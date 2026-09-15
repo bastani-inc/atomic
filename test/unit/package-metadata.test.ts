@@ -12,7 +12,7 @@ import nativesPackageJson from "../../packages/natives/package.json" with { type
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
 import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
-import { readJson } from "../helpers/runtime.js";
+import { readJson, readText } from "../helpers/runtime.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
 
@@ -176,6 +176,16 @@ describe("package metadata", () => {
 			"index.bundle.mjs",
 			"index.bundle.mjs",
 		]);
+	});
+
+	test("npm and binary packages ship bundled integration guides under docs/", async () => {
+		assert.ok(atomicPackageJson.files.includes("docs"));
+		const binaryBuild = await readText("scripts/build-binaries.sh");
+		assert.match(binaryBuild, /^\s*cp -r docs "binaries\/\$platform\/"$/m);
+		for (const topic of ["mcp", "intercom", "web-access", "subagents", "workflows"]) {
+			const guide = await readText(`packages/coding-agent/docs/${topic}.md`);
+			assert.match(guide, /^# /m, `${topic} must have a readable guide in the shipped docs tree`);
+		}
 	});
 
 	test("@bastani/atomic package manifest is installable outside the workspace", () => {

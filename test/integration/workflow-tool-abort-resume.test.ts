@@ -19,6 +19,7 @@ import { createRegistry } from "../../packages/workflows/src/workflows/registry.
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
+import { mockSession } from "../unit/executor-shared.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	const deadline = Date.now() + TEST_TIMEOUT_MS / 2;
@@ -269,6 +270,87 @@ test.each([
 			continuation.toolNodes?.map((node) => [node.id, node.argsHash, node.ordinal]),
 			source.toolNodes?.map((node) => [node.id, node.argsHash, node.ordinal]),
 		);
+	},
+);
+
+// #3038: repeated fresh-ID tool-frontier continuations must retain completed topology and timing.
+test.each(["live", "restored"] as const)(
+	"public repeated tool-frontier continuation preserves two interleaved stages and effects (%s)",
+	async (mode) => {
+		const immediateSdk = createMockSdk();
+		const sdk = {
+			...immediateSdk,
+			recordStepOutput: async (...args: Parameters<typeof immediateSdk.recordStepOutput>) => {
+				await sleep(1); // Production persistence settles asynchronously, unlike the in-memory SDK.
+				await immediateSdk.recordStepOutput(...args);
+			},
+		};
+		let backend = new DbosDurableBackend(sdk);
+		setDurableBackend(backend);
+		let modelCalls = 0;
+		let receiptCalls = 0;
+		let attempts = 0;
+		const definition = workflow({
+			name: "repeated-tool-frontier",
+			description: "two completed predecessors followed by two controlled failures",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				for (const name of ["one", "two"]) {
+					await ctx.task(name, { prompt: name });
+					await ctx.tool(`receipt-${name}`, { name }, async () => {
+						receiptCalls++;
+						return name;
+					});
+				}
+				await ctx.tool("frontier", {}, async () => {
+					if (++attempts < 3) throw new Error("controlled frontier failure");
+					return true;
+				});
+				return {};
+			},
+		});
+		const runtime = createExtensionRuntime({
+			store,
+			registry: createRegistry([definition]),
+			adapters: {
+				agentSession: {
+					create: async () => {
+						modelCalls++;
+						return mockSession();
+					},
+				},
+			},
+		});
+		const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
+		assert.ok(started.action === "run");
+		await waitFor(() => store.runs().some((run) => run.id === started.runId && run.endedAt !== undefined));
+		let source = store.runs().find((run) => run.id === started.runId)!;
+		const timing = source.stages.map(({ startedAt, endedAt, durationMs }) => ({ startedAt, endedAt, durationMs }));
+		for (let hop = 1; hop <= 2; hop++) {
+			if (mode === "restored" && hop === 2) {
+				await backend.flush(source.id);
+				backend = new DbosDurableBackend(sdk);
+				await backend.hydrateWorkflow(source.id);
+				setDurableBackend(backend);
+				const restored = durableWorkflowRunSnapshots(backend, backend.getWorkflow(source.id)!);
+				assert.equal(restored.length, 1, "retained continuation reconstructs after restart");
+				store.clear();
+				store.recordRunStart(restored[0]!);
+			}
+			const resumed = await runtime.resumeFailedRun(source.id);
+			assert.ok(resumed.ok, resumed.message);
+			await waitFor(() => store.runs().some((run) => run.id === resumed.runId && run.endedAt !== undefined));
+			const continuation = store.runs().find((run) => run.id === resumed.runId)!;
+			assert.notEqual(continuation.id, source.id);
+			assert.equal(continuation.status, hop === 1 ? "failed" : "completed", continuation.error);
+			assert.deepEqual(
+				continuation.stages.map(({ startedAt, endedAt, durationMs }) => ({ startedAt, endedAt, durationMs })),
+				timing,
+			);
+			assert.deepEqual([modelCalls, receiptCalls, attempts], [2, 2, hop + 1]);
+			source = continuation;
+		}
 	},
 );
 

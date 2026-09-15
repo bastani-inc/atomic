@@ -2,8 +2,11 @@ import { getDurableBackend } from "../durable/factory.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
+import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-stage-route-readiness.js";
 import {
+	createWorkflowBoundarySegmentsResolver,
 	stageMatchesPathPattern,
+	type WorkflowBoundarySegmentsResolver,
 	workflowBoundaryHops,
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
@@ -124,10 +127,17 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	 * so a rejected or unacknowledged emission invalidates it again below.
 	 */
 	const announcedRoutes = new Map<string, { readonly signature: string }>();
+	// Keep rejected completions separate from the publication cache: failure is not
+	// an absent optional consumer, even if it settled before a stage began waiting.
+	const routeCompletions = new Map<string, Promise<void>>();
+	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) =>
+		routeCompletions.get(runId),
+	);
 	const announceRoutes = (): void => {
 		if (disposed) return;
 		const ownedRunIds = new Set<string>();
 		const runs = activeStore.runs();
+		const resolveBoundarySegments = createWorkflowBoundarySegmentsResolver(runs);
 		for (const run of runs) {
 			const rootRunId = durableRootRunIdForRun(runs, run.id);
 			if (rootRunId === undefined) continue;
@@ -161,7 +171,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 						.map((stage) => ({
 							stageId: stage.id,
 							stageName: stage.name,
-							target: stageRouteTarget(runs, rootRunId, run.id, stage.id),
+							target: stageRouteTarget(runs, rootRunId, run.id, stage.id, resolveBoundarySegments),
 							lifecycle:
 								stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
 							// Keep agent identity for alias reactivation even after discovery eligibility ends.
@@ -178,7 +188,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 					...nonAgentNodes(run).map((node) => ({
 						stageId: node.id,
 						stageName: node.name,
-						target: stageRouteTarget(runs, rootRunId, run.id, node.id),
+						target: stageRouteTarget(runs, rootRunId, run.id, node.id, resolveBoundarySegments),
 						lifecycle: "pending",
 						routeEligible: false,
 						recipientPurpose: "control",
@@ -205,6 +215,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			} catch (error) {
 				// Never cache a failed emission; the store observer owns the error.
 				if (announcedRoutes.get(run.id) === entry) announcedRoutes.delete(run.id);
+				const failure = Promise.reject<void>(error);
+				void failure.catch(() => {});
+				routeCompletions.set(run.id, failure);
 				throw error;
 			}
 			// Both the lightweight relay and the direct heavy handler assign this
@@ -214,7 +227,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 				// No consumer claimed it: an absent event surface or a not-yet-installed
 				// relay must not make the route look published. Retry next invalidation.
 				announcedRoutes.delete(run.id);
+				routeCompletions.delete(run.id);
 			} else {
+				routeCompletions.set(run.id, completion);
 				completion.catch(() => {
 					// Identity, not signature: an older rejected A must not evict the
 					// newer A published after A → B → A. Reporting is the relay's job.
@@ -226,6 +241,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		// and re-added run re-announces instead of inheriting a stale claim.
 		for (const runId of announcedRoutes.keys()) {
 			if (!ownedRunIds.has(runId)) announcedRoutes.delete(runId);
+		}
+		for (const runId of routeCompletions.keys()) {
+			if (!ownedRunIds.has(runId)) routeCompletions.delete(runId);
 		}
 		sweepPromise = sweepPromise
 			.then(() => settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable))
@@ -323,6 +341,8 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	});
 	const dispose = (): void => {
 		disposed = true;
+		disposeReadiness();
+		routeCompletions.clear();
 		unsubscribeStore();
 		if (typeof subscription === "function") subscription();
 		if (typeof stickySubscription === "function") stickySubscription();
@@ -337,11 +357,17 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 /**
  * Canonical id-form target for one stage of `runId`, depth-faithful per the D8
  * clarification: one boundary segment per ancestor hop (boundary-stage name when it
- * is a valid single segment, else the materialized child-run id). Identical to the
+ * resolves to that child, else the materialized child-run id). Identical to the
  * roster announcement target, which is what the broker registers live aliases from.
  */
-function stageRouteTarget(runs: ReturnType<Store["runs"]>, rootRunId: string, runId: string, stageId: string): string {
-	const boundarySegments = runId === rootRunId ? [] : workflowBoundarySegments(runs, runId);
+function stageRouteTarget(
+	runs: ReturnType<Store["runs"]>,
+	rootRunId: string,
+	runId: string,
+	stageId: string,
+	resolveBoundarySegments: WorkflowBoundarySegmentsResolver = (id) => workflowBoundarySegments(runs, id),
+): string {
+	const boundarySegments = runId === rootRunId ? [] : resolveBoundarySegments(runId);
 	return formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [runId]), stageId);
 }
 

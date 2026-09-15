@@ -184,6 +184,7 @@
               "keybindings",
               "tools",
               "tools/edit",
+              "mcp",
               "web-access",
               "session-format"
             ]

@@ -253,6 +253,8 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 `parameters` is required, including for no-argument tools (use `Type.Object({})`). Registration rejects missing, null, array, and primitive schema values before they can break a provider request. This checks the schema container, not its JSON Schema `type`: object-valued union and non-object-type schemas remain accepted and unchanged.
 
+Registration is not provider validation. If a root schema is an `anyOf`/`oneOf` union, give every branch an explicit `type: "object"`; xAI rejects a non-object root branch with `tool parameter root must be an object type` before the model can call the tool. Prefer a plain `Type.Object` root with optional properties when a union is not needed.
+
 ```typescript
 import { Type } from "typebox";
 import { StringEnum } from "@bastani/atomic";

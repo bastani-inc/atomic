@@ -1,0 +1,1083 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
+import { spawnSyncCollect, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+const script = new URL("../../packages/subagents/skills/feedback/scripts/scrub.mjs", import.meta.url);
+const { scrub } = (await import(script.href)) as {
+	scrub: (text: string) => { text: string; replacements: Array<{ category: string; count: number }> };
+};
+
+function scrubFeedback(title: string, body: string) {
+	const a = scrub(title),
+		b = scrub(body);
+	const counts = new Map<string, number>();
+	for (const item of [...a.replacements, ...b.replacements])
+		counts.set(item.category, (counts.get(item.category) ?? 0) + item.count);
+	const order = [
+		"private-key",
+		"url-credentials",
+		"anthropic-token",
+		"github-token",
+		"openai-token",
+		"aws-access-key",
+		"provider-token",
+		"bearer-token",
+		"credential-assignment",
+		"home-directory",
+		"email",
+	];
+	return {
+		title: a.text,
+		body: b.text,
+		replacements: order.flatMap((category) =>
+			counts.has(category) ? [{ category, count: counts.get(category) }] : [],
+		),
+	};
+}
+
+const MARKER_SCAN_TIMEOUT_MS = 250;
+const STRUCTURAL_SCAN_TIMEOUT_MS = 250;
+const PRIVATE_KEY_SCAN_TIMEOUT_MS = 250;
+
+// Regression coverage for bastani-inc/atomic#2799.
+describe("feedback privacy core", () => {
+	for (const newline of ["\n", "\r\n"]) {
+		for (const heading of [
+			"# Summary",
+			"## Expected behavior",
+			"### Details",
+			"#### Actual behavior",
+			"##### Context",
+			"###### Notes",
+			"   ## Indented ##",
+			"##\tTabbed",
+			"##",
+			`Expected behavior${newline}===`,
+			`Actual behavior${newline}---`,
+			`   Expected behavior${newline}   =\t`,
+			`Actual behavior${newline}-`,
+		]) {
+			for (const terminated of [false, true]) {
+				for (const kind of ["quoted", "escaped", "private-key"] as const) {
+					test(`preserves Markdown report boundary ${JSON.stringify({ newline, heading, terminated, kind })}`, () => {
+						const privateKey = kind === "private-key";
+						const prefix = privateKey
+							? ["-----BEGIN", "PRIVATE KEY-----"].join(" ")
+							: 'API_KEY="syntheticCanary123';
+						const material = privateKey ? `${newline}syntheticKeyMaterial` : kind === "escaped" ? "\\" : "";
+						const terminator = privateKey ? "-----END PRIVATE KEY-----" : 'later terminator"';
+						const report = `${newline}${heading}${newline}The session should continue.${terminated ? newline + terminator : ""}`;
+						const result = scrubFeedback("Safe title", prefix + material + report);
+						assert.deepEqual(result, {
+							title: "Safe title",
+							body: (privateKey ? "[REDACTED]" : 'API_KEY="[REDACTED]"') + report,
+							replacements: [{ category: privateKey ? "private-key" : "credential-assignment", count: 1 }],
+						});
+						assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+					});
+				}
+			}
+		}
+	}
+	test("keeps non-heading hash-like and code-indented lines inside contiguous secrets", () => {
+		for (const newline of ["\n", "\r\n"]) {
+			for (const content of [
+				"####### Not a heading",
+				"##Not a heading",
+				"    ## Code",
+				"\t## Code",
+				`Title${newline}    ===`,
+				`Title${newline}= =`,
+				`    Code${newline}===`,
+			]) {
+				const quoted = scrubFeedback(
+					"Safe title",
+					`API_KEY="syntheticCanary123${newline}${content}${newline}syntheticTail456"`,
+				);
+				assert.deepEqual(quoted, {
+					title: "Safe title",
+					body: 'API_KEY="[REDACTED]"',
+					replacements: [{ category: "credential-assignment", count: 1 }],
+				});
+				const key = scrubFeedback(
+					"Safe title",
+					`${["-----BEGIN", "PRIVATE KEY-----"].join(" ")}${newline}syntheticKeyMaterial${newline}${content}${newline}-----END PRIVATE KEY-----`,
+				);
+				assert.deepEqual(key, {
+					title: "Safe title",
+					body: "[REDACTED]",
+					replacements: [{ category: "private-key", count: 1 }],
+				});
+				for (const result of [quoted, key])
+					assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+			}
+		}
+	});
+	test("passes safe text unchanged", () => {
+		assert.deepEqual(scrubFeedback("A safe title", "Ordinary diagnostic text."), {
+			title: "A safe title",
+			body: "Ordinary diagnostic text.",
+			replacements: [],
+		});
+		assert.equal(scrubFeedback("safe", "API_KEY=hunter2").body, "API_KEY=[REDACTED]");
+		assert.equal(scrubFeedback("safe", "sortkey = name").body, "sortkey = name");
+		assert.equal(scrubFeedback("safe", 'hotkey = "ctrl+k"').body, 'hotkey = "[REDACTED]"');
+	});
+	test("scrubs every required category from title and body with safe, idempotent disclosure", () => {
+		const secrets = [
+			["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"].map((prefix) => prefix + "F".repeat(32)).join(" "),
+			`sk-${"x".repeat(32)}`,
+			`sk-ant-${"y".repeat(32)}`,
+			`AKIA${"Z".repeat(16)}`,
+			`API_KEY=${"a1".repeat(20)}`,
+			"https://fake-user:fake-pass@example.invalid/path",
+			["-----BEGIN", "PRIVATE KEY-----\nsynthetic-key-material\n-----END PRIVATE KEY-----"].join(" "),
+			`${homedir()}/project and /Users/example/work`,
+		];
+		const result = scrubFeedback(secrets[0] as string, secrets.slice(1).join("\n"));
+		for (const secret of secrets.slice(0, 7))
+			assert.equal(`${result.title}\n${result.body}`.includes(secret as string), false);
+		const fired = result.replacements.map(({ category }) => category).join(" ");
+		assert.equal(
+			fired,
+			"private-key url-credentials anthropic-token github-token openai-token aws-access-key credential-assignment home-directory",
+		);
+		assert.match(result.body, /~\/project and ~\/work/u);
+		assert.equal(JSON.stringify(result.replacements).includes("fake-pass"), false);
+		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+	});
+	test("scrubs every platform's home paths without disclosing account names or rewriting URLs", () => {
+		const body =
+			"/Users/synthetic-account and /home/synthetic-account/project and C:\\Users\\synthetic-account\\app and c:\\users\\synthetic-account\\app and https://ex.invalid/Users/docs/readme";
+		const result = scrubFeedback(homedir(), body);
+		assert.equal(result.title, "~");
+		assert.equal(result.body, "~ and ~/project and ~/app and ~/app and https://ex.invalid/Users/docs/readme");
+		assert.equal(scrubFeedback("safe", "~/home/synthetic-account").body, "~~");
+		const displayed = JSON.stringify(result);
+		assert.doesNotMatch(displayed, /synthetic-account/u);
+		assert.equal(displayed.includes(homedir()), false);
+		const accountName = homedir().split("/").at(-1) ?? homedir();
+		assert.equal(displayed.includes(accountName), false);
+		assert.deepEqual(result.replacements, [{ category: "home-directory", count: 5 }]);
+	});
+	// #2799: a later home segment must not retain a second account name.
+	test("scrubs repeated home-directory segments in one path in a single pass", () => {
+		for (const [path, expected] of [
+			["/Users/bob/home/alice/x", "~/x"],
+			["/home/alice/Users/bob", "~"],
+			["C:\\Users\\bob\\home\\alice\\x", "~/x"],
+			["/Users/bob/home/alice/home/carol/file.log", "~/file.log"],
+		]) {
+			const result = scrubFeedback("safe", path);
+			assert.equal(result.body, expected);
+			assert.doesNotMatch(JSON.stringify(result), /alice|bob|carol/u);
+			assert.deepEqual(result.replacements, [{ category: "home-directory", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body), { ...result, replacements: [] });
+		}
+	});
+	test("scrubs prefixed and suffixed credential names and credentials in any URL scheme", () => {
+		const secrets = [
+			"G".repeat(40),
+			"j".repeat(40),
+			"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEX",
+			"s".repeat(24),
+			`${"q".repeat(16)}.${"r".repeat(16)}`,
+			"onlypass",
+			"tokensecret",
+		];
+		const body = `{"apiKey": "${secrets[1]}"}\nAWS_SECRET_ACCESS_KEY=${secrets[2]}\naws:\n  secret_access_key: ${secrets[3]}\ntokenizer: HuggingFaceTokenizerFast\npostgres://u:${secrets[4]}@db:5432/a\nredis://:${secrets[5]}@c:6379\ngit+ssh://git:${secrets[6]}@github.com/x.git\napi_key=${secrets[4]}`;
+		const result = scrubFeedback(`GEMINI_API_KEY=${secrets[0]}`, body);
+		const displayed = `${result.title}\n${result.body}\n${JSON.stringify(result.replacements)}`;
+		for (const secret of secrets) assert.equal(displayed.includes(secret), false);
+		assert.equal(result.title, "GEMINI_API_KEY=[REDACTED]");
+		assert.match(result.body, /\{"apiKey": "\[REDACTED\]"\}/u);
+		assert.match(result.body, /secret_access_key: \[REDACTED\]/u);
+		assert.match(result.body, /tokenizer: HuggingFaceTokenizerFast[\s\S]*api_key=\[REDACTED\]/u);
+		assert.equal(
+			JSON.stringify(result.replacements),
+			'[{"category":"url-credentials","count":3},{"category":"credential-assignment","count":5}]',
+		);
+	});
+
+	test("scrubs quoted assignments with punctuation as complete values", () => {
+		const body = "apiKey: \"AAAAAAAAAAAAAAAAAAAA.BBBB\"\npassword = 'p@ss.word!;still-secret'";
+		const result = scrubFeedback("safe", body);
+		assert.equal(result.body, "apiKey: \"[REDACTED]\"\npassword = '[REDACTED]'");
+		assert.equal(result.replacements[0]?.category, "credential-assignment");
+		assert.equal(result.replacements[0]?.count, 2);
+		assert.doesNotMatch(JSON.stringify(result), /AAAAAAAA|p@ss|still-secret/u);
+		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+	});
+	test("redacts unterminated quoted credential assignments", () => {
+		const result = scrubFeedback("safe", 'apiKey="sensitive-value');
+		assert.equal(result.body, 'apiKey="[REDACTED]"');
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		assert.doesNotMatch(JSON.stringify(result), /sensitive-value/u);
+	});
+	test("bounds unterminated quotes and scrubs placeholder suffixes", () => {
+		const report = [
+			"### What happened?",
+			"",
+			'The CLI printed apiKey="secret and then stopped.',
+			"",
+			"### Steps to reproduce",
+			"",
+			"1. Run atomic",
+			"",
+			"### Expected behavior",
+			"",
+			"The session continues.",
+		].join("\n");
+		const reportResult = scrubFeedback("safe", report);
+		assert.match(reportResult.body, /### Steps to reproduce[\s\S]*### Expected behavior/u);
+		assert.doesNotMatch(reportResult.body, /apiKey="secret/u);
+		for (const input of [`API_KEY=\${VAR}realsecret1`, `API_KEY=\${VAR}-realsecret1`]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, `API_KEY=\${VAR}[REDACTED]`);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.doesNotMatch(JSON.stringify(result), /realsecret1|\[REDACTED\]\}/u);
+			assert.deepEqual(scrubFeedback(result.title, result.body), {
+				title: result.title,
+				body: result.body,
+				replacements: [],
+			});
+		}
+		assert.equal(scrubFeedback("safe", `token=\${TOKEN}`).body, `token=\${TOKEN}`);
+		assert.equal(scrubFeedback("safe", "token={{ secrets.TOKEN }}").body, "token={{ secrets.TOKEN }}");
+	});
+	test("bounds quoted assignments at structural report boundaries", () => {
+		const cases = [
+			[
+				['apiKey="firstSecretAAA', "", "### Logs", "", 'API_KEY="secondSecretBBB"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'API_KEY="[REDACTED]"'].join("\n"),
+				2,
+			],
+			[
+				["password='hunter2", "", "### Steps to reproduce", "", "It doesn't repeat."].join("\n"),
+				["password='[REDACTED]'", "", "### Steps to reproduce", "", "It doesn't repeat."].join("\n"),
+				1,
+			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET"', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET"', "### Logs", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "### Logs", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
+			[
+				['apiKey="firstpart\nsecondpartSECRET', "", "### Logs", "", 'TOKEN="thirdSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", "### Logs", "", 'TOKEN="[REDACTED]"'].join("\n"),
+				2,
+			],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(JSON.stringify(result), /firstSecretAAA|secondSecretBBB|hunter2|thirdSecret/u);
+		}
+	});
+	test("bounds ambiguous multiline quotes without losing later feedback", () => {
+		const cases = [
+			[
+				'apiKey="firstSecretAAA\nNote: password="secondSecretBBB"',
+				'apiKey="[REDACTED]"\nNote: password="[REDACTED]"',
+				2,
+			],
+			[
+				'apiKey="firstSecretAAA\n\n### Logs\n\nAPI_KEY="secondSecretBBB"',
+				'apiKey="[REDACTED]"\n\n### Logs\n\nAPI_KEY="[REDACTED]"',
+				2,
+			],
+			['PRIVATE_TOKEN="lineOneAAAA\n\nlineTwoBBBB"', 'PRIVATE_TOKEN="[REDACTED]"\n\nlineTwoBBBB"', 1],
+			['apiKey="lineOneAAAA\nlineTwoBBBB"\n\n### Logs', 'apiKey="[REDACTED]"\n\n### Logs', 1],
+			["password='hunter2SECRET\nIt doesn't repeat.", "password='[REDACTED]'\nIt doesn't repeat.", 1],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			// A separated continuation after a report boundary is intentionally left for user review.
+			if (!input.startsWith("PRIVATE_TOKEN=")) assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
+		}
+	});
+	test("preserves quote boundaries across line endings and ordinary report content", () => {
+		const cases = [
+			[
+				'apiKey="secret\\\n### Steps to reproduce\n1. run atomic --name "release"',
+				'apiKey="[REDACTED]"\n### Steps to reproduce\n1. run atomic --name "release"',
+				1,
+			],
+			[
+				'apiKey="secret\\\r\n### Steps to reproduce\r\n1. run atomic --name "release"',
+				'apiKey="[REDACTED]"\r\n### Steps to reproduce\r\n1. run atomic --name "release"',
+				1,
+			],
+			[
+				['apiKey="secretAAA', "", "https://github.com/bastani-inc/atomic/issues/2799", "", "### Logs"].join("\n"),
+				['apiKey="[REDACTED]"', "", "https://github.com/bastani-inc/atomic/issues/2799", "", "### Logs"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="secretBBB', "", "/opt/dev/app/src/index.ts:42:7", "", "### Expected behavior"].join("\n"),
+				['apiKey="[REDACTED]"', "", "/opt/dev/app/src/index.ts:42:7", "", "### Expected behavior"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="secretCCC', "", "ordinary prose continues here", "two prose lines remain"].join("\n"),
+				['apiKey="[REDACTED]"', "", "ordinary prose continues here", "two prose lines remain"].join("\n"),
+				1,
+			],
+			[
+				['apiKey="firstpart', 'secondpartSECRET"', "", 'PASSWORD="secondSecret"'].join("\n"),
+				['apiKey="[REDACTED]"', "", 'PASSWORD="[REDACTED]"'].join("\n"),
+				2,
+			],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
+		}
+	});
+	test("redacts complete unquoted and escaped credential values", () => {
+		const cases = [
+			["PASSWORD=p@ssw0rd!", "PASSWORD=[REDACTED]"],
+			["TOKEN=abcdef!secret-suffix", "TOKEN=[REDACTED]"],
+			[`apiKey="${String.fromCharCode(92)}sensitive-value`, 'apiKey="[REDACTED]"'],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(JSON.stringify(result), /p@ssw0rd|secret-suffix|sensitive-value/u);
+		}
+	});
+	test("scrubs username-only URL userinfo without matching query text", () => {
+		const result = scrubFeedback("safe", "https://opaque-access-token@example.invalid/path");
+		assert.equal(result.body, "https://[REDACTED]@example.invalid/path");
+		assert.deepEqual(result.replacements, [{ category: "url-credentials", count: 1 }]);
+		const query = scrubFeedback("safe", "https://example.invalid/path?ref=user:pass@evil");
+		assert.equal(query.body, "https://example.invalid/path?ref=user:pass@evil");
+		assert.deepEqual(query.replacements, []);
+	});
+	test("keeps prose and delimiters intact while scrubbing short assignments", () => {
+		const prose = [
+			"The token: expired yesterday",
+			"Here is the secret:\nSomething important happened",
+			"primary_key = customer_id",
+			"foreign key: orders_id",
+		];
+		for (const input of prose) assert.equal(scrubFeedback("safe", input).body, input);
+		const result = scrubFeedback(
+			"safe",
+			"key=aaaaaaaaaa,key2=bbbbbbbbbb; password=hunt3 PIN_SECRET=1234 GITHUB_TOKEN=abc SECRET=a1b2c",
+		);
+		assert.equal(
+			result.body,
+			"key=[REDACTED],key2=[REDACTED]; password=[REDACTED] PIN_SECRET=[REDACTED] GITHUB_TOKEN=[REDACTED] SECRET=[REDACTED]",
+		);
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 6 }]);
+	});
+	test("preserves emphasized prose and complete wrapper boundaries", () => {
+		for (const input of [
+			"The token: *expired* yesterday",
+			"The secret: **not set** in CI",
+			"foreign key: *orders_id* column",
+			"primary_key = *customer_id* here",
+			"Here is the secret: `none` today",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		assert.equal(
+			scrubFeedback("safe", "API_KEY: **realsecret1 and notes**").body,
+			"API_KEY: **[REDACTED] and notes**",
+		);
+	});
+	test("scrubs credential labels in comments without corrupting prose templates", () => {
+		for (const input of [
+			"password: field is not masked in the TUI",
+			"token: counts are wrong in the footer",
+			"key: value pairs are parsed by the YAML loader",
+			"1. password: prompts appear twice",
+			`token=\${TOKEN}`,
+			"token={{ secrets.TOKEN }}",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		for (const [input, expected] of [
+			["> password: quotedSecret99", "> password: [REDACTED]"],
+			["# password: hashSecret99", "# password: [REDACTED]"],
+			["// password: slashSecret99", "// password: [REDACTED]"],
+			["password=/hunter2slash", "password=[REDACTED]"],
+			["SECRET=/hunter2slash", "SECRET=[REDACTED]"],
+			['apiKey="firstpart\nsecondpartSECRET"', 'apiKey="[REDACTED]"'],
+			["> DB_PASSWORD: quotedSecret99", "> DB_PASSWORD: [REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=/hunter2slash", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+	test("preserves decorated credential labels in ordinary prose", () => {
+		for (const input of [
+			"The `password:` field is not masked in the TUI",
+			"The `token:` counts are wrong in the footer",
+			"**Password:** field is not masked",
+			"**Password:** not set in CI",
+			"*token:* counts are wrong",
+			"`secret:` none of the panes refresh",
+			"- `password:` prompts appear twice",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+	});
+	test("scrubs compact decorated labels while preserving label wrappers", () => {
+		const cases = [
+			["token:opensesame", "token:[REDACTED]"],
+			["token: opensesame", "token: opensesame"],
+			["token:secret123", "token:[REDACTED]"],
+			["token: secret123", "token: [REDACTED]"],
+			["**token:**opensesame", "**token:**[REDACTED]"],
+			["**token:** secret123", "**token:** [REDACTED]"],
+			["**token**:opensesame", "**token**:[REDACTED]"],
+			["**token**: secret123", "**token**: [REDACTED]"],
+			["*password:*opensesame", "*password:*[REDACTED]"],
+			["`secret:`opensesame", "`secret:`[REDACTED]"],
+			["__token__:opensesame", "__token__:[REDACTED]"],
+			["**API_KEY:**realsecret1", "**API_KEY:**[REDACTED]"],
+			["**API_KEY**:realsecret1", "**API_KEY**:[REDACTED]"],
+			["API_KEY:opensesame", "API_KEY:[REDACTED]"],
+			["API_KEY: opensesame", "API_KEY: [REDACTED]"],
+			["**token=**opensesame", "**token=**[REDACTED]"],
+			["**token=** secret123", "**token=** [REDACTED]"],
+			["Set `API_KEY=abc123def` in your env", "Set `API_KEY=[REDACTED]` in your env"],
+			["Run with `DB_PASSWORD=hunter2` to reproduce", "Run with `DB_PASSWORD=[REDACTED]` to reproduce"],
+			["The **token:**expired yesterday", "The **token:**expired yesterday"],
+			["The `password:`field is not masked in the TUI", "The `password:`field is not masked in the TUI"],
+			["Clicking **secret:**hidden does nothing", "Clicking **secret:**hidden does nothing"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			if (expected !== input)
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			else assert.deepEqual(result.replacements, []);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves wrappers around compact assignments across delimiters", () => {
+		for (const [input, expected] of [
+			["**API_KEY=**realsecret1", "**API_KEY=**[REDACTED]"],
+			["**API_KEY=**realsecret1**", "**API_KEY=**[REDACTED]**"],
+			["Set `API_KEY=abc123def` in your env", "Set `API_KEY=[REDACTED]` in your env"],
+			["Run with `DB_PASSWORD=hunter2` to reproduce", "Run with `DB_PASSWORD=[REDACTED]` to reproduce"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves inline decorated prose while scrubbing line-leading credentials", () => {
+		for (const input of [
+			"The **token:**expired yesterday",
+			"The `password:`field is not masked in the TUI",
+			"Clicking **secret:**hidden does nothing",
+		])
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		for (const [input, expected] of [
+			["**token:**opensesame", "**token:**[REDACTED]"],
+			["**token=**opensesame", "**token=**[REDACTED]"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+	test("bounds marker-only credential candidates", () => {
+		const input = "*".repeat(32_000);
+		const started = performance.now();
+		assert.equal(scrubFeedback("safe", input).body, input);
+		assert.ok(performance.now() - started < MARKER_SCAN_TIMEOUT_MS);
+	});
+	test("does not leak punctuation-adjacent credential tails or strong leading-slash values", () => {
+		for (const [input, expected] of [
+			["PASSWORD=p@ss'word-tail", "PASSWORD=[REDACTED]"],
+			['DB_PASSWORD=abc"def-tail', "DB_PASSWORD=[REDACTED]"],
+			["API_KEY=abc`def-tail", "API_KEY=[REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=/K7MDENG/bPxRfiCYEX", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+			["token=/tmp/example/path", "token=/tmp/example/path"],
+			["log_path_token=/var/log/atomic.log", "log_path_token=/var/log/atomic.log"],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			if (expected.includes("[REDACTED]")) {
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+				assert.doesNotMatch(JSON.stringify(result), /word-tail|def-tail|K7MDENG|bPxRfiCYEX/u);
+			} else assert.deepEqual(result.replacements, []);
+		}
+	});
+	test("keeps long non-credential runs responsive", () => {
+		const input = "a-".repeat(32_000);
+		assert.equal(scrubFeedback("safe", input).body, input);
+	});
+	test("scrubs line-leading bare credential labels without treating prose as assignments", () => {
+		const cases = [
+			["password: s3cr3tValue", "password: [REDACTED]"],
+			["password = s3cr3tValue", "password = [REDACTED]"],
+			["  password: indented-secret", "  password: [REDACTED]"],
+			["- token: listed-secret", "- token: [REDACTED]"],
+			["1. password: numbered-secret", "1. password: [REDACTED]"],
+			[
+				"db:\n  user: admin\n  password: s3cr3tValue\n  host: localhost",
+				"db:\n  user: admin\n  password: [REDACTED]\n  host: localhost",
+			],
+			["**Password:** hunter2secret", "**Password:** [REDACTED]"],
+			["**API key:** sk-notreal-12345", "**API key:** [REDACTED]"],
+			["*token:* abc123xyz", "*token:* [REDACTED]"],
+			["`password:` hunter2secret", "`password:` [REDACTED]"],
+			["**API_KEY**: bold1234secret", "**API_KEY**: [REDACTED]"],
+			["**API_KEY**=bold1234secret", "**API_KEY**=[REDACTED]"],
+			["*password*: italicsecret12", "*password*: [REDACTED]"],
+			["`API_KEY`: codesecret1234", "`API_KEY`: [REDACTED]"],
+			["__token__: undersecret123", "__token__: [REDACTED]"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+	test("scrubs hyphenated credential names without broadening ordinary labels", () => {
+		const cases = [
+			["api-key: secret123abc", "api-key: [REDACTED]"],
+			["x-api-key: 9f8a7b6c5d4e3f", "x-api-key: [REDACTED]"],
+			["client-secret: oauthsecret123", "client-secret: [REDACTED]"],
+			["auth:\n  api-key: secret123abc", "auth:\n  api-key: [REDACTED]"],
+			["curl -H 'x-api-key: 9f8a7b6c5d4e' https://a.invalid", "curl -H 'x-api-key: [REDACTED]' https://a.invalid"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+		for (const input of ["The token: expired yesterday", "sortkey = name", "foreign key: orders_id"]) {
+			assert.equal(scrubFeedback("safe", input).body, input);
+		}
+	});
+	test("scrubs slash-containing unquoted credential values completely", () => {
+		const result = scrubFeedback("safe", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEX");
+		assert.equal(result.body, "AWS_SECRET_ACCESS_KEY=[REDACTED]");
+		assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		assert.doesNotMatch(JSON.stringify(result), /wJalrXUtnFEMI|K7MDENG|bPxRfiCYEX/u);
+	});
+	test("scrubs punctuation-bearing unquoted credentials without leaking tails", () => {
+		const cases = [
+			["MY_SECRET=abc_def_ghi", "MY_SECRET=[REDACTED]"],
+			["DB_PASSWORD=s3cr3t_p@ssw0rd", "DB_PASSWORD=[REDACTED]"],
+			["GOOGLE_API_KEY=ya29.a0Af_LiveSecretTail", "GOOGLE_API_KEY=[REDACTED]"],
+			["SLACK_TOKEN=abcdef*tail-secret", "SLACK_TOKEN=[REDACTED]"],
+			["PASSWORD=pass~word~tail", "PASSWORD=[REDACTED]"],
+			["api-key: 9f8a7b_6c5d4e3f", "api-key: [REDACTED]"],
+			["TOKEN=abc+def/ghi=tail!", "TOKEN=[REDACTED]"],
+			["AWS_SECRET_ACCESS_KEY=[wJalrXUtnFEMI", "AWS_SECRET_ACCESS_KEY=[REDACTED]"],
+			["password=[hunter2]", "password=[REDACTED]"],
+			["api_key: [abc123]", "api_key: [REDACTED]"],
+			["API_KEY=abc[def", "API_KEY=[REDACTED]"],
+			["?token=a1b2c3_d4&keep=1", "?token=[REDACTED]&keep=1"],
+			["**token=abc_def**", "**token=[REDACTED]**"],
+			["_token=abc_def_", "_token=[REDACTED]_"],
+		] as const;
+		for (const [input, expected] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			assert.doesNotMatch(
+				JSON.stringify(result),
+				/abc_def_ghi|s3cr3t|LiveSecretTail|tail-secret|pass~word|9f8a7b|abc\+def\/ghi/u,
+			);
+		}
+	});
+	test("bounds bracket assignments at structural report boundaries", () => {
+		for (const input of [
+			["api_key=[abc", "", "### Steps to reproduce", "", "1. Run atomic]"].join("\n"),
+			['api_key=["abc', "", "### Logs", "", "tail]"].join("\n"),
+		]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, input.replace(/\[[^\n]*/u, "[REDACTED]"));
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.match(result.body, /### (?:Steps to reproduce|Logs)/u);
+		}
+	});
+	test("scrubs provider-redacted assignment suffixes and value-leading punctuation", () => {
+		const providerCases = [
+			["PASSWORD=sk-ABCDEFGHIJKLMNOPQRST.uvWxSensitiveTail", "PASSWORD=[REDACTED]"],
+			["TOKEN=ghp_ABCDEFGHIJKLMNOPQRST_extraSensitiveTail", "TOKEN=[REDACTED]"],
+			["API_KEY=hf_abcdefghijklmnopqrstuvwx/SensitiveTail", "API_KEY=[REDACTED]"],
+		] as const;
+		for (const [input, expected] of providerCases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.doesNotMatch(JSON.stringify(result), /SensitiveTail|extraSensitiveTail|uvWx/u);
+		}
+		const wrapperCases = [
+			["TOKEN=_Canary42", "TOKEN=[REDACTED]"],
+			["TOKEN=*Canary42", "TOKEN=[REDACTED]"],
+			["TOKEN=~Canary42", "TOKEN=[REDACTED]"],
+			["password: **hunter2**", "password: **[REDACTED]**"],
+			["**TOKEN=abc_def**", "**TOKEN=[REDACTED]**"],
+			["**Password:** hunter2", "**Password:** [REDACTED]"],
+			["TOKEN=abc_def_", "TOKEN=[REDACTED]_"],
+			["token: **ghp_abcdefghijklmnopqrst.secret**", "token: **[REDACTED]**"],
+		] as const;
+		for (const [input, expected] of wrapperCases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			if (input.startsWith("token: **ghp_"))
+				assert.deepEqual(result.replacements, [
+					{ category: "github-token", count: 1 },
+					{ category: "credential-assignment", count: 1 },
+				]);
+			else assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+
+	test("does not count empty unquoted assignment values as redactions", () => {
+		for (const input of [
+			"token=/tmp/example/path",
+			"password=&next=1",
+			"api_key=<your-key-here>",
+			"token=}",
+			"secret=;",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+		assert.deepEqual(scrubFeedback("safe", "API_KEY=realsecret1 and log_path_token=/var/log/atomic.log"), {
+			title: "safe",
+			body: "API_KEY=[REDACTED] and log_path_token=/var/log/atomic.log",
+			replacements: [{ category: "credential-assignment", count: 1 }],
+		});
+	});
+	test("preserves delimiters following unquoted credential assignments", () => {
+		const cases = [
+			[
+				"https://x.invalid/p?token=abc123&user=bob&mode=dark",
+				"https://x.invalid/p?token=[REDACTED]&user=bob&mode=dark",
+				1,
+			],
+			[
+				"curl 'https://a.invalid/?access_token=tok12345&next=/home'",
+				"curl 'https://a.invalid/?access_token=[REDACTED]&next=/home'",
+				1,
+			],
+			["?token=a1b2c3&password=d4e5f6&keep=1", "?token=[REDACTED]&password=[REDACTED]&keep=1", 2],
+			["token=abc123|piped", "token=[REDACTED]|piped", 1],
+			["token=abc<br>more", "token=[REDACTED]<br>more", 1],
+		] as const;
+		for (const [input, expected, count] of cases) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+		}
+	});
+	// Issue #2799, r22 F-A: a prior value can overlap the next candidate's name, not its value.
+	test("scrubs adjacent assignments whose names overlap a preceding unquoted value", () => {
+		for (const [input, expected] of [
+			["export API_KEY=api ACCESS_TOKEN=abcd1234", "export API_KEY=[REDACTED] ACCESS_TOKEN=[REDACTED]"],
+			[
+				"atomic run --api_key=api --access_token=s3cr3tvalue",
+				"atomic run --api_key=[REDACTED] --access_token=[REDACTED]",
+			],
+			["api_key=api access_token=abcd1234", "api_key=[REDACTED] access_token=[REDACTED]"],
+			["API_KEY=access token: abcd1234", "API_KEY=[REDACTED] token: [REDACTED]"],
+			["api_key=v1-api access_token=abcd1234", "api_key=[REDACTED] access_token=[REDACTED]"],
+			["auth: api_key=access refresh_token=abcd1234", "auth: api_key=[REDACTED] refresh_token=[REDACTED]"],
+		]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected, input);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 2 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body), {
+				title: "safe",
+				body: expected,
+				replacements: [],
+			});
+		}
+	});
+	test("recognizes repeated spaces and tabs in strong credential name prefixes", () => {
+		for (const name of ["api key", "api  key", "api\tkey", "access\tsecret"]) {
+			for (const prefix of ["", "api_key=api "]) {
+				for (const value of ["bSECRET222", "(bSECRET222)", '"bSECRET222"', "'bSECRET222'"]) {
+					const input = `${prefix}${name}: ${value}`;
+					const result = scrubFeedback("safe", input);
+					const replacement = value.startsWith('"')
+						? '"[REDACTED]"'
+						: value.startsWith("'")
+							? "'[REDACTED]'"
+							: "[REDACTED]";
+					const expected = `${prefix ? "api_key=[REDACTED] " : ""}${name}: ${replacement}`;
+					assert.equal(result.body, expected, input);
+					assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: prefix ? 2 : 1 }]);
+					assert.deepEqual(scrubFeedback(result.title, result.body), {
+						title: "safe",
+						body: expected,
+						replacements: [],
+					});
+				}
+			}
+		}
+	});
+	test("redacts balanced unquoted wrappers symmetrically without consuming following text", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			for (const label of ["API_KEY", "**API_KEY:**", "token"]) {
+				const prefix = label.endsWith("**") ? label : `${label}=`;
+				for (const value of [
+					"opensesameSECRET",
+					"abc123",
+					"abc_def",
+					"nested(secret123)",
+					"p@ss'word",
+					'abc"def',
+				]) {
+					const input = `${prefix}${open}${value}${close} tail`;
+					const result = scrubFeedback("safe", input);
+					assert.equal(result.body, `${prefix}[REDACTED] tail`, input);
+					assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+					assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+				}
+			}
+		}
+	});
+	test("preserves Markdown links after credential labels", () => {
+		for (const input of [
+			"api_key: [docs](https://ex.invalid/k) tail",
+			"API_KEY=[documentation](https://ex.invalid/a_(b)) and notes",
+			"token: [docs][reference] tail",
+			// Greptile 3995438933, issue #2799: link text remains manual-review-only, not classified as prose or a secret.
+			"API_KEY=[hunter2](https://example.invalid)",
+		]) {
+			assert.deepEqual(scrubFeedback("safe", input), { title: "safe", body: input, replacements: [] });
+		}
+	});
+	// Greptile 3995353559, issue #2799: unquoted wrappers never span report lines.
+	test("bounds all unquoted wrappers to one line", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			for (const newline of ["\n", "\r\n"]) {
+				const report = `${newline}The CLI crashed.${newline}I expected success${close}`;
+				const result = scrubFeedback("safe", `api_key=${open}abc${report}`);
+				assert.equal(result.body, `api_key=[REDACTED]${report}`);
+				assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	test("scrubs suffixes after balanced values without leaking or duplicating placeholders", () => {
+		for (const value of [
+			"(abc123)tail",
+			"{abc123}tail",
+			"[abc123]tail",
+			"<abc123>tail",
+			"<your-key-here>tail",
+			"()tail",
+			'["a","b"]',
+		]) {
+			const result = scrubFeedback("safe", `API_KEY=${value}`);
+			assert.equal(result.body, "API_KEY=[REDACTED]");
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("preserves already-redacted wrapped values and still scrubs link query credentials", () => {
+		for (const [open, close] of [
+			["(", ")"],
+			["{", "}"],
+			["[", "]"],
+			["<", ">"],
+		] as const) {
+			const body = `API_KEY=${open}[REDACTED]${close}`;
+			assert.deepEqual(scrubFeedback("safe", body), { title: "safe", body, replacements: [] });
+			const provider = scrubFeedback("safe", `API_KEY=${open}sk-${"A".repeat(24)}${close}`);
+			assert.equal(provider.body, body);
+			assert.deepEqual(provider.replacements, [{ category: "openai-token", count: 1 }]);
+		}
+		const link = scrubFeedback("safe", "api_key: [docs](https://ex.invalid/?token=abc123) tail");
+		assert.equal(link.body, "api_key: [docs](https://ex.invalid/?token=[REDACTED]) tail");
+		assert.deepEqual(link.replacements, [{ category: "credential-assignment", count: 1 }]);
+	});
+	test("treats balanced strong-name values as credentials rather than guessing prose", () => {
+		for (const input of ["api_key: (see the docs)", "API_KEY={a value}", "API_KEY=[a value]"]) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, input.replace(/[({[].*$/u, "[REDACTED]"));
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+		}
+	});
+
+	test("scrubs PGP and truncation-orphaned private-key blocks and bare provider tokens", () => {
+		const tokens = [
+			`AIzaSy${"C".repeat(33)}`,
+			`xoxb-${"1".repeat(20)}`,
+			`glpat-${"a".repeat(20)}`,
+			`hf_${"a".repeat(24)}`,
+		];
+		const cut = ["-----BEGIN", `PRIVATE KEY-----\n${"M".repeat(4000)}`].join(" ");
+		const pgp = "-----BEGIN PGP" + " PRIVATE KEY BLOCK-----\nkeymaterial\n-----END PGP PRIVATE KEY BLOCK-----";
+		const result = scrubFeedback(tokens.join(" "), `${pgp}\n${cut}`);
+		const displayed = `${result.title}\n${result.body}`;
+		for (const token of tokens) assert.equal(displayed.includes(token), false);
+		assert.equal(result.body, "[REDACTED]\n[REDACTED]");
+		assert.doesNotMatch(displayed, /keymaterial|MMMM/u);
+		assert.equal(
+			JSON.stringify(result.replacements),
+			'[{"category":"private-key","count":2},{"category":"provider-token","count":4}]',
+		);
+	});
+
+	// Greptile review on #3063: a bare Google OAuth access token (no Bearer prefix, no KEY= label) was not scrubbed.
+	test("scrubs a standalone Google OAuth access token", () => {
+		const token = `ya29.a0${"A".repeat(40)}-${"b".repeat(20)}`;
+		const result = scrubFeedback("safe", `Gemini call failed with token ${token} in the request log.`);
+		assert.equal(result.body.includes(token), false);
+		assert.equal(result.body, "Gemini call failed with token [REDACTED] in the request log.");
+		assert.deepEqual(result.replacements, [{ category: "provider-token", count: 1 }]);
+	});
+
+	test("bounds unterminated private-key mentions at report boundaries", () => {
+		const input = [
+			"### What happened?",
+			"",
+			`log line: -----BEGIN OPENSSH ${["PRIVATE", "KEY"].join(" ")}----- appeared`,
+			"",
+			"### Steps to reproduce",
+			"",
+			"1. Run atomic",
+		].join("\n");
+		const result = scrubFeedback("safe", input);
+		assert.equal(
+			result.body,
+			["### What happened?", "", "log line: [REDACTED]", "", "### Steps to reproduce", "", "1. Run atomic"].join(
+				"\n",
+			),
+		);
+		assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+	});
+	test("keeps contiguous report lines after private-key marker mentions", () => {
+		const marker = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			const report = `${newline}and then the app exited.${newline}Steps: run atomic.`;
+			for (const trailing of [" text", " appeared in a log", "\ttext"]) {
+				const result = scrubFeedback("safe", `A log line contained ${marker}${trailing}${report}`);
+				assert.equal(result.body, `A log line contained [REDACTED]${report}`);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	// Issue #2799, r22-a2: missing END markers must not trigger one block rescan per BEGIN.
+	test("bounds repeated private-key mention scans", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const row = `${begin} appeared in the log`;
+		for (const size of [32_000, 166_000]) {
+			const count = Math.floor(size / (row.length + 1));
+			const input = Array.from({ length: count }, () => row).join("\n");
+			const start = performance.now();
+			const result = scrubFeedback("safe", input);
+			const elapsed = performance.now() - start;
+			assert.equal(result.body, Array.from({ length: count }, () => "[REDACTED]").join("\n"));
+			assert.deepEqual(result.replacements, [{ category: "private-key", count }]);
+			assert.ok(elapsed < PRIVATE_KEY_SCAN_TIMEOUT_MS, `private-key mention scan took ${elapsed}ms`);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	// Issue #2799: cached END markers must not be reused across consumed blocks or report boundaries.
+	test("keeps private-key terminators scoped to their contiguous block", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const boundary of [`${newline}${newline}`, `${newline} \t${newline}`, `${newline}### Logs${newline}`]) {
+				const input = `${end}${newline}${begin} mention${newline}report${boundary}${begin} text${newline}${begin} nested${newline}keymaterial${newline}${end} tail${newline}${begin} mention${newline}report`;
+				const expected = `${end}${newline}[REDACTED]${newline}report${boundary}[REDACTED] tail${newline}[REDACTED]${newline}report`;
+				const result = scrubFeedback("safe", input);
+				assert.equal(result.body, expected);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 3 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+			}
+		}
+	});
+	// Issue #2799, r22 F-B: a contiguous END marker identifies a complete block.
+	test("scrubs terminated private-key blocks with text on the BEGIN line", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const trailing of [" text", "\ttext", "inlineKeyMaterial"]) {
+				const result = scrubFeedback(
+					"safe",
+					`${begin}${trailing}${newline}keymaterial${newline}${end}${newline}report`,
+				);
+				assert.equal(result.body, `[REDACTED]${newline}report`);
+				assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+				for (const boundary of [
+					`${newline}${newline}`,
+					`${newline} \t${newline}`,
+					`${newline}### Logs${newline}`,
+				]) {
+					const rest = `${boundary}keymaterial${newline}${end}`;
+					assert.equal(scrubFeedback("safe", `${begin}${trailing}${rest}`).body, `[REDACTED]${rest}`);
+				}
+			}
+		}
+	});
+	test("scrubs private-key marker-only lines within hard report boundaries", () => {
+		const begin = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const end = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		for (const newline of ["\n", "\r\n"]) {
+			for (const boundary of [`${newline}${newline}`, `${newline} \t${newline}`, `${newline}### Logs${newline}`]) {
+				for (const ending of ["", `${newline}${end}`]) {
+					const remainder = `${boundary}report remains${ending}`;
+					const result = scrubFeedback("safe", `${begin}${newline}keymaterial${remainder}`);
+					assert.equal(result.body, `[REDACTED]${remainder}`);
+					assert.deepEqual(result.replacements, [{ category: "private-key", count: 1 }]);
+				}
+			}
+			for (const ending of ["", `${newline}${end}`]) {
+				assert.equal(scrubFeedback("safe", `${begin} \t${newline}keymaterial${ending}`).body, "[REDACTED]");
+			}
+		}
+	});
+
+	test("redacts contiguous multiline quoted values without crossing report boundaries", () => {
+		for (const [input, expected] of [
+			['API_KEY="lineOneAAAA\nlineTwoBBBB\nlineThreeCCC"', 'API_KEY="[REDACTED]"'],
+			["PASSWORD='lineOneAAAA\nlineTwoBBBB\nlineThreeCCC'", "PASSWORD='[REDACTED]'"],
+			['API_KEY="lineOneAAAA\nlineTwoBBBB" was the value', 'API_KEY="[REDACTED]" was the value'],
+			['API_KEY="s1AAAA\r\ns2BBBB\r\n\r\n### Steps', 'API_KEY="[REDACTED]"\r\n\r\n### Steps'],
+			['API_KEY="s1AAAA\ns2BBBB\n\n### Steps', 'API_KEY="[REDACTED]"\n\n### Steps'],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("scrubs adjacent quoted assignments independently", () => {
+		for (const [input, expected, count] of [
+			['apiKey="secretAAA PASSWORD="secretBBB"', 'apiKey="[REDACTED]" PASSWORD="[REDACTED]"', 2],
+			[
+				'apiKey="aSECRET TOKEN="bSECRET" PASSWORD="cSECRET"',
+				'apiKey="[REDACTED]" TOKEN="[REDACTED]" PASSWORD="[REDACTED]"',
+				3,
+			],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count }]);
+			assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+		}
+	});
+	test("does not treat credential-shaped prose inside quoted values as assignments", () => {
+		for (const [input, expected] of [
+			['password="my secret: do not share"', 'password="[REDACTED]"'],
+			['password="abc token=def ghi"', 'password="[REDACTED]"'],
+			['apiKey="the secret: yes please"', 'apiKey="[REDACTED]"'],
+		] as const) {
+			const result = scrubFeedback("safe", input);
+			assert.equal(result.body, expected);
+			assert.deepEqual(result.replacements, [{ category: "credential-assignment", count: 1 }]);
+			assert.equal((result.body.match(/"/gu)?.length ?? 0) % 2, 0);
+		}
+	});
+	test("keeps placeholder suffix scrubbing idempotent", () => {
+		for (const input of [
+			`API_KEY=${String.fromCharCode(36)}{VAR}[REDACTED]secret`,
+			"API_KEY={{ VAR }}[REDACTED]secret",
+		]) {
+			const first = scrubFeedback("safe", input);
+			assert.equal(first.body, input.replace(/\[REDACTED\]secret/gu, "[REDACTED]"));
+			const second = scrubFeedback(first.title, first.body);
+			assert.equal(second.body, first.body);
+			assert.deepEqual(second.replacements, []);
+		}
+	});
+	test("does not rescan the line prefix for every embedded quote", () => {
+		const input = `${"x".repeat(32_000)} token=${"`".repeat(32_000)}`;
+		const started = performance.now();
+		const result = scrubFeedback("safe", input);
+		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
+		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
+	});
+	test("keeps blank-line boundary scanning responsive", () => {
+		const input = `API_KEY="v${"\n".repeat(32_000)}tail"`;
+		const started = performance.now();
+		scrubFeedback("safe", input);
+		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
+	});
+});
+
+test("scrub CLI reads stdin and reports counts without exposing values", () => {
+	const result = spawnSyncCollect([process.execPath, fileURLToPath(script)], {
+		stdin: "ANTHROPIC_API_KEY=sk-ant-CANARY000 /Users/somebody/proj test@example.com Bearer abc123secret",
+	});
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.stdout.toString(), "ANTHROPIC_API_KEY=[REDACTED] ~/proj [REDACTED] Bearer [REDACTED]");
+	assert.match(result.stderr.toString(), /^Privacy scrubbed: /);
+	assert.doesNotMatch(result.stderr.toString(), /CANARY|somebody|example.com|abc123secret/);
+});
+
+test("normalizes the home prefix separator on Windows and preserves other text", () => {
+	assert.equal(scrub(String.raw`C:\Users\somebody\proj`).text, "~/proj");
+	assert.equal(scrub(String.raw`C:\Users\bob\home\alice\proj`).text, "~/proj");
+});
+
+test("scrubs emails and bearer tokens idempotently with count-only summaries", () => {
+	const result = scrub("a@example.com a@example.com Bearer opaque-secret");
+	assert.equal(result.text, "[REDACTED] [REDACTED] Bearer [REDACTED]");
+	assert.deepEqual(result.replacements, [
+		{ category: "bearer-token", count: 1 },
+		{ category: "email", count: 2 },
+	]);
+	assert.deepEqual(scrub(result.text), { text: result.text, replacements: [] });
+});
+
+test("scrub CLI accepts a file path and preserves safe Markdown and empty stdin", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "feedback-scrub-"));
+	try {
+		const path = join(dir, "draft with spaces.md");
+		const text = "# Draft\r\n\r\nKeep  duplicate duplicate words.\r\n";
+		await writeFileEnsuringDir(path, text);
+		const result = spawnSyncCollect([process.execPath, fileURLToPath(script), path]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stdout.toString(), text);
+		assert.equal(result.stderr.toString(), "Privacy scrubbed: no replacements needed\n");
+		const empty = spawnSyncCollect([process.execPath, fileURLToPath(script)], { stdin: "" });
+		assert.equal(empty.exitCode, 0);
+		assert.equal(empty.stdout.toString(), "");
+		assert.equal(empty.stderr.toString(), "Privacy scrubbed: no replacements needed\n");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

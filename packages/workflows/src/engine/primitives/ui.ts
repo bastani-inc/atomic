@@ -25,9 +25,12 @@ export function buildExitGatedUiContext(input: BuildExitGatedUiContextInput): Wo
 			: input.opts.executionMode === "non_interactive" && input.opts.ui === undefined
 				? makeHeadlessUnavailableUIContext()
 				: normalizeUIContext(input.opts.ui);
-	// Prompt-node continuation owns replay so its stage remains observable;
-	// durable response replay is for non-node UI and fresh redispatches.
-	const promptNodeReplay = input.opts.usePromptNodesForUi === true && input.opts.continuation !== undefined;
+	// Fresh-ID continuation owns prompt replay. Same-ID recovery must still use
+	// the exact durable UI answer; its prompt metadata does not contain that answer.
+	const promptNodeReplay =
+		input.opts.usePromptNodesForUi === true &&
+		input.opts.continuation !== undefined &&
+		input.opts.continuation.source.id !== input.durableUi?.workflowId;
 	const durableBase =
 		input.durableUi !== undefined && !promptNodeReplay ? wrapUiWithDurable(base, input.durableUi) : base;
 	const invoke = <T>(call: () => Promise<T>): Promise<T> => {

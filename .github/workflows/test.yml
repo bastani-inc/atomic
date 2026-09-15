@@ -449,7 +449,8 @@ jobs:
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 3
+    # Run 34873678170: all steps passed, but 182s finalization hit the 3-minute cap. Add 50% headroom.
+    timeout-minutes: 5
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:

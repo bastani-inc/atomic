@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { getDocsPath } from "../src/config.js";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
@@ -229,6 +232,15 @@ describe("buildSystemPrompt", () => {
 
 			expect(prompt).not.toContain("- **Workflows**:");
 		});
+	});
+
+	test("routes bundled extension questions to readable guides under the docs root", () => {
+		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
+		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
+		for (const topic of ["mcp", "intercom", "web-access", "subagents", "workflows"]) {
+			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
+			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
+		}
 	});
 
 	test("routes model advice and automation requests to evidence and domain-specific tools", () => {

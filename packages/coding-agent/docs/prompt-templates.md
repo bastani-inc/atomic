@@ -99,6 +99,14 @@ Usage: `/component Button "onClick handler" "disabled support"`
 - Template discovery in `prompts/` is non-recursive.
 - If you want templates in subdirectories, add them explicitly via `prompts` settings or a package manifest.
 
+## Report feedback
+
+Use `/feedback <what happened or what you want to change>` to draft an Atomic bug report or enhancement. The bundled feedback skill runs one foreground debugger investigation for a bug and no subagent for an enhancement. It summarizes findings and unknowns rather than attaching files or transcripts.
+
+Review the Markdown draft and its `Privacy scrubbed:` summary. Ask for changes to get a revised, re-scrubbed draft, or say you want it posted. An unrelated request continues the conversation without creating an issue. Posting uses your own authenticated `gh` CLI login to create an issue in `bastani-inc/atomic`; install GitHub CLI and run `gh auth login` if needed. If posting fails, Atomic reports the error and keeps the draft in the conversation.
+
+The scrubber replaces recognized API tokens, bearer credentials, credential assignments, URL credentials, private keys and email addresses with `[REDACTED]`, and home-directory prefixes with `~`. Review before posting: arbitrary secrets and sensitive business context may remain. Blank lines and Markdown headings stop multiline credential matching; complete template placeholders and Markdown links are preserved. Content beyond those boundaries and secret text in links can therefore require manual removal. Scrubbing cannot remove information already sent to your model provider.
+
 ## Next steps
 
 - [Skills](/skills) — instructions the agent loads on its own when a task matches, instead of on an explicit slash command.

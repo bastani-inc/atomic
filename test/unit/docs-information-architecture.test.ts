@@ -406,8 +406,8 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/models": ["/models/model-selection", "/models/pareto-efficiency", "/models/evals"],
 	"/workflows/reliable-design": ["/workflows/verification"],
 	"/tmux": ["/herdr"],
-	// Keep web-access beside tools/edit in the Reference group.
-	"/tools/edit": ["/web-access"],
+	// Keep mcp and web-access beside tools/edit in the Reference group.
+	"/tools/edit": ["/mcp", "/web-access"],
 	"/changelog": ["/models/artificial-analysis-index"],
 	"/custom-provider": [
 		"/custom-provider/override",
@@ -641,8 +641,8 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			34,
-			"24 migration routes, all six upstream additions, and the four reader-path orientation pages have insertion points",
+			35,
+			"24 migration routes, all six upstream additions, the four reader-path orientation pages, and /mcp (#3065) have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
 

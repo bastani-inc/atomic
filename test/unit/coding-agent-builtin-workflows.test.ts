@@ -237,9 +237,12 @@ describe("coding-agent builtin resources", () => {
 			}
 
 			const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
-			for (const skillName of ["subagent", "intercom"]) {
+			for (const skillName of ["subagent", "intercom", "feedback"]) {
 				assert.ok(skillNames.has(skillName), `expected builtin skill ${skillName}`);
 			}
+			const feedback = loader.getPrompts().prompts.find((prompt) => prompt.name === "feedback");
+			assert.ok(feedback, "expected bundled feedback prompt");
+			assert.equal(feedback.argumentHint, "<what happened or what you want to change>");
 		},
 		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
 	);
@@ -280,6 +283,7 @@ describe("coding-agent builtin resources", () => {
 			for (const skillName of [
 				"bro",
 				"create-spec",
+				"feedback",
 				"how",
 				"impeccable",
 				"intercom",

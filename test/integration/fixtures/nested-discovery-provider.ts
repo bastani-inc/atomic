@@ -1,5 +1,5 @@
 /** Deterministic model only: real CLI sessions, workflow tools and Intercom transport remain intact. */
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CreateAgentSessionOptions, ExtensionAPI } from "@bastani/atomic";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
@@ -51,7 +51,17 @@ export default function (pi: ExtensionAPI): void {
 				contextWindow: 100000,
 				maxTokens: 1000,
 			},
+			{
+				id: "failing",
+				name: "Failing primary",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 100000,
+				maxTokens: 1000,
+			},
 		],
+		// Registered primary fails after extension initialization, not model lookup.
 		streamSimple(model, context) {
 			const stream = createAssistantMessageEventStream();
 			const stateDir = process.env.NESTED_DISCOVERY_STATE_DIR!;
@@ -63,6 +73,9 @@ export default function (pi: ExtensionAPI): void {
 							.filter((part) => part.type === "text")
 							.map((part) => part.text)
 							.join("");
+			if (process.env.NESTED_FALLBACK_CONTROL) {
+				appendFileSync(join(stateDir, "model-attempts.jsonl"), `${JSON.stringify({ model: model.id, text })}\n`);
+			}
 			const command = /^fixture-call (.+)$/.exec(text)?.[1];
 			const request =
 				command === undefined
@@ -101,6 +114,18 @@ export default function (pi: ExtensionAPI): void {
 				},
 			};
 			void (async () => {
+				if (model.id === "failing") {
+					output.stopReason = "error";
+					output.errorMessage = "429 rate limit exceeded";
+					stream.push({ type: "error", reason: "error", error: output });
+					stream.end();
+					return;
+				}
+				if (text === "fixture-top-hold") {
+					writeFileSync(join(stateDir, "top-hold"), "started\n");
+					while (!existsSync(join(stateDir, "top-release")))
+						await new Promise((resolve) => setTimeout(resolve, 20));
+				}
 				if (isHold) {
 					appendFileSync(join(stateDir, "holds.jsonl"), "started\n");
 					while (!existsSync(join(stateDir, "release"))) await new Promise((resolve) => setTimeout(resolve, 20));

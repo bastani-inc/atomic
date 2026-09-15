@@ -112,6 +112,8 @@ Completion creates a shaded notification card in the owning chat without dependi
 
 The parent model also receives the result context. The internal receipt stays in structured message details, rather than becoming raw JSON in chat. The same persisted completion identity handles delivery retries without relaunching the child. Workflow completions remain in their owning stage chat, not the main conversation.
 
+Supervisor progress messages are labelled **Historical supervisor update** with their original `Sent:` timestamp. They describe the child's state when sent, not its current status, and can arrive after completion. Prefer a later correction or final result over an earlier progress hypothesis; use `/tasks` for the current task state.
+
 Stopping a subagent through `/tasks` (`x`, then `y`) also delivers a **stopped** card and stop context to the parent model. The notice arrives after termination is confirmed, not while the task is merely **Stopping**, and does not require a final response from the child. Cancelling queued work notifies without starting it. Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome; a task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.

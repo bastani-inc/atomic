@@ -24,27 +24,73 @@ export type WorkflowBoundarySegmentsResolver = (runId: string) => readonly strin
 
 /**
  * Depth-faithful boundary segments for `runId` (D8 clarification): one segment per
- * ancestor hop below the root, each the boundary-stage name when it is a valid single
- * segment, else that boundary's materialized child-run id. `[]` for the root run;
- * `undefined` when a parent or boundary link is missing from `runs`.
+ * ancestor hop below the root, each the boundary-stage name when it resolves to
+ * this child, else that boundary's materialized child-run id. `[]` for the root
+ * run; `undefined` when a parent or boundary link is missing from `runs`.
  */
 export function workflowBoundarySegments(runs: readonly RunSnapshot[], runId: string): readonly string[] | undefined {
+	return createWorkflowBoundarySegmentsResolver(runs)(runId);
+}
+
+/** Build once per roster publication; never retain this resolver across store invalidations. */
+export function createWorkflowBoundarySegmentsResolver(runs: readonly RunSnapshot[]): WorkflowBoundarySegmentsResolver {
 	const runById = new Map(runs.map((run) => [run.id, run]));
-	const segments: string[] = [];
-	let current = runById.get(runId);
-	while (current !== undefined && current.parentRunId !== undefined) {
-		const parent = runById.get(current.parentRunId);
-		const boundary = parent?.stages.find((stage) => stage.id === current?.parentStageId);
-		if (parent === undefined || boundary === undefined) return undefined;
-		const boundaryName = boundary.name;
-		segments.unshift(
-			boundaryName.length > 0 && !boundaryName.includes("/") && !boundaryName.includes("*")
-				? boundaryName
-				: current.id,
-		);
-		current = parent;
+	const stagesByRun = new Map<string, { byId: Map<string, StageSnapshot[]>; byName: Map<string, StageSnapshot[]> }>();
+	const childrenByParent = new Map<string, Map<string, RunSnapshot[]>>();
+	for (const run of runs) {
+		const byId = new Map<string, StageSnapshot[]>();
+		const byName = new Map<string, StageSnapshot[]>();
+		for (const stage of run.stages) {
+			const ids = byId.get(stage.id) ?? [];
+			ids.push(stage);
+			byId.set(stage.id, ids);
+			const names = byName.get(stage.name) ?? [];
+			names.push(stage);
+			byName.set(stage.name, names);
+		}
+		stagesByRun.set(run.id, { byId, byName });
+		if (run.parentRunId === undefined || run.parentStageId === undefined) continue;
+		const byStage = childrenByParent.get(run.parentRunId) ?? new Map<string, RunSnapshot[]>();
+		const children = byStage.get(run.parentStageId) ?? [];
+		children.push(run);
+		byStage.set(run.parentStageId, children);
+		childrenByParent.set(run.parentRunId, byStage);
 	}
-	return current === undefined ? undefined : segments;
+	const cachedSegments = new Map<string, readonly string[] | undefined>();
+	return (runId) => {
+		if (cachedSegments.has(runId)) return cachedSegments.get(runId);
+		const segments: string[] = [];
+		let current = runById.get(runId);
+		while (current !== undefined && current.parentRunId !== undefined) {
+			const parent = runById.get(current.parentRunId);
+			const stages = stagesByRun.get(current.parentRunId);
+			const boundary =
+				current.parentStageId === undefined ? undefined : stages?.byId.get(current.parentStageId)?.[0];
+			if (parent === undefined || stages === undefined || boundary === undefined) {
+				cachedSegments.set(runId, undefined);
+				return undefined;
+			}
+			const boundaryName = boundary.name;
+			// Preserve ID-before-name precedence and reject ambiguous boundary names.
+			const matchingBoundaries = stages.byId.get(boundaryName) ?? stages.byName.get(boundaryName);
+			const matchingBoundary = matchingBoundaries?.length === 1 ? matchingBoundaries[0] : undefined;
+			const children =
+				matchingBoundary === undefined ? undefined : childrenByParent.get(parent.id)?.get(matchingBoundary.id);
+			segments.unshift(
+				boundaryName.length > 0 &&
+					!boundaryName.includes("/") &&
+					!boundaryName.includes("*") &&
+					children?.length === 1 &&
+					children[0]?.id === current.id
+					? boundaryName
+					: current.id,
+			);
+			current = parent;
+		}
+		const result = current === undefined ? undefined : segments;
+		cachedSegments.set(runId, result);
+		return result;
+	};
 }
 
 /** One ancestor hop of a run's invocation lineage, keeping both depth-faithful spellings. */
