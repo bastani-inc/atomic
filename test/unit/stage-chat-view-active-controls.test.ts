@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createPromptCardState, renderPromptCard } from "../../packages/workflows/src/tui/prompt-card.js";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 import {
 	CURSOR_MARKER,
 	createStore,
@@ -15,12 +16,10 @@ const payload = "Polaris 雪\x1b]0;ACTIVE\x07\x1b]2;ST\x1b\\\x9d0;C1\x9c\x1b[31m
 
 function assertSafe(view: StageChatView): void {
 	for (const width of [40, 120, 400]) {
-		const visible = view
-			.render(width)
-			.join("\n")
-			.replaceAll(CURSOR_MARKER, "")
-			.replace(/\x1b\[[0-9;]*m/g, "");
-		assert.doesNotMatch(visible, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+		const visible = assertNoRawControls(view.render(width).join("\n"), {
+			markers: [CURSOR_MARKER],
+			allowSgr: true,
+		});
 		if (width === 400) {
 			assert.ok(visible.includes("Polaris 雪"));
 			assert.ok(visible.includes("\\x1b[31m"), "injected styling is literal text");
@@ -119,8 +118,7 @@ for (const kind of ["input", "select"] as const) {
 			makePendingPrompt({ kind, message: "Safe question", initial: payload, choices: [payload] }),
 		);
 		const lines = renderPromptCard({ state, theme: deriveGraphTheme({}), width: 400, maxRows: 5, cursorOn: true });
-		const visible = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		assert.doesNotMatch(visible, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+		const visible = assertNoRawControls(lines.join("\n"), { allowSgr: true });
 		assert.ok(visible.includes("Polaris 雪"));
 		assert.ok(visible.includes("\\x1b[31m"));
 	});

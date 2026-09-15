@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.js";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 import {
 	CURSOR_MARKER,
 	createStore,
@@ -178,12 +179,10 @@ for (const { kind, primitive } of [
 		});
 		try {
 			// Permit renderer-owned styles/cursor marker only, never controls from the prompt.
-			const rendered = view
-				.render(160)
-				.join("\n")
-				.replaceAll(CURSOR_MARKER, "")
-				.replace(/\x1b\[[0-9;]*m/g, "");
-			assert.doesNotMatch(rendered, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+			const rendered = assertNoRawControls(view.render(160).join("\n"), {
+				markers: [CURSOR_MARKER],
+				allowSgr: true,
+			});
 			assert.ok(rendered.includes("\\x1b[31m"), "untrusted CSI styling must also be inert");
 			for (const text of ["Readable Ω 中文", "Second line", "Red", "clear", "Final text"]) {
 				assert.ok(rendered.includes(text), `legitimate text missing: ${text}`);

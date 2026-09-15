@@ -16,15 +16,7 @@ import {
 	PreviewPane,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-pane.js";
 import { getMarkdownTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-
-const controls = [
-	["OSC-BEL", "\x1b]0;PREVIEW-BEL\x07"],
-	["OSC-ST", "\x1b]0;PREVIEW-ST\x1b\\"],
-	["CSI", "\x1b[2J"],
-	["C1", "\x9b2J\x9d0;PREVIEW-C1\x9c"],
-	["SGR", "\x1b[38;2;1;2;3m"],
-	["C0", "\x00\x08\r\x7f\x85\t"],
-] as const;
+import { assertNoRawControls, HOSTILE_CONTROLS } from "../helpers/terminal-controls.js";
 
 function makePane(question: QuestionData) {
 	initTheme("dark");
@@ -57,7 +49,7 @@ function makePane(question: QuestionData) {
 }
 
 // #2700: inspect real Markdown/PreviewPane frames, not a generic ANSI-stripped oracle.
-for (const [name, injected] of controls) {
+for (const [name, injected] of HOSTILE_CONTROLS) {
 	test(`preview escapes ${name} in prose and fences across selection, resize and invalidation`, async () => {
 		const question: QuestionData = {
 			question: "Choose?",
@@ -124,8 +116,10 @@ for (const [name, injected] of controls) {
 				"injected SGR must be absent before removing trusted styling",
 			);
 			// Only remove the exact framework marker and SGR after rejecting injected SGR above.
-			const text = frame.raw.replaceAll(OVERLAY_ACTIVE_ROW_MARKER, "").replace(/\x1b\[[0-9;]*m/g, "");
-			assert.doesNotMatch(text, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+			const text = assertNoRawControls(frame.raw, {
+				markers: [OVERLAY_ACTIVE_ROW_MARKER],
+				allowSgr: true,
+			});
 			assert.ok(text.includes("Polaris 雪"));
 			assert.ok(text.includes("Tail"));
 			assert.ok(text.includes(frame.selectedIndex === 0 ? "Readable prose" : "Readable code"));

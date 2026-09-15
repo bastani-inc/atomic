@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
+import { assertNoRawControls } from "../../../test/helpers/terminal-controls.ts";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { buildQuestionnaireResponse } from "../src/core/tools/ask-user-question/tool/response-envelope.ts";
@@ -62,7 +63,7 @@ describe("ToolExecutionComponent parity", () => {
 		const stored = JSON.stringify(result);
 		for (const envelope of [result, JSON.parse(stored) as typeof result]) {
 			const projection = getTextOutput(envelope, false);
-			expect(projection).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+			assertNoRawControls(projection, { allowTab: true });
 			expect(projection).toContain("C3 SAFE QUESTION?");
 			expect(projection).not.toMatch(/C3_(?:OSC|DCS|SOS|PM|APC|C1)/);
 			const component = new ToolExecutionComponent(
@@ -76,7 +77,7 @@ describe("ToolExecutionComponent parity", () => {
 			);
 			component.updateResult({ ...envelope, isError: false }, false);
 			const display = stripAnsi(component.render(240).join("\n"));
-			expect(display).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+			assertNoRawControls(display, { allowTab: true });
 			expect(display).toContain("C3 SAFE QUESTION?");
 			expect(JSON.stringify(envelope)).toBe(stored);
 			expect(envelope.content[0]?.text).toContain(payload);
