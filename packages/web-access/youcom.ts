@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.js";
-import { findReadableConfigPath } from "./config-paths.ts";
+import { findReadableConfigPath } from "./config-paths.js";
 import type { SearchOptions, SearchResponse, SearchResult } from "./perplexity.js";
 
 const YOUCOM_API_URL = "https://ydc-index.io/v1/search";
@@ -96,13 +96,6 @@ interface YoucomSearchResult {
 	description?: string;
 	snippets?: string[];
 	page_age?: string;
-}
-
-interface YoucomSearchResponse {
-	results?: {
-		web?: YoucomSearchResult[];
-		news?: YoucomSearchResult[];
-	};
 }
 
 function isYoucomSearchResult(value: unknown): value is YoucomSearchResult {
