@@ -30,6 +30,7 @@ import {
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
+import { withDurableControlTransition } from "./durable-control-transition.js";
 import { jobTracker as defaultJobTracker, type JobTracker } from "./job-tracker.js";
 import { aggregateWorkflowRootRunId, expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
@@ -59,6 +60,66 @@ type QuitAllRunResult =
 			readonly reason: "pause_failed";
 			readonly message: string;
 	  };
+
+interface QuitTransition {
+	quits: number;
+	resumes: number;
+	revision: number;
+}
+
+const quitTransitions = new WeakMap<Store, Map<string, QuitTransition>>();
+
+function retainQuitTransition(store: Store, runId: string) {
+	const rootRunId = aggregateWorkflowRootRunId(store, runId);
+	let transitions = quitTransitions.get(store);
+	if (transitions === undefined) {
+		transitions = new Map();
+		quitTransitions.set(store, transitions);
+	}
+	let state = transitions.get(rootRunId);
+	if (state === undefined) {
+		state = { quits: 0, resumes: 0, revision: 0 };
+		transitions.set(rootRunId, state);
+	}
+	return {
+		state,
+		release: () => {
+			if (state.quits > 0 || state.resumes > 0) return;
+			transitions.delete(rootRunId);
+			if (transitions.size === 0) quitTransitions.delete(store);
+		},
+	};
+}
+
+/** A stage pause is visible before quit has drained tools and published durability. */
+export function pendingQuitMessage(runId: string, store: Store): string | undefined {
+	const rootRunId = aggregateWorkflowRootRunId(store, runId);
+	if (!(quitTransitions.get(store)?.get(rootRunId)?.quits ?? 0)) return undefined;
+	return `Workflow ${runId} quit is still in progress. Retry resume after quit completes.`;
+}
+
+/** Keep a newer quit authoritative, even when it finishes before an older resume. */
+export async function withQuitResumeGuard<T>(
+	runId: string,
+	store: Store,
+	resume: (assertCurrent: () => void) => Promise<T>,
+): Promise<T> {
+	const { state, release } = retainQuitTransition(store, runId);
+	const revision = state.revision;
+	state.resumes += 1;
+	try {
+		return await resume(() => {
+			const pending = pendingQuitMessage(runId, store);
+			if (pending !== undefined) throw new Error(pending);
+			if (state.revision !== revision) {
+				throw new Error(`Workflow ${runId} resume was superseded by quit. Retry resume after quit completes.`);
+			}
+		});
+	} finally {
+		state.resumes -= 1;
+		release();
+	}
+}
 
 /**
  * Gracefully quit workflow work without destructive cancellation.
@@ -112,6 +173,26 @@ export async function quitRunWithAction(
 				actor?: WorkflowActor;
 		  }
 		| undefined,
+	action: "quit" | "pause",
+): Promise<QuitRunResult> {
+	const activeStore = opts?.store ?? defaultStore;
+	const run = activeStore.runs().find((candidate) => candidate.id === runId);
+	if (!run) return { ok: false, runId, reason: "not_found" };
+	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
+	const { state, release } = retainQuitTransition(activeStore, runId);
+	state.quits += 1;
+	state.revision += 1;
+	try {
+		return await performQuitRun(runId, opts, action);
+	} finally {
+		state.quits -= 1;
+		release();
+	}
+}
+
+async function performQuitRun(
+	runId: string,
+	opts: Parameters<typeof quitRunWithAction>[1],
 	action: "quit" | "pause",
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
@@ -223,7 +304,7 @@ export async function quitRunWithAction(
 	if (runtimeQuit !== undefined) publishLocalQuit(activeStore, runId, pausedRunIds, false);
 	let durableTransition: DurableQuitOutcome;
 	try {
-		durableTransition = await markDurableQuit(runId, current, resumable);
+		durableTransition = await markDurableQuit(runId, current, resumable, aggregateRootRunId);
 	} catch (error) {
 		if (!suspendedByAbort) throw error;
 		publish(false);
@@ -384,9 +465,23 @@ function controllableHandles(
 
 type DurableQuitOutcome = "transitioned" | "not_needed" | "refused";
 
-async function markDurableQuit(runId: string, run: RunSnapshot, resumable = true): Promise<DurableQuitOutcome> {
+async function markDurableQuit(
+	runId: string,
+	run: RunSnapshot,
+	resumable: boolean,
+	rootRunId: string,
+): Promise<DurableQuitOutcome> {
 	const backend = discoverDurableQuitBackend(runId);
 	if (backend === undefined) return "not_needed";
+	return withDurableControlTransition(backend, rootRunId, () => persistDurableQuit(backend, runId, run, resumable));
+}
+
+async function persistDurableQuit(
+	backend: DurableWorkflowBackend,
+	runId: string,
+	run: RunSnapshot,
+	resumable: boolean,
+): Promise<DurableQuitOutcome> {
 	// The workflow is durably tracked, so a failure to persist the paused
 	// transition or flush it must surface: swallowing it here would let quitRun
 	// advertise a resumable pause no future process could resume from. The caller

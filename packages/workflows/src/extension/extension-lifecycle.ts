@@ -110,7 +110,10 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
-		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
+		resetWorkflowHilAnswerNotificationState(
+			runtimeState.hilAnswerNotificationState,
+			(ctx?.sessionManager ?? pi.sessionManager)?.getEntries?.() ?? [],
+		);
 		if (replacementStopsWorkflows(reason)) stageControlRegistry.clear();
 		else stageControlRegistry.clearDetached();
 		// Named workflows publish lifecycle notices through the normal notification path.

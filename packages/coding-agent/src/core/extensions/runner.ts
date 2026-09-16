@@ -119,6 +119,12 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
+type WidgetArguments = [
+	key: string,
+	content: string[] | Parameters<ExtensionUIContext["setWidget"]>[1],
+	options?: Parameters<ExtensionUIContext["setWidget"]>[2],
+];
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -285,6 +291,115 @@ export class ExtensionRunner {
 		this.reloadHandler = async () => {};
 	}
 
+	// Keyed by the ExtensionUIContext the session passed to bindExtensions. Reload hands
+	// the same object to the candidate, so old and candidate resolve one host. A fresh
+	// bindExtensions (interactive rebindCurrentSession, RPC rebindSession) creates a new
+	// context and therefore a new host; cross-session isolation comes from dispose →
+	// invalidate, not from this map.
+	private static readonly widgetHosts = new WeakMap<
+		ExtensionUIContext,
+		{ current: number; owners: Map<string, number> }
+	>();
+	private readonly widgetGenerations = new Map<ExtensionUIContext, number>();
+	private readonly widgetPublications = new Map<ExtensionUIContext, Map<string, number>>();
+	private pendingWidgets: Map<ExtensionUIContext, Map<string, WidgetArguments>> | undefined;
+	private widgetsRetired = false;
+
+	/** Stop retained callbacks from publishing while this runner's shutdown is awaited. */
+	retireWidgets(): void {
+		this.widgetsRetired = true;
+	}
+
+	/** Defer candidate widget effects until fallible reload preparation succeeds. */
+	stageWidgets(): void {
+		this.pendingWidgets = new Map();
+	}
+
+	commitWidgets(): void {
+		const pending = this.pendingWidgets;
+		this.pendingWidgets = undefined;
+		for (const [ui, widgets] of pending ?? []) {
+			for (const args of widgets.values()) {
+				try {
+					this.setOwnedWidget(ui, ...args);
+				} catch (error) {
+					// Like other deferred startup effects, publication cannot undo the committed runner.
+					// Report each failure without skipping later widgets or retiring lifecycle cleanup.
+					this.emitError({
+						extensionPath: "<runtime>",
+						event: "session_start",
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
+	}
+
+	private setOwnedWidget(ui: ExtensionUIContext, ...[key, content, options]: WidgetArguments): void {
+		if (this.staleMessage || this.widgetsRetired) return;
+		if (this.pendingWidgets) {
+			let widgets = this.pendingWidgets.get(ui);
+			if (!widgets) {
+				widgets = new Map();
+				this.pendingWidgets.set(ui, widgets);
+			}
+			widgets.set(key, [key, content, options]);
+			return;
+		}
+		let host = ExtensionRunner.widgetHosts.get(ui);
+		if (!host) {
+			host = { current: 0, owners: new Map() };
+			ExtensionRunner.widgetHosts.set(ui, host);
+		}
+		if (content === undefined) {
+			const generation = this.widgetGenerations.get(ui);
+			if (generation === undefined) return;
+			if (host.owners.get(key) !== generation) return;
+			host.owners.delete(key);
+			ui.setWidget(key, undefined, options);
+			return;
+		}
+		let generation = this.widgetGenerations.get(ui);
+		if (generation === undefined) {
+			generation = ++host.current;
+			this.widgetGenerations.set(ui, generation);
+		} else if (generation !== host.current) {
+			// Stricter than the pre-reconciliation baseline: the successor owns publication even
+			// for a key this superseded runner never mounted, not only keys it previously published.
+			// The rejection is permanent for this runner/host pair: host.current only ever advances
+			// and this runner's generation is fixed, so a superseded-but-live runner goes silent for
+			// good, even after the successor invalidates and releases every key it holds.
+			return;
+		}
+		let publications = this.widgetPublications.get(ui);
+		if (!publications) {
+			publications = new Map();
+			this.widgetPublications.set(ui, publications);
+		}
+		const publication = (publications.get(key) ?? 0) + 1;
+		publications.set(key, publication);
+		host.owners.set(key, generation);
+		if (typeof content === "function") {
+			ui.setWidget(
+				key,
+				(tui, theme) => {
+					// The host may invoke a queued factory after replacement or invalidation.
+					if (
+						this.staleMessage ||
+						this.widgetsRetired ||
+						host.owners.get(key) !== generation ||
+						publications.get(key) !== publication
+					)
+						return { render: () => [], invalidate() {} };
+					return content(tui, theme);
+				},
+				options,
+			);
+		} else {
+			ui.setWidget(key, content, options);
+		}
+	}
+
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
 		this.endActiveUIPrompt();
 		const binding = ++this.uiPromptBinding;
@@ -295,6 +410,17 @@ export class ExtensionRunner {
 	private wrapUIPromptContext(ui: ExtensionUIContext, binding: number): ExtensionUIContext {
 		return {
 			...ui,
+			setWidget: (...args) => this.setOwnedWidget(ui, ...args),
+			...(ui.onWidgetRelease
+				? {
+						onWidgetRelease: (key: string, listener: () => void) =>
+							ui.onWidgetRelease!(key, () => {
+								const generation = this.widgetGenerations.get(ui);
+								const host = ExtensionRunner.widgetHosts.get(ui);
+								if (generation !== undefined && host?.owners.get(key) === generation) listener();
+							}),
+					}
+				: {}),
 			select: (title, options, opts) =>
 				this.withUIPrompt(binding, "select", title, () => ui.select(title, options, opts)),
 			confirm: (title, message, opts) =>
@@ -458,7 +584,31 @@ export class ExtensionRunner {
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
 		if (!this.staleMessage) {
+			// Retire before user disposal can reenter registration or invalidation.
 			this.staleMessage = message;
+			this.pendingWidgets = undefined;
+			for (const [ui, generation] of this.widgetGenerations) {
+				const host = ExtensionRunner.widgetHosts.get(ui);
+				if (!host) continue;
+				const publications = this.widgetPublications.get(ui);
+				if (!publications) continue;
+				for (const key of [...publications.keys()]) {
+					if (host.owners.get(key) !== generation) continue;
+					try {
+						host.owners.delete(key);
+						ui.setWidget(key, undefined);
+					} catch (error) {
+						// A retiring-only widget must not prevent remaining cleanup or runtime invalidation.
+						this.emitError({
+							extensionPath: "<runtime>",
+							event: "session_shutdown",
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+			}
+			this.widgetGenerations.clear();
+			this.widgetPublications.clear();
 			this.runtime.invalidate(message);
 		}
 	}

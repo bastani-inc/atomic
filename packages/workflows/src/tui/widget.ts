@@ -7,6 +7,7 @@
  *  - One compact rounded card per run:
  *      title: `<status glyph>  <full id>`
  *      row 1: `<name> · <dim mode · progress · live tool nodes · duration>`
+ *      awaiting-input cards add one quoted prompt row and one connect hint.
  *  - Collapsed single-line form below 80 cells:
  *      `▾  N background · X ●` in dim+warning.
  *
@@ -29,15 +30,20 @@ import {
 } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
-import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { isTopLevelWorkflowRun, topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
-import { renderRoundedBoxLines } from "./chat-surface.js";
+import { ELLIPSIS, renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
-import { renderRunIdentityRows } from "./run-identity-rows.js";
+import {
+	type PendingInputAffordance,
+	pendingInputAffordance,
+	sanitizePromptDisplay,
+} from "./pending-input-affordance.js";
+import { renderRunIdentityRows, wrapIdentifierLines } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
@@ -302,7 +308,7 @@ function metaLine(
 // Count badges for the band header
 // ---------------------------------------------------------------------------
 
-function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
+function countBadges(counts: RunCounts, theme: GraphTheme, needsConnectGuidance: boolean): FlatBandBadge[] {
 	const badges: FlatBandBadge[] = [];
 	if (counts.active > 0) {
 		badges.push({ text: `● ${counts.active} running`, fg: theme.warning });
@@ -318,7 +324,7 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
 	// question-mark status glyph, then keep ↵ as the attach/respond action hint.
 	if (counts.awaiting > 0) {
 		badges.push({
-			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`,
+			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention${needsConnectGuidance ? " (attach to workflow with `/workflow connect`)" : ""}`,
 			fg: theme.info,
 		});
 	}
@@ -391,6 +397,67 @@ function plainRunLines(
 		meta: metaLine(run, expandGraph, now, runMetaWidth(run, width), resolveBoundarySegments),
 		glyph: statusGlyph(run, allRuns),
 	});
+}
+
+function renderAwaitingPromptLine(message: string, bodyWidth: number, theme: GraphTheme | undefined): string {
+	const indent = " ".repeat(5);
+	const messageBudget = Math.max(1, bodyWidth - visibleWidth(indent) - 2);
+	// truncateToWidth is ANSI-aware, so untrusted prompt bytes must be
+	// control-stripped at this sink even if the projection already sanitized.
+	const clipped = truncateToWidth(sanitizePromptDisplay(message), messageBudget, ELLIPSIS);
+	const row = `${indent}"${clipped}"`;
+	return theme === undefined ? row : `${hexToAnsi(theme.info)}${row}${RESET}`;
+}
+
+function renderAwaitingActionLines(visibleRunId: string, bodyWidth: number, theme: GraphTheme | undefined): string[] {
+	const prefix = "     Answer: /workflow connect ";
+	const rows = wrapIdentifierLines(visibleRunId, bodyWidth, prefix, "      ");
+	return rows.map((row) => {
+		const text = `${row.prefix}${row.chunk}`;
+		return theme === undefined ? text : `${hexToAnsi(theme.info)}${text}${RESET}`;
+	});
+}
+
+function awaitingRunLines(
+	run: RunSnapshot,
+	now: number,
+	theme: GraphTheme | undefined,
+	allRuns: readonly RunSnapshot[],
+	affordance: PendingInputAffordance,
+	bodyWidth: number,
+	expandGraph: ReturnType<typeof createWorkflowGraphExpander>,
+): string[] {
+	const meta = metaLine(run, expandGraph, now, runMetaWidth(run, bodyWidth + 2));
+	const identity = renderRunIdentityRows({
+		runId: run.id,
+		name: run.name,
+		meta,
+		glyph: statusGlyph(run, allRuns),
+		...(theme
+			? {
+					glyphColor: statusFg(run, theme, allRuns),
+					metaColor: effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim,
+					theme,
+				}
+			: {}),
+		width: bodyWidth,
+	});
+	identity.push(renderAwaitingPromptLine(affordance.message, bodyWidth, theme));
+	identity.push(...renderAwaitingActionLines(affordance.visibleRunId, bodyWidth, theme));
+	return identity;
+}
+
+/** Mirror Store.activeRunId() over a serializable snapshot for F2 hint attribution. */
+export function deriveActiveRunId(runs: readonly RunSnapshot[]): string | null {
+	for (let i = runs.length - 1; i >= 0; i--) {
+		const run = runs[i];
+		if (run !== undefined && isTopLevelWorkflowRun(run) && run.endedAt === undefined) return run.id;
+	}
+	for (let i = runs.length - 1; i >= 0; i--) {
+		const run = runs[i];
+		if (run !== undefined && run.endedAt === undefined) return run.id;
+	}
+	return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,17 +555,30 @@ export function buildThemedWidgetLines(
 	const total = display.length;
 	const subtitle = `${total} run${total === 1 ? "" : "s"}`;
 
-	const badgeList = countBadges(visibleCounts, graphTheme);
+	const needsConnectGuidance = display.some(
+		(run) =>
+			run.endedAt === undefined &&
+			!isQuitRun(run) &&
+			subtreeAwaitsInput(run, snap.runs) &&
+			pendingInputAffordance(run, snap.runs) === undefined,
+	);
+	const badgeList = countBadges(visibleCounts, graphTheme, needsConnectGuidance);
 	const badges = formatTitleBadges(badgeList, graphTheme, themed);
 	const title = `BACKGROUND  ${subtitle}${badges ? `  ${badges}` : ""}`;
 	const body: string[] = [];
 	const expandGraph = createWorkflowGraphExpander(snap);
+	const bodyWidth = Math.max(2, width - 2);
 
 	for (let i = 0; i < display.length; i++) {
 		const run = display[i]!;
-		const runLines = themed
-			? themedRunLines(run, now, graphTheme, snap.runs, width, expandGraph)
-			: plainRunLines(run, now, snap.runs, width, expandGraph);
+		const affordance = pendingInputAffordance(run, snap.runs);
+		const indicator = runIndicatorStatus(run, snap.runs);
+		const runLines =
+			!isQuitRun(run) && indicator === "awaiting_input" && affordance !== undefined
+				? awaitingRunLines(run, now, themed ? graphTheme : undefined, snap.runs, affordance, bodyWidth, expandGraph)
+				: themed
+					? themedRunLines(run, now, graphTheme, snap.runs, width, expandGraph)
+					: plainRunLines(run, now, snap.runs, width, expandGraph);
 		body.push(...runLines);
 		layout?.runs.push({
 			id: run.id,

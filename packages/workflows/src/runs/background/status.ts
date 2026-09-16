@@ -29,7 +29,7 @@ import type { StageControlRegistry } from "../foreground/stage-control-registry.
 import { stageControlRegistry as defaultStageControlRegistry } from "../foreground/stage-control-registry.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
-import { quitRunWithAction } from "./quit.js";
+import { pendingQuitMessage, quitRunWithAction, withQuitResumeGuard } from "./quit.js";
 import {
 	resumeAcknowledgementMessage,
 	settleResumeAcknowledgements,
@@ -243,10 +243,26 @@ export async function resumeRun(
 	},
 ): Promise<ResumeResult> {
 	const activeStore = opts?.store ?? defaultStore;
-	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const runs = activeStore.runs();
 	const run = runs.find((candidate) => candidate.id === runId);
 
+	if (!run) return { ok: false, runId, reason: "not_found" };
+	const pendingQuit = pendingQuitMessage(runId, activeStore);
+	if (pendingQuit !== undefined) {
+		return { ok: true, runId, snapshot: structuredClone(run), resumed: [], mode: "snapshot", message: pendingQuit };
+	}
+	return withQuitResumeGuard(runId, activeStore, (assertCurrent) => resumeRetainedRun(runId, opts, assertCurrent));
+}
+
+async function resumeRetainedRun(
+	runId: string,
+	opts: Parameters<typeof resumeRun>[1],
+	assertCurrent: () => void,
+): Promise<ResumeResult> {
+	const activeStore = opts?.store ?? defaultStore;
+	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
+	const runs = activeStore.runs();
+	const run = runs.find((candidate) => candidate.id === runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	workflowObservationRuntime(activeStore).control(runId, "resume", opts?.actor);
 
@@ -259,6 +275,7 @@ export async function resumeRun(
 	if (runtimeControls.length > 0) {
 		// Parent first: persist its durable running transition before releasing any child.
 		for (const { handle } of runtimeControls) await handle.resume();
+		assertCurrent();
 		activeStore.recordRunResumed(runId, undefined, {
 			source: "run_control",
 			...(opts?.actor === undefined ? {} : { actor: opts.actor }),
@@ -297,7 +314,18 @@ export async function resumeRun(
 						.pausedStages()
 						.map((handle) => ({ controlRunId, handle })),
 				);
-		const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
+		const reopenAdmission = (): void => {
+			assertCurrent();
+			const tools = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+			for (const controlRunId of controlRunIds) tools.admissionBoundary(controlRunId)?.resume();
+		};
+		const acknowledgements = await settleResumeAcknowledgements(
+			activeStore,
+			handles,
+			opts?.message,
+			reopenAdmission,
+			assertCurrent,
+		);
 		acknowledgedTargets = acknowledgements.acknowledged;
 		resumed.push(...acknowledgements.resumed);
 		const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
@@ -309,6 +337,7 @@ export async function resumeRun(
 				!hasPausedDescendant &&
 				currentRun?.status === "paused")
 		) {
+			reopenAdmission();
 			// One scope carries the actor, mirroring pauseRun: the stage when a
 			// stage-scoped resume leaves siblings paused, the run otherwise. The
 			// aggregate root is reconciled without attribution so one request never
@@ -358,11 +387,12 @@ export async function resumeRun(
 	}
 
 	await waitForResumeReconciliation(acknowledgedTargets);
+	if (acknowledgedTargets > 0) assertCurrent();
 
 	const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === aggregateRootRunId);
 	if (locallyReconciledRoot?.endedAt === undefined && locallyReconciledRoot?.status === "running") {
 		try {
-			const transition = await markDurableResumed(aggregateRootRunId);
+			const transition = await markDurableResumed(aggregateRootRunId, assertCurrent);
 			if (transition === "refused") {
 				durabilityFailure = `authoritative durable workflow ${aggregateRootRunId} refused the running transition`;
 			}
@@ -462,7 +492,7 @@ async function pauseRunWithAction(
 	if (opts?.stageId !== undefined) {
 		const handle = registry.get(runId, opts.stageId);
 		if (!handle) return { ok: false, runId, reason: "stage_not_found" };
-		if (handle.status !== "running" && handle.status !== "pending") {
+		if (handle.status !== "running" && handle.status !== "pending" && handle.status !== "awaiting_input") {
 			return { ok: false, runId, reason: "no_active_stages" };
 		}
 		await handle.pause();
@@ -473,7 +503,10 @@ async function pauseRunWithAction(
 		const stillActive =
 			currentRun?.stages.some(
 				(candidate) =>
-					candidate.id !== opts.stageId && (candidate.status === "running" || candidate.status === "pending"),
+					candidate.id !== opts.stageId &&
+					(candidate.status === "running" ||
+						candidate.status === "pending" ||
+						candidate.status === "awaiting_input"),
 			) ?? false;
 		if (!stillActive) activeStore.recordRunPaused(runId);
 		return { ok: true, runId, paused };
@@ -484,7 +517,10 @@ async function pauseRunWithAction(
 		registry
 			.run(controlRunId)
 			.stages()
-			.filter((handle) => handle.status === "running" || handle.status === "pending")
+			.filter(
+				(handle) =>
+					handle.status === "running" || handle.status === "pending" || handle.status === "awaiting_input",
+			)
 			.map((handle) => ({ controlRunId, handle })),
 	);
 	if (handles.length === 0) {

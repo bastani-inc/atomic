@@ -26,22 +26,27 @@
  * SOFTWARE.
  */
 
-function ansiRegex({ onlyFirst = false }: { onlyFirst?: boolean } = {}): RegExp {
+function ansiRegex({ osc = true }: { osc?: boolean } = {}): RegExp {
 	// Valid string terminator sequences are BEL, ESC\, and 0x9c
 	const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
 
 	// OSC sequences only: ESC ] ... ST (non-greedy until the first ST)
-	const osc = `(?:\\u001B\\][\\s\\S]*?${ST})`;
+	const oscPattern = String.raw`(?:\u001B\][\s\S]*?${ST})`;
 
 	// CSI and related: ESC/C1, optional intermediates, optional params (supports ; and :) then final byte
 	const csi = "[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
 
-	const pattern = `${osc}|${csi}`;
-
-	return new RegExp(pattern, onlyFirst ? undefined : "g");
+	return new RegExp(osc ? `${oscPattern}|${csi}` : csi, "g");
 }
 
 const regex = ansiRegex();
+const csiRegex = ansiRegex({ osc: false });
+
+/** End of the final BEL/ST, or zero when no control string can be complete. */
+export function controlStringTerminatorEnd(value: string): number {
+	const st = value.lastIndexOf("\x1b\\");
+	return Math.max(value.lastIndexOf("\x07"), value.lastIndexOf("\x9c"), st < 0 ? -1 : st + 1) + 1;
+}
 
 export function stripAnsi(value: string): string {
 	if (typeof value !== "string") {
@@ -53,8 +58,61 @@ export function stripAnsi(value: string): string {
 		return value;
 	}
 
-	// Even though the regex is global, we don't need to reset the `.lastIndex`
-	// because unlike `.exec()` and `.test()`, `.replace()` does it automatically
-	// and doing it manually has a performance penalty.
-	return value.replace(regex, "");
+	// Every OSC start in this prefix has a terminator ahead, so successful
+	// matches consume disjoint spans. Never retry OSC on the unterminated tail.
+	// Keep the original OSC/CSI alternation and CSI fallback semantics; stripping
+	// OSC first could create new ANSI matches across the removed string.
+	const end = controlStringTerminatorEnd(value);
+	return value.slice(0, end).replace(regex, "") + value.slice(end).replace(csiRegex, "");
+}
+
+/** C0 except LF, DEL, and C1. LF is layout; a tab is a control until a tabWidth expands it. */
+const TERMINAL_CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+
+/** Global form of TERMINAL_CONTROL for replace-all passes; keep the two in sync via .source. */
+const TERMINAL_CONTROL_GLOBAL = new RegExp(TERMINAL_CONTROL.source, "g");
+
+/** True when `text` contains a C0/C1 control other than LF. */
+export function hasTerminalControls(text: string): boolean {
+	return TERMINAL_CONTROL.test(text);
+}
+
+/**
+ * Render C0/C1 controls as printable `\xNN` so untrusted text cannot emit live sequences.
+ * Without `tabWidth`, a tab becomes `\x09` (questionnaire/preview layout). With `tabWidth`,
+ * tabs expand to spaces at that stop (bordered tool boxes). LF is left as layout.
+ */
+export function escapeTerminalControls(text: string, options: { tabWidth?: number } = {}): string {
+	if (options.tabWidth === undefined) {
+		return text.replace(
+			TERMINAL_CONTROL_GLOBAL,
+			(control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
+		);
+	}
+	const stops = Math.max(1, Math.floor(options.tabWidth));
+	let out = "";
+	let column = 0;
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		if (char === "\n") {
+			out += char;
+			column = 0;
+			continue;
+		}
+		if (char === "\t") {
+			const pad = stops - (column % stops);
+			out += " ".repeat(pad);
+			column += pad;
+			continue;
+		}
+		if (hasTerminalControls(char)) {
+			const escaped = `\\x${code.toString(16).padStart(2, "0")}`;
+			out += escaped;
+			column += escaped.length;
+			continue;
+		}
+		out += char;
+		column += 1;
+	}
+	return out;
 }

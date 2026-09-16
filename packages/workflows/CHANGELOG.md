@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a live needs-input affordance to the wide `BACKGROUND` panel for a visible run tree with exactly one displayable human-in-the-loop prompt. The card preserves the full workflow identity and width-bounded pending-stage/tool metadata, shows a bounded, terminal-control-stripped question and exact `Answer: /workflow connect <full-run-id>` action without a duplicate F2 hint, and repaints back to the ordinary row when the exact prompt clears. The header keeps generic connect guidance whenever any visible workflow needing attention lacks its own answer action. Interactive users answer through F2 or the connected workflow, while agents retain the exact `workflow answer` run/stage/prompt path; promptless, multi-question, or ambiguous trees remain status-only, and the live affordance itself stays outside parent chat and model context without changing existing answer notices ([#2700](https://github.com/bastani-inc/atomic/pull/2700) by [@Shreyasd10](https://github.com/Shreyasd10), related to [#2529](https://github.com/bastani-inc/atomic/issues/2529)).
+
+### Fixed
+
+- Pausing or quitting a workflow no longer waits for answers to an open agent questionnaire, and live stages awaiting input remain eligible for pause. Resuming a retained workflow allows subsequent workflow tools to run and save their results ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Concurrent resume no longer interrupts an unfinished quit or leaves its tool-registration drain stuck; retry resume after quit completes ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Cancelling an agent questionnaire no longer reports retained draft selections as a successful HIL answer. Attached workflow prompt questions render terminal controls as inert text while preserving readable text and response entry ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Completed workflow prompt archives now render terminal controls in questions, choices, initial values, and responses as inert text without changing retained values ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Active workflow prompt choices and input/editor drafts now escape terminal controls before rendering, including compact responses, while preserving selection, editing, and submitted values ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Quit preserves the final durable paused state when an earlier resume has already acknowledged locally but is still saving or flushing its running state. A superseded queued resume cannot overwrite that quit; independent workflows remain unblocked ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- HIL ANSWERED notices now escape terminal controls in questions, answers, selected choices, and workflow attribution, including reopened notices, without changing stored prompt or answer data ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Reloading extensions no longer duplicates previously delivered HIL answer notices when another workflow starts; new answers still produce their normal notice ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+
 ## [0.9.20-alpha.1] - 2026-09-14
 
 ### Fixed

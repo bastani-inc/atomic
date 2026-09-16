@@ -1,4 +1,5 @@
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
+import type { ExtensionError } from "../../core/extensions/index.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -22,6 +23,14 @@ import {
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
+
+type ExtensionErrorEvent = ExtensionError & { type: "extension_error" };
+
+function isExtensionErrorEvent(
+	event: AgentSessionEvent | JsonAgentSessionEvent | ExtensionErrorEvent,
+): event is ExtensionErrorEvent {
+	return event.type === "extension_error";
+}
 
 function createToolComponent(
 	mode: InteractiveModeBase,
@@ -61,14 +70,18 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 
 InteractiveModeBase.prototype.handleEvent = async function (
 	this: InteractiveModeBase,
-	event: AgentSessionEvent | JsonAgentSessionEvent,
+	event: AgentSessionEvent | JsonAgentSessionEvent | ExtensionErrorEvent,
 ): Promise<void> {
 	if (!this.isInitialized) {
 		await this.init();
 	}
 
-	this.footer.invalidate();
+	if (isExtensionErrorEvent(event)) {
+		this.showExtensionError(event.extensionPath, event.error, event.stack);
+		return;
+	}
 
+	this.footer.invalidate();
 	switch (event.type) {
 		case "agent_start":
 			this.pendingTools.clear();

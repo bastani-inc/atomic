@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `escapeTerminalControls(text, { tabWidth? })` and `hasTerminalControls(text)` exported from `@bastani/atomic`; renders C0/C1 controls as printable `\xNN`, optionally expanding tabs to spaces.
+
 ### Fixed
 
 - Running Atomic inside a Herdr pane no longer leaves the pane unreported or labelled as another agent when Herdr's installed Pi integration is present. Herdr installs `herdr-agent-state.ts` into the legacy `~/.pi/agent/extensions` directory that Atomic also loads from, and Atomic used to stand its built-in reporter down as soon as that file loaded — but the installed asset reports itself as `pi`, so the pane ended up mislabelled or never updated at all. Inside a Herdr pane Atomic now skips that installed integration when loading extensions and reports the pane itself; outside a Herdr pane the file loads exactly as before. Nothing to configure, and the extra extension no longer needs to be disabled by hand ([#2416](https://github.com/bastani-inc/atomic/pull/2416) by [@makgunay](https://github.com/makgunay))
@@ -28,6 +32,13 @@
 ### Fixed
 
 - Bundled integration documentation is discoverable under the same `docs/` root in npm and binary installations, including the MCP setup guide at `docs/mcp.md`.
+- Agent questionnaires retain unsubmitted answers, partial multiselect choices, inline text, notes, and editing position when a workflow stage is detached and reattached. A new questionnaire starts unanswered; cancellation remains a cancellation ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Questionnaire questions, choices, inline text, and answer reviews escape terminal controls before display without changing submitted answers ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Option previews escape terminal controls before Markdown rendering, including inside code fences, without changing the original preview returned with a selected answer ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Completed tool results and reopened transcripts strip terminal control strings and nonprinting control characters before display, without changing stored results or model context ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Tool results containing repeated unterminated terminal control strings no longer stall display or transcript replay ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Background workflow cards and pending-input actions remain visible and scrollable after `/reload`, including when the previous extension had no visible widget; failed reloads preserve the existing widget, and retiring extensions no longer remove their replacements ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
+- Retired extension widgets are removed from the local terminal even when their disposal callbacks throw; replacement widgets still appear in both the local and isolated-engine hosts. Disposal failures during `/reload`, session switch, and engine shutdown are reported as extension errors instead of interrupting cleanup, and other widgets still finish cleanup and release notifications ([#2700](https://github.com/bastani-inc/atomic/pull/2700)).
 
 ## [0.9.20-alpha.1] - 2026-09-14
 

@@ -304,6 +304,34 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		});
 		assert.equal(await pending, "answered");
 		unregister();
+
+		// Regression for #2700: the real questionnaire's SDK signal survives public wiring.
+		const { createAskUserQuestionToolDefinition } = await import(
+			"../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.js"
+		);
+		const turn = new AbortController();
+		const question = createAskUserQuestionToolDefinition().execute(
+			"question-1",
+			{
+				questions: [
+					{
+						question: "Choose a color",
+						options: [
+							{ label: "Blue", description: "Blue color" },
+							{ label: "Amber", description: "Amber color" },
+						],
+					},
+				],
+			},
+			turn.signal,
+			undefined,
+			{ hasUI: true, ui: capturedUi },
+		);
+		assert.equal(store.runs()[0]?.stages[0]?.status, "awaiting_input");
+		const cancelled = assert.rejects(question, /turn paused/);
+		turn.abort(new Error("turn paused"));
+		assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+		await cancelled;
 	});
 
 	test("binds stage custom UI to the stage UI broker instead of parent overlays", async () => {

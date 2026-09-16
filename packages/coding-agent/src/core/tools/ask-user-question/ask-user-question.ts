@@ -115,6 +115,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			}
 
 			const itemsByTab: WrappingSelectItem[][] = typed.questions.map((q) => buildItemsForQuestion(q));
+			let session: QuestionnaireSession | undefined;
 
 			// Suspend the animated working loader for the lifetime of the blocking dialog.
 			//
@@ -131,12 +132,13 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			try {
 				const result = await ctx.ui.custom<QuestionnaireResult>(
 					(tui, theme, _kb, done) => {
-						const session = new QuestionnaireSession({
+						session = new QuestionnaireSession({
 							tui,
 							theme,
 							params: typed,
 							itemsByTab,
 							done,
+							...(session ? { draft: session.captureDraft() } : {}),
 							...(options?.chatAsOption === true ? { chatAsOption: true } : {}),
 						});
 						return session.component;

@@ -1,4 +1,5 @@
 import { type SelectItem, SelectList, type SelectListTheme, truncateToWidth } from "@earendil-works/pi-tui";
+import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
 import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type KeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
@@ -9,7 +10,7 @@ export function createPromptSelectList(state: PromptCardState, theme?: GraphThem
 	const choices = state.prompt.choices ?? [];
 	const items: SelectItem[] = choices.map((choice, idx) => ({
 		value: String(idx),
-		label: choice,
+		label: sanitizeToolDisplayText(choice),
 	}));
 	const list = new SelectList(
 		items,

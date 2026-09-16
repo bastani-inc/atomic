@@ -133,15 +133,25 @@ export function installStoreWidget(
 	const requestRender = ui.requestRender;
 	const onWidgetRelease = ui.onWidgetRelease;
 	const layout: WorkflowWidgetRowLayout = { runs: [] };
+	let disposed = false;
+	let ownedViewport: WorkflowWidgetViewport | undefined;
+	let registration = 0;
+	const clearViewport = () => {
+		if (ownedViewport && widgetViewports.get(storeInstance) === ownedViewport) widgetViewports.delete(storeInstance);
+		ownedViewport = undefined;
+	};
 	const controller = installReactiveWidget<StoreSnapshot, unknown>({
 		ui: {
 			setWidget: (key, factory, opts) => {
-				if (!factory) widgetViewports.delete(storeInstance);
+				const currentRegistration = ++registration;
+				if (!factory) clearViewport();
 				setWidget.call(
 					ui,
 					key,
 					factory
 						? (tui, theme) => {
+								if (disposed || currentRegistration !== registration)
+									return { render: () => [], invalidate() {} };
 								const host = tui as { terminal?: { rows: number }; requestRender?: () => void } | undefined;
 								const viewport = new WorkflowWidgetViewport(
 									factory(tui, theme),
@@ -150,6 +160,7 @@ export function installStoreWidget(
 									() => layout.runs,
 									workflowScrollHint,
 								);
+								ownedViewport = viewport;
 								widgetViewports.set(storeInstance, viewport);
 								return viewport;
 							}
@@ -181,7 +192,8 @@ export function installStoreWidget(
 	});
 
 	return () => {
-		widgetViewports.delete(storeInstance);
+		disposed = true;
+		clearViewport();
 		controller.dispose();
 	};
 }

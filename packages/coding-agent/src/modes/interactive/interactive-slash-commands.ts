@@ -39,63 +39,79 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		return;
 	}
 
-	this.resetExtensionUI();
-
-	const reloadBox = new Container();
-	const borderColor = (s: string) => theme.fg("border", s);
-	reloadBox.addChild(new DynamicBorder(borderColor));
-	reloadBox.addChild(new Spacer(1));
-	reloadBox.addChild(
-		new Text(theme.fg("muted", "Reloading keybindings, extensions, skills, prompts, themes..."), 1, 0),
-	);
-	reloadBox.addChild(new Spacer(1));
-	reloadBox.addChild(new DynamicBorder(borderColor));
-
-	const previousEditor = this.editor;
-	this.editorContainer.clear();
-	this.editorContainer.addChild(reloadBox);
-	this.ui.setFocus(reloadBox);
-	this.ui.requestRender(true);
-	await new Promise((resolve) => process.nextTick(resolve));
-
-	const dismissReloadBox = (editor: Component) => {
-		this.editorContainer.clear();
-		this.editorContainer.addChild(editor);
-		this.ui.setFocus(editor);
-		this.ui.requestRender();
+	// resetExtensionUI and the engine child's reload both report through showExtensionError
+	// (local sink or forwarded extension_error events). rebuildChatFromMessages clears the
+	// transcript afterward, so hold those reports until the rebuilt chat is on screen.
+	const pendingExtensionErrors: Array<{ extensionPath: string; error: string; stack?: string }> = [];
+	const showExtensionError = this.showExtensionError;
+	this.showExtensionError = (extensionPath, error, stack) => {
+		pendingExtensionErrors.push(stack === undefined ? { extensionPath, error } : { extensionPath, error, stack });
 	};
-
 	try {
-		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) await this.session.reload();
-		else await this.reloadCoordinator.reload(this.session);
-		const activeHeader = this.customHeader ?? this.builtInHeader;
-		if (isExpandable(activeHeader)) {
-			activeHeader.setExpanded(this.toolOutputExpanded);
+		this.resetExtensionUI();
+
+		const reloadBox = new Container();
+		const borderColor = (s: string) => theme.fg("border", s);
+		reloadBox.addChild(new DynamicBorder(borderColor));
+		reloadBox.addChild(new Spacer(1));
+		reloadBox.addChild(
+			new Text(theme.fg("muted", "Reloading keybindings, extensions, skills, prompts, themes..."), 1, 0),
+		);
+		reloadBox.addChild(new Spacer(1));
+		reloadBox.addChild(new DynamicBorder(borderColor));
+
+		const previousEditor = this.editor;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(reloadBox);
+		this.ui.setFocus(reloadBox);
+		this.ui.requestRender(true);
+		await new Promise((resolve) => process.nextTick(resolve));
+
+		const dismissReloadBox = (editor: Component) => {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(editor);
+			this.ui.setFocus(editor);
+			this.ui.requestRender();
+		};
+
+		try {
+			if (this.runtimeHost instanceof IsolatedInteractiveRuntime) await this.session.reload();
+			else await this.reloadCoordinator.reload(this.session);
+			const activeHeader = this.customHeader ?? this.builtInHeader;
+			if (isExpandable(activeHeader)) {
+				activeHeader.setExpanded(this.toolOutputExpanded);
+			}
+			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+			this.applyRuntimeSettings();
+			await this.themeController.applyFromSettings();
+			this.setupAutocompleteProvider();
+			const runner = this.session.extensionRunner;
+			this.setupExtensionShortcuts(runner);
+			this.rebuildChatFromMessages({ resetStartupDisclosure: true });
+			this.showExtensionError = showExtensionError;
+			for (const pending of pendingExtensionErrors) {
+				showExtensionError.call(this, pending.extensionPath, pending.error, pending.stack);
+			}
+			dismissReloadBox(this.editor as Component);
+			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
+			this.showLoadedResources({
+				force: false,
+				showDiagnosticsWhenQuiet: true,
+			});
+			if (savedImplicitProjectTrust) {
+				this.showStatus("Saved project trust for future sessions");
+			}
+			const modelsJsonError = this.session.modelRuntime.getError();
+			if (modelsJsonError) {
+				this.showError(`models.json error: ${modelsJsonError}`);
+			}
+			this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes");
+		} catch (error) {
+			dismissReloadBox(previousEditor as Component);
+			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		this.applyRuntimeSettings();
-		await this.themeController.applyFromSettings();
-		this.setupAutocompleteProvider();
-		const runner = this.session.extensionRunner;
-		this.setupExtensionShortcuts(runner);
-		this.rebuildChatFromMessages({ resetStartupDisclosure: true });
-		dismissReloadBox(this.editor as Component);
-		const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
-		this.showLoadedResources({
-			force: false,
-			showDiagnosticsWhenQuiet: true,
-		});
-		if (savedImplicitProjectTrust) {
-			this.showStatus("Saved project trust for future sessions");
-		}
-		const modelsJsonError = this.session.modelRuntime.getError();
-		if (modelsJsonError) {
-			this.showError(`models.json error: ${modelsJsonError}`);
-		}
-		this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes");
-	} catch (error) {
-		dismissReloadBox(previousEditor as Component);
-		this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		this.showExtensionError = showExtensionError;
 	}
 };
 

@@ -1,4 +1,4 @@
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { statusOnlyRunIndicator } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import { formatStageStartup } from "../shared/stage-startup.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -92,7 +92,7 @@ function statusRunIcon(
 	allRuns: readonly RunSnapshot[],
 ): string {
 	if (snapshot === undefined) return statusIcon(run.status);
-	const indicatorStatus = runIndicatorStatus(snapshot, allRuns);
+	const indicatorStatus = statusOnlyRunIndicator(snapshot, allRuns);
 	if (snapshot.endedAt === undefined && snapshot.status === "paused" && snapshot.exitReason === "quit") {
 		return statusIcon("pending");
 	}

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.js";
+import { assertNoRawControls } from "../helpers/terminal-controls.js";
 import {
+	CURSOR_MARKER,
 	createStore,
 	deriveGraphTheme,
 	FakePromptEditor,
@@ -142,3 +144,56 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 		}
 	}
 });
+
+// PR2700 LIVE-U2: exercise the attached primitive rendering sink, not just a sanitizer.
+for (const { kind, primitive } of [
+	{ kind: "input", primitive: true },
+	{ kind: "editor", primitive: true },
+	{ kind: "input", primitive: false },
+	{ kind: "editor", primitive: false },
+] as const) {
+	test(`attached ${kind} prompt primitive=${primitive} renders terminal controls inert and preserves response submission`, () => {
+		const store = createStore();
+		setupRun(store, RUN_ID, "stage-a");
+		const message =
+			"\x1b]0;PR2700_TITLE_INJECTION\x07Readable Ω 中文\n" +
+			"\x1b]2;ST_TITLE\x1b\\Second line\n" +
+			"\x9d0;C1_TITLE\x9c\x1b[31mRed\x1b[0m \x9b2Jclear\n" +
+			"\x00\x07\x08\x0d\x7f\x85Final text";
+		const prompt = makePendingPrompt({ kind, message });
+		assert.equal(store.recordStagePendingPrompt(RUN_ID, "stage-a", prompt), true);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: RUN_ID,
+			stageId: "stage-a",
+			workflowName: WORKFLOW_NAME,
+			handle,
+			onDetach: () => {},
+			...(primitive ? { piTui: { requestRender: () => {}, terminal: { rows: 60, columns: 160 } } as never } : {}),
+			onClose: () => {},
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			...(primitive ? { piEditorFactory: () => new FakePromptEditor() } : {}),
+		});
+		try {
+			// Permit renderer-owned styles/cursor marker only, never controls from the prompt.
+			const rendered = assertNoRawControls(view.render(160).join("\n"), {
+				markers: [CURSOR_MARKER],
+				allowSgr: true,
+			});
+			assert.ok(rendered.includes("\\x1b[31m"), "untrusted CSI styling must also be inert");
+			for (const text of ["Readable Ω 中文", "Second line", "Red", "clear", "Final text"]) {
+				assert.ok(rendered.includes(text), `legitimate text missing: ${text}`);
+			}
+			assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.message, message);
+			view.handleInput("Controls-Polaris");
+			if (!primitive && kind === "editor") view.handleInput("\t");
+			view.handleInput("\r");
+			assert.equal(store.getStagePromptAnswer(RUN_ID, "stage-a")?.value, "Controls-Polaris");
+		} finally {
+			view.dispose();
+		}
+	});
+}

@@ -469,6 +469,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	let rollbackPreparedResources: (() => void) | undefined;
 	try {
 		this._bindExtensionCore(candidateRunner, publication);
+		candidateRunner.stageWidgets();
 		candidateRunner.setUIContext(this._extensionUIContext, this._extensionMode);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		await options?.beforeSessionStart?.();
@@ -490,6 +491,7 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 	} catch (error) {
 		rollbackPreparedResources?.();
 		publication.discard();
+		await emitSessionShutdownEvent(candidateRunner, { type: "session_shutdown", reason: "reload" });
 		candidateRunner.invalidate();
 		throw error;
 	}
@@ -514,10 +516,21 @@ export async function reload(this: AgentSession, options?: AgentSessionReloadOpt
 		includeAllExtensionTools: true,
 		preserveRunner: true,
 	});
+	// The committed successor owns publication, even for keys the old runner never mounted.
+	// Keep the old runtime alive for shutdown; invalidate still disposes its remaining widgets.
+	oldRunner.retireWidgets();
 	// Publish reporter claims only after fallible preparation, before old shutdown or queued user effects.
 	await publication.activateStarts();
-	if (reason === "reload") await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
-	oldRunner.invalidate();
+	candidateRunner.commitWidgets();
+	// The session error listener now belongs to the candidate; retain retirement diagnostics.
+	const unsubscribeRetiringErrors = oldRunner.onError((error) => candidateRunner.emitError(error));
+	try {
+		if (reason === "reload")
+			await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
+		oldRunner.invalidate();
+	} finally {
+		unsubscribeRetiringErrors();
+	}
 	await publication.release();
 }
 

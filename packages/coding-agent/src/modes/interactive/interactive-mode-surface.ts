@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
-import type { MarkdownTransformer } from "../../core/extensions/types.ts";
+import type { ExtensionError, MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
@@ -248,7 +248,9 @@ declare module "./interactive-mode-base.ts" {
 		drainStartupReplayCommands(): Promise<void>;
 		advanceStartupInputReplay(submittedText: string): void;
 		subscribeToAgent(): void;
-		handleEvent(event: AgentSessionEvent | JsonAgentSessionEvent): Promise<void>;
+		handleEvent(
+			event: AgentSessionEvent | JsonAgentSessionEvent | (ExtensionError & { type: "extension_error" }),
+		): Promise<void>;
 		getUserMessageText(message: Message): string;
 		showStatus(message: string, persist?: boolean): void;
 		/** Report a managed-tool (fd/rg) readiness update inside the transcript. */

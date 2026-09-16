@@ -112,7 +112,10 @@ function gondolinFixture() {
 						input: options?.stdin,
 						encoding: "utf8",
 					});
-					if (result.error) throw result.error;
+					// When spawnSync produced an exit status, the child ran: trust the status and return
+					// it. Only throw when the process never started (observed under noclobber as EPIPE,
+					// when cat's stdin write races the shell rejecting the redirect).
+					if (result.error && result.status === null) throw result.error;
 					if (result.status === 44 && guest.race) {
 						guest.race = false;
 						if (guest.dangling) await symlink("missing-referent", local(args[4]));

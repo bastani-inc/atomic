@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
+import { escapeTerminalControls } from "../../../../../utils/ansi.js";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.ts";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import type { QuestionData } from "../../tool/types.ts";
@@ -67,14 +68,14 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			// as "selected" rather than "success" — matches the visual rhythm of the rest of
 			// the dialog (active pointer, label, picker rows are all accent).
 			const box = row.checked ? this.theme.fg("accent", CHECKED) : this.theme.fg("muted", UNCHECKED);
-			const label = truncateToWidth(opt.label, contentWidth, "…");
+			const label = truncateToWidth(escapeTerminalControls(opt.label), contentWidth, "…");
 			const styledLabel = row.active ? this.theme.fg("accent", this.theme.bold(label)) : label;
 			const num = String(i + 1).padStart(numberWidth, " ");
 			const line = `${pointer}${num}${NUMBER_SEPARATOR}${box}${BOX_LABEL_GAP}${styledLabel}`;
 			const rendered = truncateToWidth(line, width, "");
 			lines.push(`${rendered}${row.active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 			if (opt.description) {
-				const wrapped = wrapTextWithAnsi(opt.description, contentWidth);
+				const wrapped = wrapTextWithAnsi(escapeTerminalControls(opt.description), contentWidth);
 				for (const segment of wrapped) {
 					lines.push(CONTINUATION_INDENT + this.theme.fg("muted", segment));
 				}
@@ -96,7 +97,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			if (!opt) continue;
 			total += 1; // row line
 			if (opt.description) {
-				total += wrapTextWithAnsi(opt.description, contentWidth).length;
+				total += wrapTextWithAnsi(escapeTerminalControls(opt.description), contentWidth).length;
 			}
 		}
 		return total + 1; // Next sentinel row (no description; never wraps).

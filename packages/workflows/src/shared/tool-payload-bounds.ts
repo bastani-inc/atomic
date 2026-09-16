@@ -26,6 +26,7 @@
  * `TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER`. Nothing is silently dropped.
  */
 
+import { escapeTerminalControls } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { WorkflowSerializableValue } from "./types.js";
 
@@ -536,38 +537,12 @@ export const TOOL_TEXT_TAB_WIDTH = 4;
  *
  * Serialized fields are JSON-quoted, which escapes control bytes for free.
  * Source text is deliberately *not* quoted — it stays readable as source — so
- * it needs the same protection applied directly: tabs become spaces, because
+ * it needs the same protection applied directly. Tabs expand to spaces because
  * the width model counts a tab as one grapheme while a terminal advances to
- * its own tab stop, and every other control byte becomes a printable `\xNN`
- * so an embedded ESC cannot emit a live escape sequence into the frame.
+ * its own tab stop; every other control byte becomes a printable `\xNN`.
  */
 export function sanitizeToolDisplayText(value: string, tabWidth = TOOL_TEXT_TAB_WIDTH): string {
-	const stops = Math.max(1, Math.floor(tabWidth));
-	let out = "";
-	let column = 0;
-	for (const char of value) {
-		const code = char.codePointAt(0) ?? 0;
-		if (char === "\n") {
-			out += char;
-			column = 0;
-			continue;
-		}
-		if (char === "\t") {
-			const pad = stops - (column % stops);
-			out += " ".repeat(pad);
-			column += pad;
-			continue;
-		}
-		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
-			const escaped = `\\x${code.toString(16).padStart(2, "0")}`;
-			out += escaped;
-			column += escaped.length;
-			continue;
-		}
-		out += char;
-		column += 1;
-	}
-	return out;
+	return escapeTerminalControls(value, { tabWidth });
 }
 
 /** Single-line variant for chrome such as a box title. */

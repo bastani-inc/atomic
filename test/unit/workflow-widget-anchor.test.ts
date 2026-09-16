@@ -232,3 +232,52 @@ test("a shortened run boundary clamps the row offset without selecting the newly
 	f.viewport.scroll(-1);
 	assert.ok(f.render()[0]?.includes(uuid(0)));
 });
+
+// #2700 / #3017: HIL rows must participate in the same live viewport identity map.
+test("pending prompt growth and resolution above the viewed workflow preserve its UUID", async () => {
+	const f = fixture();
+	try {
+		f.store.removeRun(uuid(14));
+		f.store.recordRunStart({
+			id: uuid(14),
+			name: "duplicate name",
+			status: "running",
+			startedAt: now + 14,
+			inputs: {},
+			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		f.render();
+		f.scroll(1, 7);
+		assert.ok(f.render()[0]?.includes(uuid(12)));
+		assert.equal(
+			f.store.recordStagePendingPrompt(uuid(14), "ask", {
+				id: "prompt-1",
+				kind: "input",
+				message: "Continue?",
+				createdAt: now,
+			}),
+			true,
+		);
+		await Promise.resolve();
+		assert.ok(f.render()[0]?.includes(uuid(12)));
+		assert.equal(f.render(27).length, 1);
+		assert.ok(f.render(120)[0]?.includes(uuid(12)));
+		f.scroll(-1, 100);
+		assert.ok(f.render().join("\n").includes('"Continue?"'));
+		assert.ok(
+			f
+				.render()
+				.join("\n")
+				.includes(`/workflow connect ${uuid(14)}`),
+		);
+		f.scroll(1, 9);
+		assert.ok(f.render()[0]?.includes(uuid(12)));
+		assert.equal(f.store.resolveStagePendingPrompt(uuid(14), "ask", "prompt-1", "yes"), true);
+		await Promise.resolve();
+		assert.ok(f.render()[0]?.includes(uuid(12)));
+		f.scroll(-1, 100);
+		assert.ok(!f.render().join("\n").includes('"Continue?"'));
+	} finally {
+		f.dispose();
+	}
+});

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { extname, join, relative, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
@@ -30,7 +31,7 @@ interface ChmodRequest {
 	mode: number;
 }
 
-function runWithChmodTrace(command: string[], cwd: string) {
+function runWithChmodTrace(command: string[], cwd: string, inheritedEnv = process.env) {
 	const traceRoot = makeTempDirectory("atomic chmod trace ");
 	const logPath = join(traceRoot, "chmod.jsonl");
 	try {
@@ -38,7 +39,10 @@ function runWithChmodTrace(command: string[], cwd: string) {
 		const result = spawnSyncCollect(command, {
 			cwd,
 			env: {
-				...process.env,
+				...inheritedEnv,
+				// This helper rebuilds real delivery assets, even when called by Vitest.
+				NODE_ENV: "production",
+				NODE_TEST_CONTEXT: undefined,
 				// npm selects this workspace cwd for its Bun scripts. A relative path
 				// avoids Bun 1.4.2's lack of quoted/space-containing BUN_OPTIONS values.
 				BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ""} --preload=../../test/fixtures/xdg-open-chmod-preload.mjs`,
@@ -190,6 +194,7 @@ test(
 		const { result: build, requests } = runWithChmodTrace(
 			[...npmSpawnPrefix(), "run", "build", "--workspace=@bastani/atomic"],
 			root,
+			{ ...process.env, NODE_ENV: "test", NODE_TEST_CONTEXT: "child-v8" },
 		);
 		assert.equal(build.exitCode, 0, `${build.stdout.toString()}\n${build.stderr.toString()}`);
 
@@ -204,6 +209,22 @@ test(
 
 		for (const artifactPath of emittedArtifacts) {
 			const source = readFileSync(artifactPath, "utf8");
+			// #2700: execute the emitted workflow guard, not the unfurled source guard.
+			// A test-hosted real build must still select SDK sessions in production.
+			if (artifactPath === join(builtinRoot, "workflows", INSTALLED_EXTENSION_ENTRIES.workflows)) {
+				const guards: string[] = [];
+				simple(parse(source, { ecmaVersion: "latest", sourceType: "module" }), {
+					FunctionDeclaration(node) {
+						if (node.id?.name === "isTestContext") guards.push(source.slice(node.start, node.end));
+					},
+				});
+				assert.equal(guards.length, 1, "expected the emitted workflow test-context guard");
+				assert.equal(
+					runInNewContext(`(${guards[0]})()`, { process: { env: { NODE_ENV: "production" } } }),
+					false,
+					"test-hosted build permanently enables workflow stub sessions",
+				);
+			}
 			for (const specifier of collectImportSpecifiers(source)) {
 				if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
 					unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
