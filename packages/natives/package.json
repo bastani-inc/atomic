@@ -28,7 +28,7 @@
     "prepublish:native": "napi prepublish --npm-dir npm --tag-style npm --no-gh-release"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.9.0"
+    "@napi-rs/cli": "3.9.1"
   },
   "engines": {
     "bun": ">=1.4.2",
