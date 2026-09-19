@@ -62,11 +62,12 @@ function findClosestCubeIndex(value: number): number {
 	return minIdx;
 }
 
-function findClosestGrayIndex(gray: number): number {
+function findClosestGrayIndex(r: number, g: number, b: number): number {
 	let minDist = Infinity;
 	let minIdx = 0;
 	for (let i = 0; i < GRAY_VALUES.length; i++) {
-		const dist = Math.abs(gray - GRAY_VALUES[i]);
+		const value = GRAY_VALUES[i];
+		const dist = colorDistance(r, g, b, value, value, value);
 		if (dist < minDist) {
 			minDist = dist;
 			minIdx = i;
@@ -95,21 +96,13 @@ function rgbTo256(r: number, g: number, b: number): number {
 	const cubeDist = colorDistance(r, g, b, cubeR, cubeG, cubeB);
 
 	// Find closest grayscale
-	const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-	const grayIdx = findClosestGrayIndex(gray);
+	const grayIdx = findClosestGrayIndex(r, g, b);
 	const grayValue = GRAY_VALUES[grayIdx];
 	const grayIndex = 232 + grayIdx;
 	const grayDist = colorDistance(r, g, b, grayValue, grayValue, grayValue);
 
-	// Check if color has noticeable saturation (hue matters)
-	// If max-min spread is significant, prefer cube to preserve tint
-	const maxC = Math.max(r, g, b);
-	const minC = Math.min(r, g, b);
-	const spread = maxC - minC;
-
-	// Only consider grayscale if color is nearly neutral (spread < 10)
-	// AND grayscale is actually closer
-	if (spread < 10 && grayDist < cubeDist) {
+	// Prefer the cube on equal distances.
+	if (grayDist < cubeDist) {
 		return grayIndex;
 	}
 
