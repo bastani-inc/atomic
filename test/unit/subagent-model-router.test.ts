@@ -750,9 +750,8 @@ test("long auto-routing tasks fit Jev while preserving protected requirements an
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
 	assert.equal(transport.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 0);
-	assert.deepEqual(notice.mock.calls, [
-		["Text was truncated to fit the input budget. Continuing with the shortened text."],
-	]);
+	// Routing-only truncation is invisible to the user: no console notice.
+	assert.deepEqual(notice.mock.calls, []);
 });
 
 test("auto routing screens credentials even in omitted middle text", async () => {

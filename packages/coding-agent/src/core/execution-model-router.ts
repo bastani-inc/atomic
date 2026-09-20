@@ -116,9 +116,9 @@ export async function routeExecutionModel(input: {
 		)
 			throw new Error("Auto routing context contains credential material. Remove secrets before retrying.");
 		// Screen the full task first, even credentials in text the router will omit.
+		// Shortening only affects the routing request, never the execution prompt,
+		// so it is not surfaced to the user.
 		state.task = modelRoutingTask(state.task);
-		if (state.task !== input.task)
-			console.warn("Text was truncated to fit the input budget. Continuing with the shortened text.");
 		const ranked: ModelRouterOutput[] = [];
 		// Rank by repeated bounded choices, excluding all efforts of earlier models.
 		// Probabilities from separate tournament batches are not comparable.
