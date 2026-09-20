@@ -160,6 +160,8 @@ Replace the default system prompt with:
 
 Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
 
+The default prompt asks the agent to write self-describing code and not add code comments unless you ask for them or the task calls for them. To get comments, request them in your prompt (for example "add JSDoc to the exported functions"), or make it a standing rule in a context file or `APPEND_SYSTEM.md` (for example "Document every exported function with a JSDoc block"). The default guideline explicitly defers to those instructions, so no other configuration is needed.
+
 ## Exporting and Sharing Sessions
 
 Use `/export [file]` to write a session to HTML.
