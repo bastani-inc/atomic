@@ -190,11 +190,11 @@ export const REFERENCE_PRECEDENCE =
   "User references in <reference_context> are the PRIMARY visual authority and override conflicting DESIGN.md/PRODUCT.md guidance. DESIGN.md governs uncovered design decisions; PRODUCT.md still governs strategic register/voice.";
 
 export type AgentBrowserStatus = {
-  /** Whether the `agent-browser` command is expected to be available to downstream stages. */
+  /** Whether the `agent-browser` command and its browser runtime are expected to be usable by downstream stages. */
   readonly available: boolean;
   /** True when the command was already on PATH and no install was attempted. */
   readonly alreadyPresent: boolean;
-  /** True when this step installed the command via `npm install -g agent-browser` + `agent-browser install`. */
+  /** True only when this step installed both the CLI (`npm install -g agent-browser`) and its browser runtime (`agent-browser install`). */
   readonly installed: boolean;
   /** Human-readable, single-line outcome surfaced as a workflow output. */
   readonly summary: string;
@@ -298,10 +298,10 @@ export function ensureAgentBrowser(): AgentBrowserStatus {
         ? `agent-browser install exited with code ${browserInstall.status}`
         : "agent-browser install did not complete");
     return {
-      available: true,
+      available: false,
       alreadyPresent: false,
-      installed: true,
-      summary: `Installed agent-browser, but its browser download failed (${reason}); stages may need to run \`agent-browser install\` themselves.`,
+      installed: false,
+      summary: `Installed the agent-browser CLI, but its browser runtime download failed (${reason}); stages must retry \`agent-browser install\` or degrade gracefully.`,
       error: reason,
     };
   } catch (error) {
@@ -320,7 +320,7 @@ export function ensureAgentBrowser(): AgentBrowserStatus {
 /** Build browser guidance for downstream stage prompts. */
 export function buildAgentBrowserBootstrapRules(status: AgentBrowserStatus): string {
   const probeRule = status.available
-    ? "The agent-browser skill's `agent-browser` command is on PATH. Do not reinstall it unless a command reports it missing; then probe with `which agent-browser`, run `npm install -g agent-browser && agent-browser install` once, and retry. Do not add project dependencies."
+    ? "The agent-browser skill's `agent-browser` command is on PATH. Do not reinstall the CLI unless a command reports it missing; then probe with `which agent-browser`, run `npm install -g agent-browser && agent-browser install` once, and retry. A CLI on PATH does not prove its browser runtime is present: if any command reports a missing browser executable, run `agent-browser install` once and retry. Do not add project dependencies."
     : `The agent-browser skill's \`agent-browser\` command failed setup: "${status.error ?? "unknown error"}". Probe with \`which agent-browser\` and retry once with \`npm install -g agent-browser && agent-browser install\`. For permission errors, use a user-writable global prefix; report missing npm/Node or network/registry errors plainly. If still unavailable, surface the manual file path / URL. Do not add project dependencies.`;
   return [
     probeRule,
