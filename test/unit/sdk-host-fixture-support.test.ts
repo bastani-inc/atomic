@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { awaitFixtureBrokerExit, withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
+import {
+	awaitFixtureBrokerExit,
+	removeFixtureRoot,
+	withoutSqliteExperimentalWarning,
+} from "../fixtures/sdk-host-fixture-support.mjs";
 import { spawnProcess } from "../helpers/runtime.js";
 
 // #3111: only Node's exact SQLite notice is exempt, never SDK diagnostics.
@@ -33,6 +38,29 @@ test("fixture broker cleanup awaits process exit before deleting its directory",
 	} finally {
 		child.kill("SIGKILL");
 		await child.exited;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// On Windows the broker's `cmd.exe /s /c "... 2>>broker.log"` wrapper outlives the
+// broker PID and holds the log without delete sharing, so a bare rmSync right after
+// awaitFixtureBrokerExit fails with EBUSY. Reproduce that with a shell redirect that
+// is still open while the root is removed.
+test("fixture root removal outlives a shell wrapper still holding broker.log", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-fixture-broker-log-"));
+	const intercomDir = join(root, "intercom");
+	mkdirSync(intercomDir);
+	const logPath = join(intercomDir, "broker.log");
+	const holder = spawn(`"${process.execPath}" -e "setTimeout(() => {}, 500)" 2>>"${logPath}"`, {
+		shell: true,
+		stdio: "ignore",
+	});
+	const exited = new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+	try {
+		await removeFixtureRoot(root);
+		assert.equal(existsSync(root), false);
+	} finally {
+		await exited;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

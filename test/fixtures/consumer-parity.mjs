@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ReadStream } from "node:tty";
 import { fileURLToPath } from "node:url";
 
-import { awaitFixtureBrokerExit, withoutSqliteExperimentalWarning } from "./sdk-host-fixture-support.mjs";
+import { awaitFixtureBrokerExit, removeFixtureRoot, withoutSqliteExperimentalWarning } from "./sdk-host-fixture-support.mjs";
 assert.equal(process.versions.bun, undefined);
 assert.ok(!process.stdin.isTTY && !process.stdout.isTTY);
 const installedRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), "node_modules"));
@@ -562,7 +562,7 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			assert.equal(stopped.status, 0, stopped.stderr);
 		}
 	}
-	if (!mode?.startsWith("persist-")) rmSync(root, { recursive: true, force: true });
+	if (!mode?.startsWith("persist-")) await removeFixtureRoot(root);
 }
 if (!mode)
 	console.log(

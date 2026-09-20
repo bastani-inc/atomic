@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -24,4 +25,13 @@ export async function awaitFixtureBrokerExit(agentDir) {
 		assert.ok(Date.now() < deadline, "fixture broker did not exit; retaining its directory");
 		await delay(20);
 	}
+}
+
+// On Windows the broker runs under `cmd.exe /s /c "... 2>>broker.log"`, so the
+// recorded PID is the broker itself while the cmd wrapper owns the log handle and
+// exits a moment after it. That handle has no delete sharing, so unlinking
+// broker.log in that window fails with EBUSY. Retry the removal rather than racing
+// the wrapper; Node's rm retries EBUSY/ENOTEMPTY/EPERM only when maxRetries is set.
+export async function removeFixtureRoot(root) {
+	await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
