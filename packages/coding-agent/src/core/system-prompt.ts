@@ -143,6 +143,9 @@ function buildRules(
 		for (const rule of toolGuidelines[name] ?? []) addRule(rule);
 	}
 	for (const rule of promptGuidelines) addRule(rule);
+	addRule(
+		"Do not add code comments unless the user explicitly asks for them or the task instructions call for them; when a comment is warranted, explain non-obvious intent rather than restating what the code does",
+	);
 	addRule("Be concise in your responses");
 	addRule("Show file paths clearly when working with files");
 	return rules.map((rule) => `- ${rule}`).join("\n");
