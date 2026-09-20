@@ -1,6 +1,7 @@
-// Leave half of Jev's per-question budget for policy, agent metadata and candidate
-// batches. Count JSON-encoded UTF-8 bytes, including escapes, not JS characters.
-export const MODEL_ROUTING_TASK_BYTES = 12_000;
+// Jev's per-question budget is 30 KB. The task excerpt shares it with the evals
+// document (<= 16 KB), the static model-selection guide (~2 KB), agent metadata and
+// a candidate batch. Count JSON-encoded UTF-8 bytes, including escapes, not JS characters.
+export const MODEL_ROUTING_TASK_BYTES = 10_000;
 const omitted = "\n[... text omitted for model selection only ...]\n";
 const notice = "[Model-routing excerpt. Omitted text remains in the execution task.]\n";
 type Range = { start: number; end: number };

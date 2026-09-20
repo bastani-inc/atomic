@@ -30,7 +30,29 @@ export interface ModelRoute {
 	allowsModel(model: Model<Api>, effort?: string): boolean;
 }
 const instructions =
-	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals`. Consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly model and effort; null means no configurable reasoning.";
+	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly model and effort; null means no configurable reasoning.";
+
+/** Static selection policy sent with every auto-routing request alongside the dated `evals` evidence. */
+export const MODEL_SELECTION_GUIDE = `## Benchmarks are evidence, not policy
+
+Benchmark results are measurements under named harnesses, dates, models, efforts, agents, tools, prompts, prices, and scoring rules. Treat a bracketed effort level as the measurement configuration for that row, not a command to run every task at that effort. Compare only records whose measured setup resembles the decision at hand, and keep unmeasured work under ordinary validation rather than inheriting a score.
+
+Missing evidence is unknown, not zero. A rounded lead is not proof of significance. A result for one provider, model version, effort, agent, fallback setting, or benchmark harness does not transfer to another identity.
+
+## Role-based thinking effort
+
+Use these starting defaults unless the user requests a level. Higher effort can improve hard reasoning, but it also costs more and can be slower. \`max\` is an exception, not a default.
+
+| Stage role | Default thinking level | Why |
+| --- | --- | --- |
+| Coding, implementation, routine fixes | \`low\` or \`medium\` | Validate with tools and review instead of spending maximum reasoning on every edit. |
+| Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | \`high\` or \`xhigh\` | Spend reasoning where missing a defect is costly. |
+| Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | \`high\` | Resolve ambiguity before downstream work depends on it. |
+| User-impact review and final reporting | \`medium\` | Preserve evidence and communicate clearly without unnecessary reasoning. |
+| Deterministic checks | No model call | Run tests, typechecks, probes, and scripts directly. |
+
+An explicit user request wins over these defaults, but the requested level must exist for the selected catalog entry. Do not invent unsupported suffixes. If \`xhigh\` is unavailable, use \`high\` rather than automatically promoting to \`max\`; choose another catalog model or leave the stage unpinned if neither fits.
+`;
 
 const MODEL_SELECTION_EVALS_JSON_BYTES = 16_000;
 
@@ -98,6 +120,7 @@ export async function routeExecutionModel(input: {
 			task: input.task,
 			agent: { name: input.agent.name, description: input.agent.description },
 			evals: await readModelSelectionEvals(signal),
+			model_selection_guide: MODEL_SELECTION_GUIDE,
 		};
 		if (!state.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const serialized = JSON.stringify({ state, criteria: allCriteria, constraints });

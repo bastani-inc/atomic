@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Automatic subagent and workflow-stage model selection now sends a fixed `model_selection_guide` state field next to `evals`: the "Benchmarks are evidence, not policy" and "Role-based thinking effort" sections from [Model Selection](/models/model-selection), so the router applies the role defaults and effort rules rather than only the dated benchmark tables. To keep every Jev request within its input budget, the model-selection task excerpt cap is now 10,000 JSON-encoded UTF-8 bytes (was 12,000); execution tasks are still sent in full.
+
 ### Fixed
 
 - Workflow stage chats and other transcript views built from session messages no longer print a bare dim "system" line for the session's system-prompt message.

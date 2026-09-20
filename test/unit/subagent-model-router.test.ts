@@ -14,7 +14,11 @@ import {
 } from "@bastani/pi-ai";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
+import {
+	MODEL_SELECTION_GUIDE,
+	routeExecutionModel,
+} from "../../packages/coding-agent/src/core/execution-model-router.js";
+import { MODEL_ROUTING_TASK_BYTES } from "../../packages/coding-agent/src/core/model-routing-task.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
@@ -85,7 +89,7 @@ function jevPayloadBytes(body: string): { total: number; stateAndLongestQuestion
 const ROUTING_STATE_AND_LONGEST_BYTES = 30_000;
 const ROUTING_STATE_AND_ALL_BYTES = 48_000;
 
-test("execution routing keeps the real evals, 12KB task, and nine verbose candidates within Jev budgets", async () => {
+test("execution routing keeps the real evals, guide, budget-sized task, and nine verbose candidates within Jev budgets", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 	const evals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
 	const candidates = Array.from({ length: 9 }, (_, index) => ({
@@ -146,7 +150,8 @@ function taskNearRoutingLimit(): string {
 	const protectedRequirement =
 		"<keepContext>Keep this exact protected requirement Ω and do not drop it.</keepContext>";
 	let task = `${seed}${"context ".repeat(1000)}${protectedRequirement}`;
-	while (Buffer.byteLength(JSON.stringify(`${task} tail`), "utf8") <= 11_900) task = `${task} tail`;
+	while (Buffer.byteLength(JSON.stringify(`${task} tail`), "utf8") <= MODEL_ROUTING_TASK_BYTES - 100)
+		task = `${task} tail`;
 	return task;
 }
 test("auto routing receives the shipped evals document verbatim", async () => {
@@ -162,7 +167,14 @@ test("auto routing receives the shipped evals document verbatim", async () => {
 	assert.deepEqual(state.agent, { name: agent.name, description: agent.description });
 	assert.equal(state.policy, undefined);
 	assert.equal(state.evidence, undefined);
-	assert.equal(state.model_selection_guide, undefined);
+	assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
+	assert.match(state.model_selection_guide, /^## Benchmarks are evidence, not policy\n/);
+	assert.match(state.model_selection_guide, /## Role-based thinking effort/);
+	assert.match(state.model_selection_guide, /\| Deterministic checks \| No model call \|/);
+	assert.match(
+		state.model_selection_guide,
+		/If `xhigh` is unavailable, use `high` rather than automatically promoting to `max`/,
+	);
 	assert.equal(state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
 	assert.match(state.evals, /# Evals/);
 	assert.match(state.evals, /DeepSWE/);
@@ -664,7 +676,7 @@ test("hello-world routing receives evals and fits one small Jev request", async 
 	assert.ok(Buffer.byteLength(body) <= 48_000);
 	assert.ok(stateAndQuestionBytes <= 30_000);
 	assert.match(payload.state.evals, /# Evals/);
-	assert.equal(payload.state.model_selection_guide, undefined);
+	assert.equal(payload.state.model_selection_guide, MODEL_SELECTION_GUIDE);
 	assert.equal(payload.state.policy, undefined);
 	assert.equal(payload.state.evidence, undefined);
 });
@@ -680,7 +692,7 @@ test("maximal real eval routing payload preserves prompt and stays under conserv
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(models);
 	const evals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
 	const task = taskNearRoutingLimit();
-	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > 11_800);
+	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > MODEL_ROUTING_TASK_BYTES - 200);
 	const transport = vi.fn(async (_url: string, init: RequestInit) => {
 		const body = String(init.body);
 		const bytes = jevPayloadBytes(body);
@@ -835,7 +847,7 @@ test("auto routing keeps exact benchmark identity and provenance distinctions", 
 		assert.match(state.evals, /`—`=source null, not 0/);
 		assert.match(state.evals, /\| GPT-6 Astra \| max \| codex \| 53\.3 \| 58\.8 \| — \| 4\.59 \| 30\.1 \|/);
 		assert.match(state.evals, /\| Claude Fable 5\.1 \| medium \| cc \| 50\.9 \| 55\.5 \| 0\.0 \| 3\.28 \| 26\.1 \|/);
-		assert.equal(state.model_selection_guide, undefined);
+		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		return messageStream(decisionMessage({ model: `${models[rank++]!.provider}/claude-fable-5`, effort: null }));
 	});
 	await f.route();

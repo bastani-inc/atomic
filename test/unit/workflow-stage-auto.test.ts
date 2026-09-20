@@ -142,12 +142,14 @@ test("public stage auto uses actual prompt and shipped evals before admission", 
 	).state;
 	assert.equal(state.task, "  Solve this actual task verbatim.  ");
 	assert.deepEqual(state.agent, { name: "not the task", description: "Workflow stage" });
-	assert.deepEqual(Object.keys(state).sort(), ["agent", "evals", "task"]);
+	assert.deepEqual(Object.keys(state).sort(), ["agent", "evals", "model_selection_guide", "task"]);
 	assert.equal(state.policy, undefined);
 	assert.equal(state.evidence, undefined);
 	assert.match(state.evals, /# Evals/);
 	assert.match(state.evals, /DeepSWE/);
-	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 16_000);
+	assert.match(state.model_selection_guide, /^## Benchmarks are evidence, not policy\n/);
+	assert.match(state.model_selection_guide, /## Role-based thinking effort/);
+	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 18_000);
 });
 
 test("long stage prompts are excerpted only for routing, never for execution", async () => {
