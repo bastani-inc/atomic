@@ -45,6 +45,7 @@ Use these starting defaults unless the user requests a level. Higher effort can 
 
 | Stage role | Default thinking level | Why |
 | --- | --- | --- |
+| Codebase exploration: locating files, reading code, tracing call sites | \`minimal\` or \`low\` | Tool-driven lookups need speed, not deliberation; escalate to mapping or analysis only when the question becomes a design judgement. |
 | Coding, implementation, routine fixes | \`low\` or \`medium\` | Validate with tools and review instead of spending maximum reasoning on every edit. |
 | Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | \`high\` or \`xhigh\` | Spend reasoning where missing a defect is costly. |
 | Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | \`high\` | Resolve ambiguity before downstream work depends on it. |
