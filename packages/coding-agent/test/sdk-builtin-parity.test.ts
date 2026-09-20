@@ -3035,6 +3035,12 @@ test.each([false, true])(
 	},
 );
 
+// Each `/replace-me` continuation waits on a real `ctx.newSession()`: a fresh
+// `createAgentSession` with its own resource loader, extension binding and model
+// runtime. Two of those in sequence on a loaded runner exceed `vi.waitFor`'s 1 s
+// default, so the resume wait gets a budget sized for the structural cost.
+const COMMAND_REPLACEMENT_RESUME_TIMEOUT_MS = 15_000;
+
 // #3105: replacement hands off its invoking command, but terminal close still owns it.
 test.each([1, 2])(
 	"command replacement drains peers and retains %s continuations until terminal cleanup",
@@ -3135,7 +3141,7 @@ test.each([1, 2])(
 			assert.equal(generations, 1, "unrelated admitted work must drain before handoff");
 			joinReplacement.resolve();
 			peerRelease.resolve();
-			await vi.waitFor(() => assert.equal(resumed, true));
+			await vi.waitFor(() => assert.equal(resumed, true), { timeout: COMMAND_REPLACEMENT_RESUME_TIMEOUT_MS });
 			assert.equal(generations, count + 1);
 			assert.equal(shutdowns.includes(1), false, "old cleanup waits for every continuation");
 			await assert.rejects(old.prompt("late"), { code: "SessionClosed" });
