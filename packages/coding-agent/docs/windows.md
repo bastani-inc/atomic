@@ -22,7 +22,7 @@ The installer removes its `atomic-install-*` staging directory before finishing.
 
 After the script is fetched, it enables TLS 1.2 for its own GitHub requests and restores the caller's prior protocol setting. A downloaded script cannot repair the connection used to fetch itself: on a legacy Windows PowerShell 5.1 host where the literal `irm` command cannot reach GitHub, enable TLS 1.2 in that shell before rerunning the same one-liner.
 
-The installer adds the bin directory to the User PATH and the current PowerShell process. Restart the terminal afterward so other processes see the new PATH.
+While it runs, the installer prints the release and platform, a live download progress bar with the percentage and megabytes received, one-line phase confirmations, the Atomic logo in Windows Terminal, and a `To start:` block. It then prints `Installed to <path>` and adds the bin directory to the User PATH and the current PowerShell process; when it changed the User PATH it says so and asks you to open a new terminal so other processes see the new PATH. Set `NO_COLOR=1` for plain text without colours, the progress bar, or the logo; output is also plain when `CI` is set or standard output is redirected. Legacy console windows outside Windows Terminal draw the bar with `#` and `-` and skip the logo.
 
 Check these installation constraints:
 

@@ -305,6 +305,7 @@ The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links
 - `ATOMIC_VERSION` — pin an exact release tag.
 - `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR` — change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
 - `GITHUB_TOKEN` / `GH_TOKEN` — optional; raises GitHub API limits on shared networks.
+- `NO_COLOR` — plain output with no colours, progress bar, or logo; the installer also switches to plain output when its output is not a terminal or `CI` is set.
 
 The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step; Android and Termux remain unsupported. See the [Quickstart](https://docs.bastani.ai/quickstart) for path-resolution and Windows `PATHEXT` details.
 

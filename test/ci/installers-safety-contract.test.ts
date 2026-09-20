@@ -57,7 +57,7 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 		"TEMP_BASE=",
 		"if ! RELEASE_JSON=$(http_get",
 		"resolve_redirect_tag",
-		'if ! download_file "$RELEASE_BASE/$ASSET_NAME"',
+		'if ! download_archive "$RELEASE_BASE/$ASSET_NAME"',
 		'mkdir -p "$INSTALL_ROOT"',
 	]) {
 		const boundaryIndex = shell.indexOf(boundary);
@@ -252,7 +252,8 @@ test("POSIX release identities stay within Atomic's supported tag grammar", asyn
 	assert.match(shell, /releases\/download\/\$RELEASE_TAG_ENCODED/u);
 	assert.match(shell, /VERSION_PATH=\$VERSIONS_DIR\/\$RELEASE_TAG_ENCODED/u);
 	assert.match(shell, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
-	assert.match(shell, /Atomic %s installed successfully[^\n]+"\$RELEASE_TAG"/u);
+	assert.match(shell, /Installing atomic version:[^\n]+"\$RELEASE_TAG"/u);
+	assert.doesNotMatch(shell, /installed successfully|Binary: %s|Add Atomic to PATH/u);
 });
 
 test("installers pin the requested exact ref and fail closed on a mismatched release identity", async () => {
@@ -310,7 +311,11 @@ test("POSIX API authentication uses protected files and never authenticates rele
 	const releaseBase = shell.indexOf("RELEASE_BASE=");
 	assert.ok(clearAuth >= 0 && clearAuth < releaseBase);
 	const download = shell.slice(shell.indexOf("download_file()"), shell.indexOf("tag_from_release_url()"));
-	assert.doesNotMatch(download, /TOKEN|API_AUTH|Authorization/u);
+	assert.ok(download.includes("content_length_of()") && download.includes("download_archive()"));
+	assert.doesNotMatch(download, /TOKEN|API_AUTH|Authorization|WGETRC/u);
+	assert.match(download, /curl -fsIL -o "\$length_headers" "\$length_url"/u);
+	assert.match(download, /wget -S --spider "\$length_url"/u);
+	assert.ok(shell.indexOf("clear_api_auth\n") < shell.indexOf('download_archive "$RELEASE_BASE'));
 });
 
 test("POSIX rollback retries failed restores and removes created empty parent chains", async () => {
@@ -347,7 +352,7 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 		const move = powershell.indexOf("Move-Item", intent);
 		assert.ok(intent >= 0 && move > intent, `${name} intent must precede its move`);
 	}
-	const successOutput = powershell.indexOf('    Write-Output "Atomic $releaseTag installed successfully."');
+	const successOutput = powershell.indexOf('    Write-Output "Installed to $shimPath"');
 	const transactionCatch = powershell.lastIndexOf("    catch {", successOutput);
 	assert.ok(transactionCatch >= 0 && successOutput > transactionCatch);
 	assert.match(powershell.slice(transactionCatch, successOutput), /Invoke-AtomicTransactionRollback \$transaction/u);
@@ -398,7 +403,7 @@ test("Windows temporary download directories are removed with bounded verified r
 		"the bounded removal helper must only be used for the installer-owned temp directory",
 	);
 
-	const successOutput = powershell.indexOf('    Write-Output "Atomic $releaseTag installed successfully."');
+	const successOutput = powershell.indexOf('    Write-Output "Installed to $shimPath"');
 	const finallyBlock = powershell.slice(powershell.indexOf("finally {", successOutput));
 	const rollback = finallyBlock.indexOf("Invoke-AtomicTransactionRollback");
 	const tempCleanup = finallyBlock.indexOf("Remove-AtomicTemporaryDirectory $tempDir", rollback);
@@ -424,4 +429,95 @@ test("Windows temporary download directories are removed with bounded verified r
 		);
 	}
 	assert.match(powershell, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
+});
+
+test("POSIX installer output modes never weaken the download, cleanup, or error contract", async () => {
+	const { shell } = await installers();
+	// The caller's locale is read before the script pins LC_ALL=C for its own parsing.
+	const localeCapture = shell.search(/CALLER_LOCALE=\$\{LC_ALL:-\$\{LC_CTYPE:-\$\{LANG:-\}\}\}/u);
+	const localePin = shell.indexOf("\nLC_ALL=C\nexport LC_ALL\n");
+	assert.ok(
+		localeCapture >= 0 && localePin > localeCapture,
+		"LC_ALL=C is assigned before the caller's locale is captured",
+	);
+	assert.match(
+		shell,
+		/if \[ ! -t 1 \] \|\| \[ -n "\$\{NO_COLOR\+x\}" \] \|\| \[ -n "\$\{CI\+x\}" \] \|\| \[ "\$\{TERM:-dumb\}" = dumb \]; then\n\s+OUTPUT_MODE='plain'/u,
+	);
+	assert.match(shell, /printf '%serror:%s %s\\n' "\$ERROR_COLOR" "\$ERROR_RESET" "\$\*" >&2/u);
+	assert.doesNotMatch(shell, /\bawk\b/u);
+
+	// The background downloader is killed and the cursor restored before any rollback work.
+	const cleanupStart = shell.indexOf("cleanup() {");
+	const cleanup = shell.slice(cleanupStart, shell.indexOf("\n}\n", cleanupStart));
+	const kill = cleanup.indexOf('kill "$DOWNLOAD_PID"');
+	const reap = cleanup.indexOf('wait "$DOWNLOAD_PID"');
+	const cursor = cleanup.indexOf("\\033[?25h");
+	const rollback = cleanup.indexOf("rollback_once");
+	assert.ok(kill >= 0 && reap > kill && cursor > reap && rollback > cursor, cleanup);
+	assert.match(shell, /trap cleanup 0\ntrap 'exit 1' HUP INT TERM\n/u);
+	// The downloader is exec'd in the background subshell so $! is curl/wget itself,
+	// not a wrapper whose death would orphan the real download.
+	const execHelperStart = shell.indexOf("exec_download_file() {");
+	assert.ok(execHelperStart >= 0, "exec_download_file helper is missing");
+	const execHelper = shell.slice(execHelperStart, shell.indexOf("\n}\n", execHelperStart));
+	assert.match(execHelper, /exec curl -fsSL -o "\$download_destination" "\$download_url"/u);
+	assert.match(execHelper, /exec wget -q -O "\$download_destination" "\$download_url"/u);
+	assert.match(shell, /\n\s+exec_download_file "\$archive_url" "\$archive_destination" &\n\s+DOWNLOAD_PID=\$!/u);
+	assert.doesNotMatch(shell, /(^|[^_])download_file "\$archive_url" "\$archive_destination" &/mu);
+	assert.match(shell, /wait "\$DOWNLOAD_PID" \|\| archive_status=\$\?\n\s+DOWNLOAD_PID=\n/u);
+
+	// Only the asset and SHA256SUMS base can be overridden, and verification is untouched.
+	assert.match(
+		shell,
+		/RELEASE_BASE=\$\{ATOMIC_RELEASE_BASE_URL:-\$GITHUB_WEB\/\$REPOSITORY\/releases\/download\/\$RELEASE_TAG_ENCODED\}/u,
+	);
+	const overrideUses = shell
+		.split("\n")
+		.filter((line) => line.includes("ATOMIC_RELEASE_BASE_URL") && !line.trimStart().startsWith("#"));
+	assert.equal(overrideUses.length, 2, "the override must stay a download-base knob");
+	assert.equal(overrideUses[0], "  ATOMIC_RELEASE_BASE_URL");
+	assert.match(
+		overrideUses[1] ?? "",
+		/^RELEASE_BASE=\$\{ATOMIC_RELEASE_BASE_URL:-\$GITHUB_WEB\/\$REPOSITORY\/releases\/download\/\$RELEASE_TAG_ENCODED\}$/u,
+	);
+	assert.match(shell, /if ! download_file "\$RELEASE_BASE\/\$CHECKSUM_FILE" "\$CHECKSUM_PATH"; then/u);
+	assert.match(shell, /\[ "\$ACTUAL_CHECKSUM" = "\$EXPECTED_CHECKSUM" \] \|\| fail "checksum verification failed/u);
+	assert.match(shell, /NO_COLOR\s+Disable colour and progress output/u);
+	assert.match(shell, /ATOMIC_RELEASE_BASE_URL\n\s+Testing only/u);
+
+	// Decorations are terminal-only; PATH guidance keeps today's shell-quoted export.
+	const toStart = shell.indexOf("printf 'To start:");
+	const ttyGate = shell.lastIndexOf('if [ "$OUTPUT_MODE" = tty ]; then', toStart);
+	assert.ok(toStart >= 0 && ttyGate >= 0 && toStart - ttyGate < 200, "the start block is not gated on a terminal");
+	assert.ok(shell.indexOf("print_banner\n") > shell.indexOf('if [ "$CALLER_UTF8" -eq 1 ]; then', ttyGate));
+	assert.match(shell, /printf ' {2}export PATH='\n\s+shell_quote "\$BIN_DIR"\n\s+printf ':"\$PATH"\\n'/u);
+	assert.match(shell, /printf ' {2}fish_add_path '\n\s+shell_quote "\$BIN_DIR"/u);
+	assert.match(shell, /case :\$\{PATH:-\}: in\n\s+\*:"\$BIN_DIR":\*\) ;;/u);
+	assert.match(shell, /ATOMIC_BIN_DIR contains ':' and cannot be represented as one POSIX PATH entry/u);
+});
+
+test("Windows smoke checks stay silent and the summary lines use the new wording", async () => {
+	const { powershell } = await installers();
+	for (const [command, status] of [
+		['& $stagedAtomic "--version" | Out-Null', "$stagedExitCode = $LASTEXITCODE"],
+		[
+			'& $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime | Out-Null',
+			"if ($LASTEXITCODE -ne 0)",
+		],
+		['& $postgresExecutable "--version" | Out-Null', "if ($LASTEXITCODE -ne 0)"],
+		["& $env:ComSpec /d /c $shimCommand | Out-Null", "$finalExitCode = $LASTEXITCODE"],
+	] as const) {
+		const invocation = powershell.indexOf(command);
+		assert.ok(invocation >= 0, `smoke check is not piped to Out-Null: ${command}`);
+		const check = powershell.indexOf(status, invocation);
+		assert.ok(check > invocation && check - invocation < 200, `exit status is not checked after: ${command}`);
+	}
+	assert.doesNotMatch(powershell, /& \$stagedAtomic "--version"\r?\n/u);
+	assert.doesNotMatch(powershell, /& \$postgresExecutable "--version"\r?\n/u);
+	assert.doesNotMatch(powershell, /& \$env:ComSpec \/d \/c \$shimCommand\r?\n/u);
+	assert.match(powershell, /Write-Output "Installed to \$shimPath"/u);
+	assert.match(powershell, /Write-Output "Added \$binDir to your User PATH; open a new terminal to use atomic\."/u);
+	assert.match(powershell, /Write-Output "Run Atomic directly: `"\$shimPath`""/u);
+	assert.doesNotMatch(powershell, /installed successfully|Restart your terminal|Write-Output "Shim: /u);
 });

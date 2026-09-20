@@ -3,15 +3,53 @@
 set -eu
 set -f
 
+# Capture the caller's locale before forcing the C locale so the progress bar
+# and banner can tell whether the terminal expects UTF-8.
+CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
 LC_ALL=C
 export LC_ALL
+
+case $CALLER_LOCALE in
+    *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) CALLER_UTF8=1 ;;
+    *) CALLER_UTF8=0 ;;
+esac
+
+# Plain mode: no escape sequences, no carriage returns, no bar, no banner.
+if [ ! -t 1 ] || [ -n "${NO_COLOR+x}" ] || [ -n "${CI+x}" ] || [ "${TERM:-dumb}" = dumb ]; then
+    OUTPUT_MODE='plain'
+else
+    OUTPUT_MODE='tty'
+fi
+
+if [ "$OUTPUT_MODE" = tty ]; then
+    MUTED=$(printf '\033[0;2m')
+    ACCENT=$(printf '\033[38;5;214m')
+    RESET=$(printf '\033[0m')
+    if [ -t 2 ]; then
+        ERROR_COLOR=$(printf '\033[0;31m')
+        ERROR_RESET=$RESET
+    else
+        ERROR_COLOR=
+        ERROR_RESET=
+    fi
+else
+    MUTED=
+    ACCENT=
+    RESET=
+    ERROR_COLOR=
+    ERROR_RESET=
+fi
 
 REPOSITORY=bastani-inc/atomic
 GITHUB_WEB=https://github.com
 GITHUB_API=https://api.github.com
 CHECKSUM_FILE=SHA256SUMS
+DOCS_URL=https://docs.bastani.ai/quickstart
+PROGRESS_WIDTH=50
 NEWLINE=$(printf '\n_')
 NEWLINE=${NEWLINE%_}
+CARRIAGE_RETURN=$(printf '\r_')
+CARRIAGE_RETURN=${CARRIAGE_RETURN%_}
 
 usage() {
     printf '%s\n' 'Atomic release archive installer
@@ -30,11 +68,16 @@ Environment:
   ATOMIC_INSTALL_DIR  Installation root (default: $HOME/.local/share/atomic).
   ATOMIC_BIN_DIR      Directory containing the atomic link (default: $HOME/.local/bin).
   GITHUB_TOKEN        Optional GitHub API token (preferred over GH_TOKEN).
-  GH_TOKEN            Optional GitHub API token.'
+  GH_TOKEN            Optional GitHub API token.
+  NO_COLOR            Disable colour and progress output (plain mode).
+                      Plain mode is also used when stdout is not a terminal,
+                      TERM is dumb or unset, or CI is set.
+  ATOMIC_RELEASE_BASE_URL
+                      Testing only: base URL serving <asset> and SHA256SUMS.'
 }
 
 fail() {
-    printf 'error: %s\n' "$*" >&2
+    printf '%serror:%s %s\n' "$ERROR_COLOR" "$ERROR_RESET" "$*" >&2
     exit 1
 }
 
@@ -422,6 +465,8 @@ CREATED_BIN_DIR=0
 INSTALL_DIRECTORY_STOP=
 BIN_DIRECTORY_STOP=
 ROLLBACK_RETRY_LIMIT=3
+DOWNLOAD_PID=
+CURSOR_HIDDEN=0
 
 path_exists() {
     [ -e "$1" ] || [ -L "$1" ]
@@ -538,6 +583,18 @@ cleanup() {
     cleanup_status=$?
     set +e
 
+    # Background jobs of a non-interactive shell ignore SIGINT, so Ctrl-C only
+    # reaches the downloader through this explicit kill.
+    if [ -n "$DOWNLOAD_PID" ]; then
+        kill "$DOWNLOAD_PID" 2>/dev/null
+        wait "$DOWNLOAD_PID" 2>/dev/null
+        DOWNLOAD_PID=
+    fi
+    if [ "$CURSOR_HIDDEN" -eq 1 ]; then
+        printf '\n\033[?25h'
+        CURSOR_HIDDEN=0
+    fi
+
     if [ "$INSTALL_COMMITTED" -ne 1 ]; then
         rollback_attempt=0
         rollback_incomplete=1
@@ -624,6 +681,175 @@ download_file() {
     else
         wget -q -O "$download_destination" "$download_url"
     fi
+}
+
+# Background form of download_file: exec replaces the subshell so $! is the
+# downloader itself and cleanup can kill it directly.
+exec_download_file() {
+    download_url=$1
+    download_destination=$2
+    if [ "$DOWNLOADER" = curl ]; then
+        exec curl -fsSL -o "$download_destination" "$download_url"
+    else
+        exec wget -q -O "$download_destination" "$download_url"
+    fi
+}
+
+# Print the Content-Length of a URL, taking the last header of the final
+# response, or nothing when the size is unknown.
+content_length_of() {
+    length_url=$1
+    length_headers=$TEMP_DIR/asset-headers
+    if [ "$DOWNLOADER" = curl ]; then
+        curl -fsIL -o "$length_headers" "$length_url" 2>/dev/null || return 0
+    else
+        wget -S --spider "$length_url" > /dev/null 2>"$length_headers" || return 0
+    fi
+    length_value=
+    while IFS= read -r header_line || [ -n "$header_line" ]; do
+        header_line=${header_line#"${header_line%%[! ]*}"}
+        case $header_line in
+            [Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Ll][Ee][Nn][Gg][Tt][Hh]:*)
+                header_value=${header_line#*:}
+                header_value=${header_value%"$CARRIAGE_RETURN"}
+                header_value=${header_value#"${header_value%%[! ]*}"}
+                header_value=${header_value%"${header_value##*[! ]}"}
+                case $header_value in
+                    ''|*[!0123456789]*) ;;
+                    *) length_value=$header_value ;;
+                esac
+                ;;
+        esac
+    done < "$length_headers"
+    rm -f "$length_headers"
+    printf '%s' "$length_value"
+}
+
+file_size_of() {
+    if [ -f "$1" ]; then
+        size_value=$(wc -c < "$1")
+        printf '%s' "$((size_value + 0))"
+    else
+        printf 0
+    fi
+}
+
+# Whole MB with one decimal, computed in KiB so 32-bit arithmetic cannot overflow.
+megabytes_of() {
+    # shellcheck disable=SC2017 # divide first so bytes * 10 cannot overflow 32-bit shells
+    megabyte_tenths=$(($1 / 1024 * 10 / 1024))
+    printf '%s.%s' "$((megabyte_tenths / 10))" "$((megabyte_tenths % 10))"
+}
+
+render_progress_bar() {
+    bar_done=$1
+    bar_total=$2
+    if [ "$bar_total" -gt 0 ]; then
+        if [ "$bar_total" -ge 1048576 ]; then
+            # shellcheck disable=SC2017 # divide first so bytes * 100 cannot overflow 32-bit shells
+            bar_percent=$((bar_done / 1024 * 100 / (bar_total / 1024)))
+        else
+            bar_percent=$((bar_done * 100 / bar_total))
+        fi
+    else
+        bar_percent=0
+    fi
+    [ "$bar_percent" -le 100 ] || bar_percent=100
+    bar_filled=$((bar_percent * PROGRESS_WIDTH / 100))
+    bar_text=
+    bar_index=0
+    while [ "$bar_index" -lt "$bar_filled" ]; do
+        bar_text=$bar_text$PROGRESS_FILLED
+        bar_index=$((bar_index + 1))
+    done
+    while [ "$bar_index" -lt "$PROGRESS_WIDTH" ]; do
+        bar_text=$bar_text$PROGRESS_EMPTY
+        bar_index=$((bar_index + 1))
+    done
+    printf '\r%s%s%s %3d%%  %s / %s MB' "$ACCENT" "$bar_text" "$RESET" "$bar_percent" \
+        "$(megabytes_of "$bar_done")" "$(megabytes_of "$bar_total")"
+}
+
+render_progress_spinner() {
+    case $(($2 % 4)) in
+        0) spinner_frame='|' ;;
+        1) spinner_frame=/ ;;
+        2) spinner_frame=- ;;
+        *) spinner_frame=\\ ;;
+    esac
+    printf '\r%s%s%s %sDownloading%s %s  %s MB' "$ACCENT" "$spinner_frame" "$RESET" "$MUTED" "$RESET" \
+        "$ASSET_NAME" "$(megabytes_of "$1")"
+}
+
+# Download the release archive, drawing a live progress line on a terminal and
+# a single "Downloading ... done" line otherwise. Returns the downloader status.
+download_archive() {
+    archive_url=$1
+    archive_destination=$2
+    archive_total=$(content_length_of "$archive_url")
+    archive_total=${archive_total:-0}
+
+    if [ "$OUTPUT_MODE" != tty ] || ! command -v wc >/dev/null 2>&1 || ! command -v sleep >/dev/null 2>&1; then
+        if [ "$archive_total" -gt 0 ]; then
+            printf '%sDownloading%s %s %s(%s MB) ...%s ' "$MUTED" "$RESET" "$ASSET_NAME" "$MUTED" \
+                "$(megabytes_of "$archive_total")" "$RESET"
+        else
+            printf '%sDownloading%s %s %s...%s ' "$MUTED" "$RESET" "$ASSET_NAME" "$MUTED" "$RESET"
+        fi
+        archive_status=0
+        download_file "$archive_url" "$archive_destination" || archive_status=$?
+        if [ "$archive_status" -eq 0 ]; then
+            printf '%sdone%s\n' "$MUTED" "$RESET"
+        else
+            printf '\n'
+        fi
+        return "$archive_status"
+    fi
+
+    if sleep 0.1 2>/dev/null; then
+        poll_interval=0.1
+    else
+        poll_interval=1
+    fi
+    if [ "$CALLER_UTF8" -eq 1 ]; then
+        PROGRESS_FILLED=■
+        PROGRESS_EMPTY=･
+    else
+        PROGRESS_FILLED='#'
+        PROGRESS_EMPTY=-
+    fi
+
+    : > "$archive_destination"
+    printf '\033[?25l'
+    CURSOR_HIDDEN=1
+    exec_download_file "$archive_url" "$archive_destination" &
+    DOWNLOAD_PID=$!
+    spinner_tick=0
+    while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
+        archive_done=$(file_size_of "$archive_destination")
+        if [ "$archive_total" -gt 0 ]; then
+            render_progress_bar "$archive_done" "$archive_total"
+        else
+            render_progress_spinner "$archive_done" "$spinner_tick"
+            spinner_tick=$((spinner_tick + 1))
+        fi
+        sleep "$poll_interval"
+    done
+    archive_status=0
+    wait "$DOWNLOAD_PID" || archive_status=$?
+    DOWNLOAD_PID=
+
+    if [ "$archive_status" -eq 0 ]; then
+        archive_done=$(file_size_of "$archive_destination")
+        if [ "$archive_total" -gt 0 ]; then
+            render_progress_bar "$archive_done" "$archive_done"
+        else
+            printf '\r%sDownloaded%s %s %s MB' "$MUTED" "$RESET" "$ASSET_NAME" "$(megabytes_of "$archive_done")"
+        fi
+    fi
+    printf '\n\033[?25h'
+    CURSOR_HIDDEN=0
+    return "$archive_status"
 }
 
 tag_from_release_url() {
@@ -784,8 +1010,31 @@ case $RELEASE_TAG_ENCODED in
     ''|.|..) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
 esac
 
-RELEASE_BASE=$GITHUB_WEB/$REPOSITORY/releases/download/$RELEASE_TAG_ENCODED
-if ! download_file "$RELEASE_BASE/$ASSET_NAME" "$ARCHIVE_PATH"; then
+PLATFORM_LABEL=${ASSET_NAME#atomic-}
+PLATFORM_LABEL=${PLATFORM_LABEL%.tar.gz}
+printf '%sInstalling atomic version:%s %s (%s)\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$PLATFORM_LABEL"
+
+INSTALLED_VERSION=
+if [ -x "$INSTALL_ROOT/current/atomic" ]; then
+    INSTALLED_VERSION=$("$INSTALL_ROOT/current/atomic" --version 2>/dev/null </dev/null) || INSTALLED_VERSION=
+    INSTALLED_VERSION=${INSTALLED_VERSION%%"$NEWLINE"*}
+    # shellcheck disable=SC2086 # word splitting trims surrounding whitespace
+    set -- $INSTALLED_VERSION
+    INSTALLED_VERSION=${1:-}
+    set --
+fi
+if [ -n "$INSTALLED_VERSION" ]; then
+    if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ]; then
+        printf '%sVersion%s %s %salready installed%s\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$MUTED" "$RESET"
+    else
+        printf '%sInstalled version: %s%s\n' "$MUTED" "$INSTALLED_VERSION" "$RESET"
+    fi
+fi
+
+# ATOMIC_RELEASE_BASE_URL only redirects the asset and SHA256SUMS downloads
+# (testing only); tag resolution and checksum verification are unchanged.
+RELEASE_BASE=${ATOMIC_RELEASE_BASE_URL:-$GITHUB_WEB/$REPOSITORY/releases/download/$RELEASE_TAG_ENCODED}
+if ! download_archive "$RELEASE_BASE/$ASSET_NAME" "$ARCHIVE_PATH"; then
     fail "failed to download release asset: $ASSET_NAME"
 fi
 if ! download_file "$RELEASE_BASE/$CHECKSUM_FILE" "$CHECKSUM_PATH"; then
@@ -853,6 +1102,7 @@ for postgres_command in postgres pg_ctl initdb; do
         fail "incomplete PostgreSQL runtime: $postgres_command --version failed; installation was not promoted. Download a repaired release; do not reuse libraries from another version."
     fi
 done
+printf '%sVerified SHA256, extracted, and validated the runtime%s\n' "$MUTED" "$RESET"
 
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
@@ -945,8 +1195,63 @@ shell_quote() {
     printf '%s' "'"
 }
 
-printf 'Atomic %s installed successfully.\n' "$RELEASE_TAG"
-printf 'Binary: %s\n' "$BIN_PATH"
+# Collapse $HOME to ~ for display on a terminal; plain mode prints full paths.
+display_path() {
+    if [ "$OUTPUT_MODE" = tty ] && [ -n "${HOME:-}" ]; then
+        case $1 in
+            "$HOME") printf '~' ;;
+            "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+            *) printf '%s' "$1" ;;
+        esac
+    else
+        printf '%s' "$1"
+    fi
+}
+
+print_banner() {
+    printf '\n%s' "$ACCENT"
+    printf '%s\n' \
+        '  ██████▙                  ▟██████' \
+        '   ██████▙                ▟██████' \
+        '    ██████▙              ▟██████' \
+        '     ██████▙            ▟██████' \
+        '      ████████████████████████' \
+        '       ██████▛        ▜██████' \
+        '        ██████▛      ▜██████' \
+        '         ██████▛    ▜██████' \
+        '          ██████▛  ▜██████' \
+        '            ████████████'
+    printf '%s\n' "$RESET"
+}
+
+printf '%sInstalled to%s ' "$MUTED" "$RESET"
+display_path "$BIN_PATH"
+printf '\n'
+if [ "$OUTPUT_MODE" = tty ]; then
+    if [ "$CALLER_UTF8" -eq 1 ]; then
+        print_banner
+    else
+        printf '\n'
+    fi
+    printf 'To start:\n\n'
+    printf 'cd <project>  %s# Open directory%s\n' "$MUTED" "$RESET"
+    printf 'atomic        %s# Run command%s\n\n' "$MUTED" "$RESET"
+fi
+
+case ${SHELL:-} in
+    */zsh|zsh) SHELL_KIND=zsh ;;
+    */bash|bash) SHELL_KIND=bash ;;
+    */fish|fish) SHELL_KIND=fish ;;
+    *) SHELL_KIND= ;;
+esac
+# shellcheck disable=SC2088 # the hint names the file for a human, so ~ stays literal
+case $SHELL_KIND in
+    zsh) SHELL_RC='~/.zshrc' ;;
+    bash) SHELL_RC='~/.bashrc' ;;
+    fish) SHELL_RC='~/.config/fish/config.fish' ;;
+    *) SHELL_RC='~/.profile' ;;
+esac
+
 case $BIN_DIR in
     *:*)
         printf '%s\n' "ATOMIC_BIN_DIR contains ':' and cannot be represented as one POSIX PATH entry."
@@ -954,16 +1259,30 @@ case $BIN_DIR in
         shell_quote "$BIN_PATH"
         printf '\n'
         printf '%s\n' "Choose a colon-free ATOMIC_BIN_DIR to add Atomic to PATH."
+        [ "$OUTPUT_MODE" != tty ] || printf '\n'
         ;;
     *)
         case :${PATH:-}: in
             *:"$BIN_DIR":*) ;;
             *)
-                printf 'Add Atomic to PATH for this shell:\n'
-                printf '  export PATH='
-                shell_quote "$BIN_DIR"
-                printf ':"$PATH"\n'
+                printf '%sAdd%s ' "$MUTED" "$RESET"
+                display_path "$BIN_DIR"
+                printf ' %sto PATH for this shell:%s\n' "$MUTED" "$RESET"
+                if [ "$SHELL_KIND" = fish ]; then
+                    printf '  fish_add_path '
+                    shell_quote "$BIN_DIR"
+                    printf '\n'
+                else
+                    printf '  export PATH='
+                    shell_quote "$BIN_DIR"
+                    printf ':"$PATH"\n'
+                fi
+                if [ "$OUTPUT_MODE" = tty ]; then
+                    printf '%sAdd that line to %s to make it permanent.%s\n\n' "$MUTED" "$SHELL_RC" "$RESET"
+                fi
                 ;;
         esac
         ;;
 esac
+
+printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"

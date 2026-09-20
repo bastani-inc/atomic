@@ -112,6 +112,14 @@ interface InstallerFixture {
 	releases: Map<string, FixtureRelease>;
 	cleanup(): void;
 	run(options?: RunOptions): ReturnType<typeof spawnSyncCollect>;
+	/**
+	 * Run the installer on a pseudo-terminal through script(1); see `ttyScript`.
+	 * `keystrokes` are typed into that terminal once `afterFile` is non-empty.
+	 */
+	runInTty(
+		options?: RunOptions,
+		keystrokes?: { afterFile: string; keys: string },
+	): ReturnType<typeof spawnSyncCollect>;
 }
 
 interface RunOptions {
@@ -127,6 +135,43 @@ interface RunOptions {
 	environment?: Record<string, string | undefined>;
 	pathEntries?: readonly string[];
 	umask?: string;
+}
+
+interface PreparedRun {
+	command: string[];
+	env: Record<string, string | undefined>;
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * script(1) gives the installer a real terminal on stdout. macOS/BSD script
+ * takes the command as trailing arguments; util-linux script takes `-c` and
+ * only returns the child's status with `-e`. BusyBox script supports neither
+ * form reliably, so hosts without one of those two skip the terminal tests.
+ */
+function findTtyScript(): { command(argv: readonly string[]): string[] } | undefined {
+	if (process.platform === "win32") return undefined;
+	let script: string;
+	try {
+		script = resolveExecutable("script");
+	} catch {
+		return undefined;
+	}
+	if (process.platform === "darwin" || process.platform === "freebsd") {
+		return { command: (argv) => [script, "-q", "/dev/null", ...argv] };
+	}
+	const version = spawnSyncCollect([script, "--version"]);
+	if (!version.stdout.toString().includes("util-linux")) return undefined;
+	return { command: (argv) => [script, "-qec", argv.map(shellQuote).join(" "), "/dev/null"] };
+}
+
+const ttyScript = findTtyScript();
+const ttyTest = ttyScript === undefined ? test.skip : test;
+if (ttyScript === undefined) {
+	test.skip("interactive installer output needs a BSD or util-linux script(1) on this host", () => {});
 }
 
 function writeExecutable(path: string, source: string): void {
@@ -262,9 +307,15 @@ function shellExpansion(expression: string): string {
 	return ["$", `{${expression}}`].join("");
 }
 
+// A testing-only base that ATOMIC_RELEASE_BASE_URL can point at; the fixture
+// downloaders serve it exactly like the GitHub download base.
+const overrideReleaseBase = "http://127.0.0.1:1/fake-releases";
+const overrideReleaseBaseQuoted = overrideReleaseBase.replaceAll(".", "\\.").replaceAll("/", "\\/");
+
 const curlWrapper = [
 	"#!/bin/sh",
 	"output=",
+	"head=0",
 	"url=",
 	'for argument in "$@"; do printf \'ARGV %s\\n\' "$argument" >> "$ATOMIC_FIXTURE_LOG"; done',
 	'while [ "$#" -gt 0 ]; do',
@@ -272,12 +323,13 @@ const curlWrapper = [
 	"        -o) shift; output=$1 ;;",
 	"        -w) shift ;;",
 	`        -H) shift; header=$1; case $header in @*) header_file=${shellExpansion("header#@")}; mode=$($ATOMIC_FIXTURE_REAL_STAT -c '%a' "$header_file" 2>/dev/null || $ATOMIC_FIXTURE_REAL_STAT -f '%Lp' "$header_file"); printf 'AUTH_MODE %s\\n' "$mode" >> "$ATOMIC_FIXTURE_LOG"; while IFS= read -r header_line || [ -n "$header_line" ]; do printf 'HEADER %s\\n' "$header_line" >> "$ATOMIC_FIXTURE_LOG"; done < "$header_file" ;; *) printf 'HEADER %s\\n' "$header" >> "$ATOMIC_FIXTURE_LOG" ;; esac ;;`,
+	"        -*I*) head=1 ;;",
 	"        -*) ;;",
 	"        *) url=$1 ;;",
 	"    esac",
 	"    shift",
 	"done",
-	`printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"`,
+	`if [ "$head" = 1 ]; then printf 'HEAD %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; else printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; fi`,
 	"case $url in",
 	"    https://github.com/bastani-inc/atomic/releases/latest)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_REDIRECT_FAIL:-0")}" = 1 ] && exit 22`,
@@ -292,12 +344,26 @@ const curlWrapper = [
 	`        tag=${shellExpansion("url##*/")}`,
 	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
 	"        ;;",
-	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
+	`    https://github.com/bastani-inc/atomic/releases/download/*/*|${overrideReleaseBase}/*/*)`,
 	`        name=${shellExpansion("url##*/")}`,
 	`        rest=${shellExpansion("url%/*")}`,
 	`        tag=${shellExpansion("rest##*/")}`,
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_FILE:-")}" = "$name" ] && exit 22`,
-	`        /bin/cp "$ATOMIC_FIXTURE_RELEASES/$tag/$name" "$output"`,
+	`        source=$ATOMIC_FIXTURE_RELEASES/$tag/$name`,
+	'        if [ "$head" = 1 ]; then',
+	`            size=$(wc -c < "$source")`,
+	`            printf 'HTTP/2 200\\r\\ncontent-length: %s\\r\\n\\r\\n' "$((size + 0))" > "${shellExpansion("output:-/dev/stdout")}"`,
+	"            exit 0",
+	"        fi",
+	// The stalled downloader records its own PID and ignores SIGHUP, as a real
+	// terminal never hangs up the orphan of an exited installer; only an explicit
+	// kill from the installer's cleanup can end it.
+	`        if [ "${shellExpansion("ATOMIC_FIXTURE_STALL_FILE:-")}" = "$name" ]; then`,
+	`            printf '%s\\n' "$$" > "$ATOMIC_FIXTURE_STALL_PID"`,
+	"            trap '' HUP",
+	"            exec sleep 60",
+	"        fi",
+	`        /bin/cp "$source" "$output"`,
 	"        ;;",
 	"    *) exit 22 ;;",
 	"esac",
@@ -330,7 +396,7 @@ const wgetWrapper = [
 	"    esac",
 	"    shift",
 	"done",
-	`printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"`,
+	`if [ "$spider" = 1 ]; then printf 'HEAD %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; else printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; fi`,
 	"case $url in",
 	"    https://github.com/bastani-inc/atomic/releases/latest)",
 	'        [ "$spider" = 1 ] || exit 1',
@@ -346,12 +412,23 @@ const wgetWrapper = [
 	`        tag=${shellExpansion("url##*/")}`,
 	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
 	"        ;;",
-	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
+	`    https://github.com/bastani-inc/atomic/releases/download/*/*|${overrideReleaseBase}/*/*)`,
 	`        name=${shellExpansion("url##*/")}`,
 	`        rest=${shellExpansion("url%/*")}`,
 	`        tag=${shellExpansion("rest##*/")}`,
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_FILE:-")}" = "$name" ] && exit 1`,
-	`        /bin/cp "$ATOMIC_FIXTURE_RELEASES/$tag/$name" "$output"`,
+	`        source=$ATOMIC_FIXTURE_RELEASES/$tag/$name`,
+	'        if [ "$spider" = 1 ]; then',
+	`            size=$(wc -c < "$source")`,
+	`            printf '  HTTP/1.1 200 OK\\n  Content-Length: %s\\n' "$((size + 0))" >&2`,
+	"            exit 0",
+	"        fi",
+	`        if [ "${shellExpansion("ATOMIC_FIXTURE_STALL_FILE:-")}" = "$name" ]; then`,
+	`            printf '%s\\n' "$$" > "$ATOMIC_FIXTURE_STALL_PID"`,
+	"            trap '' HUP",
+	"            exec sleep 60",
+	"        fi",
+	`        /bin/cp "$source" "$output"`,
 	"        ;;",
 	"    *) exit 1 ;;",
 	"esac",
@@ -372,7 +449,7 @@ function createFixture(): InstallerFixture {
 	mkdirSync(releasesRoot);
 	writeFileSync(requestLog, "");
 
-	for (const command of ["tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip"]) {
+	for (const command of ["tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip", "wc", "sleep"]) {
 		const source = resolveExecutable(command);
 		symlinkSync(source, join(tools, command));
 	}
@@ -420,6 +497,89 @@ function createFixture(): InstallerFixture {
 	writeExecutable(join(tools, "wget"), wgetWrapper);
 
 	const releases = new Map<string, FixtureRelease>();
+	const prepare = (options: RunOptions): PreparedRun => {
+		const downloader = options.downloader ?? "curl";
+		const runTools = join(workspace, `tools-${downloader}-${Math.random().toString(16).slice(2)}`);
+		mkdirSync(runTools);
+		for (const entry of readdirSync(tools)) {
+			if ((entry === "curl" || entry === "wget") && entry !== downloader) continue;
+			if (entry === "ldd" && options.ldd === false) continue;
+			if (entry === "sysctl" && options.sysctl === false) continue;
+			symlinkSync(realpathSync(join(tools, entry)), join(runTools, entry));
+		}
+		for (const release of releases.values()) {
+			const releaseDir = join(releasesRoot, release.encodedTag);
+			rmSync(releaseDir, { recursive: true, force: true });
+			mkdirSync(releaseDir, { recursive: true });
+			for (const [asset, archive] of release.assets) symlinkSync(archive, join(releaseDir, asset));
+			writeFileSync(join(releaseDir, "SHA256SUMS"), release.checksums);
+		}
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			PATH: [...(options.pathEntries ?? []), runTools].join(delimiter),
+			HOME: home,
+			TMPDIR: tempRoot,
+			ATOMIC_INSTALL_DIR: installRoot,
+			ATOMIC_BIN_DIR: binDir,
+			ATOMIC_VERSION: undefined,
+			ATOMIC_RELEASE_BASE_URL: undefined,
+			GITHUB_TOKEN: undefined,
+			GH_TOKEN: undefined,
+			ATOMIC_FIXTURE_LOG: requestLog,
+			ATOMIC_FIXTURE_RELEASES: releasesRoot,
+			ATOMIC_FIXTURE_REAL_MV: resolveExecutable("mv"),
+			WGETRC: undefined,
+			ATOMIC_FIXTURE_REAL_STAT: resolveExecutable("stat"),
+			ATOMIC_FIXTURE_RESTORE_MARKER: join(runTools, "restore-failed"),
+			ATOMIC_FIXTURE_SIGNAL_MARKER: join(runTools, "signal-sent"),
+			ATOMIC_FIXTURE_STALL_PID: join(runTools, "stalled-download.pid"),
+			ATOMIC_FIXTURE_LATEST_TAG: "2.0.0",
+			ATOMIC_FIXTURE_OS: options.os ?? "Linux",
+			ATOMIC_FIXTURE_ARCH: options.arch ?? "x86_64",
+			ATOMIC_FIXTURE_WGET_KIND: options.wgetKind ?? "gnu",
+			ATOMIC_FIXTURE_ARM64_SYSCTL: options.arm64Sysctl ?? "0",
+			ATOMIC_FIXTURE_LIBC: options.libc ?? "ldd (GNU libc) 2.36",
+			...options.environment,
+		};
+		const installerArguments = [installerPath, ...(options.args ?? [])];
+		const command =
+			options.umask === undefined
+				? ["/bin/sh", ...installerArguments]
+				: ["/bin/sh", "-c", `umask ${options.umask}; exec /bin/sh "$0" "$@"`, ...installerArguments];
+		return { command, env };
+	};
+	// A terminal run looks like an interactive UTF-8 shell unless a test says otherwise.
+	// Keystrokes arrive through a real pipe: macOS script(1) rejects the socket pair
+	// Node uses for a piped stdin, and a shell producer keeps the timing in-process.
+	const prepareTty = (options: RunOptions, keystrokes?: { afterFile: string; keys: string }): PreparedRun => {
+		assert.ok(ttyScript, "terminal runs need script(1)");
+		const prepared = prepare({
+			...options,
+			environment: {
+				TERM: "xterm-256color",
+				LANG: "en_US.UTF-8",
+				LC_ALL: undefined,
+				LC_CTYPE: undefined,
+				NO_COLOR: undefined,
+				CI: undefined,
+				SHELL: "/bin/zsh",
+				...options.environment,
+			},
+		});
+		const terminal = ttyScript.command(prepared.command);
+		if (keystrokes === undefined) return { command: terminal, env: prepared.env };
+		const octal = [...keystrokes.keys].map((key) => `\\${key.codePointAt(0)?.toString(8).padStart(3, "0")}`).join("");
+		const typist = [
+			"waited=0",
+			'while [ ! -s "$0" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done',
+			"sleep 0.25",
+			`printf '${octal}'`,
+		].join("; ");
+		return {
+			command: ["/bin/sh", "-c", `{ ${typist}; } | ${terminal.map(shellQuote).join(" ")}`, keystrokes.afterFile],
+			env: prepared.env,
+		};
+	};
 	const fixture: InstallerFixture = {
 		workspace,
 		home,
@@ -431,57 +591,12 @@ function createFixture(): InstallerFixture {
 		releases,
 		cleanup: () => rmSync(workspace, { recursive: true, force: true }),
 		run: (options = {}) => {
-			const downloader = options.downloader ?? "curl";
-			const runTools = join(workspace, `tools-${downloader}-${Math.random().toString(16).slice(2)}`);
-			mkdirSync(runTools);
-			for (const entry of readdirSync(tools)) {
-				if ((entry === "curl" || entry === "wget") && entry !== downloader) continue;
-				if (entry === "ldd" && options.ldd === false) continue;
-				if (entry === "sysctl" && options.sysctl === false) continue;
-				symlinkSync(realpathSync(join(tools, entry)), join(runTools, entry));
-			}
-			for (const release of releases.values()) {
-				const releaseDir = join(releasesRoot, release.encodedTag);
-				rmSync(releaseDir, { recursive: true, force: true });
-				mkdirSync(releaseDir, { recursive: true });
-				for (const [asset, archive] of release.assets) symlinkSync(archive, join(releaseDir, asset));
-				writeFileSync(join(releaseDir, "SHA256SUMS"), release.checksums);
-			}
-			const env: Record<string, string | undefined> = {
-				...process.env,
-				PATH: [...(options.pathEntries ?? []), runTools].join(delimiter),
-				HOME: home,
-				TMPDIR: tempRoot,
-				ATOMIC_INSTALL_DIR: installRoot,
-				ATOMIC_BIN_DIR: binDir,
-				ATOMIC_VERSION: undefined,
-				GITHUB_TOKEN: undefined,
-				GH_TOKEN: undefined,
-				ATOMIC_FIXTURE_LOG: requestLog,
-				ATOMIC_FIXTURE_RELEASES: releasesRoot,
-				ATOMIC_FIXTURE_REAL_MV: resolveExecutable("mv"),
-				WGETRC: undefined,
-				ATOMIC_FIXTURE_REAL_STAT: resolveExecutable("stat"),
-				ATOMIC_FIXTURE_RESTORE_MARKER: join(runTools, "restore-failed"),
-				ATOMIC_FIXTURE_SIGNAL_MARKER: join(runTools, "signal-sent"),
-				ATOMIC_FIXTURE_LATEST_TAG: "2.0.0",
-				ATOMIC_FIXTURE_OS: options.os ?? "Linux",
-				ATOMIC_FIXTURE_ARCH: options.arch ?? "x86_64",
-				ATOMIC_FIXTURE_WGET_KIND: options.wgetKind ?? "gnu",
-				ATOMIC_FIXTURE_ARM64_SYSCTL: options.arm64Sysctl ?? "0",
-				ATOMIC_FIXTURE_LIBC: options.libc ?? "ldd (GNU libc) 2.36",
-				...options.environment,
-			};
-			const installerArguments = [installerPath, ...(options.args ?? [])];
-			const installerCommand =
-				options.umask === undefined
-					? ["/bin/sh", ...installerArguments]
-					: ["/bin/sh", "-c", `umask ${options.umask}; exec /bin/sh "$0" "$@"`, ...installerArguments];
-			return spawnSyncCollect(installerCommand, {
-				cwd: workspace,
-				env,
-				timeout: 15_000,
-			});
+			const { command, env } = prepare(options);
+			return spawnSyncCollect(command, { cwd: workspace, env, timeout: 15_000 });
+		},
+		runInTty: (options = {}, keystrokes) => {
+			const { command, env } = prepareTty(options, keystrokes);
+			return spawnSyncCollect(command, { cwd: workspace, env, timeout: 15_000 });
 		},
 	};
 	addRelease(fixture, "1.0.0");
@@ -504,14 +619,33 @@ function downloaderArgv(requestLog: string): string {
 		.join("\n");
 }
 
-function pathExportCommand(result: ReturnType<typeof spawnSyncCollect>): string {
-	const marker = "Add Atomic to PATH for this shell:\n  ";
+// Plain mode is the contract for pipes, CI, NO_COLOR and dumb terminals: no
+// escape sequences, no carriage returns, no bar, no banner.
+function assertPlain(text: string): void {
+	assert.doesNotMatch(text, /\u001b/u, text);
+	assert.doesNotMatch(text, /\r/u, text);
+	assert.doesNotMatch(text, /[■･#]{10}|█|To start:|Add that line to/u, text);
+}
+
+// script(1) hands back the terminal's `\r\n` line endings (and macOS echoes the
+// ^D it sends on stdin EOF); normalise those before matching the installer's text.
+function terminalText(result: ReturnType<typeof spawnSyncCollect>): string {
+	return result.stdout
+		.toString()
+		.replaceAll("\r\n", "\n")
+		.replace(/^\^D\u0008\u0008/u, "");
+}
+
+function pathExportCommand(result: ReturnType<typeof spawnSyncCollect>, binDir: string): string {
+	const marker = `Add ${binDir} to PATH for this shell:\n  export PATH=`;
 	const stdout = result.stdout.toString();
 	const markerIndex = stdout.indexOf(marker);
 	assert.ok(markerIndex >= 0, stdout);
-	const commandWithLineFeed = stdout.slice(markerIndex + marker.length);
-	assert.ok(commandWithLineFeed.endsWith("\n"), stdout);
-	return commandWithLineFeed.slice(0, -1);
+	const commandStart = markerIndex + marker.length - "export PATH=".length;
+	const terminator = ':"$PATH"\n';
+	const commandEnd = stdout.indexOf(terminator, commandStart);
+	assert.ok(commandEnd >= 0, stdout);
+	return stdout.slice(commandStart, commandEnd + terminator.length - 1);
 }
 
 function currentVersion(fixture: InstallerFixture): string {
@@ -558,12 +692,320 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 		});
 		assert.equal(installed.exitCode, 0, installed.stderr.toString());
 		assert.equal(installed.stdout.toString().trim(), "2.0.0");
-		assert.equal(pathExportCommand(result), `export PATH='${fixture.binDir}':"$PATH"`);
+
+		// Piped stdout is plain mode: one line per phase, no bar, no banner, full paths.
+		const stdout = result.stdout.toString();
+		assertPlain(stdout);
+		assert.equal(result.stderr.toString(), "");
+		const archiveBytes = statSync(fixture.releases.get("2.0.0")!.assets.get("atomic-linux-x64.tar.gz")!).size;
+		const megabyteTenths = Math.floor((Math.floor(archiveBytes / 1024) * 10) / 1024);
+		const expectedMegabytes = `${Math.floor(megabyteTenths / 10)}.${megabyteTenths % 10}`;
+		assert.equal(
+			stdout,
+			[
+				"Installing atomic version: 2.0.0 (linux-x64)",
+				`Downloading atomic-linux-x64.tar.gz (${expectedMegabytes} MB) ... done`,
+				"Verified SHA256, extracted, and validated the runtime",
+				`Installed to ${join(fixture.binDir, "atomic")}`,
+				`Add ${fixture.binDir} to PATH for this shell:`,
+				`  export PATH='${fixture.binDir}':"$PATH"`,
+				"For more information visit https://docs.bastani.ai/quickstart",
+				"",
+			].join("\n"),
+		);
+		assert.equal(pathExportCommand(result, fixture.binDir), `export PATH='${fixture.binDir}':"$PATH"`);
 		const requests = readFileSync(fixture.requestLog, "utf8");
 		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
 		assert.doesNotMatch(requests, /api\.github\.com/u);
-		assert.match(requests, /atomic-linux-x64\.tar\.gz/u);
-		assert.match(requests, /SHA256SUMS/u);
+		assert.match(
+			requests,
+			/HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/2\.0\.0\/atomic-linux-x64\.tar\.gz\n/u,
+		);
+		assert.match(
+			requests,
+			/GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/2\.0\.0\/atomic-linux-x64\.tar\.gz\n/u,
+		);
+		assert.match(
+			requests,
+			/GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/2\.0\.0\/SHA256SUMS\n/u,
+		);
+		assert.doesNotMatch(requests, /HEAD [^\n]*SHA256SUMS/u, "the SHA256SUMS download stays silent and direct");
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer reports the installed version on reinstall and upgrade, and fish gets fish_add_path", () => {
+	const fixture = createFixture();
+	try {
+		const first = fixture.run({ args: ["--ref", "1.0.0"] });
+		assertSuccess(first);
+		assert.doesNotMatch(first.stdout.toString(), /Installed version|already installed/u);
+
+		const reinstall = fixture.run({ args: ["--ref", "1.0.0"] });
+		assertSuccess(reinstall);
+		assertPlain(reinstall.stdout.toString());
+		assert.match(
+			reinstall.stdout.toString(),
+			/^Installing atomic version: 1\.0\.0 \(linux-x64\)\nVersion 1\.0\.0 already installed\nDownloading /u,
+			"a same-version run reports the installed version and still repairs the install",
+		);
+		assert.equal(currentVersion(fixture), "1.0.0");
+
+		const upgrade = fixture.run({ args: ["--ref", "2.0.0"], environment: { SHELL: "/usr/local/bin/fish" } });
+		assertSuccess(upgrade);
+		assertPlain(upgrade.stdout.toString());
+		assert.match(
+			upgrade.stdout.toString(),
+			/^Installing atomic version: 2\.0\.0 \(linux-x64\)\nInstalled version: 1\.0\.0\nDownloading /u,
+		);
+		assert.equal(currentVersion(fixture), "2.0.0");
+		const fishHint = `Add ${fixture.binDir} to PATH for this shell:\n  fish_add_path '${fixture.binDir}'\n`;
+		assert.ok(upgrade.stdout.toString().includes(fishHint), upgrade.stdout.toString());
+		assert.doesNotMatch(upgrade.stdout.toString(), /export PATH=/u);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer stays plain on a terminal when NO_COLOR, CI, or a dumb TERM asks for it", () => {
+	// These run without a terminal, so they prove the plain-mode knobs never add
+	// escapes on top of the non-TTY default and keep the human-readable lines.
+	for (const environment of [{ NO_COLOR: "" }, { NO_COLOR: "1" }, { CI: "true" }, { TERM: "dumb" }]) {
+		const fixture = createFixture();
+		try {
+			const result = fixture.run({ args: ["--ref", "1.0.0"], environment });
+			assertSuccess(result);
+			assertPlain(result.stdout.toString());
+			assert.match(result.stdout.toString(), /^Installing atomic version: 1\.0\.0 \(linux-x64\)\n/u);
+			assert.match(
+				result.stdout.toString(),
+				/\nDownloading atomic-linux-x64\.tar\.gz \([0-9]+\.[0-9] MB\) \.\.\. done\n/u,
+			);
+			assert.match(result.stdout.toString(), /\nInstalled to [^\n]+\/atomic\n/u);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+unixTest("shell installer keeps plain-mode errors on stderr with the error prefix", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({
+			args: ["--ref", "2.0.0"],
+			environment: { ATOMIC_FIXTURE_FAIL_FILE: "atomic-linux-x64.tar.gz" },
+		});
+		assert.equal(result.exitCode, 1);
+		assertPlain(output(result));
+		assert.equal(result.stderr.toString(), "error: failed to download release asset: atomic-linux-x64.tar.gz\n");
+		assert.match(result.stdout.toString(), /\nDownloading atomic-linux-x64\.tar\.gz \.\.\. \n$/u);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+const bannerFirstLine = "  ██████▙                  ▟██████";
+const accentEscape = "\u001b[38;5;214m";
+
+ttyTest("shell installer draws the progress bar, banner, and start block on a UTF-8 terminal", () => {
+	const fixture = createFixture();
+	try {
+		// Keep the install under HOME so the terminal lines can collapse it to ~.
+		const installRoot = join(fixture.home, ".local", "share", "atomic");
+		const binDir = join(fixture.home, ".local", "bin");
+		const result = fixture.runInTty({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_INSTALL_DIR: installRoot, ATOMIC_BIN_DIR: binDir },
+		});
+		assert.equal(result.exitCode, 0, output(result));
+		const text = terminalText(result);
+		assert.ok(text.includes(accentEscape), text);
+		assert.ok(text.includes("\u001b[?25l") && text.includes("\u001b[?25h"), text);
+		assert.match(text, /■{50}\u001b\[0m 100% {2}[0-9]+\.[0-9] \/ [0-9]+\.[0-9] MB\n\u001b\[\?25h/u);
+		assert.doesNotMatch(text, /[#-]{50}/u);
+		const rendered = text.replaceAll(/[^\n]*\r/gu, "").replaceAll(/\u001b\[[0-9;?]*[A-Za-z]/gu, "");
+		assert.match(rendered, /^Installing atomic version: 1\.0\.0 \(linux-x64\)\n/u);
+		assert.ok(rendered.includes("\nVerified SHA256, extracted, and validated the runtime\n"), rendered);
+		assert.ok(rendered.includes("\nInstalled to ~/.local/bin/atomic\n\n"), rendered);
+		assert.ok(rendered.includes(`\n${bannerFirstLine}\n`), rendered);
+		assert.ok(rendered.includes("            ████████████\n"), rendered);
+		assert.ok(
+			rendered.includes("\nTo start:\n\ncd <project>  # Open directory\natomic        # Run command\n\n"),
+			rendered,
+		);
+		assert.ok(
+			rendered.includes(
+				`Add ~/.local/bin to PATH for this shell:\n  export PATH='${binDir}':"$PATH"\nAdd that line to ~/.zshrc to make it permanent.\n\nFor more information visit https://docs.bastani.ai/quickstart\n`,
+			),
+			rendered,
+		);
+		assert.equal(currentVersion({ ...fixture, installRoot }), "1.0.0");
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+ttyTest("shell installer honours NO_COLOR on a terminal with plain output", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.runInTty({ args: ["--ref", "1.0.0"], environment: { NO_COLOR: "1" } });
+		assert.equal(result.exitCode, 0, output(result));
+		const text = terminalText(result);
+		assertPlain(text);
+		assert.ok(
+			text.includes(
+				`Installing atomic version: 1.0.0 (linux-x64)\nDownloading atomic-linux-x64.tar.gz (${text.match(/\(([0-9]+\.[0-9]) MB\)/u)?.[1]} MB) ... done\nVerified SHA256, extracted, and validated the runtime\nInstalled to ${join(fixture.binDir, "atomic")}\n`,
+			),
+			text,
+		);
+		assert.doesNotMatch(text, /100%|■|･/u);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+ttyTest("shell installer falls back to ASCII bar glyphs and skips the banner outside UTF-8 locales", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.runInTty({
+			args: ["--ref", "1.0.0"],
+			environment: { LANG: "C", SHELL: "/bin/bash" },
+		});
+		assert.equal(result.exitCode, 0, output(result));
+		const text = terminalText(result);
+		assert.ok(text.includes(accentEscape), text);
+		assert.match(text, /#{50}\u001b\[0m 100% {2}/u);
+		assert.doesNotMatch(text, /■|･|█/u);
+		assert.ok(text.includes("\nTo start:\n"), text);
+		assert.ok(text.includes("Add that line to ~/.bashrc to make it permanent."), text);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+ttyTest("shell installer falls back to a spinner when the release size is unknown", () => {
+	const fixture = createFixture();
+	try {
+		// HEAD requests fail exactly like a server that refuses them; the GET still works.
+		const runTools = join(fixture.workspace, "tools-no-head");
+		mkdirSync(runTools);
+		writeExecutable(
+			join(runTools, "curl"),
+			`#!/bin/sh\nfor argument in "$@"; do case $argument in -*I*) exit 22 ;; esac; done\nexec "${join(fixture.tools, "curl")}" "$@"\n`,
+		);
+		const result = fixture.runInTty({ args: ["--ref", "1.0.0"], pathEntries: [runTools] });
+		assert.equal(result.exitCode, 0, output(result));
+		const text = terminalText(result);
+		assert.match(
+			text,
+			/\r\u001b\[38;5;214m[|/\\-]\u001b\[0m \u001b\[0;2mDownloading\u001b\[0m atomic-linux-x64\.tar\.gz {2}[0-9]+\.[0-9] MB/u,
+		);
+		assert.match(text, /\r\u001b\[0;2mDownloaded\u001b\[0m atomic-linux-x64\.tar\.gz [0-9]+\.[0-9] MB\n/u);
+		assert.doesNotMatch(text, /%/u);
+		assert.ok(text.includes(`${accentEscape}${bannerFirstLine}\n`), text);
+		assert.equal(currentVersion(fixture), "1.0.0");
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+// TERM delivery is asynchronous, so a killed downloader may still be reaped a
+// moment after the installer has exited; poll instead of checking once.
+function processGone(pid: number, timeoutMs: number): boolean {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+			throw error;
+		}
+		if (Date.now() >= deadline) return false;
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+	}
+}
+
+ttyTest("Ctrl-C during the download kills the background downloader, restores the cursor, and rolls back", () => {
+	const fixture = createFixture();
+	let downloaderPid = 0;
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const stallPidPath = join(fixture.workspace, "stall.pid");
+		const result = fixture.runInTty(
+			{
+				args: ["--ref", "2.0.0"],
+				environment: {
+					ATOMIC_FIXTURE_STALL_FILE: "atomic-linux-x64.tar.gz",
+					ATOMIC_FIXTURE_STALL_PID: stallPidPath,
+				},
+			},
+			{ afterFile: stallPidPath, keys: "\u0003" },
+		);
+		const text = output(result);
+		assert.ok(existsSync(stallPidPath), "the fixture download never started");
+		downloaderPid = Number(readFileSync(stallPidPath, "utf8").trim());
+		assert.ok(Number.isInteger(downloaderPid) && downloaderPid > 0, text);
+		assert.notEqual(result.exitCode, 0, text);
+		assert.ok(text.includes("\u001b[?25l"), text);
+		const hide = text.lastIndexOf("\u001b[?25l");
+		const show = text.lastIndexOf("\u001b[?25h");
+		assert.ok(show > hide, `the cursor was not restored after Ctrl-C: ${text}`);
+		// The fixture curl/wget itself must die, not just the shell that spawned it.
+		assert.ok(
+			processGone(downloaderPid, 3_000),
+			`the background downloader (pid ${downloaderPid}) outlived the installer`,
+		);
+		assert.doesNotMatch(text, /Verified SHA256|Installed to/u, text);
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.ok(!existsSync(join(fixture.installRoot, "versions", "2.0.0")));
+		assertNoTemporaryState(fixture);
+	} finally {
+		if (downloaderPid > 0) {
+			try {
+				process.kill(downloaderPid, "SIGKILL");
+			} catch {
+				// already gone
+			}
+		}
+		fixture.cleanup();
+	}
+});
+
+unixTest("ATOMIC_RELEASE_BASE_URL redirects only the asset and checksum downloads and keeps verification", () => {
+	const fixture = createFixture();
+	try {
+		const base = `${overrideReleaseBase}/1.0.0`;
+		const result = fixture.run({ args: ["--ref", "1.0.0"], environment: { ATOMIC_RELEASE_BASE_URL: base } });
+		assertSuccess(result);
+		assert.equal(currentVersion(fixture), "1.0.0");
+		const requests = readFileSync(fixture.requestLog, "utf8");
+		assert.match(requests, /GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0\n/u);
+		assert.match(
+			requests,
+			new RegExp(`HEAD ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
+		);
+		assert.match(
+			requests,
+			new RegExp(`GET ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
+		);
+		assert.match(requests, new RegExp(`GET ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/SHA256SUMS\n`, "u"));
+		assert.doesNotMatch(requests, /releases\/download\//u);
+
+		// The override never weakens verification: a bad checksum still refuses the archive.
+		const release = fixture.releases.get("2.0.0") as FixtureRelease;
+		release.checksums = `${"0".repeat(64)}  atomic-linux-x64.tar.gz\n`;
+		const rejected = fixture.run({
+			args: ["--ref", "2.0.0"],
+			environment: { ATOMIC_RELEASE_BASE_URL: `${overrideReleaseBase}/2.0.0` },
+		});
+		assert.notEqual(rejected.exitCode, 0);
+		assert.match(output(rejected), /checksum verification failed for atomic-linux-x64\.tar\.gz/u);
+		assert.equal(currentVersion(fixture), "1.0.0");
 		assertNoTemporaryState(fixture);
 	} finally {
 		fixture.cleanup();
@@ -691,7 +1133,7 @@ unixTest("shell installer resolves relative install and bin roots against one ph
 			realpathSync(join(absoluteBin, "atomic")),
 			realpathSync(join(fixture.installRoot, "current", "atomic")),
 		);
-		assert.equal(pathExportCommand(result), `export PATH='${absoluteBin}':"$PATH"`);
+		assert.equal(pathExportCommand(result, absoluteBin), `export PATH='${absoluteBin}':"$PATH"`);
 
 		const otherDirectory = join(fixture.workspace, "other working directory");
 		mkdirSync(otherDirectory);
@@ -719,7 +1161,7 @@ unixTest("shell installer compares metacharacters in PATH entries literally", ()
 			environment: { ATOMIC_BIN_DIR: relativeBin },
 		});
 		assertSuccess(first);
-		assert.equal(pathExportCommand(first), `export PATH='${absoluteBin}':"$PATH"`);
+		assert.equal(pathExportCommand(first, absoluteBin), `export PATH='${absoluteBin}':"$PATH"`);
 
 		const second = fixture.run({
 			args: ["--ref", "1.0.0"],
@@ -727,7 +1169,7 @@ unixTest("shell installer compares metacharacters in PATH entries literally", ()
 			environment: { ATOMIC_BIN_DIR: relativeBin },
 		});
 		assertSuccess(second);
-		assert.doesNotMatch(second.stdout.toString(), /Add Atomic to PATH|export PATH=/u);
+		assert.doesNotMatch(second.stdout.toString(), /to PATH for this shell|export PATH=/u);
 
 		const otherDirectory = join(fixture.workspace, "path literal other cwd");
 		mkdirSync(otherDirectory);
@@ -747,12 +1189,13 @@ unixTest("shell installer emits executable PATH guidance for every shell-signifi
 	const fixture = createFixture();
 	try {
 		const relativeBin = "quoted $HOME `printf unsafe` 'single' \"double\" \\backslash\nline\n";
+		const absoluteBin = join(realpathSync(fixture.workspace), relativeBin);
 		const result = fixture.run({
 			args: ["--ref", "1.0.0"],
 			environment: { ATOMIC_BIN_DIR: relativeBin },
 		});
 		assertSuccess(result);
-		const exportCommand = pathExportCommand(result);
+		const exportCommand = pathExportCommand(result, absoluteBin);
 		assert.match(exportCommand, /^export PATH='/u);
 		assert.match(exportCommand, /'\\''/u);
 
@@ -782,7 +1225,7 @@ unixTest("shell installer never treats adjacent PATH entries as one colon-contai
 		const stdout = result.stdout.toString();
 		assert.match(stdout, /contains ':' and cannot be represented as one POSIX PATH entry/u);
 		assert.match(stdout, /Choose a colon-free ATOMIC_BIN_DIR/u);
-		assert.doesNotMatch(stdout, /Add Atomic to PATH|export PATH=/u);
+		assert.doesNotMatch(stdout, /to PATH for this shell|export PATH=/u);
 
 		const marker = "Run Atomic directly: ";
 		const directStart = stdout.indexOf(marker);

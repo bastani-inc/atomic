@@ -59,17 +59,112 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.ok(checksumComparison >= 0 && installMutation > checksumComparison);
 	assert.match(source, /New-Item\s+-ItemType\s+Junction/u);
 	assert.match(source, /\[Environment\]::SetEnvironmentVariable\("Path",\s*\$newUserPath,\s*"User"\)/u);
-	assert.match(source, /&\s+\$stagedAtomic\s+"--version"[\s\S]*\$LASTEXITCODE/u);
-	assert.match(source, /&\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand[\s\S]*\$LASTEXITCODE/u);
+	assert.match(source, /&\s+\$stagedAtomic\s+"--version" \| Out-Null[\s\S]*\$LASTEXITCODE/u);
+	assert.match(source, /&\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand \| Out-Null[\s\S]*\$LASTEXITCODE/u);
 
 	assert.match(source, /LOCALAPPDATA[\\/]atomic/u);
 	assert.match(source, /Default bin directory:[^\r\n]*LOCALAPPDATA[\\/]atomic[\\/]bin/u);
-	assert.match(source, /Restart your terminal/u);
+	assert.match(source, /NO_COLOR\s+Disable colour and progress output \(plain mode\)\./u);
+	assert.ok(source.includes('Write-Output "Installed to $shimPath"'));
+	assert.ok(source.includes('Write-Output "Added $binDir to your User PATH; open a new terminal to use atomic."'));
 	const unexpectedShim = source.indexOf("unexpected atomic.cmd directory");
 	const unexpectedPointer = source.indexOf("unexpected atomic-current entry");
 	const apiHeaders = source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }');
 	assert.ok(unexpectedShim >= 0 && unexpectedShim < apiHeaders);
 	assert.ok(unexpectedPointer >= 0 && unexpectedPointer < apiHeaders);
+});
+
+test("Windows installer streams the archive with a progress bar and keeps smoke-check output off the console", () => {
+	const source = installerSource();
+	const bytes = readFileSync(installerPath);
+
+	// Windows PowerShell 5.1 reads a file without a byte-order mark as ANSI, so the script stays
+	// pure ASCII and builds every glyph from code points instead of literal characters.
+	assert.ok(
+		bytes.every((byte) => byte < 0x80),
+		"install.ps1 must stay ASCII-only",
+	);
+	assert.match(source, /\[char\]0x25A0/u);
+	assert.match(source, /\[char\]0xFF65/u);
+	for (const codePoint of ["0x2588", "0x2599", "0x259F", "0x259B", "0x259C"]) {
+		assert.ok(source.includes(`[char]${codePoint}`), `banner glyph ${codePoint} is not built from its code point`);
+	}
+
+	assert.match(source, /\$null -eq \$Host\.UI -or \$null -eq \$Host\.UI\.RawUI/u);
+	assert.match(source, /\$null -ne \$env:NO_COLOR -or \$null -ne \$env:CI/u);
+	assert.match(source, /\[Console\]::IsOutputRedirected/u);
+	assert.match(
+		source,
+		/\$useUnicodeGlyphs = -not \$plainOutput -and -not \[string\]::IsNullOrEmpty\(\$env:WT_SESSION\)/u,
+	);
+
+	const progress = source.slice(
+		source.indexOf("function Invoke-AtomicDownloadWithProgress"),
+		source.indexOf("function Test-AtomicPathContains"),
+	);
+	assert.match(progress, /Add-Type -AssemblyName System\.Net\.Http/u);
+	assert.match(progress, /New-Object System\.Net\.Http\.HttpClient/u);
+	assert.match(
+		progress,
+		/\[System\.Net\.Http\.HttpCompletionOption\]::ResponseHeadersRead\)\.GetAwaiter\(\)\.GetResult\(\)/u,
+	);
+	assert.match(progress, /\$response\.Content\.Headers\.ContentLength/u);
+	assert.match(progress, /New-Object byte\[\] 65536/u);
+	assert.match(progress, /return \$false/u);
+	assert.doesNotMatch(
+		progress,
+		/Authorization|-Headers|GITHUB_TOKEN|GH_TOKEN/u,
+		"the archive stream must never carry a token",
+	);
+	assert.match(source, /\$width = 50/u);
+	assert.match(source, /" \{0,3\}% {2}\{1\} \/ \{2\} MB" -f/u);
+
+	const archiveDownload = source.indexOf(
+		'Invoke-AtomicDownloadWithProgress "$releaseBase/$assetName" $archivePath $assetName',
+	);
+	const fallbackDownload = source.indexOf(
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+		archiveDownload,
+	);
+	const checksumsDownload = source.indexOf(
+		'Invoke-AtomicDownload "$releaseBase/SHA256SUMS" $checksumsPath',
+		fallbackDownload,
+	);
+	assert.ok(archiveDownload >= 0, "the archive is not downloaded with progress");
+	assert.ok(fallbackDownload > archiveDownload, "the archive download has no Invoke-WebRequest fallback");
+	assert.ok(checksumsDownload > fallbackDownload, "SHA256SUMS must stay on the silent download path");
+	assert.match(source.slice(archiveDownload, checksumsDownload), /"Downloading \$assetName \.\.\. "[\s\S]+"done"/u);
+
+	for (const smokeCheck of [
+		'& $stagedAtomic "--version" | Out-Null',
+		'& $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime | Out-Null',
+		'& $postgresExecutable "--version" | Out-Null',
+		"& $env:ComSpec /d /c $shimCommand | Out-Null",
+	]) {
+		assert.ok(source.includes(smokeCheck), `smoke check output is not discarded: ${smokeCheck}`);
+	}
+	assert.match(source, /Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"/u);
+
+	const bannerGate = source.indexOf(
+		"if ($useUnicodeGlyphs) {",
+		source.indexOf('Write-Output "Installed to $shimPath"'),
+	);
+	assert.ok(bannerGate >= 0, "the banner is not gated on Windows Terminal");
+	assert.match(
+		source.slice(bannerGate, source.indexOf("if (-not $plainOutput) {", bannerGate)),
+		/Get-AtomicBannerLines/u,
+	);
+	assert.match(source, /Write-AtomicMuted "For more information visit https:\/\/docs\.bastani\.ai\/quickstart"/u);
+
+	const outputLines = [...source.matchAll(/^\s*Write-Output (.*)$/gmu)].map((match) => match[1]?.trim());
+	assert.deepEqual(outputLines, [
+		"$helpText",
+		'"Installed to $shimPath"',
+		"\"ATOMIC_BIN_DIR contains ';' and cannot be represented as one Windows PATH entry.\"",
+		'"Run Atomic directly: `"$shimPath`""',
+		'"Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH."',
+		'"Added $binDir to your User PATH; open a new terminal to use atomic."',
+	]);
 });
 
 test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before any request", () => {
@@ -291,9 +386,17 @@ test("Windows installer pins the requested ref and refuses an unusable PATH entr
 	);
 	assert.match(source, /cannot be represented as one Windows PATH entry/u);
 	assert.match(source, /Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH\./u);
-	const separatorBranch = source.indexOf("if ($binDirHasPathSeparator) {", source.indexOf('Write-Output "Shim:'));
+	const successOutput = source.indexOf('Write-Output "Installed to $shimPath"');
+	assert.ok(successOutput >= 0, "success output does not start with the installed launcher path");
+	const separatorBranch = source.indexOf("if ($binDirHasPathSeparator) {", successOutput);
 	assert.ok(separatorBranch >= 0, "success output does not branch on the separator case");
-	assert.ok(source.indexOf("Restart your terminal", separatorBranch) > separatorBranch);
+	const pathUpdateBranch = source.indexOf("elseif ($transaction.UserPathChangeIntended) {", separatorBranch);
+	assert.ok(pathUpdateBranch > separatorBranch, "the User PATH line is not gated on an actual PATH change");
+	assert.match(
+		source.slice(pathUpdateBranch, source.indexOf("}", pathUpdateBranch)),
+		/Write-Output "Added \$binDir to your User PATH; open a new terminal to use atomic\."/u,
+	);
+	assert.doesNotMatch(source, /Restart your terminal|installed successfully|Write-Output "Shim:/u);
 });
 
 test("Windows installer uses a successful latest redirect without querying the GitHub API", () => {
@@ -563,9 +666,7 @@ test("Windows installer removes its temporary download directory with bounded ve
 	assert.match(source, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
 	assert.doesNotMatch(source, /Remove-Item -LiteralPath \$tempDir/u, "the suppressed temp deletion is still present");
 
-	const cleanup = source.slice(
-		source.indexOf("finally {", source.indexOf('Write-Output "Atomic $releaseTag installed successfully."')),
-	);
+	const cleanup = source.slice(source.indexOf("finally {", source.indexOf('Write-Output "Installed to $shimPath"')));
 	assert.match(
 		cleanup,
 		/if \(\$null -ne \$tempDir -and \(Test-Path -LiteralPath \$tempDir\)\) \{\r?\n\s+try \{\r?\n\s+Remove-AtomicTemporaryDirectory \$tempDir \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds\r?\n\s+\}\r?\n\s+catch \{\r?\n\s+\$tempCleanupError = \$_/u,
@@ -1390,6 +1491,28 @@ function global:Invoke-WebRequest {
     throw "Unexpected fixture request: $Uri"
 }
 
+# The installer streams the release archive through System.Net.Http.HttpClient, which this
+# fixture cannot intercept. Refusing to load that assembly puts the archive download on the
+# installer's documented fallback, Invoke-AtomicDownload, so every release request still
+# reaches the Invoke-WebRequest fixture above and is recorded in AtomicFixtureRequests.
+$global:AtomicFixtureHttpAssemblyRefusals = 0
+function global:Add-Type {
+    [CmdletBinding()]
+    param(
+        [string]$AssemblyName,
+        [string]$TypeDefinition,
+        [string]$Path,
+        [string]$OutputAssembly,
+        [string]$OutputType
+    )
+
+    if ($AssemblyName -eq "System.Net.Http") {
+        $global:AtomicFixtureHttpAssemblyRefusals++
+        throw "System.Net.Http is unavailable in this fixture scenario."
+    }
+    Microsoft.PowerShell.Utility\Add-Type @PSBoundParameters
+}
+
 $global:AtomicFixturePayloadCopyCount = 0
 $global:AtomicFixtureFailurePoint = $null
 $global:AtomicFixtureRollbackFailurePoint = $null
@@ -1625,7 +1748,7 @@ try {
         $env:ATOMIC_VERSION = "environment-must-not-win"
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "ARM64"
-        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $firstInstallOutput = & $InstallerPath -Ref "1.0.0" | Out-String
 
         $versionOne = Join-Path $installRoot "versions\1.0.0"
         $current = Join-Path $installRoot "current"
@@ -1646,6 +1769,9 @@ try {
         Assert-Fixture ($exitProbe.ExitCode -eq 37) "shim did not preserve atomic.exe exit status"
         Assert-Fixture (Test-ExactPathEntry ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) "User PATH was not persisted"
         Assert-Fixture (Test-ExactPathEntry $env:Path $binDir) "current PATH was not refreshed"
+        Assert-Fixture ($firstInstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "first install did not report the installed launcher path"
+        Assert-Fixture ($firstInstallOutput -match ('(?m)^Added ' + [regex]::Escape($binDir) + ' to your User PATH; open a new terminal to use atomic\.\s*$')) "first install did not report the User PATH update"
+        Assert-Fixture ($global:AtomicFixtureHttpAssemblyRefusals -ge 1) "the archive download did not attempt the HttpClient stream before falling back"
 
         $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })[0]
         Assert-Fixture ($null -ne $firstApiRequest) "explicit -Ref did not use the exact tag endpoint"
@@ -1658,8 +1784,10 @@ try {
         $env:GITHUB_TOKEN = $null
         $env:GH_TOKEN = "gh-token"
         $env:ATOMIC_VERSION = "1.0.0"
-        & $InstallerPath | Out-Null
+        $reinstallOutput = & $InstallerPath | Out-String
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt"))) "same-version reinstall was not clean"
+        Assert-Fixture ($reinstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "same-version reinstall did not report the installed launcher path"
+        Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version reinstall claimed a User PATH update although the entry already existed"
         $fallbackApiRequests = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })
         Assert-Fixture ($fallbackApiRequests[$fallbackApiRequests.Count - 1].Authorization -eq "Bearer gh-token") "GH_TOKEN was not used when GITHUB_TOKEN was unset"
 
@@ -2304,9 +2432,10 @@ try {
         Assert-Fixture (Test-Path -LiteralPath $shim) "semicolon bin directory did not receive the shim"
         Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "a semicolon bin directory was appended to the User PATH"
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "a semicolon bin directory was appended to the current PATH"
+        Assert-Fixture ($installOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "semicolon bin directory did not report the installed launcher path"
         Assert-Fixture ($installOutput -match "cannot be represented as one Windows PATH entry") "semicolon bin directory did not report the PATH limitation"
         Assert-Fixture ($installOutput -match 'Run Atomic directly') "semicolon bin directory did not print direct-run guidance"
-        Assert-Fixture ($installOutput -notmatch 'Restart your terminal') "semicolon bin directory claimed a PATH update"
+        Assert-Fixture ($installOutput -notmatch 'to your User PATH') "semicolon bin directory claimed a PATH update"
         $versionProbe = Invoke-FixtureShim $shim "--version"
         Assert-Fixture ($versionProbe.ExitCode -eq 0 -and $versionProbe.Output -eq "1.0.0") "semicolon bin directory shim is not runnable"
 
@@ -2912,6 +3041,28 @@ test("Windows PowerShell 5.1 tag-grammar fixture rejects unsupported refs before
 	assert.match(fixtureHarness, /an unsupported latest redirect tag still downloaded a release/u);
 	assert.match(fixtureHarness, /an unsupported latest API tag_name still downloaded a release/u);
 	assert.doesNotMatch(fixtureHarness, /Atomic \$tag installed successfully\./u);
+});
+
+test("Windows PowerShell 5.1 fixtures keep the archive download on the recorded Invoke-WebRequest fallback", () => {
+	assert.match(fixtureHarness, /function global:Add-Type \{/u);
+	assert.match(
+		fixtureHarness,
+		/if \(\$AssemblyName -eq "System\.Net\.Http"\) \{[\s\S]+throw "System\.Net\.Http is unavailable in this fixture scenario\."/u,
+	);
+	assert.match(fixtureHarness, /Microsoft\.PowerShell\.Utility\\Add-Type @PSBoundParameters/u);
+	assert.ok(
+		fixtureHarness.indexOf("function global:Add-Type {") > fixtureHarness.indexOf("-OutputType ConsoleApplication"),
+		"the fixture executable must be compiled before Add-Type is shadowed",
+	);
+	assert.match(fixtureHarness, /the archive download did not attempt the HttpClient stream before falling back/u);
+	assert.match(fixtureHarness, /first install did not report the installed launcher path/u);
+	assert.match(fixtureHarness, /first install did not report the User PATH update/u);
+	assert.match(
+		fixtureHarness,
+		/same-version reinstall claimed a User PATH update although the entry already existed/u,
+	);
+	assert.match(fixtureHarness, /semicolon bin directory did not report the installed launcher path/u);
+	assert.match(fixtureHarness, /\$installOutput -notmatch 'to your User PATH'/u);
 });
 
 test("Windows PowerShell 5.1 fixtures cover missing .CMD, pointer conflicts, and preserved preflight errors", () => {

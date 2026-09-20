@@ -57,9 +57,13 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
 
-On macOS or Linux, the default paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer prints a paste-safe `export PATH=...` command if needed.
+In an interactive terminal it prints the release and platform it is installing, draws a live progress bar with the percentage and megabytes downloaded, confirms each phase on one line, shows the Atomic logo (UTF-8 terminals on macOS/Linux, Windows Terminal on Windows), and ends with a `To start:` block. PATH guidance appears only when the launcher directory is not already on your `PATH`. When an install already exists it prints the installed version, or `Version <tag> already installed`, and still repairs that version in place.
 
-On Windows, the defaults are `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer updates the User PATH and current process, then asks you to restart the terminal.
+Set `NO_COLOR=1` for plain text instead: no colours, no progress bar, and no logo, with `Downloading <archive> (<size> MB) ... done` in place of the bar. The installer also switches to plain output on its own when standard output is not a terminal, when `CI` is set, or (on macOS/Linux) when `TERM` is `dumb` or unset. Plain mode changes only the presentation; verification, error messages, and exit codes stay the same.
+
+On macOS or Linux, the default paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The installer never edits your shell configuration; when `~/.local/bin` is not on your `PATH` it prints a paste-safe `export PATH=...` command (or `fish_add_path` for fish) and names the startup file to add it to.
+
+On Windows, the defaults are `%LOCALAPPDATA%\atomic` for payloads and `%LOCALAPPDATA%\atomic\bin\atomic.cmd` for the launcher. The installer prints `Installed to <path>`, and when it adds the bin directory to your User PATH it says so and asks you to open a new terminal.
 
 The installer accepts these environment variables:
 

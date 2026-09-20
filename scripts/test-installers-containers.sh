@@ -54,10 +54,12 @@ done
 cat > "$workspace/bin/wget" <<'WGET'
 #!/bin/sh
 output=
+spider=0
 url=
 while [ "$#" -gt 0 ]; do
     case $1 in
         -O) shift; output=$1 ;;
+        --spider) spider=1 ;;
         -*) ;;
         *) url=$1 ;;
     esac
@@ -69,6 +71,13 @@ case $url in
         ;;
     https://github.com/bastani-inc/atomic/releases/download/1.0.0/*)
         file=${url##*/}
+        # `wget -S --spider` is the installer's size probe; answer like a server would.
+        # Alpine's restricted PATH below has no wc, so name it (busybox links it under /usr/bin).
+        if [ "$spider" = 1 ]; then
+            size=$(/usr/bin/wc -c < "/fixture/releases/1.0.0/$file")
+            printf '  HTTP/1.1 200 OK\n  Content-Length: %s\n' "$((size + 0))" >&2
+            exit 0
+        fi
         /bin/cp "/fixture/releases/1.0.0/$file" "$output"
         ;;
     *)

@@ -30,6 +30,7 @@ Environment:
   ATOMIC_BIN_DIR      Directory containing the atomic.cmd shim.
   GITHUB_TOKEN        Optional GitHub API token (preferred over GH_TOKEN).
   GH_TOKEN            Optional GitHub API token.
+  NO_COLOR            Disable colour and progress output (plain mode).
 
 Default install directory: $env:LOCALAPPDATA\atomic
 Default bin directory: $env:LOCALAPPDATA\atomic\bin (the install directory's bin subdirectory)
@@ -38,6 +39,133 @@ Default bin directory: $env:LOCALAPPDATA\atomic\bin (the install directory's bin
 if ($Help) {
     Write-Output $helpText
     return
+}
+
+# Plain mode drops colour, the progress bar, and the logo. It is used when the host has no
+# console, NO_COLOR or CI is set, or standard output is redirected.
+$plainOutput = $false
+try {
+    if ($null -eq $Host.UI -or $null -eq $Host.UI.RawUI) {
+        $plainOutput = $true
+    }
+}
+catch {
+    $plainOutput = $true
+}
+if ($null -ne $env:NO_COLOR -or $null -ne $env:CI) {
+    $plainOutput = $true
+}
+try {
+    if ([Console]::IsOutputRedirected) {
+        $plainOutput = $true
+    }
+}
+catch {
+    $plainOutput = $true
+}
+# Windows Terminal renders UTF-8 reliably; legacy conhost code pages do not, so the bar and
+# the logo use Unicode glyphs only under WT_SESSION.
+$useUnicodeGlyphs = -not $plainOutput -and -not [string]::IsNullOrEmpty($env:WT_SESSION)
+$progressFilledGlyph = "#"
+$progressEmptyGlyph = "-"
+if ($useUnicodeGlyphs) {
+    $progressFilledGlyph = [string][char]0x25A0
+    $progressEmptyGlyph = [string][char]0xFF65
+}
+
+function Write-AtomicMuted {
+    param(
+        [string]$Text,
+        [switch]$NoNewline
+    )
+
+    if ($plainOutput) {
+        Write-Host $Text -NoNewline:$NoNewline
+    }
+    else {
+        Write-Host $Text -ForegroundColor DarkGray -NoNewline:$NoNewline
+    }
+}
+
+function Write-AtomicLabeled {
+    param(
+        [string]$Label,
+        [string]$Value,
+        [string]$Suffix
+    )
+
+    if ($plainOutput) {
+        Write-Host ($Label + $Value + $Suffix)
+        return
+    }
+    Write-Host $Label -ForegroundColor DarkGray -NoNewline
+    Write-Host $Value -NoNewline
+    Write-Host $Suffix -ForegroundColor DarkGray
+}
+
+function Get-AtomicBannerLines {
+    # ATOMIC_FORALL_BANNER_LINES from packages/coding-agent/src/modes/interactive/components/atomic-banner.ts.
+    # This file stays ASCII so Windows PowerShell 5.1 reads it without a byte-order mark, so the
+    # glyphs are placeholders here: # is U+2588, L is U+2599, R is U+259F, l is U+259B, r is U+259C.
+    $template = @(
+        "  ######L                  R######  ",
+        "   ######L                R######   ",
+        "    ######L              R######    ",
+        "     ######L            R######     ",
+        "      ########################      ",
+        "       ######l        r######       ",
+        "        ######l      r######        ",
+        "         ######l    r######         ",
+        "          ######l  r######          ",
+        "            ############            "
+    )
+    $lines = @()
+    foreach ($row in $template) {
+        $lines += $row.Replace("#", [string][char]0x2588).Replace("L", [string][char]0x2599).Replace("R", [string][char]0x259F).Replace("l", [string][char]0x259B).Replace("r", [string][char]0x259C)
+    }
+    return ,$lines
+}
+
+function Format-AtomicMegabytes {
+    param([long]$Bytes)
+
+    return ([double]$Bytes / 1048576).ToString("0.0", [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Get-AtomicErrorDetail {
+    param($ErrorRecord)
+
+    $exception = $ErrorRecord.Exception
+    if ($null -eq $exception) {
+        return [string]$ErrorRecord
+    }
+    while ($null -ne $exception.InnerException) {
+        $exception = $exception.InnerException
+    }
+    return $exception.Message
+}
+
+function Get-AtomicInstalledVersion {
+    param([string]$LauncherPath)
+
+    if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $ErrorActionPreference = "Continue"
+        $versionLines = @(& $LauncherPath "--version" 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $versionLines.Count -eq 0) {
+            return $null
+        }
+        $version = ([string]$versionLines[0]).Trim()
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            return $null
+        }
+        return $version
+    }
+    catch {
+        return $null
+    }
 }
 
 function Get-AtomicFileSha256 {
@@ -181,6 +309,141 @@ function Invoke-AtomicDownload {
     catch {
         throw "Failed to download ${Uri}: $_"
     }
+}
+
+function Write-AtomicProgressLine {
+    param(
+        [long]$Received,
+        [long]$Total,
+        [int]$SpinnerFrame,
+        [string]$AssetName,
+        [int]$PreviousLength
+    )
+
+    if ($Total -gt 0) {
+        $completed = $Received
+        if ($completed -gt $Total) {
+            $completed = $Total
+        }
+        $width = 50
+        $filledCount = [int][Math]::Floor([double]$completed * $width / $Total)
+        $percent = [int][Math]::Floor([double]$completed * 100 / $Total)
+        $accent = ($progressFilledGlyph * $filledCount) + ($progressEmptyGlyph * ($width - $filledCount))
+        $text = " {0,3}%  {1} / {2} MB" -f $percent, (Format-AtomicMegabytes $Received), (Format-AtomicMegabytes $Total)
+    }
+    else {
+        $accent = @("|", "/", "-", "\")[$SpinnerFrame % 4]
+        $text = " Downloading $AssetName  " + (Format-AtomicMegabytes $Received) + " MB"
+    }
+
+    $length = $accent.Length + $text.Length
+    $padding = ""
+    if ($length -lt $PreviousLength) {
+        $padding = " " * ($PreviousLength - $length)
+    }
+    Write-Host ("`r" + $accent) -ForegroundColor DarkYellow -NoNewline
+    Write-Host ($text + $padding) -NoNewline
+    return $length
+}
+
+# Streams the release archive through HttpClient so the download can be drawn as it arrives.
+# Returns $false, without touching the destination, when System.Net.Http cannot be loaded so
+# the caller can fall back to Invoke-AtomicDownload. No Authorization header is ever attached.
+function Invoke-AtomicDownloadWithProgress {
+    param(
+        [string]$Uri,
+        [string]$Destination,
+        [string]$AssetName
+    )
+
+    $client = $null
+    try {
+        Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
+    }
+    catch {
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
+        return $false
+    }
+
+    $response = $null
+    $source = $null
+    $target = $null
+    $lineOpen = $false
+    try {
+        $response = $client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+        $totalBytes = [long]-1
+        $contentLength = $response.Content.Headers.ContentLength
+        if ($null -ne $contentLength) {
+            $totalBytes = [long]$contentLength
+        }
+        $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+
+        if ($plainOutput) {
+            if ($totalBytes -gt 0) {
+                Write-AtomicMuted -NoNewline ("Downloading $AssetName (" + (Format-AtomicMegabytes $totalBytes) + " MB) ... ")
+            }
+            else {
+                Write-AtomicMuted -NoNewline "Downloading $AssetName ... "
+            }
+            $lineOpen = $true
+        }
+
+        $buffer = New-Object byte[] 65536
+        $received = [long]0
+        $spinnerFrame = 0
+        $lineLength = 0
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $target = [IO.File]::Create($Destination)
+        while ($true) {
+            $read = $source.Read($buffer, 0, $buffer.Length)
+            if ($read -le 0) {
+                break
+            }
+            $target.Write($buffer, 0, $read)
+            $received += $read
+            if (-not $plainOutput -and $stopwatch.ElapsedMilliseconds -ge 100) {
+                $lineLength = Write-AtomicProgressLine $received $totalBytes $spinnerFrame $AssetName $lineLength
+                $lineOpen = $true
+                $spinnerFrame++
+                $stopwatch.Restart()
+            }
+        }
+        $target.Dispose()
+        $target = $null
+
+        if ($plainOutput) {
+            Write-AtomicMuted "done"
+        }
+        else {
+            $null = Write-AtomicProgressLine $received $totalBytes $spinnerFrame $AssetName $lineLength
+            Write-Host ""
+        }
+        $lineOpen = $false
+    }
+    catch {
+        throw "Failed to download ${Uri}: $(Get-AtomicErrorDetail $_)"
+    }
+    finally {
+        if ($lineOpen) {
+            Write-Host ""
+        }
+        if ($null -ne $target) {
+            $target.Dispose()
+        }
+        if ($null -ne $source) {
+            $source.Dispose()
+        }
+        if ($null -ne $response) {
+            $response.Dispose()
+        }
+        $client.Dispose()
+    }
+    return $true
 }
 
 function Test-AtomicPathContains {
@@ -818,6 +1081,19 @@ if (-not (Test-AtomicReleaseTag $releaseTag)) {
 }
 $encodedReleaseTag = [Uri]::EscapeDataString($releaseTag)
 $releaseBase = "https://github.com/bastani-inc/atomic/releases/download/$encodedReleaseTag"
+
+$platformLabel = ($assetName -replace '^atomic-', '') -replace '\.zip$', ''
+Write-AtomicLabeled "Installing atomic version: " $releaseTag " ($platformLabel)"
+$installedVersion = Get-AtomicInstalledVersion (Join-Path $installRoot "current\atomic.exe")
+if (-not [string]::IsNullOrWhiteSpace($installedVersion)) {
+    if ($installedVersion -ceq $releaseTag) {
+        Write-AtomicLabeled "Version " $releaseTag " already installed"
+    }
+    else {
+        Write-AtomicMuted "Installed version: $installedVersion"
+    }
+}
+
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) ("atomic-install-" + [Guid]::NewGuid().ToString("N"))
 $archivePath = Join-Path $tempDir $assetName
 $checksumsPath = Join-Path $tempDir "SHA256SUMS"
@@ -825,7 +1101,17 @@ $payloadPath = Join-Path $tempDir "payload"
 
 try {
     New-Item -ItemType Directory -Path $tempDir | Out-Null
-    Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath
+    if (-not (Invoke-AtomicDownloadWithProgress "$releaseBase/$assetName" $archivePath $assetName)) {
+        Write-AtomicMuted -NoNewline "Downloading $assetName ... "
+        try {
+            Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath
+        }
+        catch {
+            Write-Host ""
+            throw
+        }
+        Write-AtomicMuted "done"
+    }
     Invoke-AtomicDownload "$releaseBase/SHA256SUMS" $checksumsPath
 
     $checksumAssetRows = @()
@@ -856,14 +1142,14 @@ try {
         throw "Release archive $assetName does not contain atomic.exe at its root."
     }
 
-    & $stagedAtomic "--version"
+    & $stagedAtomic "--version" | Out-Null
     $stagedExitCode = $LASTEXITCODE
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
 
     $postgresRuntime = Join-Path $payloadPath "node_modules\@bastani\atomic-natives\postgres-runtime"
-    & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime
+    & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Incomplete PostgreSQL runtime: payload validation failed; installation was not promoted. Download a repaired release."
     }
@@ -874,11 +1160,12 @@ try {
         if (-not (Test-Path -LiteralPath $postgresExecutable -PathType Leaf)) {
             throw "Incomplete PostgreSQL runtime: missing $postgresExecutable; installation was not promoted. Download a repaired release."
         }
-        & $postgresExecutable "--version"
+        & $postgresExecutable "--version" | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Incomplete PostgreSQL runtime: $postgresCommand --version failed; installation was not promoted. Download a repaired release."
         }
     }
+    Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"
 
     $versionsDir = Join-Path $installRoot "versions"
     $versionDirectoryName = [Uri]::EscapeDataString($releaseTag)
@@ -980,7 +1267,7 @@ try {
         }
 
         $shimCommand = '"' + $shimPath + '" --version'
-        & $env:ComSpec /d /c $shimCommand
+        & $env:ComSpec /d /c $shimCommand | Out-Null
         $finalExitCode = $LASTEXITCODE
         if ($finalExitCode -ne 0) {
             throw "Installed atomic.cmd --version failed with exit code $finalExitCode."
@@ -997,16 +1284,35 @@ try {
         throw $commitError
     }
 
-    Write-Output "Atomic $releaseTag installed successfully."
-    Write-Output "Shim: $shimPath"
+    Write-Output "Installed to $shimPath"
+    if ($useUnicodeGlyphs) {
+        Write-Host ""
+        foreach ($bannerLine in (Get-AtomicBannerLines)) {
+            Write-Host $bannerLine
+        }
+    }
+    if (-not $plainOutput) {
+        Write-Host ""
+        Write-Host "To start:"
+        Write-Host ""
+        Write-Host "cd <project>" -NoNewline
+        Write-AtomicMuted "  # Open directory"
+        Write-Host "atomic" -NoNewline
+        Write-AtomicMuted "        # Run command"
+        Write-Host ""
+    }
     if ($binDirHasPathSeparator) {
         Write-Output "ATOMIC_BIN_DIR contains ';' and cannot be represented as one Windows PATH entry."
         Write-Output "Run Atomic directly: `"$shimPath`""
         Write-Output "Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH."
     }
-    else {
-        Write-Output "Restart your terminal so other processes pick up the updated User PATH."
+    elseif ($transaction.UserPathChangeIntended) {
+        Write-Output "Added $binDir to your User PATH; open a new terminal to use atomic."
     }
+    if (-not $plainOutput -and ($binDirHasPathSeparator -or $transaction.UserPathChangeIntended)) {
+        Write-Host ""
+    }
+    Write-AtomicMuted "For more information visit https://docs.bastani.ai/quickstart"
 }
 catch {
     $primaryError = $_
