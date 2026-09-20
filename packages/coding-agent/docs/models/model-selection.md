@@ -38,6 +38,7 @@ Use these starting defaults unless the user requests a level. Higher effort can 
 | Coding, implementation, routine fixes | `low` or `medium` | Validate with tools and review instead of spending maximum reasoning on every edit. |
 | Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | `high` or `xhigh` | Spend reasoning where missing a defect is costly. |
 | Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | `high` | Resolve ambiguity before downstream work depends on it. |
+| Orchestration, delegation, and multi-stage coordination | `medium` or `high` | Judge scope, sequence work, and integrate results without re-deriving what delegated stages already verified. |
 | User-impact review and final reporting | `medium` | Preserve evidence and communicate clearly without unnecessary reasoning. |
 | Deterministic checks | No model call | Run tests, typechecks, probes, and scripts directly. |
 
