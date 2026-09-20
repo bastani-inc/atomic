@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.20-alpha.4] - 2026-09-20
+
 ### Added
 
 - Intercom session targets now accept a unique 8-character hexadecimal UUID prefix within the sender's authorized group scope; collisions report every matching full UUID instead of selecting a session by ordering ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).

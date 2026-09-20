@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.20-alpha.4] - 2026-09-20
+
 ### Breaking Changes
 
 - Provider implementations and direct API modules now consume `TranscriptContext`; use `normalizeContext()` at direct-call boundaries and replay helpers to read prompt/tool state. Durable tool arguments and results use JSON-value types.

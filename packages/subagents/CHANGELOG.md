@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.4] - 2026-09-20
+
 ### Added
 
 - Added opt-in `model: "auto"` for single tasks, parallel tasks and agent defaults. One bounded routing decision uses the current available model/effort pairs and shipped evaluation guidance, with the shared `routerModel` setting selecting routing inference. Invalid or stale decisions stop before child execution, and routing selection remains distinct from execution fallback metadata ([#3090](https://github.com/bastani-inc/atomic/issues/3090)).

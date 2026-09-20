@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.4] - 2026-09-20
+
 ### Breaking Changes
 
 - Provider implementations now receive transcript-only contexts. Read instructions and tools with `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)`. Extension prompt options are mutable; return a forced system prompt only for an unrecorded, complete per-run replacement.

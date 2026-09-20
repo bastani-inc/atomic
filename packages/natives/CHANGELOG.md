@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.4] - 2026-09-20
+
 ### Fixed
 
 - Supervised commands no longer fail when retained output files collide after process IDs are reused; other output-file creation failures now include the operating-system error ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).

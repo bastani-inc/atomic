@@ -6,9 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Changed
-
-- Workflow run displays show only stage execution duration, without redundant startup timing rows. Startup diagnostics remain available through the workflow tool's `stage` and `stages` actions.
+## [0.9.20-alpha.4] - 2026-09-20
 
 ### Breaking Changes
 
@@ -33,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Automatic stage model selection ranks up to three distinct eligible models, trying them before remaining configured fallbacks. Durable checkpoints retain the ordered candidates and their efforts without rerouting on resume.
 - Workflow model-pinning guidance now treats `evals.md` as factual per-evaluation records and leaves unmatching catalogs unpinned instead of describing benchmark rows as recommendations.
 - Automatic stage model selection now receives `evals.md` as markdown tables of dated benchmark records.
+- Workflow run displays show only stage execution duration, without redundant startup timing rows. Startup diagnostics remain available through the workflow tool's `stage` and `stages` actions.
 
 ### Fixed
 
