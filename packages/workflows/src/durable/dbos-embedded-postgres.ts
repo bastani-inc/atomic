@@ -973,30 +973,9 @@ function acquireSetupLock(
 	const abandonedOwnerTokens = new Set<string>();
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const token = `${process.pid}-${crypto.randomUUID()}`;
-		const markerPath = join(lockDir, `.owner-${token}`);
-		try {
-			mkdirSync(lockDir);
-			try {
-				writeFileSync(
-					markerPath,
-					serializeLockOwner({ token, pid: process.pid, heartbeatMonotonicMs: now.monotonicMs }),
-					{
-						flag: "wx",
-						mode: 0o600,
-					},
-				);
-				return { lockDir, markerPath, token, ownerPid: process.pid, abandonedOwnerTokens };
-			} catch (error) {
-				try {
-					rmdirSync(lockDir);
-				} catch {
-					// Unexpected content means ownership was never established.
-				}
-				throw error;
-			}
-		} catch (error) {
-			const code = error instanceof Error && "code" in error ? error.code : undefined;
-			if (code !== "EEXIST") throw error;
+		if (createSetupLockDirectory(lockDir)) {
+			const lease = claimCreatedSetupLock(lockDir, token, now, abandonedOwnerTokens);
+			if (lease !== undefined) return lease;
 		}
 
 		const observation = observeSetupLock(lockDir);
@@ -1006,6 +985,54 @@ function acquireSetupLock(
 		for (const abandonedToken of abandoned) abandonedOwnerTokens.add(abandonedToken);
 	}
 	return undefined;
+}
+
+function createSetupLockDirectory(lockDir: string): boolean {
+	try {
+		mkdirSync(lockDir);
+		return true;
+	} catch (error) {
+		if (errorCode(error) === "EEXIST") return false;
+		throw error;
+	}
+}
+
+/**
+ * Write the owner marker into a directory this process just created. Until the
+ * marker lands the directory is indistinguishable from an abandoned empty
+ * lock, so a contender may displace it once it ages past the stale threshold;
+ * that shows up here as `ENOENT` and is a lost race rather than a failure.
+ */
+function claimCreatedSetupLock(
+	lockDir: string,
+	token: string,
+	now: HostLeaseTime,
+	abandonedOwnerTokens: ReadonlySet<string>,
+): SetupLockLease | undefined {
+	const markerPath = join(lockDir, `.owner-${token}`);
+	try {
+		writeFileSync(
+			markerPath,
+			serializeLockOwner({ token, pid: process.pid, heartbeatMonotonicMs: now.monotonicMs }),
+			{
+				flag: "wx",
+				mode: 0o600,
+			},
+		);
+		return { lockDir, markerPath, token, ownerPid: process.pid, abandonedOwnerTokens };
+	} catch (error) {
+		try {
+			rmdirSync(lockDir);
+		} catch {
+			// Unexpected content means ownership was never established.
+		}
+		if (errorCode(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+function errorCode(error: unknown): string | undefined {
+	return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
 function refreshSetupLockLease(
 	lease: SetupLockLease,
@@ -1167,10 +1194,23 @@ function setupLockIsStale(
 			return false;
 		}
 	}
-	if (!observation.hasUnexpectedState) return observation.owners.length > 0;
-	// Finite migration handling for malformed/legacy locks. A future mtime is
-	// rollback evidence rather than a lease that can stay fresh indefinitely.
-	return now.wallTimeMs < observation.latestMtimeMs || now.wallTimeMs - observation.latestMtimeMs > staleMs;
+	if (observation.hasUnexpectedState) {
+		// Finite migration handling for malformed/legacy locks. A future mtime is
+		// rollback evidence rather than a lease that can stay fresh indefinitely.
+		return now.wallTimeMs < observation.latestMtimeMs || now.wallTimeMs - observation.latestMtimeMs > staleMs;
+	}
+	if (observation.owners.length > 0) return true;
+	return emptySetupLockIsAbandoned(observation, now, staleMs);
+}
+
+/**
+ * An owner-less directory is either a contender between `mkdir` and its marker
+ * write or an abandoned legacy/crash remnant. Only age tells them apart, so a
+ * future mtime fails closed: it cannot prove the directory old, and treating it
+ * as stale would displace a live contender mid-acquisition.
+ */
+function emptySetupLockIsAbandoned(observation: LockObservation, now: HostLeaseTime, staleMs: number): boolean {
+	return Number.isFinite(observation.latestMtimeMs) && now.wallTimeMs - observation.latestMtimeMs > staleMs;
 }
 function serializeLockOwner(owner: LockOwnerRecord): string {
 	const serialized = JSON.stringify(owner);

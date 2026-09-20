@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow authoring guidance now describes stages in one invocation as peers: a live stage can `intercom list` its siblings and `send`/`ask` them directly, queue `send` to a known pending sibling, and `ask` a completed sibling that retains a valid conversation, with prompts expected to name the peers, bound the exchange, and keep each stage's structured result its own.
 
+### Fixed
+
+- An abandoned, owner-less embedded Postgres setup-lock directory (`~/.atomic/postgres/v<major>.setup-lock`, for example a legacy empty-directory lock or a crash remnant) now expires once it is older than the stale threshold, so Atomic recovers embedded provisioning instead of waiting ~30 s for a nonexistent owner and falling back to the non-durable in-memory backend. A freshly created empty directory, a future-dated one, and a live heartbeat owner remain protected ([#3135](https://github.com/bastani-inc/atomic/issues/3135)).
+
 ### Removed
 
 - The bundled Impeccable skill no longer ships its Node `scripts/*.mjs` helpers, `scripts/detector/`, `scripts/live/`, `scripts/lib/`, or the Codex-only `agents/` definitions; upstream 4.3.1 moved that logic into the engine binary and the `.pi` distribution carries no Codex agent files.

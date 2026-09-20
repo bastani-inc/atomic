@@ -982,6 +982,133 @@ test("unexpected lock entries are recovered only after their observed state is s
 	}
 });
 
+test("an abandoned empty setup-lock directory is recovered once it ages past the stale threshold (#3135)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-empty-aged-"));
+	const lockDir = join(root, "setup-lock");
+	const now = Date.now();
+	try {
+		mkdirSync(lockDir);
+		const abandonedAt = (now - TEST_SETUP_LOCK_STALE_MS * 2) / 1000;
+		utimesSync(lockDir, abandonedAt, abandonedAt);
+		let waits = 0;
+		let abandonedTokens: ReadonlySet<string> | undefined;
+		await embeddedPostgresTestHooks.withSetupLock(
+			lockDir,
+			async (setup) => {
+				abandonedTokens = setup.abandonedRuntimeStageOwnerTokens;
+				assert.equal(
+					readdirSync(lockDir).filter((entry) => entry.startsWith(".owner-")).length,
+					1,
+					"the recovering contender holds its own owner marker",
+				);
+			},
+			{
+				now: () => now,
+				staleMs: TEST_SETUP_LOCK_STALE_MS,
+				attempts: 1,
+				wait: async () => {
+					waits += 1;
+				},
+				scheduleHeartbeat: () => () => {},
+			},
+		);
+		assert.ok(abandonedTokens, "the callback entered after recovering the empty lock");
+		assert.equal(abandonedTokens.size, 0, "an owner-less remnant proves no stage ownership");
+		assert.equal(waits, 0);
+		assert.equal(existsSync(lockDir), false, "the recovered lock is released like any other");
+		assert.deepEqual(readdirSync(root), [], "no displaced stale directory is left behind");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a fresh empty setup-lock directory still excludes contenders during the mkdir-to-marker window", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-empty-fresh-"));
+	const lockDir = join(root, "setup-lock");
+	const now = Date.now();
+	try {
+		mkdirSync(lockDir);
+		utimesSync(lockDir, now / 1000, now / 1000);
+		const before = statSync(lockDir);
+		await assert.rejects(
+			embeddedPostgresTestHooks.withSetupLock(lockDir, async () => {}, {
+				now: () => now,
+				staleMs: TEST_SETUP_LOCK_STALE_MS,
+				attempts: 2,
+				wait: async () => {},
+			}),
+			/Timed out waiting for another Atomic process/,
+		);
+		const after = statSync(lockDir);
+		assert.equal(after.ino, before.ino, "the in-flight acquirer's directory is not displaced");
+		assert.deepEqual(readdirSync(lockDir), []);
+		assert.deepEqual(readdirSync(root), ["setup-lock"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("an empty setup-lock directory with a future mtime fails closed rather than counting as abandoned", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-empty-future-"));
+	const lockDir = join(root, "setup-lock");
+	const now = Date.now();
+	try {
+		mkdirSync(lockDir);
+		const futureSeconds = (now + TEST_SETUP_LOCK_STALE_MS * 2) / 1000;
+		utimesSync(lockDir, futureSeconds, futureSeconds);
+		await assert.rejects(
+			embeddedPostgresTestHooks.withSetupLock(lockDir, async () => {}, {
+				now: () => now,
+				staleMs: TEST_SETUP_LOCK_STALE_MS,
+				attempts: 1,
+				wait: async () => {},
+			}),
+			/Timed out waiting for another Atomic process/,
+		);
+		assert.equal(existsSync(lockDir), true);
+		assert.deepEqual(readdirSync(lockDir), []);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a live heartbeat owner is not displaced by aged filesystem mtimes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-live-aged-mtime-"));
+	const lockDir = join(root, "setup-lock");
+	const clock = { monotonicMs: 1_000, wallTimeMs: Date.now() };
+	let release!: () => void;
+	const blocker = new Promise<void>((resolve) => (release = resolve));
+	try {
+		const owner = embeddedPostgresTestHooks.withSetupLock(lockDir, () => blocker, {
+			clock: () => clock,
+			scheduleHeartbeat: () => () => {},
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		const aged = (clock.wallTimeMs - TEST_SETUP_LOCK_STALE_MS * 2) / 1000;
+		utimesSync(lockDir, aged, aged);
+		for (const entry of readdirSync(lockDir)) utimesSync(join(lockDir, entry), aged, aged);
+
+		await assert.rejects(
+			embeddedPostgresTestHooks.withSetupLock(lockDir, async () => {}, {
+				clock: () => clock,
+				staleMs: TEST_SETUP_LOCK_STALE_MS,
+				attempts: 1,
+				wait: async () => {},
+				isProcessAlive: () => true,
+			}),
+			/Timed out waiting for another Atomic process/,
+		);
+		assert.equal(readdirSync(lockDir).filter((entry) => entry.startsWith(".owner-")).length, 1);
+
+		release();
+		await owner;
+		assert.equal(existsSync(lockDir), false);
+	} finally {
+		release();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a takeover cleans only stages bound to a displaced owner proven dead", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-stage-cleanup-"));
 	const runtimeDir = join(root, "pg-runtime");
