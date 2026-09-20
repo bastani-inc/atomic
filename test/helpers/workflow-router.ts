@@ -9,7 +9,6 @@ export function workflowRouterState(budget?: WorkflowBudget) {
 		task: "Implement the approved change and validate it.",
 		conversation: [{ role: "user", text: "Implement only the approved change; do not publish." }],
 		constraints: ["Do not publish or widen scope."],
-		executionPreference: "unspecified",
 		documents: [
 			{ source: "task-contract", content: "Implement the change, run focused checks, and report results." },
 		],
@@ -38,6 +37,7 @@ export function workflowRouterContext(workflowType: string, maxBudget: WorkflowB
 						estimatedDuration: "15min",
 						interaction: "executable",
 						complexity: "workflow_beneficial",
+						preference: "unspecified",
 					}),
 				),
 		},
@@ -46,5 +46,10 @@ export function workflowRouterContext(workflowType: string, maxBudget: WorkflowB
 
 /** Deterministic independent judgments for tests concerned with other routing boundaries. */
 export function workflowDecisionMessage(values: Record<string, unknown>) {
-	return decisionMessage({ interaction: "executable", complexity: "workflow_beneficial", ...values });
+	return decisionMessage({
+		interaction: "executable",
+		complexity: "workflow_beneficial",
+		preference: "unspecified",
+		...values,
+	});
 }

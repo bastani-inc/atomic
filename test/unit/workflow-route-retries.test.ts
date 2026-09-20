@@ -96,6 +96,7 @@ function fixture() {
 					duration: "15min",
 					interaction: "executable",
 					complexity: "workflow_beneficial",
+					preference: "unspecified",
 					budget: "preserve",
 				})[id]!,
 		);

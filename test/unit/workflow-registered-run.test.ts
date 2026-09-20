@@ -14,7 +14,8 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { type JevFixtureRequest, jevFixtureResponse } from "../helpers/jev-tournament.js";
-import { workflowRouterContext } from "../helpers/workflow-router.js";
+import { messageStream } from "../helpers/structured-output.js";
+import { workflowDecisionMessage, workflowRouterContext } from "../helpers/workflow-router.js";
 import { createMockSdk, restoreMockSdkState, serializeMockSdkState } from "./durable-dbos-backend-helpers.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
@@ -90,6 +91,7 @@ function fixture(
 								duration: "15min",
 								interaction: "executable",
 								complexity: "workflow_beneficial",
+								preference: "unspecified",
 								budget: "preserve",
 							})[id]!,
 					),
@@ -474,13 +476,56 @@ test("checkpointed registered instance resumes under its owner after runtime rep
 	assert.equal(store.runs().length, 1);
 });
 
-// #3106: typed provider judgments cannot override an explicit structured inline constraint.
+// #3106: an explicit user request to work inline, judged by the router from the user's
+// words, cannot be turned into a reservation or an execution by either provider.
 test.each(["structured", "jev"] as const)(
 	"%s cannot reserve or execute contrary to explicit inline preference",
 	async (provider) => {
 		const f = fixture(provider);
+		// Both adapters still select the registered workflow; only the preference
+		// judgment, made from the user's words, differs from the default fixture.
+		if (provider === "jev") {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (_url: string, init: RequestInit) => {
+					const request = JSON.parse(String(init.body)) as JevFixtureRequest;
+					assert.equal("executionPreference" in (request.state.task as object), false);
+					return Response.json(
+						jevFixtureResponse(
+							request,
+							(_keys, id) =>
+								({
+									workflow: "registered",
+									duration: "15min",
+									interaction: "executable",
+									complexity: "workflow_beneficial",
+									preference: "explicit_inline",
+									budget: "preserve",
+								})[id]!,
+						),
+					);
+				}),
+			);
+		} else {
+			f.inference.mockImplementation(() =>
+				messageStream(
+					workflowDecisionMessage({
+						workflowType: "registered",
+						estimatedDuration: "15min",
+						preference: "explicit_inline",
+						maxBudget: {},
+					}),
+				),
+			);
+		}
 		const result = await f.execute(
-			{ action: "route", state: { task: "Implement inline", executionPreference: "inline" } },
+			{
+				action: "route",
+				state: {
+					task: "Implement this inline, no workflow.",
+					conversation: [{ role: "user", text: "Implement this inline, no workflow." }],
+				},
+			},
 			f.ctx,
 		);
 		assert.equal(result.action, "route");

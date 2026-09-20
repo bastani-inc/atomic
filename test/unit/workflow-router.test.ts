@@ -286,10 +286,35 @@ test("missing state and credential fields fail before inference", async () => {
 	f.noLaunch();
 });
 
-// #3106: the explicit structured constraint overrides contrary provider judgments.
-test("explicit inline preference reaches router and prevents reservation", async () => {
+// #3106: an explicit user request to work inline is judged by the router from the
+// user's own words and overrides a contrary workflow selection. The caller has no
+// field to pre-decide it.
+test("explicit inline preference judged from user words prevents reservation", async () => {
 	const f = fixture();
-	f.args.state!.executionPreference = "inline";
+	f.args.state!.task = "Fix this typo inline, no workflow please.";
+	f.args.state!.conversation = [{ role: "user", text: "Fix this typo inline, no workflow please." }];
+	f.infer.mockImplementation((_model, context) => {
+		const payload = JSON.parse(context.messages[0]!.content as string) as {
+			state: { task: Record<string, unknown> };
+			questions: Record<string, { criteria: Record<string, string> }>;
+		};
+		assert.equal("executionPreference" in payload.state.task, false);
+		assert.deepEqual(Object.keys(payload.questions.preference!.criteria), [
+			"explicit_inline",
+			"explicit_workflow",
+			"unspecified",
+		]);
+		return messageStream(
+			decisionMessage({
+				workflowType: "approved-change",
+				estimatedDuration: "15min",
+				interaction: "executable",
+				complexity: "workflow_beneficial",
+				preference: "explicit_inline",
+				maxBudget: {},
+			}),
+		);
+	});
 	const result = await f.call();
 	assert.equal(f.infer.mock.calls.length, 1);
 	assert.equal(result.details.action, "route");
@@ -297,6 +322,45 @@ test("explicit inline preference reaches router and prevents reservation", async
 	assert.ok("routerDecision" in result.details);
 	assert.equal(result.details.routerDecision?.workflowType, "none");
 	f.noLaunch();
+});
+
+// A caller-supplied routing verdict is not evidence and is rejected before inference.
+test("caller-supplied executionPreference is rejected before inference", async () => {
+	const f = fixture();
+	const result = await f.call({
+		...f.args,
+		state: { ...f.args.state!, executionPreference: "inline" } as typeof f.args.state,
+	});
+	assert.match("error" in result.details ? (result.details.error ?? "") : "", /routing preference/);
+	assert.equal(f.infer.mock.calls.length, 0);
+	f.noLaunch();
+});
+
+// An explicit user request for a workflow wins over the complexity gate; a missing
+// fitting workflow still routes to none.
+test("explicit workflow preference bypasses the complexity gate but cannot invent a workflow", async () => {
+	for (const [selected, expected] of [
+		["approved-change", "approved-change"],
+		["none", "none"],
+	] as const) {
+		const f = fixture();
+		f.args.state!.task = "Run the approved-change workflow for this one-line fix.";
+		f.infer.mockImplementation(() =>
+			messageStream(
+				decisionMessage({
+					workflowType: selected,
+					estimatedDuration: "15min",
+					interaction: "executable",
+					complexity: "inline_sufficient",
+					preference: "explicit_workflow",
+					maxBudget: {},
+				}),
+			),
+		);
+		const result = await f.call();
+		assert.ok("routerDecision" in result.details);
+		assert.equal(result.details.routerDecision?.workflowType, expected);
+	}
 });
 
 for (const budget of [
@@ -527,7 +591,9 @@ function jevAnswer(request: JevRequest, selected = "none") {
 								? "executable"
 								: id === "complexity"
 									? "workflow_beneficial"
-									: "preserve";
+									: id === "preference"
+										? "unspecified"
+										: "preserve";
 				return [
 					id,
 					{
@@ -571,7 +637,13 @@ test("Jev fallback submits one request with complete registry, contextual Choice
 	const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 		const request = JSON.parse(String(init?.body)) as JevRequest;
 		assert.equal(String(_url), "https://api.typesafe.ai/v1/systemone");
-		assert.deepEqual(Object.keys(request.questions), ["workflow", "interaction", "complexity", "duration"]);
+		assert.deepEqual(Object.keys(request.questions), [
+			"workflow",
+			"interaction",
+			"complexity",
+			"preference",
+			"duration",
+		]);
 		assert.deepEqual(Object.keys(request.questions.workflow!.criteria), ["none", "approved-change", "review-only"]);
 		assert.equal(request.questions.workflow!.type, "choice");
 		assert.match(request.questions.workflow!.instructions, /brainstorming/);
@@ -720,7 +792,8 @@ test("Jev overflowing registry retains none for final comparison and exact budge
 		estimatedDuration: "15min",
 		maxBudget: { maxTokens: 0, maxCost: 0.123456789 },
 	});
-	assert.equal(seen.size, 358);
+	// 257 workflow + 2 interaction + 2 complexity + 3 preference + 97 duration keys.
+	assert.equal(seen.size, 361);
 	assert.ok(round > 1);
 	assert.equal(f.infer.mock.calls.length, 0);
 	f.noLaunch();
@@ -757,11 +830,13 @@ test("Jev overflowing registry launches the selected registered workflow once wi
 					? "executable"
 					: id === "complexity"
 						? "workflow_beneficial"
-						: id === "duration"
-							? "15min"
-							: keys.includes("approved-change")
-								? "approved-change"
-								: keys[0]!,
+						: id === "preference"
+							? "unspecified"
+							: id === "duration"
+								? "15min"
+								: keys.includes("approved-change")
+									? "approved-change"
+									: keys[0]!,
 			),
 		);
 	});
@@ -778,7 +853,7 @@ test("Jev overflowing registry launches the selected registered workflow once wi
 	assert.deepEqual(f.jobs.runIds(), [result.details.runId]);
 	await f.jobs.get(result.details.runId)!.promise;
 	assert.ok(fetch.mock.calls.length > 1);
-	assert.equal(seen.size, 358);
+	assert.equal(seen.size, 361);
 	assert.equal(f.infer.mock.calls.length, 0);
 	assert.equal(f.admissions.mock.calls.length, 1);
 	assert.equal(f.body.mock.calls.length, 1);
@@ -924,6 +999,7 @@ for (const budget of [
 			const decision = {
 				interaction: "executable",
 				complexity: "workflow_beneficial",
+				preference: "unspecified",
 				estimatedDuration: "15min",
 				workflowType: "none",
 				maxBudget: budget,

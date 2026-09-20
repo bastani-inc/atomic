@@ -155,15 +155,18 @@ async function inspectRoutes(f: RoutingHarness, _target: string) {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (_url: string, init: RequestInit) => {
-			jev = JSON.parse(init.body as string) as CapturedRequest;
-			for (const question of Object.values(jev.questions)) {
+			const packed = JSON.parse(init.body as string) as CapturedRequest;
+			// Questions may be packed across several requests; merge them so the
+			// assertions see the complete set regardless of packing boundaries.
+			jev = { state: packed.state, questions: { ...jev?.questions, ...packed.questions } };
+			for (const question of Object.values(packed.questions)) {
 				for (const [name, contract] of Object.entries(question.criteria)) {
 					if (name !== "none" && expected.includes(name))
 						seenContracts.set(name, JSON.parse(contract) as CapturedWorkflow);
 				}
 			}
 			const answers = Object.fromEntries(
-				Object.entries(jev.questions).map(([id, question]) => {
+				Object.entries(packed.questions).map(([id, question]) => {
 					const keys = Object.keys(question.criteria);
 					const selected = id === "workflow" ? "none" : keys[0]!;
 					return [

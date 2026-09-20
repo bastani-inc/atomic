@@ -1,5 +1,5 @@
 export const WORKFLOW_ROUTING_GUIDANCE =
-	"Call workflow route with the actual request, relevant message text/document excerpts, and explicit constraints in state, not file paths in place of content. If it returns none, continue inline. Otherwise use its input contract to prepare inputs, then call workflow run with the registered workflow ID. Ask only for genuinely missing information.";
+	"Call workflow route with the actual request, relevant message text/document excerpts, and explicit constraints in state, not file paths in place of content. Pass the user's own words; the router judges whether a workflow fits and whether the user asked for inline or workflow execution, so do not restate the request as an implementation objective or pass your own routing preference. If it returns none, continue inline. Otherwise use its input contract to prepare inputs, then call workflow run with the registered workflow ID. Ask only for genuinely missing information.";
 
 export const WORKFLOW_TOOL_DESCRIPTION =
 	WORKFLOW_ROUTING_GUIDANCE +

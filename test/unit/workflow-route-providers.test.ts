@@ -56,9 +56,11 @@ for (const provider of ["structured", "jev"] as const) {
 						"complexity",
 						"duration",
 						"interaction",
+						"preference",
 						"workflow",
 					]);
 					assert.match(request.questions.interaction!.instructions, /approval gate/);
+					assert.match(request.questions.preference!.instructions, /user's own words|user-attributed/);
 					return Response.json(
 						jevFixtureResponse(
 							request,
@@ -68,6 +70,7 @@ for (const provider of ["structured", "jev"] as const) {
 									duration,
 									interaction: "executable",
 									complexity: "workflow_beneficial",
+									preference: "unspecified",
 								})[id]!,
 						),
 					);
@@ -88,6 +91,7 @@ for (const provider of ["structured", "jev"] as const) {
 						estimatedDuration: duration,
 						interaction: "executable",
 						complexity: "workflow_beneficial",
+						preference: "unspecified",
 						maxBudget: {},
 					}),
 				);
@@ -104,36 +108,56 @@ for (const provider of ["structured", "jev"] as const) {
 	});
 }
 
+// Independent judgments composed in code. `preference` is answered from the
+// user's words and, when explicit, wins over the interaction/complexity gates.
 for (const scenario of [
-	{ task: "Correct this typo.", interaction: "executable", complexity: "inline_sufficient", expected: "none" },
+	{
+		task: "Correct this typo.",
+		interaction: "executable",
+		complexity: "inline_sufficient",
+		preference: "unspecified",
+		expected: "none",
+	},
 	{
 		task: "Implement the approved migration with validation.",
 		interaction: "executable",
 		complexity: "workflow_beneficial",
+		preference: "unspecified",
 		expected: "actual-name",
 	},
 	{
 		task: "Explore possible interfaces with me.",
 		interaction: "conversational",
 		complexity: "inline_sufficient",
+		preference: "unspecified",
 		expected: "none",
 	},
 	{
 		task: "Discuss a complex distributed architecture, do not implement it.",
 		interaction: "conversational",
 		complexity: "workflow_beneficial",
+		preference: "unspecified",
 		expected: "none",
 	},
 	{
 		task: "Implement this inline, without a workflow.",
 		interaction: "executable",
-		complexity: "inline_sufficient",
+		complexity: "workflow_beneficial",
+		preference: "explicit_inline",
 		expected: "none",
+	},
+	{
+		task: "Run the actual-name workflow for this small fix.",
+		interaction: "executable",
+		complexity: "inline_sufficient",
+		preference: "explicit_workflow",
+		expected: "actual-name",
 	},
 	{
 		task: "Prepare the approved implementation, but ask for approval before publishing.",
 		interaction: "executable",
 		complexity: "workflow_beneficial",
+		preference: "unspecified",
 		expected: "actual-name",
 	},
 ]) {
@@ -159,6 +183,7 @@ for (const scenario of [
 										duration: "15min",
 										interaction: scenario.interaction,
 										complexity: scenario.complexity,
+										preference: scenario.preference,
 									})[id]!,
 							),
 						);
@@ -172,6 +197,7 @@ for (const scenario of [
 							workflowType: "actual-name",
 							interaction: scenario.interaction,
 							complexity: scenario.complexity,
+							preference: scenario.preference,
 							estimatedDuration: "15min",
 							maxBudget: {},
 						}),
@@ -231,6 +257,7 @@ for (const provider of ["structured", "jev"] as const) {
 						maxBudget: {},
 						interaction: "conversational",
 						complexity: "inline_sufficient",
+						preference: "unspecified",
 					}),
 				);
 			});

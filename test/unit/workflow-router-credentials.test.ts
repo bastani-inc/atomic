@@ -37,6 +37,7 @@ const jevNone = async (_url: string, init: RequestInit) =>
 					budget: "preserve",
 					interaction: "executable",
 					complexity: "workflow_beneficial",
+					preference: "unspecified",
 				})[id]!,
 		),
 	);

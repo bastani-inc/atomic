@@ -200,6 +200,7 @@ describe("MCP entrypoints — workflow tool execute", () => {
 				estimatedDuration: "15min",
 				interaction: "executable",
 				complexity: "workflow_beneficial",
+				preference: "unspecified",
 			}),
 		});
 		const route = await pending;
