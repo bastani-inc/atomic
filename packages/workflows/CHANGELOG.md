@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Builtin workflow prompts (`open-claude-design`, `ralph`, goal orchestration, verification guidance, and workflow authoring guidance) now direct browser verification and evidence capture to the `agent-browser` skill and CLI instead of `playwright-cli`, including `agent-browser record start`/`record stop` for QA proof videos.
 
+- Synchronized the bundled `impeccable` skill from upstream `skill-v4.1.1` (`5a149f3fdb1b5793f10567233b1dcab98fc305fd`, `.agents` distribution) to `skill-v4.3.1` (`cd12f8660e2dde57b9615c8a6b8ea674101f9cfc`, `.pi` distribution, engine 0.1.5). Every command now runs through the launcher at `scripts/impeccable` (`impeccable.cmd` on Windows), which executes a self-contained engine binary beside it or downloads the pinned release for the current platform into `~/.impeccable/bin/<version>/` and verifies it against the published SHA-256 before the first run; Node is no longer required, and `IMPECCABLE_BIN` selects a preinstalled engine where network access is unavailable. The launchers default `IMPECCABLE_NO_TELEMETRY` and `IMPECCABLE_NO_UPDATE_CHECK` on, keeping the concept-roll ping and the `npx impeccable update` prompt off for a skill that ships with each Atomic release, and the retained live-browser helpers keep their CSPRNG session-id hardening and removed-editor stripping.
+
+- The `open-claude-design` live review loop drives the bundled Impeccable launcher's `live-poll` verb instead of the removed `live-poll.mjs` script, running `impeccable.cmd` through the platform shell on Windows.
+
+### Removed
+
+- The bundled Impeccable skill no longer ships its Node `scripts/*.mjs` helpers, `scripts/detector/`, `scripts/live/`, `scripts/lib/`, or the Codex-only `agents/` definitions; upstream 4.3.1 moved that logic into the engine binary and the `.pi` distribution carries no Codex agent files.
+
 ## [0.9.20-alpha.4] - 2026-09-20
 
 ### Breaking Changes

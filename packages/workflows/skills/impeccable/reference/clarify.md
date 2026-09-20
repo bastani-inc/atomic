@@ -91,4 +91,4 @@ Read the flow in context and test:
 
 The final copy is as short as it can be without removing meaning or recovery.
 
-When the language reads cleanly, hand off to `$impeccable polish` for the final pass.
+When the language reads cleanly, hand off to `/impeccable polish` for the final pass.

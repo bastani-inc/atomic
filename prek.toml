@@ -3,7 +3,8 @@ default_install_hook_types = ["pre-commit"]
 [[repos]]
 repo = "builtin"
 hooks = [
-  { id = "check-added-large-files" },
+  # Impeccable's Google Fonts catalog is vendored verbatim from upstream and read by its engine at run time.
+  { id = "check-added-large-files", exclude = "^packages/workflows/skills/impeccable/scripts/data/font-index\\.json$" },
   { id = "check-case-conflict" },
   { id = "check-illegal-windows-names" },
   { id = "check-json", exclude = "^\\.agents/skills/.*\\.json$" },

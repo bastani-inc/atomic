@@ -86,4 +86,4 @@ Every web animation needs a `prefers-reduced-motion` path with an intentional al
 - Expensive effects stay smooth on the target device.
 - Removing an animation would lose meaning or authored character, not merely decoration.
 
-When motion earns its place, hand off to `$impeccable polish` for the final pass.
+When motion earns its place, hand off to `/impeccable polish` for the final pass.

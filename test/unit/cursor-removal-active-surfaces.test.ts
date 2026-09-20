@@ -29,18 +29,20 @@ describe("removed provider active surfaces", () => {
 	});
 
 	test("Impeccable ships no removed-editor compatibility adapter", () => {
-		assert.equal(existsSync(join(root, "packages/workflows/skills/impeccable/scripts/hook-before-edit.mjs")), false);
+		const skill = "packages/workflows/skills/impeccable";
+		assert.equal(existsSync(join(root, skill, "scripts/hook-before-edit.mjs")), false);
 		for (const path of [
-			"packages/workflows/skills/impeccable/scripts/hook-admin.mjs",
-			"packages/workflows/skills/impeccable/scripts/hook-lib.mjs",
-			"packages/workflows/skills/impeccable/scripts/hook.mjs",
-			"packages/workflows/skills/impeccable/scripts/context.mjs",
-			"packages/workflows/skills/impeccable/scripts/lib/staleness-deep.mjs",
-			"packages/workflows/skills/impeccable/scripts/live-poll.mjs",
-			"packages/workflows/skills/impeccable/scripts/pin.mjs",
-			"packages/workflows/skills/impeccable/scripts/live-browser.js",
-			"packages/workflows/skills/impeccable/reference/hooks.md",
-			"packages/workflows/skills/impeccable/reference/live.md",
+			`${skill}/SKILL.md`,
+			`${skill}/scripts/impeccable`,
+			`${skill}/scripts/impeccable.cmd`,
+			`${skill}/scripts/live-browser.js`,
+			`${skill}/scripts/live-browser-dom.js`,
+			`${skill}/scripts/live-browser-session.js`,
+			`${skill}/scripts/live-browser-ignores.js`,
+			`${skill}/reference/hooks.md`,
+			`${skill}/reference/live.md`,
+			`${skill}/reference/live-setup.md`,
+			`${skill}/reference/routing.md`,
 		]) {
 			const content = read(path);
 			assert.doesNotMatch(
@@ -51,33 +53,10 @@ describe("removed provider active surfaces", () => {
 			assert.equal(content.includes("hook-before-edit"), false, path);
 		}
 		assert.match(
-			read("packages/workflows/skills/impeccable/reference/overdrive.md"),
+			read(`${skill}/reference/overdrive.md`),
 			/responds to the cursor/u,
 			"ordinary pointer-cursor design guidance must remain intact",
 		);
-	});
-
-	test("Impeccable admin and pin commands ignore removed-editor directories", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-impeccable-removal-"));
-		writeFileSync(join(cwd, "package.json"), "{}\n");
-		const scripts = join(root, "packages/workflows/skills/impeccable/scripts");
-		try {
-			mkdirSync(join(cwd, ".agents", "skills", "impeccable"), { recursive: true });
-			mkdirSync(join(cwd, ".cursor", "skills", "impeccable"), { recursive: true });
-
-			const admin = spawnSyncCollect({ cmd: ["bun", join(scripts, "hook-admin.mjs"), "on"], cwd });
-			assert.equal(admin.exitCode, 0, admin.stderr.toString());
-			assert.equal(existsSync(join(cwd, ".codex", "hooks.json")), true);
-			assert.equal(existsSync(join(cwd, ".cursor", "hooks.json")), false);
-
-			const pin = spawnSyncCollect({ cmd: ["bun", join(scripts, "pin.mjs"), "pin", "audit"], cwd });
-			assert.equal(pin.exitCode, 0, pin.stderr.toString());
-			assert.equal(existsSync(join(cwd, ".agents", "skills", "audit", "SKILL.md")), true);
-			assert.equal(existsSync(join(cwd, ".cursor", "skills", "audit")), false);
-			assert.doesNotMatch(`${admin.stdout}${pin.stdout}`, /\bCursor\b|\.cursor/u);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
 	});
 	test("MCP discovery ignores the removed home-level import while keeping supported imports", () => {
 		const tempRoot = mkdtempSync(join(tmpdir(), "atomic-mcp-import-removal-"));

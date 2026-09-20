@@ -6,8 +6,9 @@ import { afterEach, describe, test } from "vitest";
 import {
 	buildLiveEventPrompt,
 	buildLiveSessionStartPrompt,
+	LIVE_POLL_VERB,
 	type LiveEvent,
-	liveScriptPath,
+	liveLauncherPath,
 	needsModel,
 	parseLiveEvent,
 	pollLiveEvent,
@@ -25,29 +26,29 @@ afterEach(() => {
 	}
 });
 
-/** A project whose impeccable skill is installed, so the scripts resolve. */
+/** A project whose impeccable skill is installed, so a launcher resolves there too. */
 function makeProjectWithScripts(): string {
 	const dir = mkdtempSync(join(tmpdir(), "live-protocol-"));
 	dirs.push(dir);
-	const scripts = join(dir, ".agents", "skills", "impeccable", "scripts");
+	const scripts = join(dir, ".pi", "skills", "impeccable", "scripts");
 	mkdirSync(scripts, { recursive: true });
-	const script = join(scripts, "live-poll.mjs");
-	writeFileSync(script, "#!/usr/bin/env node\n");
-	chmodSync(script, 0o755);
+	const launcher = join(scripts, "impeccable");
+	writeFileSync(launcher, "#!/bin/sh\n");
+	chmodSync(launcher, 0o755);
 	return dir;
 }
 
 /** Scripted stdout for successive poll invocations. */
 function fakeRunner(outputs: readonly string[]): {
-	run: (script: string, args: readonly string[], cwd: string) => Promise<ScriptResult>;
-	calls: { args: readonly string[] }[];
+	run: (launcher: string, args: readonly string[], cwd: string) => Promise<ScriptResult>;
+	calls: { launcher: string; args: readonly string[] }[];
 } {
-	const calls: { args: readonly string[] }[] = [];
+	const calls: { launcher: string; args: readonly string[] }[] = [];
 	let index = 0;
 	return {
 		calls,
-		run: async (_script, args) => {
-			calls.push({ args });
+		run: async (launcher, args) => {
+			calls.push({ launcher, args });
 			const stdout = outputs[Math.min(index, outputs.length - 1)] ?? "";
 			index += 1;
 			return { code: 0, stdout, stderr: "" };
@@ -84,6 +85,10 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 
 		assert.equal(event.type, "generate");
 		assert.equal(runner.calls.length, 3, "polled through both timeouts");
+		for (const call of runner.calls) {
+			assert.equal(call.launcher, liveLauncherPath(), "every poll runs the bundled launcher");
+			assert.deepEqual(call.args, [LIVE_POLL_VERB], "a poll is the bare live-poll verb");
+		}
 	});
 
 	test("nonzero poll helper exits fail instead of becoming another timeout", async () => {
@@ -99,19 +104,21 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		);
 	});
 
-	test("always resolves the skill bundled with this package, never a project copy", () => {
-		const resolved = liveScriptPath("live-poll.mjs");
-		assert.match(resolved, /skills[/\\]impeccable[/\\]scripts[/\\]live-poll\.mjs$/);
-		assert.ok(existsSync(resolved), "the bundled live scripts must ship with this package");
+	test("always resolves the launcher bundled with this package, never a project copy", () => {
+		const resolved = liveLauncherPath();
+		assert.match(resolved, /skills[/\\]impeccable[/\\]scripts[/\\]impeccable(?:\.cmd)?$/);
+		assert.ok(existsSync(resolved), "the bundled engine launcher must ship with this package");
+		assert.match(liveLauncherPath("linux"), /[/\\]impeccable$/);
+		assert.match(liveLauncherPath("darwin"), /[/\\]impeccable$/);
+		assert.match(liveLauncherPath("win32"), /[/\\]impeccable\.cmd$/, "Windows runs the .cmd launcher");
+		assert.ok(existsSync(liveLauncherPath("linux")), "the POSIX launcher must ship");
+		assert.ok(existsSync(liveLauncherPath("win32")), "the Windows launcher must ship");
 
 		// A project that vendors its own copy is deliberately ignored: the loop
-		// depends on this script's CLI surface, reply tokens, and event
+		// depends on the launcher's verb surface, reply tokens, and event
 		// vocabulary, and the bundled copy is the one tested against this code.
 		const vendored = makeProjectWithScripts();
-		assert.notEqual(
-			liveScriptPath("live-poll.mjs"),
-			join(vendored, ".agents", "skills", "impeccable", "scripts", "live-poll.mjs"),
-		);
+		assert.notEqual(liveLauncherPath(), join(vendored, ".pi", "skills", "impeccable", "scripts", "impeccable"));
 	});
 
 	test("only model events call the model; mount success stays journal-only", () => {
@@ -143,7 +150,8 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 			deps: { run: runner.run },
 		});
 
-		assert.deepEqual(runner.calls[0]?.args, ["--reply", "e1", "steer_done"]);
+		assert.equal(runner.calls[0]?.launcher, liveLauncherPath());
+		assert.deepEqual(runner.calls[0]?.args, [LIVE_POLL_VERB, "--reply", "e1", "steer_done"]);
 
 		const detailed = fakeRunner([""]);
 		await replyLiveEvent({
@@ -155,6 +163,7 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 			deps: { run: detailed.run },
 		});
 		assert.deepEqual(detailed.calls[0]?.args, [
+			LIVE_POLL_VERB,
 			"--reply",
 			"m1",
 			"done",

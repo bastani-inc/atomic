@@ -2,12 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- The SDK exports `spawnProcess` next to `createChildProcessEnvironment`: the child-process spawner that stamps Atomic's agent attribution into the environment and, on Windows, runs `.cmd`/`.bat` launchers through `cross-spawn` with correct argument quoting. The bundled `impeccable` skill's engine launcher and the `open-claude-design` live loop use it.
+
 ### Changed
 
 - Automatic subagent and workflow-stage model selection now sends a fixed `model_selection_guide` state field next to `evals`: the "Benchmarks are evidence, not policy" and "Role-based thinking effort" sections from [Model Selection](/models/model-selection), so the router applies the role defaults and effort rules rather than only the dated benchmark tables. To keep every Jev request within its input budget, the model-selection task excerpt cap is now 10,000 JSON-encoded UTF-8 bytes (was 12,000); execution tasks are still sent in full.
 - The `model_selection_guide` sent with automatic model routing, and the [Model Selection](/models/model-selection) guide it mirrors, now pair each stage role with a model cost tier as well as a thinking level: cheap, fast models for codebase exploration and routine implementation, frontier models for code review, verification, and final approval, and mid-priced models for orchestration and reporting. The router is told to match the role tier first, so high-volume tool-driven work stops defaulting to the most expensive candidate. The larger guide is paid for by lowering the model-selection task excerpt cap to 9,000 JSON-encoded UTF-8 bytes (was 10,000); execution tasks are still sent in full.
 - The default system prompt's Guidelines section now tells the agent to write self-describing code and not add comments unless the user explicitly asks for them or the task instructions call for them; code that needs a comment to be understood is treated as a smell to restructure with clearer names, smaller units, or explicit types.
 - The default system prompt and the computer-use, skills, first-session, and verification guides now direct browser automation to the `agent-browser` skill and CLI ([vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) v0.38.1) instead of the removed `playwright-cli` skill; install with `npm i -g agent-browser && agent-browser install`.
+- The bundled `impeccable` skill is upstream `skill-v4.3.1` with its self-contained engine (0.1.5). Its commands run through `scripts/impeccable` (`impeccable.cmd` on Windows), which uses an engine binary beside the launcher or downloads and checksum-verifies the pinned release for your platform on first use; set `IMPECCABLE_BIN` to a preinstalled engine on machines without network access. Atomic's launcher keeps the engine's anonymous ping and `npx impeccable update` prompt off. See the [first session](/getting-started/first-session) guide.
 
 ### Fixed
 

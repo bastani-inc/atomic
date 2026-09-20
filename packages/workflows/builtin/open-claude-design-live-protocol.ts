@@ -17,8 +17,8 @@
  * helper failures are surfaced instead of being mistaken for another timeout.
  */
 
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { spawnProcess } from "@bastani/atomic";
 
 /** JSON values emitted by the live helper. */
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -93,7 +93,7 @@ export function parseLiveEvent(stdout: string): LiveEvent {
 }
 
 export type LivePollDeps = {
-	readonly run?: (scriptPath: string, args: readonly string[], cwd: string, signal?: AbortSignal) => Promise<ScriptResult>;
+	readonly run?: (launcher: string, args: readonly string[], cwd: string, signal?: AbortSignal) => Promise<ScriptResult>;
 };
 
 export type LiveReplyInput = {
@@ -128,11 +128,14 @@ export async function pollLiveEvent(input: {
 	readonly signal?: AbortSignal;
 	readonly deps?: LivePollDeps;
 }): Promise<LiveEvent> {
-	const script = liveScriptPath("live-poll.mjs");
-	const run = input.deps?.run ?? runNodeScript;
+	const launcher = liveLauncherPath();
+	const run = input.deps?.run ?? runLiveHelper;
 	for (;;) {
 		if (input.signal?.aborted === true) return { type: "exit", raw: "aborted" };
-		const result = assertSuccessfulScript(await run(script, [], input.workflowCwd, input.signal), "live poll");
+		const result = assertSuccessfulScript(
+			await run(launcher, [LIVE_POLL_VERB], input.workflowCwd, input.signal),
+			"live poll",
+		);
 		const event = parseLiveEvent(result.stdout);
 		if (event.type !== "timeout") return event;
 	}
@@ -151,49 +154,55 @@ export async function replyLiveEvent(input: LiveReplyInput): Promise<ScriptResul
 	if (status.length === 0 || status.startsWith("--")) {
 		throw new Error(`Cannot reply to live event ${id}: reply status is missing`);
 	}
-	const args = ["--reply", id, status];
+	const args = [LIVE_POLL_VERB, "--reply", id, status];
 	const file = input.file ?? input.event.file;
 	const message = input.message ?? input.event.message;
 	const data = input.data ?? input.event.data;
 	if (file !== undefined) args.push("--file", file);
 	if (data !== undefined) args.push("--data", JSON.stringify(data));
 	if (message !== undefined) args.push(message);
-	const script = liveScriptPath("live-poll.mjs");
-	const run = input.deps?.run ?? runNodeScript;
-	return assertSuccessfulScript(await run(script, args, input.workflowCwd, input.signal), "live reply");
+	const launcher = liveLauncherPath();
+	const run = input.deps?.run ?? runLiveHelper;
+	return assertSuccessfulScript(await run(launcher, args, input.workflowCwd, input.signal), "live reply");
 }
 
+/** The engine verb that polls the live helper and acknowledges events. */
+export const LIVE_POLL_VERB = "live-poll";
+
 /**
- * Absolute path to one of the impeccable live scripts.
+ * Absolute path to the impeccable engine launcher bundled with this package.
  *
  * Always the copy that ships inside this package — `packages/workflows/skills`
  * in the repository, `dist/builtin/workflows/skills` once bundled — which sits
  * one level up from this module in both layouts, so `import.meta.url` finds it
- * without the host naming a path.
+ * without the host naming a path. The launcher runs the engine binary next to
+ * it, or downloads and checksum-verifies the platform build on first use.
  *
  * A project-vendored copy is deliberately NOT consulted. The workflow drives
- * this protocol directly: it depends on `live-poll.mjs`'s CLI surface, its
- * `--reply` tokens, and its JSON event vocabulary. The bundled scripts ship and
- * are tested with this code, so they cannot drift from it; a forked copy in a
+ * this protocol directly: it depends on the `live-poll` verb's CLI surface, its
+ * `--reply` tokens, and its JSON event vocabulary. The bundled launcher ships
+ * and is tested with this code, so it cannot drift from it; a forked copy in a
  * project could, and would break the loop in ways no test here would catch.
  */
-export function liveScriptPath(script: string): string {
-	return fileURLToPath(new URL(`../skills/impeccable/scripts/${script}`, import.meta.url));
+export function liveLauncherPath(platform: NodeJS.Platform = process.platform): string {
+	const launcher = platform === "win32" ? "impeccable.cmd" : "impeccable";
+	return fileURLToPath(new URL(`../skills/impeccable/scripts/${launcher}`, import.meta.url));
 }
 
 export type ScriptResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
-function runNodeScript(
-	scriptPath: string,
+function runLiveHelper(
+	launcher: string,
 	args: readonly string[],
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<ScriptResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [scriptPath, ...args], {
+		const child = spawnProcess(launcher, [...args], {
 			cwd,
 			env: { ...process.env, GH_PAGER: "cat" },
 			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
 		});
 		let stdout = "";
 		let stderr = "";
@@ -294,7 +303,7 @@ export function buildLiveSessionStartPrompt(input: {
 		].join("\n"),
 		[
 			"<instructions>",
-			"1. Drive `/skill:impeccable live` against the static preview: run `live.mjs` with `--target` pointed at the preview file, or the equivalent `.impeccable/live/config.json` entry, and open the URL that serves it.",
+			"1. Drive `/skill:impeccable live` against the static preview: run the bundled launcher's `impeccable live` verb with `--target` pointed at the preview file, or the equivalent `.impeccable/live/config.json` entry, and open the URL that serves it.",
 			"2. Print the live `http://` review URL in plain text, plus the preview file URL as the manual fallback, so anyone attaching to this run can find the review.",
 			"3. Directly under the URL, print how the user ends the review, in plain text: click exit in the Impeccable overlay, close the browser tab, or say `exit live`. State that the review waits indefinitely until they do, and that ending it exports the design as it then stands, with no further round.",
 			"4. Do NOT start a poll loop. The workflow owns polling and will call you back for each event that needs you. Ending your turn does not end the review.",

@@ -259,6 +259,9 @@ const proseNames = new Set([
 	"off",
 	// Transitive pi runtime package name, not a package-root export.
 	"chord",
+	// Bundled skill name and its engine environment variable, not package-root exports.
+	"impeccable",
+	"IMPECCABLE_BIN",
 	// Extension event names, not package-root exports.
 	"compaction_start",
 	"session_before_compact",
