@@ -106,8 +106,22 @@ test("Windows installer streams the archive with a progress bar and keeps smoke-
 	assert.match(progress, /New-Object System\.Net\.Http\.HttpClient/u);
 	assert.match(
 		progress,
-		/\[System\.Net\.Http\.HttpCompletionOption\]::ResponseHeadersRead\)\.GetAwaiter\(\)\.GetResult\(\)/u,
+		/\[System\.Net\.Http\.HttpCompletionOption\]::ResponseHeadersRead, \$headerCancellation\.Token\)\.GetAwaiter\(\)\.GetResult\(\)/u,
+		"the header wait must carry a cancellation token so a silent server cannot hang the installer",
 	);
+	assert.match(
+		progress,
+		/New-Object Threading\.CancellationTokenSource\(\[TimeSpan\]::FromMilliseconds\(\$downloadHeaderTimeoutMilliseconds\)\)/u,
+	);
+	assert.match(progress, /\$readTask = \$source\.ReadAsync\(\$buffer, 0, \$buffer\.Length\)/u);
+	assert.match(
+		progress,
+		/if \(-not \$readTask\.Wait\(\$downloadStallTimeoutMilliseconds\)\) \{\r?\n\s+throw "download stalled: no data received for/u,
+		"every body read must be bounded by the stall deadline",
+	);
+	assert.doesNotMatch(progress, /\$source\.Read\(\$buffer/u, "a synchronous unbounded body read must not return");
+	assert.match(source, /^\$downloadHeaderTimeoutMilliseconds = 60000\r?$/mu);
+	assert.match(source, /^\$downloadStallTimeoutMilliseconds = 60000\r?$/mu);
 	assert.match(progress, /\$response\.Content\.Headers\.ContentLength/u);
 	assert.match(progress, /New-Object byte\[\] 65536/u);
 	assert.match(progress, /return \$false/u);

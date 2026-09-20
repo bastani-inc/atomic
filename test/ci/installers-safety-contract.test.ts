@@ -254,6 +254,14 @@ test("POSIX release identities stay within Atomic's supported tag grammar", asyn
 	assert.match(shell, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
 	assert.match(shell, /Installing atomic version:[^\n]+"\$RELEASE_TAG"/u);
 	assert.doesNotMatch(shell, /installed successfully|Binary: %s|Add Atomic to PATH/u);
+	// The installed-version line is informational and must never execute the existing
+	// binary before repair: a hung `current/atomic` would block the download and promotion.
+	assert.doesNotMatch(shell, /"\$INSTALL_ROOT\/current\/atomic" --version/u);
+	assert.match(shell, /CDPATH= cd -P "\$INSTALL_ROOT\/current" 2>\/dev\/null && pwd/u);
+	assert.match(
+		shell,
+		/INSTALLED_VERSION=\$\(percent_decode "\$installed_encoded"\) &&\n\s+is_atomic_release_tag "\$INSTALLED_VERSION"/u,
+	);
 });
 
 test("installers pin the requested exact ref and fail closed on a mismatched release identity", async () => {

@@ -360,6 +360,9 @@ function Invoke-AtomicDownloadWithProgress {
     try {
         Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
         $client = New-Object System.Net.Http.HttpClient
+        # HttpClient.Timeout would cap the whole transfer, which a slow link can
+        # legitimately exceed; the header wait and each body read are bounded
+        # separately below so a stalled server still fails rather than hanging.
         $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
     }
     catch {
@@ -372,9 +375,19 @@ function Invoke-AtomicDownloadWithProgress {
     $response = $null
     $source = $null
     $target = $null
+    $headerCancellation = $null
     $lineOpen = $false
     try {
-        $response = $client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $headerCancellation = New-Object Threading.CancellationTokenSource([TimeSpan]::FromMilliseconds($downloadHeaderTimeoutMilliseconds))
+        try {
+            $response = $client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $headerCancellation.Token).GetAwaiter().GetResult()
+        }
+        catch {
+            if ($headerCancellation.IsCancellationRequested) {
+                throw "no response headers within $($downloadHeaderTimeoutMilliseconds / 1000) seconds"
+            }
+            throw
+        }
         $response.EnsureSuccessStatusCode() | Out-Null
         $totalBytes = [long]-1
         $contentLength = $response.Content.Headers.ContentLength
@@ -400,7 +413,13 @@ function Invoke-AtomicDownloadWithProgress {
         $stopwatch = [Diagnostics.Stopwatch]::StartNew()
         $target = [IO.File]::Create($Destination)
         while ($true) {
-            $read = $source.Read($buffer, 0, $buffer.Length)
+            # Bound each read by an inactivity deadline. A server or proxy that
+            # sends headers and then stops must surface as a download failure.
+            $readTask = $source.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $readTask.Wait($downloadStallTimeoutMilliseconds)) {
+                throw "download stalled: no data received for $($downloadStallTimeoutMilliseconds / 1000) seconds"
+            }
+            $read = $readTask.Result
             if ($read -le 0) {
                 break
             }
@@ -440,6 +459,9 @@ function Invoke-AtomicDownloadWithProgress {
         }
         if ($null -ne $response) {
             $response.Dispose()
+        }
+        if ($null -ne $headerCancellation) {
+            $headerCancellation.Dispose()
         }
         $client.Dispose()
     }
@@ -942,6 +964,8 @@ $transactionMissingDirectories = New-Object System.Collections.ArrayList
 $rollbackRetryLimit = 3
 $tempCleanupRetryLimit = 5
 $tempCleanupRetryDelayMilliseconds = 125
+$downloadHeaderTimeoutMilliseconds = 60000
+$downloadStallTimeoutMilliseconds = 60000
 $primaryError = $null
 $tempCleanupError = $null
 

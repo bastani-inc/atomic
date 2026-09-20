@@ -1014,14 +1014,28 @@ PLATFORM_LABEL=${ASSET_NAME#atomic-}
 PLATFORM_LABEL=${PLATFORM_LABEL%.tar.gz}
 printf '%sInstalling atomic version:%s %s (%s)\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$PLATFORM_LABEL"
 
+# Read the installed version from where `current` points rather than executing
+# the existing binary: a hung or broken install is exactly what a rerun repairs,
+# so this informational probe must never block the download and promotion.
 INSTALLED_VERSION=
-if [ -x "$INSTALL_ROOT/current/atomic" ]; then
-    INSTALLED_VERSION=$("$INSTALL_ROOT/current/atomic" --version 2>/dev/null </dev/null) || INSTALLED_VERSION=
-    INSTALLED_VERSION=${INSTALLED_VERSION%%"$NEWLINE"*}
-    # shellcheck disable=SC2086 # word splitting trims surrounding whitespace
-    set -- $INSTALLED_VERSION
-    INSTALLED_VERSION=${1:-}
-    set --
+if [ -L "$INSTALL_ROOT/current" ] && [ -d "$INSTALL_ROOT/current" ]; then
+    # shellcheck disable=SC1007 # CDPATH= clears the search path for this cd only
+    installed_physical=$(CDPATH= cd -P "$INSTALL_ROOT/current" 2>/dev/null && pwd && printf '_') || installed_physical=
+    installed_physical=${installed_physical%_}
+    installed_physical=${installed_physical%"$NEWLINE"}
+    case $installed_physical in
+        */versions/*)
+            installed_encoded=${installed_physical##*/}
+            if INSTALLED_VERSION=$(percent_decode "$installed_encoded") &&
+                is_atomic_release_tag "$INSTALLED_VERSION"; then
+                :
+            else
+                INSTALLED_VERSION=
+            fi
+            ;;
+    esac
+    installed_physical=
+    installed_encoded=
 fi
 if [ -n "$INSTALLED_VERSION" ]; then
     if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ]; then
