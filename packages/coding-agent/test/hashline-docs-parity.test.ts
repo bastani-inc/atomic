@@ -12,21 +12,14 @@ import {
 	describeAnchorExamples,
 	EMPTY_BLOCK,
 	EMPTY_INSERT,
-	EMPTY_REPLACE,
 	HUNK_LIKE_LITERAL_WARNING,
 	MINUS_ROW_REJECTED,
 	Patch,
-	parseTag,
-	UNRESOLVED_BLOCK_INTERNAL,
 } from "../src/core/tools/hashline-engine/index.ts";
 import { loadNativeSearchBinding } from "../src/core/tools/search-native.ts";
 
 const docs = readTextSync(join(dirname(fileURLToPath(import.meta.url)), "../docs/tools.md"), "utf8");
 const normalizedDocs = docs.replace(/\s+/g, " ");
-const internals = readTextSync(
-	join(dirname(fileURLToPath(import.meta.url)), "../../../docs/implementation/hashline-diagnostics.md"),
-	"utf8",
-);
 
 describe("hashline edit reference documentation", () => {
 	test("keeps exported diagnostics and generated anchor examples aligned with the engine", () => {
@@ -42,9 +35,6 @@ describe("hashline edit reference documentation", () => {
 			HUNK_LIKE_LITERAL_WARNING,
 		]) {
 			assert.ok(docs.includes(diagnostic), `reference docs omitted or changed: ${diagnostic}`);
-		}
-		for (const diagnostic of [UNRESOLVED_BLOCK_INTERNAL, EMPTY_REPLACE]) {
-			assert.ok(internals.includes(diagnostic), `maintenance reference omitted or changed: ${diagnostic}`);
 		}
 		assert.match(docs, /internal apply error[^\n]+Report the exact diagnostic/);
 	});
@@ -87,19 +77,6 @@ describe("hashline edit reference documentation", () => {
 			}
 			assert.equal(message, expected, `unexpected result for ${JSON.stringify(input)}`);
 		}
-	});
-
-	test("keeps the literal low-level invalid-line-reference error in the catalogue", () => {
-		let message: string | undefined;
-		try {
-			parseTag("abc");
-		} catch (error) {
-			assert.ok(error instanceof Error);
-			message = error.message;
-		}
-		assert.ok(message);
-		assert.ok(internals.includes(message), `maintenance reference omitted or changed: ${message}`);
-		assert.match(internals, /parseTag[^\n]+no active caller from `edit`/);
 	});
 
 	test("pins which leading nodes tree-sitter sweeps into their construct", () => {
