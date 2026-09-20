@@ -145,6 +145,10 @@ export function chatEntriesFromAgentMessages(messages: readonly AgentMessage[]):
 			case "branchSummary":
 				entries.push({ role: "summary", kind: "branchSummary", message });
 				break;
+			case "system":
+				// System messages carry prompt sections, not chat content; rendering
+				// them printed a bare dim "system" line in workflow stage chats.
+				break;
 			default: {
 				const role = (message as { role: string }).role;
 				entries.push({ role: "system", kind: "system", text: role });

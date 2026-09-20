@@ -47,6 +47,20 @@ describe("chat message renderer utilities", () => {
 		assert.equal(toolEntry.result?.isError, false);
 	});
 
+	test("skips system prompt messages instead of rendering their role name", () => {
+		const messages: AgentMessage[] = [
+			{ role: "system", content: "You are Atomic.", sections: {}, timestamp: Date.now() },
+			{ role: "user", content: "hello", timestamp: Date.now() },
+		];
+
+		const entries = chatEntriesFromAgentMessages(messages);
+
+		assert.deepEqual(
+			entries.map((entry) => entry.kind),
+			["user"],
+		);
+	});
+
 	test("live chat controller accumulates assistant deltas and tool results", () => {
 		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
 		const live = new LiveChatEntriesController(entries);

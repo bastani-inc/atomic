@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow stage chats and other transcript views built from session messages no longer print a bare dim `system` line for the session's system-prompt message.
+
 ## [0.9.20-alpha.4] - 2026-09-20
 
 ### Breaking Changes

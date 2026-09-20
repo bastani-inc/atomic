@@ -107,7 +107,6 @@ export async function handleRunControlCommand(
 		}
 		if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
 		if (policy.allowInputPicker) deps.overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-		print(`Connected to ${resolved.runId}. h hide · ctrl+x leave graph · return to main chat · esc close.`);
 		return true;
 	}
 
