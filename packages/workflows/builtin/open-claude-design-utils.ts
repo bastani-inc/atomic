@@ -48,7 +48,7 @@ export function isFileLike(value: string): boolean {
 
 /**
  * Whether the browser-centric workflow should exit early instead of generating
- * artifacts no one can review interactively. True only when the playwright-cli
+ * artifacts no one can review interactively. True only when the agent-browser
  * browser is unavailable AND we are not under the test harness (`NODE_ENV=test`,
  * which always skips the global install and runs headlessly to completion).
  */
@@ -189,12 +189,12 @@ export const ANTI_SLOP_RULES = [
 export const REFERENCE_PRECEDENCE =
   "User references in <reference_context> are the PRIMARY visual authority and override conflicting DESIGN.md/PRODUCT.md guidance. DESIGN.md governs uncovered design decisions; PRODUCT.md still governs strategic register/voice.";
 
-export type PlaywrightCliStatus = {
-  /** Whether the `playwright-cli` command is expected to be available to downstream stages. */
+export type AgentBrowserStatus = {
+  /** Whether the `agent-browser` command is expected to be available to downstream stages. */
   readonly available: boolean;
   /** True when the command was already on PATH and no install was attempted. */
   readonly alreadyPresent: boolean;
-  /** True when this step installed the command via `npm install -g @playwright/cli@latest`. */
+  /** True when this step installed the command via `npm install -g agent-browser` + `agent-browser install`. */
   readonly installed: boolean;
   /** Human-readable, single-line outcome surfaced as a workflow output. */
   readonly summary: string;
@@ -203,11 +203,11 @@ export type PlaywrightCliStatus = {
 };
 
 /**
- * Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
- * `playwright-cli` command is available before any design stage runs. Mirrors the
- * playwright-cli skill's documented bootstrap (`npx --no-install playwright-cli
- * --version` || `npm install -g @playwright/cli@latest`) but performs it once,
- * deterministically, instead of relying on each stage to probe/install it.
+ * Initial deterministic setup step (no LLM): ensure the agent-browser skill's
+ * `agent-browser` command is available before any design stage runs. Mirrors the
+ * agent-browser skill's documented bootstrap (`npm install -g agent-browser` then
+ * `agent-browser install`) but performs it once, deterministically, instead of
+ * relying on each stage to probe/install it.
  * The PATH probe always runs, but the actual global install is skipped under
  * automated tests (`NODE_ENV=test`) to avoid slow, networked, environment-
  * mutating side effects.
@@ -216,11 +216,11 @@ export type PlaywrightCliStatus = {
  * the command cannot be located or installed, downstream stages keep their graceful
  * degradation path (surface the manual preview path / URL).
  */
-export function ensurePlaywrightCli(): PlaywrightCliStatus {
+export function ensureAgentBrowser(): AgentBrowserStatus {
   const isWindows = process.platform === "win32";
   const onPath = (): boolean => {
     try {
-      const probe = spawnSync(isWindows ? "where" : "which", ["playwright-cli"], {
+      const probe = spawnSync(isWindows ? "where" : "which", ["agent-browser"], {
         stdio: "ignore",
         timeout: 15_000,
         shell: isWindows,
@@ -237,7 +237,7 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
       available: true,
       alreadyPresent: true,
       installed: false,
-      summary: "playwright-cli already on PATH; skipped install.",
+      summary: "agent-browser already on PATH; skipped install.",
     };
   }
 
@@ -251,36 +251,57 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
       alreadyPresent: false,
       installed: false,
       summary:
-        "playwright-cli not found; skipped global install under the test environment.",
+        "agent-browser not found; skipped global install under the test environment.",
       error: "global install skipped during tests",
     };
   }
 
   try {
-    const install = spawnSync("npm", ["install", "-g", "@playwright/cli@latest"], {
+    const install = spawnSync("npm", ["install", "-g", "agent-browser"], {
       stdio: "ignore",
       timeout: 180_000,
       shell: isWindows,
       env: createChildProcessEnvironment(),
     });
-    if (install.status === 0) {
+    if (install.status !== 0) {
+      const reason =
+        install.error?.message ??
+        (typeof install.status === "number"
+          ? `npm install -g agent-browser exited with code ${install.status}`
+          : "npm install -g agent-browser did not complete");
+      return {
+        available: false,
+        alreadyPresent: false,
+        installed: false,
+        summary: `Could not install agent-browser (${reason}); stages will degrade gracefully.`,
+        error: reason,
+      };
+    }
+    const browserInstall = spawnSync("agent-browser", ["install"], {
+      stdio: "ignore",
+      timeout: 300_000,
+      shell: isWindows,
+      env: createChildProcessEnvironment(),
+    });
+    if (browserInstall.status === 0) {
       return {
         available: true,
         alreadyPresent: false,
         installed: true,
-        summary: "Installed playwright-cli via `npm install -g @playwright/cli@latest`.",
+        summary:
+          "Installed agent-browser via `npm install -g agent-browser` and downloaded its browser with `agent-browser install`.",
       };
     }
     const reason =
-      install.error?.message ??
-      (typeof install.status === "number"
-        ? `npm install -g @playwright/cli@latest exited with code ${install.status}`
-        : "npm install -g @playwright/cli@latest did not complete");
+      browserInstall.error?.message ??
+      (typeof browserInstall.status === "number"
+        ? `agent-browser install exited with code ${browserInstall.status}`
+        : "agent-browser install did not complete");
     return {
-      available: false,
+      available: true,
       alreadyPresent: false,
-      installed: false,
-      summary: `Could not install playwright-cli (${reason}); stages will degrade gracefully.`,
+      installed: true,
+      summary: `Installed agent-browser, but its browser download failed (${reason}); stages may need to run \`agent-browser install\` themselves.`,
       error: reason,
     };
   } catch (error) {
@@ -290,22 +311,22 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
       available: false,
       alreadyPresent: false,
       installed: false,
-      summary: `Could not install playwright-cli (${reason}); stages will degrade gracefully.`,
+      summary: `Could not install agent-browser (${reason}); stages will degrade gracefully.`,
       error: reason,
     };
   }
 }
 
 /** Build browser guidance for downstream stage prompts. */
-export function buildPlaywrightCliBootstrapRules(status: PlaywrightCliStatus): string {
+export function buildAgentBrowserBootstrapRules(status: AgentBrowserStatus): string {
   const probeRule = status.available
-    ? "The playwright-cli skill's `playwright-cli` command is on PATH. Do not reinstall it unless a command reports it missing; then probe with `which playwright-cli` (or `npx --no-install playwright-cli --version`), run `npm install -g @playwright/cli@latest` once, and retry. Do not add project dependencies."
-    : `The playwright-cli skill's \`playwright-cli\` command failed setup: "${status.error ?? "unknown error"}". Probe with \`which playwright-cli\` (or \`npx --no-install playwright-cli --version\`) and retry once with \`npm install -g @playwright/cli@latest\`. For permission errors, use a user-writable global prefix; report missing npm/Node or network/registry errors plainly. If still unavailable, surface the manual file path / URL. Do not add project dependencies.`;
+    ? "The agent-browser skill's `agent-browser` command is on PATH. Do not reinstall it unless a command reports it missing; then probe with `which agent-browser`, run `npm install -g agent-browser && agent-browser install` once, and retry. Do not add project dependencies."
+    : `The agent-browser skill's \`agent-browser\` command failed setup: "${status.error ?? "unknown error"}". Probe with \`which agent-browser\` and retry once with \`npm install -g agent-browser && agent-browser install\`. For permission errors, use a user-writable global prefix; report missing npm/Node or network/registry errors plainly. If still unavailable, surface the manual file path / URL. Do not add project dependencies.`;
   return [
     probeRule,
-    "Use `playwright-cli open <url>` to show a local preview; use `playwright-cli snapshot` and `playwright-cli screenshot --filename=<file>` for review evidence.",
-    "If a `playwright-cli` command reports a missing browser executable, run `npx playwright install chromium` once and retry.",
-    "If `playwright-cli` is unavailable after three attempts or the browser runtime still fails, surface the manual file path / URL.",
+    "Use `agent-browser open <url>` to show a local preview; use `agent-browser snapshot` and `agent-browser screenshot <file>` for review evidence. Run `agent-browser skills get core` for the full workflow.",
+    "If an `agent-browser` command reports a missing browser executable, run `agent-browser install` once (on Linux, `agent-browser install --with-deps`) and retry.",
+    "If `agent-browser` is unavailable after three attempts or the browser runtime still fails, surface the manual file path / URL.",
   ].join("\n");
 }
 

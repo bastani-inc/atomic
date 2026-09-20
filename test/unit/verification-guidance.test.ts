@@ -44,7 +44,7 @@ function executionModeContract(prompt: string): void {
 }
 
 function verificationContract(prompt: string): void {
-	assert.match(prompt, /For web or frontend flows[\s\S]*playwright-cli/);
+	assert.match(prompt, /For web or frontend flows[\s\S]*agent-browser/);
 	assert.match(prompt, /For TUI\/terminal automation\/testing, prefer the herdr skill on macOS, Linux and Windows/);
 	assert.match(prompt, /Install Herdr if missing[\s\S]*fall back to the tmux skill or native Windows psmux/);
 	assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);
@@ -203,5 +203,5 @@ test("Ralph video guidance preserves the exact path and does not prescribe brows
 	assert.match(prompt, /For terminal or desktop\/simulator scenarios, use the domain-appropriate tool/);
 	assert.match(prompt, /only if produced/);
 	assert.match(prompt, /alternate screenshots, pane output or executable proof/);
-	assert.doesNotMatch(prompt, /For a user-visible UI scenario[\s\S]*After `playwright-cli open`/);
+	assert.doesNotMatch(prompt, /For a user-visible UI scenario[\s\S]*After `agent-browser open`/);
 });

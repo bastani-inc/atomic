@@ -38,7 +38,7 @@ describe("open-claude-design", () => {
 			run_id: "text",
 			spec_file_url: "text",
 			spec_path: "text",
-			playwright_cli_status: "text",
+			agent_browser_status: "text",
 		});
 		assert.equal(mod.default.outputs.approved_for_export, undefined);
 		assert.equal(mod.default.outputs.refinements_completed, undefined);
@@ -174,7 +174,7 @@ describe("open-claude-design", () => {
 		for (const name of ["user-feedback-1-start", "final-display"]) {
 			const prompt = ctx.calls.prompts[name]?.[0] ?? "";
 			assert.match(prompt, /<browser_use_guidelines>/);
-			assert.match(prompt, /which playwright-cli/);
+			assert.match(prompt, /which agent-browser/);
 			assert.match(prompt, /missing browser executable/);
 		}
 	});

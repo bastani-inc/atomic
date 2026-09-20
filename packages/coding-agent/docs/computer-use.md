@@ -9,7 +9,7 @@ Atomic can work in applications, not just edit code. Computer-use automation, or
 
 This guide explains tool selection, setup, and safe operation. To test a software change and attach the results to a PR, see [Verification and evidence](/workflows/verification).
 
-Jump to [application scripting](#application-scripting-and-apis), [desktop CUA](#desktop-automation-with-pyautogui-and-uv), [browser automation](#browser-automation-with-playwright-cli), [terminal automation](#terminal-automation-with-herdr), or [creative workflows](#creative-work-and-cua-workflows). Platform setup: [macOS](#macos), [Linux](#linux), [Windows](#windows).
+Jump to [application scripting](#application-scripting-and-apis), [desktop CUA](#desktop-automation-with-pyautogui-and-uv), [browser automation](#browser-automation-with-agent-browser), [terminal automation](#terminal-automation-with-herdr), or [creative workflows](#creative-work-and-cua-workflows). Platform setup: [macOS](#macos), [Linux](#linux), [Windows](#windows).
 
 ## Choose the right tool
 
@@ -19,12 +19,12 @@ Start with the result you need, not the application you could click through. If 
 | --- | --- | --- |
 | Create or edit files, such as presentations, documents, spreadsheets, or media | **A file library or CLI** | Use an app API or UI when the library cannot preserve required features, or when you need rendering or visual adjustments. |
 | Interactive terminal or TUI | **Herdr** | Use tmux on macOS/Linux or native Windows psmux when Herdr cannot be used. Ordinary shell commands need no multiplexer. |
-| Browser page or web application | **playwright-cli** | Use desktop CUA for browser chrome or OS dialogs that browser automation cannot reach. Keep existing Playwright test suites for repeatable tests. |
+| Browser page or web application | **agent-browser** | Use desktop CUA for browser chrome or OS dialogs that browser automation cannot reach. Keep existing browser test suites for repeatable tests. |
 | Desktop application or work across apps | **PyAutoGUI, run with uv** | Use native accessibility tools, application scripting, or a CLI when they make the task easier, safer, or more reliable. |
 
 You can combine tools without driving the whole task through a desktop. Generate a presentation with `python-pptx`, then inspect rendered slides for layout problems. Use Blender's Python API to generate repeated objects, then PyAutoGUI for adjustments in the visible editor. Use browser DOM controls rather than desktop clicks for a web form. For a supported web-service operation that does not require browser interaction, an authorized API request may be enough.
 
-Atomic's skills supply operating instructions, not an installed desktop or automatic permission to control one. Load the `herdr`, `playwright-cli`, or `tmux` skill when applicable. Check the installed command's help before using version-dependent options.
+Atomic's skills supply operating instructions, not an installed desktop or automatic permission to control one. Load the `herdr`, `agent-browser`, or `tmux` skill when applicable. Check the installed command's help before using version-dependent options.
 
 **Herdr eligibility:** the bundled Herdr skill requires an explicit user mention or request and an agent running inside a Herdr-managed pane with `HERDR_ENV=1`. Launch Atomic inside Herdr and ask it to use Herdr for terminal work. Do not set the variable manually to bypass the check or control a focused session from outside Herdr. If those conditions are not met, use a suitable fallback.
 
@@ -230,40 +230,41 @@ Prefer complete actions such as `press`, `hotkey`, and `click` over holding inpu
 
 After a timeout or interruption, inspect the current document and any output files. A save or export may have completed even if its acknowledgement was lost. Do not repeat destructive actions blindly.
 
-## Browser automation with playwright-cli
+## Browser automation with agent-browser
 
-For tasks that require browser interaction, prefer [playwright-cli](https://github.com/microsoft/playwright-cli) for websites and web apps on all three desktop platforms. Its snapshots expose page structure and element references, so automation can use actual controls rather than screen coordinates. For data retrieval or batch operations, consider a supported API first when it meets the request and you have permission to use it.
+For tasks that require browser interaction, prefer [agent-browser](https://github.com/vercel-labs/agent-browser) for websites and web apps on all three desktop platforms. Its accessibility-tree snapshots expose page structure and element references, so automation can use actual controls rather than screen coordinates. For data retrieval or batch operations, consider a supported API first when it meets the request and you have permission to use it.
 
 ### Setup and first session
 
-Load the `playwright-cli` skill and check `playwright-cli --help`. If the command is unavailable, check whether the project's installed Playwright exposes `npx --no-install playwright cli --help`. Otherwise install the CLI when permitted:
+Load the `agent-browser` skill and check `agent-browser --help`. If the command is unavailable, install it when permitted:
 
 ```sh
-npm install -g @playwright/cli@latest
-playwright-cli --help
+npm i -g agent-browser
+agent-browser install
+agent-browser --help
 ```
 
-Use the installed CLI's browser setup guidance if a browser is missing. Do not add browser automation dependencies to an unrelated project just to run a one-off task.
+On Linux, use `agent-browser install --with-deps` to install system dependencies alongside the browser. Do not add browser automation dependencies to an unrelated project just to run a one-off task.
 
 Create a uniquely named session, replacing `desktop-demo` if that name is already in use:
 
 ```sh
-playwright-cli -s=desktop-demo open https://example.com --headed
-playwright-cli -s=desktop-demo snapshot
-playwright-cli -s=desktop-demo screenshot --filename=browser-before.png
-playwright-cli -s=desktop-demo close
+agent-browser --session desktop-demo open https://example.com --headed
+agent-browser --session desktop-demo snapshot
+agent-browser --session desktop-demo screenshot browser-before.png
+agent-browser --session desktop-demo close
 ```
 
-For a real task, act between the snapshot and final capture. Read element references from the current snapshot, then use `click`, `fill`, `select`, or `press`. Do not reuse an example reference such as `e5` without discovering what it points to. Refresh the snapshot after navigation or substantial UI changes.
+For a real task, act between the snapshot and final capture. Read element references from the current snapshot, then interact through them. Do not reuse an example reference without discovering what it points to. Refresh the snapshot after navigation or substantial UI changes. Run `agent-browser skills get core` for the authoritative workflow, common patterns, and troubleshooting; `--full` adds the complete command reference.
 
 ### Best practices
 
-- Keep the same session name on every command. Close only sessions you created, not every browser on the machine.
+- Keep the same session name on every command (or set `AGENT_BROWSER_SESSION`). Close only sessions you created, not every browser on the machine.
 - Prefer a fresh profile. Attach to an existing personal browser only when authorized; stored sessions can expose private tabs and credentials.
 - Use headed mode for visual work. Headless mode can verify DOM behavior, but does not establish that desktop integration or native dialogs work.
-- Inspect visible results and relevant console/network output. Use semantic locators and assertions in a maintained Playwright test for repeatable regression coverage.
-- Use `upload` for supported file inputs rather than driving an OS file picker. Switch to CUA or native tooling only for UI outside the page, and then recheck focus before returning to browser control.
-- Treat cookies, saved authentication state, traces, and network logs as sensitive. Do not commit or attach a browser profile as evidence.
+- Inspect visible results and relevant console/network output (`agent-browser console`, `agent-browser errors`, `agent-browser network requests`). Keep semantic locators and assertions in a maintained browser test suite for repeatable regression coverage.
+- Use the CLI's file-upload support for supported file inputs rather than driving an OS file picker. Switch to CUA or native tooling only for UI outside the page, and then recheck focus before returning to browser control.
+- Treat cookies, saved authentication state, and network logs as sensitive. Do not commit or attach a browser profile as evidence.
 - Browser mobile emulation tests a web viewport, not a native Android or iOS application.
 
 For verification captures and recordings, see [browser evidence](/workflows/verification#browser-changes).
@@ -337,7 +338,7 @@ Use `osascript` for AppleScript or JavaScript for Automation when an app's scrip
 
 ### Browser and terminal
 
-playwright-cli uses its own browser session. WebKit coverage is not proof of every Safari-specific desktop behavior. Use an actual target browser when that distinction matters.
+agent-browser uses its own Chrome/Chromium session. Chromium coverage is not proof of every Safari-specific desktop behavior. Use an actual target browser when that distinction matters.
 
 Herdr is the first choice for interactive terminals when eligible. Homebrew provides Herdr and tmux. Preserve the shell, terminal dimensions, and keyboard behavior relevant to the task rather than silently changing them to make a scenario pass.
 
@@ -357,7 +358,7 @@ For recordings, use a supported desktop recorder or OBS with the appropriate dis
 
 ### Browser and terminal
 
-playwright-cli may need browser binaries and system libraries on a minimal Linux install. A headed browser needs a display. Headless browsing remains useful on SSH or CI hosts but does not grant desktop access.
+agent-browser may need browser binaries and system libraries on a minimal Linux install; `agent-browser install --with-deps` installs both. A headed browser needs a display. Headless browsing remains useful on SSH or CI hosts but does not grant desktop access.
 
 Herdr is preferred when eligible; tmux is a practical fallback on local or remote POSIX shells. An SSH terminal can run terminal scenarios without access to the remote desktop. Record which host owns the pane and application.
 
@@ -377,7 +378,7 @@ Snipping Tool or OBS can capture desktop evidence. Check the selected window and
 
 ### Browser and terminal
 
-Use native Windows playwright-cli when the task depends on Windows browsers, downloads, or desktop dialogs. Quote paths and URLs for the shell actually in use; do not paste POSIX shell syntax into PowerShell.
+Use native Windows agent-browser when the task depends on Windows browsers, downloads, or desktop dialogs. Quote paths and URLs for the shell actually in use; do not paste POSIX shell syntax into PowerShell.
 
 Prefer native Herdr when eligible. In PowerShell, check `$env:HERDR_ENV -eq '1'`, use `(Get-Location).Path` for the working directory, and read pane IDs from CLI responses. If Herdr cannot be used, install psmux through its documented Windows installation options and inspect its help. WSL tmux is useful for Linux programs, but is not native Windows ConPTY coverage.
 

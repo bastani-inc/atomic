@@ -280,7 +280,7 @@ describe("ralph", () => {
 			const prompt = ctx.calls.prompts[label]?.[0] ?? "";
 			assert.match(prompt, /Verify correctness end-to-end whenever practical/, label);
 			assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
-			assert.match(prompt, /skill: "playwright-cli"/, label);
+			assert.match(prompt, /skill: "agent-browser"/, label);
 			// PR #2932 prefers Herdr while retaining tmux/psmux as the fallback.
 			assert.match(prompt, /prefer the herdr skill on macOS, Linux and Windows/, label);
 			assert.match(prompt, /fall back to the tmux skill or native Windows psmux/, label);

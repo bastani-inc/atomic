@@ -10,9 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow route `state` no longer accepts `executionPreference`, and unknown state fields are rejected before inference. The router now asks an independent question about the user's stated execution preference, judged from the user's own words in `state.task`, `state.conversation` and `state.constraints`: an explicit inline request yields `none` even when a workflow matches, and an explicit workflow request bypasses the lifecycle-benefit gate without inventing an unregistered workflow. The calling assistant passes evidence only, so it can no longer pre-decide the route.
 
+- The `open-claude-design` workflow output `playwright_cli_status` is now `agent_browser_status`: the initial deterministic setup step probes for and installs the `agent-browser` CLI (`npm install -g agent-browser` + `agent-browser install`) instead of `playwright-cli`. Consumers reading `playwright_cli_status` must switch to the new field name.
+
 ### Changed
 
 - `/workflow connect <run>` no longer prints a `Connected to <run-id>. h hide · ctrl+x leave graph …` notice into the chat; the graph overlay already shows its own key hints, and the picker path never printed one.
+
+- Builtin workflow prompts (`open-claude-design`, `ralph`, goal orchestration, verification guidance, and workflow authoring guidance) now direct browser verification and evidence capture to the `agent-browser` skill and CLI instead of `playwright-cli`, including `agent-browser record start`/`record stop` for QA proof videos.
 
 ## [0.9.20-alpha.4] - 2026-09-20
 

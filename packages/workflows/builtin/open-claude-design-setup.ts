@@ -171,14 +171,14 @@ export function buildReferenceDiscoveryPrompt(args: {
     [
       "instructions",
       [
-        "Use the playwright-cli skill to open each gallery; if `playwright-cli` reports a missing browser executable, follow the bootstrap rules and retry once.",
+        "Use the agent-browser skill to open each gallery; if `agent-browser` reports a missing browser executable, follow the bootstrap rules and retry once.",
         "From each gallery, choose 1-3 fitting designs and CLICK INTO each actual live or project-detail page; do not capture only the grid or thumbnail.",
-        `Capture motion across the entire page: start \`playwright-cli video-start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, scroll smoothly in small increments with waits (using \`playwright-cli run-code\` or repeated \`playwright-cli mousewheel 0 600\`) so animations fire and lazy content loads, then run \`playwright-cli video-stop\`.`,
-        `Also run \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`; this still is the minimum when video is unavailable.`,
+        `Capture motion across the entire page: start \`agent-browser record start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, scroll smoothly in small increments with waits (using repeated \`agent-browser scroll down 600\` or \`agent-browser mouse wheel 600\`) so animations fire and lazy content loads, then run \`agent-browser record stop\`.`,
+        `Also run \`agent-browser screenshot ${join(args.artifactDir, "ref-<site>-<n>.png")} --full\`; this still is the minimum when video is unavailable.`,
         "Record the actual destination URL, title, and author. For each reference, cite observed layout, typography, color, spacing, and motion traits rather than inferred traits.",
         "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in the design-context file; prefer on-brand references and flag departures.",
         "Use ask_user_question to ask which reference direction they prefer, offering 2-4 strongest options plus `None of these fit`. If none fit, ask them to provide a reference image, screenshot, URL, or local file path and record the answer.",
-        "If `playwright-cli` is unavailable or automation is blocked, use web search / page fetch to reach actual pages and mark missing recordings or screenshots. Never fabricate references or visual claims; report galleries with no usable result.",
+        "If `agent-browser` is unavailable or automation is blocked, use web search / page fetch to reach actual pages and mark missing recordings or screenshots. Never fabricate references or visual claims; report galleries with no usable result.",
       ].join("\n"),
     ],
     [

@@ -984,7 +984,7 @@ Skills are reusable expert instructions and process modules. Atomic can select o
 | `skill-creator`     | Create, improve, and evaluate reusable skills.                                               |
 | `tdd`               | Apply a red-green-refactor loop and testing guidance.                                        |
 | `tmux`              | Drive and verify terminal applications.                                                      |
-| `playwright-cli`    | Automate browser interactions and end-to-end UI checks.                                      |
+| `agent-browser`     | Automate browser interactions and end-to-end UI checks.                                      |
 | `qlty`              | Lint, auto-format, and measure code quality across 70+ linters via the qlty CLI.              |
 | `liteparse`         | Extract text, tables, and values from documents and images.                                  |
 | `impeccable`        | Design, audit, and refine frontend interfaces.                                               |

@@ -1,9 +1,9 @@
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import {
   REFERENCE_PRECEDENCE,
-  buildPlaywrightCliBootstrapRules,
+  buildAgentBrowserBootstrapRules,
   discoveryDecisionSchema,
-  ensurePlaywrightCli,
+  ensureAgentBrowser,
   joinResults,
   prepareArtifactDir,
   shouldEarlyExitForBrowser,
@@ -30,7 +30,7 @@ type OpenClaudeDesignOutputs = {
   readonly output_type?: string; readonly design_system?: string; readonly artifact?: string; readonly handoff?: string;
   readonly import_context?: string; readonly run_id?: string;
   readonly artifact_dir?: string; readonly preview_path?: string; readonly preview_file_url?: string; readonly spec_path?: string; readonly spec_file_url?: string;
-  readonly playwright_cli_status?: string;
+  readonly agent_browser_status?: string;
 };
 
 type OpenClaudeDesignContext = {
@@ -47,10 +47,10 @@ type OpenClaudeDesignContext = {
 export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext): Promise<OpenClaudeDesignOutputs> {
   const designContext = ctx;
 
-  // Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
-  // `playwright-cli` command is installed before any design stage runs. Best-effort.
-  const playwrightCli = ensurePlaywrightCli();
-  const browserBootstrapRules = buildPlaywrightCliBootstrapRules(playwrightCli);
+  // Initial deterministic setup step (no LLM): ensure the agent-browser skill's
+  // `agent-browser` command is installed before any design stage runs. Best-effort.
+  const agentBrowser = ensureAgentBrowser();
+  const browserBootstrapRules = buildAgentBrowserBootstrapRules(agentBrowser);
 
   const inputs = designContext.inputs;
   const prompt = inputs.prompt;
@@ -63,20 +63,20 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   const previewFileUrl = `file://${previewPath}`;
   const specFileUrl = `file://${specPath}`;
   const partialArtifactOutputs = {
-    playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
+    agent_browser_status: agentBrowser.summary, run_id: runId, artifact_dir: artifactDir,
     preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
   };
 
   // Browser-centric workflow: the discovery/preview review and the interactive
-  // `live` QA loop need the playwright-cli browser. If it is unavailable, exit
+  // `live` QA loop need the agent-browser browser. If it is unavailable, exit
   // cleanly up front (surfacing artifact paths) rather than generating a design
   // no one can review. Gated off under NODE_ENV=test / runtimes without ctx.exit.
   if (
-    shouldEarlyExitForBrowser(playwrightCli.available, process.env.NODE_ENV) &&
+    shouldEarlyExitForBrowser(agentBrowser.available, process.env.NODE_ENV) &&
     typeof designContext.exit === "function"
   ) {
     designContext.exit({
-      reason: `open-claude-design needs the playwright-cli skill's browser for interactive design review, which is unavailable (${playwrightCli.error ?? playwrightCli.summary}). No design was generated. Install it (\`npm install -g @playwright/cli@latest\` + \`npx playwright install chromium\`) and re-run.`,
+      reason: `open-claude-design needs the agent-browser skill's browser for interactive design review, which is unavailable (${agentBrowser.error ?? agentBrowser.summary}). No design was generated. Install it (\`npm install -g agent-browser\` + \`agent-browser install\`) and re-run.`,
       outputs: partialArtifactOutputs,
     });
   }
@@ -314,6 +314,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     preview_file_url: previewFileUrl,
     spec_path: specPath,
     spec_file_url: specFileUrl,
-    playwright_cli_status: playwrightCli.summary,
+    agent_browser_status: agentBrowser.summary,
   };
 }

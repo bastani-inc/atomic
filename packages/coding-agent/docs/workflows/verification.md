@@ -2,7 +2,7 @@
 
 Verify the behavior that changed, then give the reviewer enough evidence to understand the result. A small fix may need a focused test and a short explanation. An interactive change usually needs a real user scenario as well. A video is useful when it shows something a test log or screenshot cannot; it is not required for every PR.
 
-For tool installation, automation techniques, platform permissions, and general work in applications, read [Computer use](/computer-use). That guide covers Herdr for terminals, playwright-cli for browsers, and PyAutoGUI with uv for desktop CUA on macOS, Linux, and Windows. It also covers native accessibility and application tools when they are easier or more reliable.
+For tool installation, automation techniques, platform permissions, and general work in applications, read [Computer use](/computer-use). That guide covers Herdr for terminals, agent-browser for browsers, and PyAutoGUI with uv for desktop CUA on macOS, Linux, and Windows. It also covers native accessibility and application tools when they are easier or more reliable.
 
 <a id="select-the-verification-environment" />
 
@@ -13,7 +13,7 @@ Start with the project's existing tests, build, typecheck, and lint commands. Ad
 | Changed behavior | Preferred mechanism | What to check |
 | --- | --- | --- |
 | Interactive terminal or TUI | **Herdr**, under its explicit-request and managed-pane requirements; tmux or native Windows psmux as fallbacks | Actual input, rendered output, navigation, resizing, and exit behavior relevant to the change. |
-| Browser/frontend | **playwright-cli** | The user flow and its visible result, with DOM or network assertions where useful. |
+| Browser/frontend | **agent-browser** | The user flow and its visible result, with DOM or network assertions where useful. |
 | Desktop app, simulator, or emulator | **PyAutoGUI with uv**, supplemented by native/app APIs | The visible app scenario and its saved or exported result. |
 | API, library, script, or other non-UI behavior | Existing test runner and shell commands | Inputs, outputs, error handling, and relevant build/type contracts. |
 | Documentation | Documentation checks and example review | Links, navigation, command accuracy, and whether a reader can follow the instructions. |
@@ -37,24 +37,24 @@ After a repair, rerun the affected checks on the new candidate. Label before/aft
 
 ### Browser changes
 
-Use playwright-cli to exercise the actual flow. A screenshot can show layout; a DOM snapshot can show control state; console and network output can help establish why a flow failed. Pair captures with assertions about the result, such as a saved record appearing after reload.
+Use agent-browser to exercise the actual flow. A screenshot can show layout; a DOM snapshot can show control state; console and network output can help establish why a flow failed. Pair captures with assertions about the result, such as a saved record appearing after reload.
 
 For a named browser session you own, the CLI supports captures such as:
 
 ```sh
-playwright-cli -s=pr-check snapshot --filename=after.yaml
-playwright-cli -s=pr-check screenshot --filename=after.png
+agent-browser --session pr-check snapshot > after.yaml
+agent-browser --session pr-check screenshot after.png
 ```
 
 For behavior best shown in motion, check the installed CLI's help, start recording before the relevant actions, and stop afterward:
 
 ```sh
-playwright-cli -s=pr-check video-start flow.webm
+agent-browser --session pr-check record start flow.webm
 # Exercise the scenario here.
-playwright-cli -s=pr-check video-stop
+agent-browser --session pr-check record stop
 ```
 
-Open the saved artifact and confirm it includes the final state. Keep recordings short and focused. Inspect traces, authentication state, and network output for secrets before sharing. See [browser setup and best practices](/computer-use#browser-automation-with-playwright-cli).
+Open the saved artifact and confirm it includes the final state. Keep recordings short and focused. Inspect authentication state and network output for secrets before sharing. See [browser setup and best practices](/computer-use#browser-automation-with-agent-browser).
 
 <a id="terminal-contracts" />
 

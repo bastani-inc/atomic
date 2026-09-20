@@ -51,7 +51,7 @@ export default workflow({
     preview_file_url: Type.Optional(Type.String({ description: "file:// URL for the generated preview.html file." })),
     spec_path: Type.Optional(Type.String({ description: "Absolute path to the generated spec.html file." })),
     spec_file_url: Type.Optional(Type.String({ description: "file:// URL for the generated spec.html file." })),
-    playwright_cli_status: Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the playwright-cli skill's `playwright-cli` command is installed." })),
+    agent_browser_status: Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the agent-browser skill's `agent-browser` command is installed." })),
   },
   run: async (ctx) => await runOpenClaudeDesignWorkflow(withBuiltinContext(ctx)),
 });

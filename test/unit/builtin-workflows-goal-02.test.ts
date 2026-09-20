@@ -342,7 +342,7 @@ describe("goal", () => {
 		assert.match(reviewerPrompt, /stop_review_loop=true/);
 		assert.match(reviewerPrompt, /Verify correctness end-to-end whenever practical/);
 		assert.match(reviewerPrompt, /frontend changes whose correctness depends on backend\/API behavior/);
-		assert.match(reviewerPrompt, /skill: "playwright-cli"/);
+		assert.match(reviewerPrompt, /skill: "agent-browser"/);
 		// PR #2932 prefers Herdr while retaining tmux/psmux as the fallback.
 		assert.match(reviewerPrompt, /prefer the herdr skill on macOS, Linux and Windows/);
 		assert.match(reviewerPrompt, /fall back to the tmux skill or native Windows psmux/);

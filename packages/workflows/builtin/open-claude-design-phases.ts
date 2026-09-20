@@ -287,7 +287,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           "In at most 600 words, return Markdown, not the HTML:",
           "1. Spec written to (absolute path)",
           "2. Sections included",
-          "3. How to open the spec (playwright-cli command + manual fallback path)",
+          "3. How to open the spec (agent-browser command + manual fallback path)",
           "4. Recommended files and components",
           "5. Implementation steps",
           "6. Usage example",
@@ -313,12 +313,12 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
         ["role", "You are an opinionated staff design engineer."],
         [
           "objective",
-          "Show the exported spec with the playwright-cli skill's `playwright-cli` command. Export is complete, so do not solicit changes; direct further changes to a new `/workflow open-claude-design` run and degrade gracefully when browser automation is unavailable.",
+          "Show the exported spec with the agent-browser skill's `agent-browser` command. Export is complete, so do not solicit changes; direct further changes to a new `/workflow open-claude-design` run and degrade gracefully when browser automation is unavailable.",
         ],
         [
           "instructions",
           [
-            `Use the bootstrap rules, run \`playwright-cli open ${specFileUrl}\`, and if a browser executable is missing follow those rules and retry once before \`playwright-cli snapshot\`.`,
+            `Use the bootstrap rules, run \`agent-browser open ${specFileUrl}\`, and if a browser executable is missing follow those rules and retry once before \`agent-browser snapshot\`.`,
             "Do not run `show --annotate` or invite changes because the review session has ended.",
             `Prominently print the manual paths:\n- Final spec: ${specPath}\n- Preview: ${previewPath}`,
             "Unavailable tooling must not block the workflow; return the structured summary.",

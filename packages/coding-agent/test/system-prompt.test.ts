@@ -254,7 +254,7 @@ describe("buildSystemPrompt", () => {
 		assert.match(prompt, /relevant benchmark charts and methodology/);
 		assert.match(prompt, /If live evidence is unavailable, label the dated docs snapshot/);
 		assert.match(prompt, /CUA\), use PyAutoGUI/);
-		assert.match(prompt, /browser automation use the playwright-cli skill/);
+		assert.match(prompt, /browser automation use the agent-browser skill/);
 		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
 		assert.match(prompt, /install it if missing/);
 		assert.match(prompt, /fall back to tmux or native Windows psmux/);

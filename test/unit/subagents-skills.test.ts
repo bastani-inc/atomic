@@ -52,19 +52,19 @@ afterEach(() => {
 });
 
 describe("subagent skill resolution", () => {
-	test("resolves builtin tdd and playwright-cli skills from the repo root", () => {
-		const result = resolveSkills(["tdd", "playwright-cli"], repoRoot);
+	test("resolves builtin tdd and agent-browser skills from the repo root", () => {
+		const result = resolveSkills(["tdd", "agent-browser"], repoRoot);
 
 		const resolvedByName = new Map(result.resolved.map((skill) => [skill.name, skill]));
 
 		assert.deepEqual(result.missing, []);
-		assert.deepEqual([...resolvedByName.keys()].sort(), ["playwright-cli", "tdd"]);
+		assert.deepEqual([...resolvedByName.keys()].sort(), ["agent-browser", "tdd"]);
 		assert.equal(resolvedByName.get("tdd")?.source, "builtin");
 		assert.equal(resolvedByName.get("tdd")?.path, join(builtinSubagentsSkillsRoot, "tdd", "SKILL.md"));
-		assert.equal(resolvedByName.get("playwright-cli")?.source, "builtin");
+		assert.equal(resolvedByName.get("agent-browser")?.source, "builtin");
 		assert.equal(
-			resolvedByName.get("playwright-cli")?.path,
-			join(builtinSubagentsSkillsRoot, "playwright-cli", "SKILL.md"),
+			resolvedByName.get("agent-browser")?.path,
+			join(builtinSubagentsSkillsRoot, "agent-browser", "SKILL.md"),
 		);
 	});
 
@@ -81,14 +81,14 @@ describe("subagent skill resolution", () => {
 	});
 
 	test("builds skill injection for builtin skills without YAML frontmatter", () => {
-		const result = resolveSkills(["tdd", "playwright-cli"], repoRoot);
+		const result = resolveSkills(["tdd", "agent-browser"], repoRoot);
 		const injection = buildSkillInjection(result.resolved);
 
 		assert.equal(result.missing.length, 0);
 		assert.match(injection, /<skill name="tdd">/);
-		assert.match(injection, /<skill name="playwright-cli">/);
+		assert.match(injection, /<skill name="agent-browser">/);
 		assert.doesNotMatch(injection, /<skill name="tdd">\n---\nname: tdd/);
-		assert.doesNotMatch(injection, /<skill name="playwright-cli">\n---\nname: playwright-cli/);
+		assert.doesNotMatch(injection, /<skill name="agent-browser">\n---\nname: agent-browser/);
 	});
 
 	test("prefers a project tdd skill over the builtin tdd skill", () => {
@@ -210,8 +210,8 @@ describe("subagent skill resolution", () => {
 		for (const capability of ["intercom", "contact_supervisor", "todo"]) {
 			assert.match(debuggerRow, new RegExp(`\\b${capability}\\b`));
 		}
-		assert.doesNotMatch(debuggerRow, /browser/);
-		assert.match(guidance, /`tdd`, `playwright-cli`, and `tmux` skills/);
+		assert.doesNotMatch(debuggerRow, /`browser`/);
+		assert.match(guidance, /`tdd`, `agent-browser`, and `tmux` skills/);
 		assert.match(guidance, /Every builtin agent declares `intercom` for live coordination/);
 		assert.match(guidance, /`debugger` and `worker` also declare `contact_supervisor`/);
 		assert.match(guidance, /Parent tool restrictions and disabled Intercom still apply/);

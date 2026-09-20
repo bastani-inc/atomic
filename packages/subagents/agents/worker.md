@@ -6,7 +6,7 @@ inheritProjectContext: true
 inheritSkills: false
 tools: read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
 model: auto
-skills: tdd, playwright-cli, tmux
+skills: tdd, agent-browser, tmux
 defaultContext: fork
 defaultProgress: true
 ---

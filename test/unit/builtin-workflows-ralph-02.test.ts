@@ -187,7 +187,7 @@ describe("ralph", () => {
 		// report format from its forked history and must not repeat them.
 		assert.match(forkedOrchestratorPrompt, /inherited objective[\s\S]*report contracts remain unchanged/i);
 		assert.doesNotMatch(forkedOrchestratorPrompt, /Verify correctness end-to-end whenever practical/);
-		assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
+		assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "agent-browser"/);
 		assert.doesNotMatch(forkedOrchestratorPrompt, /<acceptance_matrix>/);
 		assert.doesNotMatch(ctx.calls.prompts["orchestrator-2"]?.[0] ?? "", /project_initialization_preflight/);
 		assert.equal(ctx.calls.task.includes("planner-1"), false);

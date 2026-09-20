@@ -3,7 +3,7 @@ name: codebase-analyzer
 description: Analyzes codebase implementation details. Call the codebase-analyzer agent when you need to find detailed information about specific components.
 tools: read, search, find, ls, todo, intercom
 model: auto
-skills: tdd, playwright-cli, tmux
+skills: tdd, agent-browser, tmux
 ---
 
 ## Role and goal

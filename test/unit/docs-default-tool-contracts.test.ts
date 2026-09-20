@@ -67,7 +67,7 @@ test("computer use and initialization troubleshooting have live learning-path de
 	for (const heading of [
 		"Application scripting and APIs",
 		"Desktop automation with PyAutoGUI and uv",
-		"Browser automation with playwright-cli",
+		"Browser automation with agent-browser",
 		"Terminal automation with Herdr",
 		"macOS",
 		"Linux",

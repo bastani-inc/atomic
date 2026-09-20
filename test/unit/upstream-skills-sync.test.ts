@@ -283,8 +283,8 @@ const BUILTIN_LOADER_RELOAD_TIMEOUT_MS = 120_000;
 describe("synced upstream skill trees", () => {
 	test("discovers the renamed subagent skills and removes the old name", () => {
 		clearSkillCache();
-		const result = resolveSkills(["playwright-cli", "liteparse", "effective-liteparse"], root);
-		assert.deepEqual(result.resolved.map((skill) => skill.name).sort(), ["liteparse", "playwright-cli"]);
+		const result = resolveSkills(["agent-browser", "liteparse", "effective-liteparse"], root);
+		assert.deepEqual(result.resolved.map((skill) => skill.name).sort(), ["agent-browser", "liteparse"]);
 		assert.deepEqual(result.missing, ["effective-liteparse"]);
 		assert.match(readFileSync(join(subagentSkills, "liteparse/SKILL.md"), "utf8"), /^---\r?\nname: liteparse\r?$/m);
 		assert.equal(existsSync(join(subagentSkills, "effective-liteparse")), false);
@@ -311,18 +311,7 @@ describe("synced upstream skill trees", () => {
 	);
 
 	test("bundles meaningful upstream skill content without Atomic scaffolding", () => {
-		assertFiles(join(subagentSkills, "playwright-cli"), [
-			"SKILL.md",
-			"references/element-attributes.md",
-			"references/playwright-tests.md",
-			"references/request-mocking.md",
-			"references/running-code.md",
-			"references/session-management.md",
-			"references/storage-state.md",
-			"references/test-generation.md",
-			"references/tracing.md",
-			"references/video-recording.md",
-		]);
+		assertFiles(join(subagentSkills, "agent-browser"), ["SKILL.md"]);
 		assertFiles(join(subagentSkills, "liteparse"), ["SKILL.md", "scripts/search.py"]);
 		assertFiles(join(workflowSkills, "impeccable"), [
 			"SKILL.md",
@@ -368,11 +357,11 @@ describe("synced upstream skill trees", () => {
 		]) {
 			assert.equal(existsSync(join(workflowSkills, "impeccable", stale)), false, `stale upstream file: ${stale}`);
 		}
-		assertNoScaffolding(join(subagentSkills, "playwright-cli"));
+		assertNoScaffolding(join(subagentSkills, "agent-browser"));
 		assertNoScaffolding(join(subagentSkills, "liteparse"));
 		assertNoScaffolding(join(workflowSkills, "impeccable"));
 		assertPacked(join(root, "packages/subagents"), [
-			"skills/playwright-cli/references/test-generation.md",
+			"skills/agent-browser/SKILL.md",
 			"skills/liteparse/scripts/search.py",
 		]);
 		assertPacked(join(root, "packages/workflows"), [
@@ -487,7 +476,7 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("contains no accidental symlinks", () => {
-		assertRegularTree(join(subagentSkills, "playwright-cli"));
+		assertRegularTree(join(subagentSkills, "agent-browser"));
 		assertRegularTree(join(subagentSkills, "liteparse"));
 		assertRegularTree(join(workflowSkills, "impeccable"));
 	});

@@ -93,13 +93,13 @@ describe("open-claude-design setup", () => {
 	});
 
 	describe("reference discovery", () => {
-		test("buildReferenceDiscoveryPrompt names every gallery + the playwright bootstrap", () => {
+		test("buildReferenceDiscoveryPrompt names every gallery + the agent-browser bootstrap", () => {
 			const prompt = buildReferenceDiscoveryPrompt({
 				prompt: "Design a landing page",
 				outputType: "page",
 				designContextFile: "/tmp/run/design-context.md",
 				artifactDir: "/tmp/run",
-				browserBootstrapRules: "which playwright-cli ... @playwright/cli",
+				browserBootstrapRules: "which agent-browser ... npm install -g agent-browser",
 			});
 			for (const site of REFERENCE_DESIGN_SITES) {
 				assert.ok(prompt.includes(site.url), site.url);
@@ -109,9 +109,9 @@ describe("open-claude-design setup", () => {
 			assert.ok(prompt.includes("Read the file at /tmp/run/design-context.md"));
 			// The research payload must not travel inline (issue #2121).
 			assert.doesNotMatch(prompt, /Found tokens/);
-			assert.match(prompt, /video-start/);
+			assert.match(prompt, /record start/);
 			assert.match(prompt, /scroll-through video/i);
-			assert.match(prompt, /screenshot --full-page/);
+			assert.match(prompt, /screenshot .*--full/);
 			assert.match(prompt, /CLICK INTO/);
 			assert.match(prompt, /destination URL/i);
 			assert.match(prompt, /ds-\* discovery evidence/i);

@@ -871,7 +871,7 @@ Research context moves between stages as artifact files, not inline prompt paylo
 | `prompt`              | `text`    | ✓        | —       | Design brief or description.                                                |
 | `discover_references` | `boolean` | —        | `true`  | Discover current gallery references with browser tooling; set false to skip. |
 
-Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
+Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `agent_browser_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 
 ---
 

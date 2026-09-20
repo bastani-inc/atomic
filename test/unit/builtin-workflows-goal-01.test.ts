@@ -209,7 +209,7 @@ describe("goal", () => {
 		assert.match(prompt, /Use the current checkout and external state over summaries/);
 		assert.match(prompt, /Evidence for every explicit clause/);
 		assert.match(prompt, /Verify correctness end-to-end whenever practical/);
-		assert.match(prompt, /skill: "playwright-cli"/);
+		assert.match(prompt, /skill: "agent-browser"/);
 		// PR #2932 prefers Herdr while retaining tmux/psmux as the fallback.
 		assert.match(prompt, /prefer the herdr skill on macOS, Linux and Windows/);
 		assert.match(prompt, /fall back to the tmux skill or native Windows psmux/);

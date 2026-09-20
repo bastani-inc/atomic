@@ -9,7 +9,7 @@ description: |
   - Code that has gotten messy after several iterations.
 tools: read, edit, write, search, find, ls, bash, todo, intercom
 model: auto
-skills: tdd, playwright-cli, tmux
+skills: tdd, agent-browser, tmux
 ---
 
 ## Role and goal

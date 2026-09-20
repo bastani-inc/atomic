@@ -144,7 +144,6 @@ function scanPath(file: string): boolean {
 
 function activeSubagentContractPath(file: string): boolean {
 	if (isChangelogPath(file) || file.startsWith("research/") || file.startsWith("test/")) return false;
-	if (file === "packages/subagents/skills/playwright-cli/references/test-generation.md") return false;
 	if (
 		file === "specs/2026-03-02-opencode-delegation-streaming-parity.md" ||
 		file === "specs/2026-08-04-subagents-inprocess-runner.md"

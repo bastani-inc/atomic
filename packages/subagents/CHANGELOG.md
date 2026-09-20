@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the bundled `playwright-cli` skill with the `agent-browser` skill ([vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) v0.38.1) for browser automation, end-to-end UI checks, screenshots, and reviewable video recording. The `worker`, `debugger`, `code-simplifier`, `codebase-analyzer`, and `codebase-online-researcher` subagents now load `agent-browser` and drive the `agent-browser` command instead of `playwright-cli`.
+
+### Removed
+
+- Removed the bundled `playwright-cli` skill and its reference guides in favor of the `agent-browser` skill.
+
 ## [0.9.20-alpha.4] - 2026-09-20
 
 ### Added

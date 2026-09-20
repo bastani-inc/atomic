@@ -210,7 +210,7 @@ Inputs:
 | `prompt` | text | yes | — | What to design. The discovery stage refines the brief, output type, and references. |
 | `discover_references` | boolean | no | `true` | Discover current design references and feed them to generation. |
 
-The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes one live `preview.html`, and exports an HTML spec and implementation handoff after the review session. Browser-backed preview and review use the `playwright-cli` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads` with explicit read instructions.
+The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes one live `preview.html`, and exports an HTML spec and implementation handoff after the review session. Browser-backed preview and review use the `agent-browser` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads` with explicit read instructions.
 
 **The run-level gate.** The browser review is a long-poll, not an `awaiting_input` graph node, so the run first pauses at a deterministic prompt that names the preview path and `file://` URL. Answer `Start live review` to open the browser session — the session-start stage prints the live `http://` review URL in its first lines of output, visible via `/workflow connect <run-id>` — or `Skip remaining review rounds and export as-is` to export the current preview without opening a session. In headless runs the gate is skipped.
 
@@ -220,7 +220,7 @@ The workflow uses Atomic's bundled live-review helper, not a project-vendored co
 
 **Ending the review is the user's job.** The session waits through any amount of silence — a poll timeout is not an ending — so the run advances only when the user clicks exit in the Impeccable overlay, closes the browser tab, or says `exit live`. The run-level gate says so before the session opens, and the session-start stage prints it again directly under the live review URL. Ending the session exports the design as it then stands: there is no further round and no confirmation step.
 
-No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
+No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `agent_browser_status`. It has no implicit `result` output.
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"

@@ -68,7 +68,7 @@ export function renderGoalOrchestratorPrompt(
       ["objective", [
         `Read the goal ledger at ${args.ledgerPath} and latest review artifacts from the workflow read hint.`,
         "Perform the initialization preflight, then delegate the smallest coherent work that satisfies the literal objective, acceptance criteria, current state, and consolidated findings.",
-        "Run or delegate repository-relevant validation, including end-to-end playwright-cli or tmux validation for executable user scenarios. Incorporate results and follow-ups through completion; report a true blocker and safest partial state without inventing success.",
+        "Run or delegate repository-relevant validation, including end-to-end agent-browser or tmux validation for executable user scenarios. Incorporate results and follow-ups through completion; report a true blocker and safest partial state without inventing success.",
         GOAL_ORCHESTRATOR_BEST_PRACTICES,
       ].join("\n")],
     ]),

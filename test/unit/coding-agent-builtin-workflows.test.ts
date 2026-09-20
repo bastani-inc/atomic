@@ -289,7 +289,7 @@ describe("coding-agent builtin resources", () => {
 				"impeccable",
 				"intercom",
 				"liteparse",
-				"playwright-cli",
+				"agent-browser",
 				"prompt-engineer",
 				"qlty",
 				"research-codebase",
