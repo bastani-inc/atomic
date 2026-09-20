@@ -56,7 +56,7 @@ The catalog uses the same effective discovery rules as execution, so overridden 
 
 ## Let Atomic choose the child model
 
-All builtin subagents default to `model: "auto"`. Atomic selects a model and reasoning effort from your available catalog using its shipped evaluation guidance before launching each child. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
+All builtin subagents default to `model: "auto"`. Atomic selects a model and reasoning effort from your available catalog using its shipped evaluation guidance before launching each child, favouring cheaper models for exploration and routine implementation and stronger ones for review and verification. You can also set `auto` on a custom agent or call. A concrete per-call model overrides the builtin default. Custom agents with no model keep their existing inheritance. See [Automatic model selection](/subagents/reference#automatic-model-selection) for configuration and failure handling.
 
 ## Subagent execution is non-interactive
 

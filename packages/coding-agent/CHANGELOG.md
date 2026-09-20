@@ -4,6 +4,10 @@
 
 ### Changed
 
+- The `model_selection_guide` sent with automatic model routing, and the [Model Selection](/models/model-selection) guide it mirrors, now pair each stage role with a model cost tier as well as a thinking level: cheap, fast models for codebase exploration and routine implementation, frontier models for code review, verification, and final approval, and mid-priced models for orchestration and reporting. The router is told to match the role tier first, so high-volume tool-driven work stops defaulting to the most expensive candidate. The larger guide is paid for by lowering the model-selection task excerpt cap to 9,000 JSON-encoded UTF-8 bytes (was 10,000); execution tasks are still sent in full.
+
+### Changed
+
 - Automatic subagent and workflow-stage model selection now sends a fixed `model_selection_guide` state field next to `evals`: the "Benchmarks are evidence, not policy" and "Role-based thinking effort" sections from [Model Selection](/models/model-selection), so the router applies the role defaults and effort rules rather than only the dated benchmark tables. To keep every Jev request within its input budget, the model-selection task excerpt cap is now 10,000 JSON-encoded UTF-8 bytes (was 12,000); execution tasks are still sent in full.
 
 ### Fixed

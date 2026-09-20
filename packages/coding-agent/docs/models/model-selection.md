@@ -33,15 +33,17 @@ Missing evidence is unknown, not zero. A rounded lead is not proof of significan
 
 Use these starting defaults unless the user requests a level. Higher effort can improve hard reasoning, but it also costs more and can be slower. `max` is an exception, not a default.
 
-| Stage role | Default thinking level | Why |
-| --- | --- | --- |
-| Codebase exploration: locating files, reading code, tracing call sites | `minimal` or `low` | Tool-driven lookups need speed, not deliberation; escalate to mapping or analysis only when the question becomes a design judgement. |
-| Coding, implementation, routine fixes | `low` or `medium` | Validate with tools and review instead of spending maximum reasoning on every edit. |
-| Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | `high` or `xhigh` | Spend reasoning where missing a defect is costly. |
-| Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | `high` | Resolve ambiguity before downstream work depends on it. |
-| Orchestration, delegation, and multi-stage coordination | `medium` or `high` | Judge scope, sequence work, and integrate results without re-deriving what delegated stages already verified. |
-| User-impact review and final reporting | `medium` | Preserve evidence and communicate clearly without unnecessary reasoning. |
-| Deterministic checks | No model call | Run tests, typechecks, probes, and scripts directly. |
+Price is per task. Candidate cost is USD per million tokens, and roles differ in token volume and in what a mistake costs. High-volume, tool-checked roles such as exploration and routine implementation default to cheaper, faster models; roles where a missed defect is expensive, such as review, verification, and final approval, justify frontier models at high effort. Pick the tier first, then the effort within it; do not compensate for a cheap model with `max` or for an expensive one with `minimal`.
+
+| Stage role | Default thinking level | Model cost tier | Why |
+| --- | --- | --- | --- |
+| Codebase exploration: locating files, reading code, tracing call sites | `minimal` or `low` | Cheap, fast | Tool-driven lookups need speed, not deliberation; escalate to mapping or analysis only when the question becomes a design judgement. |
+| Coding, implementation, routine fixes | `low` or `medium` | Cheap or mid-priced | Runs many times per task and is validated by tools and review afterwards. |
+| Code review, test design, failure analysis, security, identity, adversarial challenge, final approval | `high` or `xhigh` | Frontier | A missed defect is the expensive outcome; spend the strongest model and reasoning here. |
+| Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage | `high` | Frontier or mid-priced | Resolve ambiguity before downstream work depends on it. |
+| Orchestration, delegation, and multi-stage coordination | `medium` or `high` | Mid-priced | Judge scope, sequence work, and integrate results without re-deriving what delegated stages already verified. |
+| User-impact review and final reporting | `medium` | Mid-priced | Preserve evidence and communicate clearly without unnecessary reasoning. |
+| Deterministic checks | No model call | — | Run tests, typechecks, probes, and scripts directly. |
 
 An explicit user request wins over these defaults, but the requested level must exist for the selected catalog entry. Do not invent unsupported suffixes. If `xhigh` is unavailable, use `high` rather than automatically promoting to `max`; choose another catalog model or leave the stage unpinned if neither fits.
 
