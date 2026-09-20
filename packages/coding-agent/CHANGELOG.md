@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Workflow stage chats and other transcript views built from session messages no longer print a bare dim `system` line for the session's system-prompt message.
+- Workflow stage chats and other transcript views built from session messages no longer print a bare dim "system" line for the session's system-prompt message.
 - Auto model routing no longer prints `Text was truncated to fit the input budget. Continuing with the shortened text.` to the console when it shortens a long task for its own routing request; the execution prompt was never affected.
 
 ## [0.9.20-alpha.4] - 2026-09-20
