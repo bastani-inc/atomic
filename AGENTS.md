@@ -95,7 +95,7 @@ test("hello world", () => {
 });
 ```
 
-For regression tests that fix a GitHub issue, add a comment with the issue number next to the test.
+For regression tests that fix a GitHub issue, put the issue number in the test name (for example `test("keeps cwd on resume (#123)", …)`) rather than in a comment.
 
 ### Replacing Bun globals in tests
 
@@ -234,7 +234,7 @@ If a user asks to publish a release or prerelease, route the request through the
 ## Docs
 
 - ALWAYS keep the user-facing docs in `packages/coding-agent/docs` up-to-date with the latest changes after you make changes. Prefer to keep other docs up-to-date as well, but the coding-agent docs are the most important since they are user-facing and often consulted by users and other agents.
-- `packages/coding-agent/docs` is user-facing documentation. Explain how to use, configure, and troubleshoot Atomic. Do not include internal implementation details, test infrastructure, debugging histories, verification evidence, or maintainer-only design notes. Keep those in repository-level docs, code/test comments, or PR descriptions. Keep user guides concise and focused on what users need to know.
+- `packages/coding-agent/docs` is user-facing documentation. Explain how to use, configure, and troubleshoot Atomic. Do not include internal implementation details, test infrastructure, debugging histories, verification evidence, or maintainer-only design notes. Keep those in repository-level docs or PR descriptions. Keep user guides concise and focused on what users need to know.
 - Update user guides only when a change affects how users use, configure, or troubleshoot Atomic. An internal optimization does not require a guide edit merely to say that something is faster, uses less CPU, or needs no configuration. If there is no actionable user guidance, leave the guide unchanged. Put user-visible performance improvements in the package changelog and measurements or implementation rationale in repository-level notes or the PR description.
 - To update docs, prefer using your `release-docs` workflow to thoroughly update all relevant docs with the latest changes. If you need to make a quick fix or update, you can also edit the markdown files directly, but make sure to keep them comprehensive and up-to-date.
 
