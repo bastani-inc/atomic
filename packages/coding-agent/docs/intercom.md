@@ -207,8 +207,13 @@ intercom({
 | **Clarification request** | Worker uses `ask` | Worker needs the answer to proceed. Blocks until reply. |
 | **Discovery escalation** | Worker uses `ask` | Worker needs approval before changing course. |
 | **Completion report** | Worker uses `ask` | Planner might have follow-up instructions or the next task. |
+| **Peer handoff** | Sibling uses `send` | A locator, researcher, or debugger passes paths, evidence, or a reproduction straight to the sibling that needs it. |
+| **Peer challenge** | Sibling uses `ask` | One reviewer or worker questions another's finding with evidence; each still returns its own verdict. |
+| **Ownership claim** | Sibling uses `send` | Parallel writers divide files or serialize a shared suite, build, or migration. |
 
-The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, and handling subagent escalations on the orchestrator side.
+Coordination is not only vertical. Subagents launched together and workflow stages in one invocation share an Intercom group, so they can list each other and message directly to debate, connect, learn, and coordinate as peers. `contact_supervisor` is only for the supervisor. See [Peer coordination](/subagents#peer-coordination) for how to enable it from the launching prompt.
+
+The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, handling subagent escalations on the orchestrator side, and peer coordination between subagents and workflow stages.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 

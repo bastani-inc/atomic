@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `open-claude-design` live review loop drives the bundled Impeccable launcher's `live-poll` verb instead of the removed `live-poll.mjs` script, running `impeccable.cmd` through the platform shell on Windows.
 
+- Workflow authoring guidance now describes stages in one invocation as peers: a live stage can `intercom list` its siblings and `send`/`ask` them directly, queue `send` to a known pending sibling, and `ask` a completed sibling that retains a valid conversation, with prompts expected to name the peers, bound the exchange, and keep each stage's structured result its own.
+
 ### Removed
 
 - The bundled Impeccable skill no longer ships its Node `scripts/*.mjs` helpers, `scripts/detector/`, `scripts/live/`, `scripts/lib/`, or the Codex-only `agents/` definitions; upstream 4.3.1 moved that logic into the engine binary and the `.pi` distribution carries no Codex agent files.

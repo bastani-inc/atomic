@@ -98,6 +98,12 @@ Targeted `kill` stops only the selected child and cannot be resumed. Explicit ba
 
 Completed, failed, interrupted, and cancelled noninteractive children cannot answer new Intercom asks, even when their retained registration still says `idle`. Such asks fail immediately with an explicit terminal-child error; an admitted ask also fails if its child terminates before replying. Launch a fresh child with the required context for follow-up work. This does not restrict live interactive idle sessions or workflow-stage post-mortem conversations, and does not change `send` delivery semantics.
 
+### Peer coordination
+
+Children do not have to route everything through the supervisor. Children launched in one parallel set, or with the same explicit `group`, share an Intercom group, and children launched by a workflow stage inherit that stage's invocation group. A child can run `intercom({ action: "list" })` to see live siblings and use ordinary `send` or `ask` with them directly: a locator hands file paths to the analyzer, two writers agree who owns which files or who runs the shared test suite, a debugger reuses a sibling's verified reproduction, or one reviewer challenges another's finding with evidence before each returns its own verdict. `contact_supervisor` stays reserved for supervisor decisions, and ordinary Intercom group restrictions still apply.
+
+Peers do not coordinate spontaneously. When related work runs in parallel, name the peers and the expected exchange in each task prompt, keep it bounded, and require each child to return its own complete result rather than deferring to a sibling. Scope, product, and architecture decisions still go to the supervisor. Peer asks and one blocking supervisor request can wait concurrently in the same child; mutual asks work as long as both children process inbound work. The `intercom` skill (`/skill:intercom`) has copy-paste peer patterns.
+
 ### Single-child handoff
 
 A claimed parent-targeted blocking request ends a single child and returns its question, attachments, agent identity, and `[TASK_CONTEXT]` through the parent's `subagent` call. Start a fresh child with the answer and handoff. In parallel runs and collected sibling launches, the requesting child instead stays alive and continues its ongoing execution after receiving the supervisor's reply.

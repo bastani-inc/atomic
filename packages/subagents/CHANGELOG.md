@@ -6,6 +6,8 @@
 
 - Replaced the bundled `playwright-cli` skill with the `agent-browser` skill ([vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) v0.38.1) for browser automation, end-to-end UI checks, screenshots, and reviewable video recording. The `worker`, `debugger`, `code-simplifier`, `codebase-analyzer`, and `codebase-online-researcher` subagents now load `agent-browser` and drive the `agent-browser` command instead of `playwright-cli`.
 
+- Subagent guidance now states that children can coordinate with each other, not only with the supervisor. The runtime Intercom bridge instruction, the orchestrator prompt guidance, the `subagent` skill, and the `worker` and `debugger` agent definitions describe when same-group siblings should use ordinary `intercom` `list`/`send`/`ask` to debate findings with evidence, hand off paths and reproductions, claim shared files or expensive steps, and learn what a sibling already verified, while `contact_supervisor` stays reserved for supervisor decisions and each child still returns its own result.
+
 ### Removed
 
 - Removed the bundled `playwright-cli` skill and its reference guides in favor of the `agent-browser` skill.

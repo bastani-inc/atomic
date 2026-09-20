@@ -31,12 +31,14 @@ const DEFAULT_INTERCOM_TARGET_PREFIX = "subagent-chat";
 export const INTERCOM_BRIDGE_MARKER = "Intercom orchestration channel:";
 const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 
-Use contact_supervisor first. It resolves the supervisor session "{orchestratorTarget}" and run metadata automatically.
+Use contact_supervisor for the supervisor. It resolves the supervisor session "{orchestratorTarget}" and run metadata automatically.
 - Need a decision, blocked, approval, or product/API/scope ambiguity: contact_supervisor({ reason: "need_decision", message: "<question>" })
 - In parallel runs, blocking requests wait here and the supervisor's correlated reply lets this same child continue; siblings keep running. Do not request a replacement launch. A single-child claimed decision/interview instead ends with a dynamic [TASK_CONTEXT] fresh-child handoff; follow the actual tool result.
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
 - Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
-- Generic intercom is lower-level plumbing/fallback only: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
+- Toward the supervisor, generic intercom is the fallback only when contact_supervisor is unavailable: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
+
+Use ordinary intercom for peers. Sibling agents launched with you, and workflow stages in your invocation, share your Intercom group; intercom({ action: "list" }) shows who is live. Send or ask them directly to share findings and file locations, divide ownership of files or expensive steps, challenge a conclusion with evidence, or learn what a sibling already verified, instead of routing that through the supervisor. Peer asks and one blocking supervisor request may wait at the same time; keep exchanges bounded, decide on evidence rather than deference, and still return your own complete result. Scope, product, and architecture decisions remain supervisor decisions. Do not invent targets.
 
 Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`;
 

@@ -930,7 +930,7 @@ Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile`
 Context mode is an execution property configured with `context`/`forkFromSessionFile`; the model cannot act on context mode, so keep it out of prompt text:
 
 - **Never describe the stage's own context mode.** Sentences like "you are running in a fresh context window", "your context is clean/non-forked", or "this is a forked session" add tokens without changing behavior. State the concrete action, inputs, and success criteria instead.
-- **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" do not help and may confuse the model. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage needs through files, declared outputs, and `reads`.
+- **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages' transcripts, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" do not help and may confuse the model. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage needs through files, declared outputs, and `reads`. If a stage should talk to a live peer, say so explicitly and tell it how to find that peer with `intercom list`; see [peer coordination between stages](#peer-coordination-between-stages).
 - **Forked continuation prompts send only the delta.** A forked stage already carries the role, contracts, guidance, and output format from its own earlier prompts, so repeating them uses more tokens and can make the two copies diverge. Send what changed since the fork point — new artifacts, updated state, the next action — plus a one-line pointer back ("the contracts and report format established earlier in this thread still apply unchanged") instead of re-injecting the full text.
 - **Keep one canonical copy of shared contracts.** When fresh and forked variants of a stage share guidance, render the full contract only in the prompt that first establishes it and reference it from continuations. If a continuation needs a contract restated (for example, after a schema change), that is a new contract version, not a repeat.
 
@@ -1335,6 +1335,17 @@ These patterns organize work **inside one root lifecycle**. They do not replace 
 | **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
 
 Constructive quorum relies on existing Intercom mechanics: every workflow invocation gets its own stable Intercom group, and parallel stages and delegated subagents inherit it when they can use Intercom. Reviewers can therefore reach siblings without authoring group plumbing; keep the evidence exchange bounded and leave quorum counting to the deterministic reducer.
+
+#### Peer coordination between stages
+
+Quorum is one instance of a general capability: stages in the same invocation are peers, not only targets for the supervisor to steer. A live stage can `intercom({ action: "list" })` its siblings and `send`/`ask` them directly to debate a finding with evidence, hand off file paths and reproductions, claim shared files or an expensive suite or build, or learn what a sibling already verified. A `send` to a known pending sibling queues until that stage starts, and an `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Delegated subagents inside a stage inherit the same group, so a stage's children can talk to each other and to sibling stages. Named subgroups (`group: "name"` or `group: true`) isolate their members from sibling subgroups while the invocation context keeps directional control over them.
+
+Design peer exchange the way you design any other handoff:
+
+- Stages do not coordinate spontaneously. Say in each prompt who the peers are (or the `list` pattern that finds them) and what they exchange.
+- Bound it: one evidence round, one ownership claim per shared step, one ask per fact. An unbounded conversation between parallel stages burns budget and blurs who decided what.
+- Keep every stage's output its own. A peer's claim is evidence to inspect, not a verdict to copy; each stage still returns its own structured result to the reducer or downstream stage.
+- Peer messages are activity inside already-running stages, not graph edges. They never replace `previous`, artifacts, or declared outputs for durable handoffs, and scope or acceptance decisions stay with a supervisor or a `ctx.ui` gate.
 
 #### Pattern diagrams
 

@@ -86,7 +86,7 @@ subagent({ agent: "codebase-analyzer", task: "Trace the auth flow", model: "anth
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
 
-Every builtin agent declares `intercom` for live coordination; `debugger` and `worker` also declare `contact_supervisor`. Parent tool restrictions and disabled Intercom still apply. Custom agents can coordinate when they declare `intercom` or when the runtime bridge supplies `contact_supervisor`; see [Subagent + Intercom Coordination](#subagent--intercom-coordination).
+Every builtin agent declares `intercom` for live coordination with the supervisor and with same-group peers; `debugger` and `worker` also declare `contact_supervisor`. Parent tool restrictions and disabled Intercom still apply. Custom agents can coordinate when they declare `intercom` or when the runtime bridge supplies `contact_supervisor`; see [Subagent + Intercom Coordination](#subagent--intercom-coordination).
 
 ## Prompting specialist subagents
 
@@ -287,7 +287,7 @@ subagent({
 
 Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the bridge can give eligible child agents a private coordination tool back to the parent session without connecting either session automatically. If a child may need live coordination, invoke `intercom({ action: "status" })` in the parent before launching it; the child connects when it first invokes `contact_supervisor` or `intercom`.
 
-All builtin specialists can coordinate through `intercom`. `debugger` and `worker` also declare `contact_supervisor`; use it for supervisor requests when the bridge supplies it. Explicit parent tool allowlists, exclusions, `noTools`, and disabled builtins are never bypassed to restore coordination.
+All builtin specialists can coordinate through `intercom`, both upward to the supervisor and sideways to peers in the same Intercom group. `debugger` and `worker` also declare `contact_supervisor`; use it for supervisor requests when the bridge supplies it. Explicit parent tool allowlists, exclusions, `noTools`, and disabled builtins are never bypassed to restore coordination.
 
 Custom agents that do have the bridge tool can ask the parent for a decision:
 
@@ -315,7 +315,29 @@ Message conventions:
 - `reason: "progress_update"` is non-blocking and should stay concise.
 - Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side subagents send grouped completion results through the intercom companion: one grouped message per foreground parent run and one per detached child completion. Acknowledged delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved.
 
-Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target.
+For supervisor requests, prefer `contact_supervisor`; use generic `intercom` toward the supervisor only when the bridge instructions provide the target and `contact_supervisor` is unavailable. For peers, discover targets with `intercom({ action: "list" })`. Never invent a target.
+
+### Peer coordination
+
+Coordination is not only vertical. Children launched in the same parallel set, or in the same explicit `group`, share one Intercom group, and workflow stages share their invocation group. Any of them can run `intercom({ action: "list" })`, see live siblings, and `send` or `ask` them directly. `contact_supervisor` is reserved for the supervisor; everything peer-to-peer goes through ordinary `intercom`.
+
+Use peer messaging when a sibling is the better source than the supervisor:
+
+- **Debate**: a reviewer challenges another reviewer's blocking finding with concrete evidence; each still returns its own verdict (see the constructive-quorum pattern in `/skill:intercom`).
+- **Connect**: a locator hands file paths and line ranges straight to the analyzer working the same question instead of round-tripping through the parent.
+- **Learn**: a worker asks the sibling that already reproduced the bug for the exact command and environment rather than rediscovering it.
+- **Coordinate**: parallel writers claim ownership of shared files, serialize expensive suites or builds, and announce when a shared step is done.
+
+```typescript
+// In a child: find who else is in the group, then talk to them
+intercom({ action: "list" })
+intercom({ action: "send", to: "worker-2", message: "I own src/api/*; leave those files to me and take src/cli/*." })
+intercom({ action: "ask", to: "reviewer-1", message: "You flagged the retry loop as unbounded. I read a max of 5 attempts at client.ts:88 — what did you see?" })
+```
+
+Peer asks and one blocking supervisor request may wait concurrently in the same child; a peer reply returns to the asking child with its context intact. Mutual asks work as long as both sides process inbound work. Keep exchanges bounded and evidence-driven, do not defer to a peer's conclusion without inspecting the evidence, and still return your own complete result. Peer messages do not replace the supervisor for scope, product, or architecture decisions.
+
+To enable this from the parent, launch related work as one parallel set (or an explicit `group`) and say in each task prompt who the peers are and what they should exchange; children do not coordinate spontaneously without that instruction. Use `group: true` to give one parallel set its own private group, or a named group to let later launches join the same conversation.
 
 If intercom messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
@@ -441,9 +463,11 @@ Give subagents specific tasks rather than vague mandates.
 - "X is broken — make it pass" → `debugger`
 - "X works but it's ugly — clean it up" → `code-simplifier`
 
-### Escalate decisions upward
+### Escalate decisions upward, coordinate sideways
 
 All builtin specialists can use Intercom when permitted by the parent. Use `contact_supervisor` for parent decisions when the active bridge supplies it. Resolve known scope, product, and architecture questions before launching any writer. If the parent realizes mid-run that the scope is wrong, steer a reachable child or kill it.
+
+When several children work related angles, tell them to use ordinary `intercom` with each other for findings, ownership, and challenges so the parent is not the bottleneck for information that a sibling already holds. See [Peer coordination](#peer-coordination).
 
 ### Intervene only on clear control signals
 

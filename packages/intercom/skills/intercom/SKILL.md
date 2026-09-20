@@ -16,7 +16,7 @@ sessions for delegation, context sharing, and collaborative workflows.
 When you are supervising with the `subagent` skill, delegated child agents can
 escalate to you via `contact_supervisor` if the subagent runtime supplied child
 bridge metadata. This skill covers how to handle those orchestrator-side
-escalations.
+escalations, and how children and workflow stages talk to each other as peers.
 
 ## When to Use
 
@@ -24,6 +24,7 @@ escalations.
 - **Context handoffs**: Send findings from a research session to an execution session
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
+- **Peer coordination**: Sibling subagents or workflow stages debate findings, hand off evidence, divide ownership, and learn from each other without routing through the supervisor
 
 ## Core Patterns
 
@@ -243,6 +244,36 @@ Use constructive quorum when several fresh-context reviewers judge the same arti
 4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
 
 In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows/reliable-design.md#common-workflow-patterns).
+
+### Pattern 8: Peer Coordination Between Subagents and Workflow Stages
+
+Communication inside a delegation is not only vertical. Children launched in one parallel set (or one explicit `group`) share an Intercom group, and workflow stages share their invocation group `workflow:<rootRunId>`; delegated subagents inside a stage inherit it. Any of them can list live siblings and message them directly. `contact_supervisor` is reserved for the supervisor; peer traffic uses ordinary `intercom`.
+
+```typescript
+// Any child or stage: discover who is live in your group
+intercom({ action: "list" })
+
+// Connect: pass what you found to the sibling who needs it
+intercom({ action: "send", to: "codebase-analyzer-2", message: "Null handling lives in src/auth/session.ts:40-118 and src/auth/refresh.ts:12-60. Start there." })
+
+// Coordinate: claim shared work so two writers do not collide
+intercom({ action: "send", to: "worker-1", message: "I am running the integration suite now (~4 min). Do not start it; I will send the result." })
+
+// Learn: reuse a sibling's verified reproduction
+intercom({ action: "ask", to: "debugger-1", message: "What exact command and env reproduced the timeout? I want to reuse it, not rediscover it." })
+
+// Debate: challenge a finding with evidence, then decide for yourself
+intercom({ action: "ask", to: "reviewer-2", message: "You called the retry loop unbounded. client.ts:88 caps attempts at 5 — which path bypasses it?" })
+```
+
+Rules that keep peer exchange useful:
+
+- Peers do not coordinate spontaneously. The launcher's prompt should name the peers (or how to discover them with `list`) and what they are expected to exchange.
+- Bound the exchange: one evidence round for reviewers, one ownership claim per shared step, one ask per fact you need. Then return your own complete result.
+- Decide on evidence, not deference. A peer's approval, rejection, or claim is input to inspect, not a verdict to copy.
+- Scope, product, architecture, and acceptance decisions stay with the supervisor (`contact_supervisor`) or a workflow gate.
+- Inside a workflow, `send` to a known pending sibling queues until it starts, and `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Named stage subgroups isolate their members from sibling subgroups.
+- Peer asks and one blocking supervisor request may wait concurrently in the same child; mutual asks work when both sides process inbound work.
 
 ## Key Differences
 

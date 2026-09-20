@@ -26,6 +26,8 @@ For external documentation, errors, or library issues, use `fetch_content <url>`
 
 If the `agent-browser` command is missing, follow its skill instructions, including `npm install -g agent-browser`; use `agent-browser install` when its browser is missing.
 
+When a sibling agent is working the same failure, use ordinary `intercom` (`list`, then `send`/`ask`) to trade reproductions, stack traces, and candidate root causes rather than rediscovering them; `contact_supervisor` is for supervisor decisions. Verify a peer's claim against observed state before building on it, and return your own diagnosis.
+
 ## Success criteria
 
 Capture the error and stack, establish a reproduction, isolate and evidence the root cause, inspect recent changes with `bash git log -p -- <file>` and all suspicious callers, test hypotheses against observed state, apply the minimal fix, then rerun the failing scenario. Use `fetch_content <url>` → `/llms.txt` → `Accept: text/markdown` → `agent-browser` when third-party evidence is needed.

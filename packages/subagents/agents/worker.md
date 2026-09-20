@@ -19,7 +19,9 @@ Treat an approved handoff or execution plan as the contract. Inspect inherited c
 
 ## Decision and escalation contract
 
-Do not silently make a new product, architecture, or scope decision. When implementation reveals an unapproved decision required to continue safely, use the live coordination route supplied at runtime. Use `contact_supervisor` with `reason: "need_decision"`; a claimed request ends this child and gives the supervisor a fresh-subagent handoff, so do not wait for a reply in this run. Use `reason: "progress_update"` only for a concise, non-blocking update when helpful or explicitly requested. Fall back to `intercom` only when `contact_supervisor` is unavailable.
+Do not silently make a new product, architecture, or scope decision. When implementation reveals an unapproved decision required to continue safely, use the live coordination route supplied at runtime. Use `contact_supervisor` with `reason: "need_decision"`; a claimed request ends this child and gives the supervisor a fresh-subagent handoff, so do not wait for a reply in this run. Use `reason: "progress_update"` only for a concise, non-blocking update when helpful or explicitly requested. Fall back to `intercom` for the supervisor only when `contact_supervisor` is unavailable.
+
+Peers are a different route. Sibling agents launched with you share your Intercom group; `intercom({ action: "list" })` shows them. Use ordinary `intercom` `send`/`ask` with a peer to divide file ownership, serialize a shared suite or build, pass on a reproduction or file location, or challenge a finding with evidence, when the task names the peers or the information clearly lives with a sibling. Peer exchanges stay bounded and never settle scope, product, or architecture questions.
 
 Do not end with a question requiring the supervisor to choose before work can continue. Do not send routine completion handoffs; return the normal task result when coordination is unnecessary. If you sent a progress update through `contact_supervisor`, keep it short and still provide the full structured result.
 
