@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { vi } from "vitest";
 import type { HerdrEnvironment } from "../../src/extensions/herdr/environment.js";
 
+// Each fake Herdr call spawns a real child process; give it process-level headroom.
+const FAKE_HERDR_WAIT_MS = 5_000;
+
 export interface HerdrCall {
 	phase: "start" | "end";
 	args: string[];
@@ -60,6 +63,15 @@ ${body}
 			.filter(Boolean)
 			.map((line) => JSON.parse(line));
 	}
+	async function waitForPhase(phase: HerdrCall["phase"], count: number, label: string): Promise<HerdrCall[]> {
+		const deadline = Date.now() + FAKE_HERDR_WAIT_MS;
+		while (Date.now() < deadline) {
+			const entries = (await calls()).filter((call) => call.phase === phase);
+			if (entries.length >= count) return entries;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.fail(`Expected ${count} ${label} fake Herdr calls: ${JSON.stringify(await calls())}`);
+	}
 	return {
 		dir,
 		bin,
@@ -67,13 +79,17 @@ ${body}
 		environment,
 		calls,
 		async waitFor(count: number) {
-			const deadline = Date.now() + 5_000;
-			while (Date.now() < deadline) {
-				const entries = (await calls()).filter((call) => call.phase === "end");
-				if (entries.length >= count) return entries;
-				await new Promise((resolve) => setTimeout(resolve, 5));
-			}
-			assert.fail(`Expected ${count} completed fake Herdr calls: ${JSON.stringify(await calls())}`);
+			return waitForPhase("end", count, "completed");
+		},
+		/**
+		 * Wait for `count` fake Herdr invocations to have started, including ones
+		 * deliberately held open by the script body (for example a "working" report
+		 * polling for an `allow-release` marker). Spawning the fake child is real
+		 * process work, so this shares `waitFor`'s deadline rather than
+		 * `vi.waitFor`'s 1 s default.
+		 */
+		async waitForStarted(count: number) {
+			return waitForPhase("start", count, "started");
 		},
 		async dispose() {
 			scripts.delete(bin);

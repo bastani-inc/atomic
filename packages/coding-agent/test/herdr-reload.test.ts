@@ -234,7 +234,8 @@ if (args.includes("working")) {
 		await retiring.emit({ type: "session_start" });
 		await fake.waitFor(1);
 		await retiring.emit({ type: "agent_start" });
-		await vi.waitFor(async () => assert.equal((await fake.calls()).length, 3));
+		// The "working" report is held open until allow-release, so wait for it to start.
+		await fake.waitForStarted(2);
 		starting = successor.emit({ type: "session_start", reason: "reload" });
 		await Promise.resolve();
 		await retiring.emit({ type: "agent_start" });

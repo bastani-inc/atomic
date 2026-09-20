@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, vi } from "vitest";
+import { test } from "vitest";
 import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
@@ -401,7 +401,8 @@ if (args.includes("working")) {
 		await successor.emit({ type: "session_shutdown", reason: "quit" });
 		assert.equal((await fake.calls()).length, 2);
 		await previous.emit({ type: "agent_start" });
-		await vi.waitFor(async () => assert.equal((await fake.calls()).length, 3));
+		// The "working" report is held open until allow-release, so wait for it to start.
+		await fake.waitForStarted(2);
 		let stopped = false;
 		stopping = previous.emit({ type: "session_shutdown", reason: "new" }).then(() => {
 			stopped = true;
