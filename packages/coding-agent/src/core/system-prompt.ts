@@ -144,7 +144,7 @@ function buildRules(
 	}
 	for (const rule of promptGuidelines) addRule(rule);
 	addRule(
-		"Do not add code comments unless the user explicitly asks for them or the task instructions call for them; when a comment is warranted, explain non-obvious intent rather than restating what the code does",
+		"Write self-describing code and do not add comments unless the user explicitly asks for them or the task instructions call for them. Code that needs a comment to be understood is a smell: restructure it with clearer names, smaller units, or explicit types instead",
 	);
 	addRule("Be concise in your responses");
 	addRule("Show file paths clearly when working with files");
