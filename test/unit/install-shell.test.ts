@@ -151,8 +151,18 @@ function shellQuote(value: string): string {
  * takes the command as trailing arguments; util-linux script takes `-c` and
  * only returns the child's status with `-e`. BusyBox script supports neither
  * form reliably, so hosts without one of those two skip the terminal tests.
+ *
+ * util-linux runs `-c` through `$SHELL`, and the terminal tests set `SHELL`
+ * to whatever rc-file hint they want the installer to print (zsh on a host
+ * that may not have zsh). `command` therefore re-exports the intended value
+ * inside the command line and `env` points script itself at /bin/sh.
  */
-function findTtyScript(): { command(argv: readonly string[]): string[] } | undefined {
+type TtyScript = {
+	command(argv: readonly string[], shell: string): string[];
+	env(env: Record<string, string | undefined>): Record<string, string | undefined>;
+};
+
+function findTtyScript(): TtyScript | undefined {
 	if (process.platform === "win32") return undefined;
 	let script: string;
 	try {
@@ -161,11 +171,19 @@ function findTtyScript(): { command(argv: readonly string[]): string[] } | undef
 		return undefined;
 	}
 	if (process.platform === "darwin" || process.platform === "freebsd") {
-		return { command: (argv) => [script, "-q", "/dev/null", ...argv] };
+		return { command: (argv) => [script, "-q", "/dev/null", ...argv], env: (env) => env };
 	}
 	const version = spawnSyncCollect([script, "--version"]);
 	if (!version.stdout.toString().includes("util-linux")) return undefined;
-	return { command: (argv) => [script, "-qec", argv.map(shellQuote).join(" "), "/dev/null"] };
+	return {
+		command: (argv, shell) => [
+			script,
+			"-qec",
+			`SHELL=${shellQuote(shell)} ${argv.map(shellQuote).join(" ")}`,
+			"/dev/null",
+		],
+		env: (env) => ({ ...env, SHELL: "/bin/sh" }),
+	};
 }
 
 const ttyScript = findTtyScript();
@@ -566,8 +584,9 @@ function createFixture(): InstallerFixture {
 				...options.environment,
 			},
 		});
-		const terminal = ttyScript.command(prepared.command);
-		if (keystrokes === undefined) return { command: terminal, env: prepared.env };
+		const terminal = ttyScript.command(prepared.command, prepared.env.SHELL ?? "/bin/sh");
+		const env = ttyScript.env(prepared.env);
+		if (keystrokes === undefined) return { command: terminal, env };
 		const octal = [...keystrokes.keys].map((key) => `\\${key.codePointAt(0)?.toString(8).padStart(3, "0")}`).join("");
 		const typist = [
 			"waited=0",
@@ -577,7 +596,7 @@ function createFixture(): InstallerFixture {
 		].join("; ");
 		return {
 			command: ["/bin/sh", "-c", `{ ${typist}; } | ${terminal.map(shellQuote).join(" ")}`, keystrokes.afterFile],
-			env: prepared.env,
+			env,
 		};
 	};
 	const fixture: InstallerFixture = {
