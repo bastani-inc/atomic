@@ -157,3 +157,17 @@ test("invalid PGPORT rejects before Docker commands run (#3158)", async () => {
 	await assert.rejects(resolveDbosSystemDatabaseUrl(), /PGPORT.*integer between 1 and 65535/);
 	assert.equal(command.mock.calls.length, 0);
 });
+
+test("startup failure normalization preserves non-Error inputs without trusting arbitrary fields (#3158)", () => {
+	vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
+	assert.equal(shouldProvisionLocalDbos("read ECONNRESET"), true);
+	for (const value of [
+		null,
+		undefined,
+		42,
+		{ code: "ECONNRESET" },
+		Object.assign(new Error("schema failed"), { code: 42 }),
+	]) {
+		assert.equal(shouldProvisionLocalDbos(value), false);
+	}
+});

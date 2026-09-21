@@ -165,7 +165,7 @@ export function shutdownResolvedLocalDbos(): Promise<void> {
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {
 	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return false;
-	if (isTransientStartupError(error)) return true;
+	if (isTransientStartupError(readStartupFailure(error))) return true;
 	const message = error instanceof Error ? `${error.message}\n${error.cause ?? ""}` : String(error);
 	return /server not reachable|connect failed|connection refused|unable to connect to system database/i.test(message);
 }
@@ -217,7 +217,7 @@ export async function waitForPostgresProtocolReadiness(options: PostgresProtocol
 		try {
 			if (await isReady(options.host, options.port)) return;
 		} catch (error) {
-			if (!isTransientStartupError(error)) throw error;
+			if (!isTransientStartupError(readStartupFailure(error))) throw error;
 		}
 		if (attempt + 1 < attempts && performance.now() < deadline) await wait(delayMs);
 	}
@@ -226,23 +226,40 @@ export async function waitForPostgresProtocolReadiness(options: PostgresProtocol
 	);
 }
 
-function isTransientStartupError(error: unknown): boolean {
+interface PostgresStartupFailure {
+	readonly message: string;
+	readonly code?: string;
+	readonly cause?: Error | string;
+	readonly source?: Error;
+}
+
+function readStartupFailure(value: unknown): PostgresStartupFailure {
+	if (!(value instanceof Error)) return { message: String(value) };
+	const cause = value.cause;
+	return {
+		message: value.message,
+		code: "code" in value && typeof value.code === "string" ? value.code : undefined,
+		cause: cause === undefined ? undefined : cause instanceof Error ? cause : String(cause),
+		source: value,
+	};
+}
+
+function isTransientStartupError(error: PostgresStartupFailure): boolean {
 	const seen = new Set<Error>();
-	let current = error;
+	let current: PostgresStartupFailure | undefined = error;
 	while (current !== undefined) {
-		const code = current instanceof Error && "code" in current ? current.code : undefined;
+		const { code, message, source, cause }: PostgresStartupFailure = current;
 		if (typeof code === "string" && TRANSIENT_STARTUP_CODES.has(code)) return true;
 		if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return false;
-		const message = current instanceof Error ? current.message : String(current);
 		if (
 			/\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE)\b|^connection (?:refused|terminated(?: unexpectedly| due to connection timeout)?)(?:\s|$)|^connect(?:ion)? (?:timeout|timed out)(?:\s|$)|^timeout (?:expired|exceeded when trying to connect)$/i.test(
 				message,
 			)
 		)
 			return true;
-		if (!(current instanceof Error) || seen.has(current)) return false;
-		seen.add(current);
-		current = current.cause;
+		if (source === undefined || seen.has(source)) return false;
+		seen.add(source);
+		current = cause === undefined ? undefined : readStartupFailure(cause);
 	}
 	return false;
 }
@@ -268,7 +285,7 @@ async function dockerPostgresQueryReady(host: string, port: number): Promise<boo
 		]);
 		return true;
 	} catch (error) {
-		if (isTransientStartupError(error)) return false;
+		if (isTransientStartupError(readStartupFailure(error))) return false;
 		throw error;
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
