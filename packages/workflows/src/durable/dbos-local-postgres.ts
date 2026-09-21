@@ -11,6 +11,7 @@
  *      provisioning fails without leaving retained-process cleanup pending.
  */
 
+import { Client } from "pg";
 import {
 	EmbeddedPostgresCleanupPendingError,
 	embeddedDbosSystemDatabaseUrl,
@@ -22,12 +23,13 @@ import {
 } from "./dbos-embedded-postgres.js";
 import type { EmbeddedPostgresRunContext } from "./dbos-embedded-postgres-root.js";
 import type { ManagedPostgresMetadata } from "./dbos-postgres-ownership.js";
-import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
+import { commandFailureDetail, delay, runLocalCommand } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
 const DOCKER_IMAGE = "pgvector/pgvector:pg16";
 const DOCKER_READY_ATTEMPTS = 60;
 const DOCKER_READY_DELAY_MS = 500;
+const DOCKER_READY_QUERY_TIMEOUT_MS = 1_000;
 
 type LocalDbosProvider = () => Promise<void>;
 type LocalDbosShutdowner = () => Promise<void>;
@@ -153,10 +155,75 @@ export function shutdownResolvedLocalDbos(): Promise<void> {
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {
 	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return false;
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	if (code === "ECONNRESET" || code === "ECONNREFUSED") return true;
 	const message = error instanceof Error ? `${error.message}\n${error.cause ?? ""}` : String(error);
-	return /ECONNREFUSED|server not reachable|connect failed|connection refused|unable to connect to system database/i.test(
+	return /ECONNRESET|ECONNREFUSED|server not reachable|connect failed|connection refused|unable to connect to system database/i.test(
 		message,
 	);
+}
+
+export type PostgresReadinessProbe = (host: string, port: number) => Promise<boolean>;
+
+export interface PostgresProtocolReadinessOptions {
+	readonly host: string;
+	readonly port: number;
+	readonly isReady?: PostgresReadinessProbe;
+	readonly attempts?: number;
+	readonly delayMs?: number;
+	readonly wait?: (ms: number) => Promise<void>;
+}
+
+/** Wait until PostgreSQL on host:port answers a query, or the bounded deadline expires. */
+export async function waitForPostgresProtocolReadiness(options: PostgresProtocolReadinessOptions): Promise<void> {
+	const attempts = options.attempts ?? DOCKER_READY_ATTEMPTS;
+	const delayMs = options.delayMs ?? DOCKER_READY_DELAY_MS;
+	const wait = options.wait ?? delay;
+	const isReady = options.isReady ?? dockerPostgresQueryReady;
+	const deadline = performance.now() + attempts * delayMs;
+	for (let attempt = 0; attempt < attempts && performance.now() < deadline; attempt += 1) {
+		try {
+			if (await isReady(options.host, options.port)) return;
+		} catch (error) {
+			if (!isTransientStartupError(error)) throw error;
+		}
+		if (attempt + 1 < attempts && performance.now() < deadline) await wait(delayMs);
+	}
+	throw new Error(
+		`The DBOS Postgres container started but did not become ready within ${(attempts * delayMs) / 1000} seconds.`,
+	);
+}
+
+function isTransientStartupError(error: unknown): boolean {
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	if (code === "ECONNRESET" || code === "ECONNREFUSED") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return /ECONNRESET|ECONNREFUSED|connection refused/i.test(message);
+}
+
+async function dockerPostgresQueryReady(host: string, port: number): Promise<boolean> {
+	const client = new Client({
+		host,
+		port,
+		user: "postgres",
+		password: "dbos",
+		database: "postgres",
+		ssl: false,
+		connectionTimeoutMillis: DOCKER_READY_QUERY_TIMEOUT_MS,
+		query_timeout: DOCKER_READY_QUERY_TIMEOUT_MS,
+		statement_timeout: DOCKER_READY_QUERY_TIMEOUT_MS,
+	});
+	client.on("error", () => {});
+	try {
+		await client.connect();
+		await client.query("SELECT 1");
+		return true;
+	} catch (error) {
+		if (isTransientStartupError(error)) return false;
+		throw error;
+	} finally {
+		await client.end().catch(() => undefined);
+	}
 }
 
 async function resolve(): Promise<string | undefined> {
@@ -222,11 +289,7 @@ async function ensureDockerDbosPostgres(): Promise<void> {
 		]);
 	}
 
-	for (let attempt = 0; attempt < DOCKER_READY_ATTEMPTS; attempt += 1) {
-		if (await tcpReachable("127.0.0.1", 5432)) return;
-		await delay(DOCKER_READY_DELAY_MS);
-	}
-	throw new Error("The DBOS Postgres container started but did not become ready within 30 seconds.");
+	await waitForPostgresProtocolReadiness({ host: "127.0.0.1", port: 5432 });
 }
 
 async function requireDockerSuccess(action: string, args: string[]): Promise<void> {

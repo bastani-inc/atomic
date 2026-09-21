@@ -118,6 +118,40 @@ describe("durable factory non-durable degradation", () => {
 			consoleSpy.mockRestore();
 		}
 	});
+	test.sequential("failed launch shuts the partial executor down before the in-memory fallback", async () => {
+		setDurableBackend(undefined);
+		const events: string[] = [];
+		const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
+		const sdk = {
+			launch: async () => {},
+			shutdown: async () => {},
+			startWorkflow: async () => {},
+			retrieveWorkflow: async () => undefined,
+			cancelWorkflow: async () => {},
+			resumeWorkflow: async () => {},
+			listAllWorkflows: async () => [],
+			listStepRecords: async () => [],
+			recordStepOutput: async () => {},
+			deleteWorkflowData: async () => {},
+		};
+		resetDbosLifecycleForTests(async () => ({
+			backend: new DbosDurableBackend(sdk),
+			launch: async () => {
+				throw new Error("postgres unavailable");
+			},
+			shutdown: async () => {
+				events.push("shutdown");
+			},
+		}));
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const backend = await initializeDurableBackend();
+			assert.equal(backend.persistent, false);
+			assert.ok(events.includes("shutdown"));
+		} finally {
+			consoleSpy.mockRestore();
+		}
+	});
 
 	test.sequential("an in-flight durable catalog preparation keeps the backend that initialization returned", async () => {
 		const backend = new InMemoryDurableBackend();

@@ -12,6 +12,7 @@ import {
 	dbosLifecycleState,
 	getReadyDbosBackend,
 	getReadyDbosBackendSync,
+	shutdownDbos,
 } from "./dbos-lifecycle.js";
 import { classifyDbosDurabilityFailure, readDbosFailureDetail } from "./dbos-registration-diagnostics.js";
 
@@ -99,6 +100,11 @@ async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkfl
 		"atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. " +
 		"Workflow runs will execute, but their state will not survive this process and `/workflow resume` " +
 		`after exit will not work. ${restore}`;
+	try {
+		await shutdownDbos();
+	} catch {
+		// Failed teardown must not prevent the loud non-durable fallback.
+	}
 	const owner = getDurableBackendProcessOwner();
 	const backend = new InMemoryDurableBackend();
 	owner.initializedBackend = backend;

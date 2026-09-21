@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import type { RetainedPostgres } from "@bastani/atomic-natives";
 import { afterEach, describe, test, vi } from "vitest";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
@@ -21,6 +22,7 @@ import {
 	resolvedPostgresProvider,
 	shouldProvisionLocalDbos,
 	shutdownResolvedLocalDbos,
+	waitForPostgresProtocolReadiness,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
 
 const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
@@ -332,12 +334,113 @@ describe("shouldProvisionLocalDbos", () => {
 			shouldProvisionLocalDbos(new Error("Unable to connect to system database at postgresql://...")),
 			true,
 		);
+		assert.equal(shouldProvisionLocalDbos(new Error("read ECONNRESET")), true);
+		assert.equal(shouldProvisionLocalDbos(Object.assign(new Error("socket reset"), { code: "ECONNRESET" })), true);
 		assert.equal(shouldProvisionLocalDbos(new Error("password authentication failed")), false);
 
 		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";
 		assert.equal(shouldProvisionLocalDbos(new Error("connect ECONNREFUSED db.example:5432")), false);
+		assert.equal(shouldProvisionLocalDbos(new Error("read ECONNRESET")), false);
 	});
 });
+describe("waitForPostgresProtocolReadiness", () => {
+	test.sequential("a TCP-published port that resets is not PostgreSQL-ready", async () => {
+		const listener = await listenResettingPort();
+		try {
+			await assert.rejects(
+				waitForPostgresProtocolReadiness({
+					host: "127.0.0.1",
+					port: listener.port,
+					attempts: 2,
+					delayMs: 1,
+					wait: async () => {},
+				}),
+				/did not become ready/,
+			);
+		} finally {
+			await listener.close();
+		}
+	});
+
+	test.sequential("recovers after a transient startup reset then becomes ready", async () => {
+		let probes = 0;
+		await waitForPostgresProtocolReadiness({
+			host: "127.0.0.1",
+			port: 1,
+			attempts: 3,
+			delayMs: 1,
+			wait: async () => {},
+			isReady: async () => {
+				probes += 1;
+				if (probes === 1) {
+					throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+				}
+				return true;
+			},
+		});
+		assert.equal(probes, 2);
+	});
+
+	test.sequential("exhausts the bounded deadline when PostgreSQL never becomes ready", async () => {
+		let probes = 0;
+		await assert.rejects(
+			waitForPostgresProtocolReadiness({
+				host: "127.0.0.1",
+				port: 1,
+				attempts: 2,
+				delayMs: 1,
+				wait: async () => {},
+				isReady: async () => {
+					probes += 1;
+					return false;
+				},
+			}),
+			/did not become ready within 0.002 seconds/,
+		);
+		assert.equal(probes, 2);
+	});
+
+	test.sequential("does not retry an authentication failure", async () => {
+		let probes = 0;
+		await assert.rejects(
+			waitForPostgresProtocolReadiness({
+				host: "127.0.0.1",
+				port: 1,
+				attempts: 5,
+				delayMs: 1,
+				wait: async () => {},
+				isReady: async () => {
+					probes += 1;
+					throw new Error("password authentication failed");
+				},
+			}),
+			/password authentication failed/,
+		);
+		assert.equal(probes, 1);
+	});
+});
+
+async function listenResettingPort(): Promise<{ port: number; close: () => Promise<void> }> {
+	const server = createServer((socket) => {
+		socket.resetAndDestroy();
+	});
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen({ host: "127.0.0.1", port: 0 }, () => resolve());
+	});
+	const address = server.address();
+	if (address === null || typeof address === "string") {
+		server.close();
+		throw new Error("resetting listener did not bind a TCP port");
+	}
+	return {
+		port: address.port,
+		close: () =>
+			new Promise<void>((resolve, reject) => {
+				server.close((error) => (error ? reject(error) : resolve()));
+			}),
+	};
+}
 
 describe("effectiveSystemDatabaseUrl", () => {
 	test("explicit config wins over the environment variable", () => {
