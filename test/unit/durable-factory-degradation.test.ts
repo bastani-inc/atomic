@@ -177,7 +177,31 @@ describe("durable factory non-durable degradation", () => {
 	});
 });
 
-async function initializeDurableBackendWithFakeDbos() {
+test("unconfirmed executor cleanup refuses the in-memory backend", async () => {
+	setDurableBackend(undefined);
+	const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await assert.rejects(
+			initializeDurableBackendWithFakeDbos({
+				launch: async () => {
+					throw new Error("original launch failed");
+				},
+				shutdown: async () => {
+					throw new Error("executor teardown failed");
+				},
+			}),
+			/cleanup failed.*original launch failed.*executor teardown failed/s,
+		);
+		assert.throws(getDurableBackend, /not ready/i);
+		assert.equal(warnings.mock.calls.length, 0);
+	} finally {
+		warnings.mockRestore();
+	}
+});
+
+async function initializeDurableBackendWithFakeDbos(
+	options: { launch?: () => Promise<void>; shutdown?: () => Promise<void> } = {},
+) {
 	const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
 	const sdk = {
 		launch: async () => {},
@@ -193,8 +217,8 @@ async function initializeDurableBackendWithFakeDbos() {
 	};
 	resetDbosLifecycleForTests(async () => ({
 		backend: new DbosDurableBackend(sdk),
-		launch: async () => {},
-		shutdown: async () => {},
+		launch: options.launch ?? (async () => {}),
+		shutdown: options.shutdown ?? (async () => {}),
 	}));
 	return await initializeDurableBackend();
 }

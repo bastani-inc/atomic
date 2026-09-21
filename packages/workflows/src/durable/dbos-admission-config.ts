@@ -1,5 +1,6 @@
 import { ensurePGDatabase } from "@dbos-inc/dbos-sdk/datasource";
 import { fenceDbosAdmissionPool } from "./dbos-admission-pool.js";
+import { defaultPostgresUrl } from "./dbos-default-postgres-url.js";
 import { resolvedPostgresHealth } from "./dbos-managed-health.js";
 import { createRecoverablePostgresPool } from "./dbos-recoverable-pool.js";
 import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
@@ -8,18 +9,7 @@ import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
 function defaultDatabaseUrl(name: string): string {
 	// Match DBOS's application-name normalization, including a leading digit.
 	const database = name.toLowerCase().replaceAll("-", "_").replaceAll(" ", "_").replace(/^\d/, "_$&");
-	const url = new URL("postgresql://localhost");
-	url.pathname = `/${database}_dbos_sys`;
-	const host = process.env.PGHOST || "localhost";
-	// pg query hosts preserve socket paths and avoid literal IPv6 authority brackets.
-	if (host.startsWith("/") || host.includes(":")) url.searchParams.set("host", host);
-	else url.hostname = host;
-	url.port = process.env.PGPORT || "5432";
-	url.username = encodeURIComponent(process.env.PGUSER || "postgres");
-	url.password = encodeURIComponent(process.env.PGPASSWORD || "dbos");
-	url.searchParams.set("connect_timeout", process.env.PGCONNECT_TIMEOUT || "10");
-	url.searchParams.set("sslmode", process.env.PGSSLMODE || (host === "localhost" ? "disable" : "allow"));
-	return url.toString();
+	return defaultPostgresUrl(`${database}_dbos_sys`);
 }
 
 export function configureAdmissionDatabase(

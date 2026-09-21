@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import {
 	type ConfiguredDbosDurability,
 	DbosDurableBackend,
@@ -49,7 +49,10 @@ function configured(
 	};
 }
 
-afterEach(() => resetDbosLifecycleForTests());
+afterEach(() => {
+	resetDbosLifecycleForTests();
+	vi.unstubAllEnvs();
+});
 
 describe("mandatory DBOS lifecycle", () => {
 	// #3105: independently owned hosts share DBOS without sharing disposal.
@@ -359,3 +362,32 @@ describe("mandatory DBOS lifecycle", () => {
 		assert.equal(dbosLifecycleState(), "failed");
 	});
 });
+
+for (const failedAttempt of [1, 2]) {
+	test(`failed executor cleanup on launch ${failedAttempt} prevents any further launch`, async () => {
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
+		const events: string[] = [];
+		let launches = 0;
+		resetDbosLifecycleForTests(
+			async () =>
+				configured(
+					events,
+					async () => {
+						launches++;
+						throw new Error(`launch ${launches}: ECONNRESET`);
+					},
+					async () => {
+						if (launches === failedAttempt) throw new Error("executor teardown failed");
+					},
+				),
+			async () => {
+				events.push("provision");
+			},
+			async () => {},
+		);
+		await assert.rejects(getReadyDbosBackend(), /ECONNRESET.*executor teardown failed/s);
+		assert.equal(launches, failedAttempt);
+		assert.equal(dbosLifecycleState(), "failed");
+		assert.equal(events.length, failedAttempt - 1);
+	});
+}

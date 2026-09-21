@@ -130,12 +130,11 @@ export async function launchDbosOnce(): Promise<void> {
 			slot.state = "ready";
 		} catch (error) {
 			try {
-				// DBOS creates an executor before testing connectivity. Tear down the
-				// failed executor so retry or non-durable fallback does not leak a pool
-				// or hang shutdown.
 				await durability.shutdown();
-			} catch {
-				// Teardown must not replace the launch diagnostic.
+			} catch (shutdownError) {
+				slot.failure = await durabilityFailure("launch cleanup", combinedShutdownFailure([error, shutdownError]));
+				slot.state = "failed";
+				throw slot.failure;
 			}
 			if (shouldProvisionLocalDbos(error)) {
 				try {
@@ -144,12 +143,13 @@ export async function launchDbosOnce(): Promise<void> {
 					slot.state = "ready";
 					return;
 				} catch (provisionError) {
+					let failure = provisionError;
 					try {
 						await durability.shutdown();
-					} catch {
-						// Same: keep the provisioning diagnostic.
+					} catch (shutdownError) {
+						failure = combinedShutdownFailure([provisionError, shutdownError]);
 					}
-					slot.failure = await durabilityFailure("local Postgres startup", provisionError);
+					slot.failure = await durabilityFailure("local Postgres startup", failure);
 				}
 			} else {
 				slot.failure = await durabilityFailure("launch", error);

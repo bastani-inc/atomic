@@ -574,6 +574,10 @@ Custom Windows launchers can still use executable names resolved through `PATH` 
 
 If embedded provisioning fails without leaving retained-process cleanup pending, Atomic tries DBOS's reusable `dbos-db` Docker container. A published TCP port is not enough: Atomic waits until PostgreSQL on that container's selected endpoint answers a query before initializing DBOS. Transient startup resets and connection refusals are retried until that bounded wait expires. If DBOS still cannot become ready, workflows **degrade to a process-local in-memory backend with a loud warning** instead of refusing to run: the run executes normally, but its state does not survive the process and `/workflow resume` after exit has nothing to restore. Fix the configured database or set `DBOS_SYSTEM_DATABASE_URL` to a working Postgres to restore durability.
 
+The Docker readiness query uses the same `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGSSLMODE` settings as DBOS. If startup reports an invalid `PGPORT`, supply an integer from 1 through 65535. Authentication, TLS, schema and statement-timeout failures are not retried as database startup delays; correct the reported configuration or database problem.
+
+Fallback starts only after failed DBOS initialization has been cleaned up. If Atomic reports `Workflow backend cleanup failed`, workflow startup stops rather than starting another backend alongside an unconfirmed executor. Correct the reported shutdown problem and restart Atomic; do not delete database data to bypass it.
+
 **Multiple concurrent Atomic sessions.** A workflow running in another process is not a resume target. Fresh-heartbeat rows are hidden from resume pickers and refused by direct resume. After a crash, the heartbeat becomes stale in about two minutes and inspection reports `crashed`. Concurrent attempts to resume the same run admit one executor; a stale request reports that the run changed.
 
 Independent root workflows persist independently. Nested workflows share their root's ordering.

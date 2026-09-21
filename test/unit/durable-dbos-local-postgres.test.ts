@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import type { RetainedPostgres } from "@bastani/atomic-natives";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
 import * as embeddedPostgres from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import {
@@ -401,6 +401,11 @@ describe("dockerFallbackEndpoint", () => {
 	});
 });
 describe("waitForPostgresProtocolReadiness", () => {
+	beforeEach(() => {
+		vi.spyOn(performance, "now").mockReturnValue(0);
+	});
+	afterEach(() => vi.restoreAllMocks());
+
 	test.sequential("a TCP-published port that resets is not PostgreSQL-ready", async () => {
 		const listener = await listenResettingPort();
 		try {
@@ -491,7 +496,7 @@ describe("waitForPostgresProtocolReadiness", () => {
 		assert.equal(probes, 2);
 	});
 
-	test.sequential("exhausts the bounded deadline when PostgreSQL never becomes ready", async () => {
+	test.sequential("exhausts the bounded attempts when PostgreSQL never becomes ready", async () => {
 		let probes = 0;
 		await assert.rejects(
 			waitForPostgresProtocolReadiness({
@@ -508,6 +513,27 @@ describe("waitForPostgresProtocolReadiness", () => {
 			/did not become ready within 0.002 seconds/,
 		);
 		assert.equal(probes, 2);
+	});
+
+	test("deadline exhaustion stops probes before the attempt limit", async () => {
+		let now = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => now);
+		let probes = 0;
+		await assert.rejects(
+			waitForPostgresProtocolReadiness({
+				host: "127.0.0.1",
+				port: 1,
+				attempts: 10,
+				delayMs: 500,
+				isReady: async () => {
+					probes++;
+					now = 5_001;
+					return false;
+				},
+			}),
+			/did not become ready within 5 seconds/,
+		);
+		assert.equal(probes, 1);
 	});
 
 	test.sequential("does not retry an authentication failure", async () => {
