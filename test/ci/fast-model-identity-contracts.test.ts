@@ -160,6 +160,7 @@ const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
 
 /** Named in the removal bullets, so they must not resolve — that is the point of naming them. */
 const removedNames = new Set([
+	"DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS",
 	// PR #3114: the former TypeSafe environment variable is no longer recognized.
 	"TYPESAFE_AI_API_KEY",
 	"ATOMIC_CODEX_FAST_MODE",
@@ -270,6 +271,8 @@ const proseNames = new Set([
 	"supportsMidConvoEffort",
 	// `Model`/`SimpleStreamOptions` request field, never a package export.
 	"maxTokens",
+	"timeoutMs",
+	"AbortSignal",
 	"tsgo",
 	"write",
 	"edit",
@@ -452,6 +455,19 @@ test("TypeSafe environment-variable migration preserves removed and unknown iden
 	);
 	assert.throws(
 		() => assertChangelogIdentifiersResolve("Supports `TYPESAFE_API_KEY_TYPO`.", () => false),
+		/not exported from the package root/u,
+	);
+});
+
+test("structured decision timeout migration names removed exports and caller-owned cancellation (#3157)", () => {
+	const block = "Removed `timeoutMs` and `DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS`; use an `AbortSignal`.";
+	assert.doesNotThrow(() => assertChangelogIdentifiersResolve(block, () => false));
+	assert.throws(
+		() => assertChangelogIdentifiersResolve(block, (name) => name === "DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS"),
+		/still named in the package root exports/u,
+	);
+	assert.throws(
+		() => assertChangelogIdentifiersResolve("Use `DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_TYPO`.", () => false),
 		/not exported from the package root/u,
 	);
 });

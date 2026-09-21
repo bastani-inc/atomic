@@ -3,6 +3,7 @@ import {
 	AuthenticationError,
 	BadRequestError,
 	InternalServerError,
+	type JsonValue,
 	NotFoundError,
 	PermissionDeniedError,
 	RateLimitError,
@@ -102,7 +103,7 @@ export async function requestJev(options: {
 	request: SystemOneRequest;
 	signal: AbortSignal;
 	authGuidance: string;
-}): Promise<unknown> {
+}): Promise<JsonValue> {
 	options.signal.throwIfAborted();
 	let response: Response;
 	let text: string;
@@ -130,7 +131,7 @@ export async function requestJev(options: {
 		);
 	}
 	options.signal.throwIfAborted();
-	let body: unknown;
+	let body: JsonValue;
 	try {
 		body = JSON.parse(text);
 	} catch {
