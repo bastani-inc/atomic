@@ -206,12 +206,13 @@ test("Jev auth failures are redacted and cannot fall back to environment credent
 	assert.equal(transport.mock.calls.length, 0);
 });
 
-test("Jev credential resolution receives the bounded decision signal", async () => {
+test("Jev credential resolution receives caller cancellation", async () => {
 	const request = decisionRequest();
+	const controller = new AbortController();
 	const transport = vi.fn();
 	vi.stubGlobal("fetch", transport);
 	let authSignal: AbortSignal | undefined;
-	await assert.rejects(
+	const pending = assert.rejects(
 		inferStructuredOutput({
 			...request,
 			modelRegistry: {
@@ -222,10 +223,12 @@ test("Jev credential resolution receives the bounded decision signal", async () 
 				},
 			},
 			model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
-			timeoutMs: 20,
+			signal: controller.signal,
 		}),
-		/timed out/,
+		/cancelled/,
 	);
+	controller.abort();
+	await pending;
 	assert.equal(authSignal?.aborted, true);
 	assert.equal(transport.mock.calls.length, 0);
 });

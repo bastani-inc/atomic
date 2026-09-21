@@ -9,6 +9,7 @@ import { decisionRequest } from "../helpers/structured-output.js";
 afterEach(() => {
 	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 test("small Jev questions reject oversized unchanged state before dispatch", async () => {
@@ -300,7 +301,7 @@ for (const failure of [
 	});
 }
 
-for (const failure of ["cancel-before", "cancel-between", "timeout", "provider"] as const) {
+for (const failure of ["cancel-before", "cancel-between", "cancel-pending", "provider"] as const) {
 	test(`overflow ${failure} rejects the whole operation`, async () => {
 		vi.useFakeTimers();
 		vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
@@ -318,10 +319,11 @@ for (const failure of ["cancel-before", "cancel-between", "timeout", "provider"]
 		});
 		vi.stubGlobal("fetch", fetch);
 		const rejected = assert.rejects(
-			inferRouterDecision({ ...request, signal: controller.signal, timeoutMs: 50 }),
-			/abort|cancel|timed out|HTTP 529/i,
+			inferRouterDecision({ ...request, signal: controller.signal }),
+			/abort|cancel|HTTP 529/i,
 		);
-		await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(120_000);
+		if (failure === "cancel-pending") controller.abort();
 		await rejected;
 		assert.equal(request.jev.decode.mock.calls.length, 0);
 		assert.equal(fetch.mock.calls.length, failure === "cancel-before" ? 0 : failure === "cancel-between" ? 1 : 2);
@@ -407,4 +409,25 @@ test("multiple overflowing questions preserve original keys independently", asyn
 		},
 	});
 	assert.deepEqual(result.value, { pick: "key_0", q0: "other_key_0" });
+});
+
+test("Jev tournament rounds can finish beyond the former shared deadline", async () => {
+	vi.useFakeTimers();
+	vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
+	const request = tournament(256);
+	const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(String(init.body)) as JevFixtureRequest;
+		await new Promise((resolve) => setTimeout(resolve, 60_000));
+		return Response.json(jevFixtureResponse(body));
+	});
+	vi.stubGlobal("fetch", fetch);
+	const outcome = inferRouterDecision(request).then(
+		(value) => value,
+		(error: Error) => error,
+	);
+	await vi.advanceTimersByTimeAsync(600_000);
+	const result = await outcome;
+	assert.ok(!(result instanceof Error), String(result));
+	assert.ok(fetch.mock.calls.length > 1);
+	assert.equal(request.jev.decode.mock.calls.length, 1);
 });

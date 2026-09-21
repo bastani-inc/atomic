@@ -333,7 +333,6 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
-	DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS,
 	getStructuredOutputProviders,
 	inferRouterDecision,
 	inferStructuredOutput,

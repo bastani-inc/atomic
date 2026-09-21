@@ -27,7 +27,6 @@ export type {
 	StructuredOutputResult,
 } from "./types.js";
 
-export const DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TOKENS = 4096;
 
 function positiveInteger(value: number, name: string): void {
@@ -70,7 +69,6 @@ async function inferChat<T extends TSchema>(
 	request: StructuredOutputRequest<T>,
 	model: Model<Api>,
 	signal: AbortSignal,
-	timeoutMs: number,
 	assertActive: () => void,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	// Anthropic catalog configuration may opt into server-side fallback. A decision must not.
@@ -105,7 +103,6 @@ async function inferChat<T extends TSchema>(
 				},
 				{
 					signal,
-					timeoutMs,
 					maxRetries: 0,
 					transport: "sse",
 					toolChoice: "auto",
@@ -163,8 +160,6 @@ async function inferDecision<T extends TSchema>(
 	fallbackModel?: Model<Api>,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	request.signal?.throwIfAborted();
-	const timeoutMs = request.timeoutMs ?? DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS;
-	positiveInteger(timeoutMs, "timeoutMs");
 	positiveInteger(request.maxTokens ?? DEFAULT_MAX_TOKENS, "maxTokens");
 	validateState(request.state);
 	if (!request.instructions?.trim()) throw new Error("Structured output requires complete judgment instructions.");
@@ -214,18 +209,7 @@ async function inferDecision<T extends TSchema>(
 	const controller = new AbortController();
 	const abort = () => controller.abort(new Error("Structured output cancelled; no decision was accepted."));
 	request.signal?.addEventListener("abort", abort, { once: true });
-	const deadline = performance.now() + timeoutMs;
-	const expire = () =>
-		controller.abort(
-			new Error(
-				"Structured output timed out; no decision was accepted. Retry explicitly or select another inference model.",
-			),
-		);
-	const assertActive = () => {
-		if (performance.now() >= deadline && !controller.signal.aborted) expire();
-		controller.signal.throwIfAborted();
-	};
-	const timer = setTimeout(expire, timeoutMs);
+	const assertActive = () => controller.signal.throwIfAborted();
 	try {
 		if (request.signal?.aborted) abort();
 		const usage = { inputTokens: 0, outputTokens: 0 };
@@ -243,13 +227,7 @@ async function inferDecision<T extends TSchema>(
 				const result = await raceWithAbortSignal(
 					selected.kind === "jev"
 						? inferJev(current, controller.signal, assertActive)
-						: inferChat(
-								current,
-								selected.model,
-								controller.signal,
-								Math.ceil(deadline - performance.now()),
-								assertActive,
-							),
+						: inferChat(current, selected.model, controller.signal, assertActive),
 					controller.signal,
 				);
 				assertActive();
@@ -301,7 +279,6 @@ async function inferDecision<T extends TSchema>(
 			}
 		}
 	} finally {
-		clearTimeout(timer);
 		request.signal?.removeEventListener("abort", abort);
 	}
 }

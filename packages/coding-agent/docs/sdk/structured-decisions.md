@@ -1,6 +1,6 @@
 ---
 title: Structured decisions
-description: Make a bounded structured decision without starting an agent session.
+description: Make a schema-validated structured decision without starting an agent session.
 ---
 
 # Structured decisions
@@ -29,11 +29,11 @@ OpenRouter Jev reuses the registry's existing OpenRouter sign-in or saved API ke
 
 ### Router repair attempts
 
-By default, `inferRouterDecision()` gives each provider an initial attempt plus **up to three corrective retries** when an answer is malformed or fails the decision schema. This applies independently to Jev and the current-chat fallback: at most four attempts each, sharing one deadline of 30 seconds by default. A valid answer stops retries immediately; a valid `none` is not retried. Repairs may increase latency and provider usage, but never start a workflow or child before final validation.
+By default, `inferRouterDecision()` gives each provider an initial attempt plus **up to three corrective retries** when an answer is malformed or fails the decision schema. This applies independently to Jev and the current-chat fallback: at most four attempts each, without a structured-decision time limit. A valid answer stops retries immediately; a valid `none` is not retried. Repairs may increase latency and provider usage, but never start a workflow or child before final validation.
 
-Input/configuration errors, cancellation, timeout, and stale-catalog rejection are not repaired. Generic `inferStructuredOutput()` remains one-shot; it does not gain router repairs or provider fallback.
+Input/configuration errors, cancellation, and stale-catalog rejection are not repaired. Generic `inferStructuredOutput()` remains one-shot; it does not gain router repairs or provider fallback.
 
-When `routerModel` is empty, automatically selected Jev switches to the current chat model after exhausting its output repairs, encountering an HTTP or connection error, or exceeding the local context budget. Context-budget failures switch before sending an oversized request; HTTP errors such as `max_tokens_exceeded` switch without repeating an unchanged request. A warning reports the safe failure reason and fallback model. The fallback gets its own initial attempt plus three corrective retries, using the original state, schema and constraints within the remaining deadline. The result includes `fallback: { from, to, reason }` and identifies the chat model in `model`. This can send routing context to your chat provider and incur its normal charges. An explicit `routerModel` disables provider fallback. Missing credentials, response-size violations, cancellation and timeout do not trigger fallback.
+When `routerModel` is empty, automatically selected Jev switches to the current chat model after exhausting its output repairs, encountering an HTTP or connection error, or exceeding the local context budget. Context-budget failures switch before sending an oversized request; HTTP errors such as `max_tokens_exceeded` switch without repeating an unchanged request. A warning reports the safe failure reason and fallback model. The fallback gets its own initial attempt plus three corrective retries, using the original state, schema and constraints. The result includes `fallback: { from, to, reason }` and identifies the chat model in `model`. This can send routing context to your chat provider and incur its normal charges. An explicit `routerModel` disables provider fallback. Missing credentials, response-size violations and cancellation do not trigger fallback.
 
 ## Prepare a decision
 
@@ -68,7 +68,7 @@ const result = await inferStructuredOutput({
   schema,
   instructions: "Classify whether the task asks a question. Use none for other tasks.",
   state: {
-    task: "What does the timeout setting mean?",
+    task: "What does the router setting mean?",
     constraints: { permittedAction: "classify only" },
     reference: { text: "A question requests an explanation or information." },
     candidates: ["question", "none"],
@@ -87,7 +87,6 @@ const result = await inferStructuredOutput({
       category: choices.category === "question" ? "question" : "none",
     } as const),
   },
-  timeoutMs: 30_000,
   maxTokens: 4096,
 });
 console.log(result.value.category);
@@ -103,7 +102,7 @@ Ordinary models receive one `structured_output` result tool with the supplied sc
 
 Ordinary requests set `maxRetries: 0`, use HTTP/SSE rather than WebSocket transport fallback, and disable configured Anthropic server-side fallbacks for this request only. Custom provider implementations must honor these options and must not introduce their own inference retries or fallback requests.
 
-[TypeSafe Jev](/providers#typesafe-jev) accepts shared state and typed questions instead of JSON-schema generation. Atomic packs independent questions together. Generic `inferStructuredOutput()` calls have no automatic retries; router calls can repair malformed or schema-invalid answers within their shared deadline. Question IDs are correlation keys, not instructions seen by Jev, so put complete semantics in each question's `instructions`. Describe the speculative premise of a conditional question and consume its answer only when that premise applies.
+[TypeSafe Jev](/providers#typesafe-jev) accepts shared state and typed questions instead of JSON-schema generation. Atomic packs independent questions together. Generic `inferStructuredOutput()` calls have no automatic retries; router calls can repair malformed or schema-invalid answers within their attempt allowance. Question IDs are correlation keys, not instructions seen by Jev, so put complete semantics in each question's `instructions`. Describe the speculative premise of a conditional question and consume its answer only when that premise applies.
 
 Choices with up to 255 options keep a single comparison when they fit the context budget. Larger or more verbose choices use a bounded tournament: every original option participates in stable batches of at most 255; each batch retains its top three by validated probabilities, with ties resolved by original order. Further shrinking rounds precede a final shared comparison. Probabilities are never compared across batches. Multiple named questions can mix small choices and tournaments; `decode` receives original option keys only after all judgments succeed. Empty choices fail; singletons still go to the provider when they fit.
 
@@ -121,11 +120,13 @@ Jev response bodies are limited to 1 MiB per request. Atomic validates answer ty
 
 ## Cancellation and failures
 
-The default deadline is 30 seconds for the entire decision, including all router repair attempts, any chat fallback, tournament rounds, authentication, transport and response reading. `timeoutMs` must be a positive integer no greater than 2147483647; zero does not disable it. Ordinary output is bounded by `maxTokens`, default 4096. Pass an `AbortSignal` to cancel. Cancellation or timeout rejects the whole call immediately; a failed batch yields no partial decision, and late responses cannot invoke the Jev mapper.
+Structured decisions have no built-in wall-clock timeout. Slow authentication, inference, repairs, chat fallback and tournament rounds can finish without the former 30-second cutoff. Pass an `AbortSignal` to cancel; SDK callers that need their own deadline can supply `signal: AbortSignal.timeout(milliseconds)`. Cancellation rejects the whole call immediately, even if a provider ignores its signal. A failed batch yields no partial decision, and late responses cannot invoke the Jev mapper. Ordinary output is still bounded by `maxTokens`, default 4096.
+
+The `timeoutMs` request option and `DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS` export have been removed. Remove these from existing integrations and use `signal` for caller-owned cancellation. Provider transport, credential-preparation and enclosing tool-request limits remain independent; removing the decision timeout does not disable them.
 
 No result is returned for missing state, invalid configuration, unrepaired malformed output or an unrecovered provider failure. Keep action admission after the awaited result and check cancellation again at that boundary. Neither API runs recursive agents or provider probes.
 
-Jev errors report the SDK error class, HTTP status, recognized machine error codes such as `max_tokens_exceeded`, and a validated TypeSafe request ID when available. Raw error bodies, arbitrary messages and credentials are not exposed. SDK transport retries and body logging are disabled, including when `TYPESAFE_LOG_LEVEL` is set. Cancellation and timeout remain distinct failures.
+Jev errors report the SDK error class, HTTP status, recognized machine error codes such as `max_tokens_exceeded`, and a validated TypeSafe request ID when available. Raw error bodies, arbitrary messages and credentials are not exposed. Jev requests have no automatic transport retries or body logging, including when `TYPESAFE_LOG_LEVEL` is set.
 
 For direct Jev, HTTP 401 means check `/login typesafe-ai` or `TYPESAFE_API_KEY`; for OpenRouter Jev, check `/login openrouter` or `OPENROUTER_API_KEY`. HTTP 400 or 422 means check the state/question contract or reported context limit; 403 means access denied, 404 means check the endpoint/model, and 429 or 529 means wait before an explicit retry.
 

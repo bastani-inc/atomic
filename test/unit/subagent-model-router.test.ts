@@ -514,18 +514,24 @@ test("provider failure, cancellation and late responses never become selections"
 	await assert.rejects(pending, /cancelled|abort/i);
 });
 
-test("routing timeout is bounded with no semantic retry", async () => {
+test("routing accepts a valid selection after the former deadline without retry", async () => {
 	const f = await fixture();
 	vi.useFakeTimers();
 	const entered = Promise.withResolvers<void>();
+	const stream = createAssistantMessageEventStream();
 	f.infer.mockImplementation(() => {
 		entered.resolve();
-		return createAssistantMessageEventStream();
+		return stream;
 	});
-	const rejected = assert.rejects(f.route(), /timed out/);
+	const pending = f.route();
 	await entered.promise;
-	await vi.advanceTimersByTimeAsync(30001);
-	await rejected;
+	await vi.advanceTimersByTimeAsync(120_000);
+	stream.push({
+		type: "done",
+		reason: "toolUse",
+		message: decisionMessage({ model: "decision-test/chat", effort: null }),
+	});
+	assert.deepEqual((await pending).routerSelection, { model: "decision-test/chat", effort: null });
 	assert.equal(f.infer.mock.calls.length, 1);
 });
 
@@ -794,6 +800,8 @@ test("oversized protected tasks still fall back intact or fail when Jev is pinne
 
 test("auto ranks three distinct models, excludes their other efforts, and replays without inference", async () => {
 	const f = await fixture();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
 	const models = ["a", "b", "c", "d"].map((id) => ({ ...reasoningModel, id }));
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(models);
 	const ranked = [
@@ -803,6 +811,7 @@ test("auto ranks three distinct models, excludes their other efforts, and replay
 	];
 	let index = 0;
 	f.infer.mockImplementation((_model, context) => {
+		now += 60_000;
 		const { questions } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
 		const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
 		for (const prior of ranked.slice(0, index)) assert.ok(candidates.every((pair) => pair.model !== prior.model));

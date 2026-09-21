@@ -1,7 +1,7 @@
-import type { Questions, SystemOneResult } from "@typesafe-ai/sdk";
+import type { Questions } from "@typesafe-ai/sdk";
 import type { Static, TSchema } from "typebox";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
-import { createJevClient, JevRequestError } from "./jev-client.js";
+import { JevRequestError, requestJev } from "./jev-client.js";
 import { getStructuredOutputProviders, JEV_STRUCTURED_OUTPUT_PROVIDER as provider } from "./resolver.js";
 import type { StructuredChoiceQuestion, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
@@ -122,23 +122,13 @@ async function askJev<T extends TSchema>(
 	}
 	if (!apiKey) throw new Error(`${selectedProvider.fullId} requires an API key. ${authGuidance}`);
 	assertActive();
-	const { client, failure } = createJevClient({
+	const response = await requestJev({
 		apiKey,
 		endpoint: selectedProvider.endpoint,
-		model: selectedProvider.wireModel,
+		request: { model: selectedProvider.wireModel, state: request.state, questions },
 		signal,
-		timeoutMs: request.timeoutMs ?? 30_000,
 		authGuidance,
 	});
-	let response: SystemOneResult<Questions>;
-	try {
-		response = await client.systemOne(
-			{ model: selectedProvider.wireModel, state: request.state, questions },
-			{ signal },
-		);
-	} catch (error) {
-		throw failure(error);
-	}
 	assertActive();
 	if (typeof response === "string")
 		throw new InvalidDecisionOutputError("Jev returned malformed JSON; no decision was accepted.");
@@ -273,7 +263,7 @@ export async function inferJev<T extends TSchema>(
 				if (!kept) return [];
 				if (question.retainForFinal !== undefined) kept.add(question.retainForFinal);
 				// A retained sentinel can undo the only elimination in a four-item
-				// batch. Stop rather than repeating an identical round until timeout.
+				// batch. Stop rather than repeating an identical round indefinitely.
 				if (kept.size >= Object.keys(question.criteria).length) throw contextLimit();
 				return [
 					[

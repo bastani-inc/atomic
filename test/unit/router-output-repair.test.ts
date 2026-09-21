@@ -145,25 +145,28 @@ test("cancellation after invalid output prevents repair", async () => {
 	assert.equal(stream.mock.calls.length, 1);
 });
 
-test("repairs share the original deadline even with an uncooperative provider", async () => {
+test("routing repairs can complete after the former 30-second deadline", async () => {
 	vi.useFakeTimers();
 	const request = decisionRequest();
 	let count = 0;
 	request.modelRegistry.streamSimple = () => {
-		count++;
-		if (count === 1) {
-			const first = messageStream(decisionMessage({}));
-			first.result = () => new Promise((resolve) => setTimeout(() => resolve(decisionMessage({})), 30));
-			return first;
-		}
-		const stream = messageStream(decisionMessage());
-		stream.result = () => new Promise(() => {});
+		const response = decisionMessage(++count === 1 ? {} : { route: "review" });
+		const stream = messageStream(response);
+		stream.result = () => new Promise((resolve) => setTimeout(() => resolve(response), 20_000));
 		return stream;
 	};
-	const result = inferRouterDecision({ ...request, timeoutMs: 50 });
-	const rejected = assert.rejects(result, /timed out/);
-	await vi.advanceTimersByTimeAsync(50);
-	await rejected;
+	const result = inferRouterDecision(request);
+	const completed = result.then(
+		(value) => value,
+		(error: Error) => error,
+	);
+	await vi.advanceTimersByTimeAsync(40_000);
+	assert.deepEqual(await completed, {
+		value: { route: "review" },
+		model: "decision-test/chat",
+		responseModel: "chat",
+		usage: { inputTokens: 40, outputTokens: 20 },
+	});
 	assert.equal(count, 2);
 });
 
@@ -205,52 +208,46 @@ test("repairs retain the original state, schema, model and router selection", as
 });
 
 for (const valid of [false, true])
-	test(`elapsed deadline rejects synchronous ${valid ? "valid" : "invalid"} output without retry`, async () => {
+	test(`elapsed time does not reject synchronous ${valid ? "valid" : "invalid"} output`, async () => {
 		let now = 0;
 		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
 		try {
 			const request = decisionRequest();
 			const stream = vi.fn(() => {
-				now = 100;
-				return messageStream(decisionMessage(valid ? { route: "review" } : {}));
+				now += 60_000;
+				return messageStream(decisionMessage(valid || stream.mock.calls.length > 1 ? { route: "review" } : {}));
 			});
-			await assert.rejects(
-				inferRouterDecision({
-					...request,
-					timeoutMs: 50,
-					modelRegistry: { ...request.modelRegistry, streamSimple: stream },
-				}),
-				/timed out/,
-			);
-			assert.equal(stream.mock.calls.length, 1);
+			const result = await inferRouterDecision({
+				...request,
+				modelRegistry: { ...request.modelRegistry, streamSimple: stream },
+			});
+			assert.equal(result.value.route, "review");
+			assert.equal(stream.mock.calls.length, valid ? 1 : 2);
 		} finally {
 			clock.mockRestore();
 		}
 	});
 
-test("expired Jev auth cannot start a transport even before the timer callback", async () => {
+test("slow Jev auth can start transport after the former deadline", async () => {
 	let now = 0;
 	const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
-	const fetch = vi.fn();
+	const fetch = vi.fn(async () => Response.json(jevResponse()));
 	vi.stubGlobal("fetch", fetch);
 	try {
 		const request = decisionRequest();
-		await assert.rejects(
-			inferRouterDecision({
-				...request,
-				timeoutMs: 50,
-				settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
-				modelRegistry: {
-					...request.modelRegistry,
-					getProviderAuth: async () => {
-						now = 100;
-						return { auth: { apiKey: "synthetic-key" } };
-					},
+		const result = await inferRouterDecision({
+			...request,
+			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			modelRegistry: {
+				...request.modelRegistry,
+				getProviderAuth: async () => {
+					now = 60_000;
+					return { auth: { apiKey: "synthetic-key" } };
 				},
-			}),
-			/timed out/,
-		);
-		assert.equal(fetch.mock.calls.length, 0);
+			},
+		});
+		assert.equal(result.value.route, "review");
+		assert.equal(fetch.mock.calls.length, 1);
 	} finally {
 		clock.mockRestore();
 	}

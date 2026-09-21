@@ -40,8 +40,6 @@ export interface StructuredOutputRequest<T extends TSchema> {
 		readonly decode: (choices: Readonly<Record<string, string>>) => Static<T>;
 	};
 	readonly signal?: AbortSignal;
-	/** Positive integer milliseconds, default 30 seconds. Covers all rounds, auth, transport and body reading. */
-	readonly timeoutMs?: number;
 	/** Ordinary-provider output bound, default 4096 tokens. */
 	readonly maxTokens?: number;
 }

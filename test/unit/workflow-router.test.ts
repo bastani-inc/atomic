@@ -454,23 +454,24 @@ test("cancellation and late approval cannot start a run", async () => {
 	assert.equal(f.infer.mock.calls.length, 1);
 });
 
-test("bounded timeout does not turn a late response into none or a launch", async () => {
+test("slow routing returns a reservation without launching or inventing none", async () => {
 	vi.useFakeTimers();
 	const f = fixture();
+	const tool = registerWorkflowTool({ registerTool: () => {} }, f.execute, async (_policy, run) => run())!;
 	const stream = createAssistantMessageEventStream();
 	f.infer.mockImplementation(() => stream);
-	const pending = f.call();
-	await vi.advanceTimersByTimeAsync(30001);
-	const result = await pending;
-	assert.match("error" in result.details ? (result.details.error ?? "") : "", /timed out/);
-	assert.equal("routerDecision" in result.details, false);
+	const pending = tool.execute("route", { ...f.args, action: "route" }, undefined, undefined, f.ctx);
+	await vi.advanceTimersByTimeAsync(60_000);
 	f.noLaunch();
 	stream.push({
 		type: "done",
 		reason: "toolUse",
 		message: decisionMessage({ estimatedDuration: "15min", workflowType: "approved-change", maxBudget: {} }),
 	});
-	await vi.advanceTimersByTimeAsync(0);
+	const result = await pending;
+	assert.ok("routerDecision" in result.details);
+	assert.equal(result.details.status, "reserved");
+	assert.equal(result.details.routerDecision?.workflowType, "approved-change");
 	f.noLaunch();
 });
 

@@ -1,6 +1,6 @@
 // Transport and preparation regression coverage for #3089 / #3090.
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai";
+import { type Model, REQUEST_AUTH_PREPARATION_TIMEOUT_MS } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
@@ -202,9 +202,9 @@ for (const state of invalidStates) {
 	});
 }
 
-for (const timeoutMs of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
-	test(`unbounded/invalid timeout ${timeoutMs} is rejected`, async () => {
-		await assert.rejects(inferRouterDecision({ ...decisionRequest(), timeoutMs }), /timeoutMs/);
+for (const maxTokens of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
+	test(`invalid output token bound ${maxTokens} is rejected`, async () => {
+		await assert.rejects(inferRouterDecision({ ...decisionRequest(), maxTokens }), /maxTokens/);
 	});
 }
 
@@ -254,10 +254,11 @@ test("Jev input snapshot cannot be changed while awaiting transport", async () =
 	assert.equal((await pending).value.route, "review");
 });
 
-for (const reason of ["timeout", "oversized"] as const) {
+for (const reason of ["cancel", "oversized"] as const) {
 	test(`Jev ${reason} body is cancelled before mapping`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		vi.useFakeTimers();
+		const controller = new AbortController();
 		const cancelled = vi.fn();
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
@@ -272,19 +273,20 @@ for (const reason of ["timeout", "oversized"] as const) {
 			inferRouterDecision({
 				...request,
 				settings: SettingsManager.inMemory(),
-				timeoutMs: 50,
+				signal: controller.signal,
 				jev: { ...request.jev, decode },
 			}),
-			reason === "timeout" ? /timed out/ : /1 MiB/,
+			reason === "cancel" ? /cancelled/ : /1 MiB/,
 		);
-		await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(120_000);
+		if (reason === "cancel") controller.abort();
 		await pending;
 		assert.equal(cancelled.mock.calls.length, 1);
 		assert.equal(decode.mock.calls.length, 0);
 	});
 }
 
-for (const reason of ["cancel", "timeout"] as const) {
+for (const reason of ["cancel", "delayed-cancel"] as const) {
 	test(`ordinary ${reason} during credential preparation cannot dispatch after late OAuth refresh`, async () => {
 		vi.useFakeTimers();
 		const lateAuth = Promise.withResolvers<{ access: string; refresh: string; expires: number }>();
@@ -317,13 +319,12 @@ for (const reason of ["cancel", "timeout"] as const) {
 			...decisionRequest(),
 			modelRegistry: new ModelRegistry(runtime),
 			signal: controller.signal,
-			timeoutMs: 50,
 		});
-		const rejected = assert.rejects(pending, reason === "cancel" ? /cancelled/ : /timed out/);
+		const rejected = assert.rejects(pending, /cancelled/);
 		await entered.promise;
 		assert.equal(dispatch.mock.calls.length, 0);
-		if (reason === "cancel") controller.abort();
-		else await vi.advanceTimersByTimeAsync(50);
+		if (reason === "delayed-cancel") await vi.advanceTimersByTimeAsync(REQUEST_AUTH_PREPARATION_TIMEOUT_MS - 1);
+		controller.abort();
 		await rejected;
 		lateAuth.resolve({ access: "late-mock-key", refresh: "mock-refresh", expires: Number.MAX_SAFE_INTEGER });
 		await vi.advanceTimersByTimeAsync(0);

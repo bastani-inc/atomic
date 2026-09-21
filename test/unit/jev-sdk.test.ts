@@ -56,7 +56,7 @@ test("automatic Jev routing falls back once to the current chat model with visib
 			questions: request.jev.questions,
 		});
 		assert.equal(options.maxRetries, 0);
-		assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30000);
+		assert.equal(options.timeoutMs, undefined);
 		return messageStream(decisionMessage());
 	});
 	const result = await inferRouterDecision({
@@ -193,35 +193,30 @@ test("a cancellation delivered with the Jev error prevents fallback", async () =
 	assert.equal(dispatch.mock.calls.length, 0);
 });
 
-test("chat fallback consumes only the remaining shared deadline", async () => {
+test("chat fallback can complete after slow Jev inference without a shared deadline", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.stubGlobal("fetch", async () => {
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 60_000));
 		return Response.json({}, { status: 400 });
 	});
 	const request = decisionRequest();
 	const dispatch = vi.fn((_model, _context, options) => {
-		assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30);
+		assert.equal(options.timeoutMs, undefined);
 		const stream = messageStream(decisionMessage());
-		stream.result = () => new Promise(() => {});
+		stream.result = () => new Promise((resolve) => setTimeout(() => resolve(decisionMessage()), 60_000));
 		return stream;
 	});
-	const rejected = assert.rejects(
-		inferRouterDecision({
-			...request,
-			settings: { getRouterModel: () => "" },
-			timeoutMs: 50,
-			modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
-		}),
-		/timed out/,
-	);
-	await vi.advanceTimersByTimeAsync(20);
+	const pending = inferRouterDecision({
+		...request,
+		settings: { getRouterModel: () => "" },
+		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
+	});
+	await vi.advanceTimersByTimeAsync(120_000);
+	assert.equal((await pending).value.route, "review");
 	assert.equal(dispatch.mock.calls.length, 1);
-	await vi.advanceTimersByTimeAsync(30);
-	await rejected;
-	assert.equal(dispatch.mock.calls[0][2].signal.aborted, true);
+	assert.equal(dispatch.mock.calls[0][2].signal.aborted, false);
 });
 
 test("oversized error bodies are bounded and cannot trigger fallback", async () => {

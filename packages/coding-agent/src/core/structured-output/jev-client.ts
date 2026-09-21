@@ -1,14 +1,12 @@
 import {
-	APIConnectionError,
 	APIError,
-	APITimeoutError,
 	AuthenticationError,
 	BadRequestError,
 	InternalServerError,
 	NotFoundError,
 	PermissionDeniedError,
 	RateLimitError,
-	TypeSafeClient,
+	type SystemOneRequest,
 	UnprocessableEntityError,
 } from "@typesafe-ai/sdk";
 
@@ -98,42 +96,47 @@ async function boundedResponse(response: Response, signal: AbortSignal): Promise
 	}
 }
 
-export function createJevClient(options: {
+export async function requestJev(options: {
 	apiKey: string;
 	endpoint: string;
-	model: string;
+	request: SystemOneRequest;
 	signal: AbortSignal;
-	timeoutMs: number;
 	authGuidance: string;
-}) {
-	const client = new TypeSafeClient({
-		apiKey: options.apiKey,
-		baseURL: new URL(options.endpoint).origin,
-		defaultModel: options.model,
-		retry: { maxRetries: 0 },
-		timeout: options.timeoutMs,
-		// SDK debug logging includes bodies. Never inherit TYPESAFE_LOG_LEVEL.
-		logLevel: "off",
-		fetch: async (_url, init) => {
-			// OpenRouter exposes the same contract at /api/alpha/decisions.
-			// Only this fixed, resolved provider endpoint may receive credentials.
-			const response = await fetch(options.endpoint, { ...init, redirect: "error" });
-			return boundedResponse(response, init?.signal ?? options.signal);
-		},
-	});
-	return {
-		client,
-		failure(error: unknown): Error {
-			options.signal.throwIfAborted();
-			if (error instanceof APIError) return describeError(error, options.authGuidance);
-			if (error instanceof APITimeoutError)
-				return new Error("Jev request timed out (APITimeoutError); no decision was accepted.");
-			if (error instanceof APIConnectionError && error.cause instanceof JevResponseLimitError) return error.cause;
-			if (error instanceof APIConnectionError)
-				return new JevRequestError(
-					"Jev request failed (APIConnectionError). Check connectivity and retry explicitly; no automatic retry was made.",
-				);
-			return new Error("Jev SDK request failed; no decision was accepted.");
-		},
-	};
+}): Promise<unknown> {
+	options.signal.throwIfAborted();
+	let response: Response;
+	let text: string;
+	try {
+		response = await boundedResponse(
+			await fetch(options.endpoint, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${options.apiKey}`,
+					Accept: "application/json",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(options.request),
+				signal: options.signal,
+				redirect: "error",
+			}),
+			options.signal,
+		);
+		text = await response.text();
+	} catch (error) {
+		options.signal.throwIfAborted();
+		if (error instanceof JevResponseLimitError) throw error;
+		throw new JevRequestError(
+			"Jev request failed (APIConnectionError). Check connectivity and retry explicitly; no automatic retry was made.",
+		);
+	}
+	options.signal.throwIfAborted();
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		body = text;
+	}
+	if (!response.ok)
+		throw describeError(APIError.fromResponse(response.status, body, response.headers), options.authGuidance);
+	return body;
 }

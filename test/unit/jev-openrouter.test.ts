@@ -249,16 +249,17 @@ for (const selected of ["typesafe-ai/jev-latest", fullId] as const) {
 	});
 }
 
-test("OpenRouter auth shares the explicit decision deadline", async () => {
+test("OpenRouter auth receives caller cancellation", async () => {
 	const request = decisionRequest();
+	const controller = new AbortController();
 	let signal: AbortSignal | undefined;
 	const transport = vi.fn();
 	vi.stubGlobal("fetch", transport);
-	await assert.rejects(
+	const pending = assert.rejects(
 		inferStructuredOutput({
 			...request,
 			model: { kind: "jev", fullId },
-			timeoutMs: 20,
+			signal: controller.signal,
 			modelRegistry: {
 				...request.modelRegistry,
 				getProviderAuth: async (_provider, options) => {
@@ -267,8 +268,10 @@ test("OpenRouter auth shares the explicit decision deadline", async () => {
 				},
 			},
 		}),
-		/timed out/,
+		/cancelled/,
 	);
+	controller.abort();
+	await pending;
 	assert.equal(signal?.aborted, true);
 	assert.equal(transport.mock.calls.length, 0);
 });

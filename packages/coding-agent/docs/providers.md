@@ -498,7 +498,7 @@ Replace the former direct ID `typesafe-ai/jev` with `typesafe-ai/jev-latest` in 
 
 With an empty `routerModel`, configured Jev credentials select Jev for prerequisite workflow and subagent-auto routing. An explicit router selection takes precedence. General SDK structured-output requests select their inference model explicitly. This does not change the `structured_output` tool's model. User-issued `/workflow` commands bypass launch routing.
 
-Routers can repair malformed or schema-invalid answers up to three times after the initial attempt, within one shared deadline. Generic SDK decisions remain one-shot. Large choices can require several requests, increasing latency and usage; state is never trimmed automatically. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits) before sending large candidate lists or context.
+Routers can repair malformed or schema-invalid answers up to three times after the initial attempt, without a structured-decision deadline. Cancel the request to stop waiting; independent provider and enclosing tool-request limits still apply. Generic SDK decisions remain one-shot. Large choices can require several requests, increasing latency and usage; state is never trimmed automatically. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits) before sending large candidate lists or context.
 
 HTTP 401 means check the key saved through `/login typesafe-ai` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
 

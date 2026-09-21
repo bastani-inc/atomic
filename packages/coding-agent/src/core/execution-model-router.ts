@@ -149,7 +149,6 @@ export async function routeExecutionModel(input: {
 		const ranked: ModelRouterOutput[] = [];
 		// Rank by repeated bounded choices, excluding all efforts of earlier models.
 		// Probabilities from separate tournament batches are not comparable.
-		const deadline = performance.now() + 30_000;
 		while (ranked.length < Math.min(3, available.length)) {
 			const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
 			if (!remaining.length) break;
@@ -170,8 +169,6 @@ export async function routeExecutionModel(input: {
 				required: ["model", "effort"],
 				additionalProperties: false,
 			});
-			const timeoutMs = Math.ceil(deadline - performance.now());
-			if (timeoutMs <= 0) throw new Error("Auto model ranking timed out; no decision was accepted.");
 			const result = await inferRouterDecision(
 				{
 					settings,
@@ -196,7 +193,6 @@ export async function routeExecutionModel(input: {
 						},
 					},
 					signal,
-					timeoutMs,
 				},
 				(value) => remaining.some((pair) => pair.model === value.model && pair.effort === value.effort),
 			);

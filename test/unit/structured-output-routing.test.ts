@@ -122,7 +122,7 @@ test("ordinary entrypoint uses configured provider/auth, complete state, one sch
 		assert.equal(options.transport, "sse");
 		assert.equal(options.toolChoice, "auto");
 		assert.equal(options.maxTokens, 4096);
-		assert.equal(options.timeoutMs, 30000);
+		assert.equal(options.timeoutMs, undefined);
 		assert.deepEqual(
 			JSON.parse(context.messages.find((message: { role: string }) => message.role === "user").content),
 			{
@@ -426,7 +426,7 @@ for (const count of [255]) {
 	});
 }
 
-for (const kind of ["cancel", "timeout", "pre-cancel"] as const) {
+for (const kind of ["cancel", "delayed-cancel", "pre-cancel"] as const) {
 	for (const provider of ["ordinary", "jev"] as const) {
 		test(`${provider} ${kind} fences late inference and mapping`, async () => {
 			vi.useFakeTimers();
@@ -453,15 +453,14 @@ for (const kind of ["cancel", "timeout", "pre-cancel"] as const) {
 				settings: SettingsManager.inMemory(),
 				modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 				signal: controller.signal,
-				timeoutMs: 50,
 				jev: { ...request.jev, decode },
 			}).then((result) => {
 				accepted++;
 				return result;
 			});
-			const rejected = assert.rejects(pending, /cancel|timed out/);
-			if (kind === "timeout") await vi.advanceTimersByTimeAsync(50);
-			else if (kind === "cancel") controller.abort();
+			const rejected = assert.rejects(pending, /cancel/);
+			if (kind === "delayed-cancel") await vi.advanceTimersByTimeAsync(120_000);
+			if (kind !== "pre-cancel") controller.abort();
 			await rejected;
 			if (kind !== "pre-cancel") assert.equal(requestSignal?.aborted, true);
 			lateHttp.resolve(Response.json(jevResponse()));
@@ -557,8 +556,8 @@ test("model/effort pairs use one Choice and one closed union, preserving null ve
 });
 
 for (const provider of ["ordinary", "jev"] as const) {
-	for (const kind of ["cancel", "timeout"] as const) {
-		test(`${provider} transport rejection during ${kind} preserves the bounded failure`, async () => {
+	for (const kind of ["cancel", "delayed-cancel"] as const) {
+		test(`${provider} transport rejection during ${kind} preserves cancellation`, async () => {
 			vi.useFakeTimers();
 			vi.stubEnv("TYPESAFE_API_KEY", provider === "jev" ? "mock-key" : "");
 			const controller = new AbortController();
@@ -602,16 +601,15 @@ for (const provider of ["ordinary", "jev"] as const) {
 				modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 				jev: { ...request.jev, decode },
 				signal: controller.signal,
-				timeoutMs: 50,
 			});
 			const rejected = assert.rejects(pending, (error: Error) => {
-				assert.match(error.message, kind === "cancel" ? /cancelled/ : /timed out/);
+				assert.match(error.message, /cancelled/);
 				assert.doesNotMatch(String(error.stack), /private upstream payload|mock-secret/);
 				return true;
 			});
 			await started.promise;
-			if (kind === "cancel") controller.abort();
-			else await vi.advanceTimersByTimeAsync(50);
+			if (kind === "delayed-cancel") await vi.advanceTimersByTimeAsync(120_000);
+			controller.abort();
 			await rejected;
 			await vi.advanceTimersByTimeAsync(0);
 			assert.equal(dispatch.mock.calls.length + transport.mock.calls.length, 1);
