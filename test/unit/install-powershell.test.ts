@@ -59,8 +59,8 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.ok(checksumComparison >= 0 && installMutation > checksumComparison);
 	assert.match(source, /New-Item\s+-ItemType\s+Junction/u);
 	assert.match(source, /\[Environment\]::SetEnvironmentVariable\("Path",\s*\$newUserPath,\s*"User"\)/u);
-	assert.match(source, /&\s+\$stagedAtomic\s+"--version" \| Out-Null[\s\S]*\$LASTEXITCODE/u);
-	assert.match(source, /&\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand \| Out-Null[\s\S]*\$LASTEXITCODE/u);
+	assert.match(source, /\$null = &\s+\$stagedAtomic\s+"--version"[\s\S]*\$LASTEXITCODE/u);
+	assert.match(source, /\$null = &\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand[\s\S]*\$LASTEXITCODE/u);
 
 	assert.match(source, /LOCALAPPDATA[\\/]atomic/u);
 	assert.match(source, /Default bin directory:[^\r\n]*LOCALAPPDATA[\\/]atomic[\\/]bin/u);
@@ -149,11 +149,15 @@ test("Windows installer streams the archive with a progress bar and keeps smoke-
 	assert.ok(checksumsDownload > fallbackDownload, "SHA256SUMS must stay on the silent download path");
 	assert.match(source.slice(archiveDownload, checksumsDownload), /"Downloading \$assetName \.\.\. "[\s\S]+"done"/u);
 
+	// Assignment rather than `| Out-Null`: a pipeline makes Windows PowerShell
+	// refuse to launch a native command that PATHEXT does not classify as an
+	// application ("Cannot run a document in the middle of a pipeline"), and
+	// the installer tolerates PATHEXT entries PowerShell itself does not parse.
 	for (const smokeCheck of [
-		'& $stagedAtomic "--version" | Out-Null',
-		'& $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime | Out-Null',
-		'& $postgresExecutable "--version" | Out-Null',
-		"& $env:ComSpec /d /c $shimCommand | Out-Null",
+		'$null = & $stagedAtomic "--version"',
+		'$null = & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime',
+		'$null = & $postgresExecutable "--version"',
+		"$null = & $env:ComSpec /d /c $shimCommand",
 	]) {
 		assert.ok(source.includes(smokeCheck), `smoke check output is not discarded: ${smokeCheck}`);
 	}
@@ -2711,6 +2715,25 @@ function global:Invoke-WebRequest {
         return [pscustomobject]@{ StatusCode = 200; Headers = @{} }
     }
     throw "Unexpected Ctrl+C fixture request: $Uri"
+}
+
+# Mirror the main fixture: the archive download streams through
+# System.Net.Http.HttpClient, which this harness cannot intercept. Refusing the
+# assembly keeps the release request on Invoke-AtomicDownload and the mock above.
+function global:Add-Type {
+    [CmdletBinding()]
+    param(
+        [string]$AssemblyName,
+        [string]$TypeDefinition,
+        [string]$Path,
+        [string]$OutputAssembly,
+        [string]$OutputType
+    )
+
+    if ($AssemblyName -eq "System.Net.Http") {
+        throw "System.Net.Http is unavailable in the Ctrl+C fixture."
+    }
+    Microsoft.PowerShell.Utility\Add-Type @PSBoundParameters
 }
 
 $global:AtomicCtrlCRollbackArmed = $false

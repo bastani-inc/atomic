@@ -891,6 +891,8 @@ interface SetupLockOptions {
 	readonly isProcessAlive?: (pid: number) => boolean;
 	/** Test seam after a complete heartbeat temp record is durable and before replacement. */
 	readonly beforeHeartbeatReplace?: (temporaryMarkerPath: string) => void;
+	/** Test seam after this process created the lock directory and before it writes its owner marker. */
+	readonly beforeOwnerMarkerWrite?: (lockDir: string) => void;
 }
 
 interface SetupLockLease {
@@ -942,7 +944,7 @@ async function withSetupLock(
 	const isProcessAlive = options.isProcessAlive ?? processIsAlive;
 	let lease: SetupLockLease | undefined;
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
-		lease = acquireSetupLock(lockDir, clock(), staleMs, isProcessAlive);
+		lease = acquireSetupLock(lockDir, clock(), staleMs, isProcessAlive, options.beforeOwnerMarkerWrite);
 		if (lease !== undefined) break;
 		if (attempt === attempts - 1) {
 			throw new Error(`Timed out waiting for another Atomic process to finish Postgres setup (${lockDir}).`);
@@ -969,11 +971,13 @@ function acquireSetupLock(
 	now: HostLeaseTime,
 	staleMs: number,
 	isProcessAlive: (pid: number) => boolean,
+	beforeOwnerMarkerWrite?: (lockDir: string) => void,
 ): SetupLockLease | undefined {
 	const abandonedOwnerTokens = new Set<string>();
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const token = `${process.pid}-${crypto.randomUUID()}`;
 		if (createSetupLockDirectory(lockDir)) {
+			beforeOwnerMarkerWrite?.(lockDir);
 			const lease = claimCreatedSetupLock(lockDir, token, now, abandonedOwnerTokens);
 			if (lease !== undefined) return lease;
 		}
@@ -1000,8 +1004,13 @@ function createSetupLockDirectory(lockDir: string): boolean {
 /**
  * Write the owner marker into a directory this process just created. Until the
  * marker lands the directory is indistinguishable from an abandoned empty
- * lock, so a contender may displace it once it ages past the stale threshold;
- * that shows up here as `ENOENT` and is a lost race rather than a failure.
+ * lock, so a contender may displace it once it ages past the stale threshold.
+ * That shows up here either as `ENOENT` (the directory is gone) or, when the
+ * contender has already installed a replacement at the same path, as a marker
+ * that landed beside another owner's. The pathname alone cannot tell the
+ * original directory from its replacement, so ownership is established only
+ * when this marker is the directory's sole entry after the write; anything
+ * else is a lost race rather than a failure.
  */
 function claimCreatedSetupLock(
 	lockDir: string,
@@ -1009,7 +1018,8 @@ function claimCreatedSetupLock(
 	now: HostLeaseTime,
 	abandonedOwnerTokens: ReadonlySet<string>,
 ): SetupLockLease | undefined {
-	const markerPath = join(lockDir, `.owner-${token}`);
+	const markerName = `.owner-${token}`;
+	const markerPath = join(lockDir, markerName);
 	try {
 		writeFileSync(
 			markerPath,
@@ -1019,7 +1029,6 @@ function claimCreatedSetupLock(
 				mode: 0o600,
 			},
 		);
-		return { lockDir, markerPath, token, ownerPid: process.pid, abandonedOwnerTokens };
 	} catch (error) {
 		try {
 			rmdirSync(lockDir);
@@ -1028,6 +1037,28 @@ function claimCreatedSetupLock(
 		}
 		if (errorCode(error) === "ENOENT") return undefined;
 		throw error;
+	}
+	if (createdSetupLockHoldsOnly(lockDir, markerName)) {
+		return { lockDir, markerPath, token, ownerPid: process.pid, abandonedOwnerTokens };
+	}
+	// The marker name is unique to this token, so removing it cannot touch the
+	// other owner's record; rmdir is non-recursive and only succeeds if every
+	// contender backed off, which leaves the path free for the next attempt.
+	rmSync(markerPath, { force: true });
+	try {
+		rmdirSync(lockDir);
+	} catch {
+		// Another owner's marker keeps the directory: that lease stands.
+	}
+	return undefined;
+}
+
+function createdSetupLockHoldsOnly(lockDir: string, markerName: string): boolean {
+	try {
+		const entries = readdirSync(lockDir);
+		return entries.length === 1 && entries[0] === markerName;
+	} catch {
+		return false;
 	}
 }
 

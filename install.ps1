@@ -1166,14 +1166,14 @@ try {
         throw "Release archive $assetName does not contain atomic.exe at its root."
     }
 
-    & $stagedAtomic "--version" | Out-Null
+    $null = & $stagedAtomic "--version"
     $stagedExitCode = $LASTEXITCODE
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
 
     $postgresRuntime = Join-Path $payloadPath "node_modules\@bastani\atomic-natives\postgres-runtime"
-    & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime | Out-Null
+    $null = & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime
     if ($LASTEXITCODE -ne 0) {
         throw "Incomplete PostgreSQL runtime: payload validation failed; installation was not promoted. Download a repaired release."
     }
@@ -1184,7 +1184,7 @@ try {
         if (-not (Test-Path -LiteralPath $postgresExecutable -PathType Leaf)) {
             throw "Incomplete PostgreSQL runtime: missing $postgresExecutable; installation was not promoted. Download a repaired release."
         }
-        & $postgresExecutable "--version" | Out-Null
+        $null = & $postgresExecutable "--version"
         if ($LASTEXITCODE -ne 0) {
             throw "Incomplete PostgreSQL runtime: $postgresCommand --version failed; installation was not promoted. Download a repaired release."
         }
@@ -1291,7 +1291,7 @@ try {
         }
 
         $shimCommand = '"' + $shimPath + '" --version'
-        & $env:ComSpec /d /c $shimCommand | Out-Null
+        $null = & $env:ComSpec /d /c $shimCommand
         $finalExitCode = $LASTEXITCODE
         if ($finalExitCode -ne 0) {
             throw "Installed atomic.cmd --version failed with exit code $finalExitCode."

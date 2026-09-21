@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSyncCollect } from "./helpers/runtime.js";
+import { npmSpawnPrefix, spawnSyncCollect } from "./helpers/runtime.js";
 
 /**
  * Make `@bastani/atomic-natives` loadable before the suites run, and say so out
@@ -160,7 +160,9 @@ export default function setup(): void {
 		`  ${BUILD_COMMAND}`,
 	]);
 
-	const result = spawnSyncCollect(["npm", "run", "build", "--workspace=@bastani/atomic-natives"], { cwd: REPO_ROOT });
+	const result = spawnSyncCollect([...npmSpawnPrefix(), "run", "build", "--workspace=@bastani/atomic-natives"], {
+		cwd: REPO_ROOT,
+	});
 
 	if (!result.success) {
 		throw new Error(

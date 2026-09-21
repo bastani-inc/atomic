@@ -1072,6 +1072,68 @@ test("an empty setup-lock directory with a future mtime fails closed rather than
 	}
 });
 
+test("a creator displaced between mkdir and its marker write does not gain a second lease on the replacement", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-empty-displaced-"));
+	const lockDir = join(root, "setup-lock");
+	const now = Date.now();
+	let releaseContender!: () => void;
+	const contenderBlocker = new Promise<void>((resolve) => (releaseContender = resolve));
+	let contender: Promise<void> | undefined;
+	let contenderEntered = false;
+	let creatorEntered = false;
+	try {
+		const creator = embeddedPostgresTestHooks.withSetupLock(
+			lockDir,
+			async () => {
+				creatorEntered = true;
+			},
+			{
+				now: () => now,
+				staleMs: TEST_SETUP_LOCK_STALE_MS,
+				attempts: 1,
+				wait: async () => {},
+				scheduleHeartbeat: () => () => {},
+				beforeOwnerMarkerWrite: (createdDir) => {
+					// The creator is suspended; its empty directory ages past the
+					// stale threshold and a contender replaces it at the same path.
+					const abandonedAt = (now - TEST_SETUP_LOCK_STALE_MS * 2) / 1000;
+					utimesSync(createdDir, abandonedAt, abandonedAt);
+					contender = embeddedPostgresTestHooks.withSetupLock(
+						lockDir,
+						async () => {
+							contenderEntered = true;
+							await contenderBlocker;
+						},
+						{
+							now: () => now,
+							staleMs: TEST_SETUP_LOCK_STALE_MS,
+							attempts: 1,
+							wait: async () => {},
+							scheduleHeartbeat: () => () => {},
+						},
+					);
+					assert.equal(contenderEntered, true, "the contender recovered the aged empty directory");
+					assert.equal(readdirSync(lockDir).length, 1, "the contender holds its marker in the replacement");
+				},
+			},
+		);
+		await assert.rejects(creator, /Timed out waiting for another Atomic process/);
+		assert.equal(creatorEntered, false, "the displaced creator never runs setup beside the contender");
+		assert.equal(
+			readdirSync(lockDir).filter((entry) => entry.startsWith(".owner-")).length,
+			1,
+			"only the contender's marker remains in the replacement directory",
+		);
+		releaseContender();
+		await contender;
+		assert.equal(existsSync(lockDir), false, "the contender's release removes its own lock cleanly");
+		assert.deepEqual(readdirSync(root), []);
+	} finally {
+		releaseContender();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a live heartbeat owner is not displaced by aged filesystem mtimes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-live-aged-mtime-"));
 	const lockDir = join(root, "setup-lock");

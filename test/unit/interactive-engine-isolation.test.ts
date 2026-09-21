@@ -146,49 +146,53 @@ test("remote custom components render and receive input through the engine proto
 	service.dispose();
 });
 
-test.sequential("startup custom UI can unblock engine binding after transport readiness", async () => {
-	const client = new RpcClient({
-		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(moduleDir(import.meta.url), "../.."),
-		runtimeExecutable: bunExecutable(),
-		provider: "isolation-fixture",
-		model: "blocking-model",
-		env: { ATOMIC_STARTUP_CUSTOM_UI: "1" },
-		args: [
-			"--no-session",
-			"--no-extensions",
-			"--extension",
-			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills",
-			"--no-prompt-templates",
-			"--no-themes",
-			"--offline",
-		],
-		interactiveEngine: { onDiagnostic: () => {} },
-	});
-	try {
-		await client.start();
-		const open = await new Promise<{ componentId: string }>((resolve) => {
-			client.onInteractiveEngineMessage((message) => {
-				if (message.type === "engine_custom_open") resolve(message);
+test.sequential(
+	"startup custom UI can unblock engine binding after transport readiness",
+	async () => {
+		const client = new RpcClient({
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
+			provider: "isolation-fixture",
+			model: "blocking-model",
+			env: { ATOMIC_STARTUP_CUSTOM_UI: "1" },
+			args: [
+				"--no-session",
+				"--no-extensions",
+				"--extension",
+				join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--offline",
+			],
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		try {
+			await client.start();
+			const open = await new Promise<{ componentId: string }>((resolve) => {
+				client.onInteractiveEngineMessage((message) => {
+					if (message.type === "engine_custom_open") resolve(message);
+				});
 			});
-		});
-		client.sendInteractiveEngineCommand({
-			type: "engine_custom_input",
-			componentId: open.componentId,
-			requestId: 1,
-			data: "\r",
-		});
-		await Promise.race([
-			client.waitForInteractiveEngineBound(),
-			sleep(2_000).then(() => {
-				throw new Error("engine binding did not resume after startup custom UI");
-			}),
-		]);
-	} finally {
-		await client.stop();
-	}
-});
+			client.sendInteractiveEngineCommand({
+				type: "engine_custom_input",
+				componentId: open.componentId,
+				requestId: 1,
+				data: "\r",
+			});
+			await Promise.race([
+				client.waitForInteractiveEngineBound(),
+				sleep(2_000).then(() => {
+					throw new Error("engine binding did not resume after startup custom UI");
+				}),
+			]);
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS,
+);
 
 test.sequential(
 	"blocking extension initialization cannot delay creation of the interactive host",
