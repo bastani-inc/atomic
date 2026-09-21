@@ -1037,6 +1037,54 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(lines[0]!.includes("2 background"));
 		assert.ok(lines[0]!.includes("2 ●"));
 	});
+
+	test("awaiting-input run shows question mark in compact indicator (plain)", () => {
+		const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [
+			makeStage("s1", "ask", "awaiting_input"),
+		]);
+		const lines = renderWidgetLines(makeSnap([awaiting]), 60).map(stripAnsi);
+		assert.equal(lines.length, 1);
+		// Should show the awaiting_input glyph (？) before the running count
+		assert.ok(lines[0]!.includes("？"), "compact indicator must include the question-mark glyph");
+		assert.ok(lines[0]!.includes("1 ●"), "running count still displayed");
+		assert.ok(lines[0]!.includes("1 background"), "total count still displayed");
+	});
+
+	test("ordinary running run without pending input keeps bullet indicator (plain)", () => {
+		const running = makeRun("r2xxxxxx", "wf-run", "running");
+		const lines = renderWidgetLines(makeSnap([running]), 60).map(stripAnsi);
+		assert.equal(lines.length, 1);
+		assert.ok(!lines[0]!.includes("？"), "no question mark for ordinary running");
+		assert.ok(lines[0]!.includes("1 ●"), "plain running indicator");
+	});
+
+	test("awaiting-input compact indicator uses info blue in themed output", () => {
+		const awaiting = makeRun("r3xxxxxx", "wf-await-themed", "running", [
+			makeStage("s1", "ask", "awaiting_input"),
+		]);
+		const lines = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 60);
+		assert.equal(lines.length, 1);
+		const infoBlue = hexToAnsi(deriveGraphTheme({}).info);
+		assert.ok(lines[0]!.includes(infoBlue), "themed compact uses info blue for awaiting-input");
+		assert.ok(stripAnsi(lines[0]!).includes("？"), "question-mark glyph present in themed compact");
+	});
+
+	test("answering the question returns compact indicator to ordinary running state", () => {
+		const localStore = createStore();
+		const stage = makeStage("s1", "ask", "awaiting_input");
+		const run = makeRun("r4xxxxxx", "wf-resolve", "running", [stage]);
+		localStore.recordRunStart(run);
+		// Before answer — should show question mark
+		const before = renderWidgetLines(localStore.graphSnapshot(), 60).map(stripAnsi);
+		assert.ok(before[0]!.includes("？"), "question mark shown while awaiting");
+
+		// Simulate stage resuming after question answered
+		localStore.recordStageEnd("r4xxxxxx", { ...stage, status: "running" });
+		localStore.recordStageStart("r4xxxxxx", { ...stage, status: "running" });
+		const after = renderWidgetLines(localStore.graphSnapshot(), 60).map(stripAnsi);
+		assert.ok(!after[0]!.includes("？"), "question mark gone after stage resumes");
+		assert.ok(after[0]!.includes("1 ●"), "back to ordinary running indicator");
+	});
 });
 
 // ---------------------------------------------------------------------------

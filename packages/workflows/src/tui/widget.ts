@@ -461,23 +461,36 @@ function themedCollapsed(counts: RunCounts, activeTools: number, theme: GraphThe
 	const dim = hexToAnsi(theme.dim);
 	const muted = hexToAnsi(theme.textMuted);
 	const warning = hexToAnsi(theme.warning);
+	const info = hexToAnsi(theme.info);
 	const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
 	const active = counts.active;
+	// When any visible run is awaiting input, replace the running ● with a
+	// question-mark indicator in the same info blue used everywhere else for
+	// awaiting-input state (graph node glyph, band badge, full widget row).
+	// The count still reflects running runs so the number stays accurate.
+	const runningIndicator =
+		counts.awaiting > 0
+			? `${info}${statusIcon("awaiting_input")} ${active} ●${RESET}`
+			: `${warning}${active} ●${RESET}`;
 	const paused = counts.paused > 0 ? `${dim} · ${RESET}${warning}${counts.paused} ❚❚${RESET}` : "";
 	const quit = counts.quit > 0 ? `${dim} · ${RESET}${warning}${counts.quit} quit${RESET}` : "";
 	const blocked = counts.blocked > 0 ? `${dim} · ${RESET}${warning}${counts.blocked} ↑${RESET}` : "";
 	const tools =
 		activeTools > 0 ? `${dim} · ${RESET}${warning}${activeTools} tool${activeTools === 1 ? "" : "s"}${RESET}` : "";
-	return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${warning}${active} ●${RESET}${paused}${quit}${blocked}${tools}`;
+	return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${runningIndicator}${paused}${quit}${blocked}${tools}`;
 }
 
 function plainCollapsed(counts: RunCounts, activeTools: number): string {
 	const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
+	// When any visible run is awaiting input, prefix the running count with
+	// a question mark so the compact form distinguishes "needs attention"
+	// from ordinary running work.
+	const runningIndicator = counts.awaiting > 0 ? `${statusIcon("awaiting_input")} ${counts.active} ●` : `${counts.active} ●`;
 	const paused = counts.paused > 0 ? ` · ${counts.paused} ❚❚` : "";
 	const quit = counts.quit > 0 ? ` · ${counts.quit} quit` : "";
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} ↑` : "";
 	const tools = activeTools > 0 ? ` · ${activeTools} tool${activeTools === 1 ? "" : "s"}` : "";
-	return ` ▾  ${total} background · ${counts.active} ●${paused}${quit}${blocked}${tools}`;
+	return ` ▾  ${total} background · ${runningIndicator}${paused}${quit}${blocked}${tools}`;
 }
 
 // ---------------------------------------------------------------------------
