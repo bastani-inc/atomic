@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Docker fallback Postgres is no longer treated as ready when the published port accepts TCP during `initdb`. Atomic waits for a PostgreSQL query on the selected endpoint, retries transient startup resets and connection refusals, and shuts down a failed DBOS executor before continuing with the in-memory backend.
+- Docker fallback Postgres is no longer treated as ready when the published port accepts TCP during `initdb`. Atomic waits for a PostgreSQL query on the `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` endpoint DBOS will use, retries transient startup resets and refusals (including a connection that terminates while the container is still starting), and shuts down a failed DBOS executor before continuing with the in-memory backend.
 
 ## [0.9.20-alpha.5] - 2026-09-20
 
