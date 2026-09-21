@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 dashmap.workspace = true
 globset.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 grep-matcher.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
