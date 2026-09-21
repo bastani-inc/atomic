@@ -78,7 +78,7 @@
 		"@smithy/node-http-handler": "4.12.1",
 		"http-proxy-agent": "9.1.0",
 		"https-proxy-agent": "9.1.0",
-		"openai": "6.40.0",
+		"openai": "7.20.0",
 		"partial-json": "0.1.7",
 		"typebox": "1.3.27"
 	},
