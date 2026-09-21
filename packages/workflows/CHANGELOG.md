@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.20-alpha.6] - 2026-09-21
+
 ### Fixed
 
 - Docker fallback Postgres is no longer treated as ready when the published port accepts TCP during `initdb`. Atomic waits for a PostgreSQL query using the endpoint, credentials and TLS settings DBOS will use, retries transient startup resets and refusals (including a connection that terminates while the container is still starting), and shuts down a failed DBOS executor before continuing with the in-memory backend. Invalid readiness ports now fail before connecting rather than leaving a delayed process-crashing error.

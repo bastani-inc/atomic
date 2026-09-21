@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.6] - 2026-09-21
+
 ### Breaking Changes
 
 - Removed the `timeoutMs` option from `StructuredOutputRequest` and `RouterDecisionRequest`, and the `DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS` export. SDK integrations can pass an `AbortSignal` for cancellation or a caller-owned deadline.
