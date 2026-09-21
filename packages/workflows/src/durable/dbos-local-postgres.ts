@@ -333,7 +333,7 @@ async function ensureDockerDbosPostgres(): Promise<void> {
 			"-e",
 			"PGDATA=/var/lib/postgresql/data",
 			"-p",
-			"127.0.0.1:5432:5432",
+			`127.0.0.1:${endpoint.port}:5432`,
 			"-v",
 			"dbos-db-data:/var/lib/postgresql/data",
 			DOCKER_IMAGE,

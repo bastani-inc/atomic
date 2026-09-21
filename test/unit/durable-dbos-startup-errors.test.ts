@@ -3,11 +3,15 @@ import { Client } from "pg";
 import { afterEach, test, vi } from "vitest";
 import {
 	dockerFallbackEndpoint,
+	resetLocalDbosProvisioningForTests,
+	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
 	waitForPostgresProtocolReadiness,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
+import * as localCommand from "../../packages/workflows/src/durable/local-command.js";
 
 afterEach(() => {
+	resetLocalDbosProvisioningForTests();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	vi.useRealTimers();
@@ -119,4 +123,37 @@ test("a code-bearing dual-stack connection failure retries before readiness", as
 		},
 	});
 	assert.equal(probes, 2);
+});
+
+for (const port of ["5432", "55432"]) {
+	test(`new Docker fallback publishes the selected PGPORT ${port} (#3158)`, async () => {
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
+		vi.stubEnv("PGPORT", port);
+		resetLocalDbosProvisioningForTests(async () => {
+			throw new Error("embedded unavailable");
+		});
+		const command = vi.spyOn(localCommand, "runLocalCommand").mockImplementation(async (_command, args) => {
+			if (args[0] === "version") return { exitCode: 0, stdout: "29", stderr: "" };
+			if (args[0] === "inspect") return { exitCode: 1, stdout: "", stderr: "missing" };
+			throw new Error("stop before creating a real container");
+		});
+		await assert.rejects(resolveDbosSystemDatabaseUrl(), /stop before creating a real container/);
+		const creation = command.mock.calls.find((call) => call[1][0] === "run");
+		assert.ok(creation);
+		assert.equal(creation[0], "docker");
+		assert.equal(creation[1][creation[1].indexOf("-p") + 1], `127.0.0.1:${port}:5432`);
+	});
+}
+
+test("invalid PGPORT rejects before Docker commands run (#3158)", async () => {
+	vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
+	vi.stubEnv("PGPORT", "99999");
+	resetLocalDbosProvisioningForTests(async () => {
+		throw new Error("embedded unavailable");
+	});
+	const command = vi.spyOn(localCommand, "runLocalCommand").mockImplementation(async () => {
+		throw new Error("must not run Docker");
+	});
+	await assert.rejects(resolveDbosSystemDatabaseUrl(), /PGPORT.*integer between 1 and 65535/);
+	assert.equal(command.mock.calls.length, 0);
 });

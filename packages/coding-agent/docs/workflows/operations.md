@@ -576,6 +576,8 @@ If embedded provisioning fails without leaving retained-process cleanup pending,
 
 The Docker readiness query uses the same `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGSSLMODE` settings as DBOS. If startup reports an invalid `PGPORT`, supply an integer from 1 through 65535. Authentication, TLS, schema and statement-timeout failures are not retried as database startup delays; correct the reported configuration or database problem.
 
+New Docker fallback containers publish PostgreSQL on `127.0.0.1` at `PGPORT`, or port 5432 when unset. Atomic does not change an existing container's port mapping. When reusing `dbos-db`, keep `PGPORT` consistent with its published port, or set `DBOS_SYSTEM_DATABASE_URL` to the intended database endpoint.
+
 Fallback starts only after failed DBOS initialization has been cleaned up. If Atomic reports `Workflow backend cleanup failed`, workflow startup stops rather than starting another backend alongside an unconfirmed executor. Correct the reported shutdown problem and restart Atomic; do not delete database data to bypass it.
 
 **Multiple concurrent Atomic sessions.** A workflow running in another process is not a resume target. Fresh-heartbeat rows are hidden from resume pickers and refused by direct resume. After a crash, the heartbeat becomes stale in about two minutes and inspection reports `crashed`. Concurrent attempts to resume the same run admit one executor; a stale request reports that the run changed.
