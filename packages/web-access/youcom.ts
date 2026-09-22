@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.js";
 import { findReadableConfigPath } from "./config-paths.js";
+import { createOwnerState } from "./owner-state.js";
 import type { SearchOptions, SearchResponse, SearchResult } from "./perplexity.js";
 
 const YOUCOM_API_URL = "https://ydc-index.io/v1/search";
@@ -11,24 +12,17 @@ interface WebSearchConfig {
 	youcomApiKey?: unknown;
 }
 
-let cachedConfig: WebSearchConfig | null = null;
-
-function loadConfig(): WebSearchConfig {
-	if (cachedConfig) return cachedConfig;
-	if (!existsSync(CONFIG_PATH)) {
-		cachedConfig = {};
-		return cachedConfig;
-	}
+const loadConfig = createOwnerState<WebSearchConfig>(() => {
+	if (!existsSync(CONFIG_PATH)) return {};
 
 	const content = readFileSync(CONFIG_PATH, "utf-8");
 	try {
-		cachedConfig = JSON.parse(content) as WebSearchConfig;
-		return cachedConfig;
+		return JSON.parse(content) as WebSearchConfig;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
 	}
-}
+});
 
 function normalizeApiKey(value: unknown): string | null {
 	if (typeof value !== "string") return null;

@@ -25,6 +25,7 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 	try {
 		vi.stubEnv("PERPLEXITY_API_KEY", "");
 		vi.stubEnv("EXA_API_KEY", "");
+		vi.stubEnv("YDC_API_KEY", "");
 		const video = join(directory, "video.mp4");
 		await writeFileEnsuringDir(video, "fixture");
 		await writeFileEnsuringDir(
@@ -36,6 +37,7 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 				geminiApiKey: "first-key",
 				perplexityApiKey: "first-key",
 				exaApiKey: "first-key",
+				youcomApiKey: "first-key",
 				chromeProfile: "first-profile",
 				githubClone: { maxRepoSizeMB: 100 },
 			}),
@@ -43,6 +45,7 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 		const { getApiKey } = await import("../../packages/web-access/gemini-api.js");
 		const { isPerplexityAvailable } = await import("../../packages/web-access/perplexity.js");
 		const { hasExaApiKey } = await import("../../packages/web-access/exa.js");
+		const { isYoucomAvailable } = await import("../../packages/web-access/youcom.js");
 		const { getChromeProfileFromConfig } = await import("../../packages/web-access/gemini-web-config.js");
 		const { loadGitHubConfig, resetGitHubConfig } = await import("../../packages/web-access/github-config.js");
 		const { isYouTubeEnabled } = await import("../../packages/web-access/youtube-extract.js");
@@ -52,10 +55,11 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 		const read = () => [
 			isPerplexityAvailable(),
 			hasExaApiKey(),
+			isYoucomAvailable(),
 			getChromeProfileFromConfig(),
 			loadGitHubConfig().maxRepoSizeMB,
 		];
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.deepEqual(context.run(reporter(scope), read), [true, true, true, "first-profile", 100]);
 		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
 		const urls: string[] = [];
 		vi.stubGlobal("fetch", async (url: string) => {
@@ -70,9 +74,9 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 			JSON.stringify({ searchModel: "second-model", geminiApiKey: "second-key" }),
 		);
 		assert.equal(context.run(reporter({}), getApiKey), "second-key");
-		assert.deepEqual(context.run(reporter({}), read), [false, false, undefined, 350]);
+		assert.deepEqual(context.run(reporter({}), read), [false, false, false, undefined, 350]);
 		context.run(reporter({}), resetGitHubConfig);
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.deepEqual(context.run(reporter(scope), read), [true, true, true, "first-profile", 100]);
 		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
 		assert.deepEqual(context.run(reporter({}), readVideo), [true, true]);
 		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);

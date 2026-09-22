@@ -150,20 +150,24 @@ function resolveProvider(requested: unknown, available: ProviderAvailability): R
 	if (provider === "auto") {
 		if (available.exa) return "exa";
 		if (available.perplexity) return "perplexity";
+		if (available.youcom) return "youcom";
 		if (available.gemini) return "gemini";
 		return "exa";
 	}
 	if (provider === "exa" && !available.exa) {
 		if (available.perplexity) return "perplexity";
+		if (available.youcom) return "youcom";
 		return available.gemini ? "gemini" : "exa";
 	}
 	if (provider === "perplexity" && !available.perplexity) {
 		if (available.exa) return "exa";
+		if (available.youcom) return "youcom";
 		return available.gemini ? "gemini" : "perplexity";
 	}
 	if (provider === "gemini" && !available.gemini) {
 		if (available.exa) return "exa";
-		return available.perplexity ? "perplexity" : "gemini";
+		if (available.perplexity) return "perplexity";
+		return available.youcom ? "youcom" : "gemini";
 	}
 	if (provider === "youcom" && !available.youcom) {
 		if (available.exa) return "exa";
