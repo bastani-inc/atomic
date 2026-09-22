@@ -90,13 +90,13 @@ function getCacheControl(
 // Stealth mode: Mimic Claude Code's tool naming exactly
 //
 // Anthropic gates newer models on the `claude-cli/<version>` user agent alone and rejects an
-// older one with `claude_code_version_too_old`. `claude-fable-5-1` requires >= 2.1.251, bisected
-// against the live API: 2.1.250 -> 400, 2.1.251 -> 200. This is pinned to that exact published
-// minimum rather than the newest release, and it is a strict superset of the previous 2.1.75 --
-// every model this provider ships answers 200 at 2.1.251. Raise it only when a model rejects
-// this value; a caller can override it for one client through the `headers` option, whose
-// lowercase `user-agent` key is merged last.
-const claudeCodeVersion = "2.1.251";
+// older one with `claude_code_version_too_old`. `claude-fable-5-1` requires >= 2.1.251 (bisected
+// against the live API: 2.1.250 -> 400, 2.1.251 -> 200) and Claude Opus 5.5 requires >= 2.1.280,
+// the floor the API names in its rejection. This is pinned to the highest published minimum
+// among shipped models rather than the newest release; every model this provider ships answers
+// 200 at 2.1.280. Raise it only when a model rejects this value; a caller can override it for
+// one client through the `headers` option, whose lowercase `user-agent` key is merged last.
+const claudeCodeVersion = "2.1.280";
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md

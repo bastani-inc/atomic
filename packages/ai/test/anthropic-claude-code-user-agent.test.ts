@@ -6,7 +6,8 @@ import { normalizeContext } from "../src/utils/transcript.ts";
 /**
  * Anthropic gates newer models on the `claude-cli/<version>` user agent alone. Sending a version
  * below a model's floor is rejected with `claude_code_version_too_old`, which is how OAuth
- * requests for `claude-fable-5-1` failed while this provider advertised `2.1.75`.
+ * requests for `claude-fable-5-1` failed while this provider advertised `2.1.75`, and how
+ * requests for Claude Opus 5.5 failed while it advertised `2.1.251`.
  *
  * These assertions run against the real SDK with an injected `fetch`, so they read the headers as
  * they go on the wire — after the SDK's `Headers` normalization collapses the case-sensitive
@@ -17,11 +18,11 @@ import { normalizeContext } from "../src/utils/transcript.ts";
  * the test tautological and it would keep passing at `2.1.75`.
  */
 
-/** The lowest Claude Code version Anthropic accepts for `claude-fable-5-1`. */
-const MINIMUM_CLAUDE_CODE_VERSION = [2, 1, 251] as const;
+/** The lowest Claude Code version Anthropic accepts for Claude Opus 5.5 (`>= 2.1.280`). */
+const MINIMUM_CLAUDE_CODE_VERSION = [2, 1, 280] as const;
 
-/** The stale version that Anthropic rejected with `claude_code_version_too_old`. */
-const REJECTED_CLAUDE_CODE_VERSION = "2.1.75";
+/** The stale versions that Anthropic rejected with `claude_code_version_too_old`. */
+const REJECTED_CLAUDE_CODE_VERSIONS = ["2.1.75", "2.1.251"] as const;
 
 const CLAUDE_CLI_USER_AGENT = /^claude-cli\/(\d+)\.(\d+)\.(\d+)$/;
 
@@ -91,7 +92,7 @@ function isAtLeast(actual: readonly number[], minimum: readonly number[]): boole
 }
 
 describe("Anthropic OAuth Claude Code user agent", () => {
-	it("advertises a Claude Code version new enough for Fable 5.1", async () => {
+	it("advertises a Claude Code version new enough for Opus 5.5", async () => {
 		const headers = await captureWireHeaders("sk-ant-oat01-test-token");
 
 		// A single `claude-cli/x.y.z` value. Two user agents would be joined with ", " by
@@ -104,10 +105,12 @@ describe("Anthropic OAuth Claude Code user agent", () => {
 		expect(isAtLeast(version, MINIMUM_CLAUDE_CODE_VERSION)).toBe(true);
 	});
 
-	it("no longer sends the version Anthropic rejected as too old", async () => {
+	it("no longer sends a version Anthropic rejected as too old", async () => {
 		const headers = await captureWireHeaders("sk-ant-oat01-test-token");
 
-		expect(headers.get("user-agent")).not.toBe(`claude-cli/${REJECTED_CLAUDE_CODE_VERSION}`);
+		for (const rejected of REJECTED_CLAUDE_CODE_VERSIONS) {
+			expect(headers.get("user-agent")).not.toBe(`claude-cli/${rejected}`);
+		}
 	});
 
 	it("keeps the Claude Code identity headers alongside the user agent", async () => {
