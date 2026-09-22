@@ -16,7 +16,7 @@
 
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
-import * as readline from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { type Component, Container, ProcessTerminal, TUI } from "@earendil-works/pi-tui";
 
@@ -72,7 +72,7 @@ async function main() {
 
 	const agent = spawn(
 		"node",
-		[cliPath, "--mode", "rpc", "--no-session", "--no-extension", "--extension", extensionPath],
+		[cliPath, "--mode", "rpc", "--no-session", "--no-extensions", "--extension", extensionPath],
 		{ stdio: ["pipe", "pipe", "pipe"] },
 	);
 
@@ -332,9 +332,10 @@ async function main() {
 
 	// -- Process agent stdout --
 
-	const stdoutRl = readline.createInterface({ input: agent.stdout!, terminal: false });
+	const decoder = new StringDecoder("utf8");
+	let stdoutBuffer = "";
 
-	stdoutRl.on("line", (line) => {
+	const processLine = (line: string): void => {
 		let data: Record<string, unknown>;
 		try {
 			data = JSON.parse(line);
@@ -397,7 +398,7 @@ async function main() {
 			tui.requestRender();
 			return;
 		}
-	});
+	};
 
 	// -- User input --
 
@@ -429,6 +430,19 @@ async function main() {
 			exit();
 		}
 	};
+
+	const processStdout = (chunk: Buffer): void => {
+		stdoutBuffer += decoder.write(chunk);
+		const lines = stdoutBuffer.split(/\r?\n/);
+		stdoutBuffer = lines.pop() ?? "";
+		for (const line of lines) processLine(line);
+	};
+
+	agent.stdout!.on("data", processStdout);
+	agent.stdout!.on("end", () => {
+		stdoutBuffer += decoder.end();
+		if (stdoutBuffer) processLine(stdoutBuffer);
+	});
 
 	// -- Agent exit --
 

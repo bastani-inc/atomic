@@ -208,7 +208,7 @@ Atomic stores only UTC date, version, and an aggregate count, retained as aggreg
 
 Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). `ATOMIC_TELEMETRY=1`/`true`/`yes` forces the ping on even when the setting is false. `ATOMIC_TELEMETRY` wins when both it and `PI_TELEMETRY` are set.
 
-Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Use `--offline` or `ATOMIC_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry. Legacy `PI_*` aliases are also supported for app-specific environment variables.
+Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Use `--offline` or `ATOMIC_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, install/update telemetry, and model catalog refreshes. Legacy `PI_*` aliases are also supported for app-specific environment variables.
 
 On a genuine first run, Atomic previews available themes and asks whether to opt into analytics. The choice and locally generated identifier are stored as `enableAnalytics` and `trackingId`; analytics remains off unless explicitly enabled.
 

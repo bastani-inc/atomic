@@ -173,6 +173,7 @@ per-test hooks. `before`/`after` are not exported.
 - Frequently run `npm run check` (typecheck plus the shrinkwrap check). `npm run typecheck` is the typecheck alone.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
+- In `packages/coding-agent`, resolve package assets through helpers in `src/config.ts`. Do not use `__dirname` directly; the helpers account for source checkouts, npm installations, and standalone binaries.
 
 ## Debugging
 

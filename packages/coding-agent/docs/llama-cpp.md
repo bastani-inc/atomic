@@ -60,7 +60,7 @@ Run `/llama` in interactive mode:
 
 Hugging Face search uses `HF_TOKEN` when set, then checks `$HF_TOKEN_PATH`, `$HF_HOME/token`, `$XDG_CACHE_HOME/huggingface/token`, and `~/.cache/huggingface/token`. Unauthenticated search has lower rate limits. Atomic warns before gated downloads and links to the access page. Because llama.cpp performs the download, its process must also have `HF_TOKEN` for gated repositories.
 
-Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` displays the router's current state because other clients may share it. Only loaded models appear in `/model`; load one first, then select it there.
+Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` displays the router's current state because other clients may share it. Loaded and sleeping models appear in `/model`; sleeping models wake automatically when selected. With router autoload enabled, unloaded preset models also appear and load when selected. With `--no-models-autoload`, load a model through `/llama` before selecting it.
 
 Atomic saves the last successful loaded-model catalog in `~/.atomic/agent/models-store.json`, or the active custom agent directory. Those entries remain selectable after restart until the first successful refresh. If the first online refresh fails, Atomic reports the router error and keeps the validated persisted catalog available. A later successful refresh replaces stale loaded-state entries without duplicates.
 
@@ -76,6 +76,6 @@ curl http://127.0.0.1:8080/models
 ```
 
 - **No models in `/llama`:** Check `--models-dir`, the directory layout, and restart the router.
-- **Model missing from `/model`:** Load it with `/llama` first.
+- **Model missing from `/model` with `--no-models-autoload`:** Load it with `/llama` first.
 - **Load fails or uses too much memory:** Lower `-c` or unload another model.
 - **Server is not in router mode:** Start it without `--model`, `-m`, or `-hf`.
