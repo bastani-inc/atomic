@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.js";
-import { findReadableConfigPath } from "./config-paths.js";
+import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 import type { SearchOptions, SearchResponse, SearchResult } from "./perplexity.js";
 
