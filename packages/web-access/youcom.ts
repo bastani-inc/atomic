@@ -44,6 +44,28 @@ function getApiKey(): string {
 	return key;
 }
 
+/** Hostname-shape check mirrored from perplexity.ts validateDomainFilter. */
+const HOSTNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_.]*\.[a-zA-Z]{2,}$/;
+
+/**
+ * Normalize a single domainFilter entry (after any `-` exclusion prefix has been
+ * stripped): remove a scheme, path, and port, strip a leading `*.` or `.`, and
+ * lowercase. Returns null for entries that do not look like a hostname; dropping
+ * a malformed entry (rather than sending it) mirrors perplexity's
+ * relax-on-invalid behavior so a typo never silently zeroes the results.
+ */
+function normalizeDomainEntry(entry: string): string | null {
+	let domain = entry.trim().toLowerCase();
+	domain = domain.replace(/^https?:\/\//, "");
+	const slash = domain.indexOf("/");
+	if (slash !== -1) domain = domain.slice(0, slash);
+	const colon = domain.indexOf(":");
+	if (colon !== -1) domain = domain.slice(0, colon);
+	if (domain.startsWith("*.")) domain = domain.slice(2);
+	else if (domain.startsWith(".")) domain = domain.slice(1);
+	return HOSTNAME_PATTERN.test(domain) ? domain : null;
+}
+
 function splitDomainFilter(domainFilter: string[] | undefined): { includes: string[]; excludes: string[] } {
 	const includes: string[] = [];
 	const excludes: string[] = [];
@@ -51,12 +73,10 @@ function splitDomainFilter(domainFilter: string[] | undefined): { includes: stri
 		if (typeof entry !== "string") continue;
 		const trimmed = entry.trim();
 		if (!trimmed) continue;
-		if (trimmed.startsWith("-")) {
-			const domain = trimmed.slice(1).trim();
-			if (domain) excludes.push(domain.toLowerCase());
-		} else {
-			includes.push(trimmed.toLowerCase());
-		}
+		const isExclude = trimmed.startsWith("-");
+		const domain = normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed);
+		if (!domain) continue;
+		(isExclude ? excludes : includes).push(domain);
 	}
 	return { includes, excludes };
 }
@@ -67,7 +87,13 @@ function domainMatches(host: string, filter: string): boolean {
 	return normalizedHost === normalizedFilter || normalizedHost.endsWith(`.${normalizedFilter}`);
 }
 
-/** Client-side enforcement of domainFilter on results (the API has no domain filter parameter). */
+/**
+ * Client-side enforcement of domainFilter on results. Pure include or pure
+ * exclude filters are also sent server-side (include_domains/exclude_domains),
+ * but a filter mixing both cannot be — the API rejects the combination — and
+ * even when a filter was sent, results are re-checked here so a restriction is
+ * never silently dropped on the server contract alone.
+ */
 function applyDomainFilter(result: SearchResult, domainFilter: string[] | undefined): boolean {
 	if (!domainFilter?.length) return true;
 	const { includes, excludes } = splitDomainFilter(domainFilter);
@@ -88,7 +114,7 @@ interface YoucomSearchResult {
 	url?: string;
 	title?: string;
 	description?: string;
-	snippets?: string[];
+	snippets?: unknown[];
 	page_age?: string;
 }
 
@@ -99,7 +125,7 @@ function isYoucomSearchResult(value: unknown): value is YoucomSearchResult {
 		typeof record.url === "string" &&
 		(record.title === undefined || typeof record.title === "string") &&
 		(record.description === undefined || typeof record.description === "string") &&
-		(record.snippets === undefined || (Array.isArray(record.snippets) && record.snippets.every((s) => typeof s === "string")))
+		(record.snippets === undefined || Array.isArray(record.snippets))
 	);
 }
 
@@ -172,16 +198,25 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
-	// domainFilter is enforced client-side after the response arrives, so an
-	// active filter requests the full page and keeps the numResults cap locally
-	// rather than letting post-filtering shrink an already-small page to zero.
+	// Pure include or pure exclude filters are sent server-side; a filter that
+	// mixes both cannot be (the API returns 422 when include_domains and
+	// exclude_domains are both present), so the mixed case is enforced entirely
+	// client-side and requests the full page to keep post-filtering from
+	// shrinking an already-small page to zero. Client-side filtering also runs
+	// in every case as enforcement of the server contract.
 	const { includes, excludes } = splitDomainFilter(options.domainFilter);
-	const hasActiveDomainFilter = includes.length > 0 || excludes.length > 0;
+	const mixedDomainFilter = includes.length > 0 && excludes.length > 0;
 
 	const requestBody: Record<string, unknown> = {
 		query,
-		count: hasActiveDomainFilter ? MAX_RESULTS : numResults,
+		count: mixedDomainFilter ? MAX_RESULTS : numResults,
 	};
+
+	if (includes.length > 0 && excludes.length === 0) {
+		requestBody.include_domains = includes;
+	} else if (excludes.length > 0 && includes.length === 0) {
+		requestBody.exclude_domains = excludes;
+	}
 
 	if (options.recencyFilter) {
 		requestBody.freshness = options.recencyFilter;

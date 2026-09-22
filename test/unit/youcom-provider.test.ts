@@ -115,16 +115,64 @@ describe("youcom search requests", () => {
 		assert.equal(body.freshness, "week");
 	});
 
-	test("requests the full 20-result page when a domainFilter is active", async () => {
-		// Filtering happens client-side after the response, so a small request
-		// page could be filtered down to zero even when matching pages exist.
+	test("sends a pure include filter as include_domains with the requested count", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse({ results: { web: [] } });
 
-		await searchWithYoucom("query", { numResults: 5, domainFilter: ["rust-lang.org"] });
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["docs.rs"] });
 
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["docs.rs"]);
+		assert.equal("exclude_domains" in body, false);
+		assert.equal(body.count, 5);
+	});
+
+	test("sends a pure exclude filter (prefix -) as exclude_domains with the requested count", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["-tokio.rs"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.exclude_domains, ["tokio.rs"]);
+		assert.equal("include_domains" in body, false);
+		assert.equal(body.count, 5);
+	});
+
+	test("sends neither domain parameter and the full 20-result page for a mixed filter", async () => {
+		// The API returns 422 when include_domains and exclude_domains are both
+		// present, so the mixed case is enforced entirely client-side; a small
+		// request page could be filtered down to zero even when matches exist.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["rust-lang.org", "-forum.rust-lang.org"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal("include_domains" in body, false);
+		assert.equal("exclude_domains" in body, false);
 		assert.equal(body.count, 20);
+	});
+
+	test("normalizes include entries with a scheme and path before sending them", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["https://docs.rs/tokio"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["docs.rs"]);
+	});
+
+	test("normalizes exclude entries with a scheme and path before sending them", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["-http://medium.com/x"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.exclude_domains, ["medium.com"]);
+		assert.equal("include_domains" in body, false);
 	});
 
 	test("keeps the requested count when the domainFilter has no usable entries", async () => {
@@ -135,6 +183,8 @@ describe("youcom search requests", () => {
 
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
 		assert.equal(body.count, 6);
+		assert.equal("include_domains" in body, false);
+		assert.equal("exclude_domains" in body, false);
 	});
 });
 
@@ -217,6 +267,48 @@ describe("youcom domainFilter enforcement", () => {
 
 		const response = await searchWithYoucom("query", { domainFilter: ["example.com"] });
 		assert.equal(response.results.length, 0);
+	});
+
+	test("drops an off-domain result client-side even when include_domains was sent", async () => {
+		// The server contract is not trusted blindly: a result outside the
+		// include list is dropped even though the API was asked to filter.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(
+			webResults([
+				{ url: "https://docs.rs/tokio/latest", title: "Kept" },
+				{ url: "https://blog.example.com/post", title: "Off-domain" },
+			]),
+		);
+
+		const response = await searchWithYoucom("query", { domainFilter: ["docs.rs"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["docs.rs"]);
+		assert.equal(response.results.length, 1);
+		assert.equal(response.results[0]?.url, "https://docs.rs/tokio/latest");
+	});
+
+	test("applies normalized include entries to client-side matching", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://docs.rs/tokio/latest", title: "Kept" }]));
+
+		const response = await searchWithYoucom("query", { domainFilter: ["https://docs.rs/tokio"] });
+
+		assert.equal(response.results.length, 1);
+		assert.equal(response.results[0]?.url, "https://docs.rs/tokio/latest");
+	});
+
+	test("relaxes the include restriction when every include entry is malformed", async () => {
+		// A malformed entry must not silently zero the results; with no valid
+		// include left, no include restriction is applied and none is sent.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Kept" }]));
+
+		const response = await searchWithYoucom("query", { domainFilter: ["not a host!"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal("include_domains" in body, false);
+		assert.equal(response.results.length, 1);
 	});
 });
 
@@ -334,6 +426,21 @@ describe("youcom response mapping", () => {
 		const response = await searchWithYoucom("query");
 		assert.equal(response.results[0]?.title, "Source 1");
 		assert.equal(response.results[0]?.snippet, "excerpt");
+	});
+
+	test("keeps a result whose snippets array mixes strings and non-strings", async () => {
+		// The shape guard only requires snippets to be an array; toSearchResult
+		// filters non-string elements individually.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({
+			results: {
+				web: [{ url: "https://example.com/mixed", title: "Mixed", snippets: ["good", 5] }],
+			},
+		});
+
+		const response = await searchWithYoucom("query");
+		assert.equal(response.results.length, 1);
+		assert.equal(response.results[0]?.snippet, "good");
 	});
 
 	test("returns empty results when the response omits 'results' entirely", async () => {
