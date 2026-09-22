@@ -27,6 +27,13 @@ import { keyText } from "../../packages/coding-agent/src/modes/interactive/compo
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
+/**
+ * Structural cost, not a slow test: each case constructs a real InteractiveMode
+ * host with its session, resources and keybindings, which takes over 60% of the
+ * default budget on Windows runners.
+ */
+const INTERACTIVE_MODE_HOST_TIMEOUT_MS = 90_000;
+
 class FakeTerminal implements Terminal {
 	columns = 100;
 	rows = 36;
@@ -121,46 +128,54 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 	return mode;
 }
 
-test.sequential("exported InteractiveMode uses services.agentDir for display and editor input", async () => {
-	const agentDir = mkdtempSync(join(tmpdir(), "atomic-explicit-agent-dir-"));
-	writeExpandBinding(agentDir, "ctrl+x");
-	const ambientDir = mkdtempSync(join(tmpdir(), "atomic-ambient-agent-dir-"));
-	process.env.ATOMIC_CODING_AGENT_DIR = ambientDir;
-	cleanup.push(async () => {
-		rmSync(ambientDir, { recursive: true, force: true });
-	});
-	const mode = await createMode(agentDir);
-	let dispatches = 0;
-	mode.defaultEditor.onAction("app.tools.expand", () => {
-		dispatches++;
-	});
+test.sequential(
+	"exported InteractiveMode uses services.agentDir for display and editor input",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "atomic-explicit-agent-dir-"));
+		writeExpandBinding(agentDir, "ctrl+x");
+		const ambientDir = mkdtempSync(join(tmpdir(), "atomic-ambient-agent-dir-"));
+		process.env.ATOMIC_CODING_AGENT_DIR = ambientDir;
+		cleanup.push(async () => {
+			rmSync(ambientDir, { recursive: true, force: true });
+		});
+		const mode = await createMode(agentDir);
+		let dispatches = 0;
+		mode.defaultEditor.onAction("app.tools.expand", () => {
+			dispatches++;
+		});
 
-	assert.deepEqual(mode.keybindings.getKeys("app.tools.expand"), ["ctrl+x"]);
-	assert.equal(keyText("app.tools.expand"), "ctrl+x");
-	mode.defaultEditor.handleInput("\x18");
-	assert.equal(dispatches, 1);
-	let hostDisposals = 0;
-	mode.disposeInteractiveEngineHost = () => {
-		hostDisposals++;
-	};
-	mode.stop();
-	assert.equal(hostDisposals, 1, "mode stop must dispose its interactive-engine host attachment");
-});
+		assert.deepEqual(mode.keybindings.getKeys("app.tools.expand"), ["ctrl+x"]);
+		assert.equal(keyText("app.tools.expand"), "ctrl+x");
+		mode.defaultEditor.handleInput("\x18");
+		assert.equal(dispatches, 1);
+		let hostDisposals = 0;
+		mode.disposeInteractiveEngineHost = () => {
+			hostDisposals++;
+		};
+		mode.stop();
+		assert.equal(hostDisposals, 1, "mode stop must dispose its interactive-engine host attachment");
+	},
+	INTERACTIVE_MODE_HOST_TIMEOUT_MS,
+);
 
-test.sequential("applies terminal capabilities before interactive rendering and before reload rebuilds", async () => {
-	const agentDir = mkdtempSync(join(tmpdir(), "atomic-capability-agent-dir-"));
-	writeTerminalSettings(agentDir, { hyperlinks: false, images: false, trueColor: false });
-	const mode = await createMode(agentDir);
-	assert.deepEqual(getCapabilities(), { hyperlinks: false, images: null, trueColor: false });
+test.sequential(
+	"applies terminal capabilities before interactive rendering and before reload rebuilds",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "atomic-capability-agent-dir-"));
+		writeTerminalSettings(agentDir, { hyperlinks: false, images: false, trueColor: false });
+		const mode = await createMode(agentDir);
+		assert.deepEqual(getCapabilities(), { hyperlinks: false, images: null, trueColor: false });
 
-	writeTerminalSettings(agentDir, { hyperlinks: true, images: "kitty", trueColor: true });
-	let capabilitiesDuringRebuild: ReturnType<typeof getCapabilities> | undefined;
-	mode.rebuildChatFromMessages = () => {
-		capabilitiesDuringRebuild = getCapabilities();
-	};
-	await mode.handleReloadCommand();
-	assert.deepEqual(capabilitiesDuringRebuild, { hyperlinks: true, images: "kitty", trueColor: true });
-});
+		writeTerminalSettings(agentDir, { hyperlinks: true, images: "kitty", trueColor: true });
+		let capabilitiesDuringRebuild: ReturnType<typeof getCapabilities> | undefined;
+		mode.rebuildChatFromMessages = () => {
+			capabilitiesDuringRebuild = getCapabilities();
+		};
+		await mode.handleReloadCommand();
+		assert.deepEqual(capabilitiesDuringRebuild, { hyperlinks: true, images: "kitty", trueColor: true });
+	},
+	INTERACTIVE_MODE_HOST_TIMEOUT_MS,
+);
 
 test.sequential("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-local-reload-agent-dir-"));

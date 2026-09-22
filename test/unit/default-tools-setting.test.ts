@@ -185,54 +185,58 @@ describe("defaultTools setting", () => {
 		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
 	);
 
-	test("keeps extension and SDK custom tools enabled alongside a narrow selection", async () => {
-		const session = await createSession(
-			["read"],
-			{
-				customTools: [
-					{
-						name: "sdk_tool",
-						label: "SDK Tool",
-						description: "SDK custom tool",
-						parameters: Type.Object({}),
-						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
-					},
-				],
-			},
-			[
-				staticExtensionTool("static_tool"),
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
-							name: "dynamic_tool",
-							label: "Dynamic Tool",
-							description: "Dynamically registered extension tool",
+	test(
+		"keeps extension and SDK custom tools enabled alongside a narrow selection",
+		async () => {
+			const session = await createSession(
+				["read"],
+				{
+					customTools: [
+						{
+							name: "sdk_tool",
+							label: "SDK Tool",
+							description: "SDK custom tool",
 							parameters: Type.Object({}),
 							execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
-						});
-					});
+						},
+					],
 				},
-			],
-		);
-		try {
-			await session.bindExtensions({});
+				[
+					staticExtensionTool("static_tool"),
+					(pi) => {
+						pi.on("session_start", () => {
+							pi.registerTool({
+								name: "dynamic_tool",
+								label: "Dynamic Tool",
+								description: "Dynamically registered extension tool",
+								parameters: Type.Object({}),
+								execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+							});
+						});
+					},
+				],
+			);
+			try {
+				await session.bindExtensions({});
 
-			assert.deepEqual(
-				[...session.getActiveToolNames()].sort(),
-				["dynamic_tool", "read", "sdk_tool", "static_tool", ...BUILTIN_EXTENSION_TOOLS].sort(),
-			);
-			const registered = session
-				.getAllTools()
-				.map((tool) => tool.name)
-				.sort();
-			assert.deepEqual(
-				registered,
-				[...registrableToolNames, ...BUILTIN_EXTENSION_TOOLS, "dynamic_tool", "sdk_tool", "static_tool"].sort(),
-			);
-		} finally {
-			session.dispose();
-		}
-	});
+				assert.deepEqual(
+					[...session.getActiveToolNames()].sort(),
+					["dynamic_tool", "read", "sdk_tool", "static_tool", ...BUILTIN_EXTENSION_TOOLS].sort(),
+				);
+				const registered = session
+					.getAllTools()
+					.map((tool) => tool.name)
+					.sort();
+				assert.deepEqual(
+					registered,
+					[...registrableToolNames, ...BUILTIN_EXTENSION_TOOLS, "dynamic_tool", "sdk_tool", "static_tool"].sort(),
+				);
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 
 	// One session per test: each session loads every builtin extension package,
 	// and the CI duration gate scores tests individually.

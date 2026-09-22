@@ -12,6 +12,13 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createStructuredOutputTool } from "../../packages/coding-agent/src/core/tools/index.js";
 
+/**
+ * Structural cost, not a slow test: each case builds a real AgentSession with its
+ * resource loader and tool registry, which takes over half the default budget on
+ * Windows runners. Do not reuse this budget for a test that merely inspects data.
+ */
+const AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS = 90_000;
+
 const gateSchema = Type.Object(
 	{
 		approved: Type.Boolean(),
@@ -78,25 +85,29 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 		}
 	});
 
-	test("tools allowlist isolates a custom-named structured output contract", async () => {
-		const finalDecision = createStructuredOutputTool({ name: "final_decision", schema: gateSchema });
-		const session = await createIsolatedSession({
-			customTools: [finalDecision],
-			tools: ["final_decision"],
-		});
-		try {
-			// #3105: an explicit allowlist does not implicitly add Intercom.
-			assert.deepEqual(session.getActiveToolNames(), ["final_decision"]);
-			assert.deepEqual(
-				session.getAllTools().map((tool) => tool.name),
-				["final_decision"],
-			);
-			assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
-			assert.equal(session.getToolDefinition("structured_output"), undefined);
-		} finally {
-			await session.dispose();
-		}
-	});
+	test(
+		"tools allowlist isolates a custom-named structured output contract",
+		async () => {
+			const finalDecision = createStructuredOutputTool({ name: "final_decision", schema: gateSchema });
+			const session = await createIsolatedSession({
+				customTools: [finalDecision],
+				tools: ["final_decision"],
+			});
+			try {
+				// #3105: an explicit allowlist does not implicitly add Intercom.
+				assert.deepEqual(session.getActiveToolNames(), ["final_decision"]);
+				assert.deepEqual(
+					session.getAllTools().map((tool) => tool.name),
+					["final_decision"],
+				);
+				assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
+				assert.equal(session.getToolDefinition("structured_output"), undefined);
+			} finally {
+				await session.dispose();
+			}
+		},
+		AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS,
+	);
 
 	test("excludedTools can remove an opt-in standard structured_output tool", async () => {
 		const strictStructuredOutput = createStructuredOutputTool({ schema: gateSchema });

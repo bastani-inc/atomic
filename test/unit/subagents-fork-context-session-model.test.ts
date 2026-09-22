@@ -38,6 +38,13 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import type { AttemptOutcome, ModelCandidate } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.ts";
 
+/**
+ * Structural cost, not a slow test: each case builds a real AgentSession with its
+ * resource loader and tool registry, which takes over half the default budget on
+ * Windows runners. Do not reuse this budget for a test that merely inspects data.
+ */
+const AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS = 90_000;
+
 const harness = vi.hoisted(() => ({ attempts: [] as { spec: unknown; candidate: unknown }[] }));
 
 /**
@@ -255,35 +262,47 @@ async function openChildSession(fixture: ForkFixture, candidate: ModelCandidate)
 }
 
 describe("fork-context child session model (executed end to end)", () => {
-	test("the resolved candidate model beats the model persisted in the forked session file", async () => {
-		const fixture = await createForkFixture();
-		const candidate = await selectCandidate(fixture, { resolve: true });
-		const sessionModel = await openChildSession(fixture, candidate);
+	test(
+		"the resolved candidate model beats the model persisted in the forked session file",
+		async () => {
+			const fixture = await createForkFixture();
+			const candidate = await selectCandidate(fixture, { resolve: true });
+			const sessionModel = await openChildSession(fixture, candidate);
 
-		// The session-level assertion comes first on purpose: it is the claim
-		// that matters, and it is what fails on pre-fix source.
-		assert.equal(sessionModel?.provider, CHILD_PROVIDER);
-		assert.equal(sessionModel?.id, CHILD_MODEL_ID);
-		assert.deepEqual(candidate.model, fixture.childModel);
-	});
-	test("the forked session file really does carry the parent's model", async () => {
-		const fixture = await createForkFixture();
-		const sessionModel = await openChildSession(fixture, {});
+			// The session-level assertion comes first on purpose: it is the claim
+			// that matters, and it is what fails on pre-fix source.
+			assert.equal(sessionModel?.provider, CHILD_PROVIDER);
+			assert.equal(sessionModel?.id, CHILD_MODEL_ID);
+			assert.deepEqual(candidate.model, fixture.childModel);
+		},
+		AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS,
+	);
+	test(
+		"the forked session file really does carry the parent's model",
+		async () => {
+			const fixture = await createForkFixture();
+			const sessionModel = await openChildSession(fixture, {});
 
-		assert.equal(sessionModel?.provider, PARENT_PROVIDER);
-		assert.equal(sessionModel?.id, PARENT_MODEL_ID);
-	});
+			assert.equal(sessionModel?.provider, PARENT_PROVIDER);
+			assert.equal(sessionModel?.id, PARENT_MODEL_ID);
+		},
+		AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS,
+	);
 
-	test("an unresolved candidate lets the parent's model win — the reported bug", async () => {
-		const fixture = await createForkFixture();
-		const candidate = await selectCandidate(fixture, { resolve: false });
+	test(
+		"an unresolved candidate lets the parent's model win — the reported bug",
+		async () => {
+			const fixture = await createForkFixture();
+			const candidate = await selectCandidate(fixture, { resolve: false });
 
-		// The pre-fix state: a candidate string, and no model object to hand on.
-		assert.equal(candidate.model, undefined);
-		assert.equal(candidate.modelId, CHILD_FULL_ID);
+			// The pre-fix state: a candidate string, and no model object to hand on.
+			assert.equal(candidate.model, undefined);
+			assert.equal(candidate.modelId, CHILD_FULL_ID);
 
-		const sessionModel = await openChildSession(fixture, candidate);
-		assert.equal(sessionModel?.provider, PARENT_PROVIDER);
-		assert.equal(sessionModel?.id, PARENT_MODEL_ID);
-	});
+			const sessionModel = await openChildSession(fixture, candidate);
+			assert.equal(sessionModel?.provider, PARENT_PROVIDER);
+			assert.equal(sessionModel?.id, PARENT_MODEL_ID);
+		},
+		AGENT_SESSION_CONSTRUCTION_TIMEOUT_MS,
+	);
 });
