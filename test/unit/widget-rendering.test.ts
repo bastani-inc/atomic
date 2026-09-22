@@ -1039,9 +1039,7 @@ describe("renderWidgetLines — collapsed form", () => {
 	});
 
 	test("awaiting-input run shows question mark in compact indicator (plain)", () => {
-		const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [
-			makeStage("s1", "ask", "awaiting_input"),
-		]);
+		const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [makeStage("s1", "ask", "awaiting_input")]);
 		const lines = renderWidgetLines(makeSnap([awaiting]), 60).map(stripAnsi);
 		assert.equal(lines.length, 1);
 		// Should show the awaiting_input glyph (？) before the running count
@@ -1059,9 +1057,7 @@ describe("renderWidgetLines — collapsed form", () => {
 	});
 
 	test("awaiting-input compact indicator uses info blue in themed output", () => {
-		const awaiting = makeRun("r3xxxxxx", "wf-await-themed", "running", [
-			makeStage("s1", "ask", "awaiting_input"),
-		]);
+		const awaiting = makeRun("r3xxxxxx", "wf-await-themed", "running", [makeStage("s1", "ask", "awaiting_input")]);
 		const lines = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 60);
 		assert.equal(lines.length, 1);
 		const infoBlue = hexToAnsi(deriveGraphTheme({}).info);

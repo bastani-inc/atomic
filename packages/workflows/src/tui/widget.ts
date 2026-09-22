@@ -485,7 +485,8 @@ function plainCollapsed(counts: RunCounts, activeTools: number): string {
 	// When any visible run is awaiting input, prefix the running count with
 	// a question mark so the compact form distinguishes "needs attention"
 	// from ordinary running work.
-	const runningIndicator = counts.awaiting > 0 ? `${statusIcon("awaiting_input")} ${counts.active} ●` : `${counts.active} ●`;
+	const runningIndicator =
+		counts.awaiting > 0 ? `${statusIcon("awaiting_input")} ${counts.active} ●` : `${counts.active} ●`;
 	const paused = counts.paused > 0 ? ` · ${counts.paused} ❚❚` : "";
 	const quit = counts.quit > 0 ? ` · ${counts.quit} quit` : "";
 	const blocked = counts.blocked > 0 ? ` · ${counts.blocked} ↑` : "";
