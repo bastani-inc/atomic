@@ -158,11 +158,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const confirm = ctx?.ui?.confirm;
 		if (typeof confirm !== "function") return undefined;
 		const { title, message } = sessionSwitchQuitConfirmation(reason, inFlightWorkflowCount);
-		try {
-			if (await confirm(title, message)) return undefined;
-		} catch {
-			return undefined;
-		}
+		const confirmed = await Promise.resolve(confirm(title, message)).catch(() => false);
+		if (confirmed) return undefined;
 		ctx?.ui?.notify?.(`${SESSION_SWITCH_COPY[reason].cancelled} cancelled; running workflows keep running.`, "info");
 		return { cancel: true };
 	};

@@ -149,7 +149,7 @@ test("session_before_switch renders plural in-flight workflow counts", async () 
 	assert.match(prompts[0]?.message ?? "", /quits 2 running workflows now/);
 });
 
-test("session_before_switch fails open when confirm throws", async () => {
+test("session_before_switch cancels the switch when confirm throws (#3203)", async () => {
 	store.recordRunStart(workflowRun());
 	const handler = getSessionBeforeSwitchHandler();
 
@@ -164,7 +164,7 @@ test("session_before_switch fails open when confirm throws", async () => {
 		},
 	);
 
-	assert.equal(result, undefined);
+	assert.deepEqual(result, { cancel: true });
 	assert.equal(store.runs().length, 1);
 	assert.equal(store.runs()[0]?.endedAt, undefined);
 });

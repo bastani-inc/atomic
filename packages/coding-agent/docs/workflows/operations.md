@@ -858,7 +858,7 @@ Run `/workflow reload` after adding, editing, renaming, or deleting workflow mod
 
 Reload is safe while workflows run: existing runs keep their starting definitions and controls, and new launches use the refreshed registry. A fatal refresh failure retains the previous registry. Top-level `/reload` also replaces extensions but preserves live runs in the same process. After a process exit, use explicit resume to replay checkpoints and retry only unfinished work.
 
-`/new`, `/fork`, and `/resume` are different: they leave the current session, so they quit running workflows. When any are running, Atomic asks first ("Quit N running workflows and start a new session?"). Confirming quits each run immediately at its last checkpoint; declining cancels the command and the runs keep going. Without an interactive UI (RPC, or an extension that switches sessions), the switch proceeds and the runs are quit the same way. Resume a quit run later with `/workflow resume`.
+`/new`, `/fork`, and `/resume` are different: they leave the current session, so they quit running workflows. When any are running, Atomic asks first ("Quit N running workflows and start a new session?"). Confirming quits each run immediately at its last checkpoint; declining, or a confirmation prompt that fails, cancels the command and the runs keep going. Without an interactive UI (RPC, or an extension that switches sessions), the switch proceeds and the runs are quit the same way. Resume a quit run later with `/workflow resume`.
 
 The `/workflow` argument-completion popup reads that same live registry. Project, user, package-provided, and built-in workflow names therefore appear immediately after reload both after `/workflow ` and after `/workflow inputs `; restarting Atomic is not required.
 
