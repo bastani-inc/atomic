@@ -5,14 +5,37 @@ import { expectDrainedFixture, expectVerifiedFixture } from "./sdk-builtin-host-
 const BUILT_NODE_HOST_PROCESS_TIMEOUT_MS = 60_000;
 
 // #3105: every admitted successor remains owned through reverse publication and failure.
-test.each(
-	["new", "resume", "fork", "import"].flatMap((operation) =>
-		["success", "failure", "both-fail", "dispose", "cleanup", "startup"].map((outcome) => ({ operation, outcome })),
-	),
-)(
-	"built Node concurrent replacement $operation $outcome",
-	({ operation, outcome }) => {
-		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", [operation, outcome]);
+// The duration guard expands only literal scalar test.each tables with a %s
+// title, so the operation × outcome table is one declaration per operation.
+// Titles reproduce vitest's quoted $variable rendering.
+test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
+	"built Node concurrent replacement 'new' '%s'",
+	(outcome) => {
+		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["new", outcome]);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
+test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
+	"built Node concurrent replacement 'resume' '%s'",
+	(outcome) => {
+		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["resume", outcome]);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
+test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
+	"built Node concurrent replacement 'fork' '%s'",
+	(outcome) => {
+		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["fork", outcome]);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
+test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
+	"built Node concurrent replacement 'import' '%s'",
+	(outcome) => {
+		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["import", outcome]);
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );

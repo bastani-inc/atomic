@@ -5,45 +5,109 @@ import { expectVerifiedFixture, runBuiltNodeFixture } from "./sdk-builtin-host-p
 // Declared in-file: the duration guard resolves timeout expressions only from numeric consts in this file.
 const BUILT_NODE_HOST_PROCESS_TIMEOUT_MS = 60_000;
 
-test.each(
-	["new", "resume", "fork", "import"].flatMap((operation) =>
-		["none", "cleanup"].map((failure) => ({ operation, failure })),
-	),
-)(
-	"built Node finalizes failed $operation retirement with $failure failure",
-	({ operation, failure }) => {
-		const result = runBuiltNodeFixture("sdk-host-retirement-failure.mjs", [operation, failure]);
-		assert.equal(result.exitCode, 0, result.stderr.toString());
-		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
-			operation,
-			failQuit: failure === "cleanup",
-			finalized: true,
-			creations: 0,
-		});
+// The duration guard expands only literal scalar test.each tables with a %s
+// title, so each two-variable table below is written as one declaration per
+// fixed first variable. Titles reproduce vitest's quoted $variable rendering.
+function assertFailedRetirementFinalized(operation: string, failure: string): void {
+	const result = runBuiltNodeFixture("sdk-host-retirement-failure.mjs", [operation, failure]);
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
+		operation,
+		failQuit: failure === "cleanup",
+		finalized: true,
+		creations: 0,
+	});
+}
+
+test.each(["none", "cleanup"])(
+	"built Node finalizes failed 'new' retirement with '%s' failure",
+	(failure) => {
+		assertFailedRetirementFinalized("new", failure);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test.each(["none", "cleanup"])(
+	"built Node finalizes failed 'resume' retirement with '%s' failure",
+	(failure) => {
+		assertFailedRetirementFinalized("resume", failure);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test.each(["none", "cleanup"])(
+	"built Node finalizes failed 'fork' retirement with '%s' failure",
+	(failure) => {
+		assertFailedRetirementFinalized("fork", failure);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test.each(["none", "cleanup"])(
+	"built Node finalizes failed 'import' retirement with '%s' failure",
+	(failure) => {
+		assertFailedRetirementFinalized("import", failure);
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
 );
 
 // #3105: all existing replacement paths share terminal admission and tracked rollback.
-test.each([
-	...["preflight", "factory", "startup"].flatMap((phase) =>
-		["new", "resume", "fork", "import"].map((operation) => ({ phase, operation, failure: "none" })),
-	),
-	{ phase: "prepare", operation: "resume", failure: "none" },
-	{ phase: "factory", operation: "new", failure: "cleanup" },
-	{ phase: "startup", operation: "new", failure: "rollback" },
-])(
-	"built Node drains $operation replacement suspended in $phase with $failure failure",
-	({ phase, operation, failure }) => {
-		const result = runBuiltNodeFixture("sdk-host-replacement-drain.mjs", [phase, operation, failure]);
-		assert.equal(result.exitCode, 0, result.stderr.toString());
-		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
-			phase,
-			operation,
-			failure,
-			drained: true,
-			active: 0,
-		});
+function assertSuspendedReplacementDrained(phase: string, operation: string, failure: string): void {
+	const result = runBuiltNodeFixture("sdk-host-replacement-drain.mjs", [phase, operation, failure]);
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
+		phase,
+		operation,
+		failure,
+		drained: true,
+		active: 0,
+	});
+}
+
+test.each(["new", "resume", "fork", "import"])(
+	"built Node drains '%s' replacement suspended in 'preflight' with 'none' failure",
+	(operation) => {
+		assertSuspendedReplacementDrained("preflight", operation, "none");
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test.each(["new", "resume", "fork", "import"])(
+	"built Node drains '%s' replacement suspended in 'factory' with 'none' failure",
+	(operation) => {
+		assertSuspendedReplacementDrained("factory", operation, "none");
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test.each(["new", "resume", "fork", "import"])(
+	"built Node drains '%s' replacement suspended in 'startup' with 'none' failure",
+	(operation) => {
+		assertSuspendedReplacementDrained("startup", operation, "none");
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"built Node drains 'resume' replacement suspended in 'prepare' with 'none' failure",
+	() => {
+		assertSuspendedReplacementDrained("prepare", "resume", "none");
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"built Node drains 'new' replacement suspended in 'factory' with 'cleanup' failure",
+	() => {
+		assertSuspendedReplacementDrained("factory", "new", "cleanup");
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"built Node drains 'new' replacement suspended in 'startup' with 'rollback' failure",
+	() => {
+		assertSuspendedReplacementDrained("startup", "new", "rollback");
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
 );

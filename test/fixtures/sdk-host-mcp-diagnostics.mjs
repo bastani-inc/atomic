@@ -20,7 +20,11 @@ try {
   writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
    [`secret-supervisor-token-${index}`]: { command: join(cwd, "missing-secret-credential") }
   } }));
+  // Only the MCP builtin logger is under test. In a source checkout the other
+  // four shipped packages load from workspace TypeScript through jiti, which
+  // costs ~20 s per session and adds nothing to the owner-sink assertions.
   const { session } = await createAgentSession({ cwd, agentDir: join(root, "agent"), modelRuntime,
+   builtins: { workflows: false, subagents: false, "web-access": false, intercom: false },
    settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false } }),
    sessionManager: SessionManager.inMemory(cwd),
    extensionBindings: withoutSink ? undefined : { onDiagnostic: entry => diagnostics[index].push(entry) } });

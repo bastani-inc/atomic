@@ -34,7 +34,11 @@ try {
   const project = join(cwd, name);
   mkdirSync(project);
   writeFileSync(join(project, ".mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: `http://127.0.0.1:${address.port}/mcp`, directTools: true } } }));
+  // Only the MCP builtin is under test. In a source checkout the other four
+  // shipped packages load from workspace TypeScript through jiti, which costs
+  // ~20 s per session and proves nothing about lazy HTTP ownership.
   const { session } = await createAgentSession({ cwd: project, agentDir: join(cwd, "agent"), modelRuntime,
+   builtins: { workflows: false, subagents: false, "web-access": false, intercom: false },
    settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false } }), sessionManager: SessionManager.inMemory(project) });
   if (name === "first") first = session; else second = session;
  }
