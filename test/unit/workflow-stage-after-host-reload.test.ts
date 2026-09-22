@@ -314,18 +314,30 @@ test("a rolled-back successor generation hands the run back to its live predeces
 	trackLiveHostGeneration(successor.pi);
 	const successorContext = sessionContext();
 	successor.emit("session_start", { reason: "reload" }, successorContext);
-	assert.equal(resolve()?.pi, successor.pi, "the transactional successor is live once it starts");
-	assert.equal(
-		resolve()?.modelContext,
-		successorContext,
-		"the successor's session_start ctx is the live model context",
-	);
+	assert.equal(resolve()?.pi, predecessor.pi, "an uncommitted reload candidate is never published");
 
 	successor.emit("session_shutdown", { reason: "reload" });
-	assert.equal(resolve()?.pi, predecessor.pi, "a rolled-back successor must not stay the live generation");
+	assert.equal(resolve()?.pi, predecessor.pi, "a rolled-back successor must not become the live generation");
 
 	predecessor.emit("session_shutdown", { reason: "reload" });
 	assert.equal(resolve(), undefined, "with no live generation the caller keeps its launch surface");
+});
+
+test("a reload candidate is published only after its predecessor retires on commit (#3201)", () => {
+	const scope = {};
+	const predecessor = generationHost(scope);
+	const resolve = trackLiveHostGeneration(predecessor.pi);
+	predecessor.emit("session_start", { reason: "startup" }, sessionContext());
+
+	const successor = generationHost(scope);
+	trackLiveHostGeneration(successor.pi);
+	const successorContext = sessionContext();
+	successor.emit("session_start", { reason: "reload" }, successorContext);
+	assert.equal(resolve()?.pi, predecessor.pi, "the predecessor stays live until the reload commits");
+
+	predecessor.emit("session_shutdown", { reason: "reload" });
+	assert.equal(resolve()?.pi, successor.pi, "the committed successor is live once its predecessor retires");
+	assert.equal(resolve()?.modelContext, successorContext);
 });
 
 test("a session-replacing start never becomes the live generation of the session it replaced (#3201)", () => {
@@ -346,6 +358,7 @@ test("a session-replacing start never becomes the live generation of the session
 	const reloaded = generationHost(scope);
 	trackLiveHostGeneration(reloaded.pi);
 	reloaded.emit("session_start", { reason: "reload" }, sessionContext());
+	resumed.emit("session_shutdown", { reason: "reload" });
 	assert.equal(resolveResumed()?.pi, reloaded.pi, "/reload still hands the resumed session's runs to its successor");
 	assert.equal(resolveLaunch(), undefined);
 });
