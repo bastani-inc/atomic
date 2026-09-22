@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The collapsed `BACKGROUND` line shown in terminals narrower than 80 columns now prefixes the running count with the `？` awaiting-input indicator (info colour) when a listed run is waiting for a reply, for example ` ▾  1 background · ？ 1 ●`, and returns to the plain ` 1 ●` once the prompt is answered, skipped or declined. The running count and total are unchanged, so a pending question is no longer indistinguishable from ordinary running work ([#3030](https://github.com/bastani-inc/atomic/issues/3030), [#3169](https://github.com/bastani-inc/atomic/pull/3169) by [@sumitvairagar](https://github.com/sumitvairagar)).
+
 ## [0.9.21-alpha.1] - 2026-09-25
 
 ### Changed
