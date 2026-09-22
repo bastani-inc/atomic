@@ -37,6 +37,10 @@ const exaCalls: string[] = [];
 
 vi.mock("../../packages/web-access/youcom.js", () => ({
 	isYoucomAvailable: () => youcomAvailableFlag,
+	// Mirror the real predicate's name-based check so the routing layer under
+	// test recognizes validation errors thrown across this module boundary.
+	isDomainFilterValidationError: (err: unknown) =>
+		typeof err === "object" && err !== null && (err as { name?: unknown }).name === "DomainFilterValidationError",
 	searchWithYoucom: async (query: string) => {
 		youcomCalls.push(query);
 		return youcomResultFactory();
@@ -175,6 +179,48 @@ describe("search() routing with the youcom provider", () => {
 			/You.com: You.com API error 503/,
 		);
 		assert.deepEqual(youcomCalls, ["youcom last in chain and failing"]);
+	});
+
+	test("a rejected domain filter under auto selection propagates unchanged and stops the chain", async () => {
+		// A caller's domain restriction rejected by You.com validation must
+		// never be silently broadened by falling back to a provider that
+		// ignores domainFilter. Arm Gemini after youcom so any continuation
+		// past the validation error is observable as a fetch call.
+		youcomAvailableFlag = true;
+		geminiApiKey = "fake-gemini-key";
+		const fetchCalls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL) => {
+				fetchCalls.push(String(url));
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		const message =
+			'Invalid domainFilter entry "not a host!": expected a hostname like example.com (prefix with - to exclude)';
+		const validationError = new Error(message);
+		validationError.name = "DomainFilterValidationError";
+		youcomResultFactory = () => {
+			throw validationError;
+		};
+
+		let caught: unknown;
+		try {
+			await search("rejected domain filter", { provider: "auto", domainFilter: ["not a host!"] });
+		} catch (err) {
+			caught = err;
+		}
+
+		assert.equal(caught, validationError, "the exact validation error must propagate");
+		assert.ok(caught instanceof Error);
+		assert.equal(caught.name, "DomainFilterValidationError", "the error name must be preserved");
+		assert.equal(caught.message, message, "the message must be intact");
+		assert.ok(
+			!caught.message.includes("Auto provider search failed"),
+			"the validation error must not be aggregated into the auto-provider failure summary",
+		);
+		assert.deepEqual(youcomCalls, ["rejected domain filter"]);
+		assert.deepEqual(fetchCalls, [], "no Gemini API request may follow the rejected domain filter");
 	});
 
 	test("explicit youcom selection surfaces the provider error instead of falling through", async () => {

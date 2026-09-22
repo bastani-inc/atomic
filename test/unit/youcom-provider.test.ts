@@ -26,7 +26,9 @@ vi.mock("../../packages/web-access/config-paths.js", () => {
 	};
 });
 
-const { isYoucomAvailable, searchWithYoucom } = await import("../../packages/web-access/youcom.js");
+const { isDomainFilterValidationError, isYoucomAvailable, searchWithYoucom } = await import(
+	"../../packages/web-access/youcom.js"
+);
 const { activityMonitor } = await import("../../packages/web-access/activity.js");
 
 interface FetchCall {
@@ -222,6 +224,44 @@ describe("youcom search requests", () => {
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
 		assert.deepEqual(body.include_domains, ["docs.rs"]);
 		assert.equal("exclude_domains" in body, false);
+	});
+
+	test("folds an IDN include entry to ASCII before sending it", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["bücher.de"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["xn--bcher-kva.de"]);
+	});
+
+	test("trims a trailing dot from an include entry before sending it", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["docs.rs."] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["docs.rs"]);
+	});
+
+	test("rejects an invalid entry with a DomainFilterValidationError recognized by the predicate", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		let caught: unknown;
+		try {
+			await searchWithYoucom("validation-error-identity", { domainFilter: ["not a host!"] });
+		} catch (err) {
+			caught = err;
+		}
+
+		assert.ok(caught instanceof Error, "the search must reject");
+		assert.equal(caught.name, "DomainFilterValidationError");
+		assert.equal(isDomainFilterValidationError(caught), true);
+		assert.match(caught.message, /Invalid domainFilter entry "not a host!"/);
+		assert.equal(fetchCalls.length, 0, "no request should be made for an invalid filter");
 	});
 
 	test("rejects blank domainFilter entries before any request or activity entry", async () => {
@@ -525,6 +565,19 @@ describe("youcom response mapping", () => {
 			"Brief description\nSource: Article Title (https://example.com/article)\n\n" +
 				"News summary\nSource: News Headline (https://news.example.com/story)",
 		);
+	});
+
+	test("caps per-result snippet content at 1000 characters, mirroring the exa cap", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		const longDescription = "x".repeat(3000);
+		fetchResult = okResponse(
+			webResults([{ url: "https://example.com/long", title: "Long", description: longDescription }]),
+		);
+
+		const response = await searchWithYoucom("query");
+
+		assert.equal(response.results[0]?.snippet, "x".repeat(1000));
+		assert.equal(response.answer, `${"x".repeat(1000)}\nSource: Long (https://example.com/long)`);
 	});
 
 	test("returns an empty answer when no result has a snippet", async () => {

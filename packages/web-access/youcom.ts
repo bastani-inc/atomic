@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { domainToASCII } from "node:url";
 import { activityMonitor } from "./activity.js";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
@@ -61,7 +62,34 @@ function normalizeDomainEntry(entry: string): string | null {
 	if (colon !== -1) domain = domain.slice(0, colon);
 	if (domain.startsWith("*.")) domain = domain.slice(2);
 	else if (domain.startsWith(".")) domain = domain.slice(1);
+	if (domain.endsWith(".")) domain = domain.slice(0, -1);
+	if (domain.length > 0) {
+		// Fold IDN labels to ASCII (bücher.de → xn--bcher-kva.de); an empty
+		// result means the input is not a valid domain.
+		const ascii = domainToASCII(domain);
+		if (ascii === "") return null;
+		domain = ascii;
+	}
 	return HOSTNAME_PATTERN.test(domain) ? domain : null;
+}
+
+/**
+ * Thrown when a caller-supplied domainFilter entry fails validation. Carries a
+ * stable `name` so the routing layer can recognize it across module boundaries
+ * and refuse to fall back to a provider that would ignore the restriction.
+ */
+export class DomainFilterValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "DomainFilterValidationError";
+	}
+}
+
+export function isDomainFilterValidationError(err: unknown): boolean {
+	return (
+		err instanceof DomainFilterValidationError ||
+		(typeof err === "object" && err !== null && (err as { name?: unknown }).name === "DomainFilterValidationError")
+	);
 }
 
 interface DomainFilter {
@@ -85,7 +113,7 @@ function splitDomainFilter(domainFilter: readonly unknown[] | undefined): Domain
 		const isExclude = trimmed.startsWith("-");
 		const domain = trimmed ? normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed) : null;
 		if (!domain) {
-			throw new Error(
+			throw new DomainFilterValidationError(
 				`Invalid domainFilter entry "${String(entry)}": expected a hostname like example.com (prefix with - to exclude)`
 			);
 		}
@@ -183,7 +211,9 @@ function toSearchResult(result: YoucomSearchResult, fallbackIndex: number): Sear
 	return {
 		title: result.title || `Source ${fallbackIndex}`,
 		url,
-		snippet: snippetParts.join(" · "),
+		// Mirror exa.ts: bound per-result content so the snippet and the
+		// synthesized answer stay capped per result.
+		snippet: snippetParts.join(" · ").slice(0, 1000),
 	};
 }
 

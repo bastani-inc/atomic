@@ -5,7 +5,7 @@ import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
 import { hasExaApiKey, isExaAvailable, searchWithExa } from "./exa.js";
-import { isYoucomAvailable, searchWithYoucom } from "./youcom.js";
+import { isDomainFilterValidationError, isYoucomAvailable, searchWithYoucom } from "./youcom.js";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
@@ -180,7 +180,10 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 			const result = await searchWithYoucom(query, options);
 			return { ...result, provider: "youcom" };
 		} catch (err) {
-			if (isAbortError(err)) throw err;
+			// A domainFilter rejected by You.com validation must propagate: a
+			// later provider would ignore the restriction and silently broaden
+			// the results the caller asked to narrow.
+			if (isAbortError(err) || isDomainFilterValidationError(err)) throw err;
 			fallbackErrors.push(`You.com: ${errorMessage(err)}`);
 		}
 	}
