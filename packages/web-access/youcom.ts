@@ -70,23 +70,23 @@ interface DomainFilter {
 }
 
 /**
- * Split a domainFilter into normalized include and exclude hostnames. Blank
- * entries express no restriction and are skipped; any other entry that does
- * not normalize to a hostname (including a bare `-`) throws, because dropping
- * it would silently broaden the results the caller asked to restrict.
+ * Split a domainFilter into normalized include and exclude hostnames. Every
+ * entry must be a string that normalizes to a hostname (optionally prefixed
+ * with `-`); a blank, non-string, or otherwise malformed entry (including a
+ * bare `-`) throws, because skipping it would silently broaden the results the
+ * caller asked to restrict. The parameter is typed as `unknown[]` because tool
+ * arguments are not validated by the host, so non-string entries are reachable.
  */
-function splitDomainFilter(domainFilter: string[] | undefined): DomainFilter {
+function splitDomainFilter(domainFilter: readonly unknown[] | undefined): DomainFilter {
 	const includes: string[] = [];
 	const excludes: string[] = [];
 	for (const entry of domainFilter ?? []) {
-		if (typeof entry !== "string") continue;
-		const trimmed = entry.trim();
-		if (!trimmed) continue;
+		const trimmed = typeof entry === "string" ? entry.trim() : "";
 		const isExclude = trimmed.startsWith("-");
-		const domain = normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed);
+		const domain = trimmed ? normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed) : null;
 		if (!domain) {
 			throw new Error(
-				`Invalid domainFilter entry "${entry}": expected a hostname like example.com (prefix with - to exclude)`
+				`Invalid domainFilter entry "${String(entry)}": expected a hostname like example.com (prefix with - to exclude)`
 			);
 		}
 		(isExclude ? excludes : includes).push(domain);
@@ -208,7 +208,7 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 	// activity entry and never reaches the network.
 	const apiKey = getApiKey();
 	const domainFilter = splitDomainFilter(options.domainFilter);
-	const numResults = Math.min(options.numResults ?? 5, MAX_RESULTS);
+	const numResults = Math.max(1, Math.min(options.numResults ?? 5, MAX_RESULTS));
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 

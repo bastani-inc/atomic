@@ -105,6 +105,17 @@ describe("youcom search requests", () => {
 		assert.equal(body.count, 20);
 	});
 
+	test("floors count at 1 when numResults is zero or negative", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+
+		for (const numResults of [0, -3]) {
+			fetchResult = okResponse({ results: { web: [] } });
+			await searchWithYoucom("query", { numResults });
+			const body = JSON.parse(fetchCalls.at(-1)?.init.body as string) as Record<string, unknown>;
+			assert.equal(body.count, 1, `numResults ${numResults} should send count 1`);
+		}
+	});
+
 	test("maps recencyFilter to the freshness parameter", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse({ results: { web: [] } });
@@ -197,16 +208,70 @@ describe("youcom search requests", () => {
 		assert.equal("exclude_domains" in body, false);
 	});
 
-	test("keeps the requested count when the domainFilter has only blank entries", async () => {
+	test("rejects blank domainFilter entries before any request or activity entry", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
-		fetchResult = okResponse({ results: { web: [] } });
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
 
-		await searchWithYoucom("query", { numResults: 6, domainFilter: ["  ", ""] });
+		for (const domainFilter of [[""], ["  ", ""]]) {
+			await assert.rejects(
+				() => searchWithYoucom("blank-filter-entry", { domainFilter }),
+				/Invalid domainFilter entry "\s*": expected a hostname like example\.com \(prefix with - to exclude\)/,
+			);
+		}
 
-		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
-		assert.equal(body.count, 6);
-		assert.equal("include_domains" in body, false);
-		assert.equal("exclude_domains" in body, false);
+		assert.equal(fetchCalls.length, 0, "no request should be made for a blank filter entry");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "blank-filter-entry");
+		assert.equal(entry, undefined, "no activity entry should be created for a blank filter entry");
+	});
+
+	test("rejects a non-string domainFilter entry before any request or activity entry", async () => {
+		// Tool arguments are not validated at runtime by the host, so a number
+		// can reach the provider; it must not be skipped into an open filter.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() => searchWithYoucom("non-string-filter-entry", { domainFilter: [123] as unknown as string[] }),
+			/Invalid domainFilter entry "123": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made for a non-string filter entry");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "non-string-filter-entry");
+		assert.equal(entry, undefined, "no activity entry should be created for a non-string filter entry");
+	});
+
+	test("rejects an object domainFilter entry even when it stringifies to an exclusion", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://docs.rs/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() =>
+				searchWithYoucom("object-filter-entry", {
+					domainFilter: [{ toString: () => "-docs.rs" }] as unknown as string[],
+				}),
+			/Invalid domainFilter entry "-docs\.rs": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made for an object filter entry");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "object-filter-entry");
+		assert.equal(entry, undefined, "no activity entry should be created for an object filter entry");
+	});
+
+	test("rejects a filter mixing a valid exclusion with a non-string entry instead of dropping the entry", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() =>
+				searchWithYoucom("mixed-valid-and-non-string-entry", {
+					domainFilter: ["-docs.rs", 123] as unknown as string[],
+				}),
+			/Invalid domainFilter entry "123": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made when any filter entry is invalid");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "mixed-valid-and-non-string-entry");
+		assert.equal(entry, undefined, "no activity entry should be created when any filter entry is invalid");
 	});
 
 	test("rejects an invalid include entry before any request or activity entry", async () => {
@@ -321,7 +386,25 @@ describe("youcom domainFilter enforcement", () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Kept" }]));
 
-		const response = await searchWithYoucom("query", { domainFilter: [] });
+		const response = await searchWithYoucom("query", { numResults: 6, domainFilter: [] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal(body.count, 6);
+		assert.equal("include_domains" in body, false);
+		assert.equal("exclude_domains" in body, false);
+		assert.equal(response.results.length, 1);
+	});
+
+	test("treats an undefined domainFilter as no restriction", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Kept" }]));
+
+		const response = await searchWithYoucom("query", { numResults: 6, domainFilter: undefined });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal(body.count, 6);
+		assert.equal("include_domains" in body, false);
+		assert.equal("exclude_domains" in body, false);
 		assert.equal(response.results.length, 1);
 	});
 
