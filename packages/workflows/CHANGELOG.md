@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- A workflow stage with `model: "auto"` no longer fails when routing inference fails completely (Jev and the chat structured-output fallback both). The stage now runs on the current chat model with a recorded warning, on fresh runs and resumes alike, when that model is available and satisfies every routing constraint; validation, eligibility, credential-screening failures and cancellation still fail the stage ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
-
 ### Changed
 
 - Generalized the prompt-engineering GPT-6 guide (`references/gpt_6.md`, formerly `gpt_6_astra.md`) to cover GPT-6 Sol and Luna, and replaced its paraphrased snippets with OpenAI's official GPT-6 prompt templates for follow-through, approval timing, skill-instruction priority, writing style, delegation, and verification.
@@ -23,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A workflow run that stays in flight across a preserving host `/reload` can now create stages after the reload. Stage session creation and the stage model catalog resolve the newest live extension generation instead of the retired launch `pi` and command ctx, so the next stage no longer fails with `This extension ctx is stale after session replacement or reload` and no longer falls back to `workflows: model catalog unavailable` ([#3201](https://github.com/bastani-inc/atomic/issues/3201)).
 - A Goal run with `create_pr=true` could never be resumed after its `pull-request` stage failed with a recoverable error. Every resume failed with `insufficient_state: replay topology mismatch for stage "pull-request"` yet still reported `resumable: true`. On resume, Goal reloads its persisted ledger, which already recorded the approving review round as `complete`, so the turn loop was skipped and `pull-request` ran without its reviewer parents. Goal now replays the turns recorded in a reloaded ledger from their durable checkpoints, so the resume re-executes only the failed stage ([#3207](https://github.com/bastani-inc/atomic/issues/3207)).
 - Resuming a Goal run no longer duplicates its ledger history. A replayed turn (one the reloaded ledger already recorded) appended another reducer decision, lifecycle events, a convergence record and reverification entries for the same turn, so the ledger and the final PR report showed repeated history after a resume. Replayed turns are now read-only for the ledger; only live turns append and persist new outcomes ([#3207](https://github.com/bastani-inc/atomic/issues/3207)).
+- A workflow stage with `model: "auto"` no longer fails when routing inference fails completely (Jev and the chat structured-output fallback both). The stage now runs on the current chat model with a recorded warning, on fresh runs and resumes alike, when that model is available and satisfies every routing constraint; validation, eligibility, credential-screening failures and cancellation still fail the stage ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
 
 ## [0.9.20-alpha.6] - 2026-09-22
 
