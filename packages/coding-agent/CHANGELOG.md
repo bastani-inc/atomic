@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added inherited GPT-6 Sol and GPT-6 Luna support for OpenAI API keys and OpenAI Codex subscriptions.
+- Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for GPT-6 Sol and GPT-6 Luna in the model evals used by automatic routing.
 - Added inherited Claude Opus 5.5 support for Anthropic with adaptive thinking and a 1M context window.
 
 ### Changed

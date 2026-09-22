@@ -1,6 +1,6 @@
 # GPT-5.6 prompting and migration
 
-Use this reference for the GPT-5.6 family. Guidance checked on September 5, 2026 against [OpenAI's GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6). Snippets below are adaptations for prompt authors, not verbatim official quotes. Keep these defaults separate from [GPT-6 Astra](gpt_6_astra.md) and [GPT-5.5](gpt_5_5.md).
+Use this reference for the GPT-5.6 family. Guidance checked on September 5, 2026 against [OpenAI's GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6). Snippets below are adaptations for prompt authors, not verbatim official quotes. Keep these defaults separate from [GPT-6](gpt_6.md) and [GPT-5.5](gpt_5_5.md).
 
 ## When moving from an older prompt stack
 

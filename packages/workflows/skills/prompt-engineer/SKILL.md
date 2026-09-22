@@ -28,8 +28,8 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 
 | Target | Read | Main distinctions |
 | --- | --- | --- |
-| GPT-6 Astra | `references/gpt_6_astra.md` | Completion and approval pauses, instruction sensitivity, proportionate verification, API migration |
-| GPT-5.6, Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, effort sweep, pro mode, programmatic tools, caching |
+| GPT-6 Astra, Sol, Luna | `references/gpt_6.md` | Completion and approval pauses, instruction sensitivity, proportionate verification, Sol/Luna effort and tool-calling differences, API migration |
+| GPT-5.6 Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, effort sweep, pro mode, programmatic tools, caching |
 | GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, explicit validation, assistant phase replay |
 | Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, thinking-history binding, completion and output budget |
 | Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |

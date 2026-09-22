@@ -1,6 +1,8 @@
-# GPT-6 Astra prompting and migration
+# GPT-6 family prompting and migration
 
-Use this reference when targeting `gpt-6-astra`, migrating a prompt to Astra, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on September 5, 2026 against [OpenAI's model guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra). Snippets below are adaptations for prompt authors, not verbatim official quotes.
+Use this reference when targeting `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`, migrating a prompt to the GPT-6 family, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on September 22, 2026 against [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model). Snippets below are adaptations for prompt authors, not verbatim official quotes.
+
+OpenAI positions the three models by reasoning demand, latency, and cost: Astra for the highest capability and long multi-step work across code, browsers, and professional software; Sol for strong reasoning on demanding tasks; Luna for efficient, repeatable work at scale. The behavior sections below were observed on Astra. OpenAI offers the same starting prompts for the whole family, so apply them to Sol and Luna as hypotheses and evaluate on the chosen model and workload rather than assuming Astra's tendencies transfer. See [Sol and Luna differences](#sol-and-luna-differences) before choosing effort or a tool-calling API.
 
 ## When it asks before doing authorized work
 
@@ -82,15 +84,25 @@ Do not add tests that merely restate the implementation. Do not repeat a passing
 
 Caveats: do not use this to skip required CI-equivalent checks, safety checks, release gates, or user-requested validation.
 
+## Sol and Luna differences
+
+The prompt patterns above are shared, but three things change when the target is `gpt-6-sol` or `gpt-6-luna`.
+
+Effort: Sol and Luna support `reasoning.effort: "none"`; Astra does not. On FrontierCode 1.1 (accessed 2026-09-22, Codex harness, Main subset) Sol scored 37.3 at `low`, 45.9 at `medium`, 47.7 at `high`, 48.4 at `xhigh`, and 49.3 at `max` for USD 0.43 to 2.07 per task; Luna scored 25.7, 35.5, 37.3, 37.1, and 42.4 for USD 0.02 to 0.10. Artificial Analysis lists Sol (max) at Intelligence Index 47.5 and Luna (max) at 37.3, with `none` at 28.1 and 18.3. Effort moves these models more than it moves Astra, so sweep effort as a prompt variable: a Luna prompt tuned at `medium` may need `high` or `max` before it is comparable to a Sol prompt at `medium`, and a Sol prompt at `none` is a different model in practice. Do not compensate for a lower effort with longer instructions.
+
+Tool calling: Sol and Luna call functions in Chat Completions only at `reasoning_effort: "none"`. Any reasoning effort with tools requires the Responses API. Astra's tool calling requires Responses at every effort. When a prompt assumes tools and reasoning together, confirm the request path before blaming the prompt.
+
+Scope of the behavior guidance: OpenAI's initiative, instruction-following, writing-style, delegation, and verification prompts were written against Astra. Sol and Luna are cheaper to sweep, so measure whether the early-stop and over-testing adjustments are needed at all before adding them; a Luna prompt that carries Astra's autonomy language without the corresponding capability can persist on work it cannot finish. Keep the same approval gates.
+
 ## Compatibility notes
 
 These are API capabilities, not promises that every agent harness exposes them. Verify the SDK, provider, and request path before adding parameters.
 
-- Model and effort: set `model: "gpt-6-astra"`. Astra does not support `none`; when migrating from `none` or `minimal`, start with `low` and evaluate. Use `reasoning.effort` in Responses or `reasoning_effort` in Chat Completions.
-- Tools: use Responses for tool calling. Astra may support Chat Completions, but tool calling requires Responses.
-- Sampling/logprobs: remove `temperature`, `top_p`, `top_logprobs`, Chat Completions `logprobs`, and Responses `message.output_text.logprobs` includes where unsupported.
+- Model and effort: set `model` to `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. Preserve the current effective effort where the model supports it. Astra does not support `none`; when migrating from `none` or `minimal`, start with `low` and evaluate. Sol and Luna support `none`; when migrating from `minimal`, start with `low` and compare. Use `reasoning.effort` in Responses or `reasoning_effort` in Chat Completions.
+- Tools: use Responses for tool calling. Astra may support Chat Completions, but its tool calling requires Responses. Sol and Luna support Chat Completions function calling only with `reasoning_effort: "none"`.
+- Sampling/logprobs: when effort is not `none`, remove `temperature`, `top_p`, `top_logprobs`, Chat Completions `logprobs`, and Responses `message.output_text.logprobs` includes.
 - Caching: when migrating from GPT-5.5 or earlier, replace `prompt_cache_retention` with `prompt_cache_options.ttl: "30m"`; review cache boundaries and cache-write billing.
-- Changing effort: `configuration_update` can change effort in supported standard single-agent Responses requests without rewriting the cached prompt prefix. Check compatibility limits first.
+- Changing effort: `configuration_update` can change effort in supported standard single-agent Responses requests without rewriting the cached prompt prefix. Keep request-level `reasoning.effort` unchanged so the prefix stays cacheable. Check compatibility limits first.
 - Async tools and mid-turn steering require application support. Prompt text alone does not enable async execution, steering, cancellation, or side-effect reconciliation in Atomic or another harness.
 - EU data residency: GPT-6 family data residency is Standard-processing only; Astra fast mode has no latency SLA.
 

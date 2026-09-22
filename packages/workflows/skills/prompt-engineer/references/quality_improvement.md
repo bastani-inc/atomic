@@ -48,7 +48,7 @@ The following audit distills [Eric Provencher's advice on X](https://x.com/pvnch
 - Make permission boundaries concrete. If the environment actually uses disposable local fixtures with no production access, authorize running and repairing those tests as one workflow. Do not generalize that permission to production or publication, and do not ask again at every already-authorized step.
 - Define completion before work starts, including running the implementation, inspecting results, and repairing failures when requested. A first-pass review gate is a deliberate stopping point; remove an accidental gate only when authorized. For broader exploration, state what to investigate and where to stop.
 
-Treat each audit change as a hypothesis. Compare representative tasks, including a small edit and a real approval boundary, before removing a rule globally. OpenAI's [Astra guide](gpt_6_astra.md) adds model-specific advice for excessive testing, early stops, and instruction conflicts.
+Treat each audit change as a hypothesis. Compare representative tasks, including a small edit and a real approval boundary, before removing a rule globally. OpenAI's [GPT-6 guide](gpt_6.md) adds model-specific advice for excessive testing, early stops, and instruction conflicts.
 
 ## Evaluation Contract
 

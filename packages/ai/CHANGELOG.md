@@ -6,6 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Added
 
+- Added GPT-6 Sol and GPT-6 Luna for OpenAI API keys and OpenAI Codex subscriptions, with full reasoning-effort, prompt-caching, tool-search, long-context pricing, and official cost metadata.
 - Added Claude Opus 5.5 to the built-in Anthropic model catalog with adaptive thinking, 1M context, and official pricing metadata.
 
 ### Fixed
