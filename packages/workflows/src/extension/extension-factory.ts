@@ -115,9 +115,9 @@ function factory(pi: ExtensionAPI): void {
 	}
 
 	const liveGeneration = trackLiveHostGeneration(pi);
-	const adapters = buildRuntimeAdapters(pi, { resolveSurface: () => liveGeneration().pi });
+	const adapters = buildRuntimeAdapters(pi, { resolveSurface: () => liveGeneration()?.pi ?? pi });
 	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters, {
-		resolveLiveModelContext: () => liveGeneration().modelContext,
+		resolveLiveModelContext: () => liveGeneration()?.modelContext,
 	});
 	const postMortemResolverDeps = {
 		adapters,
