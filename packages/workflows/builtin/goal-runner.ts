@@ -153,7 +153,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let terminalRemainingWork: string | undefined;
     let previousOrchestratorSessionFile: string | undefined;
 
-    for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
+    // A resume reloads the ledger its source run already advanced, possibly to a
+    // terminal status. Replay the recorded turns anyway: their stages return
+    // durable checkpoints, and skipping them would leave later stages such as
+    // pull-request without the parents they had in the source run (#3207).
+    const recordedTurns = ledger.turns;
+    for (let turn = 1; turn <= maxTurns && (ledger.status === "active" || turn <= recordedTurns); turn += 1) {
       appendLifecycleEvent(ledger, "work_turn_started", "Orchestrator started.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
