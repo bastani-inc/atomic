@@ -116,6 +116,22 @@ describe("youcom search requests", () => {
 		}
 	});
 
+	test("coerces fractional and non-finite numResults to an integer count", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+
+		const cases: Array<[number, number]> = [
+			[2.5, 2],
+			[Number.NaN, 5],
+			[Number.POSITIVE_INFINITY, 20],
+		];
+		for (const [numResults, expected] of cases) {
+			fetchResult = okResponse({ results: { web: [] } });
+			await searchWithYoucom("query", { numResults });
+			const body = JSON.parse(fetchCalls.at(-1)?.init.body as string) as Record<string, unknown>;
+			assert.equal(body.count, expected, `numResults ${numResults} should send count ${expected}`);
+		}
+	});
+
 	test("maps recencyFilter to the freshness parameter", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse({ results: { web: [] } });

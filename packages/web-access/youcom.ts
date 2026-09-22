@@ -208,7 +208,11 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 	// activity entry and never reaches the network.
 	const apiKey = getApiKey();
 	const domainFilter = splitDomainFilter(options.domainFilter);
-	const numResults = Math.max(1, Math.min(options.numResults ?? 5, MAX_RESULTS));
+	const requestedResults =
+		typeof options.numResults === "number" && !Number.isNaN(options.numResults)
+			? Math.trunc(options.numResults)
+			: 5;
+	const numResults = Math.max(1, Math.min(requestedResults, MAX_RESULTS));
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
