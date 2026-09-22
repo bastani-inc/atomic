@@ -420,10 +420,11 @@ test("Jev 401 falls back to chat (#3206)", async () => {
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
 	assert.equal(result.fallback?.to, "decision-test/chat");
-	assert.match(result.fallback?.reason ?? "", /HTTP 401/);
+	assert.equal(result.fallback?.reason, "Jev credentials are missing or were rejected.");
 	assert.equal(transport.mock.calls.length, 1);
 	assert.equal(dispatch.mock.calls.length, 1);
 	assert.equal(warning.mock.calls.length, 1);
+	assert.doesNotMatch(String(warning.mock.calls[0][0]), /\/login|TYPESAFE_API_KEY|mock-key|HTTP 401/);
 });
 
 test("pinned Jev falls back to chat (#3206)", async () => {
@@ -440,7 +441,8 @@ test("pinned Jev falls back to chat (#3206)", async () => {
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
-	assert.match(result.fallback?.reason ?? "", /requires an API key/);
+	assert.equal(result.fallback?.reason, "Jev credentials are missing or were rejected.");
+	assert.doesNotMatch(result.fallback?.reason ?? "", /\/login|TYPESAFE_API_KEY/);
 	assert.equal(transport.mock.calls.length, 0);
 	assert.equal(dispatch.mock.calls.length, 1);
 });

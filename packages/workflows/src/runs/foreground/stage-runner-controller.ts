@@ -20,7 +20,6 @@ import type {
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
 	WorkflowModelUsage,
-	WorkflowModelValue,
 } from "../../shared/types.js";
 import {
 	buildModelCandidatesFromCatalog,
@@ -264,7 +263,6 @@ export class StageSessionController {
 	private modelRoute: ModelRoute | undefined;
 	private routingPromise: Promise<void> | undefined;
 	private explicitModel: CreateAgentSessionOptions["model"];
-	private autoRoutingFallbackModel: WorkflowModelValue | undefined;
 	private activeCandidateIndex: number | undefined;
 	private selectedModel: string | undefined;
 	private sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
@@ -430,8 +428,7 @@ export class StageSessionController {
 		return (
 			this.effectiveStageOptions?.model === "auto" &&
 			this.modelRoute === undefined &&
-			this.explicitModel === undefined &&
-			this.autoRoutingFallbackModel === undefined
+			this.explicitModel === undefined
 		);
 	}
 
@@ -461,19 +458,13 @@ export class StageSessionController {
 					this.startupWait.signal.throwIfAborted();
 					this.opts.signal?.throwIfAborted();
 					// #3206: only a total routing-inference failure (Jev and the chat
-					// structured-output fallback both failed) degrades to the current
-					// chat model. Validation and eligibility failures still fail.
-					const current = this.modelCatalog?.currentModel;
-					if (!(error instanceof AutoRoutingInferenceError) || current === undefined || current === "auto")
-						throw error;
-					const fallbackModel = typeof current === "string" ? current : `${current.provider}/${current.id}`;
-					this.autoRoutingFallbackModel = fallbackModel;
+					// structured-output fallback both failed) degrades, and only to a
+					// current chat model that satisfies every routing constraint.
+					if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
+					this.modelRoute = error.currentModelRoute;
 					this.modelCatalog?.recordWarning?.(
-						`workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${fallbackModel}. ${error.message}`,
+						`workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`,
 					);
-					this.meta.stageOptions = { ...options, model: fallbackModel };
-					this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta());
-					return;
 				}
 				this.modelRoute.assertCurrent();
 				this.meta.stageOptions = { ...options, model: this.modelRoute.modelOverride };
@@ -1211,11 +1202,7 @@ export class StageSessionController {
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
 		if (!this.candidatesPromise) {
 			const resolved = buildModelCandidatesFromCatalog({
-				primaryModel:
-					this.modelRoute?.modelOverride ??
-					this.explicitModel ??
-					this.autoRoutingFallbackModel ??
-					this.effectiveStageOptions?.model,
+				primaryModel: this.modelRoute?.modelOverride ?? this.explicitModel ?? this.effectiveStageOptions?.model,
 				fallbackModels: [
 					...(this.modelRoute?.fallbackModels ?? []),
 					...(this.effectiveStageOptions?.fallbackModels ?? []),

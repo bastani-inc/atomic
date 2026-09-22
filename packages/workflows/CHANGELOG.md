@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A workflow stage with `model: "auto"` no longer fails when routing inference fails completely (Jev and the chat structured-output fallback both). The stage now runs on the current chat model with a recorded warning, on fresh runs and resumes alike; validation, eligibility, credential-screening failures and cancellation still fail the stage ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+- A workflow stage with `model: "auto"` no longer fails when routing inference fails completely (Jev and the chat structured-output fallback both). The stage now runs on the current chat model with a recorded warning, on fresh runs and resumes alike, when that model is available and satisfies every routing constraint; validation, eligibility, credential-screening failures and cancellation still fail the stage ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
 
 ### Changed
 

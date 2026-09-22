@@ -1,7 +1,7 @@
 import type { Questions } from "@typesafe-ai/sdk";
 import type { Static, TSchema } from "typebox";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
-import { DEFAULT_DECISION_RETRY, JevRequestError, requestJev } from "./jev-client.js";
+import { DEFAULT_DECISION_RETRY, JevRequestError, jevCredentialError, requestJev } from "./jev-client.js";
 import { getStructuredOutputProviders, JEV_STRUCTURED_OUTPUT_PROVIDER as provider } from "./resolver.js";
 import type { StructuredChoiceQuestion, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
@@ -106,9 +106,9 @@ async function askJev<T extends TSchema>(
 			: process.env[selectedProvider.apiKeyEnv]?.trim();
 	} catch {
 		signal.throwIfAborted();
-		throw new Error(`Jev credential resolution failed. ${authGuidance}`);
+		throw jevCredentialError(`Jev credential resolution failed. ${authGuidance}`);
 	}
-	if (!apiKey) throw new Error(`${selectedProvider.fullId} requires an API key. ${authGuidance}`);
+	if (!apiKey) throw jevCredentialError(`${selectedProvider.fullId} requires an API key. ${authGuidance}`);
 	assertActive();
 	const response = await requestJev({
 		apiKey,

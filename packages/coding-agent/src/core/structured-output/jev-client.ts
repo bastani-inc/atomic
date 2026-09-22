@@ -16,6 +16,14 @@ import {
 export class JevRequestError extends Error {
 	usage?: { inputTokens: number; outputTokens: number };
 	transient = false;
+	/** Missing, unresolvable, or rejected credentials; the message carries auth guidance. */
+	credential = false;
+}
+
+export function jevCredentialError(message: string): JevRequestError {
+	const error = new JevRequestError(message);
+	error.credential = true;
+	return error;
 }
 
 /** Matches the `settings.retry` defaults used by ordinary chat providers. */
@@ -64,6 +72,7 @@ function describeError(error: APIError, authGuidance: string): JevRequestError {
 							? "Provider is rate limited or overloaded."
 							: "Check provider availability.";
 	const message = `Jev HTTP ${error.status} (${kind}). ${guidance}${requestId ? ` Request ID: ${requestId}.` : ""}`;
+	if (error instanceof AuthenticationError) return jevCredentialError(message);
 	return isTransientStatus(error.status) ? transientError(message) : new JevRequestError(message);
 }
 

@@ -73,7 +73,11 @@ test("automatic Jev routing falls back once to the current chat model with visib
 	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
 	assert.match(result.fallback?.reason ?? "", /max_tokens_exceeded/);
 	assert.equal(warning.mock.calls.length, 1);
-	assert.match(String(warning.mock.calls[0][0]), /max_tokens_exceeded.*Falling back/);
+	assert.match(
+		String(warning.mock.calls[0][0]),
+		/^Jev routing failed; falling back to current chat model decision-test\/chat/,
+	);
+	assert.doesNotMatch(String(warning.mock.calls[0][0]), /max_tokens_exceeded|TYPESAFE_API_KEY|synthetic-secret/);
 	assert.equal(transport.mock.calls.length, 1);
 	assert.equal(dispatch.mock.calls.length, 1);
 });

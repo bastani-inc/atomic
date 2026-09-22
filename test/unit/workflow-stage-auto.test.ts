@@ -246,6 +246,43 @@ test("auto stage total routing failure runs on the current chat model (#3206)", 
 	assert.equal(f.infer.mock.calls.length, 1);
 });
 
+for (const [allowed, status, admissions] of [
+	["decision-test/chat", "completed", ["decision-test/chat"]],
+	["second-provider/other", "failed", []],
+] as const) {
+	test(`auto stage total routing failure with allowedModels=${allowed} ${status === "completed" ? "degrades to" : "never runs"} the current chat model (#3206)`, async () => {
+		const f = await fixture();
+		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([
+			decisionModel,
+			{ ...decisionModel, provider: "second-provider", id: "other" },
+		]);
+		f.infer.mockImplementation(() => {
+			throw new Error("mock router outage");
+		});
+		const def = workflow({
+			name: "constrained-degraded-auto",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx
+					.stage("task", { model: "auto", modelConstraints: { allowedModels: [allowed] } })
+					.prompt("Solve task");
+				return {};
+			},
+		});
+		const result = await run(def, {}, f);
+		// A provider-classified routing failure blocks the stage; the run stays resumable.
+		if (status === "completed") assert.equal(result.status, "completed");
+		else {
+			assert.notEqual(result.status, "completed");
+			assert.equal(result.stages[0]?.status, "failed");
+		}
+		assert.deepEqual(f.admissions, [...admissions]);
+		assert.equal(f.infer.mock.calls.length, 1);
+	});
+}
+
 test("auto stage malformed routing decisions degrade to the current chat model (#3206)", async () => {
 	const f = await fixture();
 	f.infer.mockImplementation(() => messageStream(decisionMessage({ model: "decision-test/chat", effort: "high" })));

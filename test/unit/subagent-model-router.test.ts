@@ -530,6 +530,54 @@ test("provider failure degrades to the current chat model; cancellation never be
 	await assert.rejects(pending, /cancelled|abort/i);
 });
 
+for (const [allowed, degrades] of [
+	["decision-test/chat", true],
+	["second-provider/reasoner", false],
+] as const) {
+	test(`total routing failure with allowedModels=${allowed} ${degrades ? "degrades to" : "never runs"} the current chat model (#3206)`, async () => {
+		const f = await fixture();
+		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		f.infer.mockImplementation(() => {
+			throw new Error("mock provider failure");
+		});
+		const routing = routeSubagentModel({ ctx: f.ctx, agent, modelConstraints: { allowedModels: [allowed] } });
+		if (!degrades) {
+			await assert.rejects(routing, /provider request failed/);
+			assert.equal(warning.mock.calls.length, 0);
+			return;
+		}
+		const route = await routing;
+		assert.equal(route.modelOverride, "decision-test/chat");
+		assert.equal(route.allowsCandidate("decision-test/chat"), true);
+		assert.equal(route.allowsCandidate("second-provider/reasoner:high"), false);
+		assert.equal(route.allowsModel(reasoningModel, "high"), false);
+		assert.equal(warning.mock.calls.length, 1);
+		assert.doesNotMatch(String(warning.mock.calls[0]![0]), /mock provider failure/);
+	});
+}
+
+test("a failed optional fallback-ranking pass keeps the selected primary (#3206)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	f.infer
+		.mockImplementationOnce(() =>
+			messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "high" })),
+		)
+		.mockImplementation(() => {
+			throw new Error("mock provider failure");
+		});
+	const route = await routeExecutionModel({
+		ctx: f.ctx,
+		task: "Fix the approved defect",
+		agent: { name: agent.name, description: agent.description },
+	});
+	assert.deepEqual(route.routerSelection, { model: "second-provider/reasoner", effort: "high" });
+	assert.equal(route.modelOverride, "second-provider/reasoner:high");
+	assert.deepEqual(route.fallbackModels, []);
+	assert.equal(f.infer.mock.calls.length, 2);
+});
+
 test("routing accepts a valid selection after the former deadline without retry", async () => {
 	const f = await fixture();
 	vi.useFakeTimers();
@@ -638,9 +686,9 @@ test("default reasoning catalog does not invent extended effort support (#3206)"
 	f.infer.mockImplementation(() =>
 		messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "max" })),
 	);
-	// The invented effort is never accepted; the launch degrades to the chat model.
-	const route = await f.route();
-	assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
+	// The invented effort is never accepted. The current chat model is not in the
+	// available catalog, so the launch cannot degrade to it and fails.
+	await assert.rejects(f.route(), /Invalid structured output/);
 	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /Invalid structured output/);
 	f.ctx.model = decisionModel;

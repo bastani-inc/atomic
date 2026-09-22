@@ -150,6 +150,12 @@ async function inferChat<T extends TSchema>(
 	};
 }
 
+/** Credential failures get a static reason; their messages carry auth guidance. */
+function jevFallbackReason(error: unknown): string {
+	if (error instanceof JevRequestError && error.credential) return "Jev credentials are missing or were rejected.";
+	return error instanceof Error ? error.message : "Jev routing failed.";
+}
+
 /** General structured inference remains one-shot. */
 export function inferStructuredOutput<T extends TSchema>(
 	request: StructuredOutputRequest<T>,
@@ -256,9 +262,15 @@ async function inferDecision<T extends TSchema>(
 						usage.inputTokens += error.usage.inputTokens;
 						usage.outputTokens += error.usage.outputTokens;
 					}
-					const reason = error instanceof Error ? error.message : "Jev routing failed.";
-					fallback = { from: selected.fullId, to: `${fallbackChat.provider}/${fallbackChat.id}`, reason };
-					console.warn(`${reason} Falling back to current chat model ${fallback.to} for this routing decision.`);
+					fallback = {
+						from: selected.fullId,
+						to: `${fallbackChat.provider}/${fallbackChat.id}`,
+						reason: jevFallbackReason(error),
+					};
+					// Static text only: Jev errors can carry credential guidance.
+					console.warn(
+						`Jev routing failed; falling back to current chat model ${fallback.to} for this routing decision.`,
+					);
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
 					attempt = 0;
 					continue;

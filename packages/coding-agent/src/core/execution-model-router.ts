@@ -32,16 +32,35 @@ export interface ModelRoute {
 
 /**
  * Total auto-routing inference failure: Jev and the chat structured-output
- * fallback both failed to produce a decision (#3206). Consumers that hold a
- * concrete current chat model may degrade to it instead of failing the stage.
- * Validation, eligibility, and credential-screening errors are never marked.
+ * fallback both failed before any model was selected (#3206). Validation,
+ * eligibility, and credential-screening errors are never marked.
  */
 export class AutoRoutingInferenceError extends Error {
-	constructor(message: string) {
+	/**
+	 * Route pinned to the current chat model, present only when that model is
+	 * available and satisfies every routing constraint. Consumers may degrade
+	 * to it; when it is absent the failure stays fatal.
+	 */
+	readonly currentModelRoute?: ModelRoute;
+
+	constructor(message: string, currentModelRoute?: ModelRoute) {
 		super(message);
 		this.name = "AutoRoutingInferenceError";
+		if (currentModelRoute !== undefined) this.currentModelRoute = currentModelRoute;
 	}
 }
+
+/** Degraded routes keep a balanced effort when the constraints leave a choice. */
+const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
+	null,
+	"medium",
+	"high",
+	"low",
+	"xhigh",
+	"minimal",
+	"max",
+	"off",
+];
 const instructions =
 	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly model and effort; null means no configurable reasoning.";
 
@@ -164,32 +183,47 @@ export async function routeExecutionModel(input: {
 		// so it is not surfaced to the user.
 		state.task = modelRoutingTask(state.task);
 		const ranked: ModelRouterOutput[] = [];
+		// Degrade only to a current chat model that is available and eligible under
+		// the same constraints, restored through the normal selection path (#3206).
+		const currentModelRoute = async (): Promise<ModelRoute | undefined> => {
+			const current = ctx.model;
+			const entry = available.find(
+				(candidate) => candidate.model.provider === current?.provider && candidate.model.id === current?.id,
+			);
+			const pair = CURRENT_MODEL_EFFORT_PREFERENCE.map((effort) =>
+				entry?.pairs.find((candidate) => candidate.effort === effort),
+			).find((candidate) => candidate !== undefined);
+			if (pair === undefined) return undefined;
+			return routeExecutionModel({ ...input, selection: { model: pair.model, effort: pair.effort } });
+		};
 		// Rank by repeated bounded choices, excluding all efforts of earlier models.
 		// Probabilities from separate tournament batches are not comparable.
-		// Failures inside this loop are inference failures: Jev and its chat
-		// structured-output fallback both failed to return a decision (#3206).
-		try {
-			while (ranked.length < Math.min(3, available.length)) {
-				const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
-				if (!remaining.length) break;
-				const criteria = Object.fromEntries(
-					remaining.map((pair) => {
-						const key = `pair_${pairs.indexOf(pair)}`;
-						return [key, allCriteria[key]];
-					}),
-				);
-				// Strict Responses providers reject object unions. Enumerate scalar values
-				// on the wire, then verify the exact model/effort relation before admission.
-				const schema = Type.Unsafe<ModelRouterOutput>({
-					type: "object",
-					properties: {
-						model: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
-						effort: { type: ["string", "null"], enum: [...new Set(remaining.map((pair) => pair.effort))] },
-					},
-					required: ["model", "effort"],
-					additionalProperties: false,
-				});
-				const result = await inferRouterDecision(
+		// Only a failure before the primary is chosen is a total inference failure:
+		// Jev and its chat structured-output fallback both failed (#3206). A failed
+		// optional fallback-ranking pass keeps the models already ranked.
+		while (ranked.length < Math.min(3, available.length)) {
+			const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
+			if (!remaining.length) break;
+			const criteria = Object.fromEntries(
+				remaining.map((pair) => {
+					const key = `pair_${pairs.indexOf(pair)}`;
+					return [key, allCriteria[key]];
+				}),
+			);
+			// Strict Responses providers reject object unions. Enumerate scalar values
+			// on the wire, then verify the exact model/effort relation before admission.
+			const schema = Type.Unsafe<ModelRouterOutput>({
+				type: "object",
+				properties: {
+					model: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
+					effort: { type: ["string", "null"], enum: [...new Set(remaining.map((pair) => pair.effort))] },
+				},
+				required: ["model", "effort"],
+				additionalProperties: false,
+			});
+			let result: Awaited<ReturnType<typeof inferRouterDecision<typeof schema>>>;
+			try {
+				result = await inferRouterDecision(
 					{
 						settings,
 						modelRegistry: ctx.modelRegistry,
@@ -216,11 +250,15 @@ export async function routeExecutionModel(input: {
 					},
 					(value) => remaining.some((pair) => pair.model === value.model && pair.effort === value.effort),
 				);
-				ranked.push(result.value);
+			} catch (error) {
+				signal?.throwIfAborted();
+				if (ranked.length > 0) break;
+				throw new AutoRoutingInferenceError(
+					error instanceof Error ? error.message : String(error),
+					await currentModelRoute().catch(() => undefined),
+				);
 			}
-		} catch (error) {
-			signal?.throwIfAborted();
-			throw new AutoRoutingInferenceError(error instanceof Error ? error.message : String(error));
+			ranked.push(result.value);
 		}
 		selection = { ...ranked[0]!, ...(ranked.length > 1 ? { fallbacks: ranked.slice(1) } : {}) };
 	}

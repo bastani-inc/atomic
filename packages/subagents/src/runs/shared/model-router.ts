@@ -41,23 +41,14 @@ export async function routeSubagentModel(input: {
 	} catch (error) {
 		input.signal?.throwIfAborted();
 		// #3206: only a total routing-inference failure (Jev and the chat
-		// structured-output fallback both failed) degrades to the current chat
-		// model. Validation and eligibility failures still fail the launch.
-		const current = ctx.model;
-		if (!(error instanceof AutoRoutingInferenceError) || current === undefined || current.id === "auto") throw error;
-		const modelId = `${current.provider}/${current.id}`;
+		// structured-output fallback both failed) degrades, and only to a current
+		// chat model that satisfies every routing constraint. Validation,
+		// eligibility and ineligible-current-model failures still fail the launch.
+		if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
+		route = error.currentModelRoute;
 		console.warn(
-			`Subagent auto routing failed; running "${agent.name}" on the current chat model ${modelId}. ${error.message}`,
+			`Subagent auto routing failed; running "${agent.name}" on the current chat model ${route.modelOverride}.`,
 		);
-		return {
-			routerSelection: { model: modelId, effort: null },
-			modelOverride: modelId,
-			assertCurrent: () => {
-				input.signal?.throwIfAborted();
-			},
-			allowsModel: () => true,
-			allowsCandidate: () => true,
-		};
 	}
 	// Legacy thinking selects the primary effort, not a hard limit on suffixed fallbacks.
 	// Restore the recorded selection against only real constraints, without another inference.
