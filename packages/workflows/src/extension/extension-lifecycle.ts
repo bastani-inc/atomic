@@ -17,11 +17,11 @@ import { installStoreWidget } from "../tui/store-widget-installer.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
-import type { ExtensionAPI } from "./public-types.js";
+import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 
 interface WorkflowLifetime {
-	readonly generations: Set<() => Promise<void>>;
+	readonly generations: Set<(boundary?: "quit" | "switch") => Promise<void>>;
 	release?: () => Promise<void>;
 	closing?: Promise<void>;
 }
@@ -40,13 +40,48 @@ async function attemptAll(actions: readonly (() => unknown | Promise<unknown>)[]
 
 /**
  * `/reload`, `/fork`, `/new`, and `/resume` replace the host session inside
- * one process that keeps running the workflows. Those reasons must not kill
- * in-flight runs or drop live executor handles. `startup` and any reason
- * this code does not recognise still clear: neither names a predecessor
- * that handed anything over. `/reload` reuses the host bus; the others do not.
+ * one process that keeps its workflow state and durable backend. Those reasons
+ * must not tear down the workflow lifetime. `startup` and any reason this code
+ * does not recognise still clear: neither names a predecessor that handed
+ * anything over. `/reload` reuses the host bus; the others do not.
  */
 function replacementStopsWorkflows(reason: string | undefined): boolean {
 	return reason !== "reload" && reason !== "fork" && reason !== "new" && reason !== "resume";
+}
+
+type SessionSwitchReason = "new" | "resume" | "fork";
+
+/**
+ * Switching to another session quits in-flight runs at a resumable checkpoint
+ * (#3203). Only `/reload` keeps them executing, because it stays on the same
+ * session.
+ */
+function isSessionSwitch(reason: string | undefined): reason is SessionSwitchReason {
+	return reason === "new" || reason === "resume" || reason === "fork";
+}
+
+const SESSION_SWITCH_COPY: Record<SessionSwitchReason, { action: string; cancelled: string }> = {
+	new: { action: "start a new session", cancelled: "New session" },
+	resume: { action: "resume another session", cancelled: "Resume" },
+	fork: { action: "fork this session", cancelled: "Fork" },
+};
+
+export function sessionSwitchQuitConfirmation(
+	reason: SessionSwitchReason,
+	inFlightWorkflowCount: number,
+): { title: string; message: string } {
+	const runs = inFlightWorkflowCount === 1 ? "1 running workflow" : `${inFlightWorkflowCount} running workflows`;
+	const pronoun = inFlightWorkflowCount === 1 ? "It" : "Each";
+	return {
+		title: `Quit ${runs} and ${SESSION_SWITCH_COPY[reason].action}?`,
+		message: `Continuing quits ${runs} now. ${pronoun} stops at its last checkpoint and can be resumed later with /workflow resume.`,
+	};
+}
+
+function eventReason(event: unknown): string | undefined {
+	return typeof event === "object" && event !== null && "reason" in event
+		? (event as { readonly reason?: string }).reason
+		: undefined;
 }
 
 export interface WorkflowLifecycleRegistrationDeps {
@@ -71,8 +106,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			// Discovery is borrowed. Acquire durability only when a session starts.
 		}),
 	);
-	lifetime.generations.add(async () => {
-		await attemptAll([
+	const quitAndCheckpointRuns = (boundary: "quit" | "switch" = "quit") =>
+		attemptAll([
 			async () => {
 				const results = await quitAllRuns({
 					store,
@@ -86,7 +121,9 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					throw new Error(
 						`Workflow cleanup left uncooperative tools: ${abandoned.map((tool) => `${tool.runId}/${tool.nodeId}`).join(", ")}`,
 					);
-				const failures = results.filter((result) => !result.ok);
+				const failures = results
+					.flatMap((result) => (result.ok ? [] : [result]))
+					.filter((result) => !(boundary === "switch" && result.reason === "no_active_stages"));
 				if (failures.length > 0)
 					throw new Error(
 						failures
@@ -108,36 +145,33 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			},
 			() => stageControlRegistry.clear(),
 		]);
-	});
+	lifetime.generations.add(quitAndCheckpointRuns);
 	const { runtimeState } = deps;
-	pi.on("session_before_switch", async (event, ctx) => {
-		const reason =
-			typeof event === "object" && event !== null && "reason" in event
-				? (event as { readonly reason?: string }).reason
-				: undefined;
-		if (reason !== "new" && reason !== "resume") return undefined;
+	const confirmSessionSwitch = async (
+		reason: SessionSwitchReason,
+		ctx: PiCommandContext | undefined,
+	): Promise<{ cancel: true } | undefined> => {
 		const inFlightWorkflowCount = topLevelWorkflowRuns(store.runs()).filter(
 			(run) => run.endedAt === undefined,
 		).length;
 		if (inFlightWorkflowCount === 0) return undefined;
-		const confirmSessionSwitch = ctx?.ui?.confirm;
-		if (typeof confirmSessionSwitch !== "function") return undefined;
-		const workflowNoun = inFlightWorkflowCount === 1 ? "workflow" : "workflows";
-		const actionLabel = reason === "new" ? "Start a new session" : "Resume another session";
-		const messageLabel = reason === "new" ? "Starting a new session" : "Resuming another session";
+		const confirm = ctx?.ui?.confirm;
+		if (typeof confirm !== "function") return undefined;
+		const { title, message } = sessionSwitchQuitConfirmation(reason, inFlightWorkflowCount);
 		try {
-			const shouldSwitchSession = await confirmSessionSwitch(
-				`${actionLabel} with ${inFlightWorkflowCount} in-flight ${workflowNoun} still running?`,
-				`${messageLabel} keeps ${inFlightWorkflowCount} in-flight ${workflowNoun} running in this process. They stay on the session that started them.`,
-			);
-			if (shouldSwitchSession) return undefined;
+			if (await confirm(title, message)) return undefined;
 		} catch {
 			return undefined;
 		}
-		const cancelledLabel = reason === "new" ? "New session" : "Resume";
-		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows keep running.`, "info");
+		ctx?.ui?.notify?.(`${SESSION_SWITCH_COPY[reason].cancelled} cancelled; running workflows keep running.`, "info");
 		return { cancel: true };
+	};
+	pi.on("session_before_switch", async (event, ctx) => {
+		const reason = eventReason(event);
+		if (reason !== "new" && reason !== "resume") return undefined;
+		return confirmSessionSwitch(reason, ctx);
 	});
+	pi.on("session_before_fork", async (_event, ctx) => confirmSessionSwitch("fork", ctx));
 
 	pi.on("session_start", async (event, ctx) => {
 		// Injected backends remain borrowed; each started lifetime owns one lease.
@@ -178,10 +212,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 
 	installCompactionHook(pi, store);
 	pi.on("session_shutdown", async (event) => {
-		const reason =
-			typeof event === "object" && event !== null && "reason" in event
-				? (event as { readonly reason?: string }).reason
-				: undefined;
+		const reason = eventReason(event);
 		const closeGeneration = () =>
 			attemptAll([
 				() => {
@@ -206,6 +237,12 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				() => lifetime.release?.(),
 			]);
 			await lifetime.closing;
+		} else if (isSessionSwitch(reason)) {
+			await attemptAll([
+				closeGeneration,
+				...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
+				flushDbos,
+			]);
 		} else {
 			await attemptAll([closeGeneration, () => stageControlRegistry.clearDetached(), flushDbos]);
 		}

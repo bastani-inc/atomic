@@ -89,7 +89,10 @@ try {
  if (workflow && (outcome === "success" || outcome === "failure" || outcome === "startup")) {
   const tool = runtime.session.agent.state.tools.find(tool => tool.name === "workflow");
   const status = (await tool.execute("retained", { action: "status" }, new AbortController().signal)).details;
-  assert.equal(status.runs[0]?.status, "running", JSON.stringify(status));
+  // #3203: switching sessions quits the run at a resumable checkpoint instead of leaving it detached.
+  assert.equal(status.runs[0]?.status, "paused", JSON.stringify(status));
+  assert.equal(status.runs[0]?.exitReason, "quit", JSON.stringify(status));
+  assert.equal(status.snapshots[0]?.resumable, true, JSON.stringify(status));
   assert.equal(status.runs[0]?.awaitingInputCount, 1, JSON.stringify(status));
  }
  if (outcome === "cleanup") await assert.rejects(runtime.dispose(), { code: "ShutdownFailed" });

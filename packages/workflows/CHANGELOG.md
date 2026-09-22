@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Focused every prompt-engineering model guide on prompts: removed API request settings such as beta headers, output-token limits, sampling parameters, tool-choice values, API paths, and pricing, while keeping prompt-ordering and caching guidance.
 - Added source-attributed Claude Opus 5.5 guidance to the prompt-engineering skill, covering effort calibration, always-on thinking, progress visibility, bounded unattended completion, and API migration checks.
 - Reworked all nine prompt-engineering model guides around observed behaviors, practical prompt adjustments, adaptable examples, and caveats, with API details kept secondary.
+- `/new`, `/fork`, and `/resume` now quit running workflows instead of leaving them detached from the session that launched them, where their next stage would later fail. When workflows are running, Atomic first asks "Quit N running workflows and …?" and explains that each stops at its last checkpoint and can be resumed with `/workflow resume`; declining cancels the command and the runs keep going. Without an interactive UI the switch proceeds and the runs are quit the same way. `/reload` still keeps runs executing ([#3203](https://github.com/bastani-inc/atomic/issues/3203)).
 
 ### Fixed
 

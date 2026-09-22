@@ -1,4 +1,4 @@
-/** Drive the real session handlers so process-preserving boundaries do not destroy in-flight runs (#2247 / #2462). */
+/** Drive the real session handlers: /reload preserves in-flight runs (#2247 / #2462); switching sessions quits them at a resumable checkpoint (#3203). */
 
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -13,7 +13,10 @@ import {
 import { dbosLifecycleState, resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { adoptWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
-import { registerWorkflowLifecycleHandlers } from "../../packages/workflows/src/extension/extension-lifecycle.js";
+import {
+	registerWorkflowLifecycleHandlers,
+	sessionSwitchQuitConfirmation,
+} from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import type { WorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import { createWorkflowHilAnswerNotificationState } from "../../packages/workflows/src/extension/hil-answer-notifications.js";
 import { createWorkflowLifecycleNotificationState } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
@@ -231,7 +234,7 @@ test("owner quit drains retained generations, preserves sibling and borrowed bac
 			},
 		}),
 	);
-	await first.get("session_shutdown")!({ reason: "new" });
+	await first.get("session_shutdown")!({ reason: "reload" });
 	assert.equal(firstDisposed, false);
 	bindScope({});
 	const successor = captureHandlers(owner);
@@ -365,50 +368,107 @@ describe("process-preserving session boundaries leave in-flight runs intact", ()
 			assert.equal(store.resolveStagePendingPrompt(`preserve-${reason}`, "ask", "p1", "yes"), true);
 			assert.equal(await answer, "yes");
 		});
+	}
 
-		test(`session_shutdown(${reason}) then session_start(${reason}) keep live executor handles`, async () => {
-			const { handle, answer } = seedRun(`roundtrip-${reason}`, "ask", "p1");
-			const handlers = captureHandlers();
-			const shutdown = handlers.get("session_shutdown");
-			const start = handlers.get("session_start");
-			assert.ok(shutdown && start);
-			await shutdown({ reason });
-			await start({ reason });
-			assertLive(`roundtrip-${reason}`, "ask", "p1", handle);
-			assert.equal(store.resolveStagePendingPrompt(`roundtrip-${reason}`, "ask", "p1", "go"), true);
-			assert.equal(await answer, "go");
+	test("session_shutdown(reload) then session_start(reload) keep live executor handles", async () => {
+		const { handle, answer } = seedRun("roundtrip-reload", "ask", "p1");
+		const handlers = captureHandlers();
+		const shutdown = handlers.get("session_shutdown");
+		const start = handlers.get("session_start");
+		assert.ok(shutdown && start);
+		await shutdown({ reason: "reload" });
+		await start({ reason: "reload" });
+		assertLive("roundtrip-reload", "ask", "p1", handle);
+		assert.equal(store.resolveStagePendingPrompt("roundtrip-reload", "ask", "p1", "go"), true);
+		assert.equal(await answer, "go");
+	});
+});
+
+function waitingWorkflowRuntime(name: string) {
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	let aborted = false;
+	const runtime = createExtensionRuntime({
+		definitions: [
+			workflow({
+				name,
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.tool("wait", {}, async ({ signal }) => {
+						entered();
+						await new Promise<void>((resolve) =>
+							signal.addEventListener("abort", () => resolve(), { once: true }),
+						);
+						aborted = true;
+						return "stopped";
+					});
+					return {};
+				},
+			}),
+		],
+	});
+	return {
+		async launch() {
+			const accepted = await runtime.dispatch({ workflow: name, action: "run", inputs: {} });
+			await started;
+			assert.ok("status" in accepted);
+			assert.equal(accepted.status, "running");
+		},
+		aborted: () => aborted,
+	};
+}
+
+describe("switching sessions quits in-flight runs at a resumable checkpoint (#3203)", () => {
+	for (const reason of ["new", "resume", "fork"] as const) {
+		test(`session_shutdown(${reason}) pauses the run durably and keeps the lifetime open (#3203)`, async () => {
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			const owner = {};
+			adoptWorkflowSessionRunState({});
+			const first = captureHandlers(owner);
+			const firstStore = currentWorkflowStore();
+			const jobs = currentJobTracker();
+			const firstRun = waitingWorkflowRuntime(`switch-first-${reason}`);
+			await firstRun.launch();
+			await first.get("session_shutdown")!({ reason });
+			assert.equal(firstRun.aborted(), true);
+			const firstSnapshot = firstStore.runs()[0];
+			assert.equal(firstSnapshot?.status, "paused");
+			assert.equal(backend.getWorkflow(firstSnapshot!.id)?.status, "paused");
+			assert.deepEqual(jobs.runIds(), []);
+
+			adoptWorkflowSessionRunState({});
+			const successor = captureHandlers(owner);
+			await successor.get("session_start")!({ reason });
+			const successorStore = currentWorkflowStore();
+			const secondRun = waitingWorkflowRuntime(`switch-second-${reason}`);
+			await secondRun.launch();
+			await successor.get("session_shutdown")!({ reason });
+			assert.equal(secondRun.aborted(), true);
+			assert.equal(successorStore.runs()[0]?.status, "paused");
 		});
 	}
 
-	test("a distinct successor EventBus does not list the preserved run; the predecessor scope stays answerable", async () => {
-		for (const reason of ["new", "resume", "fork"] as const) {
-			const predecessor = createEventBus();
-			const successor = createEventBus();
-			bindScope(predecessor);
-			store.clear();
-			stageControlRegistry.clear();
-			const runId = `adopt-${reason}`;
-			const { handle, answer } = seedRun(runId, "ask", "p1");
-			const handlers = captureHandlers();
-			const shutdown = handlers.get("session_shutdown");
-			const start = handlers.get("session_start");
-			assert.ok(shutdown && start);
-			await shutdown({ reason });
-			bindScope(successor);
-			await start({ reason });
-			assert.deepEqual(
-				statusRuns().map((entry) => entry.runId),
-				[],
-				`${reason} successor session view`,
-			);
-			assert.equal(inspectRun(runId).ok, false);
-			bindScope(predecessor);
-			assertLive(runId, "ask", "p1", handle);
-			assert.equal(store.resolveStagePendingPrompt(runId, "ask", "p1", "yes"), true);
-			assert.equal(await answer, "yes");
-		}
+	test("session_shutdown(reload) keeps the run executing (#3203)", async () => {
+		setDurableBackend(new InMemoryDurableBackend());
+		adoptWorkflowSessionRunState({});
+		const handlers = captureHandlers();
+		const ownedStore = currentWorkflowStore();
+		const run = waitingWorkflowRuntime("switch-reload");
+		await run.launch();
+		await handlers.get("session_shutdown")!({ reason: "reload" });
+		assert.equal(run.aborted(), false);
+		assert.equal(ownedStore.runs()[0]?.status, "running");
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+		assert.equal(run.aborted(), true);
 	});
+});
 
+describe("startup and unrecognised session starts still clear", () => {
 	for (const reason of CLEAR_ON_START) {
 		test(`session_start(${reason}) still kills the in-flight run and clears handles`, async () => {
 			const { answer } = seedRun(`clear-${reason}`, "ask", "p1");
@@ -519,62 +579,92 @@ describe("quit still pauses, clears, and shuts DBOS down once", () => {
 	}
 });
 
-describe("/new and /resume confirmation no longer claims workflows are stopped", () => {
-	test("session_before_switch tells the user in-flight workflows keep running", async () => {
-		for (const reason of ["new", "resume"] as const) {
-			store.clear();
-			startBareRun(`switch-${reason}`, "switch-confirm");
-			const beforeSwitch = captureHandlers().get("session_before_switch");
-			assert.ok(beforeSwitch);
+describe("session-switch confirmation says running workflows will be quit (#3203)", () => {
+	const SWITCH_EVENTS = [
+		{ reason: "new", event: "session_before_switch", cancelled: /New session cancelled/ },
+		{ reason: "resume", event: "session_before_switch", cancelled: /Resume cancelled/ },
+		{ reason: "fork", event: "session_before_fork", cancelled: /Fork cancelled/ },
+	] as const;
+
+	for (const { reason, event, cancelled } of SWITCH_EVENTS) {
+		test(`${reason} asks to quit running workflows and says they can be resumed (#3203)`, async () => {
+			startBareRun(`switch-${reason}-a`, "switch-confirm");
+			startBareRun(`switch-${reason}-b`, "switch-confirm");
+			const handler = captureHandlers().get(event);
+			assert.ok(handler);
 			const prompts: Array<{ title: string; message?: string }> = [];
-			assert.equal(
-				await beforeSwitch(
-					{ reason },
-					{
-						ui: {
-							confirm: async (title: string, message?: string) => {
-								prompts.push({ title, message });
-								return true;
-							},
+			const result = await handler(
+				{ reason, entryId: "e1", position: "before" },
+				{
+					ui: {
+						confirm: async (title: string, message?: string) => {
+							prompts.push({ title, message });
+							return true;
 						},
 					},
-				),
-				undefined,
+				},
 			);
-			const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
-			assert.match(promptText, /keeps? .* running/i);
-			assert.match(promptText, /session that started them/i);
-			assert.doesNotMatch(promptText, /\/workflow status/i);
-			assert.doesNotMatch(promptText, /stop|kill|clear workflow history/i);
-			assert.equal(store.runs()[0]?.endedAt, undefined);
-		}
+			assert.equal(result, undefined);
+			assert.equal(prompts.length, 1);
+			assert.match(prompts[0]!.title, /^Quit 2 running workflows and /);
+			assert.match(prompts[0]!.message ?? "", /quits 2 running workflows now/);
+			assert.match(prompts[0]!.message ?? "", /last checkpoint/);
+			assert.match(prompts[0]!.message ?? "", /resumed later with \/workflow resume/);
+			assert.doesNotMatch(`${prompts[0]!.title}\n${prompts[0]!.message}`, /keeps? .* running/i);
+		});
+
+		test(`declining ${reason} cancels it and leaves workflows running (#3203)`, async () => {
+			startBareRun(`decline-${reason}`, "switch-decline");
+			const handler = captureHandlers().get(event);
+			assert.ok(handler);
+			const notifications: string[] = [];
+			const result = await handler(
+				{ reason, entryId: "e1", position: "before" },
+				{
+					ui: {
+						confirm: async () => false,
+						notify: (message: string) => notifications.push(message),
+					},
+				},
+			);
+			assert.deepEqual(result, { cancel: true });
+			assert.equal(store.runs()[0]?.status, "running");
+			assert.match(notifications.at(-1) ?? "", cancelled);
+			assert.match(notifications.at(-1) ?? "", /cancelled; running workflows keep running\./);
+		});
+
+		test(`${reason} without an interactive UI proceeds so shutdown can quit the runs (#3203)`, async () => {
+			startBareRun(`headless-${reason}`, "switch-headless");
+			const handler = captureHandlers().get(event);
+			assert.ok(handler);
+			assert.equal(await handler({ reason, entryId: "e1", position: "before" }, {}), undefined);
+		});
+	}
+
+	test("no confirmation is shown when nothing is running (#3203)", async () => {
+		const handler = captureHandlers().get("session_before_fork");
+		assert.ok(handler);
+		let asked = false;
+		const result = await handler(
+			{ entryId: "e1", position: "before" },
+			{
+				ui: {
+					confirm: async () => {
+						asked = true;
+						return true;
+					},
+				},
+			},
+		);
+		assert.equal(result, undefined);
+		assert.equal(asked, false);
 	});
 
-	test("declining still cancels the switch and rewords the notice", async () => {
-		for (const reason of ["new", "resume"] as const) {
-			store.clear();
-			startBareRun(`decline-${reason}`, "switch-decline");
-			const beforeSwitch = captureHandlers().get("session_before_switch");
-			assert.ok(beforeSwitch);
-			const notifications: Array<{ message: string }> = [];
-			assert.deepEqual(
-				await beforeSwitch(
-					{ reason },
-					{
-						ui: {
-							confirm: async () => false,
-							notify: (message: string) => notifications.push({ message }),
-						},
-					},
-				),
-				{ cancel: true },
-			);
-			assert.equal(store.runs()[0]?.endedAt, undefined);
-			assert.match(
-				notifications.at(-1)?.message ?? "",
-				reason === "new" ? /New session cancelled/i : /Resume cancelled/i,
-			);
-			assert.doesNotMatch(notifications.at(-1)?.message ?? "", /left unchanged/i);
-		}
+	test("confirmation copy uses singular wording for one run (#3203)", () => {
+		assert.deepEqual(sessionSwitchQuitConfirmation("new", 1), {
+			title: "Quit 1 running workflow and start a new session?",
+			message:
+				"Continuing quits 1 running workflow now. It stops at its last checkpoint and can be resumed later with /workflow resume.",
+		});
 	});
 });
