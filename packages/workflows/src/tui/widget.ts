@@ -464,14 +464,14 @@ function themedCollapsed(counts: RunCounts, activeTools: number, theme: GraphThe
 	const info = hexToAnsi(theme.info);
 	const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
 	const active = counts.active;
-	// When any visible run is awaiting input, replace the running ● with a
+	// When any visible run is awaiting input, prefix the running count with a
 	// question-mark indicator in the same info blue used everywhere else for
 	// awaiting-input state (graph node glyph, band badge, full widget row).
-	// The count still reflects running runs so the number stays accurate.
-	const runningIndicator =
-		counts.awaiting > 0
-			? `${info}${statusIcon("awaiting_input")} ${active} ●${RESET}`
-			: `${warning}${active} ●${RESET}`;
+	// Only the glyph is blue: the count and ● still describe running work and
+	// keep the warning colour, mirroring the split between the "● N running"
+	// and "？ needs attention" badges of the full-size band.
+	const awaitingPrefix = counts.awaiting > 0 ? `${info}${statusIcon("awaiting_input")}${RESET} ` : "";
+	const runningIndicator = `${awaitingPrefix}${warning}${active} ●${RESET}`;
 	const paused = counts.paused > 0 ? `${dim} · ${RESET}${warning}${counts.paused} ❚❚${RESET}` : "";
 	const quit = counts.quit > 0 ? `${dim} · ${RESET}${warning}${counts.quit} quit${RESET}` : "";
 	const blocked = counts.blocked > 0 ? `${dim} · ${RESET}${warning}${counts.blocked} ↑${RESET}` : "";

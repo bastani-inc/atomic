@@ -1038,7 +1038,7 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(lines[0]!.includes("2 ●"));
 	});
 
-	test("awaiting-input run shows question mark in compact indicator (plain)", () => {
+	test("awaiting-input run shows question mark in compact indicator (plain) (#3030)", () => {
 		const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [makeStage("s1", "ask", "awaiting_input")]);
 		const lines = renderWidgetLines(makeSnap([awaiting]), 60).map(stripAnsi);
 		assert.equal(lines.length, 1);
@@ -1048,7 +1048,7 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(lines[0]!.includes("1 background"), "total count still displayed");
 	});
 
-	test("ordinary running run without pending input keeps bullet indicator (plain)", () => {
+	test("ordinary running run without pending input keeps bullet indicator (plain) (#3030)", () => {
 		const running = makeRun("r2xxxxxx", "wf-run", "running");
 		const lines = renderWidgetLines(makeSnap([running]), 60).map(stripAnsi);
 		assert.equal(lines.length, 1);
@@ -1056,16 +1056,18 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(lines[0]!.includes("1 ●"), "plain running indicator");
 	});
 
-	test("awaiting-input compact indicator uses info blue in themed output", () => {
+	test("awaiting-input compact indicator uses info blue in themed output (#3030)", () => {
 		const awaiting = makeRun("r3xxxxxx", "wf-await-themed", "running", [makeStage("s1", "ask", "awaiting_input")]);
 		const lines = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 60);
 		assert.equal(lines.length, 1);
 		const infoBlue = hexToAnsi(deriveGraphTheme({}).info);
-		assert.ok(lines[0]!.includes(infoBlue), "themed compact uses info blue for awaiting-input");
+		const warning = hexToAnsi(deriveGraphTheme({}).warning);
+		assert.ok(lines[0]!.includes(`${infoBlue}？`), "themed compact uses info blue for the awaiting-input glyph");
+		assert.ok(lines[0]!.includes(`${warning}1 ●`), "running count keeps the warning colour");
 		assert.ok(stripAnsi(lines[0]!).includes("？"), "question-mark glyph present in themed compact");
 	});
 
-	test("answering the question returns compact indicator to ordinary running state", () => {
+	test("answering the question returns compact indicator to ordinary running state (#3030)", () => {
 		const localStore = createStore();
 		const stage = makeStage("s1", "ask", "awaiting_input");
 		const run = makeRun("r4xxxxxx", "wf-resolve", "running", [stage]);
