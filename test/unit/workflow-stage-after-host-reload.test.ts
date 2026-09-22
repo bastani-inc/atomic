@@ -195,7 +195,7 @@ test(
 );
 
 test(
-	"a run launched before /new never creates stages through the replacement session (#3201)",
+	"a run launched before /new is quit at a checkpoint and never creates stages through the replacement session (#3201, #3203)",
 	async () => {
 		const host = await gatedWorkflowHost("atomic-stage-after-new-");
 		const started: { readonly reason: string; readonly lifecycleScope: object | undefined }[] = [];
@@ -252,24 +252,20 @@ test(
 				["startup", "new"],
 			);
 			assert.equal(started[1]?.lifecycleScope, started[0]?.lifecycleScope, "/new keeps the host lifecycle scope");
-			assert.equal(findRun()?.endedAt, undefined, "/new keeps the run in flight");
-
-			await host.release();
-			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle after /new");
-			assert.deepEqual(
-				[...new Set(stageSurfaces)],
-				["startup"],
-				"the stage after /new is requested through the launch session, never the replacement",
+			const run = findRun();
+			assert.equal(run?.status, "paused", "/new quits the in-flight run at a resumable checkpoint");
+			assert.equal(run?.exitReason, "quit");
+			assert.equal(
+				run?.stages.some((candidate) => candidate.name === "after-reload"),
+				false,
+				"the quit run creates no stage after /new",
 			);
-			const stage = findRun()?.stages.find((candidate) => candidate.name === "after-reload");
-			assert.match(
-				(stage?.warnings ?? []).join("\n"),
-				/model catalog unavailable/,
-				"the stage model catalog reads the launch ctx, never the replacement session's live registry",
-			);
+			assert.deepEqual(stageSurfaces, [], "no stage is requested through either session after /new");
 		} finally {
-			if (findRun()?.endedAt === undefined) await host.release().catch(() => {});
-			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle before disposal").catch(() => {});
+			if (findRun()?.status === "running") {
+				await host.release().catch(() => {});
+				await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle before disposal").catch(() => {});
+			}
 			await runtime.dispose();
 			await host.cleanup();
 		}
