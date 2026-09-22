@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/cac6a17a-1eeb-4dde-9818-cdf85d8ea98f
 
 ## Why Pi Web Access
 
-**Zero Config** — Works out of the box with Exa MCP (no API key needed). Add API keys for Exa, Perplexity, or Gemini API for more control, or opt into browser-cookie access for Gemini Web.
+**Zero Config** — Works out of the box with Exa MCP (no API key needed). Add API keys for Exa, Perplexity, You.com, or Gemini API for more control, or opt into browser-cookie access for Gemini Web.
 
 **Video Understanding** — Point it at a YouTube video or local screen recording and ask questions about what's on screen. Full transcripts, visual descriptions, and frame extraction at exact timestamps.
 

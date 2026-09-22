@@ -114,6 +114,28 @@ describe("youcom search requests", () => {
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
 		assert.equal(body.freshness, "week");
 	});
+
+	test("requests the full 20-result page when a domainFilter is active", async () => {
+		// Filtering happens client-side after the response, so a small request
+		// page could be filtered down to zero even when matching pages exist.
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["rust-lang.org"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal(body.count, 20);
+	});
+
+	test("keeps the requested count when the domainFilter has no usable entries", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 6, domainFilter: ["  ", "-"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.equal(body.count, 6);
+	});
 });
 
 describe("youcom domainFilter enforcement", () => {
@@ -240,7 +262,41 @@ describe("youcom response mapping", () => {
 				snippet: "News summary",
 			},
 		]);
+	});
+
+	test("synthesizes an answer from result snippets with source citations", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({
+			results: {
+				web: [
+					{ url: "https://example.com/article", title: "Article Title", description: "Brief description" },
+					{ url: "https://example.com/bare", title: "No Snippet" },
+				],
+				news: [{ url: "https://news.example.com/story", title: "News Headline", description: "News summary" }],
+			},
+		});
+
+		const response = await searchWithYoucom("query", { numResults: 5 });
+
+		assert.equal(
+			response.answer,
+			"Brief description\nSource: Article Title (https://example.com/article)\n\n" +
+				"News summary\nSource: News Headline (https://news.example.com/story)",
+		);
+	});
+
+	test("returns an empty answer when no result has a snippet", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(
+			webResults([
+				{ url: "https://example.com/1", title: "One" },
+				{ url: "https://example.com/2", title: "Two" },
+			]),
+		);
+
+		const response = await searchWithYoucom("query");
 		assert.equal(response.answer, "");
+		assert.equal(response.results.length, 2);
 	});
 
 	test("caps combined web+news results at numResults", async () => {

@@ -105,6 +105,23 @@ describe("curator provider resolution with the youcom provider", () => {
 		assert.equal(bootstrap.defaultProvider, "youcom");
 	});
 
+	test("requested youcom without a key falls back to exa when exa is keyed", async () => {
+		exaAvailableFlag = true;
+		geminiApiAvailableFlag = true;
+
+		const bootstrap = await loadCuratorBootstrap("youcom");
+
+		assert.equal(bootstrap.defaultProvider, "exa");
+	});
+
+	test("requested youcom without a key falls back to perplexity when only perplexity is keyed", async () => {
+		perplexityAvailableFlag = true;
+
+		const bootstrap = await loadCuratorBootstrap("youcom");
+
+		assert.equal(bootstrap.defaultProvider, "perplexity");
+	});
+
 	test("requested youcom with a key resolves to youcom", async () => {
 		youcomAvailableFlag = true;
 		perplexityAvailableFlag = true;

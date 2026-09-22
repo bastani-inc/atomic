@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added an optional You.com search provider for `web_search`. Configure it with `youcomApiKey` in `web-search.json` or the `YDC_API_KEY` environment variable, and select it with `provider: "youcom"` (or per call). Under automatic provider selection it sits after Exa and Perplexity and before the Gemini fallbacks. `domainFilter` is enforced client-side on You.com results, since the You.com API has no domain filter parameter ([#2949](https://github.com/bastani-inc/atomic/pull/2949) by [@mouse-value-add](https://github.com/mouse-value-add)).
+- Added an optional You.com search provider for `web_search`. Configure it with `youcomApiKey` in `web-search.json` or the `YDC_API_KEY` environment variable, and select it with `provider: "youcom"` (or per call). Under automatic provider selection it sits after Exa and Perplexity and before the Gemini fallbacks. `domainFilter` is enforced client-side on You.com results, since the You.com API has no domain filter parameter. The You.com answer is assembled from result snippets with source citations ([#2949](https://github.com/bastani-inc/atomic/pull/2949) by [@mouse-value-add](https://github.com/mouse-value-add)).
 
 ## [0.9.20] - 2026-09-24
 

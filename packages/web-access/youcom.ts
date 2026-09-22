@@ -149,6 +149,16 @@ function toSearchResult(result: YoucomSearchResult, fallbackIndex: number): Sear
 	};
 }
 
+/** Mirror exa.ts buildAnswerFromSearchResults: synthesize an answer from result snippets with source citations. */
+function buildAnswerFromResults(results: SearchResult[]): string {
+	const parts: string[] = [];
+	for (const result of results) {
+		if (!result.snippet) continue;
+		parts.push(`${result.snippet}\nSource: ${result.title} (${result.url})`);
+	}
+	return parts.join("\n\n");
+}
+
 export function isYoucomAvailable(): boolean {
 	const config = loadConfig();
 	return !!(normalizeApiKey(process.env.YDC_API_KEY) ?? normalizeApiKey(config.youcomApiKey));
@@ -162,9 +172,15 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
+	// domainFilter is enforced client-side after the response arrives, so an
+	// active filter requests the full page and keeps the numResults cap locally
+	// rather than letting post-filtering shrink an already-small page to zero.
+	const { includes, excludes } = splitDomainFilter(options.domainFilter);
+	const hasActiveDomainFilter = includes.length > 0 || excludes.length > 0;
+
 	const requestBody: Record<string, unknown> = {
 		query,
-		count: numResults,
+		count: hasActiveDomainFilter ? MAX_RESULTS : numResults,
 	};
 
 	if (options.recencyFilter) {
@@ -227,5 +243,5 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 	}
 
 	activityMonitor.logComplete(activityId, response.status);
-	return { answer: "", results };
+	return { answer: buildAnswerFromResults(results), results };
 }

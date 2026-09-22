@@ -65,6 +65,17 @@ vi.mock("../../packages/web-access/exa.js", () => ({
 	},
 }));
 
+vi.mock("../../packages/web-access/gemini-api.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../packages/web-access/gemini-api.js")>();
+	return {
+		...original,
+		// Deterministic regardless of the developer's GEMINI_API_KEY: tests opt
+		// in to a fake key only when they must observe a Gemini API attempt.
+		getApiKey: () => geminiApiKey || null,
+		isGeminiApiAvailable: () => !!geminiApiKey,
+	};
+});
+
 vi.mock("../../packages/web-access/gemini-web.js", () => ({
 	isGeminiWebAvailable: async () => null,
 	queryWithCookies: async () => {
@@ -76,22 +87,26 @@ const { search } = await import("../../packages/web-access/gemini-search.js");
 
 let youcomAvailableFlag = false;
 let perplexityAvailableFlag = false;
+let geminiApiKey = "";
 let perplexityErrorFactory: (() => Promise<never>) | null = null;
 let youcomResultFactory: () => { answer: string; results: Array<{ title: string; url: string; snippet: string }> } =
 	() => ({ answer: "youcom-answer", results: [] });
-
 beforeEach(() => {
 	youcomCalls.length = 0;
 	perplexityCalls.length = 0;
 	exaCalls.length = 0;
 	youcomAvailableFlag = false;
 	perplexityAvailableFlag = false;
+	geminiApiKey = "";
 	perplexityErrorFactory = null;
 	youcomResultFactory = () => ({ answer: "youcom-answer", results: [] });
+	// Never let a developer's real key open a network path through the chain.
+	vi.stubEnv("GEMINI_API_KEY", "");
 });
 
 afterEach(() => {
 	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
 });
 
 describe("search() routing with the youcom provider", () => {
@@ -175,8 +190,21 @@ describe("search() routing with the youcom provider", () => {
 	});
 
 	test("cancellation during a youcom search does not fall through to another provider", async () => {
+		// Perplexity sits before youcom in the auto chain, so asserting on
+		// perplexityCalls alone proves nothing about fall-through. Instead,
+		// arm the provider *after* youcom: give Gemini API a fake key and a
+		// recording fetch, so any continuation past youcom is observable.
 		youcomAvailableFlag = true;
 		perplexityAvailableFlag = false;
+		geminiApiKey = "fake-gemini-key";
+		const fetchCalls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL) => {
+				fetchCalls.push(String(url));
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
 		const controller = new AbortController();
 		controller.abort();
 		youcomResultFactory = () => {
@@ -185,11 +213,20 @@ describe("search() routing with the youcom provider", () => {
 			throw err;
 		};
 
-		await assert.rejects(
-			() => search("cancelled youcom search", { provider: "auto", signal: controller.signal }),
-			/aborted/i,
+		let caught: unknown;
+		try {
+			await search("cancelled youcom search", { provider: "auto", signal: controller.signal });
+		} catch (err) {
+			caught = err;
+		}
+
+		assert.ok(caught instanceof Error, "the search must reject");
+		assert.equal(caught.name, "AbortError", "the original abort error must propagate unchanged");
+		assert.ok(
+			!caught.message.includes("Auto provider search failed"),
+			"the abort must not be aggregated into the auto-provider failure summary",
 		);
 		assert.deepEqual(youcomCalls, ["cancelled youcom search"]);
-		assert.deepEqual(perplexityCalls, [], "cancellation must propagate, not trigger the next provider in the chain");
+		assert.deepEqual(fetchCalls, [], "no Gemini API request may follow the aborted youcom search");
 	});
 });
