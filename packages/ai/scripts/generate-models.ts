@@ -575,11 +575,15 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 	"claude-opus-4.7",
 	"claude-opus-4.8",
 	"claude-opus-5",
+	"claude-opus-5.5",
 	"claude-sonnet-4.6",
 	"claude-sonnet-5",
 	"gpt-5.3-codex",
 	"gpt-5.4",
 	"gpt-5.5",
+	"gpt-6-astra",
+	"gpt-6-luna",
+	"gpt-6-sol",
 ]);
 
 const GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS = ["claude-fable-5", "claude-fable-5-1"] as const;
@@ -2986,6 +2990,51 @@ async function generateModels() {
 			contextWindow: 1000000,
 			maxTokens: 128000,
 		});
+	}
+
+	// The authenticated Copilot catalog advertised these models on 2026-09-22,
+	// but models.dev did not include them yet.
+	const missingCopilotModels: Model<Api>[] = [
+		{
+			id: "claude-opus-5.5",
+			name: "Claude Opus 5.5",
+			api: "anthropic-messages",
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			reasoning: true,
+			thinkingLevelMap: {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			},
+			input: ["text", "image"],
+			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+			headers: { ...COPILOT_STATIC_HEADERS },
+		},
+		...(["gpt-6-sol", "gpt-6-luna"] as const).map((id) => ({
+			id,
+			name: id === "gpt-6-sol" ? "GPT-6 Sol" : "GPT-6 Luna",
+			api: "openai-responses" as const,
+			provider: "github-copilot" as const,
+			baseUrl: "https://api.individual.githubcopilot.com",
+			reasoning: true,
+			input: ["text", "image"] as ("text" | "image")[],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS[id]),
+			contextWindow: 1000000,
+			maxTokens: 128000,
+			headers: { ...COPILOT_STATIC_HEADERS },
+		})),
+	];
+	for (const model of missingCopilotModels) {
+		if (!allModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+			allModels.push(model);
+		}
 	}
 
 	// Temporary overrides until upstream model metadata is corrected.

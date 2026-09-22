@@ -136,11 +136,15 @@ test("routes GitHub Copilot Claude Fable models through anthropic-messages", () 
 	assert.deepEqual(Object.fromEntries(Object.entries(copilot).map(([id, model]) => [id, model.api])), {
 		"claude-fable-5": "anthropic-messages",
 		"claude-fable-5-1": "anthropic-messages",
+		"claude-opus-5.5": "anthropic-messages",
 		"claude-sonnet-4": "anthropic-messages",
 		"gemini-3-pro": "openai-completions",
 		"gpt-5.2": "openai-responses",
 		// Astra's provisional fallback is present even before models.dev advertises it.
 		"gpt-6-astra": "openai-responses",
+		// Copilot fallbacks added before models.dev lists them (upstream pi 27c072e9).
+		"gpt-6-luna": "openai-responses",
+		"gpt-6-sol": "openai-responses",
 	});
 });
 

@@ -396,6 +396,6 @@ test("prefers Copilot catalog metadata and routes Astra through Responses", () =
 	const model = copilot["gpt-6-astra"];
 	assert.equal(model.name, "Copilot Astra fixture");
 	assert.equal(model.api, "openai-responses");
-	assert.equal(model.contextWindow, 1_050_000);
+	assert.equal(model.contextWindow, 1_000_000);
 	assert.deepEqual(model.cost, { input: 3, output: 9, cacheRead: 0.3, cacheWrite: 0 });
 });

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added inherited Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna support for GitHub Copilot.
 - Added inherited GPT-6 Sol and GPT-6 Luna support for OpenAI API keys and OpenAI Codex subscriptions, including the `openai/gpt-6-sol-fast`, `openai/gpt-6-luna-fast`, `openai-codex/gpt-6-sol-fast`, and `openai-codex/gpt-6-luna-fast` Fast-mode choices.
 - Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for GPT-6 Sol and GPT-6 Luna in the model evals used by automatic routing.
 - Added Vercel AI Gateway and OpenCode Zen as Jev structured-decision providers (`vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, `opencode/jev-1.13-free`) for the router model setting and SDK decisions, reusing each gateway's existing login or its AI_GATEWAY_API_KEY / OPENCODE_API_KEY environment key. Gateway model IDs, limits, and prices come from the models.dev decision catalog, and `getStructuredOutputProviders()` entries now carry the published context window and price.
