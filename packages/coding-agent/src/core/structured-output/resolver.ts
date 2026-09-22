@@ -1,4 +1,30 @@
+import { type DecisionModel, getDecisionModels } from "@bastani/pi-ai";
 import type { RouterModelSelectionOptions, StructuredOutputModel } from "./types.js";
+
+const JEV_CAPABILITIES = Object.freeze({
+	structuredDecisions: true,
+	choice: true,
+	maxChoiceOptions: 255,
+	chat: false,
+	toolCalling: false,
+	jsonSchemaGeneration: false,
+} as const);
+
+/** One Jev registration: an Atomic provider ID, the endpoint it answers on, and the wire model. */
+export interface JevStructuredOutputProvider {
+	readonly id: string;
+	readonly name: string;
+	readonly model: string;
+	readonly fullId: string;
+	readonly wireModel: string;
+	readonly endpoint: string;
+	readonly apiKeyEnv: string;
+	readonly capabilities: typeof JEV_CAPABILITIES;
+	/** Largest request the provider accepts, in tokens, when models.dev publishes it. */
+	readonly contextWindow?: number;
+	/** USD per million tokens when models.dev publishes it. */
+	readonly cost?: DecisionModel["cost"];
+}
 
 /** Decision-only registration: deliberately not a pi-ai chat Provider or Model. */
 export const JEV_STRUCTURED_OUTPUT_PROVIDER = Object.freeze({
@@ -9,15 +35,8 @@ export const JEV_STRUCTURED_OUTPUT_PROVIDER = Object.freeze({
 	wireModel: "jev-latest",
 	endpoint: "https://api.typesafe.ai/v1/systemone",
 	apiKeyEnv: "TYPESAFE_API_KEY",
-	capabilities: Object.freeze({
-		structuredDecisions: true,
-		choice: true,
-		maxChoiceOptions: 255,
-		chat: false,
-		toolCalling: false,
-		jsonSchemaGeneration: false,
-	}),
-} as const);
+	capabilities: JEV_CAPABILITIES,
+} as const) satisfies JevStructuredOutputProvider;
 
 const OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER = Object.freeze({
 	...JEV_STRUCTURED_OUTPUT_PROVIDER,
@@ -28,14 +47,64 @@ const OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER = Object.freeze({
 	wireModel: "~typesafe/jev-latest",
 	endpoint: "https://openrouter.ai/api/alpha/decisions",
 	apiKeyEnv: "OPENROUTER_API_KEY",
-} as const);
+} as const) satisfies JevStructuredOutputProvider;
+
+/**
+ * Gateways that resell Jev on a TypeSafe-compatible `systemone` endpoint with plain bearer
+ * auth. models.dev supplies which Jev models each one lists (`type: "decision"`), their
+ * limits, and prices; the endpoint and credential come from the provider's own docs and
+ * from the matching Atomic chat provider so `/login` and saved keys are shared.
+ *
+ * Not registered: Cloudflare AI Gateway (Workers AI `ai/run` envelope with account and
+ * gateway IDs, a different wire shape), NanoGPT (no published `systemone` route), and
+ * Vivgrid (its docs list `jev-latest` where models.dev lists `jev`; no Atomic provider).
+ */
+const JEV_GATEWAY_TRANSPORTS = Object.freeze([
+	{
+		id: "vercel-ai-gateway",
+		name: "Vercel AI Gateway",
+		modelsDevProvider: "vercel",
+		endpoint: "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		apiKeyEnv: "AI_GATEWAY_API_KEY",
+	},
+	{
+		id: "opencode",
+		name: "OpenCode Zen",
+		modelsDevProvider: "opencode",
+		endpoint: "https://opencode.ai/zen/v1/systemone",
+		apiKeyEnv: "OPENCODE_API_KEY",
+	},
+] as const);
+
+function gatewayProviders(): readonly JevStructuredOutputProvider[] {
+	const decisionModels = getDecisionModels();
+	return JEV_GATEWAY_TRANSPORTS.flatMap((transport) =>
+		decisionModels
+			.filter((model) => model.provider === transport.modelsDevProvider)
+			.map((model) =>
+				Object.freeze({
+					id: transport.id,
+					name: transport.name,
+					model: model.id,
+					fullId: `${transport.id}/${model.id}`,
+					wireModel: model.id,
+					endpoint: transport.endpoint,
+					apiKeyEnv: transport.apiKeyEnv,
+					capabilities: JEV_CAPABILITIES,
+					contextWindow: model.contextWindow,
+					cost: model.cost,
+				}),
+			),
+	);
+}
 
 /** Dedicated provider catalog; these registrations must not enter the chat model picker. */
-export function getStructuredOutputProviders(): readonly (
-	| typeof JEV_STRUCTURED_OUTPUT_PROVIDER
-	| typeof OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER
-)[] {
-	return [JEV_STRUCTURED_OUTPUT_PROVIDER, OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER];
+export function getStructuredOutputProviders(): readonly JevStructuredOutputProvider[] {
+	return [JEV_STRUCTURED_OUTPUT_PROVIDER, OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER, ...gatewayProviders()];
+}
+
+export function isStructuredOutputProviderModel(provider: string, modelId: string): boolean {
+	return getStructuredOutputProviders().some((candidate) => candidate.id === provider && candidate.model === modelId);
 }
 
 export function resolveRouterModel(options: RouterModelSelectionOptions): StructuredOutputModel {

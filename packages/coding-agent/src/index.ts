@@ -342,6 +342,7 @@ export {
 	inferRouterDecision,
 	inferStructuredOutput,
 	JEV_STRUCTURED_OUTPUT_PROVIDER,
+	type JevStructuredOutputProvider,
 	type RouterDecisionRequest,
 	type RouterModelSelectionOptions,
 	resolveRouterModel,

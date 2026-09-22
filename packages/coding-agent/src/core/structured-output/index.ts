@@ -10,9 +10,10 @@ import {
 import { InvalidDecisionOutputError } from "./invalid-output.js";
 import { inferJev, STRUCTURED_DECISION_POLICY } from "./jev.js";
 import { JevRequestError } from "./jev-client.js";
-import { resolveRouterModel } from "./resolver.js";
+import { isStructuredOutputProviderModel, resolveRouterModel } from "./resolver.js";
 import type { RouterDecisionRequest, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
+export type { JevStructuredOutputProvider } from "./resolver.js";
 export {
 	getStructuredOutputProviders,
 	JEV_STRUCTURED_OUTPUT_PROVIDER,
@@ -298,8 +299,7 @@ export async function inferRouterDecision<T extends TSchema>(
 		!settings.getRouterModel() &&
 		currentModel &&
 		currentModel.id !== "auto" &&
-		currentModel.provider !== "typesafe-ai" &&
-		currentModel.id !== "~typesafe/jev-latest"
+		!isStructuredOutputProviderModel(currentModel.provider, currentModel.id)
 			? currentModel
 			: undefined;
 	return inferDecision({ ...inference, model }, 3, validateDecision, fallback);

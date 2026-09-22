@@ -11,7 +11,7 @@ Use `inferStructuredOutput()` from `@bastani/atomic` when an SDK integration nee
 
 ## Select the inference model
 
-For a general structured-output call, pass `model: { kind: "chat", fullId, model }` with a concrete model from the current registry, or `model: { kind: "jev", fullId: "typesafe-ai/jev-latest" }`. For OpenRouter Jev, use `model: { kind: "jev", fullId: "openrouter/~typesafe/jev-latest" }`. Setting `routerModel` or exporting a TypeSafe key does not change this explicit selection.
+For a general structured-output call, pass `model: { kind: "chat", fullId, model }` with a concrete model from the current registry, or `model: { kind: "jev", fullId: "typesafe-ai/jev-latest" }`. For Jev through a gateway, use any `fullId` from `getStructuredOutputProviders()`: `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or `opencode/jev-1.13-free`. Setting `routerModel` or exporting a TypeSafe key does not change this explicit selection.
 
 `inferRouterDecision()` is the shared entrypoint for prerequisite workflow selection and automatic subagent/workflow-stage model selection. Only this entrypoint consults `routerModel` in [settings.json](/settings#routermodel). It takes `settings`, `modelRegistry` and the invocation-time `currentModel` instead of an explicit inference `model`. Resolution is:
 
@@ -26,6 +26,8 @@ Extension tools can read the owning session's current routing setting with `ctx.
 Pass the full `ModelRegistry` to use saved Jev credentials with either decision API. Its provider-auth methods preserve normal credential resolution and logout behavior. Minimal custom adapters that omit `getProviderAuth` and `getProviderAuthStatus` retain environment-only Jev support. Never copy a resolved key into decision state.
 
 OpenRouter Jev reuses the registry's existing OpenRouter sign-in or saved API key and normal `OPENROUTER_API_KEY` fallback. It never uses TypeSafe credentials. Minimal adapters use `OPENROUTER_API_KEY` for this selection. The Atomic ID includes `openrouter/`; the wire model is only `~typesafe/jev-latest`, sent to `https://openrouter.ai/api/alpha/decisions`. Both Jev selections accept the same Choice questions and return the same structured result. OpenRouter is explicit-only and does not change automatic selection precedence.
+
+Vercel AI Gateway (`https://ai-gateway.vercel.sh/typesafe/v1/systemone`, wire model `typesafe-ai/jev`) and OpenCode Zen (`https://opencode.ai/zen/v1/systemone`, wire models `jev-1.13` and `jev-1.13-free`) follow the same rule with `AI_GATEWAY_API_KEY` and `OPENCODE_API_KEY` or that provider's `/login`. Their model IDs, `contextWindow`, and `cost` fields are read from the models.dev decision catalog bundled with `@bastani/pi-ai` (`getDecisionModels()`), so a gateway that drops or renames its Jev listing disappears from `getStructuredOutputProviders()` at the next catalog regeneration. Gateway Jev is explicit-only.
 
 ### Router repair attempts
 

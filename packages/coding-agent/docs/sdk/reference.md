@@ -154,7 +154,7 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 ### Structured decisions
 
-Use `inferStructuredOutput()` with an explicit inference model for a single schema-validated semantic decision without starting an agent session or executing tools. It supports ordinary configured models and the decision-only `typesafe-ai/jev-latest` and `openrouter/~typesafe/jev-latest` integrations, and never reads `routerModel`. OpenRouter Jev reuses existing OpenRouter authentication. The separate `inferRouterDecision()` entrypoint shares `routerModel` resolution for prerequisite workflow/subagent-auto routing only. Neither API changes the selected chat model or the `structured_output` tool. See [Structured decisions](/sdk/structured-decisions) for state preparation, examples, provider limits and failure handling.
+Use `inferStructuredOutput()` with an explicit inference model for a single schema-validated semantic decision without starting an agent session or executing tools. It supports ordinary configured models and the decision-only Jev integrations listed by `getStructuredOutputProviders()` (direct TypeSafe, OpenRouter, Vercel AI Gateway, OpenCode Zen), and never reads `routerModel`. Gateway Jev reuses that gateway's existing authentication. The separate `inferRouterDecision()` entrypoint shares `routerModel` resolution for prerequisite workflow/subagent-auto routing only. Neither API changes the selected chat model or the `structured_output` tool. See [Structured decisions](/sdk/structured-decisions) for state preparation, examples, provider limits and failure handling.
 
 ### System Prompt
 
