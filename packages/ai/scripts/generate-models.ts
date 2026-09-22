@@ -2994,6 +2994,19 @@ async function generateModels() {
 			candidate.contextWindow = 1000000;
 		}
 
+		// models.dev may list Opus 5.5 before its effort metadata is complete.
+		if (candidate.provider === "anthropic" && candidate.id === "claude-opus-5-5") {
+			mergeThinkingLevelMap(candidate, {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			});
+		}
+
 		if (
 			(candidate.provider === "anthropic" ||
 				candidate.provider === "opencode" ||

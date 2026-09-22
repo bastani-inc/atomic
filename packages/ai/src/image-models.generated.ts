@@ -200,6 +200,21 @@ export const IMAGE_MODELS = {
 				cacheWrite: 0,
 			},
 		} satisfies ImagesModel<"openrouter-images">,
+		"inclusionai/ming-image-0.1-design": {
+			id: "inclusionai/ming-image-0.1-design",
+			name: "inclusionAI: Ming Image 0.1 Design",
+			api: "openrouter-images",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			input: ["text"],
+			output: ["image"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+		} satisfies ImagesModel<"openrouter-images">,
 		"krea/krea-2-large": {
 			id: "krea/krea-2-large",
 			name: "Krea: Krea 2 Large",

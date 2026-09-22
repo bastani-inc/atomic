@@ -12,6 +12,7 @@
 ### Changed
 
 - Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for Claude Opus 5.5 in the evals snapshot used by automatic model routing.
+- Updated the inherited Pi runtime dependencies (`pi-agent-core`, `pi-client`, `pi-protocol`, `pi-tui`, `pi-telemetry`, and transitive `chord`) to 0.87.1.
 
 ### Fixed
 

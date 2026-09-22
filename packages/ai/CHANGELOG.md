@@ -14,6 +14,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Fixed Anthropic OAuth requests for Claude Opus 5.5 rejected with `claude_code_version_too_old` by advertising Claude Code version `2.1.280`, the minimum the API requires.
 - Fixed Fast-mode usage costs for GPT-6 models being recorded at standard rates when OpenAI reports the tier as `service_tier: "fast"` instead of `priority`.
+- Fixed Claude Opus 5.5 offering thinking levels other than low, medium, high, xhigh, and max when models.dev lists the model before its effort metadata is complete.
 
 ## [0.9.20-alpha.6] - 2026-09-22
 
