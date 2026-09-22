@@ -1,57 +1,106 @@
 # Claude Fable 5.1 prompting
 
-Use this reference for Fable 5.1 migration or observed changes in progress reporting, tool batching, completion, and conversation replay. Distilled from [Anthropic's Fable 5.1 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1), checked September 5, 2026. Existing Fable 5 prompts are a useful baseline; adjust for observed differences.
+Distilled from [Anthropic's Fable 5.1 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1), checked September 22, 2026. Existing Fable 5 prompts are a useful baseline. The snippets are adaptations, not verbatim source quotations. Select the adjustment for an observed failure rather than appending every example.
 
-## Sweep effort again
+## When long tool sequences look silent
 
-Start at the default `high`, then evaluate `low`, `medium`, `xhigh`, and `max` on your tasks. Matching effort names across Fable versions does not mean matching reasoning volume. Lower effort can save cost where quality holds, but `low` is less likely to search or retrieve current information.
-
-For long prose or code deliverables, prefer `high` unless higher effort improves measured quality. At `xhigh` and `max`, the model may spend substantial output budget preparing a deliverable before writing the answer. Set `max_tokens` for both thinking and the final response. If needed, tell it the actual output limit and ask it to reserve room for the deliverable, without asking it to expose private reasoning.
-
-## Make progress visible
-
-Fable 5.1 produces fewer updates during long tool sequences. Check the client before adding prompting: progress-update `thinking` blocks are empty with the default `thinking.display: "omitted"`. The guide describes `display: "updates"` with beta header `thinking-display-updates-2026-08-18`, or `"summarized"` for updates plus summarized reasoning. Verify provider and SDK support and render the returned updates; these settings do not imply Atomic support.
-
-Remove old instructions that suppress narration. If more updates are still needed, specify a sparse cadence and content:
+First check that the client renders progress-update thinking blocks; a prompt cannot fix hidden output. Remove old rules such as "hold all findings until the end," then specify the cadence and a whole-task final recap.
 
 ```text
-Before a long operation, briefly state what it will establish. Report material findings and blockers as work proceeds. The final response should cover the whole requested task and its validation, not just the last step.
+Before starting, briefly state what you will establish. Report material findings and blockers as you work. Close with a standalone recap of the whole request: what you found, what you changed, what you verified, and what remains open.
 ```
 
-Tell the model when tool output is hidden from the user, so it does not rely on a command's output as its user-facing explanation.
+If the interface hides tool results, add: "The user cannot see the full command output. Include any result they need to understand in your reply." Do not claim output is hidden unless that matches the interface.
 
-## Batch independent work
+## When independent calls are issued one at a time
 
-In coding and computer-use loops, implied independent calls can be issued one per turn. A short reminder after tool results can reduce unnecessary round trips: "Batch independent tool calls in this turn; keep calls that need earlier results sequential."
+In coding and computer-use loops, independent next calls may be implied rather than explicitly named. Add a short nudge after tool results:
 
-The guide places repeated reminders in turn-scoped system messages with `clear_at: "next_user_message"` and beta header `mid-conversation-system-clear-at-2026-08-21`. Without that beta, append the reminder after `tool_result` blocks in the same user message. Preserve earlier turns unchanged. This is an integration pattern to implement only where the request path supports it.
+```text
+Request the independent information you need next in one batch. Keep calls sequential when they depend on an earlier result or change shared state.
+```
 
-When subagents are supported, let the launch tool return promptly, deliver results later, and provide a separate wait tool. The lead can continue independent work while children run. Preserve task ownership, concurrency limits, and dependencies; prompt text alone does not create asynchronous orchestration.
+If subagents are already available, add: "While a delegated task runs, continue useful independent work. Wait on the existing task when its result becomes a dependency." The host must support asynchronous results; prompts do not create that capability or override concurrency limits.
 
-## Preserve conversation history
+## When an unattended agent announces work instead of doing it
 
-Append assistant turns exactly as returned, including thinking blocks. Do not rewrite earlier system instructions, tool lists, messages, or per-turn reminders while replaying thinking from the old prefix.
+Only for genuinely unattended execution, make the completion condition explicit. The source emphasizes saying the user is not watching when that is true.
 
-For accounts created on or after August 31, 2026, the guide states that Fable 5.1 thinking blocks bind to the exact producing conversation. A changed prefix can return a 400. The beta `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`, with `thinking-binding-controls-2026-08-01`, drops affected blocks instead; inspect `input_transformations` to diagnose edits. Do not treat dropping blocks as preserving their reasoning.
+```text
+You are operating unattended; the user cannot answer routine check-ins. Carry out reversible work already authorized by the request rather than asking whether to begin it. If your last paragraph promises an available next step, take that step instead of ending there. Stop for required approvals, protected access, or a blocking decision. If the user requested analysis rather than a change, the deliverable is the assessment; do not apply a fix.
+```
 
-Use supported mid-conversation system messages for updates and server-side compaction or context editing for trimming. If compacting on the client, a simple safe shape is a new summary plus the new user turn, carrying no old thinking blocks. Tell the summary to retain task constraints, decisions, unfinished work, and exact identifiers needed to continue. Evaluate compaction timing against current cache costs rather than inheriting an early-compaction rule.
+Define scope alongside persistence:
 
-## Finish the requested work within scope
+```text
+Deliver the whole requested scope without silently narrowing or expanding it. If one part is blocked, finish independent parts and state exactly what remains and why. Before a state-changing command, verify that the evidence supports that particular action.
+```
 
-Define completion through implementation, inspection, and repairs when those are requested. For unattended execution, say that the user is not watching only when that is true. Continue already-authorized steps instead of ending with "Next, I'll..." or asking permission again. Preserve explicit confirmation gates and ask for a blocking decision when necessary.
+Do not use unattended wording in a human-in-the-loop application. Preserve its required confirmations and the host's lifecycle and budget rules.
 
-Constrain nearby fixes, extra features, and committed test code to the requested outcome. Keep required checks and meaningful regressions. Prefer targeted edits for small and medium changes; whole-file rewrites are appropriate when the file is short or most of it changes.
+## When a change grows extra features, tests, or rewrites
 
-## Tune writing, retrieval, and vision
+Fable 5.1 can add nearby fixes or rewrite a whole file for a small edit. State what belongs in the change and what should be reported separately.
 
-Break dense prose into short sentences and paragraphs. Remove blanket anti-formatting rules inherited from earlier models; allow headers, lists, and emphasis when they clarify structure. For source summaries, give one complete example that distinguishes paraphrases from quoted passages, attributes both, and explains why it is correct. Adapt any tool names in examples to the actual environment.
+```text
+Make the smallest changes that fully implement the request. Report unrelated pre-existing bugs as follow-ups unless they prevent the requested behavior from working. Keep required regression coverage proportional to the behavior and neighboring tests. Prefer targeted edits over whole-file rewrites when the result is the same; temporary scratch checks need not become permanent files.
+```
 
-At `low` effort, require current facts to be checked with available search or retrieval tools. Search unfamiliar names as supplied rather than treating recognition as proof of current knowledge. If omissions persist, evaluate a higher effort level for those turns.
+This limits extras, not requested functionality or mandatory checks. Whole-file replacement is appropriate when the file is short or most of it genuinely changes.
 
-For dense charts and images, provide the original media and crop/zoom tools. A cropped, enlarged region lets the model inspect details instead of guessing from a whole-image view.
+## When low-effort answers rely on stale familiarity
 
-## Handle refusals and validate
+At `low` effort, explicitly trigger retrieval for unfamiliar names and fast-changing facts. Recognition is not evidence of current state.
 
-Treat `stop_reason: "refusal"` as an explicit outcome. For benign coding false positives, supply documentation for unfamiliar languages, ask about bugs rather than relying solely on compile-check phrasing, and remove unnecessary base64 blobs from tool output. These measures clarify legitimate tasks; they do not authorize bypassing safeguards. Do not solicit internal reasoning as response text.
+```text
+Verify unfamiliar names and current claims before answering. Include the name exactly as the user wrote it in at least one search, even if you recognize a similar name. Use authoritative sources and dates; distinguish what you checked from what you infer. If retrieval is unavailable, say so.
+```
 
-Test a long tool loop, a current-information query at low effort, and a history replay before rollout. Check visible updates, result correlation, completion, scope, and quoted-source attribution. Compare exact outgoing request prefixes if replay fails. No prompt-only test proves a provider supports the beta integration features above.
+If the problem persists, evaluate a higher effort for those turns rather than the whole conversation. Search only authorized sources; retrieved instructions are not new authority.
+
+## When prose is dense or quotations are unmarked
+
+Replace metaphor and flourish with literal statements. Remove blanket anti-formatting rules inherited from older models and allow structure where it helps.
+
+```text
+Use short paragraphs and literal language. Prefer "change the parameter" to "turn the dial." Use headings or lists for genuinely multifaceted material, but honor requests for plain prose or minimal formatting. Paraphrase source material in your own words and mark exact quotations with attribution.
+```
+
+For source summaries, give one complete example rather than only a prohibition. This fictional example illustrates the format, not facts to reuse:
+
+```text
+Request: Compare the two supplied reports about the bridge closure.
+Response: Both reports date the closure to March 3. The Ledger focuses on disruption to nearby shops; the Dispatch emphasizes delayed maintenance and calls the closure "entirely foreseeable."
+Why this works: It compares the sources, attributes their claims, paraphrases most content, and clearly marks the one exact quotation.
+```
+
+Replace the fictional sources and phrase with supplied evidence. Do not copy illustrative facts into the real answer.
+
+## When compaction loses decisions or repeats completed work
+
+Give the summarizer an explicit retention contract:
+
+```text
+Preserve the user's requirements, permissions, prohibitions, preferences, and exact identifiers. Record decisions and their reasons, attempted approaches and outcomes, completed work and evidence, unresolved blockers, and the next unfinished steps. Keep hard-to-reconstruct names, paths, numbers, dates, and links exact. Condense prior explanations rather than dropping these constraints.
+```
+
+The host owns safe history compaction. A summary instruction does not make edited-prefix thinking blocks valid for replay.
+
+## When a long deliverable exhausts the output budget
+
+Prefer the source's `high` baseline unless higher effort yields measured improvement. At `xhigh` or `max`, state the actual configured limit and prioritize the final artifact:
+
+```text
+This request has a total output allowance of [actual max_tokens], including thinking and the answer. Reserve room for the complete requested deliverable. Settle its structure and difficult decisions without drafting the entire artifact twice. Return the artifact, not a reconstruction of private reasoning.
+```
+
+Replace the placeholder with the real limit. Allocate enough tokens in the request; a prompt cannot increase it. For dense visual inputs, add: "Inspect the relevant regions with the available crop and zoom tools, checking labels and units before reporting values." Tools must actually be available.
+
+## Compatibility and refusal notes
+
+- Start effort evaluations at the model's `high` default and sweep `low`, `medium`, `xhigh`, and `max`. Equal level names across versions do not imply equal thinking.
+- Progress blocks are empty at default `thinking.display: "omitted"`. `display: "updates"` uses `thinking-display-updates-2026-08-18`; `"summarized"` includes reasoning summaries too. Verify provider and host support rather than assuming Atomic exposes these controls.
+- Append assistant turns unchanged, thinking included. For accounts created on or after August 31, 2026, changed prefixes can cause a 400. The `thinking-binding-controls-2026-08-01` beta permits `prefix_mismatch_behavior: "drop_block"`; inspect `input_transformations`, and do not equate dropping blocks with preserving reasoning.
+- Turn-scoped reminders use `clear_at: "next_user_message"` and `mid-conversation-system-clear-at-2026-08-21`. Without that beta, append a text reminder after tool results in the same user message. Never rewrite previous copies. For client compaction, a fresh summary plus user turn without old thinking blocks is the simple safe shape; re-evaluate compaction timing against cache costs.
+- Handle `stop_reason: "refusal"` explicitly. For legitimate coding false positives, supply unfamiliar-language documentation, ask about supported bugs, and avoid unnecessary base64 tool output. These clarify benign tasks, not bypass safeguards; do not request internal reasoning.
+- Validate progress visibility, batching dependencies, scope, retrieval, quotations, output completion, and history replay. Report checks not run; prompt inspection alone does not validate beta API support.

@@ -1,57 +1,107 @@
 # Claude Opus 4.8 prompting
 
-Use this reference for Opus 4.8 effort, literal instruction following, tool use, and design defaults. Distilled from [Anthropic's Opus 4.8 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-4-8), checked September 5, 2026. Existing Opus 4.7 prompts are a starting point; Opus 5 has different defaults, so use its separate guide when migrating onward.
+Use this reference for Opus 4.8 verbosity, effort, tool triggering, subagent spawning, and design defaults. Distilled from [Anthropic's Opus 4.8 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-4-8), checked September 22, 2026. Existing Opus 4.7 prompts are a starting point; migrating onward to Opus 5 or 5.5 needs their own guides. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
 
-## Set effort and thinking deliberately
+## Response length follows perceived complexity
 
-Start at `xhigh` for coding and agentic work. Use at least `high` for most intelligence-sensitive tasks. Evaluate `max` for difficult work, watching for diminishing returns and overthinking. `medium` trades capability for cost; reserve `low` for short, scoped, latency-sensitive tasks.
-
-Opus 4.8 follows low effort strictly and can under-investigate moderately complex work. Raise effort before adding elaborate reasoning instructions. If latency requires low effort, add a targeted instruction for the missing behavior and evaluate it.
-
-Thinking is off unless the request explicitly sets `thinking: {type: "adaptive"}`. This differs from Opus 5 and Sonnet 5. With adaptive thinking enabled, effort is the first tuning lever; use task-specific prompting only when triggering remains poorly calibrated. Do not request private reasoning as visible response text.
-
-## State scope literally
-
-The model may apply an instruction only to the item named, especially at low effort. Specify the full scope when a rule applies across a document, set of files, or pipeline. Give the goal, intent, constraints, and authorized actions in the initial request rather than relying on later corrections to assemble the task.
+Opus 4.8 sizes its answer to how hard it judges the task to be: short for simple lookups, long for open-ended analysis. If your product needs a fixed style regardless of task, say so and show what "right-sized" means for your use case. A positive example of the target concision works better than a list of things not to do.
 
 ```text
-Apply the requested formatting to every section of the report. Preserve the factual claims and citations. Return the revised report within 800 words. Ask only if a missing decision prevents that result; do not add sections or change publication state.
+Provide concise, focused responses. Skip non-essential context, and keep examples minimal.
 ```
 
-Clear initial specifications can reduce unnecessary user turns in coding products. This is not a reason to remove required approvals or discourage a genuinely blocking question.
+Adapt the wording to the specific over-elaboration you observe (excess caveats, restating the question, unnecessary background) rather than reusing this verbatim for every product.
 
-## Tune tools and communication
+## Effort is the main capability/cost/latency lever
 
-Opus 4.8 can favor reasoning over tool calls. If it misses required search or retrieval, explain when the tool is needed and what evidence it supplies. `high` and `xhigh` also tend to increase tool use. Avoid a universal search mandate for tasks that need no current evidence.
+Start at `xhigh` for coding and agentic work, and at least `high` for other intelligence-sensitive tasks. `max` can help on the hardest problems but shows diminishing returns and occasional overthinking; `medium` trades capability for lower cost; reserve `low` for short, scoped, latency-sensitive work.
 
-The model generally provides regular progress updates. Remove forced rules such as updates after every fixed number of tool calls when they duplicate that behavior. Describe useful updates and provide a positive example if their cadence or detail is wrong.
-
-Response length follows perceived task complexity. Give explicit length and style expectations for open-ended analysis. Its default voice is direct and opinionated; specify warmth or conversational tone where the product requires it.
-
-## Encourage useful delegation
-
-Opus 4.8 spawns fewer subagents by default. If the host supports collaboration, identify independent tasks worth delegating, define ownership and expected evidence, and keep dependent work sequential. Do not import Opus 5's delegation damping as a universal rule for this model.
-
-## Specify design alternatives
-
-Open-ended designs can settle into cream backgrounds, serif headings, italic accents, and terracotta or amber. Generic bans may only substitute another fixed palette. Supply concrete colors, typography, spacing, component behavior, and reference examples when the brief requires a different style.
-
-If choosing a direction is part of the task, request distinct options before implementation:
+At `low` and `medium`, Opus 4.8 scopes its work strictly to what was asked and can under-investigate moderately complex tasks. If you see shallow reasoning, raise effort before adding reasoning instructions. Where effort must stay low for latency, add a targeted nudge:
 
 ```text
-Propose three visual directions for this enterprise dashboard, each with a palette, typography, and density rationale. Use the existing accessibility requirements. Wait for the requested design selection before implementing.
+This task involves multistep reasoning. Think carefully through the problem before responding.
 ```
 
-Use this approval step only when the user wants to choose; otherwise specify the authorized decision rule. Remove older, lengthy anti-generic design instructions if smaller concrete guidance performs better. Prompt for variety rather than relying on inherited sampling settings.
+Thinking is off unless the request explicitly sets `thinking: {type: "adaptive"}`, unlike Opus 5 and Sonnet 5. Once adaptive thinking is on, its triggering is steerable; if it thinks more often than the task needs (common with large or complex system prompts), say so directly and measure the effect:
 
-## Preserve code-review recall
+```text
+Thinking adds latency and should only be used when it will meaningfully improve answer quality — typically for problems that require multistep reasoning. When in doubt, respond directly.
+```
 
-Broad instructions such as "be conservative" or "only important issues" can suppress valid lower-severity findings. If coverage is the review stage's goal, separate supported bug discovery from later ranking and deduplication. If only one pass is available, specify a concrete threshold such as incorrect behavior, test failure, or misleading output, while excluding pure style preferences. Preserve explicit user severity limits.
+At `max` or `xhigh` effort, leave enough `max_tokens` headroom for thinking plus tool calls and subagent turns; the source suggests starting around 64k and tuning from there. Do not ask the model to expose private reasoning as response text as a substitute for thinking visibility.
 
-## Computer use and validation
+## Tool use favors reasoning over calling
 
-The source lists `computer_toolset_20260801` and `browser_toolset_20260801` on the Claude API and Google Cloud, plus the earlier `computer_20251124` computer tool. Verify provider and host support before using these versions. Tool availability in the API does not establish Atomic support.
+Opus 4.8 can reach for reasoning instead of a tool it should have used. Raising effort increases tool use, especially for agentic search and coding at `high`/`xhigh`. If a specific tool (for example, web search) is still under-used, explain concretely when and why it applies rather than adding a blanket "always use tools" rule that fires on tasks needing no current evidence.
 
-For computer-use screenshots, the guide reports 1080p as a useful performance/cost balance; evaluate 720p or 1366×768 for cost-sensitive work. It describes a maximum of 2576px / 3.75MP. Select image detail and effort against actual task accuracy rather than increasing either blindly.
+```text
+Use the available search tool for current API behavior or facts not established by the supplied materials. Read the authoritative source before making a compatibility claim. If retrieval is unavailable, distinguish inference from verified facts instead of claiming you checked.
+```
 
-Test literal scope, tool triggering, review recall, and design adherence on representative cases. Measure effort changes separately from prompt changes, and retain required checks and permission boundaries throughout.
+## Progress updates are usually adequate without forcing
+
+Opus 4.8 already gives regular, reasonably detailed updates during long agentic traces. Remove inherited scaffolding like "after every 3 tool calls, summarize progress" and see whether native behavior is sufficient. If the length or content of updates is still miscalibrated for your use case, describe the desired update explicitly and give one example.
+
+## Instructions are read literally, especially at low effort
+
+The model does not silently generalize a rule from one item to a set, and it does not infer requests you did not make. This gives predictable behavior for structured extraction and pipelines, but it means an instruction meant to apply broadly must say so:
+
+```text
+Apply the requested formatting to every section of the report, not just the first one. Preserve the factual claims and citations. Return the revised report within 800 words. Ask only if a missing decision prevents that result; do not add sections or change publication state.
+```
+
+Front-load goal, constraints, and authorized actions in the initial request instead of assembling the task across later corrections; this reduces avoidable back-and-forth without removing a genuinely required approval.
+
+## Tone defaults direct and opinionated
+
+Prose style may differ from what a prior model produced. Opus 4.8's default voice is direct, minimally validation-forward, and sparing with emoji. If the product needs a warmer or more conversational voice, say so and give an example:
+
+```text
+Use a warm, collaborative tone. Acknowledge the user's framing before answering.
+```
+
+## Subagent spawning needs explicit permission
+
+Opus 4.8 spawns fewer subagents by default than later Claude models. Where the host supports delegation, name when spawning is worthwhile and when it is not, matching the actual concurrency and ownership rules your harness enforces:
+
+```text
+Keep a small task you can finish directly local. If delegation is available, fan out substantial independent investigations with distinct ownership and expected evidence. Keep dependent edits sequential and respect the host's concurrency limits.
+```
+
+## Design defaults toward one house style
+
+Open-ended design and frontend briefs can settle into a recognizable default: warm cream backgrounds, serif display type, italic accents, terracotta or amber. This fits editorial or hospitality briefs but reads wrong for dashboards, dev tools, fintech, healthcare, or enterprise apps. Generic bans ("don't use cream," "make it clean") tend to swap in a different fixed style rather than producing real variety. Two approaches work more reliably:
+
+**Give a concrete alternative spec.** Name the actual palette, typography, spacing, and component behavior you want instead of describing what to avoid:
+
+```text
+Use a cold monochrome atmosphere: pale silver-gray tones deepening into blue-gray and near-black. Sharp, controlled, restrained. A square angular sans-serif with wide letter-spacing in headings; short, sparse body copy. 4px corner radius across cards, buttons, inputs, and media frames. Generous margins. Palette limited to #E9ECEC, #C9D2D4, #8C9A9E, #44545B, #11171B.
+```
+
+**Ask for options before building**, when the user should choose:
+
+```text
+Before building, propose 4 distinct visual directions tailored to this brief (each as: background hex / accent hex / typeface, with a one-line rationale). Wait for the user's selection before implementing.
+```
+
+Use the options prompt only when the user actually wants to choose; otherwise state the decision rule you already have authorization to apply. A short generic-pattern guard can still help alongside a concrete spec:
+
+```text
+Use the supplied visual references to choose typography, spacing, and components deliberately. Avoid decorative gradients, repetitive nested cards, or unusual fonts unless they serve this design. Preserve accessibility and the existing design system.
+```
+
+## Review recall drops under vague severity filters
+
+Broad phrasing such as "be conservative" or "only important issues" can make Opus 4.8 investigate just as thoroughly but then withhold findings it judges below that vague bar, lowering measured recall without a capability loss. If a separate stage already filters or ranks, tell the finding stage its job is coverage:
+
+```text
+Report supported issues within scope, including lower-severity findings if the request allows them. Give the evidence and estimated impact for each. Label uncertain candidates separately for the downstream verification pass; do not present them as established bugs.
+```
+
+For a single pass with no separate filter, give a concrete bar instead of a qualitative one: incorrect behavior, a failing test, or a misleading result, while excluding pure style or naming preferences. Preserve any severity limit the user explicitly requested.
+
+## Compatibility notes
+
+The source lists `computer_toolset_20260801` and the earlier `computer_20251124` computer-use tool, plus `browser_toolset_20260801`, on the Claude API and Google Cloud. A provider capability is not proof Atomic or another host exposes it; verify before writing a tool-dependent prompt. For computer-use screenshots, the source reports 1080p as a good performance/cost balance and 720p or 1366×768 as lower-cost alternatives, with a 2576px/3.75MP maximum; tune resolution and effort against measured task accuracy rather than defaults alone.
+
+Test literal scope, tool triggering, review recall, and design adherence on representative cases, and compare effort changes separately from prompt changes. Preserve required checks and real permission boundaries throughout.

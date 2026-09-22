@@ -1,57 +1,104 @@
 # Claude Sonnet 5 prompting
 
-Use this reference for Sonnet 5 effort, thinking defaults, tools, and migration from Sonnet 4.6. Distilled from [Anthropic's Sonnet 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5), checked September 5, 2026. Existing Sonnet 4.6 prompts are a starting point, but unchanged request parameters can behave differently.
+Use this reference for Sonnet 5 effort, adaptive-thinking defaults, tool triggering, and migration from Sonnet 4.6. Distilled from [Anthropic's Sonnet 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5), checked September 22, 2026. Existing Sonnet 4.6 prompts are a starting point, but unchanged request parameters can behave differently. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
 
-## Review migration parameters first
+## Response length follows perceived complexity
 
-| Area | Sonnet 5 rule |
-| --- | --- |
-| Effort | Default `high`; use `xhigh` for the hardest coding and agentic tasks. Evaluate `medium` for cost-sensitive work and `low` for short, scoped, latency-sensitive tasks. `max` prioritizes capability with greater token spending. |
-| Thinking default | Adaptive thinking is on when `thinking` is omitted. Sonnet 4.6 ran without thinking for that same request. Explicit `thinking: {type: "disabled"}` turns it off. |
-| Manual budgets | `thinking: {type: "enabled", budget_tokens: N}` is unsupported and returns a 400. Use adaptive thinking with effort. |
-| Output budget | `max_tokens` covers thinking plus the response. Revisit limits inherited from thinking-disabled Sonnet 4.6 workloads. |
-| Sampling | Non-default `temperature`, `top_p`, or `top_k` returns a 400. Remove these parameters during migration and guide style in the prompt. |
+Sonnet 5 sizes its answer to task complexity rather than a fixed verbosity: short for simple lookups, longer for open-ended analysis. Where a product needs a specific style regardless, give a positive example of the target concision rather than a list of prohibitions:
 
-These are model/API rules. Confirm the provider, SDK, and host support before changing configuration. Do not assume a raw API field is an Atomic setting.
+```text
+Provide concise, focused responses. Skip non-essential context, and keep examples minimal.
+```
 
-## Calibrate effort against behavior
+Adapt the wording to the specific over-elaboration you actually observe.
 
-Effort names are not equivalent across model versions. The guide offers rough Sonnet 4.6 comparisons, but recommends benchmarking observed thinking length rather than matching names alone. Try thinking enabled at lower effort before carrying forward a thinking-disabled setup.
+## Effort defaults unchanged; thinking default does not
 
-At `low` and `medium`, the model follows the stated task narrowly; moderately complex work at `low` may be too shallow. Raise effort to `high` or `xhigh` before compensating with elaborate instructions. Where low effort is necessary, add a narrow instruction for the missed behavior and test it.
+Effort defaults to `high`, the same as Sonnet 4.6. Use `xhigh` for the hardest coding and agentic tasks, `medium` for cost-sensitive work, and `low` for short, scoped, latency-sensitive work. As a rough migration anchor, the source reports Sonnet 5 at `medium` comparable in intelligence to Sonnet 4.6 at `high`, and Sonnet 5 at `high` comparable to Sonnet 4.6 at `max`; benchmark against observed thinking length on your own tasks rather than trusting the name alone.
 
-## State scope and tools explicitly
+At `low` and `medium`, the model scopes tightly to what was asked and can under-think moderately complex work. Raise effort before adding reasoning instructions; if effort must stay low for latency, add a targeted nudge:
 
-Sonnet 5 is more agentic than Sonnet 4.6 and uses tools and self-verification more readily. Thinking-disabled requests can trigger tools less often. If required retrieval is missed, say what evidence must be fetched and when, rather than demanding tool use on every task. Higher effort can also increase search and coding tool use.
+```text
+This task involves multistep reasoning. Think carefully through the problem before responding.
+```
 
-Instructions are literal, particularly at lower effort. Name the full scope when a rule applies to every file or section. Provide task intent and constraints up front so routine work can continue without a sequence of avoidable user confirmations. Preserve actual approval gates and missing-decision escalation.
+The real behavior change from Sonnet 4.6: a request that omits `thinking` now runs with adaptive thinking on by default, where the same omission ran without thinking on Sonnet 4.6. If a former thinking-disabled workload now emits more than you want, steer triggering directly and measure the effect:
+
+```text
+Thinking adds latency and should only be used when it will meaningfully improve answer quality, typically for problems that require multistep reasoning. When in doubt, respond directly.
+```
+
+Conversely, for hard `medium`-effort workloads showing under-thinking, raise effort first; prompt for more thinking only if that is insufficient. Manual extended thinking (`budget_tokens`) is not supported on Sonnet 5; adaptive thinking plus effort is the only control.
+
+## Tool use is more readily triggered, except with thinking off
+
+Sonnet 5 reaches for tools and self-verification more readily than 4.6 by default. With thinking explicitly disabled, it is less likely to reach for tools; add an explicit nudge in the system prompt if you rely on tool calls under that configuration. Higher effort also increases tool use in agentic search and coding. For an under-used specific tool, explain concretely when and why it applies instead of adding a blanket instruction.
+
+```text
+Use the available retrieval tool when the answer depends on current external facts, and the execution tool for requested checks rather than predicting their output. Do not call tools for facts already established by the supplied evidence. Report when a needed tool is unavailable.
+```
+
+## Progress updates are usually adequate without forcing
+
+Sonnet 5 already gives regular, reasonably detailed updates during long agentic traces. Remove inherited scaffolding like "after every 3 tool calls, summarize progress." If updates are still miscalibrated for your use case, describe the desired content and cadence explicitly, with one example.
+
+## Instructions are read literally, especially at low effort
+
+The model does not silently generalize an instruction from one item to a set, and it does not infer requests you did not make. State the full intended scope:
 
 ```text
 Update each affected section using the supplied specification. Retrieve current API documentation only where the specification leaves compatibility unresolved. Keep changes within this request, run the required checks, and report any blocking mismatch with evidence. Deployment is not authorized.
 ```
 
-## Calibrate writing and progress
+Front-load intent and constraints so routine work can proceed without avoidable confirmation turns, while preserving actual approval gates.
 
-Response length follows perceived task complexity. Set an explicit output length and structure when open-ended work runs long; use a positive example of the desired tone. Progress updates are generally regular without a fixed tool-count schedule. Remove redundant narration rules and specify useful update content where needed.
+## Tone and sampling-based variety both need direct prompting
 
-Control voice and design variety with concrete prompting, not rejected sampling parameters. Do not ask the model to reproduce private reasoning in its response; request evidence, conclusions, and observed results.
+Prose style may shift from a prior model's baseline; re-evaluate an inherited voice prompt against actual output.
 
-## Design and frontend work
+```text
+Use a warm, collaborative tone. Acknowledge the user's framing before answering.
+```
 
-For an open-ended brief, Sonnet 5 can settle into a consistent house style. Generic bans often produce another fixed style rather than useful variation. Specify an alternative palette, typography, density, and interactions, or ask for distinct design directions when the user wants to choose before implementation.
+`temperature`, `top_p`, and `top_k` at non-default values are rejected outright on Sonnet 5. Remove those parameters during migration and drive tone and output variety through the prompt instead of sampling settings.
 
-A short design instruction plus concrete references may replace lengthy legacy anti-generic guidance. Keep accessibility and existing product requirements explicit. Do not create a new approval gate when the user has already authorized selecting a direction.
+## Design defaults toward one house style
 
-## Keep review filters concrete
+Open-ended frontend and design briefs can settle into a single default style that reads fine for some products but wrong for dashboards, dev tools, fintech, healthcare, or enterprise apps. A generic ban ("don't use that color") tends to swap in another fixed default instead of real variety. Two approaches work more reliably:
 
-A review instruction such as "be conservative" or "don't nitpick" can hide supported bugs because the model follows it more literally. For a multi-stage review, make discovery responsible for coverage and perform confidence filtering, deduplication, and ranking separately.
+**Give a concrete alternative spec:**
 
-For one pass, define the bar in terms of consequences: incorrect behavior, failing tests, or misleading results. Exclude pure naming and style preferences if they are out of scope. Do not expand a review beyond an explicit user severity constraint in pursuit of recall.
+```text
+Use a cold monochrome atmosphere: pale silver-gray tones deepening into blue-gray and near-black. Sharp, controlled, restrained. A square angular sans-serif with wide letter-spacing in headings; short, sparse body copy. 4px corner radius across cards, buttons, inputs, and media frames. Generous margins. Palette limited to #E9ECEC, #C9D2D4, #8C9A9E, #44545B, #11171B.
+```
 
-## Computer use and rollout checks
+**Ask for options before building**, when the user should choose, since `temperature` is unavailable for run-to-run variety here:
 
-The source lists `computer_toolset_20260801` and `browser_toolset_20260801` on the Claude API and Google Cloud, and the older `computer_20251124` computer tool. Verify actual availability before authoring a tool-dependent prompt.
+```text
+Before building, propose 4 distinct visual directions tailored to this brief (each as: background hex / accent hex / typeface, plus a one-line rationale). Wait for the user's selection before implementing.
+```
+Use this selection pause only when the user wants to choose. Otherwise follow the approved design direction without inventing another approval gate.
 
-For screenshots, the guide describes 1080p as a useful balance and 720p or 1366×768 as cost-sensitive alternatives, with a maximum of 2576px / 3.75MP. Evaluate resolution and effort against the details the task needs.
+A short generic-pattern guard can still help alongside a concrete spec:
 
-Test a migrated request payload, a required-retrieval task, and a code-review case. Check budget exhaustion, structured tool calls, scope, and supported findings. Compare one prompt or effort change at a time; no static guide proves live quality improvements.
+```text
+Choose typography, spacing, and components from the supplied design references rather than default decorative patterns. Avoid ornamental gradients and repetitive nested cards unless they serve this brief. Keep accessibility and existing design-system constraints.
+```
+
+## Review recall drops under vague severity filters
+
+Phrasing such as "be conservative" or "don't nitpick" can make Sonnet 5 investigate just as thoroughly but withhold findings below that vague bar, lowering measured recall without a real capability loss. If a separate stage filters or ranks findings, tell the discovery stage its job is coverage:
+
+```text
+Report supported issues within scope with their trigger, evidence, location, and impact. Include lower-severity findings when the request allows them. Keep uncertain candidates separate from confirmed bugs so a downstream pass can verify and rank them.
+```
+
+For a single pass with no separate filter, define the bar concretely (incorrect behavior, failing test, misleading result) and exclude pure style or naming preferences. Preserve any severity limit the user explicitly requested; do not expand review scope beyond it in pursuit of recall.
+
+## Compatibility notes
+
+The migration guide (linked from the source) removes accepted sampling parameters and manual extended thinking, and changes the default `max_tokens` accounting to include thinking tokens; a limit tuned for thinking-disabled Sonnet 4.6 output can now truncate a response mid-answer with `stop_reason: "max_tokens"`. Raising `max_tokens` or lowering effort resolves that. The source also reports a new tokenizer producing roughly 30% more tokens for equivalent text, so an inherited budget may need retuning independent of thinking.
+
+Computer use follows the same tool versions and resolution guidance as Opus 4.8: `computer_toolset_20260801` or the earlier `computer_20251124`, plus `browser_toolset_20260801`, on the Claude API and Google Cloud; 1080p is reported as a good performance/cost balance, with 720p/1366×768 for cost-sensitive work. Confirm actual host and provider support before depending on any of these; API availability is not Atomic support.
+
+Test a migrated request payload, a required-retrieval task, and a code-review case. Check budget exhaustion, structured tool calls, scope, and supported findings. Compare one prompt or effort change at a time.

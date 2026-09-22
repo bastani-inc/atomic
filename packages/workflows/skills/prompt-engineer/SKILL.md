@@ -5,7 +5,7 @@ description: Write, evaluate, migrate, or troubleshoot prompts for GPT and Claud
 
 # Prompt engineering
 
-Create or revise prompts for the user's target model. Keep the common prompt portable and load only the relevant model guide. Each model page distills its official source into practical instructions; defaults, effort levels, and API features do not transfer automatically between models or providers.
+Create or revise prompts for the user's target model. Keep the common prompt portable and load only the relevant model guide. Each page connects an observed behavior to a prompt adjustment, adaptable wording, and caveats. Use the matching patterns rather than pasting the whole guide into a prompt. API compatibility notes are secondary; defaults, effort levels, and features do not transfer automatically between models or providers.
 
 ## Workflow
 

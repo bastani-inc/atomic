@@ -1,47 +1,86 @@
 # Claude Opus 5 prompting
 
-Use this reference for Opus 5 response length, scope, verification, and delegation tuning. Distilled from [Anthropic's Opus 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5), checked September 5, 2026. Existing Opus 4.8 prompts are a useful starting point; retest effort and remove obsolete instructions selectively.
+Distilled from [Anthropic's Opus 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5), checked September 22, 2026. Existing Opus 4.8 prompts are a useful baseline. The snippets below are adaptable examples, not verbatim quotations or instructions to add all at once. Start with the behavior you observe and compare representative tasks after each change.
 
-## Give the complete task and calibrate effort
+## When an end-to-end task is incomplete or drifts in scope
 
-Provide the specification, intended result, relevant constraints, and completion criteria up front. Opus 5 performs well on difficult multi-file and end-to-end work, but narrow tasks still need an explicit scope boundary to prevent unrequested additions.
-
-Start at the default `high`. Evaluate `low` and `medium` wherever quality holds, including code review, and use `xhigh` for demanding coding or agentic tasks. Effort controls thinking volume and latency; reducing it does not reliably shorten the visible response.
-
-## Control response and artifact length separately
-
-Specify conversation length and the length of written deliverables directly. Reports and Markdown files can run long even when chat replies are brief. Positive examples of the desired communication style are more useful than a long list of forbidden phrases.
+Give the full specification, intended result, constraints, and completion criteria up front. Opus 5 can carry difficult multi-file work through to completion without a prescribed sequence of routine steps, but may add work to a narrow request. State the boundary as well as the outcome.
 
 ```text
-Lead with the result and its material caveats. Keep the chat response under 200 words. Write a report only if requested; keep that report within the requested sections and length. Preserve evidence needed to support the conclusions.
+Implement the requested retry behavior in the client and its existing tests. Preserve the public API and unrelated behavior. Finish implementation and the repository's required checks. Make routine implementation decisions yourself; ask only when different interpretations would materially change the work. Report unrelated improvements rather than adding them.
 ```
 
-Opus 5 narrates agentic work readily. For a quiet interface, request an initial short update followed by messages for material findings or blockers. If more interaction is useful, give examples and specify its cadence. Limit correction narration to errors that affect the user's understanding or next action.
+Replace the example's scope with the actual request. This is not authorization to edit when the user asked only for an assessment, nor to proceed through an approval gate.
 
-## Remove redundant verification, retain required checks
+## When replies or written deliverables run long
 
-Opus 5 self-corrects and verifies without generic reminders. Review inherited instructions such as "double-check every answer," "always add a final verification step," or "use a subagent to verify." Remove redundant advisory instructions when evaluations show no benefit; they can compound with native behavior and waste work.
+Effort controls thinking, not reliable visible-response length. Specify chat length and artifact length separately. Prefer a positive example of the desired answer to a long list of forbidden phrases.
 
-This does not cancel repository checks, requested regression tests, independent review requirements, or evidence needed for a completion claim. Keep those concrete obligations and constrain work to the requested outcome.
+```text
+Lead with the result and its material caveats. Keep the chat reply under 200 words unless I request detail. If a report is requested, cover its required sections without boilerplate or repeated summaries; the report's requested length is separate from the chat limit.
+```
 
-For bug finding, vague severity filters can suppress valid findings because the model follows them literally. If a separate stage ranks or filters findings, ask the discovery stage to cover supported bugs first. In a single pass, state a concrete reporting threshold and honor any severity restriction the user explicitly requested.
+Keep evidence needed to support consequential claims. Do not shorten the actual deliverable merely because the status message should be brief.
 
-## Bound delegation
+## When agentic narration overwhelms the work
 
-Opus 5 delegates readily. Allow substantial independent tracks where the benefit exceeds coordination cost, specify file ownership and evidence, and cap concurrency or spend in application code. Avoid splitting a small task merely to create parallel work.
+Opus 5 narrates readily. Specify when updates are useful and what they contain rather than suppressing all communication.
 
-The guide names Claude Code and Claude Agent SDK controls `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, and `max_budget_usd`, requiring Claude Code 2.1.217 or later. These are not Atomic controls. With a custom system prompt, do not assume the Claude Code preset's delegation instruction is present.
+```text
+Before the first tool call, give one sentence about the immediate goal. While working, update me only for a material finding, a change of direction, or a blocker. Finish with what changed, what was checked, and what remains unresolved.
+```
 
-## Keep thinking enabled when practical
+For a more interactive product, increase that cadence explicitly. If correction narration is distracting, add: "State a correction briefly when it changes the user's code, conclusions, or decisions; fix inconsequential slips without a separate announcement." Never hide a consequential error.
 
-Thinking is on by default. It can be disabled only at effort `high` or below; `xhigh` and `max` require it. Prefer enabled thinking with lower effort for cost-sensitive work rather than disabling it without evaluation.
+## When repeated verification consumes time
 
-With thinking disabled, the model can write a tool call as visible text instead of emitting structured `tool_use`, so nothing executes. It can also emit internal XML. Remove instructions forbidding thinking or reasoning, which can increase leakage.
+Opus 5 self-corrects and verifies without generic reminders. Remove inherited advisory rules such as "double-check everything" or "always launch a verifier" when evaluations show no benefit. Replace them with the actual acceptance checks.
 
-If the integration must disable thinking, explain that brief user-facing text before a tool call is allowed, that it may answer directly when no tool fits, and that internal markup does not belong in the response. The guide favors a general markup rule over naming particular internal tags. Still validate actual structured tool calls; printed syntax is not execution. Do not ask for private reasoning text as a workaround.
+```text
+Run the specified regression tests and required repository checks. Report their results and any limits. Do not add repeated verification passes unless a failure, uncertainty, or explicit requirement gives them a purpose.
+```
 
-## Vision and rollout checks
+This does not remove mandated tests, independent reviews, or evidence requirements. For bug discovery, vague severity filters can suppress valid findings; when a separate ranking pass is intended, use:
 
-For dense charts, documents, diagrams, or visual replication, provide tools to crop, inspect, and verify images. Re-evaluate old vision workarounds before retaining them. For office tasks, supply required templates and styles instead of relying on generic preferences.
+```text
+Find supported bugs within the requested files. For each, give the trigger, evidence, impact, and location. Separate discovery from ranking; do not discard a supported finding merely because it is not high severity.
+```
 
-Compare representative edits, a review task, and a long deliverable at several effort levels. Inspect output length, supported findings, scope, delegation cost, and actual tool execution. Consult the source's linked migration guide before changing API controls, and verify that the chosen provider and host expose them.
+Do not apply that discovery instruction when the user explicitly requested only high-severity findings.
+
+## When small tasks spawn too many agents
+
+Permit delegation for substantial independent tracks and keep trivial work local. Give each delegate a non-overlapping scope and a concrete return contract.
+
+```text
+Keep work you can finish in a few tool calls local. Delegate only a substantial independent task that can overlap useful work you will do yourself. Give it file ownership and an evidence-based result to return. Use the smallest team that helps and obey the host's concurrency and spend limits.
+```
+
+Required independent review still applies. Prompt text does not enforce a concurrency cap; enforce limits in the host.
+
+## When visual or document work misses details
+
+Re-test workarounds inherited from older models. Provide templates for office deliverables and image tools for detailed visual work, rather than only asking the model to think harder.
+
+```text
+Use the supplied template and preserve its required sections. For each figure taken from the chart, inspect the relevant axis, legend, and units with the available crop or zoom tool. If the source is unreadable, mark the value uncertain instead of estimating it silently.
+```
+
+Use only tools actually available and authorized. Compare image inspection against higher effort rather than assuming higher effort is the cheaper solution.
+
+## When thinking-disabled output contains fake tool calls or markup
+
+Prefer thinking enabled with lower effort. If an integration must disable thinking, remove rules forbidding thought and use one combined instruction:
+
+```text
+You may give a brief user-facing sentence before a tool call. Use the actual tool interface, not printed call syntax. If no tool can express the requested action, say so rather than inventing a call. Keep internal or system markup out of the response.
+```
+
+Validate structured tool events in the host: printed syntax is not execution. Do not name internal thinking tags or ask for private reasoning as a workaround.
+
+## Configuration and validation notes
+
+- The Opus 5 API default is `high`; evaluate `low` and `medium` where quality holds, including review, and use `xhigh` for demanding work only when justified. These are model-specific baselines, not overrides of an explicit user setting.
+- Thinking can be disabled only at `high` or below; `xhigh` and `max` require it. This differs from Opus 5.5, where thinking cannot be disabled.
+- Claude Code 2.1.217+ and Claude Agent SDK controls include `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, and `max_budget_usd`. They are not Atomic settings; a custom system prompt does not inherit the Claude Code preset's delegation instructions automatically.
+- Consult the source's migration guide before changing API controls and verify provider/host support. Test a narrow edit, a review, a long report, and actual tool execution; compare scope, output length, supported findings, latency, and cost. Label checks not run.
