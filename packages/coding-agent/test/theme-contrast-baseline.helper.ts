@@ -122,6 +122,14 @@ const TOOL_FG = ["toolTitle", "toolOutput", "muted", "toolDiffAdded", "toolDiffR
 
 // Non-text tokens (borders, rules, box-drawing, indicators). WCAG applies the
 // 3.0 large/non-text threshold to these rather than 4.5.
+//
+// Each token receives exactly ONE global kind, chosen from its dominant
+// rendered use, even when the token is mixed-use: `bashMode` also paints the
+// `$ command` header *text* in bash-execution.ts (besides the command-box and
+// editor borders), and `borderAccent` also paints the `[compaction: …]` label
+// *text* in tree-selector-content.ts (besides highlighted borders). This is an
+// intentional Phase 0 simplification — the recorded kind does not necessarily
+// cover every use of such a token, and no use-specific rows are emitted.
 const NON_TEXT = new Set<string>([
 	"border",
 	"borderAccent",
@@ -299,6 +307,14 @@ export function generateBaselineMarkdown(): string {
 	lines.push(
 		"`searchMatchText`/`searchMatchBg` are omitted: transcript search was removed from",
 		"`main`, so the pair is a loadable compatibility fallback, not a visible surface.",
+		"",
+	);
+	lines.push(
+		"Each token receives one global `kind` (text or non-text), chosen from its dominant",
+		"rendered use. Mixed-use tokens such as `bashMode` and `borderAccent` are also",
+		"painted as text/non-text elsewhere, so the recorded kind does not necessarily",
+		"cover every use of such a token. This is an intentional Phase 0 simplification;",
+		"no use-specific rows are emitted.",
 		"",
 	);
 

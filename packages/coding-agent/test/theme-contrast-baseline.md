@@ -25,6 +25,12 @@ in 256-color mode (only theme colors pass through `fgAnsi()`/`bgAnsi()`):
 `searchMatchText`/`searchMatchBg` are omitted: transcript search was removed from
 `main`, so the pair is a loadable compatibility fallback, not a visible surface.
 
+Each token receives one global `kind` (text or non-text), chosen from its dominant
+rendered use. Mixed-use tokens such as `bashMode` and `borderAccent` are also
+painted as text/non-text elsewhere, so the recorded kind does not necessarily
+cover every use of such a token. This is an intentional Phase 0 simplification;
+no use-specific rows are emitted.
+
 ## truecolor
 
 ### dark (dark)

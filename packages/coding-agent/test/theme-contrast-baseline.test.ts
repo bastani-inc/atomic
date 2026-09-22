@@ -74,6 +74,32 @@ describe("theme contrast baseline (Phase 0 — report only)", () => {
 		expect(anyDifference).toBe(true);
 	});
 
+	it("records exactly one global kind per token and documents the mixed-use simplification", () => {
+		// Maintainer request on PR #2464: mixed-use tokens (e.g. `bashMode`,
+		// `borderAccent`) get one global kind; the report must say so.
+		const markdown = generateBaselineMarkdown();
+		expect(markdown).toContain("Mixed-use tokens such as `bashMode` and `borderAccent`");
+		expect(markdown).toMatch(/does not necessarily\s+cover every use of such a token/);
+		expect(markdown).toContain("no use-specific rows are emitted");
+
+		const rows = measureTheme("catppuccin-mocha", "truecolor");
+		const bashModeRows = rows.filter((r) => r.pair === "bashMode on canvas");
+		expect(bashModeRows).toHaveLength(1);
+		expect(bashModeRows[0]?.kind).toBe("non-text");
+
+		// A token never appears with more than one kind, whatever surface it is on.
+		const kindsByToken = new Map<string, Set<string>>();
+		for (const r of rows) {
+			const token = r.pair.split(" on ")[0] ?? r.pair;
+			const kinds = kindsByToken.get(token) ?? new Set<string>();
+			kinds.add(r.kind);
+			kindsByToken.set(token, kinds);
+		}
+		for (const [token, kinds] of kindsByToken) {
+			expect(kinds.size, `${token} recorded more than one kind`).toBe(1);
+		}
+	});
+
 	it("keeps the checked-in Markdown baseline in sync with the generator", () => {
 		const generated = generateBaselineMarkdown();
 		if (process.env.UPDATE_CONTRAST_BASELINE) {
