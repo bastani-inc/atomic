@@ -54,7 +54,7 @@ import {
 	workflowHeartbeatContextInvalidation,
 } from "./workflow-heartbeat-scheduler.js";
 import { bindWorkflowHumanInput } from "./workflow-human-input.js";
-import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
+import { type WorkflowModelContext, workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
 import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
 import { type WorkflowReloadReport, workflowReloadDiagnostics } from "./workflow-reload-report.js";
@@ -131,11 +131,18 @@ export interface WorkflowExtensionRuntimeState {
 	resolveDefaultStageSessionDir(): string | undefined;
 }
 
+export interface WorkflowExtensionRuntimeStateOptions {
+	resolveHostCwd?: () => string;
+	/** Newest live model context; the launch ctx retires on a preserving `/reload` (#3201). */
+	resolveLiveModelContext?: () => WorkflowModelContext | undefined;
+}
+
 export function createWorkflowExtensionRuntimeState(
 	pi: ExtensionAPI,
 	adapters: StageAdapters,
-	resolveHostCwd?: () => string,
+	options: WorkflowExtensionRuntimeStateOptions = {},
 ): WorkflowExtensionRuntimeState {
+	const { resolveHostCwd, resolveLiveModelContext } = options;
 	const store = currentWorkflowStore();
 	const stageUiBroker = currentStageUiBroker();
 	const cancellationRegistry = currentCancellationRegistry();
@@ -387,7 +394,7 @@ export function createWorkflowExtensionRuntimeState(
 	};
 
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
-		const models = workflowModelCatalogFromContext(ctx);
+		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext);
 		const durabilityWarningSink = durabilityWarningSinkFromContext(ctx);
 		if (models === undefined && durabilityWarningSink === undefined) return runtimeProxy;
 		return createExtensionRuntime({

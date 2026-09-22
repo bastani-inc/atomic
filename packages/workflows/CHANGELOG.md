@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added source-attributed Claude Opus 5.5 guidance to the prompt-engineering skill, covering effort calibration, always-on thinking, progress visibility, bounded unattended completion, and API migration checks.
 - Reworked all nine prompt-engineering model guides around observed behaviors, practical prompt adjustments, adaptable examples, and caveats, with API details kept secondary.
 
+### Fixed
+
+- A workflow run that stays in flight across a preserving host `/reload` can now create stages after the reload. Stage session creation and the stage model catalog resolve the newest live extension generation instead of the retired launch `pi` and command ctx, so the next stage no longer fails with `This extension ctx is stale after session replacement or reload` and no longer falls back to `workflows: model catalog unavailable` ([#3201](https://github.com/bastani-inc/atomic/issues/3201)).
+
 ## [0.9.20-alpha.6] - 2026-09-22
 
 ### Changed

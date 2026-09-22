@@ -13,6 +13,7 @@ import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
+import { trackLiveHostGeneration } from "./live-host-generation.js";
 import { registerPendingStageIntercomBridge } from "./pending-stage-intercom.js";
 import { createPostMortemHandleResolver } from "./postmortem-deps.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
@@ -113,8 +114,11 @@ function factory(pi: ExtensionAPI): void {
 		};
 	}
 
-	const adapters = buildRuntimeAdapters(pi);
-	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
+	const liveGeneration = trackLiveHostGeneration(pi);
+	const adapters = buildRuntimeAdapters(pi, { resolveSurface: () => liveGeneration().pi });
+	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters, {
+		resolveLiveModelContext: () => liveGeneration().modelContext,
+	});
 	const postMortemResolverDeps = {
 		adapters,
 		resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,

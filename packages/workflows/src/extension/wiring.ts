@@ -131,6 +131,12 @@ export interface RuntimeAdapterBuildOptions {
 	sdk?: PiCodingAgentSdk;
 	/** Broker that routes stage-local custom UI into attached workflow nodes. */
 	stageUiBroker?: StageUiBroker;
+	/**
+	 * Newest live host surface for each stage creation. The `pi` this adapter
+	 * was built with retires on a preserving `/reload` while the run that holds
+	 * the adapter keeps executing (#3201).
+	 */
+	resolveSurface?: () => RuntimeWiringSurface;
 }
 
 type BindableStageSession = StageSessionRuntime & {
@@ -495,10 +501,11 @@ function makeStageExtensionUiContext(
  *      NOT on the `ExtensionAPI` surface).
  */
 export function buildRuntimeAdapters(
-	pi: RuntimeWiringSurface,
+	builtWith: RuntimeWiringSurface,
 	options: RuntimeAdapterBuildOptions = {},
 ): StageAdapters {
-	const createSession =
+	const resolveSurface = options.resolveSurface ?? (() => builtWith);
+	const sessionFactory = (pi: RuntimeWiringSurface) =>
 		options.createAgentSession ??
 		pi.createAgentSession ??
 		(isTestContext() && options.sdk === undefined
@@ -526,6 +533,8 @@ export function buildRuntimeAdapters(
 				// extensions, tools, prompts, and skills as the parent chat. Callers
 				// can still opt into a custom resource set by passing `resourceLoader`
 				// through `stage(name, options)`.
+				const pi = resolveSurface();
+				const createSession = sessionFactory(pi);
 				const inheritedOptions =
 					pi.getChildSessionOptions?.(stripWorkflowOnlyOptions(stageOptions) ?? {}) ??
 					stripWorkflowOnlyOptions(stageOptions) ??
