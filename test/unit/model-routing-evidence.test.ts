@@ -129,11 +129,14 @@ test("the factual evals document keeps the top Intelligence Index rows that fit 
 		evals,
 		/\| claude-opus-5-5 \| Claude Opus 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 57\.6 \| 66\.1 \| 67\.3 \| 69\.5 \| 59\.6 \|/,
 	);
+	assert.match(evals, /\| gpt-6-luna \| GPT-6 Luna \(max\) \| 37\.3 \| ∅ \| 43\.4 \| ∅ \| 12\.6 \| 54\.6 \| 38\.5 \|/);
 	const aaRows = evals
 		.slice(evals.indexOf("| --- |"), evals.indexOf("## Cognition"))
 		.split("\n")
 		.filter((line) => line.startsWith("| ") && !line.startsWith("| ---"));
-	assert.equal(aaRows.length, 26);
+	assert.equal(aaRows.length, 27);
+	const aaHeaderCells = evals.match(/^\| slug \|.*$/m)![0].split("|").length;
+	for (const row of aaRows) assert.equal(row.split("|").length, aaHeaderCells, row);
 	assert.doesNotMatch(evals, /no suffix=`?max|slug model names are exact source labels/i);
 	assertSourceRows(evals, fixture.frontierRows, "F", fixture.shapeChecks.frontierMainRows.values);
 	assert.match(evals, /\| GPT-6 Astra \| max \| codex \|/);
