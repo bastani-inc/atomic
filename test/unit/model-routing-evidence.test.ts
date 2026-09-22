@@ -125,6 +125,10 @@ test("the factual evals document keeps the top Intelligence Index rows that fit 
 	assert.match(evals, /\| slug \| Model \| idx \| Brief \| Gn \| Auto \| TB4 \|/);
 	assert.match(evals, /\| grok-4-7 \| Grok 4\.7 \(xhigh\) \| 46\.4 \| 57\.9 \| 59\.8 \| 65\.6 \| 25\.8 \|/);
 	assert.match(evals, /\| grok-4-7-high \| Grok 4\.7 \(high\) \| 46\.3 \| 57\.2 \| 59\.7 \| 63\.5 \| 24\.7 \|/);
+	assert.match(
+		evals,
+		/\| claude-opus-5-5 \| Claude Opus 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 57\.6 \| 66\.1 \| 67\.3 \| 69\.5 \| 59\.6 \|/,
+	);
 	const aaRows = evals
 		.slice(evals.indexOf("| --- |"), evals.indexOf("## Cognition"))
 		.split("\n")
