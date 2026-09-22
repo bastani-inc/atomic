@@ -33,6 +33,7 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 | GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, explicit validation, assistant phase replay |
 | Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, thinking-history binding, completion and output budget |
 | Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |
+| Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, medium effort baseline, progress blocks, bounded unattended continuation, pasted-content boundaries |
 | Claude Opus 5 | `references/claude_opus_5.md` | Separate response length from effort, remove redundant verification, bound delegation |
 | Claude Opus 4.8 | `references/claude_opus_4_8.md` | Explicit adaptive thinking, literal scope, tool triggering, design alternatives |
 | Claude Sonnet 5 | `references/claude_sonnet_5.md` | Changed thinking default, unsupported manual budgets/sampling, literal scope and review recall |

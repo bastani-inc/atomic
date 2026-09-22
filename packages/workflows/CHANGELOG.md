@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Added source-attributed Claude Opus 5.5 guidance to the prompt-engineering skill, covering effort calibration, always-on thinking, progress visibility, bounded unattended completion, and API migration checks.
+
 ## [0.9.20-alpha.6] - 2026-09-22
 
 ### Changed
