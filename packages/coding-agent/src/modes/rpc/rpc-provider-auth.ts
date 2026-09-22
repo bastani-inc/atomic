@@ -1,7 +1,7 @@
 import type { Credential } from "@bastani/pi-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.js";
-import { CredentialSynchronizationError } from "../../core/model-runtime.js";
+import { CredentialSynchronizationError, type SaveCredentialOptions } from "../../core/model-runtime.js";
 import { createAuthInteraction, isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { createRpcOAuthCallbacks, type OAuthInteractionTransport } from "./rpc-oauth-interaction.ts";
 import type { RpcLoginProviderResult, RpcModelCatalog, RpcOAuthLoginProviderResult } from "./rpc-types.ts";
@@ -91,8 +91,13 @@ export class RpcProviderAuth {
 		}
 	}
 
-	async save(session: AgentSession, provider: string, credential: Credential): Promise<RpcModelCatalog> {
-		await session.modelRuntime.saveCredential(provider, credential);
+	async save(
+		session: AgentSession,
+		provider: string,
+		credential: Credential,
+		options: SaveCredentialOptions = {},
+	): Promise<RpcModelCatalog> {
+		await session.modelRuntime.saveCredential(provider, credential, options);
 		session.refreshCurrentModelFromRegistry();
 		return this.catalog(session);
 	}

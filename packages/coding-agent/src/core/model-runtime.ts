@@ -123,6 +123,11 @@ export interface ExtensionProviderTransaction {
 	commit(): Promise<void>;
 }
 
+export interface SaveCredentialOptions {
+	/** Fetch the remote catalog before publishing the credential. Defaults to true. */
+	refreshCatalog?: boolean;
+}
+
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -722,12 +727,31 @@ export class ModelRuntime implements Models {
 		}
 	}
 
-	async saveCredential(providerId: string, credential: Credential): Promise<void> {
+	/**
+	 * Persist a credential acquired elsewhere.
+	 *
+	 * `refreshCatalog` defaults to true so the saved credential is published against
+	 * a freshly fetched catalog. Callers that acquired the key through a login dialog
+	 * pass false: that transaction ends at persistence, and a remote catalog fetch
+	 * would make an offline save fail after the credential was already committed.
+	 */
+	async saveCredential(
+		providerId: string,
+		credential: Credential,
+		options: SaveCredentialOptions = {},
+	): Promise<void> {
+		const refreshCatalog = options.refreshCatalog ?? true;
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.credentials.modify(providerId, async () => credential);
 			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "saveCredential", credential, async () => {
+				if (!refreshCatalog) {
+					this.updateModelSnapshot();
+					this.externalProviderAuthStatuses.delete(providerId);
+					this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
+					return;
+				}
 				const result = await this.refresh({ providers: [providerId] });
 				this.assertCredentialRefreshSucceeded(providerId, result);
 				// A concurrent catalog refresh can supersede this provider's availability

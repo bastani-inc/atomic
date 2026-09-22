@@ -229,7 +229,9 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(
 					id,
 					"save_provider_credential",
-					await providerAuth.save(session, command.provider, command.credential),
+					await providerAuth.save(session, command.provider, command.credential, {
+						refreshCatalog: command.refreshCatalog,
+					}),
 				);
 
 			case "cancel_login_provider":

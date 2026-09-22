@@ -29,8 +29,12 @@ async function createIsolatedRuntimes() {
 		refreshCurrentModelFromRegistry: () => {},
 	} as unknown as AgentSession;
 	const providerAuth = new RpcProviderAuth();
-	const saveProviderCredential = vi.fn((provider: string, credential: Parameters<RpcProviderAuth["save"]>[2]) =>
-		providerAuth.save(engineSession, provider, credential),
+	const saveProviderCredential = vi.fn(
+		(
+			provider: string,
+			credential: Parameters<RpcProviderAuth["save"]>[2],
+			options: Parameters<RpcProviderAuth["save"]>[3],
+		) => providerAuth.save(engineSession, provider, credential, options),
 	);
 	return {
 		engineRuntime,
@@ -57,7 +61,11 @@ describe("isolated API-key login", () => {
 		});
 
 		expect(result).toEqual({ modelsRefreshed: true });
-		expect(saveProviderCredential).toHaveBeenCalledWith(PROVIDER, { type: "api_key", key: "isolated-login-key" });
+		expect(saveProviderCredential).toHaveBeenCalledWith(
+			PROVIDER,
+			{ type: "api_key", key: "isolated-login-key" },
+			{ refreshCatalog: false },
+		);
 		expect((await engineRegistry.getProviderAuth(PROVIDER))?.auth.apiKey).toBe("isolated-login-key");
 		expect(engineRuntime.hasConfiguredAuth(PROVIDER)).toBe(true);
 		expect(frontendRuntime.hasConfiguredAuth(PROVIDER)).toBe(true);

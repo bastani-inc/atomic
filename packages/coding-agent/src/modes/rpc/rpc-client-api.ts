@@ -6,6 +6,7 @@ import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
+import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type {
 	RpcAutocompleteItem,
@@ -102,8 +103,19 @@ export abstract class RpcClientApi {
 			signal?.removeEventListener("abort", cancel);
 		}
 	}
-	async saveProviderCredential(provider: string, credential: Credential): Promise<RpcModelCatalog> {
-		return this.data(await this.request({ type: "save_provider_credential", provider, credential }));
+	async saveProviderCredential(
+		provider: string,
+		credential: Credential,
+		options: SaveCredentialOptions = {},
+	): Promise<RpcModelCatalog> {
+		return this.data(
+			await this.request({
+				type: "save_provider_credential",
+				provider,
+				credential,
+				refreshCatalog: options.refreshCatalog,
+			}),
+		);
 	}
 	async cancelLoginProvider(provider: string, loginId?: string): Promise<void> {
 		await this.request({ type: "cancel_login_provider", provider, loginId });

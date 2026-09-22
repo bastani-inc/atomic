@@ -32,7 +32,10 @@ export async function loginIsolatedOAuthProvider(
  *
  * The engine owns credential storage for the isolated runtime, so the frontend
  * only collects the key and adopts the engine's catalog and credential snapshot
- * afterwards. A cancelled dialog persists nothing on either side.
+ * afterwards. A cancelled dialog persists nothing on either side. The engine save
+ * deliberately skips the remote catalog refresh: catalog freshness belongs to
+ * /model's bounded background refresh, and a failed fetch would otherwise leave the
+ * key persisted in the engine while the frontend took the error branch.
  */
 export async function loginIsolatedApiKeyProvider(
 	session: AgentSession,
@@ -47,7 +50,7 @@ export async function loginIsolatedApiKeyProvider(
 	signal.throwIfAborted();
 	const credential = await raceWithAbortSignal(apiKeyAuth.login({ ...interaction, signal }), signal);
 	if (signal.aborted) throw normalizeOAuthLoginError(signal.reason ?? new Error("Login cancelled"), signal);
-	const remoteCatalog = await client.saveProviderCredential(provider, credential);
+	const remoteCatalog = await client.saveProviderCredential(provider, credential, { refreshCatalog: false });
 	catalog.apply(remoteCatalog);
 	await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 	return { modelsRefreshed: true };

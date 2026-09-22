@@ -76,7 +76,14 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
 	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
-	| { id?: string; type: "save_provider_credential"; provider: string; credential: Credential }
+	| {
+			id?: string;
+			type: "save_provider_credential";
+			provider: string;
+			credential: Credential;
+			/** Fetch the remote catalog before publishing the credential. Defaults to true. */
+			refreshCatalog?: boolean;
+	  }
 	| { id?: string; type: "cancel_login_provider"; provider: string; loginId?: string }
 	| { id?: string; type: "logout_provider"; provider: string }
 	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
