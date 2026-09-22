@@ -36,9 +36,14 @@ import { createIssue3085StageSession } from "./fixtures/issue-3085-provider-auth
  * Structural: this case serializes durable workflow state, then spawns a real
  * Node child that hydrates and resumes through the workflows TypeScript graph
  * via jiti. Named and kept at the call site, per AGENTS.md.
+ *
+ * The child's cost is dominated by jiti's cold transform of the coding-agent
+ * SDK and workflows runtime graph, which CI never has cached: 7.1s cold versus
+ * 2.7s warm locally, and a loaded Windows runner exceeded a 45s child budget
+ * where an idle retry of the same job finished in 23.5s.
  */
-const ISOLATED_PROCESS_RESTART_TIMEOUT_MS = 60_000;
-const RESUME_CHILD_TIMEOUT_MS = 45_000;
+const ISOLATED_PROCESS_RESTART_TIMEOUT_MS = 150_000;
+const RESUME_CHILD_TIMEOUT_MS = 120_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const resumeFixture = join(moduleDir(import.meta.url), "fixtures", "issue-3085-provider-auth-block.ts");
