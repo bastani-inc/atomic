@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.20-alpha.6] - 2026-09-22
+
 ### Fixed
 
 - Admitted subagent children now connect to Intercom when their session starts instead of on their own first Intercom call, so a working child launched from a workflow stage or main chat appears in `intercom list` and can be steered with `send`/`ask` from its supervisor and peers even if it never uses Intercom itself. A recoverable broker disconnect during that warm-up no longer aborts the child's launch; the child falls back to connecting lazily.

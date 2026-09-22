@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.20-alpha.6] - 2026-09-22
+
 ### Added
 
 - Added Meta provider (Model API key and Muse subscription OAuth) with Muse Spark models.
