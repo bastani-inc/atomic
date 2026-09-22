@@ -686,14 +686,14 @@ const MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS = new Set(["openrouter:anthr
 function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "");
 	return (
-		/^claude-opus-5(?:-\d{8})?$/.test(id) ||
+		/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/.test(id) ||
 		/^claude-(?:fable|mythos)-5(?:[.-]1)(?:-\d{8})?$/.test(id)
 	);
 }
 
 function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
 	return (
-		/^claude-opus-(?:4[.-]8|5)(?:-\d{8})?$/.test(modelId) ||
+		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
 		/^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$/.test(modelId)
 	);
 }
@@ -1266,14 +1266,16 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	// Anthropic publishes exactly five efforts for Claude Fable 5.1 — low, medium, high, xhigh,
-	// max — and no `minimal`. `getSupportedThinkingLevels` includes any level the map leaves
-	// undefined, so on the sparse Anthropic-side maps `minimal` was offered as a sixth option.
-	// It is not an API error (`mapThinkingLevelToEffort` collapses it to `low`), but it is not a
-	// level the model publishes, so deny it explicitly. The OpenRouter entries already carry a
-	// full map with `minimal: null` from models.dev `reasoning_options`, so this is a no-op there.
+	// Anthropic publishes exactly five efforts for Claude Fable 5.1 and Claude Opus 5.5 — low,
+	// medium, high, xhigh, max — and no `minimal`. `getSupportedThinkingLevels` includes any level
+	// the map leaves undefined, so on the sparse Anthropic-side maps `minimal` was offered as a
+	// sixth option. It is not an API error (`mapThinkingLevelToEffort` collapses it to `low`), but
+	// it is not a level the model publishes, so deny it explicitly. The OpenRouter entries already
+	// carry a full map with `minimal: null` from models.dev `reasoning_options`, so this is a no-op
+	// there.
 	// https://platform.claude.com/docs/en/models/fable-5-1/overview
-	if (/fable-5[-.]1/.test(model.id)) {
+	// https://platform.claude.com/docs/en/models/opus-5-5/overview
+	if (/fable-5[-.]1|opus-5[-.]5/.test(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: null });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
@@ -2947,6 +2949,32 @@ async function generateModels() {
 			!(model.provider === "xai" && XAI_BUILTIN_EXCLUDED_MODEL_IDS.has(model.id)) &&
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
+
+	// Add Claude Opus 5.5 until models.dev includes it.
+	// https://platform.claude.com/docs/en/models/opus-5-5/overview
+	if (!allModels.some((model) => model.provider === "anthropic" && model.id === "claude-opus-5-5")) {
+		allModels.push({
+			id: "claude-opus-5-5",
+			name: "Claude Opus 5.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			thinkingLevelMap: {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			},
+			input: ["text", "image"],
+			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
 
 	// Temporary overrides until upstream model metadata is corrected.
 	for (const candidate of allModels) {
