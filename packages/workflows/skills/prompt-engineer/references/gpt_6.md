@@ -1,111 +1,139 @@
 # GPT-6 family prompting and migration
 
-Use this reference when targeting `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`, migrating a prompt to the GPT-6 family, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on September 22, 2026 against [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model). Snippets below are adaptations for prompt authors, not verbatim official quotes.
+Use this reference when targeting `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`, migrating a prompt to the GPT-6 family, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on September 22, 2026 against [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model). The prompt blocks labeled **OpenAI template** are quoted verbatim from that guide. Start from them, then edit the wording to fit the product's approval gates and house style.
 
-OpenAI positions the three models by reasoning demand, latency, and cost: Astra for the highest capability and long multi-step work across code, browsers, and professional software; Sol for strong reasoning on demanding tasks; Luna for efficient, repeatable work at scale. The behavior sections below were observed on Astra. OpenAI offers the same starting prompts for the whole family, so apply them to Sol and Luna as hypotheses and evaluate on the chosen model and workload rather than assuming Astra's tendencies transfer. See [Sol and Luna differences](#sol-and-luna-differences) before choosing effort or a tool-calling API.
+OpenAI positions the three models by reasoning demand, latency, and cost: Astra for the highest capability and long multi-step work across code, browsers, and professional software; Sol for strong reasoning on demanding tasks; Luna for efficient, repeatable work at scale. OpenAI offers the templates below as a starting point for the whole family, but the behaviors they address were observed on Astra. Evaluate them on the chosen model and workload. See [Sol and Luna differences](#sol-and-luna-differences) before choosing effort or a tool-calling API.
 
 ## When it asks before doing authorized work
 
-Observed behavior: Astra is more likely than earlier GPT models to ask focused questions when missing information could change the outcome. That is useful for risky ambiguity, but it can stall tasks where the conversation already authorizes reversible local work.
+Observed behavior: Astra stays coherent through long tasks, and it is more likely than GPT-5.6 Sol and earlier models to ask for clarification where they would have made assumptions. By default it also asks non-blocking questions while it works. That helps with risky ambiguity, but it can stall work the conversation already authorizes.
 
-Prompt adjustment: define what counts as authorized progress, what still needs approval, and that approval should happen after the model prepares a concrete result. Do not use this to bypass destructive actions, deployments, external writes, purchases, or scope changes.
+Prompt adjustment: tell the model to infer scope and act, treat "can you…" requests as instructions, and leave approval until a concrete, reviewable result exists. Pick the templates that match the autonomy your application needs.
 
-Adaptable prompt:
+OpenAI template, for autonomous work:
 
 ```text
-Infer the user's intended result from the current request and prior conversation. When the request asks to fix, build, inspect, draft, or update something, do the authorized local and reversible work instead of stopping at a plan or asking whether to proceed.
+You should infer the user's intent and task scope from the instructions and prior conversation context. Your job is to bias towards action and carry the user's intended task to completion.
 
-Complete the work that can be done safely first: inspect relevant context, make in-scope changes, run non-destructive checks, and prepare a concrete result. Ask when a missing decision would materially change the result, permission is absent, or a required approval gate applies. Do not re-request authorization already granted. Deployment, publishing, merging, and irreversible changes require explicit authorization.
+When the user expresses intent to perform new work or fix an existing issue, persist until the user's intended goal is complete. Progress autonomously towards the user's goal (e.g. creating isolated worktrees / checkouts if needed, resolving merge conflicts, read-only actions, creating draft PRs etc.) unless they are clearly destructive or irreversible.
 ```
 
-Caveats: keep real approval gates. If the user asked for review-only work, do not edit. If the task is broad exploration, name the exploration questions and stopping point instead of asking Astra to persist indefinitely.
+OpenAI template, for follow-through when the request implies authorization:
+
+```text
+When the user's prompt indicates a request for action, such as "can you...", "I want to...", "help me..." and similar expressions, treat these as instructions to do the work and take action. Do not stop at acknowledging capability (e.g. "Yes…"), proposing a plan, or offering to continue. Do not settle for a partial or "helpful enough" solution that does not fully satisfy the user's task to save time, effort or tokens. If a task requires sustained work, complete all the necessary work until the intended outcome is fulfilled.
+```
+
+OpenAI template, for asking approval only after the work is reviewable:
+
+```text
+Before asking the user clarifying questions, you should complete the work that is already authorized from context and necessary to make the proposed action concrete and reviewable. The user should be approving a concrete, reviewable result. For example, before deploying a change, writing to an external application, merging a PR or publishing a site, do all the required work first so that user approval is the final step. You don't need user permission for reversible tasks, read-only actions, reviews or fixes, or anything for which authorization is provided earlier in the session or strongly implied from the task instruction.
+
+Do not introduce unsolicited warnings, disclaimers, approval flows, or safety/compliance checklists due to hypothetical risk.
+```
+
+Caveats: these templates widen autonomy. Keep the product's real approval gates for deployment, publishing, merging, external writes, purchases, credential changes, and irreversible actions, and state them next to the template. If the user asked for review-only work, the model must not edit. For broad exploration, name the questions and the stopping point instead of asking the model to persist indefinitely. The last sentence of the third template removes hypothetical-risk warnings; it does not remove warnings the user needs about real risks.
 
 ## When skills or repo instructions change behavior
 
-Observed behavior: Astra follows loaded instructions closely, including `AGENTS.md`, skills, and other context files. Stale or conflicting guidance can cause early pauses, broad research, or unrequested review gates.
+Observed behavior: Astra follows long instructions well and is more sensitive to what is in context, including `AGENTS.md`, skills, and other files it can read. Unclear or conflicting guidance in a skill can make it pause and block work early. OpenAI strongly recommends auditing every skill and instruction file the model can access.
 
-Prompt adjustment: tell it how to surface instruction conflicts and how to prioritize explicit user direction against advisory skill text, without weakening higher-priority instructions.
+Prompt adjustment: state the priority between user instructions and skills, and ask the model to name the instruction that made it pause or change direction.
 
-Adaptable prompt:
+OpenAI template, for instruction priority:
 
 ```text
-Follow applicable instructions according to their actual priority. Treat skills and reference files as task guidance, not permission to change the user's requested outcome or override higher-priority requirements.
-
-If a loaded instruction makes you pause, ask permission, expand scope, or leave requested work unfinished, name the exact file, quote the relevant sentence, and explain whether it is a binding requirement or an advisory interpretation. Do not silently discard security, permission, validation, or repository rules.
+The user's instructions take precedence over guidelines provided in a skill. If explicit user instructions conflict with a skill's instructions, prioritize the user's instructions.
 ```
 
-Caveats: this is diagnostic guidance. It does not authorize ignoring project rules or policy. Use the shared instruction-audit reference when conflicts repeat.
+OpenAI template, for surfacing the instruction behind a pause:
+
+```text
+If a skill causes you to ask for permission or confirmation, pause, leave requested work unfinished, or diverge from the user's intent, name and link to the exact SKILL.md file you read, quote the relevant instruction, and briefly explain how it applies. Distinguish explicit skill requirements from your interpretation of guidelines.
+```
+
+Caveats: the priority template covers advisory skill text. It must not let a user instruction override system, security, permission, or repository rules that rank above the user; say so when the harness has such rules. The second template is the one to use when an application loads many skills and instruction files and you need to find silent or conflicting guidance. Use `quality_improvement.md` when conflicts repeat.
 
 ## When responses are too formatted or too long
 
-Observed behavior: Astra tends toward detailed Markdown, recurring phrases, tables, and broad explanations. It can be steered strongly toward a product's house style.
+Observed behavior: Astra tends to use lists, tables, and Markdown to make responses scannable, writes detailed answers, and can reuse the same phrases across sessions. It responds well to an explicit house style.
 
-Prompt adjustment: state the audience, first sentence, permitted structure, and what to trim first. Avoid generic style labels alone.
+Prompt adjustment: specify the structure and register the application needs. Use the templates below as the starting style contract.
 
-Adaptable prompt:
+OpenAI template, for prose with less formatting:
 
 ```text
-Lead with the result in a plain sentence. Use short paragraphs by default. Use bullets or a table only when the information is parallel, sequential, or easier to compare.
+Default to using clear, concise paragraphs, each developing one main idea. Use lists only when the information is genuinely parallel, sequential, or easier to compare, and avoid nested lists unless the hierarchy cannot be expressed clearly in prose. Use plain, simple language: familiar words, concrete examples, and precise verbs. Prefer active voice and direct statements.
 
-Preserve the evidence, material caveats, and next action the reader needs. Trim introductions, generic reassurance, stock conclusions, repeated contrasts, and jargon that does not help the reader act. Do not use canned headings such as "Bottom line" unless the requested format requires them.
+Make sure to state the main point clearly and early, then develop it with the explanation and detail the reader needs. Let each sentence build on what came before. Develop the points that matter and provide enough support to be useful.
 ```
 
-Caveats: do not trim contractual fields, citations, validation evidence, or warnings the user needs. For technical audiences, plain language still includes exact identifiers, commands, and API names when they matter.
+OpenAI template, for technical communication:
+
+```text
+Use plain language over jargon, and reference technical details only to the degree that it helps illustrate an idea or your work to the user. Communicate complex concepts in a clear and cohesive manner, and calibrate your writing to the level of background knowledge assumed from the user's prompt and context.
+```
+
+OpenAI template, for reducing jargon and stock phrases:
+
+```text
+Avoid using slop words or phrases like "Bottom Line:" in conclusions, "delve," "foster," "leverage," "it's worth noting," "importantly," "Question? Answer." or "This isn't about X. It's about Y.", "genuinely" or hyphenated compound descriptions and adjectives. Do not use concluding summary statements such as "In short:..", "The simplest mental model is:...".
+
+State the intended action directly. Avoid adding what you won't do, what will remain unchanged, or how you'll separate or categorize results. Do not use contrastive framing such as "X, not Y" or "X—not Y" that introduces an unprompted alternative that the user didn't ask about. Avoid invented compound labels like "exact-head checks" and "editorial-row layouts", vague qualifiers, and canned transitions; use plain verbs and prepositions to state the actual relationship directly.
+```
+
+Caveats: do not trim contractual fields, citations, validation evidence, or warnings the reader needs. For technical audiences, plain language still includes exact identifiers, commands, and API names. If a parser or UI requires Markdown, tables, or fixed headings, state that requirement after the style template so it wins.
 
 ## When it under-delegates or over-serializes work
 
-Observed behavior: Astra can use parallel collaborators effectively, but may delegate less than a harness expects unless told when parallelism is useful.
+Observed behavior: Astra is trained to divide work and delegate it to subagents that run in parallel, but it may delegate less often than a workflow expects. Messages it sends to other agents can contain grammar or spacing errors.
 
-Prompt adjustment: identify independent tracks, expected evidence, and synthesis rules. Prompting cannot create subagents or raise concurrency limits; the host must provide those tools.
+Prompt adjustment: tell it when and how much to delegate, and require legible inter-agent messages. It responds well to specific guidance, so tune the wording to the harness.
 
-Adaptable prompt:
+OpenAI template, for delegation:
 
 ```text
-When the host provides collaboration tools, parallelize independent work that can save time or improve quality. Give each delegate a bounded objective, owned files or sources, and the evidence it must return. Keep dependent work sequential. Synthesize results before editing or making claims, and respect the host's concurrency, cost, and ownership limits.
-
-Messages to other agents may be read by humans. Use clear spacing, exact identifiers, and enough context for the recipient to act without guessing.
+If at any point you can parallelize work by delegating tasks to another agent (no matter if you are the root or subagent), you should do so using collaboration tools if it could save time or improve quality.
 ```
 
-Caveats: do not split a small task just to use parallelism. Delegation is not approval to widen scope or skip validation.
+OpenAI template, for legible inter-agent messages:
+
+```text
+Messages that you send to other agents and your final answer may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.
+```
+
+Caveats: prompting cannot create subagents or raise concurrency limits; the host must provide the collaboration tools. Add the harness's limits on concurrency, cost, and file ownership, and ask each delegate to return a bounded result with evidence. Do not split a small task only to use parallelism. Delegation does not authorize wider scope or skipped validation.
 
 ## When it tests too broadly or repeats checks
 
-Observed behavior: Astra can be thorough on coding tasks and may run broader or repeated verification than a small change needs.
+Observed behavior: on coding tasks Astra tests thoroughly before calling the work complete. On small changes that can mean broader or repeated tests than the task needs.
 
-Prompt adjustment: name required checks, meaningful targeted checks, and when to broaden.
+Prompt adjustment: calibrate how much testing a change requires and when to broaden it.
 
-Adaptable prompt:
+OpenAI template:
 
 ```text
-Run tests and checks proportionate to the change. For small reversible edits, prefer targeted behavior checks and required repository checks. Broaden or rerun tests when a check fails, you change code after a check, the risk justifies it, or a repository rule requires it.
+Do not write tests for reversible, low-impact changes that mirror the implementation. If you do choose to verify your work with tests, make sure that the tests are meaningful and necessary to verify implementation.
 
-Do not add tests that merely restate the implementation. Do not repeat a passing check unless a later change could have invalidated it. Report checks that were not run and the best evidence available.
+Run tests appropriate to the change and complete required checks. Once those pass, broaden or repeat testing only when new changes, failures, or unresolved concerns justify it; otherwise, continue toward completing the task.
 ```
 
-Caveats: do not use this to skip required CI-equivalent checks, safety checks, release gates, or user-requested validation.
+Caveats: this does not replace required CI-equivalent checks, safety checks, release gates, repository test rules, or validation the user asked for. Ask the model to report checks it did not run.
 
 ## Sol and Luna differences
 
-The prompt patterns above are shared, but three things change when the target is `gpt-6-sol` or `gpt-6-luna`.
+The templates above are shared, but two things change when the target is `gpt-6-sol` or `gpt-6-luna`.
 
-Effort: Sol and Luna support `reasoning.effort: "none"`; Astra does not. On FrontierCode 1.1 (accessed 2026-09-22, Codex harness, Main subset) Sol scored 37.3 at `low`, 45.9 at `medium`, 47.7 at `high`, 48.4 at `xhigh`, and 49.3 at `max` for USD 0.43 to 2.07 per task; Luna scored 25.7, 35.5, 37.3, 37.1, and 42.4 for USD 0.02 to 0.10. Artificial Analysis lists Sol (max) at Intelligence Index 47.5 and Luna (max) at 37.3, with `none` at 28.1 and 18.3. Effort moves these models more than it moves Astra, so sweep effort as a prompt variable: a Luna prompt tuned at `medium` may need `high` or `max` before it is comparable to a Sol prompt at `medium`, and a Sol prompt at `none` is a different model in practice. Do not compensate for a lower effort with longer instructions.
+Effort sensitivity: effort moves Sol and Luna much more than it moves Astra, and both can run with no reasoning at all, which Astra cannot. Treat effort as a prompt variable: a Luna prompt tuned at medium effort may need high or max effort before it is comparable to a Sol prompt at medium, and a prompt run with no reasoning behaves like a different model. Do not compensate for a lower effort with longer instructions.
 
-Tool calling: Sol and Luna call functions in Chat Completions only at `reasoning_effort: "none"`. Any reasoning effort with tools requires the Responses API. Astra's tool calling requires Responses at every effort. When a prompt assumes tools and reasoning together, confirm the request path before blaming the prompt.
+Scope of the behavior guidance: OpenAI wrote the initiative, instruction-following, writing-style, delegation, and verification templates against Astra's behavior. Sol and Luna are cheaper to sweep, so measure whether the early-stop and over-testing templates are needed at all before adding them. A Luna prompt that carries Astra's autonomy language without the matching capability can keep going on work it cannot finish. Keep the same approval gates.
 
-Scope of the behavior guidance: OpenAI's initiative, instruction-following, writing-style, delegation, and verification prompts were written against Astra. Sol and Luna are cheaper to sweep, so measure whether the early-stop and over-testing adjustments are needed at all before adding them; a Luna prompt that carries Astra's autonomy language without the corresponding capability can persist on work it cannot finish. Keep the same approval gates.
+## Prompt structure notes
 
-## Compatibility notes
-
-These are API capabilities, not promises that every agent harness exposes them. Verify the SDK, provider, and request path before adding parameters.
-
-- Model and effort: set `model` to `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. Preserve the current effective effort where the model supports it. Astra does not support `none`; when migrating from `none` or `minimal`, start with `low` and evaluate. Sol and Luna support `none`; when migrating from `minimal`, start with `low` and compare. Use `reasoning.effort` in Responses or `reasoning_effort` in Chat Completions.
-- Tools: use Responses for tool calling. Astra may support Chat Completions, but its tool calling requires Responses. Sol and Luna support Chat Completions function calling only with `reasoning_effort: "none"`.
-- Sampling/logprobs: when effort is not `none`, remove `temperature`, `top_p`, `top_logprobs`, Chat Completions `logprobs`, and Responses `message.output_text.logprobs` includes.
-- Caching: when migrating from GPT-5.5 or earlier, replace `prompt_cache_retention` with `prompt_cache_options.ttl: "30m"`; review cache boundaries and cache-write billing.
-- Changing effort: `configuration_update` can change effort in supported standard single-agent Responses requests without rewriting the cached prompt prefix. Keep request-level `reasoning.effort` unchanged so the prefix stays cacheable. Check compatibility limits first.
-- Async tools and mid-turn steering require application support. Prompt text alone does not enable async execution, steering, cancellation, or side-effect reconciliation in Atomic or another harness.
-- EU data residency: GPT-6 family data residency is Standard-processing only; Astra fast mode has no latency SLA.
+- Caching: keep the prompt prefix stable. When effort changes between turns, change it without rewriting the original instructions so the cached prefix survives.
+- Async tool calls and mid-turn steering need host support. Mentioning them in a prompt does not enable them.
+- Approval pauses after migration: if the model keeps asking for approval, apply the templates in [When it asks before doing authorized work](#when-it-asks-before-doing-authorized-work) first.
 
 ## Validate the prompt change
 
-Compare a normal task, an early-stop case, a style-sensitive answer, a permission-boundary case, and a small coding change. Check whether Astra completes authorized work, asks only blocking questions, names instruction conflicts, uses collaboration only where useful, verifies proportionately, and respects forbidden actions. Change one prompt, model, or effort variable at a time so regressions have an identifiable cause. Do not claim measured improvement without running representative comparisons.
+Compare a normal task, an early-stop case, a style-sensitive answer, a permission-boundary case, and a small coding change. Check whether the model completes authorized work, asks only blocking questions, names instruction conflicts, delegates only where useful, verifies proportionately, and respects forbidden actions. Change one template, model, or effort variable at a time so regressions have an identifiable cause. Do not claim measured improvement without running representative comparisons.

@@ -78,9 +78,6 @@ You may give a brief user-facing sentence before a tool call. Use the actual too
 
 Validate structured tool events in the host: printed syntax is not execution. Do not name internal thinking tags or ask for private reasoning as a workaround.
 
-## Configuration and validation notes
+## Validate the prompt change
 
-- The Opus 5 API default is `high`; evaluate `low` and `medium` where quality holds, including review, and use `xhigh` for demanding work only when justified. These are model-specific baselines, not overrides of an explicit user setting.
-- Thinking can be disabled only at `high` or below; `xhigh` and `max` require it. This differs from Opus 5.5, where thinking cannot be disabled.
-- Claude Code 2.1.217+ and Claude Agent SDK controls include `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, and `max_budget_usd`. They are not Atomic settings; a custom system prompt does not inherit the Claude Code preset's delegation instructions automatically.
-- Consult the source's migration guide before changing API controls and verify provider/host support. Test a narrow edit, a review, a long report, and actual tool execution; compare scope, output length, supported findings, latency, and cost. Label checks not run.
+A custom system prompt does not inherit a harness preset's delegation instructions; restate the ones you need. Test a narrow edit, a review, a long report, and actual tool execution; compare scope, output length, supported findings, latency, and cost. Label checks not run.

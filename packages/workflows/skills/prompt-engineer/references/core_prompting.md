@@ -38,7 +38,7 @@ For autonomous work, distinguish safe local actions from external, destructive, 
 
 ## Roles and Message Placement
 
-Use the `system` parameter for a stable role, behavior, and policy. Put request-specific inputs and instructions in the `user` turn. A role should contribute domain judgment or communication style; decorative personas add tokens without improving behavior.
+Use the system prompt for a stable role, behavior, and policy. Put request-specific inputs and instructions in the `user` turn. A role should contribute domain judgment or communication style; decorative personas add tokens without improving behavior.
 
 Example:
 

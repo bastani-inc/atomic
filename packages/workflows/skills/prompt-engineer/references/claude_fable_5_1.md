@@ -4,7 +4,7 @@ Distilled from [Anthropic's Fable 5.1 prompting guide](https://platform.claude.c
 
 ## When long tool sequences look silent
 
-First check that the client renders progress-update thinking blocks; a prompt cannot fix hidden output. Remove old rules such as "hold all findings until the end," then specify the cadence and a whole-task final recap.
+If the client hides progress output, a prompt cannot fix that. Otherwise remove old rules such as "hold all findings until the end," then specify the cadence and a whole-task final recap.
 
 ```text
 Before starting, briefly state what you will establish. Report material findings and blockers as you work. Close with a standalone recap of the whole request: what you found, what you changed, what you verified, and what remains open.
@@ -50,7 +50,7 @@ This limits extras, not requested functionality or mandatory checks. Whole-file 
 
 ## When low-effort answers rely on stale familiarity
 
-At `low` effort, explicitly trigger retrieval for unfamiliar names and fast-changing facts. Recognition is not evidence of current state.
+At lower effort, explicitly trigger retrieval for unfamiliar names and fast-changing facts. Recognition is not evidence of current state.
 
 ```text
 Verify unfamiliar names and current claims before answering. Include the name exactly as the user wrote it in at least one search, even if you recognize a similar name. Use authoritative sources and dates; distinguish what you checked from what you infer. If retrieval is unavailable, say so.
@@ -84,23 +84,22 @@ Give the summarizer an explicit retention contract:
 Preserve the user's requirements, permissions, prohibitions, preferences, and exact identifiers. Record decisions and their reasons, attempted approaches and outcomes, completed work and evidence, unresolved blockers, and the next unfinished steps. Keep hard-to-reconstruct names, paths, numbers, dates, and links exact. Condense prior explanations rather than dropping these constraints.
 ```
 
-The host owns safe history compaction. A summary instruction does not make edited-prefix thinking blocks valid for replay.
+The host owns history compaction; the prompt only controls what the summary keeps. Keep earlier turns unchanged, including thinking. To add a turn-scoped reminder, append it after the tool results in the current user message instead of rewriting an earlier copy, so the cached prefix stays valid.
 
 ## When a long deliverable exhausts the output budget
 
-Prefer the source's `high` baseline unless higher effort yields measured improvement. At `xhigh` or `max`, state the actual configured limit and prioritize the final artifact:
+At high effort, a long artifact can run out of output room before it is finished. State the real limit and prioritize the final artifact:
 
 ```text
-This request has a total output allowance of [actual max_tokens], including thinking and the answer. Reserve room for the complete requested deliverable. Settle its structure and difficult decisions without drafting the entire artifact twice. Return the artifact, not a reconstruction of private reasoning.
+This request has a total output allowance of [actual output limit], including thinking and the answer. Reserve room for the complete requested deliverable. Settle its structure and difficult decisions without drafting the entire artifact twice. Return the artifact, not a reconstruction of private reasoning.
 ```
 
-Replace the placeholder with the real limit. Allocate enough tokens in the request; a prompt cannot increase it. For dense visual inputs, add: "Inspect the relevant regions with the available crop and zoom tools, checking labels and units before reporting values." Tools must actually be available.
+Replace the placeholder with the real limit; a prompt cannot raise it. For dense visual inputs, add: "Inspect the relevant regions with the available crop and zoom tools, checking labels and units before reporting values." Tools must actually be available.
 
-## Compatibility and refusal notes
+## When legitimate coding work is refused
 
-- Start effort evaluations at the model's `high` default and sweep `low`, `medium`, `xhigh`, and `max`. Equal level names across versions do not imply equal thinking.
-- Progress blocks are empty at default `thinking.display: "omitted"`. `display: "updates"` uses `thinking-display-updates-2026-08-18`; `"summarized"` includes reasoning summaries too. Verify provider and host support rather than assuming Atomic exposes these controls.
-- Append assistant turns unchanged, thinking included. For accounts created on or after August 31, 2026, changed prefixes can cause a 400. The `thinking-binding-controls-2026-08-01` beta permits `prefix_mismatch_behavior: "drop_block"`; inspect `input_transformations`, and do not equate dropping blocks with preserving reasoning.
-- Turn-scoped reminders use `clear_at: "next_user_message"` and `mid-conversation-system-clear-at-2026-08-21`. Without that beta, append a text reminder after tool results in the same user message. Never rewrite previous copies. For client compaction, a fresh summary plus user turn without old thinking blocks is the simple safe shape; re-evaluate compaction timing against cache costs.
-- Handle `stop_reason: "refusal"` explicitly. For legitimate coding false positives, supply unfamiliar-language documentation, ask about supported bugs, and avoid unnecessary base64 tool output. These clarify benign tasks, not bypass safeguards; do not request internal reasoning.
-- Validate progress visibility, batching dependencies, scope, retrieval, quotations, output completion, and history replay. Report checks not run; prompt inspection alone does not validate beta API support.
+For false-positive refusals on benign coding tasks, supply documentation for unfamiliar languages or libraries, describe the bug you want fixed, and avoid asking for large encoded outputs such as base64 dumps. These clarify a benign task; they do not bypass safeguards. Do not ask for internal reasoning.
+
+## Validate the prompt change
+
+Check progress visibility, batching dependencies, scope, retrieval, quotations, and output completion on representative cases. Report checks not run; reading the prompt is not validation.

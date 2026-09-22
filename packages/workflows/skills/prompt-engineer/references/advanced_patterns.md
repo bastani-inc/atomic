@@ -1,10 +1,10 @@
 # Advanced Prompting Patterns
 
-Use these patterns for agents, tools, long context, multi-stage work, or model-specific tuning. Keep the common prompt portable; add a model-specific branch only when behavior or API controls differ.
+Use these patterns for agents, tools, long context, multi-stage work, or model-specific tuning. Keep the common prompt portable; add a model-specific branch only when behavior differs.
 
 ## Choose model-specific guidance separately
 
-The [skill's model table](../SKILL.md#model-guides) routes to one page per model, each linked to its official source. Read the target page before selecting effort, verification cadence, delegation, or API controls. Keep those differences out of a shared prompt unless the application deliberately branches by model.
+The [skill's model table](../SKILL.md#model-guides) routes to one page per model, each linked to its official source. Read the target page before tuning effort, verification cadence, or delegation. Keep those differences out of a shared prompt unless the application deliberately branches by model.
 
 ## Agentic Prompt Structure
 
@@ -72,11 +72,11 @@ Quote grounding can focus retrieval in noisy inputs. Require only quotes that su
 
 ## Adaptive Thinking and Effort
 
-Check the target model's thinking default, supported effort levels, and output budget before tuning. Effort names do not guarantee equal reasoning volume across versions. On supported Claude thinking requests, `max_tokens` covers both thinking and visible response; leave room for both. Change effort separately from prompt wording to identify the cause of regressions.
+Check the target model's thinking behavior before tuning. Effort names do not guarantee equal reasoning volume across versions. Where thinking shares the output allowance with the visible response, leave room for both. Change effort separately from prompt wording to identify the cause of regressions.
 
 Do not use visible chain-of-thought instructions or private-deliberation tags as a prompting technique. They are obsolete and can trigger Fable 5 safeguards. Ask for an answer supported by evidence, calculations, test results, or a concise decision rationale that does not solicit private deliberation.
 
-Keep earlier conversation items intact when replaying state. Caching and thinking-history binding rules differ by model and API; read the model page before changing effort, system instructions, or the replayed prefix.
+Keep earlier conversation items intact when replaying state. Caching and history-replay rules differ by model; read the model page before changing effort, system instructions, or the replayed prefix.
 
 ## Prompt Chaining and Examples
 

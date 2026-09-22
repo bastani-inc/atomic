@@ -12,27 +12,25 @@ Provide concise, focused responses. Skip non-essential context, and keep example
 
 Adapt the wording to the specific over-elaboration you observe (excess caveats, restating the question, unnecessary background) rather than reusing this verbatim for every product.
 
-## Effort is the main capability/cost/latency lever
+## Lower effort narrows investigation
 
-Start at `xhigh` for coding and agentic work, and at least `high` for other intelligence-sensitive tasks. `max` can help on the hardest problems but shows diminishing returns and occasional overthinking; `medium` trades capability for lower cost; reserve `low` for short, scoped, latency-sensitive work.
-
-At `low` and `medium`, Opus 4.8 scopes its work strictly to what was asked and can under-investigate moderately complex tasks. If you see shallow reasoning, raise effort before adding reasoning instructions. Where effort must stay low for latency, add a targeted nudge:
+At lower effort, Opus 4.8 scopes its work strictly to what was asked and can under-investigate moderately complex tasks. If you see shallow reasoning, raise effort before adding reasoning instructions. Where effort must stay low for latency, add a targeted nudge:
 
 ```text
 This task involves multistep reasoning. Think carefully through the problem before responding.
 ```
 
-Thinking is off unless the request explicitly sets `thinking: {type: "adaptive"}`, unlike Opus 5 and Sonnet 5. Once adaptive thinking is on, its triggering is steerable; if it thinks more often than the task needs (common with large or complex system prompts), say so directly and measure the effect:
+When adaptive thinking is on, its triggering is steerable. If it thinks more often than the task needs (common with large or complex system prompts), say so directly and measure the effect:
 
 ```text
 Thinking adds latency and should only be used when it will meaningfully improve answer quality — typically for problems that require multistep reasoning. When in doubt, respond directly.
 ```
 
-At `max` or `xhigh` effort, leave enough `max_tokens` headroom for thinking plus tool calls and subagent turns; the source suggests starting around 64k and tuning from there. Do not ask the model to expose private reasoning as response text as a substitute for thinking visibility.
+Do not ask the model to expose private reasoning as response text as a substitute for thinking visibility.
 
 ## Tool use favors reasoning over calling
 
-Opus 4.8 can reach for reasoning instead of a tool it should have used. Raising effort increases tool use, especially for agentic search and coding at `high`/`xhigh`. If a specific tool (for example, web search) is still under-used, explain concretely when and why it applies rather than adding a blanket "always use tools" rule that fires on tasks needing no current evidence.
+Opus 4.8 can reach for reasoning instead of a tool it should have used. Raising effort increases tool use, especially for agentic search and coding. If a specific tool (for example, web search) is still under-used, explain concretely when and why it applies rather than adding a blanket "always use tools" rule that fires on tasks needing no current evidence.
 
 ```text
 Use the available search tool for current API behavior or facts not established by the supplied materials. Read the authoritative source before making a compatibility claim. If retrieval is unavailable, distinguish inference from verified facts instead of claiming you checked.
@@ -100,8 +98,6 @@ Report supported issues within scope, including lower-severity findings if the r
 
 For a single pass with no separate filter, give a concrete bar instead of a qualitative one: incorrect behavior, a failing test, or a misleading result, while excluding pure style or naming preferences. Preserve any severity limit the user explicitly requested.
 
-## Compatibility notes
-
-The source lists `computer_toolset_20260801` and the earlier `computer_20251124` computer-use tool, plus `browser_toolset_20260801`, on the Claude API and Google Cloud. A provider capability is not proof Atomic or another host exposes it; verify before writing a tool-dependent prompt. For computer-use screenshots, the source reports 1080p as a good performance/cost balance and 720p or 1366×768 as lower-cost alternatives, with a 2576px/3.75MP maximum; tune resolution and effort against measured task accuracy rather than defaults alone.
+## Validate the prompt change
 
 Test literal scope, tool triggering, review recall, and design adherence on representative cases, and compare effort changes separately from prompt changes. Preserve required checks and real permission boundaries throughout.

@@ -91,7 +91,7 @@ Use, in order of preference:
 4. parser validation and bounded retries;
 5. focused prompt chaining when stages need separate contracts.
 
-Do not prefill the final assistant turn. Claude 4.6 and later reject it with a 400 error. To suppress preambles, instruct the model to begin with the outcome; for JSON or classifications, use structured outputs, enums, or tools.
+Do not prefill the final assistant turn; current Claude models reject it. To suppress preambles, instruct the model to begin with the outcome; for JSON or classifications, use structured outputs, enums, or tools.
 
 ## Security and Prompt Injection
 
@@ -122,11 +122,11 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 | Long visible answer | No explicit output length contract | Specify preserved content, omissions, sections, and word limit |
 | High latency/cost | Excess prompt text or effort | Delete first, then compare one lower effort level |
 | Long-context miss | Query precedes large documents | Put documents first and query last; Anthropic measured up to ~30% improvement |
-| Fable 5 refusal/fallback | Prompt solicits internal reasoning text | Request evidence and conclusions; consume API-provided summaries if needed |
+| Fable 5 refusal/fallback | Prompt solicits internal reasoning text | Request evidence and conclusions instead of reasoning text |
 
 ## Model and Effort Regression Checks
 
-Preserve the current model and effort as the baseline before tuning. Read the relevant page from the [model table](../SKILL.md#model-guides) for migration defaults and supported controls. Effort names do not imply equal reasoning volume across models. Compare lower levels where quality holds and higher levels only where the gain justifies cost; do not silently change thinking defaults, output budgets, or API compatibility.
+Preserve the current model and effort as the baseline before tuning. Read the relevant page from the [model table](../SKILL.md#model-guides) for migration behavior. Effort names do not imply equal reasoning volume across models. Compare lower levels where quality holds and higher levels only where the gain justifies cost.
 
 Effort is not a substitute for missing success criteria, routing, dependencies, validation, or stop rules. On Opus 5, effort does not reliably control visible response length; use an explicit length and shape contract.
 

@@ -5,7 +5,7 @@ description: Write, evaluate, migrate, or troubleshoot prompts for GPT and Claud
 
 # Prompt engineering
 
-Create or revise prompts for the user's target model. Keep the common prompt portable and load only the relevant model guide. Each page connects an observed behavior to a prompt adjustment, adaptable wording, and caveats. Use the matching patterns rather than pasting the whole guide into a prompt. API compatibility notes are secondary; defaults, effort levels, and features do not transfer automatically between models or providers.
+Create or revise prompts for the user's target model. Keep the common prompt portable and load only the relevant model guide. Each page connects an observed behavior to a prompt adjustment, prompt wording, and caveats. Use the matching patterns rather than pasting the whole guide into a prompt. The guides cover prompts, not API request settings; behavior does not transfer automatically between models.
 
 ## Workflow
 
@@ -28,15 +28,15 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 
 | Target | Read | Main distinctions |
 | --- | --- | --- |
-| GPT-6 Astra, Sol, Luna | `references/gpt_6.md` | Completion and approval pauses, instruction sensitivity, proportionate verification, Sol/Luna effort and tool-calling differences, API migration |
-| GPT-5.6 Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, effort sweep, pro mode, programmatic tools, caching |
-| GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, explicit validation, assistant phase replay |
-| Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, thinking-history binding, completion and output budget |
+| GPT-6 Astra, Sol, Luna | `references/gpt_6.md` | OpenAI's official templates for approval pauses, skill-instruction conflicts, writing style, delegation, and verification; Sol/Luna effort sensitivity |
+| GPT-5.6 Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, high-effort and pro-mode prompts, programmatic tool stages, cache-friendly ordering |
+| GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, grounded drafts, explicit validation |
+| Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, append-only reminders, completion within the output allowance |
 | Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |
-| Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, medium effort baseline, progress blocks, bounded unattended continuation, pasted-content boundaries |
+| Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, progress cadence, bounded unattended continuation, pasted-content boundaries |
 | Claude Opus 5 | `references/claude_opus_5.md` | Separate response length from effort, remove redundant verification, bound delegation |
-| Claude Opus 4.8 | `references/claude_opus_4_8.md` | Explicit adaptive thinking, literal scope, tool triggering, design alternatives |
-| Claude Sonnet 5 | `references/claude_sonnet_5.md` | Changed thinking default, unsupported manual budgets/sampling, literal scope and review recall |
+| Claude Opus 4.8 | `references/claude_opus_4_8.md` | Steerable thinking, literal scope, tool triggering, design alternatives |
+| Claude Sonnet 5 | `references/claude_sonnet_5.md` | Thinking on by default, variety through prompts instead of sampling, literal scope and review recall |
 
 For a migration, read both source and target pages when both are listed. For a cross-model prompt, keep common requirements in the main contract and isolate only the differences that affect behavior. Do not load every page for a single-model task.
 
@@ -45,12 +45,12 @@ For a migration, read both source and target pages when both are listed. For a c
 - State the result and completion bar; leave routine path selection to the model.
 - Give relevant context and a short reason for important constraints.
 - Reserve absolute language for true invariants such as safety, permission, required fields, and forbidden actions. Use conditional rules for judgment calls.
-- Specify output length, sections, format, and validation when the user or a parser depends on them. Use schemas for machine output where supported.
+- Specify output length, sections, format, and validation when the user or a parser depends on them. Use schemas for machine output when the host enforces them.
 - Use descriptive XML tags to separate mixed instructions, context, examples, and untrusted documents when helpful. Simple prompts need no markup.
 - Keep examples only when they improve measured behavior. Ensure they obey the written contract.
 - Require evidence for consequential claims, permit uncertainty, and define what happens when evidence is missing.
 - Request conclusions, evidence, observed behavior, and validation results. Do not ask the model to reconstruct private reasoning in response text.
 - Calibrate verification and delegation to the model and task. Preserve required checks, real approval gates, and the harness's concurrency and execution rules.
-- Validate API compatibility before recommending parameters. A provider capability is not proof that Atomic or another host exposes it.
+- Mentioning a tool or capability in a prompt does not provide it. Write prompts only for tools the host actually exposes.
 
 Prompting reduces errors but does not eliminate them. Preserve safety, business, evidence, permission, and downstream parser constraints while optimizing.

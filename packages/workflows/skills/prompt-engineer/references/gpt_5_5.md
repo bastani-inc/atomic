@@ -41,7 +41,7 @@ Collaboration: make reasonable assumptions when the request is clear enough to a
 Output: lead with the answer. Keep material caveats, required evidence, and next steps. Use short paragraphs by default; use bullets only when they improve comparison or scanning.
 ```
 
-Caveats: do not use tone instructions to hide uncertainty, omit caveats, or soften required refusal/permission boundaries. Set `text.verbosity` intentionally where supported; visible length is separate from reasoning quality.
+Caveats: do not use tone instructions to hide uncertainty, omit caveats, or soften required refusal/permission boundaries. Visible length is separate from reasoning quality; ask for the length you want.
 
 ## When a long or tool-heavy task feels slow to start
 
@@ -55,7 +55,7 @@ Adaptable prompt:
 For a multi-step or tool-using task, begin with one short user-visible update that acknowledges the request and states the first useful step. Then continue with the task. Do not narrate every tool call or reveal private reasoning.
 ```
 
-Caveats: avoid preambles for latency-critical single-turn answers where the extra text is noise. If your application manually replays assistant items, preserve returned `phase` values exactly.
+Caveats: avoid preambles for latency-critical single-turn answers where the extra text is noise.
 
 ## When retrieval can sprawl or under-support claims
 
@@ -109,20 +109,14 @@ Render the artifact before finalizing when the environment supports it. Inspect 
 
 Caveats: do not turn validation into repeated self-check loops with no new evidence. Keep required repository checks and user-requested regressions.
 
-## Compatibility notes
+## Prompt structure notes
 
-Verify the actual SDK and provider before changing configuration.
-
-- API path: use Responses for reasoning, tool-calling, and multi-turn work.
-- Effort: default is `medium`. Evaluate `low` for latency-sensitive tasks that still need tools or planning. Reserve `none` for latency-critical work that does not need reasoning or chained tools. Increase to `high` or `xhigh` only for measured quality gains.
 - Effort regressions: resolve contradictory instructions, open-ended tools, and weak stopping rules before increasing effort; more reasoning can increase unnecessary searching when the contract is unclear.
-- Structured outputs: prefer supported schema validation over duplicating an entire schema in prose; keep semantic requirements, missing-data behavior, and validation rules in the prompt.
-- Continuations: use `previous_response_id` or replay relevant returned output items for stateless/ZDR flows. Preserve assistant `phase` values unchanged when manually replaying history; do not add `phase` to user messages.
-- Caching: keep static instructions first and dynamic user context last. Use `prompt_cache_key` consistently for shared prefixes and track cached tokens.
+- Structured output: when a schema is enforced, do not repeat the whole schema in prose; keep semantic requirements, missing-data behavior, and validation rules in the prompt.
+- Caching: keep static instructions first and dynamic user context last, and keep shared prefixes identical across requests.
 - Compaction: preserve completed actions, active assumptions, IDs, tool outcomes, unresolved blockers, and the next concrete goal.
-- Dates: the official guide says GPT-5.5 knows the current UTC date. Add explicit date/timezone context only for business-specific, policy-effective, user-local, or other non-UTC references.
-- Images: unset/`auto` uses `original` behavior up to 10,240,000 pixels or 6,000 pixels per dimension; explicit `high` preserves up to 2,500,000 pixels or 2,048 pixels; `low` resizes above 512 pixels more aggressively. Check cost and accuracy on visual tasks.
-- Tool features, hosted tools, tool search, compaction, and phase handling are not enabled merely by mentioning them in an Atomic skill.
+- Dates: GPT-5.5 knows the current UTC date. Add explicit date or timezone context only for business-specific, policy-effective, user-local, or other non-UTC references.
+- Mentioning a tool or feature in a prompt does not enable it; the host must provide it.
 
 ## Validate the prompt change
 

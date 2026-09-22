@@ -4,15 +4,15 @@ Use this reference for long autonomous tasks, progress reliability, delegation, 
 
 ## Turns run much longer by default
 
-Hard tasks can run for many minutes per request, and autonomous runs can extend for hours, especially when the model gathers context, builds, and self-verifies. Review client timeouts, streaming, and progress indicators before adopting Fable 5, and prefer asynchronous monitoring (scheduled checks, not blocking waits) for genuinely long runs. Do not raise repository test budgets or execution policy merely because long turns are now possible. On ambiguous tasks, keep the model from overplanning:
+Hard tasks can run for many minutes per request, and autonomous runs can extend for hours, especially when the model gathers context, builds, and self-verifies. On ambiguous tasks, keep the model from overplanning:
 
 ```text
 When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue in user-facing messages. If you are weighing a choice, give a recommendation, not an exhaustive survey. This does not apply to thinking blocks.
 ```
 
-## Effort trades capability for latency and cost
+## Higher effort can widen scope on routine work
 
-Start at `high` for most tasks. Use `xhigh` for the most capability-sensitive work, and evaluate `medium` or `low` for routine or interactive tasks; lower effort on Fable 5 still performs well and can exceed `xhigh` on prior models. At higher effort on routine work, the model can gather context and deliberate beyond what the task needs, alongside strong verification and rigorous output. To curb unrequested scope growth at higher effort:
+Lower effort still performs well on routine or interactive tasks. At higher effort on routine work, the model can gather context and deliberate beyond what the task needs, alongside strong verification and rigorous output. To curb unrequested scope growth:
 
 ```text
 Do not add features, refactors, or abstractions beyond the task. Use the simplest design that fully satisfies the request. Avoid speculative handling for impossible scenarios, while preserving existing validation, required checks, and meaningful safety boundaries.
@@ -113,8 +113,10 @@ Vague thresholds like "be conservative" can make the model investigate just as t
 Within the requested scope, report supported findings with their trigger, location, impact, and evidence. Label plausible but unverified concerns separately. If a later review pass will rank them, do not silently discard lower-severity findings; retain any severity limits the user explicitly set.
 ```
 
-## Compatibility notes
+## Requests for its reasoning can trigger refusals
 
-Fable 5 uses adaptive thinking only, with summarized-only thinking output and no manual extended-thinking budget; verify these against the actual provider and host before changing request parameters. It runs safety classifiers for offensive cybersecurity, biology/life-sciences content, and extraction of its summarized thinking; benign work in these areas can still trigger `stop_reason: "refusal"`, with server- or client-side fallback to Opus 4.8 configurable at the application layer. Do not ask the model to echo, transcribe, or reconstruct its private reasoning in response text; that request pattern can itself trigger a `reasoning_extraction` refusal. Request conclusions, citations, and validation evidence instead, and read provider-supplied thinking blocks where the integration supports them.
+Fable 5 runs safety classifiers for offensive cybersecurity, biology and life-sciences content, and extraction of its reasoning. Benign work in these areas can still be refused. Do not ask the model to echo, transcribe, or reconstruct its private reasoning in the response; that request pattern can itself trigger a refusal. Ask for conclusions, citations, and validation evidence instead.
 
-Evaluate a difficult bounded task, a routine edit, and an interrupted long run. Check completion, authorization, scope, accurate status, and actual tool execution, and compare effort levels separately from prompt changes. This prompting guide does not establish API compatibility for every provider or Atomic integration; consult the linked model introduction before changing request parameters.
+## Validate the prompt change
+
+Evaluate a difficult bounded task, a routine edit, and an interrupted long run. Check completion, authorization, scope, accurate status, and actual tool execution. Change one prompt variable at a time.

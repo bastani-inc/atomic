@@ -6,7 +6,7 @@ Use this reference for the GPT-5.6 family. Guidance checked on September 5, 2026
 
 Observed behavior: GPT-5.6 often maintains or improves quality with fewer tokens, especially when prompts and tool descriptions are lean. Over-specified legacy prompts can waste context and constrain useful judgment.
 
-Prompt adjustment: preserve product requirements and measured fixes, but remove repeated instructions, redundant examples, and irrelevant tools one group at a time. Evaluate the chosen variant on the actual workload: `gpt-5.6` routes to Sol for flagship capability, Terra balances quality and price, and Luna targets efficient high-volume work. API names do not guarantee the agent catalog exposes those variants.
+Prompt adjustment: preserve product requirements and measured fixes, but remove repeated instructions, redundant examples, and irrelevant tools one group at a time. Evaluate the chosen variant on the actual workload: `gpt-5.6` routes to Sol for flagship capability, Terra balances quality and price, and Luna targets efficient high-volume work.
 
 Adaptable prompt:
 
@@ -38,7 +38,7 @@ Caveats: if the user explicitly asks for review-only/no-edit work, that wins. Pr
 
 Observed behavior: GPT-5.6 tends to be more concise than GPT-5.5. Migrated prompts that also demand brevity can lose caveats, evidence, or next steps.
 
-Prompt adjustment: say what a short answer must retain and what can be cut. Use `text.verbosity` for request-level detail when the API path supports it, then prompt task-specific length and content.
+Prompt adjustment: say what a short answer must retain and what can be cut, and state the task-specific length and content.
 
 Adaptable prompt:
 
@@ -50,9 +50,9 @@ If the user reports a problem, acknowledge the specific issue before the next st
 
 Caveats: do not let brevity remove required output fields, citations, validation status, or uncertainty that changes a decision.
 
-## When effort, pro mode, or prior reasoning needs tuning
+## When high effort or pro mode is enabled
 
-Observed behavior: GPT-5.6 supports `none`, `low`, `medium`, `high`, `xhigh`, and `max`, with default `medium`. The guide recommends preserving GPT-5.5/5.4 effort on migration, then comparing one level lower. Pro mode can improve difficult tasks but adds latency and bills aggregated model work.
+Observed behavior: higher effort and pro mode can improve difficult tasks but add latency and cost. On migration from GPT-5.5, keep the previous effort, then compare one level lower.
 
 Prompt adjustment: keep the prompt outcome-focused. Do not ask for private reasoning or multiple visible candidate answers merely because pro mode or high effort is enabled.
 
@@ -62,7 +62,7 @@ Adaptable prompt:
 Use the selected effort or mode to produce one complete answer that satisfies the task. Do not expose private reasoning. For difficult analysis, show conclusions, supporting evidence, assumptions, and unresolved risks. Prefer the lowest effort or mode that passes the same representative evaluations.
 ```
 
-Caveats: use `high`, `xhigh`, `max`, or pro mode only where measured quality gain justifies latency and cost. With persisted reasoning, use `all_turns` for stable goals and `current_turn` when earlier reasoning is no longer relevant; preserve API-returned items when manually replaying history.
+Caveats: keep higher effort or pro mode only where a measured quality gain justifies the latency and cost.
 
 ## When a tool-heavy workflow needs reduction
 
@@ -78,7 +78,7 @@ Use programmatic tool calling only for this bounded stage: [stage]. Eligible too
 Stop when [condition] is met. Retry transient failures at most [N] times. Do not repeat completed calls or perform side-effecting actions. Use direct tool calls for semantic judgment, approvals, source inspection, and final validation.
 ```
 
-Caveats: the application must enable PTC, opt tools in, handle `program` and `program_output` items, and preserve `call_id`/`caller` linkage. A correct program result is not enough if the final answer drops a citation, field, or caveat. Prompt text does not enable PTC in Atomic or another harness.
+Caveats: the host must enable programmatic tool calling and opt tools in; prompt text alone does not. A correct program result is not enough if the final answer drops a citation, field, or caveat.
 
 ## When frontend or visual work is part of the task
 
@@ -96,19 +96,12 @@ Render or inspect the result before finalizing. Fix clipping, spacing, hierarchy
 
 Caveats: if the host cannot render or inspect the UI, report that limitation and use the best static evidence available. Do not claim visual validation from code inspection alone.
 
-## Compatibility notes
+## Prompt structure notes
 
-Verify provider and SDK support before adopting these controls.
-
-- Model choice: `gpt-5.6` routes to Sol; choose Sol, Terra, or Luna by workload and configured availability.
-- API path: use Responses for reasoning, tool-calling, and multi-turn work.
-- Effort: supported values are `none`, `low`, `medium`, `high`, `xhigh`, `max`; default is `medium`.
-- Pro mode: keep the selected model and set `reasoning.mode: "pro"`; do not invent a separate model slug. Effort remains independent.
-- Persisted reasoning: GPT-5.6 defaults to `all_turns`; use `previous_response_id` or preserve prior user inputs and every response output item. With `store: false` or Zero Data Retention, replay encrypted reasoning items returned by the API.
-- Caching: implicit caching remains; cache writes cost 1.25× uncached input. Track cached and cache-write tokens. Use explicit breakpoints where useful and replace `prompt_cache_retention` with `prompt_cache_options.ttl`.
-- Images: `original` or `auto` preserve dimensions unless a side exceeds 65,535 pixels; images still over the 30,000-patch limit are rejected.
-- Safeguards: real-time cyber/biology classifiers can refuse requests or pause streaming. Handle refusals and delays honestly; do not prompt around safeguards. For individual users, send a privacy-preserving `safety_identifier` when supported.
+- Model choice: choose Sol, Terra, or Luna by workload and test the prompt on the variant you will run.
+- Caching: keep static instructions and tool definitions first and dynamic context last, so the shared prefix stays cacheable. Do not rewrite earlier turns when replaying history.
+- Safeguards: real-time cyber and biology classifiers can refuse requests or pause streaming. Do not prompt around safeguards; ask for the legitimate task directly.
 
 ## Validate the prompt change
 
-Compare a normal task, a terse-answer case, a tool-heavy reduction, a frontend/visual case if relevant, and a permission-boundary case. Measure task success, final-answer completeness, required evidence, latency, tokens, cost, and refusal handling. Change one prompt, model, effort, or API feature at a time.
+Compare a normal task, a terse-answer case, a tool-heavy reduction, a frontend/visual case if relevant, and a permission-boundary case. Measure task success, final-answer completeness, required evidence, latency, tokens, cost, and refusal handling. Change one prompt, model, or effort variable at a time.

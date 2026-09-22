@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Generalized the prompt-engineering GPT-6 guide (`references/gpt_6.md`, formerly `gpt_6_astra.md`) to cover GPT-6 Sol and Luna: effort sweeps backed by FrontierCode 1.1 and Artificial Analysis results, `none` effort support, Chat Completions tool calling only at `none`, and the Responses requirement for reasoning with tools.
+- Generalized the prompt-engineering GPT-6 guide (`references/gpt_6.md`, formerly `gpt_6_astra.md`) to cover GPT-6 Sol and Luna, and replaced its paraphrased snippets with OpenAI's official GPT-6 prompt templates for follow-through, approval timing, skill-instruction priority, writing style, delegation, and verification.
+- Focused every prompt-engineering model guide on prompts: removed API request settings such as beta headers, output-token limits, sampling parameters, tool-choice values, API paths, and pricing, while keeping prompt-ordering and caching guidance.
 - Added source-attributed Claude Opus 5.5 guidance to the prompt-engineering skill, covering effort calibration, always-on thinking, progress visibility, bounded unattended completion, and API migration checks.
 - Reworked all nine prompt-engineering model guides around observed behaviors, practical prompt adjustments, adaptable examples, and caveats, with API details kept secondary.
 
