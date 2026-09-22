@@ -639,6 +639,27 @@ describe("session-switch confirmation says running workflows will be quit (#3203
 			assert.ok(handler);
 			assert.equal(await handler({ reason, entryId: "e1", position: "before" }, {}), undefined);
 		});
+
+		test(`${reason} in a headless host proceeds without consulting its no-op confirm (#3203)`, async () => {
+			startBareRun(`no-ui-${reason}`, "switch-no-ui");
+			const handler = captureHandlers().get(event);
+			assert.ok(handler);
+			let asked = false;
+			const result = await handler(
+				{ reason, entryId: "e1", position: "before" },
+				{
+					hasUI: false,
+					ui: {
+						confirm: async () => {
+							asked = true;
+							return false;
+						},
+					},
+				},
+			);
+			assert.equal(result, undefined);
+			assert.equal(asked, false);
+		});
 	}
 
 	test("no confirmation is shown when nothing is running (#3203)", async () => {

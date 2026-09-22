@@ -156,7 +156,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		).length;
 		if (inFlightWorkflowCount === 0) return undefined;
 		const confirm = ctx?.ui?.confirm;
-		if (typeof confirm !== "function") return undefined;
+		if (ctx?.hasUI === false || typeof confirm !== "function") return undefined;
 		const { title, message } = sessionSwitchQuitConfirmation(reason, inFlightWorkflowCount);
 		const confirmed = await Promise.resolve(confirm(title, message)).catch(() => false);
 		if (confirmed) return undefined;
