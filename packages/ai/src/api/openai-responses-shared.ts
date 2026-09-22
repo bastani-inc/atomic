@@ -129,6 +129,13 @@ export function resolveRequestedServiceTier(
 	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
 }
 
+type ServiceTier = NonNullable<ResponseCreateParamsStreaming["service_tier"]>;
+
+export function normalizeResponseServiceTier(serviceTier: string | null | undefined): ServiceTier | undefined {
+	if (serviceTier === null || serviceTier === undefined) return undefined;
+	return serviceTier === "fast" ? "priority" : (serviceTier as ServiceTier);
+}
+
 /**
  * Reject a payload hook that rewrote a field the model's route owns.
  *
@@ -644,9 +651,10 @@ export async function processResponsesStream<TApi extends Api>(
 		}
 		calculateCost(model, output.usage);
 		if (options?.applyServiceTierPricing) {
+			const responseServiceTier = normalizeResponseServiceTier(response?.service_tier);
 			const serviceTier = options.resolveServiceTier
-				? options.resolveServiceTier(response?.service_tier, options.serviceTier)
-				: (response?.service_tier ?? options.serviceTier);
+				? options.resolveServiceTier(responseServiceTier, options.serviceTier)
+				: (responseServiceTier ?? options.serviceTier);
 			options.applyServiceTierPricing(output.usage, serviceTier);
 		}
 		// Map status to stop reason. For incomplete responses, retain the provider's

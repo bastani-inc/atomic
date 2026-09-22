@@ -575,6 +575,50 @@ describe("openai-responses provider defaults", () => {
 		expect(result.usage.cost.total).toBe((base.cost.input + base.cost.output) * 2.5 * tokenScale);
 	});
 
+	it.each(["gpt-6-sol", "gpt-6-luna"] as const)(
+		"prices a %s fast variant at 2x when the response reports the fast tier by name",
+		async (modelId) => {
+			const base = getModel("openai", modelId);
+			const fast: Model<"openai-responses"> = {
+				...base,
+				id: `${modelId}-fast`,
+				fastRoute: { baseModelId: modelId, upstreamModelId: modelId, serviceTier: "priority" },
+			};
+			const tokenCount = 100_000;
+			const tokenScale = tokenCount / 1_000_000;
+			let capturedPayload: { model?: string; service_tier?: string } | undefined;
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+				capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+				const sse = `data: ${JSON.stringify({
+					type: "response.completed",
+					response: {
+						status: "completed",
+						service_tier: "fast",
+						usage: {
+							input_tokens: tokenCount,
+							output_tokens: tokenCount,
+							total_tokens: tokenCount * 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				})}\n\n`;
+				return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+			});
+
+			const result = await streamOpenAIResponses(
+				fast,
+				normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+				{ apiKey: "test-key" },
+			).result();
+
+			expect(capturedPayload?.model).toBe(modelId);
+			expect(capturedPayload?.service_tier).toBe("priority");
+			expect(result.model).toBe(`${modelId}-fast`);
+			expect(result.usage.cost.input).toBeCloseTo(base.cost.input * 2 * tokenScale, 12);
+			expect(result.usage.cost.total).toBeCloseTo((base.cost.input + base.cost.output) * 2 * tokenScale, 12);
+		},
+	);
+
 	/**
 	 * The route is the authority: a per-request option cannot downgrade a fast variant, because fast
 	 * versus normal is model identity and the request is still recorded and billed as the fast one.

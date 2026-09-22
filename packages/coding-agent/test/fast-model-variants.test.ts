@@ -384,6 +384,34 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.equal(base.fastRoute, undefined);
 	});
 
+	it.each([
+		["openai", "gpt-6-sol"],
+		["openai", "gpt-6-luna"],
+		["openai-codex", "gpt-6-sol"],
+		["openai-codex", "gpt-6-luna"],
+	] as const)("derives the canonical fast identity for %s/%s", async (provider, modelId) => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-fast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+
+		const base = runtime.getModel(provider, modelId);
+		const fast = runtime.getModel(provider, `${modelId}-fast`);
+		assert.ok(base);
+		assert.ok(fast);
+		assert.equal(fast.api, base.api);
+		assert.deepEqual(fast.cost, base.cost);
+		assert.deepEqual(fast.fastRoute, {
+			baseModelId: modelId,
+			upstreamModelId: modelId,
+			serviceTier: FAST_MODEL_SERVICE_TIER,
+		});
+		assert.equal(base.fastRoute, undefined);
+	});
+
 	it("gates Copilot Astra fast on the exact account entitlement without a priority tier", async () => {
 		const entitled = await runtimeWithCopilotCredential(["gpt-6-astra-fast"]);
 		const fast = entitled.getModel("github-copilot", "gpt-6-astra-fast");

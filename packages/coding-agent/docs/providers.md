@@ -66,6 +66,8 @@ If the Codex backend reports that an OAuth/auth token was invalidated or revoked
 
 GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Codex currently marks Astra as hidden in its bundled catalog, so access can depend on the account, rollout, and minimum client policy even though Atomic lists the model.
 
+GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`. Each has a derived `-fast` choice, such as `openai-codex/gpt-6-sol-fast`, that sends the base upstream model with `service_tier: priority`. GitHub Copilot does not list Sol or Luna yet, so there is no Copilot fast choice for them.
+
 Codex describes Astra Fast as "2x speed, increased usage." OpenAI prices Fast at twice the applicable API token rates. Pick the fast identity only when the latency reduction is worth the higher usage and price.
 
 ### Fast models
