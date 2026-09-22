@@ -32,7 +32,9 @@ export async function loginIsolatedOAuthProvider(
  *
  * The engine owns credential storage for the isolated runtime, so the frontend
  * only collects the key and adopts the engine's catalog and credential snapshot
- * afterwards. A cancelled dialog persists nothing on either side. The engine save
+ * afterwards. A dialog cancelled before the engine save is sent persists nothing on
+ * either side; once the save is in flight it completes and the login is reported, the
+ * same commit point the local credential store uses. The engine save
  * deliberately skips the remote catalog refresh: catalog freshness belongs to
  * /model's bounded background refresh, and a failed fetch would otherwise leave the
  * key persisted in the engine while the frontend took the error branch.
