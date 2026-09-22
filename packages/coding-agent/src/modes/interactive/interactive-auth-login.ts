@@ -146,7 +146,7 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 	};
 
 	try {
-		await this.session.modelRuntime.login(providerId, "api_key", {
+		const loginResult = await this.runtimeHost.loginApiKeyProvider(providerId, {
 			signal: dialog.signal,
 			prompt: (prompt) =>
 				dialog.showPrompt(prompt.message, "placeholder" in prompt ? prompt.placeholder : undefined),
@@ -156,9 +156,7 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 			},
 		});
 		restoreEditor();
-		await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel, {
-			modelsRefreshed: true,
-		});
+		await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel, loginResult);
 	} catch (error: unknown) {
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);

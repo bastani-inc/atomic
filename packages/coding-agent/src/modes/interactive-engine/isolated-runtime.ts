@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AuthInteraction } from "@bastani/pi-ai";
 import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
@@ -21,7 +22,11 @@ import type {
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
 import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
-import { type AtomicOAuthLoginCallbacks, loginIsolatedOAuthProvider } from "./isolated-auth.ts";
+import {
+	type AtomicOAuthLoginCallbacks,
+	loginIsolatedApiKeyProvider,
+	loginIsolatedOAuthProvider,
+} from "./isolated-auth.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
@@ -245,6 +250,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	override async loginOAuthProvider(provider: string, callbacks: AtomicOAuthLoginCallbacks) {
 		return loginIsolatedOAuthProvider(super.session, this.client, this.remoteModelCatalog, provider, callbacks);
+	}
+
+	override async loginApiKeyProvider(provider: string, interaction: AuthInteraction) {
+		return loginIsolatedApiKeyProvider(super.session, this.client, this.remoteModelCatalog, provider, interaction);
 	}
 
 	override async logoutProvider(provider: string) {

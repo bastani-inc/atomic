@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, parse, resolve } from "node:path";
+import type { AuthInteraction } from "@bastani/pi-ai";
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { resolvePath } from "../utils/paths.ts";
@@ -331,6 +332,13 @@ export class AgentSessionRuntime {
 	): Promise<{ modelsRefreshed: boolean }> {
 		return this.admit(async () => {
 			await loginRuntimeOAuthProvider(this.session, provider, callbacks);
+			return { modelsRefreshed: true };
+		});
+	}
+
+	async loginApiKeyProvider(provider: string, interaction: AuthInteraction): Promise<{ modelsRefreshed: boolean }> {
+		return this.admit(async () => {
+			await this.session.modelRuntime.login(provider, "api_key", interaction);
 			return { modelsRefreshed: true };
 		});
 	}

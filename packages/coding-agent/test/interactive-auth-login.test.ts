@@ -31,11 +31,12 @@ describe("interactive API-key login persistence failures", () => {
 		const showStatus = vi.fn();
 		const completeProviderAuthentication = vi.fn();
 		const editor = {};
-		const login = vi.fn(async () => {
+		const loginApiKeyProvider = vi.fn(async () => {
 			throw saveError;
 		});
 		const harness = {
-			session: { model: undefined, modelRuntime: { login } },
+			session: { model: undefined },
+			runtimeHost: { loginApiKeyProvider },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
 			editor,
@@ -51,9 +52,8 @@ describe("interactive API-key login persistence failures", () => {
 		) => Promise<void>;
 		await showApiKeyLoginDialog.call(harness, "example", "Example Provider");
 
-		expect(login).toHaveBeenCalledWith(
+		expect(loginApiKeyProvider).toHaveBeenCalledWith(
 			"example",
-			"api_key",
 			expect.objectContaining({
 				prompt: expect.any(Function),
 				notify: expect.any(Function),
@@ -63,6 +63,35 @@ describe("interactive API-key login persistence failures", () => {
 		expect(showStatus).not.toHaveBeenCalled();
 		expect(showError).toHaveBeenCalledWith("Failed to save API key for Example Provider: auth.json is read-only");
 		expect(harness.editorContainer.addChild).toHaveBeenLastCalledWith(editor);
+	});
+
+	it("completes with the runtime host's refreshed-catalog result (#3193)", async () => {
+		vi.spyOn(LoginDialogComponent.prototype, "showPrompt").mockResolvedValue("secret-key");
+		const completeProviderAuthentication = vi.fn(async () => {});
+		const loginApiKeyProvider = vi.fn(async () => ({ modelsRefreshed: true }));
+		const editor = {};
+		const harness = {
+			session: { model: undefined },
+			runtimeHost: { loginApiKeyProvider },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor,
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+			completeProviderAuthentication,
+		};
+
+		const showApiKeyLoginDialog = InteractiveModeBase.prototype.showApiKeyLoginDialog as (
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
+		) => Promise<void>;
+		await showApiKeyLoginDialog.call(harness, "typesafe-ai", "TypeSafe Jev");
+
+		expect(completeProviderAuthentication).toHaveBeenCalledWith("typesafe-ai", "TypeSafe Jev", "api_key", undefined, {
+			modelsRefreshed: true,
+		});
+		expect(harness.showError).not.toHaveBeenCalled();
 	});
 });
 
