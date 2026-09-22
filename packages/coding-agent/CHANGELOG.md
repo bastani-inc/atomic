@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Recorded Artificial Analysis Intelligence Index results for Claude Opus 5.5 in the evals snapshot used by automatic model routing.
+- Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for Claude Opus 5.5 in the evals snapshot used by automatic model routing.
 
 ### Fixed
 
