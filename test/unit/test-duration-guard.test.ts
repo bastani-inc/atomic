@@ -295,7 +295,7 @@ test("built Node MCP ownership is scored against its declared timeout expression
 	const scored = evaluateDurations(
 		report([
 			{
-				file: "test/integration/sdk-builtin-host-parity.test.ts",
+				file: "test/integration/sdk-builtin-host-parity-mcp-web.test.ts",
 				tests: [{ title: "built Node lazy MCP HTTP ownership", status: "passed", duration: 25_265 }],
 			},
 		]),
@@ -322,8 +322,12 @@ test("built Node table cases retain their existing structural budgets", () => {
 	const scored = evaluateDurations(
 		report([
 			{
-				file: "test/integration/sdk-builtin-host-parity.test.ts",
-				tests: cases.map(([title, duration]) => ({ title, duration, status: "passed" })),
+				file: "test/integration/sdk-builtin-host-parity-shared-siblings.test.ts",
+				tests: [{ title: cases[0][0], duration: cases[0][1], status: "passed" }],
+			},
+			{
+				file: "test/integration/sdk-builtin-host-parity-mcp-web.test.ts",
+				tests: cases.slice(1).map(([title, duration]) => ({ title, duration, status: "passed" })),
 			},
 		]),
 		30_000,
