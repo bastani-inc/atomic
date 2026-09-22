@@ -51,9 +51,12 @@ describe("theme contrast baseline (Phase 0 — report only)", () => {
 		expect(pairs).toContain("syntaxKeyword on customMessageBg");
 		expect(pairs).toContain("accent on selectedBg");
 		expect(pairs).toContain("workingIndicator.peak on canvas");
-		// Never scored against the canvas, and the removed search pair never appears.
+		// Never scored against the canvas, and the unrendered pairs never appear:
+		// transcript search was removed from `main`, and assistant-message.ts now
+		// paints thinking with `muted` rather than `thinkingText`.
 		expect(pairs).not.toContain("userMessageText on canvas");
 		expect(pairs.some((p) => p.startsWith("searchMatch"))).toBe(false);
+		expect(pairs).not.toContain("thinkingText on canvas");
 	});
 
 	it("quantizes to a 256-color palette that can change a rating", () => {

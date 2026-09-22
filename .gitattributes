@@ -37,6 +37,10 @@ packages/coding-agent/docs/**/*.md text eol=lf
 packages/coding-agent/docs/**/*.mdx text eol=lf
 packages/coding-agent/docs/**/*.svg text eol=lf
 
+# The theme contrast baseline test compares the checked-in report byte-for-byte
+# with a generator that joins on "\n"; keep it LF under core.autocrlf=true too.
+packages/coding-agent/test/theme-contrast-baseline.md text eol=lf
+
 # Graphics
 *.png      binary
 *.jpg      binary

@@ -24,6 +24,9 @@ in 256-color mode (only theme colors pass through `fgAnsi()`/`bgAnsi()`):
 
 `searchMatchText`/`searchMatchBg` are omitted: transcript search was removed from
 `main`, so the pair is a loadable compatibility fallback, not a visible surface.
+`thinkingText` is omitted for the same reason: `assistant-message.ts` paints thinking
+blocks with `muted` on current `main`, so no terminal renderer paints it; it stays
+loadable for compatibility without being counted in the visible baseline.
 
 Each token receives one global `kind` (text or non-text), chosen from its dominant
 rendered use. Mixed-use tokens such as `bashMode` and `borderAccent` are also
@@ -74,7 +77,6 @@ no use-specific rows are emitted.
 | AA-large | 4.22 | text | mdQuote on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.22 | non-text | mdQuoteBorder on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.22 | text | muted on canvas | `#808080` | `#1e1e1e` |
-| AA-large | 4.22 | text | thinkingText on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.28 | text | syntaxComment on customMessageBg | `#6A9955` | `#2d2838` |
 | AA-large | 4.42 | non-text | thinkingLow on canvas | `#5f87af` | `#1e1e1e` |
 | AA-large | 4.49 | text | error on canvas | `#cc6666` | `#1e1e1e` |
@@ -217,7 +219,6 @@ no use-specific rows are emitted.
 | AA | 5.25 | text | mdQuote on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 5.25 | non-text | mdQuoteBorder on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 5.25 | text | muted on canvas | `#6c6c6c` | `#ffffff` |
-| AA | 5.25 | text | thinkingText on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 6.10 | text | syntaxFunction on canvas | `#795E26` | `#ffffff` |
 | AA | 6.41 | text | syntaxString on userMessageBg | `#A31515` | `#e8e8e8` |
 | AA | 6.49 | text | syntaxString on customMessageBg | `#A31515` | `#ede7f6` |
@@ -335,7 +336,6 @@ no use-specific rows are emitted.
 | AA | 8.46 | non-text | thinkingLow on canvas | `#85c1dc` | `#1e1e1e` |
 | AA | 9.10 | non-text | borderAccent on canvas | `#babbf1` | `#1e1e1e` |
 | AA | 9.14 | text | muted on canvas | `#b5bfe2` | `#1e1e1e` |
-| AA | 9.14 | text | thinkingText on canvas | `#b5bfe2` | `#1e1e1e` |
 | AA | 9.61 | non-text | bashMode on canvas | `#a6d189` | `#1e1e1e` |
 | AA | 9.61 | text | success on canvas | `#a6d189` | `#1e1e1e` |
 | AA | 9.61 | text | syntaxString on canvas | `#a6d189` | `#1e1e1e` |
@@ -448,7 +448,6 @@ no use-specific rows are emitted.
 | AA | 5.41 | non-text | thinkingHigh on canvas | `#8839ef` | `#ffffff` |
 | AA | 5.43 | text | error on canvas | `#d20f39` | `#ffffff` |
 | AA | 6.25 | text | muted on canvas | `#5c5f77` | `#ffffff` |
-| AA | 6.25 | text | thinkingText on canvas | `#5c5f77` | `#ffffff` |
 | AA | 7.99 | text | mdCodeBlock on canvas | `#4c4f69` | `#ffffff` |
 | AA | 7.99 | text | syntaxVariable on canvas | `#4c4f69` | `#ffffff` |
 | AA | 7.99 | text | text on canvas | `#4c4f69` | `#ffffff` |
@@ -545,7 +544,6 @@ no use-specific rows are emitted.
 | AA | 8.64 | non-text | thinkingLow on canvas | `#7dc4e4` | `#1e1e1e` |
 | AA | 9.25 | non-text | borderAccent on canvas | `#b7bdf8` | `#1e1e1e` |
 | AA | 9.25 | text | muted on canvas | `#b8c0e0` | `#1e1e1e` |
-| AA | 9.25 | text | thinkingText on canvas | `#b8c0e0` | `#1e1e1e` |
 | AA | 10.35 | text | syntaxOperator on canvas | `#91d7e3` | `#1e1e1e` |
 | AA | 10.39 | non-text | bashMode on canvas | `#a6da95` | `#1e1e1e` |
 | AA | 10.39 | text | success on canvas | `#a6da95` | `#1e1e1e` |
@@ -649,7 +647,6 @@ no use-specific rows are emitted.
 | AA | 8.69 | text | toolOutput on toolSuccessBg | `#cdd6f4` | `#313244` |
 | AA | 8.69 | text | userMessageText on userMessageBg | `#cdd6f4` | `#313244` |
 | AA | 8.83 | non-text | thinkingLow on canvas | `#74c7ec` | `#1e1e1e` |
-| AA | 9.41 | text | thinkingText on canvas | `#bac2de` | `#1e1e1e` |
 | AA | 9.42 | text | syntaxNumber on canvas | `#fab387` | `#1e1e1e` |
 | AA | 9.89 | text | syntaxType on customMessageBg | `#f9e2af` | `#313244` |
 | AA | 9.89 | text | syntaxType on userMessageBg | `#f9e2af` | `#313244` |
@@ -713,7 +710,6 @@ no use-specific rows are emitted.
 | AA-large | 4.22 | text | mdQuote on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.22 | non-text | mdQuoteBorder on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.22 | text | muted on canvas | `#808080` | `#1e1e1e` |
-| AA-large | 4.22 | text | thinkingText on canvas | `#808080` | `#1e1e1e` |
 | AA-large | 4.25 | text | syntaxVariable on userMessageBg | `#afd7ff` | `#5f5f5f` |
 | AA-large | 4.33 | text | syntaxFunction on userMessageBg | `#d7d7af` | `#5f5f5f` |
 | AA-large | 4.39 | text | syntaxComment on customMessageBg | `#5f875f` | `#00005f` |
@@ -853,7 +849,6 @@ no use-specific rows are emitted.
 | AA | 5.25 | text | mdQuote on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 5.25 | non-text | mdQuoteBorder on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 5.25 | text | muted on canvas | `#6c6c6c` | `#ffffff` |
-| AA | 5.25 | text | thinkingText on canvas | `#6c6c6c` | `#ffffff` |
 | AA | 5.73 | text | mdHeading on canvas | `#875f00` | `#ffffff` |
 | AA | 5.73 | text | syntaxFunction on canvas | `#875f00` | `#ffffff` |
 | AA | 5.73 | text | warning on canvas | `#875f00` | `#ffffff` |
@@ -966,7 +961,6 @@ no use-specific rows are emitted.
 | AA | 7.63 | non-text | thinkingMedium on canvas | `#87afff` | `#1e1e1e` |
 | AA | 7.89 | text | mdQuote on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 7.89 | text | muted on canvas | `#afafd7` | `#1e1e1e` |
-| AA | 7.89 | text | thinkingText on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 8.26 | non-text | borderAccent on canvas | `#afafff` | `#1e1e1e` |
 | AA | 8.73 | text | accent on canvas | `#d7afd7` | `#1e1e1e` |
 | AA | 8.73 | text | mdHeading on canvas | `#d7afd7` | `#1e1e1e` |
@@ -1086,7 +1080,6 @@ no use-specific rows are emitted.
 | AA | 5.18 | text | error on canvas | `#d7005f` | `#ffffff` |
 | AA | 6.05 | text | mdQuote on canvas | `#5f5f87` | `#ffffff` |
 | AA | 6.05 | text | muted on canvas | `#5f5f87` | `#ffffff` |
-| AA | 6.05 | text | thinkingText on canvas | `#5f5f87` | `#ffffff` |
 | AA | 6.39 | text | mdCodeBlock on canvas | `#5f5f5f` | `#ffffff` |
 | AA | 6.39 | text | syntaxVariable on canvas | `#5f5f5f` | `#ffffff` |
 | AA | 6.39 | text | text on canvas | `#5f5f5f` | `#ffffff` |
@@ -1175,7 +1168,6 @@ no use-specific rows are emitted.
 | AA | 7.63 | non-text | thinkingMedium on canvas | `#87afff` | `#1e1e1e` |
 | AA | 7.89 | text | mdQuote on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 7.89 | text | muted on canvas | `#afafd7` | `#1e1e1e` |
-| AA | 7.89 | text | thinkingText on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 8.26 | non-text | borderAccent on canvas | `#afafff` | `#1e1e1e` |
 | AA | 9.10 | text | accent on canvas | `#d7afff` | `#1e1e1e` |
 | AA | 9.10 | text | mdHeading on canvas | `#d7afff` | `#1e1e1e` |
@@ -1285,7 +1277,6 @@ no use-specific rows are emitted.
 | AA | 7.63 | non-text | workingIndicator.accent on canvas | `#87afff` | `#1e1e1e` |
 | AA | 7.89 | text | mdQuote on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 7.89 | text | muted on canvas | `#afafd7` | `#1e1e1e` |
-| AA | 7.89 | text | thinkingText on canvas | `#afafd7` | `#1e1e1e` |
 | AA | 9.10 | non-text | borderMuted on canvas | `#d7afff` | `#1e1e1e` |
 | AA | 9.10 | text | mdHeading on canvas | `#d7afff` | `#1e1e1e` |
 | AA | 9.10 | text | mdListBullet on canvas | `#d7afff` | `#1e1e1e` |

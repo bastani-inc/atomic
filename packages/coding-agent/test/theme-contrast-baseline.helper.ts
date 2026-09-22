@@ -26,6 +26,11 @@
 // `searchMatchText`/`searchMatchBg` are intentionally excluded: transcript
 // search was removed from `main`, so that pair is a loadable compatibility
 // fallback (theme-class.ts still resolves it) rather than a visible surface.
+// `thinkingText` is excluded for the same reason: assistant-message.ts paints
+// thinking blocks with `muted` on current `main`, so no terminal renderer
+// paints it; it stays loadable for compatibility (theme-class.ts /
+// theme-schema.ts) without being counted in the visible baseline. (The HTML
+// export still emits it as a CSS variable, outside the surfaces measured here.)
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -95,7 +100,6 @@ const SYNTAX_FG = [
 // Foregrounds painted directly on the terminal canvas (chrome + assistant prose).
 const CANVAS_FG = [
 	"text",
-	"thinkingText",
 	"accent",
 	"muted",
 	"dim",
@@ -307,6 +311,9 @@ export function generateBaselineMarkdown(): string {
 	lines.push(
 		"`searchMatchText`/`searchMatchBg` are omitted: transcript search was removed from",
 		"`main`, so the pair is a loadable compatibility fallback, not a visible surface.",
+		"`thinkingText` is omitted for the same reason: `assistant-message.ts` paints thinking",
+		"blocks with `muted` on current `main`, so no terminal renderer paints it; it stays",
+		"loadable for compatibility without being counted in the visible baseline.",
 		"",
 	);
 	lines.push(
