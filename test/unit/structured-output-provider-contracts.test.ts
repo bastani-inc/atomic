@@ -135,6 +135,9 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 				settings: SettingsManager.inMemory({ routerModel: `${model.provider}/${model.id}` }),
 				currentModel: model,
 				modelRegistry: new ModelRegistry(runtime),
+				// Decision-layer transient retries are covered elsewhere; disable them
+				// here to isolate the per-attempt serializer contract (#3206).
+				retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 			});
 			if (status === 200) assert.deepEqual((await pending).value, { route: "none" });
 			else await assert.rejects(pending, /inference ended with error/);
@@ -208,18 +211,19 @@ for (const maxTokens of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
 	});
 }
 
-test("explicit Jev without its key fails without falling back to chat", async () => {
+test("explicit Jev without its key fails without a chat model to fall back to (#3206)", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	await assert.rejects(
 		inferRouterDecision({
 			...decisionRequest(),
+			currentModel: undefined,
 			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 		}),
 		/requires an API key.*\/login typesafe-ai/,
 	);
 });
 
-test("Jev network errors do not leak transport messages or retry", async () => {
+test("Jev network errors do not leak transport messages and honor a disabled retry policy (#3206)", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 	const transport = vi.fn(async () => {
 		throw new Error("private request body and key");
@@ -228,6 +232,8 @@ test("Jev network errors do not leak transport messages or retry", async () => {
 	await assert.rejects(
 		inferRouterDecision({
 			...decisionRequest(),
+			currentModel: undefined,
+			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 		}),
 		/Jev request failed/,
@@ -272,6 +278,7 @@ for (const reason of ["cancel", "oversized"] as const) {
 		const pending = assert.rejects(
 			inferRouterDecision({
 				...request,
+				currentModel: undefined,
 				settings: SettingsManager.inMemory(),
 				signal: controller.signal,
 				jev: { ...request.jev, decode },

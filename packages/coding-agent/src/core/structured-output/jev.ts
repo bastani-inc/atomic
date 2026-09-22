@@ -1,7 +1,7 @@
 import type { Questions } from "@typesafe-ai/sdk";
 import type { Static, TSchema } from "typebox";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
-import { JevRequestError, requestJev } from "./jev-client.js";
+import { DEFAULT_DECISION_RETRY, JevRequestError, requestJev } from "./jev-client.js";
 import { getStructuredOutputProviders, JEV_STRUCTURED_OUTPUT_PROVIDER as provider } from "./resolver.js";
 import type { StructuredChoiceQuestion, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
@@ -37,63 +37,51 @@ function compileQuestions(
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function probability(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+function tokenCount(value: unknown): number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
-function tokenCount(value: unknown): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function sameKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-	return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+function probabilityOf(probabilities: unknown, key: string): number {
+	if (!isRecord(probabilities)) return 0;
+	const value = probabilities[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Accept any response that names a valid candidate for every question.
+ * Usage, model and probabilities are advisory: read when present, never required.
+ */
 function parseResponse(value: unknown, questions: Readonly<Record<string, StructuredChoiceQuestion>>) {
-	// Codes are static: never interpolate response values, question IDs, or credentials.
-	const malformed = (code: string) => {
-		const error = new InvalidDecisionOutputError(`Malformed Jev structured decision response (${code}).`);
-		if (
-			isRecord(value) &&
-			isRecord(value.usage) &&
-			tokenCount(value.usage.input_tokens) &&
-			tokenCount(value.usage.output_tokens)
-		)
-			error.usage = { inputTokens: value.usage.input_tokens, outputTokens: value.usage.output_tokens };
-		return error;
+	const record = isRecord(value) ? value : {};
+	const usageRecord = isRecord(record.usage) ? record.usage : {};
+	const usage = {
+		inputTokens: tokenCount(usageRecord.input_tokens),
+		outputTokens: tokenCount(usageRecord.output_tokens),
 	};
-	if (!isRecord(value)) throw malformed("response_shape");
-	if (typeof value.model !== "string" || !value.model.trim()) throw malformed("model");
-	if (!isRecord(value.answers)) throw malformed("answers_shape");
-	if (!isRecord(value.usage)) throw malformed("usage_shape");
-	if (!sameKeys(value.answers, Object.keys(questions))) throw malformed("answer_keys");
-	const { input_tokens, output_tokens } = value.usage;
-	if (!tokenCount(input_tokens) || !tokenCount(output_tokens)) throw malformed("usage_tokens");
-	const answers = value.answers;
+	const answers = isRecord(record.answers) ? record.answers : {};
 	const ranked: Record<string, string[]> = Object.create(null);
 	const choices = Object.fromEntries(
 		Object.entries(questions).map(([id, question]) => {
 			const answer = answers[id];
-			if (!isRecord(answer) || answer.type !== "choice") throw malformed("answer_type");
-			if (typeof answer.choice !== "string" || !Object.hasOwn(question.criteria, answer.choice))
-				throw malformed("choice_key");
-			if (!probability(answer.confidence)) throw malformed("confidence");
-			if (!isRecord(answer.probabilities)) throw malformed("probabilities_shape");
-			const probabilities = answer.probabilities;
-			if (!sameKeys(probabilities, Object.keys(question.criteria))) throw malformed("probability_keys");
-			if (!Object.values(probabilities).every(probability)) throw malformed("probability_value");
-			const choice = answer.choice;
-			const values = Object.values(probabilities) as number[];
-			if (values.some((p) => p > (probabilities[choice] as number))) throw malformed("choice_not_highest");
-			ranked[id] = Object.keys(question.criteria).sort(
-				(a, b) => (probabilities[b] as number) - (probabilities[a] as number),
-			);
-			return [id, answer.choice];
+			const choice = isRecord(answer) ? answer.choice : undefined;
+			if (typeof choice !== "string" || !Object.hasOwn(question.criteria, choice)) {
+				// Static code: never interpolate response values, question IDs, or credentials.
+				const error = new InvalidDecisionOutputError("Malformed Jev structured decision response (choice_key).");
+				error.usage = usage;
+				throw error;
+			}
+			const probabilities = isRecord(answer) ? answer.probabilities : undefined;
+			const others = Object.keys(question.criteria)
+				.filter((key) => key !== choice)
+				.sort((a, b) => probabilityOf(probabilities, b) - probabilityOf(probabilities, a));
+			ranked[id] = [choice, ...others];
+			return [id, choice];
 		}),
 	);
 	return {
 		choices,
 		ranked,
-		responseModel: value.model,
-		usage: { inputTokens: input_tokens, outputTokens: output_tokens },
+		responseModel: typeof record.model === "string" ? record.model : "",
+		usage,
 	};
 }
 
@@ -128,6 +116,7 @@ async function askJev<T extends TSchema>(
 		request: { model: selectedProvider.wireModel, state: request.state, questions },
 		signal,
 		authGuidance,
+		retry: request.retry ?? DEFAULT_DECISION_RETRY,
 	});
 	assertActive();
 	if (typeof response === "string")

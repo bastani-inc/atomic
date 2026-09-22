@@ -14,6 +14,9 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+/** Real backoff sleeps are 2s/4s/8s; tests retry on immediate timers. */
+const FAST_RETRY = { enabled: true, maxRetries: 3, baseDelayMs: 1 };
+
 test("Jev reports a safe SDK error class, context-limit code and request ID without echoed input", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	const transport = vi.fn(async () =>
@@ -26,6 +29,7 @@ test("Jev reports a safe SDK error class, context-limit code and request ID with
 	await assert.rejects(
 		inferRouterDecision({
 			...decisionRequest(),
+			currentModel: undefined,
 			settings: { getRouterModel: () => "typesafe-ai/jev-latest" },
 		}),
 		(error: Error) => {
@@ -75,7 +79,8 @@ test("automatic Jev routing falls back once to the current chat model with visib
 });
 
 for (const status of [400, 401, 403, 404, 422, 429, 500, 529]) {
-	test(`SDK HTTP ${status} has no hidden retries or logging and cannot override the endpoint`, async () => {
+	const transient = status === 429 || status >= 500;
+	test(`SDK HTTP ${status} ${transient ? "retries transiently" : "fails once"} without logging and cannot override the endpoint (#3206)`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 		vi.stubEnv("TYPESAFE_BASE_URL", "https://untrusted.invalid");
 		vi.stubEnv("TYPESAFE_DEFAULT_MODEL", "unwanted-model");
@@ -100,6 +105,7 @@ for (const status of [400, 401, 403, 404, 422, 429, 500, 529]) {
 			inferStructuredOutput({
 				...decisionRequest(),
 				model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
+				retry: FAST_RETRY,
 			}),
 			(error: Error) => {
 				assert.match(error.message, new RegExp(`HTTP ${status}`));
@@ -107,7 +113,7 @@ for (const status of [400, 401, 403, 404, 422, 429, 500, 529]) {
 				return true;
 			},
 		);
-		assert.equal(transport.mock.calls.length, 1);
+		assert.equal(transport.mock.calls.length, transient ? 4 : 1);
 		assert.ok(logs.every((log) => log.mock.calls.length === 0));
 	});
 }
@@ -136,7 +142,7 @@ for (const invalid of [false, true]) {
 	});
 }
 
-test("failed fallback is not retried or replaced by another model", async () => {
+test("failed fallback is not retried or replaced by another model (#3206)", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	const transport = vi.fn(async () => Response.json({}, { status: 503 }));
@@ -148,12 +154,13 @@ test("failed fallback is not retried or replaced by another model", async () => 
 	await assert.rejects(
 		inferRouterDecision({
 			...request,
+			retry: FAST_RETRY,
 			settings: { getRouterModel: () => "" },
 			modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 		}),
 		/Structured output provider request failed/,
 	);
-	assert.equal(transport.mock.calls.length, 1);
+	assert.equal(transport.mock.calls.length, 4);
 	assert.equal(dispatch.mock.calls.length, 1);
 });
 
@@ -219,8 +226,9 @@ test("chat fallback can complete after slow Jev inference without a shared deadl
 	assert.equal(dispatch.mock.calls[0][2].signal.aborted, false);
 });
 
-test("oversized error bodies are bounded and cannot trigger fallback", async () => {
+test("oversized error bodies are bounded and fall back to chat (#3206)", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const cancelled = vi.fn();
 	vi.stubGlobal(
 		"fetch",
@@ -237,16 +245,21 @@ test("oversized error bodies are bounded and cannot trigger fallback", async () 
 	);
 	const request = decisionRequest();
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
+	const result = await inferRouterDecision({
+		...request,
+		settings: { getRouterModel: () => "" },
+		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
+	});
+	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
+	assert.match(result.fallback?.reason ?? "", /1 MiB/);
+	assert.equal(dispatch.mock.calls.length, 1);
+	assert.equal(cancelled.mock.calls.length, 1);
+	assert.equal(warning.mock.calls.length, 1);
+	// Without a concrete chat model the bounded-read failure stays observable.
 	await assert.rejects(
-		inferRouterDecision({
-			...request,
-			settings: { getRouterModel: () => "" },
-			modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
-		}),
+		inferRouterDecision({ ...request, currentModel: undefined, settings: { getRouterModel: () => "" } }),
 		/1 MiB/,
 	);
-	assert.equal(dispatch.mock.calls.length, 0);
-	assert.equal(cancelled.mock.calls.length, 1);
 });
 
 test("execution auto routing recovers from Jev context rejection and still checks catalog eligibility", async () => {
@@ -282,21 +295,16 @@ test("execution auto routing recovers from Jev context rejection and still check
 });
 
 for (const succeeds of [true, false]) {
-	test(`Jev and chat fallback each get three corrective retries by default: final success=${succeeds}`, async () => {
+	test(`Jev falls back immediately and the chat fallback gets three corrective retries: final success=${succeeds} (#3206)`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const transport = vi.fn(async (_url, init) => {
-			const body = JSON.parse(init.body);
-			assert.equal(
-				body.questions.route.instructions.includes("previous response failed"),
-				transport.mock.calls.length > 1,
-			);
-			return Response.json({ model: "jev-latest", answers: {}, usage: { input_tokens: 20, output_tokens: 10 } });
-		});
+		const transport = vi.fn(async () =>
+			Response.json({ model: "jev-latest", answers: {}, usage: { input_tokens: 20, output_tokens: 10 } }),
+		);
 		vi.stubGlobal("fetch", transport);
 		const request = decisionRequest();
 		const dispatch = vi.fn((_model, context) => {
-			assert.equal(transport.mock.calls.length, 4);
+			assert.equal(transport.mock.calls.length, 1);
 			assert.equal(context.systemPrompt.includes("previous response failed"), dispatch.mock.calls.length > 1);
 			assert.deepEqual(JSON.parse(context.messages[0].content), {
 				state: request.state,
@@ -314,10 +322,10 @@ for (const succeeds of [true, false]) {
 		if (succeeds) {
 			const result = await pending;
 			assert.deepEqual(result.value, { route: "review" });
-			assert.deepEqual(result.usage, { inputTokens: 160, outputTokens: 80 });
-			assert.match(result.fallback?.reason ?? "", /exhausted after 4 attempts/);
+			assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 50 });
+			assert.match(result.fallback?.reason ?? "", /choice_key/);
 		} else await assert.rejects(pending, /Chat fallback output repair exhausted after 4 attempts/);
-		assert.equal(transport.mock.calls.length, 4);
+		assert.equal(transport.mock.calls.length, 1);
 		assert.equal(dispatch.mock.calls.length, 4);
 		assert.equal(warning.mock.calls.length, 1);
 	});

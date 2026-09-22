@@ -88,6 +88,7 @@ test("OpenRouter Jev does not use TypeSafe credentials when OpenRouter auth is m
 	await assert.rejects(
 		inferRouterDecision({
 			...decisionRequest(),
+			currentModel: undefined,
 			modelRegistry: new ModelRegistry(runtime),
 			settings: { getRouterModel: () => fullId },
 		}),
@@ -130,13 +131,22 @@ test("OpenRouter logout falls back to its environment key, not TypeSafe", async 
 	assert.equal(transport.mock.calls.length, 1);
 });
 
-for (const status of [401, 429, 529]) {
-	test(`OpenRouter HTTP ${status} is redacted and never retried`, async () => {
+for (const [status, calls] of [
+	[401, 1],
+	[429, 4],
+	[529, 4],
+] as const) {
+	test(`OpenRouter HTTP ${status} is redacted and ${calls === 1 ? "fails once" : "retried as transient"} (#3206)`, async () => {
 		vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
 		const transport = vi.fn(async () => new Response("private-upstream-material", { status }));
 		vi.stubGlobal("fetch", transport);
 		await assert.rejects(
-			inferRouterDecision({ ...decisionRequest(), settings: { getRouterModel: () => fullId } }),
+			inferRouterDecision({
+				...decisionRequest(),
+				currentModel: undefined,
+				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+				settings: { getRouterModel: () => fullId },
+			}),
 			(error: Error) => {
 				assert.match(error.message, new RegExp(`Jev HTTP ${status}`));
 				assert.doesNotMatch(error.message, /private-upstream-material|typesafe-ai|TYPESAFE_API_KEY/);
@@ -144,7 +154,7 @@ for (const status of [401, 429, 529]) {
 				return true;
 			},
 		);
-		assert.equal(transport.mock.calls.length, 1);
+		assert.equal(transport.mock.calls.length, calls);
 	});
 }
 
@@ -153,12 +163,16 @@ test("OpenRouter malformed decisions have bounded router repairs but generic cal
 	const transport = vi.fn(async () => Response.json({ ...jevResponse(), answers: {} }));
 	vi.stubGlobal("fetch", transport);
 	await assert.rejects(
-		inferRouterDecision({ ...decisionRequest(), settings: { getRouterModel: () => fullId } }),
-		/answer_keys/,
+		inferRouterDecision({
+			...decisionRequest(),
+			currentModel: undefined,
+			settings: { getRouterModel: () => fullId },
+		}),
+		/choice_key/,
 	);
 	assert.equal(transport.mock.calls.length, 4);
 	transport.mockClear();
-	await assert.rejects(inferStructuredOutput({ ...decisionRequest(), model: { kind: "jev", fullId } }), /answer_keys/);
+	await assert.rejects(inferStructuredOutput({ ...decisionRequest(), model: { kind: "jev", fullId } }), /choice_key/);
 	assert.equal(transport.mock.calls.length, 1);
 });
 
@@ -204,6 +218,7 @@ test("OpenRouter auth errors are redacted without bypassing the resolver through
 	await assert.rejects(
 		inferRouterDecision({
 			...request,
+			currentModel: undefined,
 			settings: { getRouterModel: () => fullId },
 			modelRegistry: {
 				...request.modelRegistry,

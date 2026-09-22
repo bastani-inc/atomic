@@ -65,6 +65,9 @@ test("Bedrock router inference performs only one SDK transport attempt on a retr
 		inferRouterDecision({
 			...decisionRequest(),
 			currentModel: model,
+			// Decision-layer transient retries are covered elsewhere; disable them
+			// here to isolate the SDK transport contract (#3206).
+			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 			modelRegistry: {
 				getAll: () => [model],
 				streamSimple: (_model, context, options) =>
@@ -112,6 +115,7 @@ for (const api of ["google-generative-ai", "google-vertex"] as const) {
 					...decisionRequest(),
 					settings: { getRouterModel: () => `${model.provider}/${model.id}` },
 					currentModel: model,
+					retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 					modelRegistry: {
 						getAll: () => [model],
 						streamSimple: (_model, context, options) =>

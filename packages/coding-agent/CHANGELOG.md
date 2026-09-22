@@ -12,6 +12,9 @@
 
 ### Changed
 
+- Structured-decision requests (router and generic) now retry transient provider failures — connection errors and HTTP 408, 429 and 5xx — up to three times with exponential backoff, for both Jev and chat decision models, matching ordinary chat-provider retry defaults. Cancellation is never retried ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+- Any Jev routing failure now falls back to the current chat model when one exists, including explicitly pinned Jev router selections, missing or unresolvable Jev credentials, context-budget rejections, and oversized response bodies. Cancellation still never falls back ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+- Jev structured-decision responses are now accepted whenever every question names a known Choice option; reported model, usage, probabilities, confidence and answer types are advisory instead of grounds for rejection ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
 - Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for Claude Opus 5.5 in the evals snapshot used by automatic model routing.
 - Updated the inherited Pi runtime dependencies (`pi-agent-core`, `pi-client`, `pi-protocol`, `pi-tui`, `pi-telemetry`, and transitive `chord`) to 0.87.1.
 

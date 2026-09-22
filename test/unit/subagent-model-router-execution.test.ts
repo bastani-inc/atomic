@@ -194,12 +194,16 @@ test("parallel tasks do not share the first decision", async () => {
 	);
 	assert.equal(f.infer.mock.calls.length, 4);
 });
-test("invalid routing and conflicting constraints produce no child runs", async () => {
+test("invalid routing degrades to the current chat model; conflicting constraints produce no child runs (#3206)", async () => {
 	const f = await fixture("auto");
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 	f.infer.mockImplementation(() => messageStream(decisionMessage({ model: "auto", effort: null })));
-	const invalid = await f.call({ agent: "worker", task: "Inspect" });
-	assert.equal(invalid.isError, true);
-	assert.equal(f.runSync.mock.calls.length, 0);
+	// #3206: the total routing-inference failure runs the child on the current chat model.
+	const degraded = await f.call({ agent: "worker", task: "Inspect" });
+	assert.equal(degraded.isError ?? false, false);
+	assert.equal(f.runSync.mock.calls.length, 1);
+	assert.equal(f.runSync.mock.calls[0]![4].modelOverride, "decision-test/chat");
+	// Conflicting constraints are a validation failure, not an inference failure.
 	f.agent.modelConstraints = { allowedModels: ["private/model"] };
 	const denied = await f.call({
 		agent: "worker",
@@ -207,7 +211,7 @@ test("invalid routing and conflicting constraints produce no child runs", async 
 		modelConstraints: { allowedModels: ["decision-test/chat"] },
 	});
 	assert.equal(denied.isError, true);
-	assert.equal(f.runSync.mock.calls.length, 0);
+	assert.equal(f.runSync.mock.calls.length, 1);
 });
 test("router cancellation cannot admit a child through a late result", async () => {
 	const f = await fixture("auto");

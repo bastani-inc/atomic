@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai";
+import type { Api, Model, RetryPolicy } from "@bastani/pi-ai";
 import type { Static, TSchema } from "typebox";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -13,7 +13,7 @@ export interface StructuredChoiceQuestion {
 }
 
 export interface RouterModelSelectionOptions {
-	readonly settings: Pick<SettingsManager, "getRouterModel">;
+	readonly settings: Pick<SettingsManager, "getRouterModel"> & Partial<Pick<SettingsManager, "getRetrySettings">>;
 	readonly modelRegistry: Pick<ModelRegistry, "getAll"> & Partial<Pick<ModelRegistry, "getProviderAuthStatus">>;
 	/** Read the active chat model at invocation time; never change it to perform a decision. */
 	readonly currentModel?: Model<Api>;
@@ -43,6 +43,8 @@ export interface StructuredOutputRequest<T extends TSchema> {
 	readonly signal?: AbortSignal;
 	/** Ordinary-provider output bound, default 4096 tokens. */
 	readonly maxTokens?: number;
+	/** Transient provider failure retries for Jev and chat requests; defaults to 3 retries. */
+	readonly retry?: RetryPolicy;
 }
 
 /** Shared prerequisite router request. Neither routing consumer is activated by this API alone. */

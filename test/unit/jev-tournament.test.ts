@@ -216,6 +216,8 @@ function tournament(count: number) {
 	const criteria = Object.fromEntries(Array.from({ length: count }, (_, i) => [`key_${i}`, `Candidate ${i}`]));
 	return {
 		...decisionRequest(),
+		// No chat fallback: these tests exercise the Jev tournament itself (#3206).
+		currentModel: undefined,
 		settings: { getRouterModel: () => "typesafe-ai/jev-latest" },
 		schema: Type.Record(Type.String(), Type.String()),
 		jev: {
@@ -267,16 +269,7 @@ test("invalid retained key rejects before transport", async () => {
 	assert.equal(fetch.mock.calls.length, 0);
 });
 
-for (const failure of [
-	"missing",
-	"extra",
-	"negative",
-	"nonfinite",
-	"winner",
-	"missing-answer",
-	"extra-answer",
-	"http",
-] as const) {
+for (const failure of ["winner", "missing-answer", "http"] as const) {
 	test(`overflow ${failure} fails without partial decode after bounded output repair`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
 		const request = tournament(256);
@@ -284,14 +277,8 @@ for (const failure of [
 			const body = JSON.parse(String(init.body)) as JevFixtureRequest;
 			const response = jevFixtureResponse(body);
 			const answer = Object.values(response.answers)[0]!;
-			const key = Object.keys(answer.probabilities)[0]!;
-			if (failure === "missing") delete answer.probabilities[key];
-			if (failure === "extra") answer.probabilities.absent = 0;
-			if (failure === "negative") answer.probabilities[key] = -1;
-			if (failure === "nonfinite") answer.probabilities[key] = NaN;
 			if (failure === "winner") answer.choice = "absent";
 			if (failure === "missing-answer") delete response.answers[Object.keys(response.answers)[0]!];
-			if (failure === "extra-answer") response.answers.absent = answer;
 			return failure === "http" ? new Response("private", { status: 422 }) : Response.json(response);
 		});
 		vi.stubGlobal("fetch", fetch);
@@ -301,6 +288,26 @@ for (const failure of [
 	});
 }
 
+// #3206: probability drift, extra answers and missing usage are advisory and no
+// longer reject a tournament round; only the named choices decide.
+test("overflow probability drift and extra answers decode normally (#3206)", async () => {
+	vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
+	const request = tournament(256);
+	const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(String(init.body)) as JevFixtureRequest;
+		const response = jevFixtureResponse(body);
+		const answer = Object.values(response.answers)[0]!;
+		const key = Object.keys(answer.probabilities)[0]!;
+		answer.probabilities[key] = -1;
+		answer.probabilities.absent = 0;
+		response.answers.absent = { ...answer };
+		return Response.json(response);
+	});
+	vi.stubGlobal("fetch", fetch);
+	assert.equal((await inferRouterDecision(request)).value.pick, "key_0");
+	assert.equal(request.jev.decode.mock.calls.length, 1);
+});
+
 for (const failure of ["cancel-before", "cancel-between", "cancel-pending", "provider"] as const) {
 	test(`overflow ${failure} rejects the whole operation`, async () => {
 		vi.useFakeTimers();
@@ -309,9 +316,9 @@ for (const failure of ["cancel-before", "cancel-between", "cancel-pending", "pro
 		const controller = new AbortController();
 		if (failure === "cancel-before") controller.abort();
 		const fetch = vi.fn(async (_url: string, init: RequestInit) => {
-			if (fetch.mock.calls.length === 2) {
+			if (fetch.mock.calls.length >= 2) {
 				if (failure === "provider") return new Response("private", { status: 529 });
-				return new Promise<Response>(() => {});
+				if (fetch.mock.calls.length === 2) return new Promise<Response>(() => {});
 			}
 			const body = JSON.parse(String(init.body)) as JevFixtureRequest;
 			if (failure === "cancel-between") controller.abort();
@@ -326,7 +333,10 @@ for (const failure of ["cancel-before", "cancel-between", "cancel-pending", "pro
 		if (failure === "cancel-pending") controller.abort();
 		await rejected;
 		assert.equal(request.jev.decode.mock.calls.length, 0);
-		assert.equal(fetch.mock.calls.length, failure === "cancel-before" ? 0 : failure === "cancel-between" ? 1 : 2);
+		assert.equal(
+			fetch.mock.calls.length,
+			failure === "cancel-before" ? 0 : failure === "cancel-between" ? 1 : failure === "provider" ? 5 : 2,
+		);
 		vi.useRealTimers();
 	});
 }

@@ -235,8 +235,20 @@ const invalidPairs: JsonObject[] = [
 	{ model: "decision-test/chat", effort: null, extra: true },
 ];
 for (const answer of invalidPairs) {
-	test(`invalid pair rejected: ${JSON.stringify(answer)}`, async () => {
+	test(`invalid pair degrades to the current chat model: ${JSON.stringify(answer)} (#3206)`, async () => {
 		const f = await fixture();
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		f.infer.mockImplementation(() => messageStream(decisionMessage(answer)));
+		const route = await f.route();
+		assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
+		assert.equal(route.modelOverride, "decision-test/chat");
+		assert.equal(warning.mock.calls.length, 1);
+		assert.match(String(warning.mock.calls[0]![0]), /running "worker" on the current chat model/);
+	});
+
+	test(`invalid pair rejected without a current chat model: ${JSON.stringify(answer)} (#3206)`, async () => {
+		const f = await fixture();
+		f.ctx.model = undefined;
 		f.infer.mockImplementation(() => messageStream(decisionMessage(answer)));
 		await assert.rejects(f.route(), /Invalid structured output/);
 	});
@@ -490,12 +502,16 @@ test("empty catalogs fail before inference", async () => {
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("provider failure, cancellation and late responses never become selections", async () => {
+test("provider failure degrades to the current chat model; cancellation never becomes a selection (#3206)", async () => {
 	const f = await fixture();
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 	f.infer.mockImplementation(() => {
 		throw new Error("mock provider failure");
 	});
+	assert.equal((await f.route()).modelOverride, "decision-test/chat");
+	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /provider request failed/);
+	f.ctx.model = decisionModel;
 	const stream = createAssistantMessageEventStream();
 	const entered = Promise.withResolvers<void>();
 	f.infer.mockImplementation(() => {
@@ -555,11 +571,16 @@ test("Jev uses one Choice over complete pairs and deterministically maps the sel
 	assert.equal(fetch.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 0);
 	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 	fetch.mockImplementation(async () =>
 		Response.json({
 			answers: { pair: { type: "choice", choice: "bogus", probabilities: { bogus: 1 }, confidence: 1 } },
 		}),
 	);
+	// #3206: the malformed pinned-Jev decision falls back to the chat router.
+	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
+	assert.equal(f.infer.mock.calls.length, 1);
+	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /choice|invalid|malformed/i);
 });
 
@@ -610,13 +631,19 @@ test("configured credential text is rejected before inference", async () => {
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("default reasoning catalog does not invent extended effort support", async () => {
+test("default reasoning catalog does not invent extended effort support (#3206)", async () => {
 	const f = await fixture();
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...reasoningModel, thinkingLevelMap: undefined }]);
 	f.infer.mockImplementation(() =>
 		messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "max" })),
 	);
+	// The invented effort is never accepted; the launch degrades to the chat model.
+	const route = await f.route();
+	assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
+	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /Invalid structured output/);
+	f.ctx.model = decisionModel;
 });
 
 test("router model precedence preserves chat fallback and rejects recursive or invalid explicit configuration", async () => {
@@ -640,6 +667,8 @@ for (const failure of ["stale", "provider"] as const) {
 			.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 		f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+		// No current chat model, so the routing failure stays observable (#3206).
+		if (failure === "provider") f.ctx.model = undefined;
 		const fetch = vi.fn(async (_url: string, init: RequestInit) => {
 			const request = JSON.parse(String(init.body)) as JevFixtureRequest;
 			if (request.questions.pair) {
@@ -785,11 +814,12 @@ test("oversized protected tasks still fall back intact or fail when Jev is pinne
 	vi.stubGlobal("fetch", transport);
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
 	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
-	await assert.rejects(f.route(task), /conservative input budget/);
+	// #3206: the pinned Jev context overflow falls back to the chat router too.
+	await f.route(task);
 	f.ctx.getRouterModel = () => "";
 	await f.route(task);
 	assert.equal(transport.mock.calls.length, 0);
-	assert.equal(f.infer.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 2);
 	assert.equal(
 		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state
 			.task,

@@ -139,7 +139,12 @@ export {
 	type VerbatimCompactionResult,
 } from "./core/compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
-export { type ModelRoute, type ModelRoutingContext, routeExecutionModel } from "./core/execution-model-router.js";
+export {
+	AutoRoutingInferenceError,
+	type ModelRoute,
+	type ModelRoutingContext,
+	routeExecutionModel,
+} from "./core/execution-model-router.js";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
 export {

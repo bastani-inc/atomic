@@ -42,6 +42,9 @@ function fixture() {
 	);
 	const ctx = { ...workflowRouterContext("registered"), sessionId: "retry-owner" };
 	ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	// No current chat model: these tests exercise Jev-side bounded repair, which
+	// only runs when no chat fallback exists (#3206).
+	ctx.model = undefined;
 	vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
 	const attempts = Array.from({ length: 4 }, () => ({
 		entered: Promise.withResolvers<JevFixtureRequest>(),
@@ -100,7 +103,7 @@ function fixture() {
 					budget: "preserve",
 				})[id]!,
 		);
-		if (!valid) response.answers.workflow!.probabilities.registered = -1;
+		if (!valid) response.answers.workflow!.choice = "absent";
 		attempts[index]!.response.resolve(Response.json(response));
 	}
 	return { execute, ctx, controller, result, transport, pendingAttempt, respond, assertNoLaunch };
@@ -136,7 +139,7 @@ test("public route reports exhaustion only after four malformed Jev responses", 
 	assert.equal("workflowId" in result && result.workflowId, "");
 	assert.equal(
 		"error" in result && result.error,
-		"Malformed Jev structured decision response (probability_value). Routing output repair exhausted after 4 attempts.",
+		"Malformed Jev structured decision response (choice_key). Routing output repair exhausted after 4 attempts.",
 	);
 	assert.equal(f.transport.mock.calls.length, 4);
 	f.assertNoLaunch();
@@ -144,6 +147,40 @@ test("public route reports exhaustion only after four malformed Jev responses", 
 	assert.equal("status" in run && run.status, "failed");
 	f.assertNoLaunch();
 	assert.equal(f.transport.mock.calls.length, 4);
+});
+
+test("public route falls back to the chat model on a malformed Jev response (#3206)", async () => {
+	const store = createStore();
+	const jobs = createJobTracker();
+	const definition = workflow({
+		name: "registered",
+		description: "Approved implementation",
+		inputs: { objective: Type.String() },
+		outputs: {},
+		run: async () => ({}),
+	});
+	const runtime = createExtensionRuntime({ registry: createRegistry().register(definition), store, jobs });
+	const execute = makeExecuteWorkflowTool(
+		runtime,
+		() => undefined,
+		() => {},
+		{ ...captureWorkflowOwnerResources(), store, jobs },
+	);
+	const ctx = { ...workflowRouterContext("registered"), sessionId: "retry-owner-fallback" };
+	ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	vi.stubEnv("TYPESAFE_API_KEY", "fixture-key");
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	const transport = vi.fn(async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(String(init.body)) as JevFixtureRequest;
+		const response = jevFixtureResponse(body);
+		response.answers.workflow!.choice = "absent";
+		return Response.json(response);
+	});
+	vi.stubGlobal("fetch", transport);
+	const result = await execute({ action: "route", state: { task: "Implement the approved change" } }, ctx);
+	assert.equal(result.action, "route");
+	assert.equal("status" in result && result.status, "reserved");
+	assert.equal(transport.mock.calls.length, 1);
 });
 
 test.each([false, true])("public route cancellation during repair ignores a late valid=%s response", async (valid) => {

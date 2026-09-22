@@ -29,6 +29,19 @@ export interface ModelRoute {
 	assertCurrent(): void;
 	allowsModel(model: Model<Api>, effort?: string): boolean;
 }
+
+/**
+ * Total auto-routing inference failure: Jev and the chat structured-output
+ * fallback both failed to produce a decision (#3206). Consumers that hold a
+ * concrete current chat model may degrade to it instead of failing the stage.
+ * Validation, eligibility, and credential-screening errors are never marked.
+ */
+export class AutoRoutingInferenceError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AutoRoutingInferenceError";
+	}
+}
 const instructions =
 	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly model and effort; null means no configurable reasoning.";
 
@@ -153,54 +166,61 @@ export async function routeExecutionModel(input: {
 		const ranked: ModelRouterOutput[] = [];
 		// Rank by repeated bounded choices, excluding all efforts of earlier models.
 		// Probabilities from separate tournament batches are not comparable.
-		while (ranked.length < Math.min(3, available.length)) {
-			const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
-			if (!remaining.length) break;
-			const criteria = Object.fromEntries(
-				remaining.map((pair) => {
-					const key = `pair_${pairs.indexOf(pair)}`;
-					return [key, allCriteria[key]];
-				}),
-			);
-			// Strict Responses providers reject object unions. Enumerate scalar values
-			// on the wire, then verify the exact model/effort relation before admission.
-			const schema = Type.Unsafe<ModelRouterOutput>({
-				type: "object",
-				properties: {
-					model: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
-					effort: { type: ["string", "null"], enum: [...new Set(remaining.map((pair) => pair.effort))] },
-				},
-				required: ["model", "effort"],
-				additionalProperties: false,
-			});
-			const result = await inferRouterDecision(
-				{
-					settings,
-					modelRegistry: ctx.modelRegistry,
-					currentModel: ctx.model,
-					state,
-					instructions,
-					schema,
-					jev: {
-						questions: {
-							pair: {
-								instructions:
-									"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers, evals, and candidate capabilities and prices? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification. Candidate cost is USD per million tokens, not benchmark task cost.",
-								criteria,
+		// Failures inside this loop are inference failures: Jev and its chat
+		// structured-output fallback both failed to return a decision (#3206).
+		try {
+			while (ranked.length < Math.min(3, available.length)) {
+				const remaining = pairs.filter((pair) => !ranked.some((selected) => selected.model === pair.model));
+				if (!remaining.length) break;
+				const criteria = Object.fromEntries(
+					remaining.map((pair) => {
+						const key = `pair_${pairs.indexOf(pair)}`;
+						return [key, allCriteria[key]];
+					}),
+				);
+				// Strict Responses providers reject object unions. Enumerate scalar values
+				// on the wire, then verify the exact model/effort relation before admission.
+				const schema = Type.Unsafe<ModelRouterOutput>({
+					type: "object",
+					properties: {
+						model: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
+						effort: { type: ["string", "null"], enum: [...new Set(remaining.map((pair) => pair.effort))] },
+					},
+					required: ["model", "effort"],
+					additionalProperties: false,
+				});
+				const result = await inferRouterDecision(
+					{
+						settings,
+						modelRegistry: ctx.modelRegistry,
+						currentModel: ctx.model,
+						state,
+						instructions,
+						schema,
+						jev: {
+							questions: {
+								pair: {
+									instructions:
+										"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers, evals, and candidate capabilities and prices? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification. Candidate cost is USD per million tokens, not benchmark task cost.",
+									criteria,
+								},
+							},
+							decode: (choices) => {
+								const pair = pairs[Number(choices.pair?.replace(/^pair_/, ""))];
+								if (!pair || choices.pair !== `pair_${pairs.indexOf(pair)}`)
+									throw new Error("Invalid execution model Choice.");
+								return { ...pair };
 							},
 						},
-						decode: (choices) => {
-							const pair = pairs[Number(choices.pair?.replace(/^pair_/, ""))];
-							if (!pair || choices.pair !== `pair_${pairs.indexOf(pair)}`)
-								throw new Error("Invalid execution model Choice.");
-							return { ...pair };
-						},
+						signal,
 					},
-					signal,
-				},
-				(value) => remaining.some((pair) => pair.model === value.model && pair.effort === value.effort),
-			);
-			ranked.push(result.value);
+					(value) => remaining.some((pair) => pair.model === value.model && pair.effort === value.effort),
+				);
+				ranked.push(result.value);
+			}
+		} catch (error) {
+			signal?.throwIfAborted();
+			throw new AutoRoutingInferenceError(error instanceof Error ? error.message : String(error));
 		}
 		selection = { ...ranked[0]!, ...(ranked.length > 1 ? { fallbacks: ranked.slice(1) } : {}) };
 	}

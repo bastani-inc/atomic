@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow stage with `model: "auto"` no longer fails when routing inference fails completely (Jev and the chat structured-output fallback both). The stage now runs on the current chat model with a recorded warning, on fresh runs and resumes alike; validation, eligibility, credential-screening failures and cancellation still fail the stage ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+
 ### Changed
 
 - Generalized the prompt-engineering GPT-6 guide (`references/gpt_6.md`, formerly `gpt_6_astra.md`) to cover GPT-6 Sol and Luna, and replaced its paraphrased snippets with OpenAI's official GPT-6 prompt templates for follow-through, approval timing, skill-instruction priority, writing style, delegation, and verification.

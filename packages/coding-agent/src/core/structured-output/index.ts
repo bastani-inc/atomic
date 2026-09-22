@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai";
+import { type Api, type AssistantMessage, type Model, retryAssistantCall } from "@bastani/pi-ai";
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
@@ -9,7 +9,7 @@ import {
 } from "../tools/structured-output.ts";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
 import { inferJev, STRUCTURED_DECISION_POLICY } from "./jev.js";
-import { JevRequestError } from "./jev-client.js";
+import { DEFAULT_DECISION_RETRY, JevRequestError } from "./jev-client.js";
 import { isStructuredOutputProviderModel, resolveRouterModel } from "./resolver.js";
 import type { RouterDecisionRequest, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
@@ -81,42 +81,45 @@ async function inferChat<T extends TSchema>(
 	let response: AssistantMessage;
 	assertActive();
 	try {
-		response = await request.modelRegistry
-			.streamSimple(
-				decisionModel,
-				{
-					systemPrompt: `${STRUCTURED_DECISION_POLICY}\n\n${request.instructions}\n\nCall ${STRUCTURED_OUTPUT_TOOL_NAME} exactly once with the decision. Do not use prose or other tools.`,
-					messages: [
+		response = await retryAssistantCall(
+			() =>
+				request.modelRegistry
+					.streamSimple(
+						decisionModel,
 						{
-							role: "user",
-							content: JSON.stringify({ state: request.state, questions: request.jev.questions }),
-							timestamp: Date.now(),
+							systemPrompt: `${STRUCTURED_DECISION_POLICY}\n\n${request.instructions}\n\nCall ${STRUCTURED_OUTPUT_TOOL_NAME} exactly once with the decision. Do not use prose or other tools.`,
+							messages: [
+								{
+									role: "user",
+									content: JSON.stringify({ state: request.state, questions: request.jev.questions }),
+									timestamp: Date.now(),
+								},
+							],
+							tools: [
+								{
+									name: tool.name,
+									description: tool.description,
+									parameters: tool.parameters,
+									constrainedSampling: { type: "json_schema", strict: "prefer" },
+								},
+							],
 						},
-					],
-					tools: [
 						{
-							name: tool.name,
-							description: tool.description,
-							parameters: tool.parameters,
-							constrainedSampling: { type: "json_schema", strict: "prefer" },
+							signal,
+							maxRetries: 0,
+							transport: "sse",
+							toolChoice: "auto",
+							maxTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
 						},
-					],
-				},
-				{
-					signal,
-					maxRetries: 0,
-					transport: "sse",
-					toolChoice: "auto",
-					maxTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
-				},
-			)
-			.result();
+					)
+					.result(),
+			request.retry ?? DEFAULT_DECISION_RETRY,
+			signal,
+		);
 	} catch {
 		signal.throwIfAborted();
 		// Provider exceptions can echo private state or credentials; do not retain their cause.
-		throw new Error(
-			"Structured output provider request failed. Check provider configuration and connectivity, then retry explicitly; no automatic retry was made.",
-		);
+		throw new Error("Structured output provider request failed. Check provider configuration and connectivity.");
 	}
 	signal.throwIfAborted();
 	if (response.stopReason === "error" || response.stopReason === "aborted")
@@ -248,35 +251,30 @@ async function inferDecision<T extends TSchema>(
 				return { ...result, value, usage, ...(fallback ? { fallback } : {}) };
 			} catch (error) {
 				assertActive();
-				if (!(error instanceof InvalidDecisionOutputError) && !(error instanceof JevRequestError)) throw error;
-				if (error.usage) {
-					usage.inputTokens += error.usage.inputTokens;
-					usage.outputTokens += error.usage.outputTokens;
-				}
-				if (error instanceof InvalidDecisionOutputError && attempt < repairs) {
-					attempt++;
-					continue;
-				}
-				const failure =
-					error instanceof InvalidDecisionOutputError
-						? new Error(
-								`${error.message} ${repairs ? `${fallback ? "Chat fallback" : "Routing"} output repair exhausted after ${repairs + 1} attempts.` : "No repair request was made."}`,
-							)
-						: error;
 				if (selected.kind === "jev" && fallbackChat && !fallback) {
-					fallback = {
-						from: selected.fullId,
-						to: `${fallbackChat.provider}/${fallbackChat.id}`,
-						reason: failure.message,
-					};
-					console.warn(
-						`${failure.message} Falling back to current chat model ${fallback.to} for this routing decision.`,
-					);
+					if ((error instanceof InvalidDecisionOutputError || error instanceof JevRequestError) && error.usage) {
+						usage.inputTokens += error.usage.inputTokens;
+						usage.outputTokens += error.usage.outputTokens;
+					}
+					const reason = error instanceof Error ? error.message : "Jev routing failed.";
+					fallback = { from: selected.fullId, to: `${fallbackChat.provider}/${fallbackChat.id}`, reason };
+					console.warn(`${reason} Falling back to current chat model ${fallback.to} for this routing decision.`);
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
 					attempt = 0;
 					continue;
 				}
-				throw failure;
+				if (!(error instanceof InvalidDecisionOutputError)) throw error;
+				if (error.usage) {
+					usage.inputTokens += error.usage.inputTokens;
+					usage.outputTokens += error.usage.outputTokens;
+				}
+				if (attempt < repairs) {
+					attempt++;
+					continue;
+				}
+				throw new Error(
+					`${error.message} ${repairs ? `${fallback ? "Chat fallback" : "Routing"} output repair exhausted after ${repairs + 1} attempts.` : "No repair request was made."}`,
+				);
 			}
 		}
 	} finally {
@@ -293,14 +291,14 @@ export async function inferRouterDecision<T extends TSchema>(
 	request.signal?.throwIfAborted();
 	const { settings, currentModel, ...inference } = request;
 	const model = resolveRouterModel({ settings, currentModel, modelRegistry: request.modelRegistry });
-	// A concrete routerModel is a provider pin. Only default, automatically selected Jev may switch.
+	// Any Jev failure, pinned or automatic, falls back to the current chat model.
 	const fallback =
 		model.kind === "jev" &&
-		!settings.getRouterModel() &&
 		currentModel &&
 		currentModel.id !== "auto" &&
 		!isStructuredOutputProviderModel(currentModel.provider, currentModel.id)
 			? currentModel
 			: undefined;
-	return inferDecision({ ...inference, model }, 3, validateDecision, fallback);
+	const retry = inference.retry ?? settings.getRetrySettings?.() ?? DEFAULT_DECISION_RETRY;
+	return inferDecision({ ...inference, model, retry }, 3, validateDecision, fallback);
 }

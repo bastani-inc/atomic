@@ -72,6 +72,8 @@ for (const valid of [true, false]) {
 		const value = { ...pairs.at(-1)!, effort: valid ? "high" : "low" };
 		const { request, dispatch } = requestFor(value);
 		request.settings = { getRouterModel: () => "typesafe-ai/jev-latest" };
+		// No chat fallback: the Jev-side repair budget stays observable (#3206).
+		request.currentModel = undefined;
 		request.jev.decode = () => value;
 		const fetch = vi.fn(async () =>
 			Response.json({

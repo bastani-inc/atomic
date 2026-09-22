@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent with `model: "auto"` no longer fails to launch when routing inference fails completely (Jev and the chat structured-output fallback both). The child now runs on the current chat model with a reported warning; validation and conflicting-constraint failures and cancellation still stop the launch ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+
 ## [0.9.20-alpha.6] - 2026-09-22
 
 ### Added

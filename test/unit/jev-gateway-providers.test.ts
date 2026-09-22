@@ -130,6 +130,7 @@ for (const gateway of gateways) {
 		await assert.rejects(
 			inferRouterDecision({
 				...decisionRequest(),
+				currentModel: undefined,
 				modelRegistry: new ModelRegistry(runtime),
 				settings: { getRouterModel: () => gateway.fullId },
 			}),

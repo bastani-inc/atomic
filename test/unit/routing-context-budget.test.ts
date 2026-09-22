@@ -88,18 +88,17 @@ for (const task of ["x".repeat(36_000), "界".repeat(11_000)]) {
 				settings: { getRouterModel: () => (pinned ? "typesafe-ai/jev-latest" : "") },
 				modelRegistry: { ...original.modelRegistry, streamSimple: chat },
 			};
-			if (pinned) await assert.rejects(inferRouterDecision(request), /conservative input budget/);
-			else {
-				const result = await inferRouterDecision(request);
-				assert.equal(result.fallback?.to, "decision-test/chat");
-			}
+			// #3206: the pinned Jev context overflow falls back to chat too.
+			const result = await inferRouterDecision(request);
+			assert.equal(result.fallback?.to, "decision-test/chat");
+			assert.match(result.fallback?.reason ?? "", /conservative input budget/);
 			assert.equal(transport.mock.calls.length, 0);
-			assert.equal(chat.mock.calls.length, pinned ? 0 : 1);
+			assert.equal(chat.mock.calls.length, 1);
 			await assert.rejects(
 				inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe-ai/jev-latest" } }),
 				/conservative input budget/,
 			);
-			assert.equal(chat.mock.calls.length, pinned ? 0 : 1);
+			assert.equal(chat.mock.calls.length, 1);
 		});
 	}
 }

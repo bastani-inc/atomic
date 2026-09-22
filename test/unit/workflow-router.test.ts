@@ -14,7 +14,7 @@ import * as durableFactory from "../../packages/workflows/src/durable/factory.js
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { withWorkflowDefaults } from "../../packages/workflows/src/extension/config-loader.js";
-import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
+import type { PiExecuteContext, WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 import type { WorkflowCommandHandler } from "../../packages/workflows/src/extension/workflow-command-utils.js";
@@ -666,34 +666,45 @@ test("Jev fallback submits one request with complete registry, contextual Choice
 	f.noLaunch();
 });
 
-for (const status of [401, 422, 429, 529]) {
-	test(`Jev HTTP ${status} fails before any admission without retry or decision`, async () => {
+for (const [status, calls] of [
+	[401, 1],
+	[422, 1],
+	[429, 4],
+	[529, 4],
+] as const) {
+	test(`Jev HTTP ${status} fails before any admission ${calls === 1 ? "without retry" : "after transient retries"} or decision (#3206)`, async () => {
+		vi.useFakeTimers();
 		const f = fixture();
 		f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+		// No current chat model, so the routing failure stays observable (#3206).
+		(f.ctx as { model?: PiExecuteContext["model"] }).model = undefined;
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const fetch = vi.fn(async () => new Response("private provider payload", { status }));
 		vi.stubGlobal("fetch", fetch);
-		const result = await f.call();
+		const pending = f.call();
+		await vi.advanceTimersByTimeAsync(60_000);
+		const result = await pending;
 		assert.equal("routerDecision" in result.details, false);
 		assert.match("error" in result.details ? (result.details.error ?? "") : "", new RegExp(String(status)));
 		assert.equal(JSON.stringify(result).includes("private provider payload"), false);
-		assert.equal(fetch.mock.calls.length, 1);
+		assert.equal(fetch.mock.calls.length, calls);
 		assert.equal(f.infer.mock.calls.length, 0);
 		f.noLaunch();
 	});
 }
 
-for (const malformed of ["unknown-choice", "unknown-duration", "missing-duration", "wrong-type"]) {
+for (const malformed of ["unknown-choice", "unknown-duration", "missing-duration"]) {
 	test(`Jev ${malformed} fails closed after bounded repair`, async () => {
 		const f = fixture();
 		f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+		// No current chat model, so Jev-side bounded repair stays observable (#3206).
+		(f.ctx as { model?: PiExecuteContext["model"] }).model = undefined;
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 			const response = jevAnswer(JSON.parse(String(init?.body)) as JevRequest);
 			if (malformed === "unknown-choice") response.answers.workflow!.choice = "not-registered";
 			if (malformed === "unknown-duration") response.answers.duration!.choice = "unknown";
 			if (malformed === "missing-duration") delete response.answers.duration;
-			if (malformed === "wrong-type") response.answers.workflow!.type = "score";
 			return new Response(JSON.stringify(response));
 		});
 		vi.stubGlobal("fetch", fetch);
@@ -703,6 +714,28 @@ for (const malformed of ["unknown-choice", "unknown-duration", "missing-duration
 		f.noLaunch();
 	});
 }
+
+test("Jev malformed decision falls back to the chat model and routes (#3206)", async () => {
+	const f = fixture();
+	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+		const response = jevAnswer(JSON.parse(String(init?.body)) as JevRequest);
+		response.answers.workflow!.choice = "not-registered";
+		return new Response(JSON.stringify(response));
+	});
+	vi.stubGlobal("fetch", fetch);
+	f.infer.mockImplementation(() =>
+		messageStream(decisionMessage({ workflowType: "none", maxBudget: {}, estimatedDuration: "15min" })),
+	);
+	const result = await f.call();
+	assert.ok("routerDecision" in result.details);
+	assert.equal(result.details.routerDecision?.workflowType, "none");
+	assert.equal(fetch.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 1);
+	f.noLaunch();
+});
 
 test("reload after inference during runtime initialization rejects before admission", async () => {
 	const f = fixture();
@@ -930,6 +963,8 @@ for (const failure of ["registry", "provider", "cancel"] as const) {
 			registry = registry.register({ ...f.other, name: `extra-${i}`, normalizedName: `extra-${i}` });
 		f.replace(registry);
 		f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+		// No current chat model, so the routing failure stays observable (#3206).
+		(f.ctx as { model?: PiExecuteContext["model"] }).model = undefined;
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const controller = new AbortController();
 		const fetch = vi.fn(async (_url: string, init: RequestInit) => {
@@ -1202,14 +1237,11 @@ for (const pinned of [false, true]) {
 		});
 		const result = await f.call();
 		assert.equal(fetch.mock.calls.length, 0);
-		assert.equal(f.infer.mock.calls.length, pinned ? 0 : 1);
-		if (pinned) {
-			assert.equal("routerDecision" in result.details, false);
-			assert.match("error" in result.details ? (result.details.error ?? "") : "", /conservative input budget/);
-		} else {
-			assert.ok("routerDecision" in result.details);
-			assert.deepEqual(result.details.routerDecision?.maxBudget, { maxCost: 0.123456789, maxTokens: 0 });
-		}
+		// #3206: the pinned Jev context overflow now falls back to the current
+		// chat model too instead of failing the route.
+		assert.equal(f.infer.mock.calls.length, 1);
+		assert.ok("routerDecision" in result.details);
+		assert.deepEqual(result.details.routerDecision?.maxBudget, { maxCost: 0.123456789, maxTokens: 0 });
 		f.noLaunch();
 	});
 }

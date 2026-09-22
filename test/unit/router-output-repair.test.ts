@@ -93,18 +93,33 @@ test.each([0, 0.5, 0.999, 1.001, 1.5, 2])("Jev accepts total probability %s with
 	assert.equal(fetch.mock.calls.length, 1);
 });
 
-for (const kind of ["missing", "probability", "json"] as const)
-	test(`Jev repairs ${kind} output without changing criteria`, async () => {
+// #3206: missing probabilities and probability drift are advisory and decode
+// without repair; only an unknown choice or malformed JSON triggers repair.
+for (const kind of ["missing", "probability"] as const)
+	test(`Jev accepts ${kind} output without repair (#3206)`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-key");
 		const bad = jevResponse();
 		if (kind === "missing") Reflect.deleteProperty(bad.answers.route, "probabilities");
 		if (kind === "probability") bad.answers.route.probabilities.none = -1;
+		const fetch = vi.fn(async () => Response.json(bad));
+		vi.stubGlobal("fetch", fetch);
+		const result = await inferRouterDecision({ ...decisionRequest(), settings: SettingsManager.inMemory() });
+		assert.equal(result.value.route, "review");
+		assert.equal(fetch.mock.calls.length, 1);
+	});
+
+for (const kind of ["choice", "json"] as const)
+	test(`Jev repairs ${kind} output without changing criteria`, async () => {
+		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-key");
+		const bad = jevResponse();
+		if (kind === "choice") bad.answers.route.choice = "absent";
 		const fetch = vi
 			.fn()
 			.mockResolvedValueOnce(kind === "json" ? new Response("invalid") : Response.json(bad))
 			.mockImplementation(async () => Response.json(jevResponse()));
 		vi.stubGlobal("fetch", fetch);
-		const request = { ...decisionRequest(), settings: SettingsManager.inMemory() };
+		// No chat fallback: repairs run on Jev only without a current chat model (#3206).
+		const request = { ...decisionRequest(), currentModel: undefined, settings: SettingsManager.inMemory() };
 		const result = await inferRouterDecision(request);
 		assert.equal(result.value.route, "review");
 		assert.equal(fetch.mock.calls.length, 2);
@@ -119,13 +134,14 @@ for (const kind of ["missing", "probability", "json"] as const)
 		});
 	});
 
-test("pinned Jev HTTP authentication failure does not retry or fall back", async () => {
+test("pinned Jev HTTP authentication failure does not retry and stays fatal without a chat model (#3206)", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-key");
 	const fetch = vi.fn(async () => new Response("private", { status: 401 }));
 	vi.stubGlobal("fetch", fetch);
 	await assert.rejects(
 		inferRouterDecision({
 			...decisionRequest(),
+			currentModel: undefined,
 			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 		}),
 		/HTTP 401/,

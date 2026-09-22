@@ -1,3 +1,4 @@
+import { type RetryPolicy, retryDelayMs } from "@bastani/pi-ai";
 import {
 	APIError,
 	AuthenticationError,
@@ -14,6 +15,20 @@ import {
 /** Safe diagnostics only. Never retain SDK errors, headers, bodies, or causes. */
 export class JevRequestError extends Error {
 	usage?: { inputTokens: number; outputTokens: number };
+	transient = false;
+}
+
+/** Matches the `settings.retry` defaults used by ordinary chat providers. */
+export const DEFAULT_DECISION_RETRY: RetryPolicy = Object.freeze({ enabled: true, maxRetries: 3, baseDelayMs: 2000 });
+
+function transientError(message: string): JevRequestError {
+	const error = new JevRequestError(message);
+	error.transient = true;
+	return error;
+}
+
+function isTransientStatus(status: number): boolean {
+	return status === 408 || status === 429 || status >= 500;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,11 +61,10 @@ function describeError(error: APIError, authGuidance: string): JevRequestError {
 					: error instanceof NotFoundError
 						? "Check the provider endpoint and model."
 						: error instanceof RateLimitError || error.status === 529
-							? "Wait before retrying explicitly."
+							? "Provider is rate limited or overloaded."
 							: "Check provider availability.";
-	return new JevRequestError(
-		`Jev HTTP ${error.status} (${kind}). ${guidance}${requestId ? ` Request ID: ${requestId}.` : ""} No automatic retry was made.`,
-	);
+	const message = `Jev HTTP ${error.status} (${kind}). ${guidance}${requestId ? ` Request ID: ${requestId}.` : ""}`;
+	return isTransientStatus(error.status) ? transientError(message) : new JevRequestError(message);
 }
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -97,7 +111,43 @@ async function boundedResponse(response: Response, signal: AbortSignal): Promise
 	}
 }
 
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		signal.throwIfAborted();
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal.reason);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** Retry transient transport, 408, 429 and 5xx failures with the provider retry policy. */
 export async function requestJev(options: {
+	apiKey: string;
+	endpoint: string;
+	request: SystemOneRequest;
+	signal: AbortSignal;
+	authGuidance: string;
+	retry: RetryPolicy;
+}): Promise<JsonValue> {
+	const maxRetries = options.retry.enabled ? options.retry.maxRetries : 0;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await requestJevOnce(options);
+		} catch (error) {
+			options.signal.throwIfAborted();
+			if (!(error instanceof JevRequestError) || !error.transient || attempt >= maxRetries) throw error;
+			await sleep(retryDelayMs(options.retry, attempt + 1), options.signal);
+		}
+	}
+}
+
+async function requestJevOnce(options: {
 	apiKey: string;
 	endpoint: string;
 	request: SystemOneRequest;
@@ -126,9 +176,7 @@ export async function requestJev(options: {
 	} catch (error) {
 		options.signal.throwIfAborted();
 		if (error instanceof JevResponseLimitError) throw error;
-		throw new JevRequestError(
-			"Jev request failed (APIConnectionError). Check connectivity and retry explicitly; no automatic retry was made.",
-		);
+		throw transientError("Jev request failed (APIConnectionError). Check connectivity.");
 	}
 	options.signal.throwIfAborted();
 	let body: JsonValue;
