@@ -139,19 +139,30 @@ describe("youcom search requests", () => {
 		assert.equal(body.count, 5);
 	});
 
-	test("sends neither domain parameter and the full 20-result page for a mixed filter", async () => {
+	test("sends include_domains only for a mixed filter and enforces the exclusions client-side", async () => {
 		// The API returns 422 when include_domains and exclude_domains are both
-		// present, so the mixed case is enforced entirely client-side; a small
-		// request page could be filtered down to zero even when matches exist.
+		// present, so a mixed filter keeps server-side narrowing via
+		// include_domains and enforces the exclusions client-side; the full page
+		// is requested because client-side exclusion can shrink it.
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
-		fetchResult = okResponse({ results: { web: [] } });
+		fetchResult = okResponse(
+			webResults([
+				{ url: "https://blog.rust-lang.org/a", title: "Kept" },
+				{ url: "https://forum.rust-lang.org/b", title: "Excluded but still returned by the server" },
+			]),
+		);
 
-		await searchWithYoucom("query", { numResults: 5, domainFilter: ["rust-lang.org", "-forum.rust-lang.org"] });
+		const response = await searchWithYoucom("query", {
+			numResults: 5,
+			domainFilter: ["rust-lang.org", "-forum.rust-lang.org"],
+		});
 
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
-		assert.equal("include_domains" in body, false);
+		assert.deepEqual(body.include_domains, ["rust-lang.org"]);
 		assert.equal("exclude_domains" in body, false);
 		assert.equal(body.count, 20);
+		assert.equal(response.results.length, 1);
+		assert.equal(response.results[0]?.url, "https://blog.rust-lang.org/a");
 	});
 
 	test("normalizes include entries with a scheme and path before sending them", async () => {
@@ -175,16 +186,69 @@ describe("youcom search requests", () => {
 		assert.equal("include_domains" in body, false);
 	});
 
-	test("keeps the requested count when the domainFilter has no usable entries", async () => {
+	test("strips a port and a leading *. wildcard from include entries before sending them", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse({ results: { web: [] } });
 
-		await searchWithYoucom("query", { numResults: 6, domainFilter: ["  ", "-"] });
+		await searchWithYoucom("query", { numResults: 5, domainFilter: ["*.Docs.rs:443"] });
+
+		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
+		assert.deepEqual(body.include_domains, ["docs.rs"]);
+		assert.equal("exclude_domains" in body, false);
+	});
+
+	test("keeps the requested count when the domainFilter has only blank entries", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse({ results: { web: [] } });
+
+		await searchWithYoucom("query", { numResults: 6, domainFilter: ["  ", ""] });
 
 		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
 		assert.equal(body.count, 6);
 		assert.equal("include_domains" in body, false);
 		assert.equal("exclude_domains" in body, false);
+	});
+
+	test("rejects an invalid include entry before any request or activity entry", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() => searchWithYoucom("invalid-include-entry", { domainFilter: ["not a host!"] }),
+			/Invalid domainFilter entry "not a host!": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made for an invalid filter");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "invalid-include-entry");
+		assert.equal(entry, undefined, "no activity entry should be created for an invalid filter");
+	});
+
+	test("rejects an invalid exclude entry before any request or activity entry", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() => searchWithYoucom("invalid-exclude-entry", { domainFilter: ["-docs"] }),
+			/Invalid domainFilter entry "-docs": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made for an invalid filter");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "invalid-exclude-entry");
+		assert.equal(entry, undefined, "no activity entry should be created for an invalid filter");
+	});
+
+	test("rejects a bare - exclusion prefix before any request or activity entry", async () => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+
+		await assert.rejects(
+			() => searchWithYoucom("bare-exclusion-prefix", { domainFilter: ["example.com", "-"] }),
+			/Invalid domainFilter entry "-": expected a hostname like example\.com \(prefix with - to exclude\)/,
+		);
+
+		assert.equal(fetchCalls.length, 0, "no request should be made for an invalid filter");
+		const entry = activityMonitor.getEntries().find((e) => e.query === "bare-exclusion-prefix");
+		assert.equal(entry, undefined, "no activity entry should be created for an invalid filter");
 	});
 });
 
@@ -253,7 +317,7 @@ describe("youcom domainFilter enforcement", () => {
 		assert.equal(response.results[0]?.url, "https://blog.rust-lang.org/a");
 	});
 
-	test("treats an empty or wholly invalid domainFilter as no restriction", async () => {
+	test("treats an empty domainFilter as no restriction", async () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Kept" }]));
 
@@ -296,19 +360,6 @@ describe("youcom domainFilter enforcement", () => {
 
 		assert.equal(response.results.length, 1);
 		assert.equal(response.results[0]?.url, "https://docs.rs/tokio/latest");
-	});
-
-	test("relaxes the include restriction when every include entry is malformed", async () => {
-		// A malformed entry must not silently zero the results; with no valid
-		// include left, no include restriction is applied and none is sent.
-		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
-		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Kept" }]));
-
-		const response = await searchWithYoucom("query", { domainFilter: ["not a host!"] });
-
-		const body = JSON.parse(fetchCalls[0].init.body as string) as Record<string, unknown>;
-		assert.equal("include_domains" in body, false);
-		assert.equal(response.results.length, 1);
 	});
 });
 

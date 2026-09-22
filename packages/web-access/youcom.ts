@@ -50,9 +50,7 @@ const HOSTNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_.]*\.[a-zA-Z]{2,}$/;
 /**
  * Normalize a single domainFilter entry (after any `-` exclusion prefix has been
  * stripped): remove a scheme, path, and port, strip a leading `*.` or `.`, and
- * lowercase. Returns null for entries that do not look like a hostname; dropping
- * a malformed entry (rather than sending it) mirrors perplexity's
- * relax-on-invalid behavior so a typo never silently zeroes the results.
+ * lowercase. Returns null for entries that do not look like a hostname.
  */
 function normalizeDomainEntry(entry: string): string | null {
 	let domain = entry.trim().toLowerCase();
@@ -66,7 +64,18 @@ function normalizeDomainEntry(entry: string): string | null {
 	return HOSTNAME_PATTERN.test(domain) ? domain : null;
 }
 
-function splitDomainFilter(domainFilter: string[] | undefined): { includes: string[]; excludes: string[] } {
+interface DomainFilter {
+	includes: string[];
+	excludes: string[];
+}
+
+/**
+ * Split a domainFilter into normalized include and exclude hostnames. Blank
+ * entries express no restriction and are skipped; any other entry that does
+ * not normalize to a hostname (including a bare `-`) throws, because dropping
+ * it would silently broaden the results the caller asked to restrict.
+ */
+function splitDomainFilter(domainFilter: string[] | undefined): DomainFilter {
 	const includes: string[] = [];
 	const excludes: string[] = [];
 	for (const entry of domainFilter ?? []) {
@@ -75,7 +84,11 @@ function splitDomainFilter(domainFilter: string[] | undefined): { includes: stri
 		if (!trimmed) continue;
 		const isExclude = trimmed.startsWith("-");
 		const domain = normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed);
-		if (!domain) continue;
+		if (!domain) {
+			throw new Error(
+				`Invalid domainFilter entry "${entry}": expected a hostname like example.com (prefix with - to exclude)`
+			);
+		}
 		(isExclude ? excludes : includes).push(domain);
 	}
 	return { includes, excludes };
@@ -88,15 +101,14 @@ function domainMatches(host: string, filter: string): boolean {
 }
 
 /**
- * Client-side enforcement of domainFilter on results. Pure include or pure
- * exclude filters are also sent server-side (include_domains/exclude_domains),
- * but a filter mixing both cannot be — the API rejects the combination — and
- * even when a filter was sent, results are re-checked here so a restriction is
- * never silently dropped on the server contract alone.
+ * Client-side enforcement of domainFilter on results. Includes (or, for a pure
+ * exclude filter, excludes) are also sent server-side, but a filter mixing both
+ * only sends include_domains — the API rejects the combination — so its
+ * exclusions are enforced here alone. Even when a filter was sent, results are
+ * re-checked here so a restriction is never silently dropped on the server
+ * contract alone.
  */
-function applyDomainFilter(result: SearchResult, domainFilter: string[] | undefined): boolean {
-	if (!domainFilter?.length) return true;
-	const { includes, excludes } = splitDomainFilter(domainFilter);
+function applyDomainFilter(result: SearchResult, { includes, excludes }: DomainFilter): boolean {
 	if (!includes.length && !excludes.length) return true;
 	let host: string;
 	try {
@@ -191,20 +203,23 @@ export function isYoucomAvailable(): boolean {
 }
 
 export async function searchWithYoucom(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-	// Validate credentials before starting activity tracking so a missing key
-	// never leaves a dangling activity entry.
+	// Validate credentials and the domain filter before starting activity
+	// tracking so a missing key or a malformed filter never leaves a dangling
+	// activity entry and never reaches the network.
 	const apiKey = getApiKey();
+	const domainFilter = splitDomainFilter(options.domainFilter);
 	const numResults = Math.min(options.numResults ?? 5, MAX_RESULTS);
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
-	// Pure include or pure exclude filters are sent server-side; a filter that
-	// mixes both cannot be (the API returns 422 when include_domains and
-	// exclude_domains are both present), so the mixed case is enforced entirely
-	// client-side and requests the full page to keep post-filtering from
-	// shrinking an already-small page to zero. Client-side filtering also runs
-	// in every case as enforcement of the server contract.
-	const { includes, excludes } = splitDomainFilter(options.domainFilter);
+	// Includes are sent server-side as include_domains; a pure exclude filter is
+	// sent as exclude_domains. A filter that mixes both cannot send both (the
+	// API returns 422 when include_domains and exclude_domains are both
+	// present), so it keeps server-side narrowing via include_domains, enforces
+	// the exclusions client-side, and requests the full page to keep that
+	// post-filtering from shrinking an already-small page to zero. Client-side
+	// filtering also runs in every case as enforcement of the server contract.
+	const { includes, excludes } = domainFilter;
 	const mixedDomainFilter = includes.length > 0 && excludes.length > 0;
 
 	const requestBody: Record<string, unknown> = {
@@ -212,9 +227,9 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 		count: mixedDomainFilter ? MAX_RESULTS : numResults,
 	};
 
-	if (includes.length > 0 && excludes.length === 0) {
+	if (includes.length > 0) {
 		requestBody.include_domains = includes;
-	} else if (excludes.length > 0 && includes.length === 0) {
+	} else if (excludes.length > 0) {
 		requestBody.exclude_domains = excludes;
 	}
 
@@ -272,7 +287,7 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 	for (const result of [...sections.web, ...sections.news]) {
 		if (results.length >= numResults) break;
 		const mapped = toSearchResult(result, ++sourceIndex);
-		if (mapped && applyDomainFilter(mapped, options.domainFilter)) {
+		if (mapped && applyDomainFilter(mapped, domainFilter)) {
 			results.push(mapped);
 		}
 	}
