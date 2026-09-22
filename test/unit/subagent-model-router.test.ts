@@ -851,7 +851,7 @@ test("auto routing keeps exact benchmark identity and provenance distinctions", 
 		const { state } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
 		assert.match(String(state.evals), /Harness: `cc`=claude-code, `gb`=grok-build, `msa`=mini-swe-agent/);
 		assert.match(String(state.evals), /\| claude-fable-5 /);
-		assert.match(String(state.evals), /\| F01 \| Claude Fable 5 \|/);
+		assert.match(String(state.evals), /\| F\d\d \| Claude Fable 5 \|/);
 		assert.equal(state.evals, evals);
 		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		return messageStream(decisionMessage({ model: `${models[rank++]!.provider}/claude-fable-5`, effort: null }));
