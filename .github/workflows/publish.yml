@@ -104,17 +104,53 @@ jobs:
         # this leg's artifact, so two legs that share platform+arch (glibc and musl
         # Linux) can never collide on an artifact name.
         include:
-          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: linux, arch: x64, slug: linux-x64-gnu, target: x86_64-unknown-linux-gnu, timeout_minutes: 16, build_timeout_minutes: 5 }
-          - { runner: nscloud-ubuntu-24.04-arm64-4x16, platform: linux, arch: arm64, slug: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, timeout_minutes: 17, build_timeout_minutes: 5 }
+          - runner: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: linux
+            arch: x64
+            slug: linux-x64-gnu
+            target: x86_64-unknown-linux-gnu
+            timeout_minutes: 16
+            build_timeout_minutes: 5
+          - runner: [nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-arm64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: linux
+            arch: arm64
+            slug: linux-arm64-gnu
+            target: aarch64-unknown-linux-gnu
+            timeout_minutes: 17
+            build_timeout_minutes: 5
           # musl legs reuse the same zig toolchain; @napi-rs/cli adds
           # `-C target-feature=-crt-static` for a musl ABI, which is what keeps the
           # produced .node a dlopen-able shared object instead of a static-CRT blob.
-          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 17, build_timeout_minutes: 5 }
-          - { runner: nscloud-ubuntu-24.04-arm64-4x16, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 18, build_timeout_minutes: 5 }
-          - { runner: namespace-profile-atomic-release-macos-arm64-6x14, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
-          - { runner: namespace-profile-atomic-release-macos-arm64-6x14, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
-          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
-          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
+          - runner: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: linux
+            arch: x64
+            slug: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+            timeout_minutes: 17
+            build_timeout_minutes: 5
+          - runner: [nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-arm64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: linux
+            arch: arm64
+            slug: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+            timeout_minutes: 18
+            build_timeout_minutes: 5
+          - { runner: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit], platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
+          - { runner: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit], platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
+          - runner: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: win32
+            arch: x64
+            slug: win32-x64-msvc
+            target: x86_64-pc-windows-msvc
+            timeout_minutes: 20
+            build_timeout_minutes: 5
+          - runner: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
+            platform: win32
+            arch: arm64
+            slug: win32-arm64-msvc
+            target: aarch64-pc-windows-msvc
+            timeout_minutes: 20
+            build_timeout_minutes: 5
     steps:
       # Release checkout does not use the Namespace git mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,9 +196,12 @@ jobs:
         with:
           spacectl-version: 0.12.3
           cache: npm
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+      - name: Configure Linux release dependency cache
+        if: runner.os == 'Linux'
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Resolve explicit native build target
@@ -376,7 +415,7 @@ jobs:
   windows-binary-smoke:
     name: Build and smoke Windows archives
     needs: [integrity, native-artifacts]
-    runs-on: nscloud-windows-2022-amd64-4x16
+    runs-on: [nscloud-windows-2022-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.windows-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -389,6 +428,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          package-manager-cache: false
+      - name: Configure Namespace dependency cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Download Windows native bindings

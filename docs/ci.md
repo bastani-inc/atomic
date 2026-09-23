@@ -54,7 +54,7 @@ Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actio
 
 Namespace refuses to schedule a job whose `runs-on` names more than one Namespace machine label, so each job names exactly one profile or label.
 
-`test/ci/ci-workflow-contracts.test.ts` enforces approved PR profiles, the dedicated macOS release profile, inline release labels, and the npm publication exception. It also checks pinned cache actions, dependency-only release caching, and the main-only warmer. The tests run on the revision under test, so they catch a mistaken change but cannot stop a fork pull request that edits a workflow and the tests with it; see [Approving fork workflow runs](#approving-fork-workflow-runs).
+Validate workflow changes with YAML parsing, actionlint, maintainer review, and hosted runs on the exact PR head. Do not add tests that restate workflow configuration, including runner labels, matrices, action pins, permissions, or required-check names. Product and executable release-tooling tests remain in the CI suite. Review the actual security settings and required GitHub contexts before merging; see [Approving fork workflow runs](#approving-fork-workflow-runs).
 
 ### Runner mapping
 
@@ -82,8 +82,8 @@ Namespace refuses to schedule a job whose `runs-on` names more than one Namespac
 
 | Profile tag | OS | Arch | Shape | Builder mode | Access Level | Created with | Jobs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs) |
-| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
+| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs) |
+| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
 | `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | No remote builder | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
 | `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | No remote builder | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
 
@@ -103,7 +103,7 @@ The rest is dashboard-only, in the [runner profile editor](https://cloud.namespa
 
 All four CI profiles retain Restricted access and have 50 GB cache volumes with updates allowed only from `main`. Toolchain and action caches are enabled in the profiles. `test.yml` configures npm and Rust caches through the pinned Namespace cache action after checkout and toolchain installation. This uses attached storage; no broader Namespace API permission is granted. Hosted validation must establish that the action works with Restricted access on each platform. If it fails, do not silently change Access Level. `NO_CACHING` disables the remote Docker builder cache, not the attached cache volume.
 
-**Resizing.** The shape lives in the profile, not the workflow, and the tag names the shape. To resize a pull-request job, create a profile whose tag names the new shape (`nsc` for Linux, the editor for Windows), set its Access Level to Restricted, then update the tag in the workflow, this section and the tables above, `APPROVED_PULL_REQUEST_PROFILES` in `test/ci/ci-workflow-contracts.test.ts`, and, for `test.yml`, the runner constants in `test/ci/test-workflow-topology.test.ts`. Remove the old profile once no workflow uses it. Changing a profile's shape in place would make its tag, these docs, and the contract tests wrong.
+**Resizing.** The shape lives in the profile, and its tag names the shape. Create a correctly named profile, set Restricted access and protected caching, then update the workflow and these tables. Remove the old profile only once no workflow uses it. Verify the selected shape and runtime performance in hosted CI.
 
 **If a profile is missing.** A job whose `runs-on` names a profile that does not exist (a missing Windows profile, or a mistyped tag) is never picked up. It stays queued, and GitHub cancels a self-hosted job after 24 hours in the queue ([Actions limits](https://docs.github.com/en/actions/reference/limits)). `timeout-minutes` counts from job start, so it does not bound that wait. Namespace also holds jobs in the queue while capacity is unavailable, so check the profile list first when a job stays queued far longer than usual.
 
@@ -164,7 +164,7 @@ The Intel replacement was probed on a short-lived Namespace Tahoe 6x14 instance 
 
 ### GitHub-hosted exceptions
 
-Only `publish-npm` stays GitHub-hosted. Its reason is recorded in `GITHUB_HOSTED_EXCEPTIONS` in `test/ci/ci-workflow-contracts.test.ts`.
+Only `publish-npm` stays GitHub-hosted, for the registry constraint below.
 
 1. **`publish-npm` (`ubuntu-latest`).** Namespace runners register with GitHub as self-hosted runners, so the job's GitHub OIDC token carries `runner_environment: self-hosted` ([GitHub OIDC reference](https://docs.github.com/en/actions/reference/security/oidc)). npm accepts trusted publishing and provenance only from cloud-hosted runners:
    - "Trusted publishing currently supports only cloud-hosted runners. Support for self-hosted runners is intended for a future release." ([npm trusted publishers](https://docs.npmjs.com/trusted-publishers))
@@ -178,11 +178,12 @@ Only `publish-npm` stays GitHub-hosted. Its reason is recorded in `GITHUB_HOSTED
 
 This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on Namespace, the same provider that runs releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
 
-- **Ephemeral runners, persistent caches.** Namespace starts a fresh runner for each job. Attached caches outlive it, so their update policy and profile isolation are part of the security boundary. Each profile has its own cache per repository; no custom cache-sharing tags are used.
-- **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` runs on a repository-specific profile whose Access Level is Restricted, which disables Namespace feature access for the runner workload. On an inline `nscloud-*` label the same job would get a workload token with the default Permissive access, and "by default, workload tokens allow access to any Namespace feature". Access Level can be set only on a profile, and only in the dashboard. [Runner profiles](#runner-profiles) lists the profiles, how to recreate them, and how to verify the setting. The contract tests fail if a job in a pull-request-capable workflow uses anything other than an approved profile. This protects fork runs that use the committed workflow files. For `pull_request`, GitHub runs the workflow files from the pull request's merge commit, so a fork pull request can change `runs-on` to an inline `nscloud-*` label and get a Permissive token, and the contract tests in that same revision cannot prevent it.
+- **Ephemeral runners, persistent caches.** Namespace starts a fresh runner for each job. Attached caches outlive it. PR jobs use explicit repository-qualified cache tags, `bastani-inc.atomic.ci.<job>.<platform>`, through the documented `;overrides.cache-tag=` profile suffix. Unit, integration, agent, archive, static-check, CodeQL and result-gate jobs have separate cache identities so a sparse job cannot replace a build job's cache under Namespace's last-write-wins snapshot model. Branch-write restrictions and Restricted access remain on the underlying profiles. Concurrent runs of the same job can still select different cache generations; no build assumes an exact previous snapshot.
+- **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` uses a repository-specific Restricted profile. The cache identity suffix changes storage selection, not API permissions. A fork can edit its workflow to request a different runner or cache, so maintainer approval remains the security boundary for workflow edits. Configuration tests cannot enforce it against a malicious PR.
 - **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
 - **Main-only cache updates.** The four `atomic-ci-*` profiles have 50 GB cache volumes. Namespace's [protected cache updates](https://namespace.so/docs/solutions/github-actions/caching#protect-caches-from-updates) allow jobs from `main` to persist changes; PR jobs read the cache and discard their local changes. `test.yml` uses `namespacelabs/nscloud-cache-action` pinned to `1124a6f3ce44e5cf84cc22111530961f4d2a15f9` for npm downloads and, in jobs that build native bindings, Cargo dependencies and build output. `setup-node` has `package-manager-cache: false` to avoid duplicate archive transfers. `npm ci --ignore-scripts` still installs from the lockfile on every run. Cold caches remain valid; no cache miss skips installation or tests. The profile also enables automatic action and toolchain caching. Git checkout still uses `actions/checkout`, not the Namespace mirror action.
-- **Separate macOS release cache.** `atomic-release-macos-arm64-6x14` uses Tahoe Slim, arm64, 6 vCPU and 14 GB RAM, with a separate 50 GB volume writable only from `main`. `warm-macos-release-cache.yml` runs on main pushes or manual dispatch on main, installs the same Bun/Node/Rust versions as the publisher, and downloads locked npm and Cargo dependencies. The release-tag job reads that cache without persisting changes. Both workflows cache npm downloads plus `~/.cargo/registry` and `~/.cargo/git`; neither caches Cargo build output, `node_modules`, native bindings, or release artifacts. All other release jobs retain their existing caching configuration, including the GitHub Actions cache for MSVC CRT downloads. Remote Docker builders remain disabled on the cache-enabled profiles.
+- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads. Releases do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. The GitHub Actions cache for MSVC CRT downloads remains separate. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
+- **Cache restrictions are job configuration.** Main-only labels and profile settings are not proven immutable volume ACLs. Approved workflow edits can request the same cache under different settings. Do not treat a repo-prefixed tag as an authorization boundary. Release npm downloads are checked against lockfile integrity; Cargo source caching is withheld because restored sources do not provide the same protection. The macOS profile's automatic action/tool caching also needs hosted isolation verification before release readiness.
 - **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. Against a pull request that changes anything under `.github/workflows`, approval is the only barrier: the Restricted profiles protect only runs that use the committed workflows. Follow [Approving fork workflow runs](#approving-fork-workflow-runs).
 
 ### Cache setup and validation
@@ -194,6 +195,8 @@ Read back the volume size, `allow_commit_from_branch: [main]`, and builder mode 
 The first main run populates the caches. PRs and release tags cannot warm them persistently, so pre-merge cache misses are expected. The macOS warmer checks `github.ref == 'refs/heads/main'`, including on manual dispatch. It performs no build or publication. Once merged, it can also be started with `gh workflow run warm-macos-release-cache.yml --ref main`.
 
 The cache action runs after checkout and after the relevant tools are installed, following the [action reference](https://namespace.so/docs/reference/github-actions/nscloud-cache-action). Both the action SHA and `spacectl-version: 0.12.3` are pinned. This version includes the Windows Rust junction-path fix introduced in 0.12.2. The action configures local mounts without calling Namespace APIs; profile access remains Restricted. Verify Linux, Windows, and macOS logs for configured paths and cache hits, compare setup/build timings after a successful main population, and confirm Restricted access remains unchanged. No warm-hit or performance claim is made until those runs complete. Cache wiring does not resolve the separate Windows SYSTEM temporary-directory ACL failures or per-test duration regressions found in the first migration run.
+
+The macOS warmer installs both arm64 and x64 Node/npm dependencies, so the first Intel smoke can reuse architecture-specific downloads. This remains download caching only; each release builds its native module from source.
 
 ### Approving fork workflow runs
 
@@ -221,15 +224,24 @@ Possible future decisions for the workspace owner. None is authorized or pending
 3. Run this repository's CI in a separate Namespace workspace that holds nothing sensitive, so a Permissive token reaches nothing of value. Whether one GitHub organization can split repositories across workspaces is unconfirmed.
 4. Confirm with Namespace support whether Restricted caps `permissions.additional_grant`, and whether an access level can be set through a `runs-on` suffix.
 
-### Pre-baked base image decision
+### Pre-baked Linux runner image
 
-Namespace can pre-bake dependencies into a [custom base image](https://namespace.so/docs/solutions/github-actions/custom-base-images). **It is not adopted.** The evidence:
+`.github/runner-images/Dockerfile` extends Namespace's Ubuntu 24.04 base with Rust 1.97.0, rustfmt, clippy and rust-analyzer, installed as `runner`. The rustup fallback is version-pinned and checksum-verified. It copies no repository code, credentials or dependency payloads. Both Linux CI profiles use this definition. Windows and macOS retain their standard images.
 
-- **Little to save.** Measured per-job setup in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543) was `setup-bun` 2–5 s, `setup-node` 3–13 s, the Rust toolchain 8–13 s, and `npm ci` 4–5 s on Linux (18–20 s on Windows). An image could save roughly 15–30 s of that per job, while the jobs run for 2–14 minutes. The larger costs (native binding builds of 39–54 s on Linux and 66 s and 96 s in the Windows unit-tests and integration-tests jobs, the package build, the suites) depend on the checked-out source and cannot be baked. Lockfile-dependent state such as `node_modules` and Cargo output belongs in a ref-scoped cache, not an image.
-- **Linux-only, and profile state.** A committed Dockerfile *can* be applied from the CLI: `nsc github profile update --dockerfile <path>` (or `--spec_file`) sets a profile's custom image, and `nsc github profile rebuild-base-image` and `test-build-base-image` rebuild and test it. But the image belongs to a runner profile, not to the workflow file, so it lives in workspace state that each rebuild has to keep in sync. `test-build-base-image` builds only `linux/amd64` and `linux/arm64`, so an image would leave Windows and macOS unaffected, and Windows sets the length of every `test.yml` run.
-- **Trust and drift.** A profile image shared with pull-request jobs is state the release path must not depend on. Its preinstalled Bun, Node and Rust would also have to be rebuilt in lockstep with the workflow pins (Bun 1.4.2, Node 22, Rust 1.97.0 in `publish.yml`). Otherwise the setup actions still run and the saving disappears.
+Linux CI explicitly runs `rustup run 1.97.0 rustc --version` and exports `RUSTUP_TOOLCHAIN=1.97.0` before Cargo use. It fails if the baked toolchain is absent rather than hiding an image rollout failure behind a download. Windows CI keeps its existing stable Rust setup. The developer-facing `rust-toolchain.toml` remains unchanged. Node and Bun continue through their pinned setup actions and the Namespace toolchain cache; baking copies those actions would ignore provides no benefit.
 
-Revisit only if post-migration timings show setup dominating a job. Any adoption would need a Dockerfile committed to this repository, applied only to the Linux `atomic-ci-*` [runner profiles](#runner-profiles), the same version pins, a rebuild whenever a pin changes, no secrets or checked-out content in the image, and no use from `publish.yml`.
+The standalone image build and the uploaded 8-vCPU profile's test build succeeded. Both Linux profiles received the Dockerfile and explicit rebuild requests. Hosted CI must still verify image rollout, toolchain reuse and timing before a speedup is claimed. Earlier Linux Rust setup took 8–13 seconds per job; compare the replacement step against that baseline.
+
+For a Rust pin change, update the Dockerfile and Linux CI selection together, then test and apply it to each Linux CI profile:
+
+```sh
+nsc base-image build-github-image --os-label ubuntu-24.04 --platform linux/amd64 -f .github/runner-images/Dockerfile
+nsc github profile update --profile_id <linux-ci-profile-id> --dockerfile .github/runner-images/Dockerfile
+nsc github profile test-build-base-image --profile_id <linux-ci-profile-id> --os-label ubuntu-24.04 --platform linux/amd64
+nsc github profile rebuild-base-image --profile_id <linux-ci-profile-id>
+```
+
+Read back cache restrictions and runner shape after applying the image. Keep profile access Restricted. Namespace distributes and optimizes a rebuilt image asynchronously, so verify an actual job uses it. Repeat the rebuild when taking updated Namespace base-image security patches; the upstream base is supplied by Namespace at build time rather than frozen forever.
 
 ### Follow-ups
 
@@ -292,7 +304,7 @@ The readable context is emitted now so that the external ruleset change never ha
 
 1. Confirm that `test (all platforms)` reports on a recent `main` run and on an open pull request.
 2. In ruleset `9310196`, require `test (all platforms)` and remove the two legacy contexts in one edit.
-3. In a follow-up pull request, delete the two legacy rows from the gate's `required_context` list, along with `LEGACY_REQUIRED_CONTEXTS` in the topology test and the legacy exception in the no-Blacksmith contract.
+3. In a follow-up pull request, delete the two legacy rows from the gate's `required_context` list.
 
 Reversing the order would orphan required checks: removing a legacy row before step 2 leaves the ruleset waiting for a context that never reports. If maintainers later prefer real per-job required contexts, follow the same order: emit, switch the ruleset, then drop.
 
@@ -489,27 +501,22 @@ stored under that key. That is more reproducible than resolving `latest` on ever
 release, but it means **the `v1` epoch in the key is the only lever for a
 deliberate SDK refresh**. To force one, bump the epoch (`xwin-v2-…`) in both
 `.github/workflows/publish.yml` and `.github/workflows/warm-toolchain-cache.yml`
-in the same change; a CI contract test asserts the two keys stay equal. The
+in the same change and review that their keys match. The
 trailing `17` is `XWIN_VERSION`, the Visual Studio major version.
 
 ### Warming the release toolchain caches
 
-Cache entries are scoped by branch or tag, with a default-branch read fallback.
-`warm-toolchain-cache.yml` acquires Zig and the CRT/SDK on `main` so release tags
-can reuse those entries. It is dispatch-only; cross-ref reuse from Namespace
-runners is not established by this guide. Both workflows use GitHub's Actions
-cache service, never a Namespace cache volume (see
-[Checkout and cache trust model](#checkout-and-cache-trust-model)).
+`warm-toolchain-cache.yml` runs on main pushes and manual dispatch on main. It populates Namespace npm download volumes for Linux x64, Linux arm64 and Windows x64. Tags are `bastani-inc.atomic.release.linux-x64`, `bastani-inc.atomic.release.linux-arm64` and `bastani-inc.atomic.release.windows-x64`; the publisher selects the same tags. Warmers request main-only writes. Every release consumer explicitly disables cache commits, regardless of its trigger ref.
 
-Before relying on warming, dispatch it on `main`, confirm the expected key was
-saved, then inspect an authorized release/recovery run for a matching cache hit.
-Do not dispatch publication solely to test a cache. Schedule warming only after
-cross-ref reuse is demonstrated; bounded acquisition steps must remain safe on
-a miss. Cache entries expire after seven days without access.
+Warmers install Node and Bun and download locked npm packages. The separate macOS warmer covers both Node architectures. No warmer publishes packages, builds native bindings, or caches Cargo sources or compiled release output.
+
+MSVC CRT/SDK downloads remain in GitHub's branch-scoped Actions cache with the existing keys. That path is not simultaneously mounted by Namespace. Verify a matching default-branch cache hit on an authorized release before relying on cross-ref reuse. Zig setup remains uncached; the former no-op Zig warmer was removed rather than claiming a download persisted when its caching switches were off.
+
+Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Inspect successful main population and a subsequent authorized release for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
 
 ### Pinned actions and build tools
 
-Every third-party action in all three workflows is pinned to a full commit SHA
+Third-party actions are pinned to full commit SHAs
 with a trailing `# vX.Y.Z` comment, following upstream pi's convention.
 `publish.yml` carries `contents: write` and `id-token: write` in its graph, so a
 compromised floating tag anywhere in it is a release-integrity event.

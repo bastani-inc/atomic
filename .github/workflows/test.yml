@@ -52,10 +52,10 @@ jobs:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
-            runner: namespace-profile-atomic-ci-linux-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.linux-amd64
             timeout_minutes: 22
           - binary_platform: windows-x64
-            runner: namespace-profile-atomic-ci-windows-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
             timeout_minutes: 22
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -89,6 +89,7 @@ jobs:
       # to load at import without a binding. That takes the root unit and
       # integration suites down with it, not just the in-process runner tests.
       - id: rust
+        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -101,6 +102,12 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Use pre-baked Linux Rust toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup run 1.97.0 rustc --version
+          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -143,10 +150,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: namespace-profile-atomic-ci-linux-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
             timeout_minutes: 10
           - binary_platform: windows-x64
-            runner: namespace-profile-atomic-ci-windows-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -165,6 +172,7 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - id: rust
+        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -176,6 +184,12 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Use pre-baked Linux Rust toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup run 1.97.0 rustc --version
+          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -217,10 +231,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: namespace-profile-atomic-ci-linux-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
             timeout_minutes: 15
           - binary_platform: windows-x64
-            runner: namespace-profile-atomic-ci-windows-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.windows-amd64
             timeout_minutes: 20
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -241,6 +255,7 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - id: rust
+        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -253,6 +268,12 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Use pre-baked Linux Rust toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup run 1.97.0 rustc --version
+          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -293,10 +314,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: namespace-profile-atomic-ci-linux-amd64-4x16
+            runner: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.release-archive.linux-amd64
             timeout_minutes: 4
           - binary_platform: windows-x64
-            runner: namespace-profile-atomic-ci-windows-amd64-4x16
+            runner: namespace-profile-atomic-ci-windows-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.release-archive.windows-amd64
             timeout_minutes: 7
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -321,6 +342,7 @@ jobs:
       # pays the native build again rather than waiting on agent-suite. That is a
       # runner-second cost, not a wall-clock one.
       - id: rust
+        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -332,6 +354,12 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Use pre-baked Linux Rust toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup run 1.97.0 rustc --version
+          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -460,7 +488,7 @@ jobs:
     name: static-checks (linux-x64)
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.static-checks.linux-amd64
     # Run 34873678170: all steps passed, but 182s finalization hit the 3-minute cap. Add 50% headroom.
     timeout-minutes: 5
     steps:
@@ -477,6 +505,11 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      - name: Use pre-baked Linux Rust toolchain
+        shell: bash
+        run: |
+          rustup run 1.97.0 rustc --version
+          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace npm cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -549,7 +582,7 @@ jobs:
           - test (blacksmith-4vcpu-windows-2025, windows-x64)
           - test (all platforms)
       fail-fast: false
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1
     steps:
       - name: Require every work job to have succeeded

@@ -33,16 +33,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    # A repository runner profile, not ubuntu-latest or an inline `nscloud-*`
-    # label: `ci-workflow-contracts.test.ts` enumerates every workflow in this
-    # directory, and a job in a pull_request workflow must run on an approved
-    # `namespace-profile-atomic-ci-*` profile whose Access Level is Restricted,
-    # so fork runs of this committed file get no usable Namespace workload token.
-    # A fork pull request that edits this file runs its own `runs-on`; only
-    # maintainer approval stops that (docs/ci.md, "Approving fork workflow
-    # runs"). Default setup escaped the contract check only because it was not
-    # a file here; an advanced setup is subject to it.
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64
     timeout-minutes: 30
     permissions:
       # Uploading the SARIF results is the whole point of the job.

@@ -1,0 +1,9 @@
+self-hosted-runner:
+  labels:
+    - namespace-profile-atomic-*
+    - nscloud-ubuntu-24.04-*
+    - nscloud-windows-2022-*
+    - nscloud-cache-*
+    - nscloud-runner-tool-cache-*
+    - nscloud-no-remote-builders
+    - nscloud-container-image-cache

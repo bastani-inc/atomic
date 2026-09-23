@@ -28,22 +28,20 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        timeout-minutes: 4
-        with:
-          toolchain: 1.97.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Configure macOS release dependency cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
           cache: npm
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
       - name: Download locked npm dependencies
         run: npm ci --ignore-scripts
-      - name: Download locked Cargo dependencies
+      - name: Cache Intel Node for Rosetta smoke
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          architecture: x64
+          package-manager-cache: false
+      - name: Download locked Intel npm dependencies
         run: |
-          cargo fetch --locked --target aarch64-apple-darwin
-          cargo fetch --locked --target x86_64-apple-darwin
+          node -e "require('node:assert/strict').equal(process.arch, 'x64')"
+          npm ci --ignore-scripts --cpu=x64
