@@ -384,20 +384,46 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 test("Windows temporary download directories are removed with bounded verified retries", async () => {
 	const { powershell } = await installers();
 
-	const helperStart = powershell.indexOf("function Remove-AtomicTemporaryDirectory");
-	assert.ok(helperStart >= 0, "the bounded temp-directory removal helper is missing");
-	const helper = powershell.slice(helperStart, powershell.indexOf("function Remove-AtomicEmptyDirectory"));
-	assert.ok(helper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
-	assert.match(helper, /while \(\$attempt -lt \$RetryLimit\)/u);
+	const retryStart = powershell.indexOf("function Remove-AtomicTreeWithRetry");
+	assert.ok(retryStart >= 0, "the bounded shared removal helper is missing");
+	const helper = powershell.slice(retryStart, powershell.indexOf("function Remove-AtomicTemporaryDirectory"));
+	assert.ok(helper.length > 0, "the shared removal helper is not declared before Remove-AtomicTemporaryDirectory");
+	assert.match(helper, /while \(\$result\.Attempts -lt \$RetryLimit\)/u);
 	assert.doesNotMatch(helper, /while \(\$true\)|do \{/u);
-	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse -Force -ErrorAction Stop/u);
+	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse:\$isDirectory -Force -ErrorAction Stop/u);
 	assert.doesNotMatch(helper, /SilentlyContinue/u);
 	assert.match(helper, /\[IO\.Directory\]::Delete\(\$Path, \$true\)/u);
-	assert.match(helper, /if \(-not \[IO\.Directory\]::Exists\(\$Path\)\)/u);
+	assert.match(helper, /if \(-not \(Test-AtomicRemovalTargetExists \$Path\)\)/u);
 	assert.match(helper, /\[IO\.FileAttributes\]::ReadOnly/u);
-	assert.match(helper, /after \$attempt attempts; last error: \$lastCleanupDetail/u);
 	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u);
 	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u);
+
+	const wrapperStart = powershell.indexOf("function Remove-AtomicTemporaryDirectory");
+	assert.ok(wrapperStart >= 0, "the bounded temp-directory removal helper is missing");
+	const wrapper = powershell.slice(wrapperStart, powershell.indexOf("function Remove-AtomicEmptyDirectory"));
+	assert.ok(wrapper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
+	assert.match(wrapper, /Remove-AtomicTreeWithRetry \$Path \$RetryLimit \$RetryDelayMilliseconds/u);
+	assert.match(wrapper, /after \$\(\$removal\.Attempts\) attempts; last error: \$lastCleanupDetail/u);
+
+	const backupCleanupStart = powershell.indexOf("function Remove-AtomicTransactionBackups");
+	assert.ok(backupCleanupStart >= 0, "the committed backup cleanup helper is missing");
+	const backupCleanup = powershell.slice(
+		backupCleanupStart,
+		powershell.indexOf("$tempDir = $null", backupCleanupStart),
+	);
+	assert.match(
+		backupCleanup,
+		/Remove-AtomicTreeWithRetry \$shimBackupItem\.FullName \$RetryLimit \$RetryDelayMilliseconds/u,
+	);
+	assert.match(
+		backupCleanup,
+		/Remove-AtomicTreeWithRetry \$backupItem\.FullName \$RetryLimit \$RetryDelayMilliseconds/u,
+	);
+	assert.doesNotMatch(backupCleanup, /Remove-AtomicDirectoryLinkOrTree/u);
+	assert.match(
+		powershell,
+		/Remove-AtomicTransactionBackups \$transaction \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+	);
 
 	assert.match(powershell, /\$tempCleanupRetryLimit = [2-9]/u);
 	assert.doesNotMatch(powershell, /Remove-Item -LiteralPath \$tempDir/u);
