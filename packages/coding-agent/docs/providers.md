@@ -74,14 +74,15 @@ Codex describes Astra Fast as "2x speed, increased usage." OpenAI prices Fast at
 
 Fast inference is a model choice, not a mode. Where a provider supports it, Atomic adds a second selectable model whose canonical ID is the base model ID plus `-fast` — for example `openai-codex/gpt-5.6-sol-fast`. It appears in `/model`, in `atomic --list-models`, and in workflow model catalogs alongside its normal sibling, and it is persisted and restored by that exact ID. Select it anywhere you name a model, including with a thinking suffix: `openai-codex/gpt-5.6-sol-fast:medium`.
 
-Two provider paths produce these variants:
+Three provider paths produce these variants:
 
 - Only first-party OpenAI `openai/*` and OpenAI Codex `openai-codex/*` models send the **base** upstream model ID plus the fixed `service_tier: priority`. A renamed provider, proxy, Azure OpenAI, OpenRouter, or generic OpenAI-compatible provider does not receive a synthetic fast variant.
+- First-party Anthropic `anthropic/*` exposes [fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8: `anthropic/claude-opus-5-5-fast`, `anthropic/claude-opus-5-fast`, and `anthropic/claude-opus-4-8-fast`. Each sends the **base** upstream model ID with `speed: "fast"` and the `fast-mode-2026-02-01` beta header. It works with API keys and Claude subscription logins. Amazon Bedrock, Google Vertex, GitHub Copilot, OpenRouter, and renamed or proxied Anthropic-compatible providers do not receive a synthetic fast variant.
 - GitHub Copilot exposes only the real fast sibling IDs the OAuth model catalog advertises for the signed-in account, and only when the corresponding base model exists in Atomic's Copilot catalog. It sends those suffixed IDs verbatim with no OpenAI service-tier field. Copilot fast models require the account catalog metadata obtained through `/login`; a raw `COPILOT_GITHUB_TOKEN` does not provide that metadata.
 
 The selection Atomic records stays the canonical `-fast` identity even when the outbound request carries the base upstream model ID, so sessions, usage rows, fallback attempts, workflow metadata, and subagent labels all keep normal and fast apart. There is no separate `fast` badge anywhere in the UI: the model ID already says it.
 
-A fast variant's route owns two request fields: the upstream model ID and the service tier. A `before_provider_request` hook may rewrite anything else, but replacing the payload with a non-object or changing either route-owned field is refused with an error naming the model and the remedy, because a model recorded, persisted, and billed as `-fast` must not go out as a different model or at an ordinary tier. Select the normal sibling instead when a request needs different routing. A model without a fast variant keeps unrestricted hook freedom, and an explicit per-request service tier still applies to it without granting fast-model identity.
+A fast variant's route owns two request fields: the upstream model ID and the service tier (`speed` for Anthropic). A `before_provider_request` hook may rewrite anything else, but replacing the payload with a non-object or changing either route-owned field is refused with an error naming the model and the remedy, because a model recorded, persisted, and billed as `-fast` must not go out as a different model or at an ordinary tier. Select the normal sibling instead when a request needs different routing. A model without a fast variant keeps unrestricted hook freedom, and an explicit per-request service tier still applies to it without granting fast-model identity.
 
 Models served by an extension's own stream function, including native provider registrations, do not get automatic fast variants. Their normal models and custom transport remain available.
 
@@ -92,6 +93,8 @@ Provider-owned names ending in `-fast` remain ordinary exact IDs. Vercel AI Gate
 First-party Codex fast models keep their priority routing across retries and transport changes. Renaming a provider or setting `serviceTier: priority` on a normal model does not grant fast-model identity.
 
 Pick fast variants deliberately in workflows: parallel fan-out multiplies provider usage, and priority-tier requests are billed at a higher rate.
+
+Anthropic fast mode delivers up to 2.5x higher output tokens per second at twice the standard token rates, with prompt-caching multipliers applied on top. Atomic prices each response by the speed Anthropic reports in its usage. Fast mode has its own rate limit; when it is exhausted Anthropic returns `429`, which Atomic retries like any other rate limit rather than silently falling back to standard speed. Switching between a fast and a normal Claude model invalidates the prompt cache.
 
 ### Claude Pro/Max
 

@@ -6,11 +6,14 @@ import type { Api, Model, Provider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import {
+	ANTHROPIC_FAST_MODE_MODEL_IDS,
 	copilotAdvertisedFastModelIds,
 	deriveFastModelVariants,
 	FAST_MODEL_SERVICE_TIER,
+	FAST_MODEL_SPEED,
 	fastModelId,
 	isNativeFastRouteApi,
+	usesAnthropicFastMode,
 	usesOpenAIFastServiceTier,
 	withFastModelVariants,
 } from "../src/core/fast-model-variants.ts";
@@ -97,6 +100,54 @@ describe("fast model variant eligibility", () => {
 				}
 			}
 		}
+	});
+});
+
+describe("Anthropic fast mode eligibility", () => {
+	it("covers exactly the Opus models Anthropic's fast mode accepts", () => {
+		assert.deepEqual([...ANTHROPIC_FAST_MODE_MODEL_IDS].sort(), [
+			"claude-opus-4-8",
+			"claude-opus-5",
+			"claude-opus-5-5",
+		]);
+	});
+
+	it.each([
+		["anthropic", "anthropic-messages", "claude-opus-5-5", true],
+		["anthropic", "anthropic-messages", "claude-opus-5", true],
+		["anthropic", "anthropic-messages", "claude-opus-4-8", true],
+		["anthropic", "anthropic-messages", "claude-opus-4-7", false],
+		["anthropic", "anthropic-messages", "claude-opus-4-6", false],
+		["anthropic", "anthropic-messages", "claude-sonnet-5", false],
+		["anthropic", "anthropic-messages", "claude-fable-5-1", false],
+		["amazon-bedrock", "bedrock-converse-stream", "claude-opus-5-5", false],
+		["google-vertex", "anthropic-messages", "claude-opus-5-5", false],
+		["github-copilot", "anthropic-messages", "claude-opus-5-5", false],
+		["openrouter", "anthropic-messages", "claude-opus-5-5", false],
+		["anthropic-proxy", "anthropic-messages", "claude-opus-5-5", false],
+	] as const)("%s/%s on %s is fast-mode eligible: %s", (provider, api, id, eligible) => {
+		assert.equal(usesAnthropicFastMode({ provider, api, id }), eligible);
+		const derived = deriveFastModelVariants(provider, [model({ id, provider, api })]).models;
+		assert.deepEqual(ids(derived), eligible ? [id, `${id}-fast`] : [id]);
+	});
+
+	it("routes the base upstream model with speed fast and no service tier", () => {
+		const base = model({
+			id: "claude-opus-5-5",
+			provider: "anthropic",
+			api: "anthropic-messages",
+			name: "Claude Opus 5.5",
+		});
+		const [, fast] = deriveFastModelVariants("anthropic", [base]).models;
+		assert.ok(fast);
+		assert.equal(fast.id, "claude-opus-5-5-fast");
+		assert.equal(fast.name, "Claude Opus 5.5 (fast)");
+		assert.deepEqual(fast.fastRoute, {
+			baseModelId: "claude-opus-5-5",
+			upstreamModelId: "claude-opus-5-5",
+			speed: FAST_MODEL_SPEED,
+		});
+		assert.deepEqual(fast.cost, base.cost);
 	});
 });
 
@@ -360,6 +411,25 @@ describe("ModelRuntime fast model catalog", () => {
 		// Normal and fast are distinct catalog entries.
 		assert.notEqual(fast, base);
 		assert.equal(runtime.getWarning(), undefined);
+	});
+
+	it("exposes derived Anthropic fast-mode models for the supported Opus models only", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-fast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+
+		for (const baseId of ANTHROPIC_FAST_MODE_MODEL_IDS) {
+			const fast = runtime.getModel("anthropic", `${baseId}-fast`);
+			assert.ok(fast, `anthropic/${baseId}-fast is missing`);
+			assert.deepEqual(fast.fastRoute, { baseModelId: baseId, upstreamModelId: baseId, speed: FAST_MODEL_SPEED });
+		}
+		assert.equal(runtime.getModel("anthropic", "claude-sonnet-5-fast"), undefined);
+		assert.equal(runtime.getModel("anthropic", "claude-opus-4-7-fast"), undefined);
+		assert.equal(runtime.getModel("amazon-bedrock", "claude-opus-5-5-fast"), undefined);
 	});
 
 	it("exposes GPT-6-Astra and its canonical derived fast identity", async () => {

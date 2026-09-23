@@ -407,7 +407,7 @@ These rules apply when you write `models.json`:
 - **Your exact ID wins.** If a provider, a custom model in `models`, or an extension already defines that exact `<base>-fast` ID, Atomic keeps yours untouched, does not derive a duplicate, and prints a warning naming the model to rename or remove if you wanted the derived variant instead. A model you define is an ordinary model: the `-fast` suffix alone never gives it fast routing behavior.
 - **`modelOverrides` applies to derived variants.** A derived entry is a real catalog model, so `modelOverrides["gpt-5.6-sol-fast"]` customizes it exactly like any other model, and its routing metadata survives the override. Overriding the *base* model still flows through to the derived entry by inheritance; a fast-specific override wins over that inherited value.
 
-A derived variant inherits the base model's `cost`. The provider adapter applies the fast-tier multiplier at request time, so do not pre-multiply cost in an override.
+A derived variant inherits the base model's `cost`. The provider adapter applies the fast multiplier at request time (OpenAI's priority tier, Anthropic's fast-mode speed), so do not pre-multiply cost in an override.
 
 ## Anthropic Messages Compatibility
 

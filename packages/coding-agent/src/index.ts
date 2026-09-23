@@ -160,15 +160,18 @@ export {
 	CODEX_FAST_ROUTE_ORIGINATOR,
 } from "./core/fast-model-routing-transport.ts";
 export {
+	ANTHROPIC_FAST_MODE_MODEL_IDS,
 	copilotAdvertisedFastModelIds,
 	deriveFastModelVariants,
 	FAST_MODEL_ID_SUFFIX,
 	FAST_MODEL_SERVICE_TIER,
+	FAST_MODEL_SPEED,
 	type FastModelVariantDerivation,
 	type FastModelVariantDiagnostic,
 	type FastModelVariantsOptions,
 	fastModelId,
 	isNativeFastRouteApi,
+	usesAnthropicFastMode,
 	usesOpenAIFastServiceTier,
 	withFastModelVariants,
 } from "./core/fast-model-variants.ts";

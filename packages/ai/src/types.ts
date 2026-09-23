@@ -1122,6 +1122,8 @@ export interface ModelFastRoute {
 	upstreamModelId: string;
 	/** Service tier to send with the request. Set only for providers that route fast traffic through an OpenAI-style tier. */
 	serviceTier?: "priority";
+	/** Anthropic inference speed to send with the request. Set only for Claude models that support fast mode. */
+	speed?: "fast";
 }
 
 // Model interface for the unified model system

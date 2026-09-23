@@ -199,6 +199,72 @@ const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
 const THINKING_BINDING_CONTROLS_BETA = "thinking-binding-controls-2026-08-01";
 const MID_CONVERSATION_OUTPUT_CONFIG_BETA = "mid-conversation-output-config-2026-07-01";
 const MID_CONVERSATION_TOOL_CHANGES_BETA = "mid-conversation-tool-changes-2026-07-01";
+const FAST_MODE_BETA = "fast-mode-2026-02-01";
+
+/**
+ * Fast mode bills every token category at twice the standard rate for each supported model, across
+ * the full context window, and prompt-caching multipliers stack on top.
+ * https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
+ */
+const FAST_MODE_PRICE_MULTIPLIER = 2;
+
+type AnthropicSpeed = "standard" | "fast";
+
+function requestedSpeed(model: Pick<Model<"anthropic-messages">, "fastRoute">): AnthropicSpeed | undefined {
+	return model.fastRoute?.speed;
+}
+
+function upstreamModelId(model: Pick<Model<"anthropic-messages">, "fastRoute" | "id">): string {
+	return model.fastRoute?.upstreamModelId ?? model.id;
+}
+
+function reportedSpeed(usage: unknown): AnthropicSpeed | undefined {
+	const speed = (usage as { speed?: unknown } | null | undefined)?.speed;
+	return speed === "fast" || speed === "standard" ? speed : undefined;
+}
+
+function applyFastModePricing(usage: Usage): void {
+	usage.cost.input *= FAST_MODE_PRICE_MULTIPLIER;
+	usage.cost.output *= FAST_MODE_PRICE_MULTIPLIER;
+	usage.cost.cacheRead *= FAST_MODE_PRICE_MULTIPLIER;
+	usage.cost.cacheWrite *= FAST_MODE_PRICE_MULTIPLIER;
+	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+}
+
+/**
+ * Reject a payload hook that rewrote a field the model's fast route owns.
+ *
+ * A fast variant is recorded, persisted, and billed under its own `-fast` identity, so a hook that
+ * changes the upstream model or drops `speed: "fast"` would send a different request under that
+ * identity. Refusing loudly surfaces the misconfigured hook instead of silently restoring the route.
+ */
+function assertPayloadPreservesFastRoute(model: Model<"anthropic-messages">, payload: unknown): void {
+	const fastRoute = model.fastRoute;
+	if (fastRoute?.speed === undefined) return;
+	const remedy =
+		`A fast model variant must send its route's upstream model and speed, because it is recorded, persisted, ` +
+		`and billed under its own identity. Select the normal model "${model.provider}/${fastRoute.baseModelId}" ` +
+		`if the request needs different routing`;
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+		throw new Error(
+			`A request hook changed payload for fast model "${model.provider}/${model.id}" to a value that cannot carry ` +
+				`the route's upstream model and speed. ${remedy}, or return an object that preserves those fields.`,
+		);
+	}
+	const record = payload as Record<string, unknown>;
+	const conflicts: string[] = [];
+	if (record.model !== fastRoute.upstreamModelId) {
+		conflicts.push(`model (expected "${fastRoute.upstreamModelId}", got ${JSON.stringify(record.model)})`);
+	}
+	if (record.speed !== fastRoute.speed) {
+		conflicts.push(`speed (expected ${JSON.stringify(fastRoute.speed)}, got ${JSON.stringify(record.speed)})`);
+	}
+	if (conflicts.length === 0) return;
+	throw new Error(
+		`A request hook changed ${conflicts.join(" and ")} for fast model "${model.provider}/${model.id}". ` +
+			`${remedy}, or stop rewriting those fields.`,
+	);
+}
 
 /**
  * Stable deferred tool declared whenever native tool changes are in use. Anthropic adds
@@ -321,7 +387,7 @@ function addEarlierAttemptCosts(
 
 		// Price at the rates of the model that ran the attempt, which is not the serving model.
 		const attemptCost =
-			iteration.model === model.id
+			iteration.model === upstreamModelId(model)
 				? model.cost
 				: iteration.model === servingModel.id
 					? servingModel.cost
@@ -704,6 +770,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			let client: Anthropic;
 			let isOAuth: boolean;
 			let usageModel = model;
+			let servedSpeed = requestedSpeed(model);
 
 			if (options?.client) {
 				client = options.client;
@@ -751,6 +818,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
+			assertPayloadPreservesFastRoute(model, params);
 			const requestOptions = {
 				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -778,9 +846,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
 					const responseModel = event.message.model;
-					if (responseModel !== model.id) output.responseModel = responseModel;
+					if (responseModel !== upstreamModelId(model)) output.responseModel = responseModel;
 					const fallbackCost =
-						responseModel === model.id
+						responseModel === upstreamModelId(model)
 							? undefined
 							: model.compat?.allowedFallbackModels?.find(
 									(fallback) => fallback.provider === model.provider && fallback.model === responseModel,
@@ -797,6 +865,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					servedSpeed = reportedSpeed(event.message.usage) ?? servedSpeed;
+					if (servedSpeed === "fast") applyFastModePricing(output.usage);
 					inputTransformations = getInputTransformations(event.message) ?? inputTransformations;
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
@@ -984,6 +1054,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(usageModel, output.usage);
+					servedSpeed = reportedSpeed(event.usage) ?? servedSpeed;
+					if (servedSpeed === "fast") applyFastModePricing(output.usage);
 					// A non-empty final fallback report supersedes the request-start report with
 					// the serving model's transformations. An empty report must not erase drops
 					// already reported at message_start.
@@ -1142,6 +1214,7 @@ function createClient(
 		betaFeatures.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
 	}
 	if (useNativeToolChanges) betaFeatures.push(MID_CONVERSATION_TOOL_CHANGES_BETA);
+	if (requestedSpeed(model) === "fast") betaFeatures.push(FAST_MODE_BETA);
 	const uniqueBetaFeatures = [...new Set(betaFeatures)];
 
 	// Copilot: Bearer auth, selective betas.
@@ -1257,6 +1330,7 @@ function getNativeToolChangeBetas(
 	if (shouldUseThinkingBindingControlsBeta(model)) features.push(THINKING_BINDING_CONTROLS_BETA);
 	if (supportsMidConvoEffort(model))
 		features.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
+	if (requestedSpeed(model) === "fast") features.push(FAST_MODE_BETA);
 	return [...new Set(features)];
 }
 
@@ -1291,7 +1365,7 @@ function buildParams(
 	);
 	const activeEffort = options?.effort ?? "high";
 	const params: MessageCreateParamsStreaming = {
-		model: model.id,
+		model: upstreamModelId(model),
 		messages: (supportsMidConvoEffort(model)
 			? insertThinkingLevelMessages(converted, activeEffort)
 			: converted.messages) as MessageParam[],
@@ -1299,6 +1373,8 @@ function buildParams(
 		stream: true,
 	};
 	if (nativeToolChanges) params.betas = getNativeToolChangeBetas(model, context, isOAuthToken, options);
+	const speed = requestedSpeed(model);
+	if (speed !== undefined) params.speed = speed;
 
 	// For OAuth tokens, we MUST include Claude Code identity
 	if (isOAuthToken) {

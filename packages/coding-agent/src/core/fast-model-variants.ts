@@ -8,6 +8,20 @@ export const FAST_MODEL_ID_SUFFIX = "-fast";
 /** Service tier OpenAI-style providers use to route fast traffic. */
 export const FAST_MODEL_SERVICE_TIER = "priority" as const;
 
+/** Inference speed Anthropic's Messages API uses to route fast traffic. */
+export const FAST_MODEL_SPEED = "fast" as const;
+
+/**
+ * Claude models Anthropic's fast mode accepts. Requesting `speed: "fast"` on any other model is an
+ * error, so the list is explicit rather than a family-name pattern.
+ * https://platform.claude.com/docs/en/build-with-claude/fast-mode#supported-models
+ */
+export const ANTHROPIC_FAST_MODE_MODEL_IDS: ReadonlySet<string> = new Set([
+	"claude-opus-5-5",
+	"claude-opus-5",
+	"claude-opus-4-8",
+]);
+
 /** A derived fast variant that was suppressed because something already owns its exact model ID. */
 export interface FastModelVariantDiagnostic {
 	provider: string;
@@ -83,6 +97,21 @@ export function isGitHubCopilotModel(model: Pick<Model<Api>, "provider">): boole
 	return model.provider === "github-copilot";
 }
 
+/**
+ * Anthropic fast mode keeps the base upstream model ID and adds `speed: "fast"` with the fast-mode beta.
+ *
+ * Eligibility requires the first-party `anthropic` provider on the Messages API and a supported model.
+ * Fast mode is not offered through Amazon Bedrock, Google Vertex, GitHub Copilot, OpenRouter, or a
+ * renamed or proxied Anthropic-compatible provider.
+ */
+export function usesAnthropicFastMode(model: Pick<Model<Api>, "api" | "id" | "provider">): boolean {
+	return (
+		model.api === "anthropic-messages" &&
+		model.provider === "anthropic" &&
+		ANTHROPIC_FAST_MODE_MODEL_IDS.has(model.id)
+	);
+}
+
 function advertisedModelIds(value: unknown): readonly string[] | undefined {
 	if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined;
 	return value;
@@ -116,6 +145,9 @@ function fastRouteForBaseModel(
 ): ModelFastRoute | undefined {
 	if (usesOpenAIFastServiceTier(model)) {
 		return { baseModelId: model.id, upstreamModelId: model.id, serviceTier: FAST_MODEL_SERVICE_TIER };
+	}
+	if (usesAnthropicFastMode(model)) {
+		return { baseModelId: model.id, upstreamModelId: model.id, speed: FAST_MODEL_SPEED };
 	}
 	if (isGitHubCopilotModel(model)) {
 		const advertisedId = fastModelId(model.id);

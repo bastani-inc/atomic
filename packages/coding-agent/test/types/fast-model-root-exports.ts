@@ -15,17 +15,20 @@ import type {
 	FastModelVariantsOptions,
 } from "../../src/index.ts";
 import {
+	ANTHROPIC_FAST_MODE_MODEL_IDS,
 	CODEX_FAST_ROUTE_HEADER,
 	CODEX_FAST_ROUTE_ORIGINATOR,
 	copilotAdvertisedFastModelIds,
 	deriveFastModelVariants,
 	FAST_MODEL_ID_SUFFIX,
 	FAST_MODEL_SERVICE_TIER,
+	FAST_MODEL_SPEED,
 	fastModelId,
 	getModelFastRoute,
 	isNativeFastRouteApi,
 	type ModelRuntime,
 	resolveUpstreamModelId,
+	usesAnthropicFastMode,
 	usesChatGptCodexTransport,
 	usesFirstPartyCodexRouting,
 	usesOpenAIFastServiceTier,
@@ -36,10 +39,12 @@ import {
 
 // Values must exist at runtime, not only as types.
 export const fastModelRootExports = {
+	ANTHROPIC_FAST_MODE_MODEL_IDS,
 	CODEX_FAST_ROUTE_HEADER,
 	CODEX_FAST_ROUTE_ORIGINATOR,
 	FAST_MODEL_ID_SUFFIX,
 	FAST_MODEL_SERVICE_TIER,
+	FAST_MODEL_SPEED,
 	copilotAdvertisedFastModelIds,
 	deriveFastModelVariants,
 	fastModelId,
@@ -47,6 +52,7 @@ export const fastModelRootExports = {
 	isNativeFastRouteApi,
 	resolveUpstreamModelId,
 	usesChatGptCodexTransport,
+	usesAnthropicFastMode,
 	usesFirstPartyCodexRouting,
 	usesOpenAIFastServiceTier,
 	withCodexFastRouteHeaders,
