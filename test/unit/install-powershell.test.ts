@@ -46,7 +46,11 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.match(source, /function Get-AtomicFileSha256/u);
 	assert.match(source, /Get-FileHash\s+-LiteralPath\s+\$Path\s+-Algorithm\s+SHA256/u);
 	assert.match(source, /Get-AtomicFileSha256\s+\$archivePath/u);
-	assert.match(source, /Expand-Archive\s+-LiteralPath\s+\$archivePath/u);
+	assert.match(source, /Expand-AtomicReleaseArchive\s+\$archivePath\s+\$payloadPath/u);
+	assert.match(
+		source,
+		/\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory\(\$ArchivePath, \$DestinationPath\)/u,
+	);
 	assert.doesNotMatch(source, /ConvertFrom-Json\s+-AsHashtable/u);
 	assert.doesNotMatch(source, /\?\?|ForEach-Object\s+-Parallel|\?\s+[^:\r\n]+\s+:/u);
 	assert.doesNotMatch(source, /\b(?:npm|pnpm|yarn|bun|node|git|jq)(?:\.exe)?\b/iu);

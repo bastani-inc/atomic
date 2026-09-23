@@ -557,3 +557,32 @@ test("Windows smoke checks stay silent without a pipeline and the summary lines 
 	assert.match(powershell, /Write-Output "Run Atomic directly: `"\$shimPath`""/u);
 	assert.doesNotMatch(powershell, /installed successfully|Restart your terminal|Write-Output "Shim: /u);
 });
+
+test("Windows release extraction uses native ZipFile with Expand-Archive only as the assembly-load fallback", async () => {
+	const { powershell } = await installers();
+	const helperStart = powershell.indexOf("function Expand-AtomicReleaseArchive");
+	assert.ok(helperStart >= 0, "the extraction helper is missing");
+	const helperEnd = powershell.indexOf("\nfunction ", helperStart + 1);
+	const helper = powershell.slice(helperStart, helperEnd);
+	assert.match(helper, /Add-Type -AssemblyName System\.IO\.Compression\.FileSystem -ErrorAction Stop/u);
+	assert.match(
+		helper,
+		/catch \{\s+Expand-Archive -LiteralPath \$ArchivePath -DestinationPath \$DestinationPath -Force\s+return\s+\}/u,
+	);
+	assert.match(
+		helper,
+		/\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory\(\$ArchivePath, \$DestinationPath\)/u,
+	);
+
+	// Expand-Archive survives only inside the helper's fallback; every other
+	// extraction goes through the native fast path.
+	const mentions = powershell.split("Expand-Archive -LiteralPath").length - 1;
+	assert.equal(mentions, 1, "Expand-Archive must appear only in the helper fallback");
+
+	const checksumComparison = powershell.indexOf("Checksum verification failed");
+	const extraction = powershell.indexOf("Expand-AtomicReleaseArchive $archivePath $payloadPath");
+	assert.ok(
+		checksumComparison >= 0 && extraction > checksumComparison,
+		"extraction must follow checksum verification",
+	);
+});

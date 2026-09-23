@@ -186,6 +186,24 @@ function Get-AtomicFileSha256 {
     }
 }
 
+function Expand-AtomicReleaseArchive {
+    param([string]$ArchivePath, [string]$DestinationPath)
+
+    # The release archive holds ~19k files; Expand-Archive processes entries at
+    # script speed under Windows PowerShell 5.1 and takes minutes for that many.
+    # ZipFile.ExtractToDirectory is native, ships with .NET Framework 4.6.2+ and
+    # PowerShell 7, and rejects entries that resolve outside the destination.
+    # Expand-Archive remains only as the fallback when the assembly cannot load.
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    }
+    catch {
+        Expand-Archive -LiteralPath $ArchivePath -DestinationPath $DestinationPath -Force
+        return
+    }
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
+}
+
 function Test-AtomicReleaseTag {
     param([string]$Tag)
 
@@ -1208,7 +1226,7 @@ try {
     }
 
     New-Item -ItemType Directory -Path $payloadPath | Out-Null
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $payloadPath -Force
+    Expand-AtomicReleaseArchive $archivePath $payloadPath
     $stagedAtomic = Join-Path $payloadPath "atomic.exe"
     if (-not (Test-Path -LiteralPath $stagedAtomic -PathType Leaf)) {
         throw "Release archive $assetName does not contain atomic.exe at its root."

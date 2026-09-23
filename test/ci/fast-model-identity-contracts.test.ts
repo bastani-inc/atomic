@@ -200,6 +200,9 @@ const proseNames = new Set([
 	"routerModel",
 	// The session tool name is distinct from its exported SDK functions.
 	"structured_output",
+	// PowerShell installer prose: the .NET ZipFile API and the Expand-Archive cmdlet.
+	"ZipFile",
+	"Expand-Archive",
 	// #3089: workflow routing's inline sentinel is a wire value, not an export.
 	"none",
 	// PR #3143: the auto-routing state fields sent to the router are wire names, not exports.

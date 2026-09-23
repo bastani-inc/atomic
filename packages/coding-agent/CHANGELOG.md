@@ -17,6 +17,7 @@
 - Jev structured-decision responses are now accepted whenever every question names a known Choice option; reported model, usage, probabilities, confidence and answer types are advisory instead of grounds for rejection ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
 - Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for Claude Opus 5.5 in the evals snapshot used by automatic model routing.
 - Updated the inherited Pi runtime dependencies (`pi-agent-core`, `pi-client`, `pi-protocol`, `pi-tui`, `pi-telemetry`, and transitive `chord`) to 0.87.1.
+- The Windows installer extracts the release archive with the native .NET `ZipFile` API instead of `Expand-Archive`, which processed the archive's ~19,000 entries at script speed under Windows PowerShell 5.1. Extraction is now several times faster; `Expand-Archive` remains only as a fallback when the compression assembly cannot load.
 
 ### Fixed
 
