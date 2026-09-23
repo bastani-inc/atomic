@@ -224,24 +224,11 @@ Possible future decisions for the workspace owner. None is authorized or pending
 3. Run this repository's CI in a separate Namespace workspace that holds nothing sensitive, so a Permissive token reaches nothing of value. Whether one GitHub organization can split repositories across workspaces is unconfirmed.
 4. Confirm with Namespace support whether Restricted caps `permissions.additional_grant`, and whether an access level can be set through a `runs-on` suffix.
 
-### Pre-baked Linux runner image
+### Standard runner images
 
-`.github/runner-images/Dockerfile` extends Namespace's Ubuntu 24.04 base with Rust 1.97.0, rustfmt, clippy and rust-analyzer, installed as `runner`. The rustup fallback is version-pinned and checksum-verified. It copies no repository code, credentials or dependency payloads. Both Linux CI profiles use this definition. Windows and macOS retain their standard images.
+Both Linux CI profiles use standard Ubuntu 24.04 images. CI installs Rust explicitly through the pinned setup action; Node and Bun use their existing setup actions. Dependency caches remain enabled.
 
-Linux CI explicitly runs `rustup run 1.97.0 rustc --version` and exports `RUSTUP_TOOLCHAIN=1.97.0` before Cargo use. It fails if the baked toolchain is absent rather than hiding an image rollout failure behind a download. Windows CI keeps its existing stable Rust setup. The developer-facing `rust-toolchain.toml` remains unchanged. Node and Bun continue through their pinned setup actions and the Namespace toolchain cache; baking copies those actions would ignore provides no benefit.
-
-The standalone image build and the uploaded 8-vCPU profile's test build succeeded. Both Linux profiles received the Dockerfile and explicit rebuild requests. Hosted CI must still verify image rollout, toolchain reuse and timing before a speedup is claimed. Earlier Linux Rust setup took 8–13 seconds per job; compare the replacement step against that baseline.
-
-For a Rust pin change, update the Dockerfile and Linux CI selection together, then test and apply it to each Linux CI profile:
-
-```sh
-nsc base-image build-github-image --os-label ubuntu-24.04 --platform linux/amd64 -f .github/runner-images/Dockerfile
-nsc github profile update --profile_id <linux-ci-profile-id> --dockerfile .github/runner-images/Dockerfile
-nsc github profile test-build-base-image --profile_id <linux-ci-profile-id> --os-label ubuntu-24.04 --platform linux/amd64
-nsc github profile rebuild-base-image --profile_id <linux-ci-profile-id>
-```
-
-Read back cache restrictions and runner shape after applying the image. Keep profile access Restricted. Namespace distributes and optimizes a rebuilt image asynchronously, so verify an actual job uses it. Repeat the rebuild when taking updated Namespace base-image security patches; the upstream base is supplied by Namespace at build time rather than frozen forever.
+Custom pre-baking was abandoned after the image built successfully but remained unavailable to hosted jobs. Do not require a baked toolchain or re-enable custom images without a new maintainer decision.
 
 ### Follow-ups
 

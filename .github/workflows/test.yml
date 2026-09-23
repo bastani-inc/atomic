@@ -71,6 +71,10 @@ jobs:
           lfs: true
           # Full history and tags support CI contract fixtures and release tooling.
           fetch-depth: 0
+      - name: Configure private Windows temp storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-temp.ps1
       # Bun is still a declared engine: it compiles the release binaries and runs
       # scripts/*.ts, including the flaky-suite wrapper invoked below. It no
       # longer installs dependencies or runs any suite.
@@ -89,7 +93,6 @@ jobs:
       # to load at import without a binding. That takes the root unit and
       # integration suites down with it, not just the in-process runner tests.
       - id: rust
-        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -102,12 +105,6 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
-      - name: Use pre-baked Linux Rust toolchain
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rustup run 1.97.0 rustc --version
-          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -164,6 +161,10 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
+      - name: Configure private Windows temp storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-temp.ps1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
@@ -172,7 +173,6 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - id: rust
-        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -184,12 +184,6 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
-      - name: Use pre-baked Linux Rust toolchain
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rustup run 1.97.0 rustc --version
-          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -246,6 +240,10 @@ jobs:
           # Package LFS assets include session fixtures and the runtime PNG.
           lfs: true
           fetch-depth: 0
+      - name: Configure private Windows temp storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-temp.ps1
       # Bun still compiles binaries and runs scripts/*.ts, including the wrapper.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -255,7 +253,6 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - id: rust
-        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -268,12 +265,6 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
-      - name: Use pre-baked Linux Rust toolchain
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rustup run 1.97.0 rustc --version
-          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -329,6 +320,10 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
+      - name: Configure private Windows temp storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-temp.ps1
       # `bun build --compile` is still the binary compiler, exactly as upstream.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -342,7 +337,6 @@ jobs:
       # pays the native build again rather than waiting on agent-suite. That is a
       # runner-second cost, not a wall-clock one.
       - id: rust
-        if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -354,12 +348,6 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
-      - name: Use pre-baked Linux Rust toolchain
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rustup run 1.97.0 rustc --version
-          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
       - name: Configure Namespace dependency and Rust build cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
@@ -505,11 +493,11 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - name: Use pre-baked Linux Rust toolchain
-        shell: bash
-        run: |
-          rustup run 1.97.0 rustc --version
-          echo 'RUSTUP_TOOLCHAIN=1.97.0' >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
       - name: Configure Namespace npm cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
