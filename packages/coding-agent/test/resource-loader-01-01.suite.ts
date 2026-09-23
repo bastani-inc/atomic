@@ -34,6 +34,66 @@ describe("DefaultResourceLoader", () => {
 			expect(loader.getPrompts().prompts).toEqual([]);
 			expect(loader.getThemes().themes).toEqual([]);
 		});
+
+		it("should not treat a project manifest as the owner of a project extension", async () => {
+			const extensionsDir = join(cwd, ".atomic", "extensions");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(join(cwd, "package.json"), JSON.stringify({ dependencies: { "@bastani/atomic": "1.0.0" } }));
+			const extensionPath = join(extensionsDir, "project-extension.ts");
+			writeFileSync(extensionPath, "export default function() {}");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toContain(extensionPath);
+			expect(loader.getExtensions().warnings).toEqual([]);
+		});
+
+		it("should warn about host dependencies in an extension package manifest (#9863)", async () => {
+			const packageRoot = join(tempDir, "extension-package");
+			const extensionsDir = join(packageRoot, "extensions");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(
+				join(packageRoot, "package.json"),
+				JSON.stringify({
+					dependencies: { "@earendil-works/pi-coding-agent": "1.0.0", "@bastani/atomic": "1.0.0", chalk: "5.0.0" },
+				}),
+			);
+			const extensionPath = join(extensionsDir, "package-extension.ts");
+			writeFileSync(extensionPath, "export default function() {}");
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({ packages: [packageRoot] }),
+			});
+			await loader.reload();
+
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toContain(extensionPath);
+			expect(loader.getExtensions().warnings).toEqual([
+				{
+					path: join(packageRoot, "package.json"),
+					warning:
+						'Host-provided extension packages must be declared in peerDependencies with a "*" range, not dependencies: @bastani/atomic, @earendil-works/pi-coding-agent. Installed copies can bypass the extension loader and create duplicate runtime modules.',
+				},
+			]);
+		});
+
+		it("should fail when an extension package manifest cannot be parsed", async () => {
+			const packageRoot = join(tempDir, "invalid-extension-package");
+			const extensionsDir = join(packageRoot, "extensions");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(join(packageRoot, "package.json"), "{");
+			writeFileSync(join(extensionsDir, "package-extension.ts"), "export default function() {}");
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({ packages: [packageRoot] }),
+			});
+
+			await expect(loader.reload()).rejects.toThrow(SyntaxError);
+		});
 		it("should refresh package workflow resources without reloading extensions", async () => {
 			const settingsManager = SettingsManager.inMemory();
 			const pkgDir = join(tempDir, "workflow-package");

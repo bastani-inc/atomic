@@ -320,6 +320,7 @@ async function loadExtensionsInternal(
 	return {
 		extensions,
 		errors,
+		warnings: [],
 		runtime: resolvedRuntime,
 	};
 }

@@ -81,6 +81,7 @@ export async function loadFinalExtensionSet(
 	const extensionsResult: LoadExtensionsResult = {
 		extensions: orderedExtensions,
 		errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+		warnings: [...(preTrustExtensions.warnings ?? []), ...(remainingExtensions.warnings ?? [])],
 		runtime: preTrustExtensions.runtime,
 	};
 	return extensionsResult;

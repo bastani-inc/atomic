@@ -68,7 +68,9 @@ When a package manifest exists, declared resource arrays normally define what lo
 
 Third-party runtime dependencies belong in `dependencies` in `package.json`. Dependencies that do not register extensions, skills, prompt templates, themes, or workflows also belong in `dependencies`. When Atomic installs a package from npm or git, it runs the configured npm-compatible install command, so those dependencies are installed automatically.
 
-Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@bastani/pi-ai`, `@earendil-works/pi-agent-core`, `@bastani/atomic`, `@earendil-works/pi-tui`, `typebox`.
+Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@bastani/pi-ai`, `@earendil-works/pi-agent-core`, `@bastani/atomic`, `@earendil-works/pi-tui`, `typebox`. Atomic does not install peer dependencies for npm packages or for git packages installed with npm, pnpm, or Bun. Local packages are not installed or modified, so their dependency tree is up to the package author.
+
+Do not list these host-provided packages in `dependencies`. An installed copy can bypass Atomic's extension module mapping and create duplicate classes, registries, and startup work. Atomic shows an extension warning when a package's `dependencies` include one of them.
 
 Workflow packages import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export definitions returned by `workflow({ ... })`. List `@bastani/atomic` and `typebox` in `peerDependencies` so package consumers receive the workflow SDK and schema library.
 

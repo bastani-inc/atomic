@@ -256,6 +256,7 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	warnings?: Array<{ path: string; warning: string }>;
 	overlaps?: ResourceOverlap[];
 
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */

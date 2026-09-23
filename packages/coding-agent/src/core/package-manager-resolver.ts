@@ -211,6 +211,7 @@ async function resolvePackageSources(
 			}
 			if (!installedPath) continue;
 			metadata.baseDir = installedPath;
+			metadata.packageRoot = installedPath;
 			await collectPackageResources(installedPath, accumulator, filter, metadata);
 			continue;
 		}
@@ -225,6 +226,7 @@ async function resolvePackageSources(
 			else await refreshTemporaryGitSource(context, parsed, sourceStr);
 		}
 		metadata.baseDir = installedPath;
+		metadata.packageRoot = installedPath;
 		await collectPackageResources(installedPath, accumulator, filter, metadata);
 	}
 }
@@ -262,7 +264,7 @@ async function resolveLocalExtensionSource(
 			return;
 		}
 		if (stats.isDirectory()) {
-			const packageMetadata: PathMetadata = { ...metadata, baseDir: resolved };
+			const packageMetadata: PathMetadata = { ...metadata, baseDir: resolved, packageRoot: resolved };
 			const packageResources = await collectPackageResources(resolved, accumulator, filter, packageMetadata);
 			const projectLocalResources = options?.includeProjectLocalResources
 				? await collectProjectLocalResources(resolved, accumulator, filter, packageMetadata)

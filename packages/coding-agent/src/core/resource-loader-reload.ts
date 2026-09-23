@@ -22,6 +22,7 @@ import {
 } from "./resource-loader-context-files.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
+import { collectExtensionPackageWarnings, mergeExtensionWarnings } from "./resource-loader-extension-warnings.ts";
 import {
 	loadExtensionFactories,
 	loadFinalExtensionSet,
@@ -137,6 +138,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 			state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
 		),
 	);
+	const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
 		state.cwd,
@@ -145,6 +147,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		undefined,
 		inheritanceSnapshotProvider,
 	);
+	mergeExtensionWarnings(extensionsResult, packageWarnings);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
@@ -311,6 +314,7 @@ export async function prepareDefaultResourceLoaderReload(
 		);
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
+		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 		const extensionsResult: LoadExtensionsResult = options?.deferExtensions
 			? { extensions: [], errors: [], runtime: createExtensionRuntime() }
 			: await loadFinalExtensionSet(
@@ -320,6 +324,7 @@ export async function prepareDefaultResourceLoaderReload(
 					workflowResourceProvider,
 					inheritanceSnapshotProvider,
 				);
+		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, packageWarnings);
 		const mandatoryExtensionPaths = new Set(
 			getMandatoryBuiltinExtensionPaths().map((path) =>
 				resolvePath(path, state.cwd, { normalizeUnicodeSpaces: true }),

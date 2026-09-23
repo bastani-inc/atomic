@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed workflow stages with `model: "auto"` (and other stage sessions) crashing with `Cannot read properties of undefined (reading 'baseDir')` when Atomic was launched with `--theme <path>` or other CLI-provided resource paths ([#3229](https://github.com/bastani-inc/atomic/issues/3229)).
+- Managed git packages no longer install Atomic's host-provided peer dependencies (`@bastani/atomic`, `@bastani/pi-ai`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`, `typebox`) when their dependencies are installed with npm, pnpm, or Bun, and `npmCommand` wrappers such as `corepack pnpm` are now recognized. Extension packages that list one of those packages in `dependencies` now get an extension warning, because an installed copy can load a duplicate runtime ([#9863](https://github.com/earendil-works/pi/issues/9863)).
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

@@ -8,6 +8,7 @@ export interface PathMetadata {
 	scope: SourceScope;
 	origin: "package" | "top-level";
 	baseDir?: string;
+	packageRoot?: string;
 	configurationOrigin?: ResourceConfigurationOrigin;
 	/** True for project-local resources borrowed from an explicit temporary extension source. */
 	borrowedProjectLocal?: true;

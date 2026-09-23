@@ -24,10 +24,23 @@ export function getNpmCommand(context: PackageManagerContext): { command: string
 
 export function getPackageManagerName(context: PackageManagerContext): string {
 	const npmCommand = getNpmCommand(context);
-	const commandParts = [npmCommand.command, ...npmCommand.args];
-	const separatorIndex = commandParts.lastIndexOf("--");
-	const packageManagerCommand = separatorIndex >= 0 ? commandParts[separatorIndex + 1] : npmCommand.command;
-	return packageManagerCommand ? basename(packageManagerCommand).replace(/\.(cmd|exe)$/i, "") : "";
+	const normalizeCommandName = (command: string): string => basename(command).replace(/\.(cmd|exe)$/i, "");
+	const supportedPackageManagers = new Set(["npm", "pnpm", "bun"]);
+	const directCommand = normalizeCommandName(npmCommand.command);
+	const separatorIndex = npmCommand.args.lastIndexOf("--");
+	if (separatorIndex >= 0) {
+		const wrappedCommand = npmCommand.args[separatorIndex + 1];
+		return wrappedCommand ? normalizeCommandName(wrappedCommand) : directCommand;
+	}
+	if (supportedPackageManagers.has(directCommand)) return directCommand;
+
+	const wrappedPackageManagers = [
+		...new Set(npmCommand.args.map(normalizeCommandName).filter((command) => supportedPackageManagers.has(command))),
+	];
+	if (wrappedPackageManagers.length > 1) {
+		throw new Error(`Ambiguous npmCommand package managers: ${wrappedPackageManagers.join(", ")}`);
+	}
+	return wrappedPackageManagers[0] ?? directCommand;
 }
 
 export async function runNpmCommand(
@@ -52,11 +65,22 @@ export function runNpmCommandSync(context: PackageManagerContext, args: string[]
 }
 
 export function getGitDependencyInstallArgs(context: PackageManagerContext): string[] {
-	const configuredCommand = context.settingsManager.getNpmCommand();
-	if (configuredCommand && configuredCommand.length > 0) {
-		return ["install"];
+	switch (getPackageManagerName(context)) {
+		case "bun":
+			return ["install", "--omit=dev", "--omit=peer"];
+		case "pnpm":
+			return [
+				"install",
+				"--prod",
+				"--config.auto-install-peers=false",
+				"--config.strict-peer-dependencies=false",
+				"--config.strict-dep-builds=false",
+			];
+		case "npm":
+			return ["install", "--omit=dev", "--legacy-peer-deps"];
+		default:
+			return ["install"];
 	}
-	return ["install", "--omit=dev"];
 }
 
 export function getNpmInstallArgs(context: PackageManagerContext, specs: string[], installRoot: string): string[] {

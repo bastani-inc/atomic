@@ -142,7 +142,7 @@ describe("DefaultPackageManager", () => {
 			);
 		});
 
-		it("should install git package dependencies with --omit=dev", async () => {
+		it("should install git package dependencies without auto-installing peers", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
@@ -157,7 +157,9 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("should reject unsafe pinned git refs before invoking git", async () => {
@@ -197,7 +199,9 @@ describe("DefaultPackageManager", () => {
 				cwd: targetDir,
 			});
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("should reconcile an existing git checkout to its update target when installing without a ref", async () => {
@@ -232,9 +236,9 @@ describe("DefaultPackageManager", () => {
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
-		it("should use plain install for git package dependencies when npmCommand is configured", async () => {
+		it("should prefer the package manager after a separator over the outer executable (#9863)", async () => {
 			settingsManager = SettingsManager.inMemory({
-				npmCommand: ["pnpm"],
+				npmCommand: ["npm", "exec", "--", "pnpm"],
 			});
 			packageManager = new DefaultPackageManager({
 				cwd: tempDir,
@@ -256,10 +260,119 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("pnpm", ["install"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				[
+					"exec",
+					"--",
+					"pnpm",
+					"install",
+					"--prod",
+					"--config.auto-install-peers=false",
+					"--config.strict-peer-dependencies=false",
+					"--config.strict-dep-builds=false",
+				],
+				{ cwd: targetDir },
+			);
 		});
 
-		it("should update git package dependencies with --omit=dev", async () => {
+		it("should detect pnpm through a corepack wrapper without a separator (#9863)", async () => {
+			settingsManager = SettingsManager.inMemory({
+				npmCommand: ["corepack", "pnpm"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const runCommandSpy = vi
+				.spyOn(packageManager as any, "runCommand")
+				.mockImplementation(async (...callArgs: unknown[]) => {
+					const [command, args] = callArgs as [string, string[]];
+					if (command === "git" && args[0] === "clone") {
+						mkdirSync(targetDir, { recursive: true });
+						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					}
+				});
+
+			await packageManager.install(source);
+
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"corepack",
+				[
+					"pnpm",
+					"install",
+					"--prod",
+					"--config.auto-install-peers=false",
+					"--config.strict-peer-dependencies=false",
+					"--config.strict-dep-builds=false",
+				],
+				{ cwd: targetDir },
+			);
+		});
+
+		it("should reject npmCommand wrappers that name more than one package manager", async () => {
+			settingsManager = SettingsManager.inMemory({
+				npmCommand: ["corepack", "pnpm", "bun"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const runCommandSpy = vi
+				.spyOn(packageManager as any, "runCommand")
+				.mockImplementation(async (...callArgs: unknown[]) => {
+					const [command, args] = callArgs as [string, string[]];
+					if (command === "git" && args[0] === "clone") {
+						mkdirSync(targetDir, { recursive: true });
+						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					}
+				});
+
+			await expect(packageManager.install(source)).rejects.toThrow(
+				"Ambiguous npmCommand package managers: pnpm, bun",
+			);
+
+			expect(runCommandSpy).not.toHaveBeenCalledWith("corepack", expect.anything(), { cwd: targetDir });
+		});
+
+		it("should disable peer installation for git package dependencies with bun", async () => {
+			settingsManager = SettingsManager.inMemory({
+				npmCommand: ["bun"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const runCommandSpy = vi
+				.spyOn(packageManager as any, "runCommand")
+				.mockImplementation(async (...callArgs: unknown[]) => {
+					const [command, args] = callArgs as [string, string[]];
+					if (command === "git" && args[0] === "clone") {
+						mkdirSync(targetDir, { recursive: true });
+						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					}
+				});
+
+			await packageManager.install(source);
+
+			expect(runCommandSpy).toHaveBeenCalledWith("bun", ["install", "--omit=dev", "--omit=peer"], {
+				cwd: targetDir,
+			});
+		});
+
+		it("should update git package dependencies without auto-installing peers", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
@@ -283,7 +396,9 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("repairs missing git dependencies when the checkout is already current", async () => {
@@ -308,7 +423,9 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+				cwd: targetDir,
+			});
 			expect(runCommandSpy).not.toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
@@ -383,9 +500,11 @@ describe("DefaultPackageManager", () => {
 
 			await expect(packageManager.update(source)).rejects.toThrow("simulated clean failure");
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+				cwd: targetDir,
+			});
 		});
-		it("should use plain install through npmCommand argv when updating git package dependencies", async () => {
+		it("should disable peer installation through wrapped pnpm when updating git dependencies", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "node@20", "--", "pnpm"],
 			});
@@ -418,9 +537,21 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("mise", ["exec", "node@20", "--", "pnpm", "install"], {
-				cwd: targetDir,
-			});
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"mise",
+				[
+					"exec",
+					"node@20",
+					"--",
+					"pnpm",
+					"install",
+					"--prod",
+					"--config.auto-install-peers=false",
+					"--config.strict-peer-dependencies=false",
+					"--config.strict-dep-builds=false",
+				],
+				{ cwd: targetDir },
+			);
 		});
 	});
 });
