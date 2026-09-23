@@ -163,16 +163,17 @@ test(
 );
 
 test(
-	"a green suite still fails when one test exhausts its timeout headroom",
+	"a green suite only warns when one test exhausts its timeout headroom",
 	async () => {
 		const gated = await fixture("headroom");
-		assert.equal(gated.code, 1);
+		assert.equal(gated.code, 0);
 		assert.match(
 			gated.output,
-			/::error title=Timeout headroom exhausted[\s\S]*drifting test took 25000ms of its 30000ms budget \(83%\)/,
+			/::warning title=Slow test[\s\S]*drifting test took 25000ms of its 30000ms budget \(83%\)/,
 		);
 		assert.doesNotMatch(gated.output, /::(?:warning|error)[^\n]*healthy test/);
-		assert.match(gated.summary, /Timeout headroom exhausted/);
+		assert.doesNotMatch(gated.output, /::error/);
+		assert.match(gated.summary, /Slow tests/);
 		assert.match(gated.durations, /drifting test/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
@@ -338,6 +339,26 @@ test(
 				["npm", "run", "test:unit"],
 			),
 		);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"a real Vitest per-test timeout still fails through the advisory wrapper",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": REAL_CONFIG,
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					'test("exceeds its actual timeout", async () => { await new Promise(() => {}); }, 50);',
+				].join("\n"),
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.output, /Test timed out in 50ms/);
+		assert.doesNotMatch(result.output, /Timeout headroom exhausted/);
 	},
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );

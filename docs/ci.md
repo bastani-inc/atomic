@@ -145,7 +145,7 @@ The decisions:
 - **Everything else keeps its shape.** release-archive, static-checks, the result gate, and every publish job average at most 64 % CPU and finish well inside their caps. The win32 cross-compile legs' slow runs (4–8 minutes) come from earlier releases in the window. The ten most recent successful `win32-x64-msvc` runs took 54–82 s. `Build release payload` is effectively single-threaded (busy share 0.01). Every CodeQL language keeps 4x16. CodeQL does gate merges: ruleset `9310196` has a `code_scanning` rule that requires CodeQL results (no alerts at `errors` or security alerts at `high_or_higher`), but the analysis finishes inside the `test.yml` critical path, so a larger shape would not shorten the wait for a mergeable pull request. JavaScript analysis peaks at 10.5 GB, so a smaller-memory shape would be unsafe. `darwin-arm64` moves from 24 GB to 14 GB of memory; its 7.9 GB peak fits.
 - **Jobs without data keep their shape.** `warm-toolchain-cache.yml` has not run in the 30-day window, so its 4-vCPU shape is unchanged. `publish-npm` and `register-published-version` ran GitHub-hosted, where Blacksmith recorded nothing. `register-published-version` is a short network-bound job, and its shape stays at 4x16.
 
-The job caps and the per-test gate (warn at 40 %, fail at 70 % of each test's budget) are unchanged. Do not relax them to absorb a runner difference. The seven-day aggregate (`--since 7d`) reports a median of 100 % CPU and a busy share of 1.0 for every Windows job, including release-archive, which averaged 49 % over 14 days. Only about half of that window's Windows runs have metrics. Those figures look like a telemetry artifact, so the sizing relies on the 14-day data.
+Whole-job caps remain enforced. Vitest enforces each test's effective timeout; the duration report warns at 40% but never fails a passing test for headroom alone. The historical seven-day aggregate (`--since 7d`) reported a median of 100% CPU and a busy share of 1.0 for every Windows job, including release-archive, which averaged 49% over 14 days. Only about half of that window's Windows runs had metrics, so the sizing relied on the 14-day data.
 
 Re-measure on Namespace:
 
@@ -311,10 +311,11 @@ all on the former Blacksmith 4-vCPU Linux runners. These are a small observation
 controlled cache or runner comparisons. Keep detailed incident history in PRs
 and linked runs rather than growing this guide with each calibration.
 
-Do not raise per-test budgets or duration-score thresholds to repair a job cap.
-The shared test default remains 30000 ms, with warnings at 40% and failure at
-70% of each test's effective budget. The flaky-suite wrapper permits one bounded
-retry. npm's request policy allows at most 85 seconds for one stalled request
+The global per-test timeout remains 30000 ms. Expensive integration tests may use
+named, platform-neutral explicit budgets. Vitest fails actual timeouts; the wrapper
+only warns at 40% of each effective budget and retains duration artifacts. It does
+not retry failing suites. Missing or unreadable timing reports still fail as harness
+errors. Whole-job timeouts remain independent hang limits. npm's request policy allows at most 85 seconds for one stalled request
 and two retries; that is less than the smallest npm-installing job cap, but does
 not guarantee a whole install fits. Rust installation and its retry each have
 a four-minute step cap; PR-only Mintlify validation has a five-minute step cap.

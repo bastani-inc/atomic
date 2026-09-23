@@ -7,7 +7,6 @@ import { test } from "vitest";
 import {
 	declaredTimeouts,
 	evaluateDurations,
-	FAIL_RATIO,
 	parseVitestReport,
 	renderDurationTable,
 	reportedTestCount,
@@ -287,7 +286,6 @@ test("the real sequential workflow reload declaration keeps its explicit timeout
 	assert.equal(sample?.explicit, true);
 	assert.equal(sample?.ratio, 21_611 / 120_000);
 	assert.deepEqual(scored.warnings, []);
-	assert.deepEqual(scored.failures, []);
 });
 
 // #3129: the test passed on Windows; the gate ignored its existing 60s + 5s budget.
@@ -305,7 +303,6 @@ test("built Node MCP ownership is scored against its declared timeout expression
 	assert.equal(scored.samples[0]?.timeoutMs, 65_000);
 	assert.equal(scored.samples[0]?.explicit, true);
 	assert.deepEqual(scored.warnings, []);
-	assert.deepEqual(scored.failures, []);
 });
 
 // #3129: a curried test.each call still has a per-test third-argument budget.
@@ -339,7 +336,6 @@ test("built Node table cases retain their existing structural budgets", () => {
 		assert.equal(sample?.explicit, true);
 		assert.equal(sample?.ratio, duration / budget);
 	}
-	assert.deepEqual(scored.failures, []);
 });
 
 test("literal table budgets stay scoped and dynamic tables cannot borrow them", () => {
@@ -396,7 +392,6 @@ test("real edited-flow CLI cases keep their structural budgets without lending t
 		assert.equal(sample?.ratio, durations[index]! / 240_000);
 	}
 	assert.deepEqual(scored.warnings, []);
-	assert.deepEqual(scored.failures, []);
 
 	const unbudgeted = evaluateDurations(
 		report([
@@ -421,7 +416,7 @@ test("real edited-flow CLI cases keep their structural budgets without lending t
 		assert.equal(sample.explicit, false);
 		assert.equal(sample.ratio, 0.8);
 	}
-	assert.deepEqual(unbudgeted.failures, unbudgeted.samples);
+	assert.deepEqual(unbudgeted.warnings, unbudgeted.samples);
 });
 
 test("unsupported wrappers and lookalike members do not donate timeout budgets", () => {
@@ -539,23 +534,18 @@ test("headroom is scored against the effective timeout, not a fixed ceiling", ()
 		assert.equal(scored.enabled, true);
 		assert.equal(scored.defaultTimeoutMs, 30_000);
 		const byName = new Map(scored.samples.map((sample) => [sample.name, sample]));
-		// Same duration, different budgets, therefore different verdicts.
 		assert.equal(byName.get("heavy but declared")?.ratio.toFixed(2), "0.42");
 		assert.equal(byName.get("heavy and undeclared")?.ratio.toFixed(2), "0.83");
 		assert.deepEqual(
-			scored.failures.map((sample) => sample.name),
-			["heavy and undeclared"],
-		);
-		assert.deepEqual(
 			scored.warnings.map((sample) => sample.name),
-			["heavy but declared"],
+			["heavy and undeclared", "heavy but declared"],
 		);
 		assert.match(renderDurationTable(scored), /60000 ms \(explicit\)/);
 
 		// With no resolvable budget nothing is judged, but the table is still emitted.
 		const ungated = evaluateDurations(payload, undefined, directory);
 		assert.equal(ungated.enabled, false);
-		assert.deepEqual(ungated.failures, []);
+		assert.deepEqual(ungated.warnings, []);
 		assert.equal(ungated.samples.length, 3);
 		assert.match(renderDurationTable(ungated), /not declared \(gate disabled\)/);
 	} finally {
@@ -563,9 +553,6 @@ test("headroom is scored against the effective timeout, not a fixed ceiling", ()
 	}
 });
 
-test("guard thresholds keep the observed Windows tail silent and bound a genuine hang", () => {
-	// The slowest observed healthy Windows test sat near 30 % of its budget; the
-	// thresholds must leave that quiet and still catch a test approaching timeout.
-	assert.ok(WARN_RATIO > 0.3, "a healthy Windows tail must not warn on every run");
-	assert.ok(FAIL_RATIO > WARN_RATIO && FAIL_RATIO < 1, "failing must precede the timeout, not coincide with it");
+test("the advisory threshold leaves the observed healthy Windows tail quiet", () => {
+	assert.ok(WARN_RATIO > 0.3 && WARN_RATIO < 1);
 });

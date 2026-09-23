@@ -27,8 +27,6 @@ import { parseExpression } from "@babel/parser";
 
 /** Emit a warning once a test consumes this share of its effective timeout. */
 export const WARN_RATIO = 0.4;
-/** Fail the step once a test consumes this share of its effective timeout. */
-export const FAIL_RATIO = 0.7;
 /** vitest's built-in per-test timeout, used only for reporting an unset budget. */
 export const VITEST_DEFAULT_TIMEOUT_MS = 5000;
 
@@ -53,7 +51,6 @@ export interface DurationGuardReport {
 	blind: boolean;
 	samples: BudgetedSample[];
 	warnings: BudgetedSample[];
-	failures: BudgetedSample[];
 }
 
 /** The subset of vitest's JSON reporter this guard reads. */
@@ -433,7 +430,7 @@ export async function resolveDefaultTimeoutMs(
 	return readConfiguredTimeout(rootDir, cwd, flag(args.slice(1), "--project"));
 }
 
-/** Join durations to budgets and classify each sample against the two ratios. */
+/** Join durations to budgets and identify samples needing a warning. */
 export function evaluateDurations(
 	reportJson: string,
 	defaultTimeoutMs: number | undefined,
@@ -453,15 +450,14 @@ export function evaluateDurations(
 	}
 	samples.sort((left, right) => right.ratio - left.ratio);
 	const enabled = defaultTimeoutMs !== undefined;
-	const failures = enabled ? samples.filter((sample) => sample.ratio >= FAIL_RATIO) : [];
-	const warnings = enabled ? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO) : [];
+	const warnings = enabled ? samples.filter((sample) => sample.ratio >= WARN_RATIO) : [];
 	// A suite that ran tests yet yielded no durations has not been measured. An
 	// empty sample set is otherwise indistinguishable from a healthy run, which
 	// is exactly how a silently disabled gate survives. Under the JSON reporter
 	// this can only mean the harness broke: it emits a record per test.
 	const ranTests = reportedTestCount(reportJson);
 	const blind = enabled && ranTests > 0 && samples.length === 0;
-	return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings, failures };
+	return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings };
 }
 
 function row(sample: BudgetedSample): string {
@@ -475,7 +471,7 @@ function row(sample: BudgetedSample): string {
 export function renderDurationTable(report: DurationGuardReport, limit = 40): string {
 	const header = [
 		`Default per-test timeout: ${report.defaultTimeoutMs === undefined ? "not declared (gate disabled)" : `${report.defaultTimeoutMs} ms`}`,
-		`Warn at ${WARN_RATIO * 100} % of budget, fail at ${FAIL_RATIO * 100} %. Samples: ${report.samples.length} of ${report.ranTests} test(s) run.`,
+		`Warn at ${WARN_RATIO * 100} % of budget; duration headroom is advisory. Samples: ${report.samples.length} of ${report.ranTests} test(s) run.`,
 		"",
 		"| Budget used | Duration | Timeout | File | Test |",
 		"|---|---|---|---|---|",

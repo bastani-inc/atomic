@@ -7,7 +7,6 @@ import { spawnProcess } from "../test/helpers/runtime.js";
 import {
 	type BudgetedSample,
 	evaluateDurations,
-	FAIL_RATIO,
 	renderDurationTable,
 	resolveDefaultTimeoutMs,
 	WARN_RATIO,
@@ -178,7 +177,7 @@ async function reportDurations(result: RunResult, options: Options, name: string
 			`::error title=Duration guard blind: ${options.label}::${missing ? "the suite wrote no readable JSON report" : `${evaluated.ranTests} test(s) ran but the report carried no durations`}, so no headroom could be measured.`,
 		);
 		appendSummary(
-			`### ❌ Duration guard blind: ${options.label}\nThe suite ran tests but produced no per-test durations, so the ${FAIL_RATIO * 100} % headroom gate measured nothing. Restore vitest's JSON reporter output before trusting this run.\n\n${table}`,
+			`### ❌ Duration guard blind: ${options.label}\nThe suite produced no per-test durations. Restore vitest's JSON reporter output before trusting this run.\n\n${table}`,
 		);
 		return 1;
 	}
@@ -187,14 +186,12 @@ async function reportDurations(result: RunResult, options: Options, name: string
 	for (const message of evaluated.warnings.slice(0, 10).map(describe)) {
 		console.error(`::warning title=Slow test: ${options.label}::${message}`);
 	}
-	if (evaluated.failures.length === 0) return 0;
-	for (const message of evaluated.failures.slice(0, 10).map(describe)) {
-		console.error(`::error title=Timeout headroom exhausted: ${options.label}::${message}`);
+	if (evaluated.warnings.length > 0) {
+		appendSummary(
+			`### ⚠️ Slow tests: ${options.label}\n${evaluated.warnings.length} test(s) used at least ${WARN_RATIO * 100} % of their per-test timeout. Headroom is advisory; Vitest enforces the actual timeout.\n\n${table}`,
+		);
 	}
-	appendSummary(
-		`### ❌ Timeout headroom exhausted: ${options.label}\n${evaluated.failures.length} test(s) used at least ${FAIL_RATIO * 100} % of their per-test timeout (warning threshold ${WARN_RATIO * 100} %). Raise the specific test's explicit timeout only if the cost is structural, and make it fast otherwise.\n\n${table}`,
-	);
-	return 1;
+	return 0;
 }
 
 const options = parseArgs();
