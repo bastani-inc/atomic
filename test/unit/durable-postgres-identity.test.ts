@@ -268,6 +268,28 @@ test("adopts a legacy Atomic-provisioned cluster without reinitializing (#3235)"
 	assert.ok(statSync(join(f.root, "v18.shared", "cluster.json")).isFile());
 });
 
+const GENUINE_OLD_ATOMIC_POSTMASTER_OPTS =
+	'/Users/norinlavaee/.bun/install/global/node_modules/@bastani/atomic-natives-darwin-arm64/postgres-runtime/bin/postgres "-D" "/Users/norinlavaee/.atomic/postgres/v18" "-p" "5439" "-c" "listen_addresses=127.0.0.1"\n';
+
+test("adopts a cluster whose postmaster.opts is verbatim old-Atomic output (#3235)", async () => {
+	const f = fixture();
+	legacyCluster(
+		f,
+		GENUINE_OLD_ATOMIC_POSTMASTER_OPTS.replace('"/Users/norinlavaee/.atomic/postgres/v18"', `"${f.data}"`),
+	);
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let starts = 0;
+	hooks.setRetainedPostgresSpawner(() => {
+		starts++;
+		throw new Error("unexpected start");
+	});
+	await hooks.ensureCluster(f.options);
+	assert.equal(starts, 0);
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	assert.ok(statSync(join(f.root, "v18.shared", "cluster.json")).isFile());
+});
+
 test("unregistered data without Atomic's recorded loopback launch stays refused (#3235)", async () => {
 	for (const opts of [
 		undefined,
