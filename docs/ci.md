@@ -234,7 +234,6 @@ Custom pre-baking was abandoned after the image built successfully but remained 
 
 These are recorded here and deliberately not performed by the migration:
 
-1. **Ruleset rename.** Switch ruleset `9310196` from the legacy `test (blacksmith-…)` contexts to `test (all platforms)`, then drop the legacy rows. Follow [Moving the ruleset to the readable context](#moving-the-ruleset-to-the-readable-context). Until then, keep both legacy strings byte-for-byte.
 2. **Measurement-based resizing.** Follow [Sizing](#sizing) once each job has five successful Namespace runs.
 3. **First-run verification.** Before the first pull-request run, confirm in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles) that all four `atomic-ci-*` profiles exist and each reads Access Level Restricted. On the first runs, confirm that no `test.yml` or `codeql.yml` job stays queued (a missing profile queues until GitHub cancels it after 24 hours, and `timeout-minutes` does not count queue time), that each job's runner has the profile's shape, that Windows native builds link with MSVC, Linux checkout time fits its caps, `docker run` bind mounts work in `static-checks` and both Alpine legs, `patchelf` and LLVM 18 are present on arm64, and `register-published-version` mints its OIDC token.
 4. **Fork-workflow residual risk (accepted 2026-09-23).** The risk is accepted under the approval gate; see [Residual risk and available mitigations](#residual-risk-and-available-mitigations). If the workspace owner revisits it, the options are: restrict or delete the `default` and `default-arm64` profiles; lock down workspace-default workload permissions through Namespace support; move this repository's CI to a separate Namespace workspace; and ask Namespace support whether Restricted caps `permissions.additional_grant` and whether a `runs-on` suffix can set the access level. None is authorized.
@@ -268,32 +267,17 @@ Split long-running test files by topic so file-level parallelism can apply. Do n
 
 ### The `test` job is a result gate
 
-Repository ruleset `9310196` requires these exact job contexts:
+Repository ruleset `9310196` requires `test (all platforms)`. This single gate replaces the two legacy provider-named checks and runs on the Linux 4x16 Namespace profile. Its display name is independent of runner sizing and provider labels.
 
-- `test (blacksmith-4vcpu-ubuntu-2404, linux-x64)`
-- `test (blacksmith-4vcpu-windows-2025, windows-x64)`
-
-These are **legacy context identifiers, not runner labels.** They name the Blacksmith runners CI used before it moved to Namespace (see [Runners](#runners)). The ruleset lives outside this repository, so the gate keeps emitting both strings byte-for-byte. It also emits one readable context, `test (all platforms)`, that the ruleset can switch to.
-
-The gate's matrix has a single key, `required_context`, and its display name is `${{ matrix.required_context }}`. Each matrix value is therefore the whole context string, and GitHub appends nothing to it. `test/ci/test-workflow-topology.test.ts` pins the list to the two legacy strings plus the readable one. Per-platform timeouts and runner labels stay out of the gate's matrix, so tuning either can never rename a required check.
-
-Every leg does the same bookkeeping on the Linux 4x16 runner profile. The gate exists to fail closed:
+The gate exists to fail closed:
 
 - Moving work into new jobs without a gate would silently un-protect every step that left `test`. The contexts would still exist and still go green.
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
-- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, each leg asserts every platform's work jobs. That is strictly stronger than the per-platform meaning the legacy contexts once had, which is why a single readable context replaces both.
+- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, the gate asserts every platform's work jobs.
 
 The work jobs are named by platform only, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names.
 
-#### Moving the ruleset to the readable context
-
-The readable context is emitted now so that the external ruleset change never has to land in the same window as a workflow merge:
-
-1. Confirm that `test (all platforms)` reports on a recent `main` run and on an open pull request.
-2. In ruleset `9310196`, require `test (all platforms)` and remove the two legacy contexts in one edit.
-3. In a follow-up pull request, delete the two legacy rows from the gate's `required_context` list.
-
-Reversing the order would orphan required checks: removing a legacy row before step 2 leaves the ruleset waiting for a context that never reports. If maintainers later prefer real per-job required contexts, follow the same order: emit, switch the ruleset, then drop.
+When changing a required-check name, emit the replacement first, update the repository ruleset, then remove the old context. Never remove a context while branch rules still require it.
 
 ### Per-job time limits
 

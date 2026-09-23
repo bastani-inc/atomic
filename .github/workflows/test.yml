@@ -542,34 +542,10 @@ jobs:
       - name: Deterministic CI and release contracts
         run: npm run test:ci-contracts
 
-  # Result gate. It carries the two contexts required by repository ruleset
-  # 9310196 plus one readable context for the ruleset to move to:
-  #
-  #   test (blacksmith-4vcpu-ubuntu-2404, linux-x64)    legacy, required today
-  #   test (blacksmith-4vcpu-windows-2025, windows-x64) legacy, required today
-  #   test (all platforms)                               readable replacement
-  #
-  # The two legacy strings are ruleset identifiers, not runner labels: they name
-  # the Blacksmith runners CI used before Namespace. The ruleset lives outside
-  # this repository, so they stay byte-for-byte until it requires the readable
-  # context instead; docs/ci.md ("The `test` job is a result gate") has the
-  # transition. `name:` is the whole context string, so no matrix value can be
-  # appended to it. Every leg does identical bookkeeping on one Linux runner.
-  # `if: always()` is mandatory: a job whose `needs` failed is *skipped*, and
-  # GitHub counts a skipped required check as satisfied, which would turn a red
-  # suite green. `needs.<job>.result` collapses a matrix to one value, so each
-  # leg asserts every platform's work jobs.
   test:
-    name: ${{ matrix.required_context }}
+    name: test (all platforms)
     needs: [unit-tests, integration-tests, agent-suite, release-archive, static-checks]
     if: always()
-    strategy:
-      matrix:
-        required_context:
-          - test (blacksmith-4vcpu-ubuntu-2404, linux-x64)
-          - test (blacksmith-4vcpu-windows-2025, windows-x64)
-          - test (all platforms)
-      fail-fast: false
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1
     steps:

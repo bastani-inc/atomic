@@ -35,10 +35,10 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI. npm trusted publishing and provenance accept only cloud-hosted runners, so `publish.yml`'s `publish-npm` job must stay GitHub-hosted (`ubuntu-latest`): Namespace runners report `runner_environment=self-hosted` |
 
 **Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
-job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces twelve
-check contexts including full Windows coverage, runs on Namespace runners, and carries
-per-job timeout budgets. Adopting pi's
-topology would delete Windows coverage and orphan the two required check contexts. Parity is
+job with no matrix and no `timeout-minutes`. Do not copy it. This workflow preserves
+full Windows coverage, runs on Namespace runners, and carries per-job timeout budgets.
+Adopting pi's topology would delete Windows coverage and orphan the required
+`test (all platforms)` check. Parity is
 a *toolchain* goal, not a CI-topology goal.
 
 **CI runners:** pull-request-capable workflows (`test.yml`, `codeql.yml`) run every job on a
@@ -50,9 +50,8 @@ only barrier there: before approving a fork run, check the diff for `.github/` c
 uses inline labels (`nscloud-*`) except the dedicated macOS release cache profile and
 `publish-npm` on GitHub-hosted Linux (`ubuntu-latest`, required by npm trusted publishing
 and provenance). Both macOS targets build on Namespace Apple Silicon; Intel artifacts
-are cross-compiled and smoke-tested under Rosetta, not on native Intel hardware. The required contexts still read
-`test (blacksmith-…)`: those are legacy identifiers kept for the external ruleset, not runner
-labels. The gate also emits `test (all platforms)` so the ruleset can move to it first.
+are cross-compiled and smoke-tested under Rosetta, not on native Intel hardware.
+The required `test (all platforms)` gate aggregates every platform's work jobs.
 `docs/ci.md` ("Runners") has the mapping, the profiles and their dashboard-only settings, the
 checkout/cache trust model, and the follow-ups.
 
