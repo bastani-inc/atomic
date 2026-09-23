@@ -51,8 +51,10 @@ Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actio
 
 | Workflow and jobs | Before | Now | Shape |
 | --- | --- | --- | --- |
-| `test.yml` unit, integration, agent-suite and release-archive (Linux legs); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `test.yml` unit, integration, agent-suite and release-archive (Windows legs) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
+| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs) | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
+| `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
+| `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
 | `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release, cleanup-draft-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
@@ -63,17 +65,53 @@ Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actio
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `macos-26-intel` (GitHub-hosted exception) | GitHub standard |
 
-`4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`.
+`4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`. `8x16` is in the standard list.
 
 ### Sizing
 
-Each job keeps its previous vCPU class. The Blacksmith 4-vCPU runners had 16 GB of memory, so `4x16` keeps both CPU and memory. The Blacksmith era left no CPU or memory utilization data: GitHub's job API reports elapsed time only, and `.ci-diagnostics/` records per-test durations. There is therefore no measured load to justify a larger runner. The job caps and the per-test gate (warn at 40 %, fail at 70 % of each test's budget) are unchanged. Do not relax them to absorb a runner difference.
+Shapes come from the Blacksmith-era per-job CPU and memory metrics. The source is `blacksmith jobs aggregate --repo bastani-inc/atomic --since 14d --format json --min-runs 3`, for 2026-09-09 to 2026-09-23. Release jobs run too rarely for a 14-day window, so `publish.yml` uses `--since 30d --group-by repo,job_name,runner_label`. Release versions are separate workflow names, and that grouping merges them. Blacksmith's SKU catalog (`blacksmith runners catalog`) gives the memory behind each percentage: 15.2 GB for Linux amd64, 12 GB for Linux arm64, 14 GB for Windows (all 4 vCPU) and 24 GB for the 6-vCPU macOS runner.
 
-Size from Namespace data once it exists:
+In the table, **CPU** is the p50 / p95 across runs of each run's average CPU. **Busy** is the median share of a run spent above 80 % CPU. **Mem** is the p95 of each run's peak memory. **Duration** is p50 / p95 against the job cap. Windows rows have metrics for 71–74 % of runs.
+
+| Job | Runs | CPU p50 / p95 | Busy | Mem p95 | Duration p50 / p95 (cap) | Shape now |
+| --- | ---: | --- | ---: | ---: | --- | --- |
+| unit-tests linux-x64 | 706 | 68 % / 83 % | 0.45 | 3.3 GB | 491 s / 1048 s (1320 s) | **8x16** |
+| unit-tests windows-x64 | 704 | 76 % / 100 % | 0.63 | 4.4 GB | 698 s / 1328 s (1320 s) | **8x16** |
+| integration-tests linux-x64 | 704 | 54 % / 64 % | 0.25 | 3.5 GB | 211 s / 521 s (600 s) | **8x16** |
+| integration-tests windows-x64 | 708 | 64 % / 100 % | 0.42 | 4.9 GB | 365 s / 846 s (840 s) | **8x16** |
+| agent-suite linux-x64 | 702 | 69 % / 74 % | 0.40 | 2.9 GB | 337 s / 695 s (900 s) | **8x16** |
+| agent-suite windows-x64 | 705 | 77 % / 100 % | 0.72 | 3.6 GB | 557 s / 864 s (1200 s) | **8x16** |
+| release-archive linux-x64 | 702 | 43 % / 48 % | 0.24 | 1.4 GB | 89 s / 124 s (240 s) | 4x16 |
+| release-archive windows-x64 | 702 | 49 % / 100 % | 0.25 | 3.5 GB | 166 s / 271 s (420 s) | 4x16 |
+| static-checks | 702 | 51 % / 55 % | 0.30 | 2.7 GB | 101 s / 151 s (300 s) | 4x16 |
+| `test` result gate (per leg) | 711 | 28 % / 33 % | 0.17 | 0.3 GB | 4 s / 5 s (60 s) | 4x16 |
+| CodeQL javascript-typescript | 704 | 61 % / 66 % | 0.43 | 10.5 GB | 190 s / 493 s (1800 s) | 4x16 |
+| CodeQL rust | 704 | 47 % / 50 % | 0.25 | 8.4 GB | 137 s / 196 s (1800 s) | 4x16 |
+| CodeQL actions | 703 | 32 % / 38 % | 0.10 | 1.0 GB | 32 s / 45 s (1800 s) | 4x16 |
+| Native win32-x64-msvc / win32-arm64-msvc (30 d) | 45 / 46 | 55–56 % / 71–72 % | 0.30–0.32 | 1.1 GB | 267–278 s / 401–471 s | 4x16 |
+| Native linux-x64-gnu / -musl (30 d) | 45 each | 46 % / 51–52 % | 0.29 | 0.9 GB | 63–65 s / 91–106 s | 4x16 |
+| Native linux-arm64-gnu / -musl (30 d) | 45 each | 52–53 % / 55–56 % | 0.31–0.33 | 1.0 GB | 122–127 s / 148–150 s | arm64 4x16 |
+| Native darwin-arm64 (30 d) | 45 | 64 % / 71 % | 0.33 | 7.9 GB | 58 s / 73 s | macOS 6x14 |
+| Smoke Linux binary (30 d) | 45 | 49 % / 51 % | 0.28 | 2.3 GB | 65 s / 94 s | 4x16 |
+| Build and smoke Windows archives (30 d) | 30 | 37 % / 82 % | 0.07 | 3.1 GB | 138 s / 181 s | 4x16 |
+| Smoke Alpine musl x64 / arm64 (30 d) | 41 each | 29–36 % / 34–37 % | 0.04 | 2.5–2.9 GB | 49–87 s / 68–122 s | 4x16 / arm64 4x16 |
+| Build release payload (30 d) | 40 | 27 % / 30 % | 0.01 | 1.2 GB | 205 s / 265 s | 4x16 |
+| Verify release tag, stage/publish/clean up GitHub Release (30 d) | 1–45 | 9–31 % | ≤ 0.2 | ≤ 0.4 GB | ≤ 96 s | 4x16 |
+
+The decisions:
+
+- **The three test suites move to 8 vCPU on both platforms.** On 4 vCPU they are CPU-bound. The Windows legs spend most of each run above 80 % CPU, and Windows unit-tests and integration-tests already reach their job caps at p95. Linux unit-tests and integration-tests reach 79 % and 87 % of their caps at p95. Vitest sizes its worker pool from the available cores, so the suites parallelize across the extra vCPU. Cargo also builds each job's native binding in parallel. Memory peaked at 2.9–4.9 GB with 4 workers, so twice that still fits in 16 GB.
+- **8 vCPU, not 16.** The Windows suites set the length of every run, and a larger Linux shape would not shorten it: Linux already finishes ahead of Windows. `test.yml` runs overlap often. Over 746 runs in the same 14 days, two or more were in flight for about 39 % of the time that any run was. Concurrency limits are per platform, so a 16-vCPU Windows shape would make overlapping runs queue for Windows capacity. 8 vCPU doubles the throughput of each suite and still lets overlapping runs start at once.
+- **Everything else keeps its shape.** release-archive, static-checks, the result gate, and every publish job average at most 64 % CPU and finish well inside their caps. The win32 cross-compile legs' slow runs (4–8 minutes) come from earlier releases in the window. The ten most recent successful `win32-x64-msvc` runs took 54–82 s. `Build release payload` is effectively single-threaded (busy share 0.01). Every CodeQL language keeps 4x16. CodeQL is not one of the required status checks, and it finishes inside the `test.yml` critical path. JavaScript analysis peaks at 10.5 GB, so a smaller-memory shape would be unsafe. `darwin-arm64` moves from 24 GB to 14 GB of memory; its 7.9 GB peak fits.
+- **Jobs without data keep their shape.** `warm-toolchain-cache.yml` has not run in the 30-day window, so its 4-vCPU shape is unchanged. `publish-npm` and `register-published-version` ran GitHub-hosted, where Blacksmith recorded nothing. `register-published-version` is a short network-bound job, and its shape stays at 4x16.
+
+The job caps and the per-test gate (warn at 40 %, fail at 70 % of each test's budget) are unchanged. Do not relax them to absorb a runner difference. The seven-day aggregate (`--since 7d`) reports a median of 100 % CPU and a busy share of 1.0 for every Windows job, including release-archive, which averaged 49 % over 14 days. Only about half of that window's Windows runs have metrics. Those figures look like a telemetry artifact, so the sizing relies on the 14-day data.
+
+Re-measure on Namespace:
 
 1. Let each job accumulate at least five successful runs on Namespace.
 2. Export `nsc instance report` (a CSV of every runner instance from the last seven days, with allocated shape and observed peak CPU and memory). Also read the dashboard's **p90 CPU per Job** and **Max Memory Used per Job** views.
-3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it. A job with low utilization can move down on the same evidence.
+3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it, as the table above does. A job with low utilization can move down on the same evidence.
 
 ### Platform differences imposed by Namespace
 
@@ -111,8 +149,8 @@ This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` 
 Namespace can pre-bake dependencies into a [custom base image](https://namespace.so/docs/solutions/github-actions/custom-base-images). **It is not adopted.** The evidence:
 
 - **Little to save.** Measured per-job setup in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543) was `setup-bun` 2–5 s, `setup-node` 3–13 s, the Rust toolchain 8–13 s, and `npm ci` 4–5 s on Linux (18–20 s on Windows). An image could save roughly 15–30 s of that per job, while the jobs run for 2–14 minutes. The larger costs (native binding builds of 39–54 s, the package build, the suites) depend on the checked-out source and cannot be baked. Lockfile-dependent state such as `node_modules` and Cargo output belongs in a ref-scoped cache, not an image.
-- **Not version-controlled or cross-platform.** Custom images are configured per runner profile in the dashboard, as APT packages or a Dockerfile. `nsc github profile create` and `nsc github profile describe` expose no base-image fields, and `nsc github build-base-image` only test-builds a Dockerfile for `linux/amd64` and `linux/arm64`. Adopting an image would move runner definition out of the workflow files into dashboard state. It would also leave Windows and macOS, the slowest legs, unaffected.
-- **Trust and drift.** An image edited in the dashboard and shared with pull-request jobs is state the release path must not depend on. Its preinstalled Bun, Node and Rust would also have to be rebuilt in lockstep with the workflow pins (Bun 1.4.2, Node 22, Rust 1.97.0 in `publish.yml`). Otherwise the setup actions still run and the saving disappears.
+- **Linux-only, and profile state.** A committed Dockerfile *can* be applied from the CLI: `nsc github profile update --dockerfile <path>` (or `--spec_file`) sets a profile's custom image, and `nsc github profile rebuild-base-image` and `test-build-base-image` rebuild and test it. But the image belongs to a runner profile, not to the workflow file, so it lives in workspace state that each rebuild has to keep in sync. `test-build-base-image` builds only `linux/amd64` and `linux/arm64`, so an image would leave Windows and macOS unaffected, and Windows sets the length of every `test.yml` run.
+- **Trust and drift.** A profile image shared with pull-request jobs is state the release path must not depend on. Its preinstalled Bun, Node and Rust would also have to be rebuilt in lockstep with the workflow pins (Bun 1.4.2, Node 22, Rust 1.97.0 in `publish.yml`). Otherwise the setup actions still run and the saving disappears.
 
 Revisit only if post-migration timings show setup dominating a job. Any adoption would need a Dockerfile committed to this repository, a dedicated repository-scoped profile limited to `test.yml` Linux jobs, the same version pins, a rebuild whenever a pin changes, no secrets or checked-out content in the image, and no use from `publish.yml`.
 

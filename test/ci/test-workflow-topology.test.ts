@@ -12,9 +12,23 @@ const testPath = join(root, ".github/workflows/test.yml");
 /** The work jobs the result gate must depend on, in file and `needs` order. */
 const WORK_JOBS = ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"] as const;
 
-/** The Namespace machine labels the Linux and Windows work jobs run on. */
+/** The Namespace machine labels for bookkeeping, static checks and the release archive (4 vCPU). */
 const LINUX_RUNNER = "nscloud-ubuntu-24.04-amd64-4x16";
 const WINDOWS_RUNNER = "nscloud-windows-2022-amd64-4x16";
+/**
+ * The three test suites were CPU-bound on 4 vCPU (docs/ci.md, "Sizing"), so they
+ * run on 8 vCPU. Vitest sizes its worker pool from the available cores.
+ */
+const LINUX_SUITE_RUNNER = "nscloud-ubuntu-24.04-amd64-8x16";
+const WINDOWS_SUITE_RUNNER = "nscloud-windows-2022-amd64-8x16";
+
+/** The [Linux, Windows] runner pair of each split matrix job. */
+const SPLIT_JOB_RUNNERS: Record<string, [string, string]> = {
+	"unit-tests": [LINUX_SUITE_RUNNER, WINDOWS_SUITE_RUNNER],
+	"integration-tests": [LINUX_SUITE_RUNNER, WINDOWS_SUITE_RUNNER],
+	"agent-suite": [LINUX_SUITE_RUNNER, WINDOWS_SUITE_RUNNER],
+	"release-archive": [LINUX_RUNNER, WINDOWS_RUNNER],
+};
 
 /** A runner label as a regex fragment; its dots are literal. */
 function label(runner: string): string {
@@ -165,17 +179,19 @@ test("each split job retains its measured timeout hang detector", async () => {
 		// The partial build is not a measured completion; docs/ci.md records this projection's limits.
 		"release-archive": [Math.ceil(((49 + 84 + 15 + 5 + 5) * 1.5) / 60), Math.ceil((244 * 1.5) / 60)],
 	};
+	assert.deepEqual(Object.keys(caps), Object.keys(SPLIT_JOB_RUNNERS));
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
 		const block = blocks.get(job) as string;
+		const [linuxRunner, windowsRunner] = SPLIT_JOB_RUNNERS[job] as [string, string];
 		assert.match(
 			block,
-			new RegExp(`binary_platform: linux-x64\\s+runner: ${label(LINUX_RUNNER)}\\s+timeout_minutes: ${linux}`, "u"),
+			new RegExp(`binary_platform: linux-x64\\s+runner: ${label(linuxRunner)}\\s+timeout_minutes: ${linux}`, "u"),
 			job,
 		);
 		assert.match(
 			block,
 			new RegExp(
-				`binary_platform: windows-x64\\s+runner: ${label(WINDOWS_RUNNER)}\\s+timeout_minutes: ${windows}`,
+				`binary_platform: windows-x64\\s+runner: ${label(windowsRunner)}\\s+timeout_minutes: ${windows}`,
 				"u",
 			),
 			job,

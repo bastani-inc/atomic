@@ -43,11 +43,13 @@ jobs:
     strategy:
       matrix:
         include:
+          # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
+          # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-4x16
+            runner: nscloud-ubuntu-24.04-amd64-8x16
             timeout_minutes: 22
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-4x16
+            runner: nscloud-windows-2022-amd64-8x16
             timeout_minutes: 22
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -128,10 +130,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-4x16
+            runner: nscloud-ubuntu-24.04-amd64-8x16
             timeout_minutes: 10
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-4x16
+            runner: nscloud-windows-2022-amd64-8x16
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -195,10 +197,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-4x16
+            runner: nscloud-ubuntu-24.04-amd64-8x16
             timeout_minutes: 15
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-4x16
+            runner: nscloud-windows-2022-amd64-8x16
             timeout_minutes: 20
       fail-fast: false
     runs-on: ${{ matrix.runner }}

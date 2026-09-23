@@ -969,13 +969,22 @@ function runsOnLabelSets(label: string, job: NonNullable<Workflow["jobs"]>[strin
 /** Any Namespace machine label: `nscloud-{os}-{arch}-{shape}[-with-*]`. Namespace schedules at most one per job. */
 const NAMESPACE_MACHINE_LABEL = /^nscloud-(?:ubuntu|windows|macos)-/u;
 
-/** The machine labels this repository approves: bare shapes, no cache, feature, or builder suffix. */
+/**
+ * The machine labels this repository approves: bare shapes, no cache, feature, or
+ * builder suffix. The 8x16 shapes carry only the three CPU-bound test.yml suites
+ * (pinned in test-workflow-topology.test.ts); docs/ci.md ("Sizing") has the data.
+ */
 const APPROVED_NAMESPACE_RUNNERS = new Set([
 	"nscloud-ubuntu-24.04-amd64-4x16",
+	"nscloud-ubuntu-24.04-amd64-8x16",
 	"nscloud-ubuntu-24.04-arm64-4x16",
 	"nscloud-windows-2022-amd64-4x16",
+	"nscloud-windows-2022-amd64-8x16",
 	"nscloud-macos-tahoe-arm64-6x14",
 ]);
+
+/** The jobs whose measured 4-vCPU CPU load justified 8 vCPU (docs/ci.md, "Sizing"). */
+const MEASURED_8_VCPU_JOBS = new Set(["test.yml unit-tests", "test.yml integration-tests", "test.yml agent-suite"]);
 
 /**
  * The only jobs that stay GitHub-hosted, each for a reason a future "move
@@ -1008,6 +1017,9 @@ test("Namespace runners are used everywhere they are supported", async () => {
 				assert.ok(machines.length <= 1, `${label}: more than one nscloud machine label in ${set.join(", ")}`);
 				if (machines.length === 1) {
 					assert.ok(APPROVED_NAMESPACE_RUNNERS.has(machines[0] as string), `${label}: unapproved ${machines[0]}`);
+					if (machines[0]?.endsWith("-8x16")) {
+						assert.ok(MEASURED_8_VCPU_JOBS.has(label), `${label}: 8 vCPU needs sizing evidence in docs/ci.md`);
+					}
 					assert.deepEqual(set, machines, `${label}: companion labels need a docs/ci.md trust review`);
 					continue;
 				}
