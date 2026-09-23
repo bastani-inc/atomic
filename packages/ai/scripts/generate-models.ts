@@ -3044,7 +3044,10 @@ async function generateModels() {
 		}
 
 		// models.dev may list Opus 5.5 before its effort metadata is complete.
-		if (candidate.provider === "anthropic" && candidate.id === "claude-opus-5-5") {
+		if (
+			(candidate.provider === "anthropic" && candidate.id === "claude-opus-5-5") ||
+			(candidate.provider === "github-copilot" && candidate.id === "claude-opus-5.5")
+		) {
 			mergeThinkingLevelMap(candidate, {
 				off: null,
 				minimal: null,
