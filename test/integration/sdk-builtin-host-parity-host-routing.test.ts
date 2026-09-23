@@ -31,15 +31,19 @@ test("workflow execution policy admits a callback host without a terminal", () =
 	assert.equal(workflowPolicyFromContext({ hasUI: false }).awaitTerminalRun, false);
 });
 
+const REAL_UNBOUND_GATE_STARTUP_TIMEOUT_MS = 45_000;
+
 // #3105: initial absence is not an execution-policy restriction.
-test("public factory preserves an initially unbound required gate and continues exactly once", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-initially-unbound-"));
-	const directory = join(cwd, ".atomic", "workflows");
-	mkdirSync(directory, { recursive: true });
-	const effect = join(cwd, "effect.jsonl");
-	writeFileSync(
-		join(directory, "required.ts"),
-		`
+test(
+	"public factory preserves an initially unbound required gate and continues exactly once",
+	async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-initially-unbound-"));
+		const directory = join(cwd, ".atomic", "workflows");
+		mkdirSync(directory, { recursive: true });
+		const effect = join(cwd, "effect.jsonl");
+		writeFileSync(
+			join(directory, "required.ts"),
+			`
 import { workflow } from "@bastani/atomic/workflows";
 import { appendFileSync } from "node:fs";
 export default workflow({ name: "required", description: "required approval", inputs: {}, outputs: {},
@@ -49,53 +53,55 @@ export default workflow({ name: "required", description: "required approval", in
     return {};
   }
 });`,
-	);
-	const { session } = await createAgentSession({
-		cwd,
-		agentDir: join(cwd, "agent"),
-		sessionManager: SessionManager.inMemory(cwd),
-		settingsManager: SettingsManager.inMemory(),
-		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
-	});
-	try {
-		await session.prompt("/workflow required --no-picker");
-		const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
-		const status = async () =>
-			(await tool.execute("status", { action: "status" }, new AbortController().signal)).details as {
-				runs: { runId: string; status: string; awaitingInputCount: number }[];
-			};
-		await vi.waitFor(async () => assert.equal((await status()).runs[0]?.awaitingInputCount, 1), { timeout: 5000 });
-		const pending = await status();
-		assert.equal(pending.runs[0]!.status, "running");
-		assert.match(JSON.stringify(pending), /"promptKind":"confirm"/);
-		assert.equal(existsSync(effect), false);
-		const answers = Promise.withResolvers<boolean>();
-		const identities: HostInputOptions[] = [];
-		await session.bindExtensions({
-			humanInput: {
-				confirm: async (_title, _message, options) => {
-					identities.push(options);
-					return answers.promise;
-				},
-				input: async () => undefined,
-				select: async () => undefined,
-				editor: async () => undefined,
-				questionnaire: async () => ({ answers: [], cancelled: true }),
-			},
+		);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			sessionManager: SessionManager.inMemory(cwd),
+			settingsManager: SettingsManager.inMemory(),
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
-		await vi.waitFor(() => assert.equal(identities.length, 1));
-		assert.equal(identities[0]!.workflowRunId, pending.runs[0]!.runId);
-		answers.resolve(true);
-		answers.resolve(true);
-		await vi.waitFor(async () => assert.equal((await status()).runs[0]?.status, "completed"), { timeout: 5000 });
-		await session.bindExtensions({});
-		assert.equal(identities.length, 1);
-		assert.equal(readFileSync(effect, "utf8"), "effect\n");
-	} finally {
-		await session.dispose();
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+		try {
+			await session.prompt("/workflow required --no-picker");
+			const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+			const status = async () =>
+				(await tool.execute("status", { action: "status" }, new AbortController().signal)).details as {
+					runs: { runId: string; status: string; awaitingInputCount: number }[];
+				};
+			await vi.waitFor(async () => assert.equal((await status()).runs[0]?.awaitingInputCount, 1), { timeout: 5000 });
+			const pending = await status();
+			assert.equal(pending.runs[0]!.status, "running");
+			assert.match(JSON.stringify(pending), /"promptKind":"confirm"/);
+			assert.equal(existsSync(effect), false);
+			const answers = Promise.withResolvers<boolean>();
+			const identities: HostInputOptions[] = [];
+			await session.bindExtensions({
+				humanInput: {
+					confirm: async (_title, _message, options) => {
+						identities.push(options);
+						return answers.promise;
+					},
+					input: async () => undefined,
+					select: async () => undefined,
+					editor: async () => undefined,
+					questionnaire: async () => ({ answers: [], cancelled: true }),
+				},
+			});
+			await vi.waitFor(() => assert.equal(identities.length, 1));
+			assert.equal(identities[0]!.workflowRunId, pending.runs[0]!.runId);
+			answers.resolve(true);
+			answers.resolve(true);
+			await vi.waitFor(async () => assert.equal((await status()).runs[0]?.status, "completed"), { timeout: 5000 });
+			await session.bindExtensions({});
+			assert.equal(identities.length, 1);
+			assert.equal(readFileSync(effect, "utf8"), "effect\n");
+		} finally {
+			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	},
+	REAL_UNBOUND_GATE_STARTUP_TIMEOUT_MS,
+);
 
 // #3105: exercise discovery, the builtin extension and runner-owned HostInput,
 // not a manually assembled executor adapter. Prompt-node policy is unchanged.
