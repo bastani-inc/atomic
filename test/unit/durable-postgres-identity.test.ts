@@ -290,6 +290,57 @@ test("adopts a cluster whose postmaster.opts is verbatim old-Atomic output (#323
 	assert.ok(statSync(join(f.root, "v18.shared", "cluster.json")).isFile());
 });
 
+test("failed legacy adoption removes its ownership records so the next startup re-checks (#3235)", async () => {
+	const f = fixture();
+	legacyCluster(f, legacyLaunch(f.data));
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let starts = 0,
+		signals = 0;
+	hooks.setRetainedPostgresSpawner((options) => {
+		starts++;
+		f.pidfile(Number(options.args[options.args.indexOf("-p") + 1]));
+		return {
+			pid: process.pid,
+			wait: async () => {
+				throw new Error("Timed out waiting for the retained Postgres process to exit");
+			},
+			interruptAndWait: async () => {
+				signals++;
+				return { exited: true, signaled: true };
+			},
+			release() {},
+		};
+	});
+	const unregistered = () => assert.throws(() => statSync(join(f.root, "v18.shared")), { code: "ENOENT" });
+	await assert.rejects(
+		hooks.ensureCluster({
+			...f.options,
+			probeIdentity: async () => {
+				throw new Error("identity probe refused");
+			},
+		}),
+		/identity probe refused/,
+	);
+	unregistered();
+	rmSync(join(f.data, "postmaster.pid"));
+	await assert.rejects(
+		hooks.ensureCluster({
+			...f.options,
+			probeIdentity: async (selected) => ({ ...f.row(selected), system_identifier: "2" }),
+		}),
+		/identity mismatch/,
+	);
+	assert.equal(starts, 1);
+	assert.equal(signals, 1, "the unverified started child is rolled back before its records are removed");
+	unregistered();
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	f.pidfile(port);
+	await hooks.ensureCluster(f.options);
+	assert.equal(starts, 1);
+	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.port, port);
+});
+
 test("unregistered data without Atomic's recorded loopback launch stays refused (#3235)", async () => {
 	for (const opts of [
 		undefined,

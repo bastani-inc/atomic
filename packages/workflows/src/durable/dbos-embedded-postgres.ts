@@ -215,8 +215,9 @@ async function ensureCluster(
 		chmodSync(root, 0o755);
 	}
 	let startedCluster: ActiveEmbeddedPostgres | undefined;
-	try {
-		await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async (setup) => {
+	await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async (setup) => {
+		let adoptedRegistry: string | undefined;
+		try {
 			await cleanupAbandonedRuntimeStages(root, setup.abandonedRuntimeStageOwnerTokens);
 			const preferredPort = preferredPostgresPort();
 			const registered = existsSync(postgresOwnershipDirectory(root, EMBEDDED_PG_MAJOR));
@@ -243,6 +244,7 @@ async function ensureCluster(
 				registered || unregisteredData
 					? managedPostgresMetadata(root, EMBEDDED_PG_MAJOR, unregisteredData)
 					: undefined;
+			if (unregisteredData) adoptedRegistry = postgresOwnershipDirectory(root, EMBEDDED_PG_MAJOR);
 			if (options.recovery && !metadata)
 				throw new Error("Managed Postgres recovery requires existing ownership records.");
 			if (
@@ -350,6 +352,7 @@ async function ensureCluster(
 			}
 			if (!setup.runtimePublicationLease.refresh()) throw new Error("Postgres setup lease lost before attach.");
 			publishPostgresServer(root, metadata, verified);
+			adoptedRegistry = undefined;
 			actualPort = port;
 			inspectPostgresConsumers(root, metadata);
 			const nextConsumer = acquirePostgresConsumer(root, metadata, `${process.execPath} | ${import.meta.url}`);
@@ -400,12 +403,17 @@ async function ensureCluster(
 					},
 				});
 			}
-		});
-	} catch (startupError) {
-		// Readiness already attempted rollback; retain its lease for a later shutdown retry.
-		if (startupError instanceof EmbeddedPostgresCleanupPendingError) throw startupError;
-		await rollbackStartedCluster(startedCluster, startupError);
-	}
+		} catch (startupError) {
+			// Readiness already attempted rollback; retain its lease for a later shutdown retry.
+			if (startupError instanceof EmbeddedPostgresCleanupPendingError) throw startupError;
+			await rollbackStartedCluster(startedCluster, startupError).catch((error: unknown) => {
+				// Unpublished adoption must leave the data unregistered so the next startup re-runs the legacy check.
+				if (adoptedRegistry !== undefined && !(error instanceof EmbeddedPostgresCleanupPendingError))
+					rmSync(adoptedRegistry, { recursive: true, force: true });
+				throw error;
+			});
+		}
+	});
 }
 
 async function rollbackStartedCluster(
