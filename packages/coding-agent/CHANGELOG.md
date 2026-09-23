@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.8] - 2026-09-22
+
 ### Added
 
 - Added fast variants for first-party xAI Grok models, such as `xai/grok-4.7-fast`. They send the base Grok model with xAI Priority Processing (`service_tier: priority`) for lower latency, billed at twice the standard token rates only when xAI confirms the priority tier. `usesXaiFastServiceTier` reports which models qualify.
