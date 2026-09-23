@@ -5,9 +5,6 @@
  * release. Nothing caught it: the changelog is prose, and no test read the export list. This file
  * compiles under `tsgo -p tsconfig.typetests.json`, which `npm run typecheck` runs, so a renamed or
  * dropped export becomes a build error rather than a stale sentence.
- *
- * Adding a name here is only half the contract. `test/ci/fast-model-identity-contracts.test.ts`
- * checks the other direction: that every identifier the changelog block names is a real export.
  */
 import type {
 	FastModelVariantDerivation,
