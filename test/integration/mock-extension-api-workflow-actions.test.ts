@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { beforeEach, describe, test, vi } from "vitest";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
+import { beforeEach, describe, test } from "vitest";
 import type {
 	ExtensionAPI,
 	PiCommandOptions,
@@ -83,14 +82,12 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
 
 	test("action='run' for fan-out-and-synthesize returns a non-placeholder runId", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const ctx = workflowRouterContext("fan-out-and-synthesize");
-		const route = await runTool(execute, { action: "route", state: workflowRouterState() }, ctx);
-		assert.equal(route.action, "route");
+		const ctx = {};
 		// Background dispatch returns `status: "running"` synchronously with a real UUID.
 		const result = await runTool(
 			execute,
 			{
-				workflowId: route.workflowId,
+				workflow: "fan-out-and-synthesize",
 				inputs: { prompt: "test query", max_branches: 1 },
 				action: "run",
 			},
@@ -122,13 +119,11 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
 
 	test("action='run' without adapters reports honest failure, not a stub", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const ctx = workflowRouterContext("fan-out-and-synthesize");
-		const route = await runTool(execute, { action: "route", state: workflowRouterState() }, ctx);
-		assert.equal(route.action, "route");
+		const ctx = {};
 		const result = await runTool(
 			execute,
 			{
-				workflowId: route.workflowId,
+				workflow: "fan-out-and-synthesize",
 				inputs: { prompt: "test", max_branches: 1 },
 				action: "run",
 			},
@@ -156,10 +151,8 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
 		}
 	});
 
-	test("action='run' rejects a legacy workflow name without routing or admission", async () => {
+	test("action='run' rejects an unknown workflow name without admission", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const ctx = workflowRouterContext("nonexistent-workflow-xyz");
-		const inference = vi.spyOn(ctx.modelRegistry!, "streamSimple");
 		const runsBefore = defaultStore.runs().map((run) => run.id);
 		const result = await runTool(
 			execute,
@@ -167,15 +160,13 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
 				workflow: "nonexistent-workflow-xyz",
 				inputs: {},
 				action: "run",
-				state: workflowRouterState(),
 			},
-			ctx,
+			{},
 		);
 		const r = result as { action: "run"; runId: string; status: string; error?: string };
 		assert.equal(r.status, "failed");
-		assert.match(r.error ?? "", /registered workflowId/);
+		assert.match(r.error ?? "", /not found/i);
 		assert.equal(r.runId, "");
-		assert.equal(inference.mock.calls.length, 0);
 		assert.deepEqual(
 			defaultStore.runs().map((run) => run.id),
 			runsBefore,

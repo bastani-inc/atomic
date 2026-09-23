@@ -17,7 +17,6 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 
 afterEach(() => setDurableBackend(undefined));
 
@@ -53,10 +52,8 @@ for (const outcome of ["resolve", "reject"] as const) {
 		const caller = new AbortController();
 		const reason = new Error("user interrupted startup");
 		let acceptedId: string | undefined;
-		const context = workflowRouterContext(definition.normalizedName);
-		const routed = await execute({ action: "route", state: workflowRouterState() }, context);
-		assert.ok("workflowId" in routed && routed.workflowId);
-		const pending = execute({ action: "run", workflowId: routed.workflowId }, context, caller.signal, (id) => {
+		const context = {};
+		const pending = execute({ action: "run", workflow: definition.normalizedName }, context, caller.signal, (id) => {
 			acceptedId = id;
 		});
 		const rejected = assert.rejects(pending, (error) => error === reason);

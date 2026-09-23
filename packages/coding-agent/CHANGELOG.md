@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The model-facing workflow tool no longer has a route action or a routing classifier step: the agent decides whether a workflow fits and runs a registered workflow by name. The router model setting now applies only to automatic workflow-stage and subagent model selection.
+
 ### Added
 
 - Added inherited Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna support for GitHub Copilot.

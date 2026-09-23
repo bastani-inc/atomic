@@ -202,12 +202,10 @@ export function expectRegisteredCommand(commands: RegisteredCommand[], name: str
 }
 
 export const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
-	"Call workflow route",
-	"actual request",
-	"registered workflow ID",
-	"If it returns none, continue inline",
-	"invalid inputs can be corrected using the same ID",
-	"No name override or omitted-action launch",
+	"Decide yourself whether a workflow fits",
+	"registered workflow name",
+	"Work inline for brainstorming",
+	"invalid inputs fail without launching",
 	"custom TypeScript workflow",
 	"inline with normal coding tools",
 	"discover with list/get/inputs",

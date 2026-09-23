@@ -35,7 +35,6 @@ import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/sta
 import type { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.ts";
 import type { Store } from "../../packages/workflows/src/shared/store.ts";
 import { readText } from "../helpers/runtime.ts";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 
 beforeEach(() => {
 	resetSessionScopedSingletonPreAdoptionForTests();
@@ -587,22 +586,15 @@ test.sequential(
 			assert.equal(beforeLaunchReload.status, "ok", beforeLaunchReload.error);
 
 			const widgetCallStart = widget.calls.length;
-			const routed = await executeWorkflowTool(
-				firstExtension,
-				"agent-route",
-				{ action: "route", state: workflowRouterState() },
-				{ ...workflowRouterContext("global-publish-watch"), ...context },
-			);
-			assert.equal(routed.status, "reserved", routed.error);
 			const launched = await executeWorkflowTool(
 				firstExtension,
 				"agent-run",
 				{
 					action: "run",
-					workflowId: routed.workflowId,
+					workflow: "global-publish-watch",
 					inputs: { label: "agent" },
 				},
-				{ ...workflowRouterContext("global-publish-watch"), ...context },
+				context,
 			);
 			const jobOwner = trackWorkflowJob(first, launched.runId, trackedRunIds, trackedJobs);
 			assert.equal(launched.action, "run");

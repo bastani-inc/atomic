@@ -23,7 +23,6 @@ import {
 } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;
@@ -93,19 +92,10 @@ describe("public workflow tool request deadline", () => {
 		});
 		const runtime = createExtensionRuntime({ definitions: [definition] });
 		const tool = registeredTool(makeExecuteWorkflowTool(runtime, () => undefined));
-		const ctx = workflowRouterContext(definition.normalizedName);
-		const route = await tool.execute(
-			"route",
-			{ action: "route", state: workflowRouterState() },
-			undefined,
-			undefined,
-			ctx,
-		);
-		assert.equal(route.details.action, "route");
-		assert.ok("workflowId" in route.details);
+		const ctx = {};
 		const pending = tool.execute(
 			"auth-rejection",
-			{ action: "run", workflowId: route.details.workflowId },
+			{ action: "run", workflow: definition.normalizedName },
 			undefined,
 			undefined,
 			ctx,
@@ -168,19 +158,10 @@ describe("public workflow tool request deadline", () => {
 			});
 			const runtime = createExtensionRuntime({ definitions: [definition] });
 			const tool = registeredTool(makeExecuteWorkflowTool(runtime, () => undefined));
-			const ctx = workflowRouterContext(definition.normalizedName);
-			const route = await tool.execute(
-				"route",
-				{ action: "route", state: workflowRouterState() },
-				undefined,
-				undefined,
-				ctx,
-			);
-			assert.equal(route.details.action, "route");
-			assert.ok("workflowId" in route.details);
+			const ctx = {};
 			let settled = false;
 			const pending = tool
-				.execute(mode, { action: "run", workflowId: route.details.workflowId }, undefined, undefined, ctx)
+				.execute(mode, { action: "run", workflow: definition.normalizedName }, undefined, undefined, ctx)
 				.then((result) => {
 					settled = true;
 					return result;
@@ -420,20 +401,11 @@ describe("public workflow tool request deadline", () => {
 			}
 			return result;
 		});
-		const ctx = workflowRouterContext(definition.normalizedName);
-		const route = await tool.execute(
-			"route",
-			{ action: "route", state: workflowRouterState() },
-			undefined,
-			undefined,
-			ctx,
-		);
-		assert.equal(route.details.action, "route");
-		assert.ok("workflowId" in route.details);
+		const ctx = {};
 
 		const pending = tool.execute(
 			"delayed-acknowledgement",
-			{ action: "run", workflowId: route.details.workflowId },
+			{ action: "run", workflow: definition.normalizedName },
 			undefined,
 			undefined,
 			ctx,
@@ -499,10 +471,12 @@ describe("public workflow tool request deadline", () => {
 		const runtime = createExtensionRuntime({ definitions: [definition], store });
 		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
 		const controller = new AbortController();
-		const ctx = workflowRouterContext(definition.normalizedName);
-		const route = await execute({ action: "route", state: workflowRouterState() }, ctx);
-		assert.equal(route.action, "route");
-		const acknowledgement = await execute({ action: "run", workflowId: route.workflowId }, ctx, controller.signal);
+		const ctx = {};
+		const acknowledgement = await execute(
+			{ action: "run", workflow: definition.normalizedName },
+			ctx,
+			controller.signal,
+		);
 		assert.equal(acknowledgement.action, "run");
 		assert.equal("status" in acknowledgement ? acknowledgement.status : undefined, "running");
 		await bodyEntered.promise;

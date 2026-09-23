@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
 import { testRunId } from "../helpers/run-id.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -80,11 +79,8 @@ describe("tool run-control actions", () => {
 			registry: createRegistry([def]),
 		});
 		const handler = makeExecuteWorkflowTool(runtime, () => undefined);
-		const ctx = workflowRouterContext("tool-answers-ctx-ui-input");
-		const route = await handler({ action: "route", state: workflowRouterState() }, ctx);
-		assert.equal(route.action, "route");
-
-		const started = await handler({ action: "run", workflowId: route.workflowId }, ctx);
+		const ctx = {};
+		const started = await handler({ action: "run", workflow: "tool-answers-ctx-ui-input" }, ctx);
 		assert.equal(started.action, "run");
 		const runId = (started as { runId: string }).runId;
 		assert.ok(runId);

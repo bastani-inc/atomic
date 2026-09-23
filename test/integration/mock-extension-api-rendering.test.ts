@@ -210,9 +210,9 @@ describe("renderCall — all action branches", () => {
 		assert.ok(renderCall({ workflow: "wf-a", action: "inputs" }).includes("wf-a"));
 	});
 
-	test("action='run' does not pre-announce a workflow before routing", () => {
+	test("action='run' names the workflow when supplied", () => {
 		assert.equal(renderCall({ action: "run" }), "workflow: run");
-		assert.equal(renderCall({ workflow: "wf-b", action: "run" }), "workflow: run");
+		assert.equal(renderCall({ workflow: "wf-b", action: "run" }), 'workflow: run "wf-b"');
 	});
 
 	test("action='pause' includes runId", () => {
@@ -232,7 +232,7 @@ describe("renderCall — all action branches", () => {
 	});
 
 	test("defaults to 'run' when action omitted", () => {
-		assert.equal(renderCall({ workflow: "wf-c" }), "workflow: run");
+		assert.equal(renderCall({ workflow: "wf-c" }), 'workflow: run "wf-c"');
 	});
 
 	test("respects host render width", () => {

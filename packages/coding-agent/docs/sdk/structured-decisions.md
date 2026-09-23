@@ -7,13 +7,13 @@ description: Make a schema-validated structured decision without starting an age
 
 Use `inferStructuredOutput()` from `@bastani/atomic` when an SDK integration needs one semantic decision before it performs an action. It returns a schema-validated value, the requested and responding model identities, and input/output token counts. It does not execute tools, start a session, or authorize an action.
 
-`inferStructuredOutput()` takes an explicit inference model and never reads `routerModel`. The `structured_output` tool continues to use its session's model. Neither API changes the selected chat model. [Model-invoked workflow launches](/workflows/operations#model-invoked-launch-routing) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection) use the shared router entrypoint below.
+`inferStructuredOutput()` takes an explicit inference model and never reads `routerModel`. The `structured_output` tool continues to use its session's model. Neither API changes the selected chat model. [Workflow-stage](/workflows/operations#automatic-stage-models) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection) selection use the shared router entrypoint below.
 
 ## Select the inference model
 
 For a general structured-output call, pass `model: { kind: "chat", fullId, model }` with a concrete model from the current registry, or `model: { kind: "jev", fullId: "typesafe-ai/jev-latest" }`. For Jev through a gateway, use any `fullId` from `getStructuredOutputProviders()`: `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or `opencode/jev-1.13-free`. Setting `routerModel` or exporting a TypeSafe key does not change this explicit selection.
 
-`inferRouterDecision()` is the shared entrypoint for prerequisite workflow selection and automatic subagent/workflow-stage model selection. Only this entrypoint consults `routerModel` in [settings.json](/settings#routermodel). It takes `settings`, `modelRegistry` and the invocation-time `currentModel` instead of an explicit inference `model`. Resolution is:
+`inferRouterDecision()` is the shared entrypoint for automatic subagent/workflow-stage model selection. Only this entrypoint consults `routerModel` in [settings.json](/settings#routermodel). It takes `settings`, `modelRegistry` and the invocation-time `currentModel` instead of an explicit inference `model`. Resolution is:
 
 1. A nonempty explicit, exact `routerModel` value.
 2. Otherwise `typesafe-ai/jev-latest` when Jev credentials are configured through `/login typesafe-ai` or `TYPESAFE_API_KEY`.
@@ -120,7 +120,7 @@ Jev documents limits of 32k tokens for state plus the longest question, and 64k 
 
 The structured-decision transport never trims supplied state or sends an indivisible comparison that exceeds its local budget. Router calls use that state with the current chat model, including for pinned Jev; general structured-output calls fail. A provider `max_tokens_exceeded` response still uses the same routing fallback policy without repeating the rejected request. Supply concise context or select a chat model with enough capacity when needed.
 
-Automatic subagent and workflow-stage model selection prepares a [bounded task excerpt](/subagents/reference#automatic-model-selection) before calling this API. That excerpt preserves protected spans and does not replace the execution prompt. Workflow-launch routing and direct SDK decision calls do not apply this task-excerpt policy.
+Automatic subagent and workflow-stage model selection prepares a [bounded task excerpt](/subagents/reference#automatic-model-selection) before calling this API. That excerpt preserves protected spans and does not replace the execution prompt. Direct SDK decision calls do not apply this task-excerpt policy.
 
 Jev response bodies are limited to 1 MiB per request. Atomic validates that every question receives a known Choice option; reported model, usage, probabilities and confidence are advisory and never reject an otherwise valid decision.
 

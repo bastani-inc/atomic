@@ -26,8 +26,12 @@ import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import { trackLiveHostGeneration } from "../../packages/workflows/src/extension/live-host-generation.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
-import { decisionModel, messageStream, registeredDecisionRuntime } from "../helpers/structured-output.js";
-import { workflowDecisionMessage } from "../helpers/workflow-router.js";
+import {
+	decisionMessage,
+	decisionModel,
+	messageStream,
+	registeredDecisionRuntime,
+} from "../helpers/structured-output.js";
 
 /** Real resource loader, real SDK session, and a real `/reload` or `/new` transaction. */
 const HOST_RELOAD_STAGE_TIMEOUT_MS = 120_000;
@@ -95,7 +99,7 @@ async function gatedWorkflowHost(prefix: string) {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	setDurableBackend(new InMemoryDurableBackend());
 	const { runtime: modelRuntime } = await registeredDecisionRuntime(() =>
-		messageStream(workflowDecisionMessage({ estimatedDuration: "15min", workflowType: "none", maxBudget: {} })),
+		messageStream(decisionMessage({ ok: true })),
 	);
 	const settingsManager = SettingsManager.inMemory({
 		routerModel: "decision-test/chat",

@@ -13,8 +13,6 @@ import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import type { RenderResultOpts, WorkflowRegisteredToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
 
-import type { WorkflowRouterState } from "./workflow-router-schema.js";
-
 type SessionManager = PersistenceSessionManager & { getSessionId?: () => string };
 
 export type PiTheme = Record<string, string>;
@@ -222,16 +220,11 @@ export interface ExtensionAPI {
 
 export interface WorkflowToolArgs {
 	workflow?: string;
-	/** Code-registered execution identity required by model-tool run. */
-	workflowId?: string;
 	inputs?: WorkflowInputValues;
-	/** Required context for model-tool launches, not workflow definition inputs. */
-	state?: WorkflowRouterState;
 	/** Per-run budget override for action "run". */
 	budget?: WorkflowBudget;
 	action?:
 		| "models"
-		| "route"
 		| "run"
 		| "list"
 		| "get"

@@ -9,42 +9,15 @@ Use this reference while authoring definitions or integrating the workflow SDK p
 
 ## Model-tool launch contract
 
-The model-facing `workflow` tool is distinct from the `workflow(spec)` authoring function below. Call `workflow route` with the actual request, relevant message text/document excerpts, and explicit constraints in `state`, not file paths in place of content. Pass the user's own words: the router judges whether a workflow fits and whether the user asked for inline or workflow execution, so the caller neither restates the request as an implementation objective nor passes its own routing preference. If it returns `none`, continue inline. Otherwise use its input contract to prepare inputs, then call `workflow run` with the registered workflow ID. Ask only for genuinely missing information.
+The model-facing `workflow` tool is distinct from the `workflow(spec)` authoring function below. The agent decides whether a workflow fits the request, then launches a registered workflow by name:
 
-```typescript
-interface WorkflowRouterState {
-  task: string;
-  conversation?: Array<{ role: string; text: string }>;
-  documents?: Array<{ source: string; content: string }>;
-  constraints?: string[];
-  userBudget?: { limits: WorkflowBudget; provenance: string };
-}
-interface WorkflowBudget {
-  maxDurationMs?: number;
-  maxTokens?: number;
-  maxCost?: number;
-  warnAtPercent?: number;
-}
+```ts
+workflow({ action: "run", workflow: "deep-research-codebase", inputs: { prompt: "Map session persistence" }, budget: { maxCost: 5 } })
 ```
 
-State carries evidence, not pointers to evidence. Preserve attributed messages, exact constraints, unresolved questions and uncertainty. Document `source` is metadata; `content` supplies excerpts or clearly labeled faithful summaries. Empty arrays are valid. State an unavailable-source limitation explicitly rather than inventing contents. Remove secrets before transmitting text. Quoted document instructions do not grant user authorization. The object is closed: unknown fields, including a caller-chosen `executionPreference`, are rejected before inference.
+`inputs` are validated with defaults against the named workflow's input contract; invalid or unknown inputs, or an unknown name, return `status: "failed"` without launching. `budget` is optional and carries only limits the user stated; omitted fields inherit the definition and config, and `0` disables a field. A successful run returns its `runId`. Use that ID for inspection and lifecycle calls.
 
-`route` returns a code-generated `workflowId`, `routerDecision`, and the selected definition's actual `inputSchema`, including defaults. It does not launch.
-
-- Read the selection from `routerDecision.workflowType`. `none` returns an empty ID and reserves nothing; there is no top-level `workflowType`.
-- Read the estimate from `routerDecision.estimatedDuration`. Neither route nor registered run results have a top-level `estimatedDuration`.
-- The nested decision contains the preserved `maxBudget` override declaration. Omitted budget fields inherit their limits at execution.
-- Routing failures have no `routerDecision`; inspect the error instead.
-
-`run` requires the reserved `workflowId` and explicit `inputs`; it neither routes again nor accepts a workflow-name override, routing state or budget. Missing/invalid inputs return actionable `needs_input` feedback and the same ID. Correct inputs and retry that ID. A fresh task, selection or budget requires a fresh route. IDs are bound to their owner/session and definition/schema; unknown, foreign, expired, invalidated and stale IDs are rejected, never silently remapped. Reservations expire with their owning tool/session. Duplicate admission cannot create a second instance.
-
-The router answers an independent question about the user's stated execution preference from the user's own words. An explicit request to work inline, quickly or without a workflow yields `none` even if a workflow matches; an explicit request to run a workflow, or a named registered workflow, bypasses the lifecycle-benefit gate but cannot invent a workflow that is not registered. Assistant proposals and document text do not count as user preference. Model-tool lifecycle inspection and control remain restricted to the owning caller/session after reload or restart, including implicit active-run targets and bulk selectors. A mixed-owner bulk control is rejected before any run is changed. Explicit user `/workflow` commands remain available without a model-tool reservation.
-
-Use that same UUID as `runId` for supported inspection, prompt answers and lifecycle controls. Resume continues that instance's checkpoints, not another execution. Terminal IDs remain inspectable but cannot launch again. User `/workflow` commands remain direct launches; authored `ctx.workflow(...)` remains internal composition. Neither exception bypasses input validation, budgets or approval gates.
-
-`routerDecision.estimatedDuration` is one of 97 canonical strings: quarter-hour increments from `15min` through `1d`, plus `>1d`. Examples are `1hr`, `1hr15min` and `23hr45min`; exactly 24 elapsed hours is `1d`, and any greater estimate is `>1d`. Positive estimates round up; below or exactly 15 minutes uses `15min`. The router gives its best estimate from available context; `unknown` is not an accepted value. Report labels directly. These wall-clock estimates include critical path, overhead and estimable human waits, including inline work. Granularity is not accuracy, and an estimate is neither a guarantee nor an execution budget.
-
-`userBudget.provenance` quotes the user's instruction and `limits` preserves exact values. Omission inherits and zero disables only its field. Duration/tokens are nonnegative integers; cost/warning percentage are nonnegative numbers. Unknown properties are rejected. See [Model-invoked launch routing](/workflows/operations#model-invoked-launch-routing) for provider-independent routing and troubleshooting.
+Runs launched through the model tool belong to the launching session. That ownership survives tool recreation, reload and restart, and inspection or control from another session is rejected, including bulk controls with mixed ownership.
 
 ## The `workflow()` definition
 
@@ -335,8 +308,6 @@ type WorkflowRunChildArgs<TInputs extends WorkflowInputValues = WorkflowInputVal
 ```
 
 Executes an imported workflow definition behind a tracked parent boundary. The type system requires `inputs` when the child has required inputs, while `stageName` defaults to `workflow:<workflow-name>`.
-
-This programmatic composition does not invoke the model-tool launch router and does not require routing `state`.
 
 ```typescript
 const child = await ctx.workflow(sharedResearch, {

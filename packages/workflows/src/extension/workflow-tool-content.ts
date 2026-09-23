@@ -256,7 +256,6 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 		case "statusDetail":
 		case "inputs":
 		case "get":
-		case "route":
 		case "run":
 		case "models":
 			return stringifyWorkflowToolResult(result);

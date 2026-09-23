@@ -15,7 +15,7 @@ On a fresh install with no prior startup state, Atomic shows a one-time explanat
 
 The normal Atomic input is ready from the start. Type a message, run `/login` if no provider is connected, or launch a workflow command. No separate onboarding step is required.
 
-Call `workflow route` with the actual request, relevant message text/document excerpts, and explicit constraints in `state`, not file paths in place of content. If it returns `none`, continue inline. Otherwise use its input contract to prepare inputs, then call `workflow run` with the registered workflow ID. Ask only for genuinely missing information.
+The agent decides whether a workflow fits. Well-defined, authorized work that benefits from durable stages, checkpoints, dependencies, recovery, review loops or approval gates runs as a workflow; brainstorming, discussion, unclear goals, simple bounded work, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
 Atomic can discover and run named builtin, project, user, and package workflows; author a rich custom TypeScript `workflow({...})` inline; and compositionally import reusable workflow definitions—including builtins from `@bastani/atomic/workflows/builtin`—into parent workflows with `ctx.workflow(...)`. Nested children can nest again within `maxDepth`, so custom graphs can combine proven research, implementation, design, verification, and approval workflows instead of copying them. They can also classify and branch, dynamically fan out and synthesize artifacts, run adversarial repair cycles, tournament-rank candidates, and loop until checks pass with explicit bounds.
 
@@ -81,7 +81,7 @@ Use goal to update the CLI docs, include one example, run the docs build, and fi
 Use ralph to research and implement specs/rate-limit.md, then review and repair it within three loops.
 ```
 
-For natural-language launches, Atomic follows the route-then-run contract above and preserves your explicit approval gates. Direct user `/workflow <name>` commands launch the named workflow without a prior route reservation. Goal provides a durable ledger and receipt-backed reviewer gate; Ralph provides a research-first implementation/review loop. Custom graphs can add domain-specific deterministic checks and bounded repairs.
+For natural-language launches, Atomic decides between inline work and a workflow as described above and preserves your explicit approval gates. Direct user `/workflow <name>` commands launch the named workflow. Goal provides a durable ledger and receipt-backed reviewer gate; Ralph provides a research-first implementation/review loop. Custom graphs can add domain-specific deterministic checks and bounded repairs.
 
 ### Monitor and steer a run
 

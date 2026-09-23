@@ -496,7 +496,7 @@ For router-mode discovery, load/unload management, and Hugging Face downloads wi
 
 ## TypeSafe Jev
 
-`typesafe-ai/jev-latest`, `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` are built-in structured-decision models, not chat or tool-calling models. They are available for [workflow launch routing](/workflows/operations#model-invoked-launch-routing) and [SDK structured decisions](/sdk/structured-decisions), not `/model`, chat `--model`, or child execution model fields. SDK integrations can inspect their supported capabilities with `getStructuredOutputProviders()`.
+`typesafe-ai/jev-latest`, `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` are built-in structured-decision models, not chat or tool-calling models. They are available for automatic workflow-stage and subagent model selection and [SDK structured decisions](/sdk/structured-decisions), not `/model`, chat `--model`, or child execution model fields. SDK integrations can inspect their supported capabilities with `getStructuredOutputProviders()`.
 
 Use `/login typesafe-ai` to save an API key in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key, just as for other API-key providers. `/logout` removes the saved key; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
 
@@ -506,7 +506,7 @@ Vercel AI Gateway and OpenCode Zen resell Jev on TypeSafe-compatible `systemone`
 
 Replace the former direct ID `typesafe-ai/jev` with `typesafe-ai/jev-latest` in saved router settings and SDK calls. Direct TypeSafe credentials and the wire model `jev-latest` are unchanged.
 
-With an empty `routerModel`, configured Jev credentials select Jev for prerequisite workflow and subagent-auto routing. An explicit router selection takes precedence. General SDK structured-output requests select their inference model explicitly. This does not change the `structured_output` tool's model. User-issued `/workflow` commands bypass launch routing.
+With an empty `routerModel`, configured Jev credentials select Jev for workflow-stage and subagent `model: "auto"` selection. An explicit router selection takes precedence. General SDK structured-output requests select their inference model explicitly. This does not change the `structured_output` tool's model. User-issued `/workflow` commands launch directly.
 
 Routers can repair malformed or schema-invalid answers up to three times after the initial attempt, without a structured-decision deadline. Cancel the request to stop waiting; independent provider and enclosing tool-request limits still apply. Generic SDK decisions remain one-shot. Large choices can require several requests, increasing latency and usage; state is never trimmed automatically. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits) before sending large candidate lists or context.
 

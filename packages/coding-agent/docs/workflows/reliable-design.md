@@ -2,15 +2,15 @@
 
 Use this guide to turn an objective into an acyclic, evidence-producing workflow with explicit contracts, context boundaries, verification, and stop conditions. Read [Custom Workflow Authoring](/workflows/authoring) first if you have not built a workflow definition yet.
 
-Call `workflow route` with the actual request, relevant message text/document excerpts, and explicit constraints in `state`, not file paths in place of content. If it returns `none`, continue inline. Otherwise use its input contract to prepare inputs, then call `workflow run` with the registered workflow ID. Ask only for genuinely missing information.
+The agent decides whether a workflow fits. Well-defined, authorized work that benefits from durable stages, checkpoints, dependencies, recovery, review loops or approval gates runs as a workflow; brainstorming, discussion, unclear goals, simple bounded work, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
-The router owns all semantic selection. Preserve the user's actual words, uncertainty and preferences in neutral state; do not turn discussion into an implementation objective. User-issued `/workflow` commands launch directly and authored `ctx.workflow(...)` remains internal composition. For workflow authoring, carry the [domain/environment verification and media evidence contract](/workflows/verification) into worker, reviewer and final handoff prompts.
+Preserve the user's actual words, uncertainty and preferences; do not turn discussion into an implementation objective. User-issued `/workflow` commands launch directly and authored `ctx.workflow(...)` remains internal composition. For workflow authoring, carry the [domain/environment verification and media evidence contract](/workflows/verification) into worker, reviewer and final handoff prompts.
 
 ## Choosing an Execution Shape
 
-The following architecture pass applies only to deliberate definition authoring and composition, not to model-tool selection. Authoring a definition adds a candidate, not a launch commitment. `run` uses the registered selection and explicit inputs without routing again; do not resend routing state.
+The following architecture pass applies only to deliberate definition authoring and composition. Authoring a definition adds a candidate, not a launch commitment.
 
-> **Authored multi-item orchestration:** Enumerate requested implementation items and prove their dependencies. For deliberately composed execution, keep independent items in bounded concurrent top-level runs with explicit worktrees and root failure boundaries; preserve ordered composition only for real code, artifact, contract, decision, approval, or merged-result dependencies. This does not preselect model-tool routing outcomes.
+> **Authored multi-item orchestration:** Enumerate requested implementation items and prove their dependencies. For deliberately composed execution, keep independent items in bounded concurrent top-level runs with explicit worktrees and root failure boundaries; preserve ordered composition only for real code, artifact, contract, decision, approval, or merged-result dependencies.
 
 The shapes, cheapest first:
 
@@ -79,11 +79,11 @@ node | prerequisites | duration range and source | shared resources | evidence n
 - Start long CI/check waits when their candidate is ready and overlap independent review, documentation, or handoff preparation that neither mutates that candidate nor needs its check results. Use supported concurrency, keep workflow-owned CI launch/wait/result checks in durable `ctx.tool` nodes with finite timeouts and cancellation, and join required results before acceptance, merge, or publication. Background admission is not check completion.
 - Record the checked commit or artifact identity. Later edits invalidate affected results, so rerun those checks for the new candidate. Never reuse a green check from an older commit as proof for a changed head. Do not alter repository protections, required checks, or concurrency limits to shorten the estimate.
 
-For model-tool launches, report the workflow choice and `estimatedDuration` only after the router returns. The router estimates a wall-clock range from task and catalog context; it is not measured timing, a guarantee or a `budget` override. Preserve brainstorming and unclear interactive intent in neutral state instead of inventing an objective or pre-announcing a workflow.
+When you decide to run a workflow, give a brief wall-clock estimate from available project evidence such as CI timings, test history and prior workflow runs. Say which inputs are unknown. An estimate is not measured timing, a guarantee or a `budget` override. Preserve brainstorming and unclear interactive intent instead of inventing an objective or pre-announcing a workflow.
 
-Proceed with inherited budget limits without asking the user to choose a budget before each launch; preserve existing budget limits and approval gates. When the user does state a limit, pass only the fields they named in `route`'s `state.userBudget` with exact provenance. Omission inherits the workflow declaration and config; zero disables only the specified field. `run` uses those registered constraints, not a new budget choice. Never convert an estimate into a cap.
+Proceed with inherited budget limits without asking the user to choose a budget before each launch; preserve existing budget limits and approval gates. When the user does state a limit, pass only the fields they named as the `run` call's `budget`. Omission inherits the workflow declaration and config; zero disables only the specified field. Never convert an estimate into a cap.
 
-For example, with hypothetical timings, 6 minutes of implementation followed by independent 12-minute CI and 4-minute read-only review branches, then a 1-minute handoff, has a 19-minute critical path, not a 23-minute sum. Queue delays, repairs, and human approval can extend that. Authored scheduling analysis must cite actual project evidence rather than reuse these illustrative numbers; it does not replace the model-tool router's `estimatedDuration`.
+For example, with hypothetical timings, 6 minutes of implementation followed by independent 12-minute CI and 4-minute read-only review branches, then a 1-minute handoff, has a 19-minute critical path, not a 23-minute sum. Queue delays, repairs, and human approval can extend that. Authored scheduling analysis must cite actual project evidence rather than reuse these illustrative numbers.
 
 Revise the remaining-time estimate at lifecycle updates only when new evidence materially changes the path. Keep the normal heartbeat cadence and end-turn/no-polling rules. At completion, report actual elapsed time against the estimate and identify the main bottleneck to improve the next schedule. These are agent design/reporting instructions, not an automatic scheduler or ETA feature.
 
@@ -291,25 +291,15 @@ export default workflow({
 
 The workflow binding creates or validates the reusable worktree before `run` starts. The first durable tool then creates or checks out the requested feature branch, so worktree setup's detached checkout never becomes the implementation branch. The item run owns branch setup → implementation → bounded review/repair → deterministic checks → push → PR creation. A failed review or check fails that item before push/PR.
 
-Route each item with its actual request and constraints. Inspect the returned `inputSchema`, then prepare inputs and run its registered ID. Reservations do not count as executing runs. Admit no third run until one ends to preserve the bound of 2. If routing returns `none`, continue that item inline. Explicit user `/workflow` commands remain available for deliberate exact-name launches.
+For each item, inspect the workflow's inputs with `workflow({ action: "inputs", workflow: "<name>" })`, then prepare inputs and launch with `workflow({ action: "run", workflow: "<name>", inputs: {...} })`. Item runs are top-level and independent. Admit no third run until one ends to preserve the bound of 2. Explicit user `/workflow` commands remain available for deliberate exact-name launches.
 
 ```ts
-workflow({ action: "route", state: {
-  task: "Fix cache-key normalization for issue #2101 and create its PR after validation.",
-  constraints: ["Use ../atomic-issue-2101 and branch fix/2101-cache-key; at most two concurrent item runs."],
-}})
-// If the returned inputSchema declares these inputs:
-workflow({ action: "run", workflowId: "returned-id-for-2101", inputs: {
+workflow({ action: "run", workflow: "issue-to-pr", inputs: {
   issue: "#2101 fix cache-key normalization",
   git_worktree_dir: "../atomic-issue-2101", base_ref: "origin/main", pr_base: "main",
   branch: "fix/2101-cache-key", checks: [["npm", "run", "test:unit", "--", "test/unit/cache-key.test.ts"]],
 }})
-
-workflow({ action: "route", state: {
-  task: "Correct CLI help output for issue #2102 and create its PR after validation.",
-  constraints: ["Use ../atomic-issue-2102 and branch fix/2102-cli-help; at most two concurrent item runs."],
-}})
-workflow({ action: "run", workflowId: "returned-id-for-2102", inputs: {
+workflow({ action: "run", workflow: "issue-to-pr", inputs: {
   issue: "#2102 correct CLI help output",
   git_worktree_dir: "../atomic-issue-2102", base_ref: "origin/main", pr_base: "main",
   branch: "fix/2102-cli-help", checks: [["npm", "run", "test:unit", "--", "test/unit/cli-help.test.ts"]],
@@ -342,16 +332,16 @@ The factory self-prompt is: **enumerate → inspect and classify dependencies �
 
 ### Prompting the choice
 
-Humans can provide preferences for the router or deliberately request definition authoring:
+Humans can steer the agent's choice or deliberately request definition authoring:
 
-- **Name the shape or installed workflow.** Preserve "Do this quickly", "do this inline", "use subagents to investigate", or "write a custom workflow for this" as attributed user intent in neutral state. The router interprets these preferences; the caller does not turn them into semantic branches.
+- **Name the shape or installed workflow.** "Do this quickly", "do this inline", "use subagents to investigate", "run ralph", or "write a custom workflow for this" tell the agent how to run the work. The agent honors them.
 - **State acceptance criteria.** Verbatim criteria make the objective provable and define reviewer and reducer contracts.
 - **State the loop.** "Iterate until tests pass" or "review and fix until approved" defines a hard workflow stop condition.
 - **State the evidence.** A QA video, test output, generated artifact, or reviewer sign-off tells the graph which gates it needs.
 - **State the boundary.** "Work in a separate worktree", "do not create a PR", or "stop after implementation" separates implementation from final actions.
 - **State the queue policy.** Say how to split, order, isolate, and bound queued items; otherwise Atomic runs the [dependency-triage and bounded-dispatch playbook](/workflows/reliable-design#task-queues-and-software-factories) before implementation. Ordinary list order and per-item "create a PR after" wording do not create a cross-item dependency.
 
-Absent these controls, preserve that absence in neutral state rather than fabricating preferences. The router decides workflow suitability and selection; authoring guidance does not override its result.
+Absent these controls, the agent decides workflow suitability and selection from the task and the user's words, without fabricating preferences.
 
 ## The Run Contract
 
@@ -450,12 +440,7 @@ The tags are plain text, so they work anywhere text becomes a stage prompt — y
 **Run inputs.** Workflows inject their inputs into stage prompts, so anything you tag in an input is inherited by the stages that receive it:
 
 ```
-workflow({ action: "route", state: {
-  task: "Research and implement issue #2170. Do not touch the release pipeline.",
-  documents: [{ source: "issue #2170", content: issueBody }],
-}})
-// Inspect inputSchema before preparing these inputs:
-workflow({ action: "run", workflowId: "returned-execution-id", inputs: {
+workflow({ action: "run", workflow: "ralph", inputs: {
   prompt: "<keepContext>\nResearch and implement issue #2170. Do not touch the release pipeline.\n</keepContext>\n\n" + issueBody,
   acceptance_criteria: "<keepContext>\n1. ...\n2. ...\n</keepContext>",
 }})

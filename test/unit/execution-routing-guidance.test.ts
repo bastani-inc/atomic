@@ -36,30 +36,31 @@ const workflowDocumentationPaths = [
 	"README.md",
 ];
 
-describe("route-then-registered-run guidance", () => {
-	// #3106: inspect each caller location, not concatenated docs where a new contract
+describe("agent-decided workflow execution guidance", () => {
+	// Inspect each caller location, not concatenated docs where a new contract
 	// elsewhere can mask an obsolete opening. Keep authoring/lifecycle checks below.
 	const callerSections = [
 		["packages/workflows/README.md", "", "### Custom workflow directories"],
 		["packages/coding-agent/docs/getting-started/first-session.md", "## First session", "## Verify the session"],
 		["docs/workflow-playbook.md", "## The core loop", "## Prompt anatomy"],
-		["packages/coding-agent/docs/workflows/reliable-design.md", "", "### The self-prompt"],
+		["packages/coding-agent/docs/workflows/reliable-design.md", "", "## Choosing an Execution Shape"],
+		["packages/coding-agent/docs/workflows.md", "## When to Use Workflows", "| User need | Use |"],
 	] as const;
 	for (const [path, start, end] of callerSections) {
-		test(`${path} caller entry teaches route then registered run`, async () => {
+		test(`${path} caller entry lets the agent decide and run by workflow name`, async () => {
 			const text = await readRepositoryFile(path);
 			const from = text.indexOf(start);
 			const to = text.indexOf(end, from);
 			assert.ok(from >= 0 && to > from, `${path}: caller section exists`);
 			const section = text.slice(from, to).replaceAll("`", "");
 			for (const contract of [
-				/Call workflow route.*actual request.*message text\/document excerpts.*constraints.*state/,
-				/not file paths in place of content/,
-				/If it returns none, continue inline/,
-				/input contract.*prepare inputs.*workflow run.*registered workflow ID/,
+				/The agent decides whether a workflow fits/,
+				/explicit request to work inline, quickly or without a workflow stays inline/,
+				/input contract.*workflow run with the registered workflow name and inputs/,
 				/Ask only for genuinely missing information/,
 			])
 				assert.match(section, contract, path);
+			assert.doesNotMatch(section, /workflow route|workflowId|routerDecision/, path);
 		});
 	}
 	for (const path of workflowDocumentationPaths) {
@@ -75,6 +76,7 @@ describe("route-then-registered-run guidance", () => {
 				/task earns a workflow|ten[- ]call rule|\d+[–-]\d+ total|hard signal overrides/i,
 				/model-tool run[^\n]*supply[^\n]*state/i,
 				/workflow plus inputs/i,
+				/workflow route|action: "route"|routerDecision|estimatedDuration|state\.userBudget/,
 			])
 				assert.doesNotMatch(text, obsolete, path);
 		});
@@ -88,18 +90,18 @@ describe("route-then-registered-run guidance", () => {
 		assert.doesNotMatch(section, /(?:fresh|new) run id|notice names both/i);
 		assert.match(section, /resume.*same (?:workflow|execution|run) id/i);
 	});
-	// #3106: no caller selection heuristics or pre-routing rituals survive the clean break.
-	test("uses one concise content-bearing routing contract", () => {
+	test("lets the agent decide inline versus workflow and launch by registered name", () => {
 		for (const phrase of [
-			"Call workflow route",
-			"actual request",
-			"not file paths in place of content",
-			"If it returns none, continue inline",
+			"Decide yourself whether a workflow fits",
+			"Work inline for brainstorming",
+			"Honor an explicit user request for a named workflow",
+			"call workflow run with the registered workflow name",
 			"input contract",
-			"registered workflow ID",
 			"Ask only for genuinely missing information",
 		])
 			expect(modelVisibleRouting).toContain(phrase);
+		for (const removed of ["workflow route", "workflowId", "routerDecision", "estimatedDuration", "state.userBudget"])
+			expect(modelVisibleRouting).not.toContain(removed);
 		for (const obsolete of [
 			"Budget reconnaissance",
 			"roughly ten exploratory tool calls",
@@ -116,7 +118,6 @@ describe("route-then-registered-run guidance", () => {
 			"reload",
 			"ctx.workflow",
 			"consuming only declared outputs",
-			"inputSchema",
 			"approval",
 		])
 			expect(modelVisibleRouting).toContain(phrase);
@@ -472,10 +473,7 @@ describe("route-then-registered-run guidance", () => {
 		}
 	});
 
-	test("selection criteria live in the router, not caller trigger lists", async () => {
-		const router = await readRepositoryFile("packages/workflows/src/extension/workflow-router.ts");
-		expect(router).toContain("interaction");
-		expect(router).toContain("complexity");
+	test("keeps selection guidance free of caller trigger lists", () => {
 		expect(modelVisibleRouting).not.toContain("independent slices → Fan-out-and-synthesize");
 	});
 
@@ -529,6 +527,8 @@ describe("route-then-registered-run guidance", () => {
 			"gitWorktreeDir",
 			"concurrency",
 			"failFast",
+			"workflowId",
+			"state",
 		]) {
 			expect(properties).not.toHaveProperty(removed);
 		}
@@ -617,7 +617,7 @@ describe("route-then-registered-run guidance", () => {
 	test("keeps subagents complementary without universal delegation", () => {
 		for (const phrase of [
 			"focused specialist work inside workflows",
-			"call workflow run with the registered workflow ID",
+			"Launch with workflow run using the registered workflow name",
 			"single subagent",
 			"parallel tasks",
 			"debugger subagent for actual failures",
@@ -923,7 +923,7 @@ describe("route-then-registered-run guidance", () => {
 	 */
 	test("keeps the inherited budget and heartbeat cadence until the user asks", () => {
 		for (const phrase of [
-			"Explicit user limits belong in route state.userBudget",
+			"Pass budget only for a user-specified limit",
 			"omission inherits and zero disables only its field",
 			"Never convert an estimate into a cap",
 			"Heartbeat cadence is 15 minutes by default",
@@ -945,7 +945,7 @@ describe("route-then-registered-run guidance", () => {
 		"packages/coding-agent/docs/workflows.md",
 		"packages/coding-agent/docs/workflows/reliable-design.md",
 	]) {
-		test(`${path} does not countermand router-owned selection or preannounce results`, async () => {
+		test(`${path} keeps agent-owned selection without preannounced graphs`, async () => {
 			const text = await readRepositoryFile(path);
 			for (const contradiction of [
 				/self-prompt an orchestrating agent should run before the first tool call/i,
@@ -956,9 +956,8 @@ describe("route-then-registered-run guidance", () => {
 				/Treat "quickly" as an inline execution choice/i,
 			])
 				assert.doesNotMatch(text, contradiction, path);
-			assert.match(text, /router owns all semantic selection/i);
-			assert.match(text, /neutral state/);
-			assert.match(text, /only after the router returns/);
+			assert.match(text, /The agent decides whether a workflow fits/);
+			assert.match(text, /An estimate is not (?:measured timing|a budget)/);
 			if (path.endsWith("reliable-design.md")) {
 				assert.match(
 					text,

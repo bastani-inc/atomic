@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `workflow` tool's `route` action and its router classifier. The agent now decides itself whether a workflow fits and launches with `workflow({ action: "run", workflow: "<name>", inputs, budget? })`. The `workflowId` reservation, `state` parameter, `routerDecision`, `estimatedDuration` labels, and `needs_input`/`not_launched`/`reserved` statuses are gone; `run` validates inputs and fails without launching when they are invalid. Runs launched through the model tool still belong to the launching session.
+
 ### Changed
 
 - Generalized the prompt-engineering GPT-6 guide (`references/gpt_6.md`, formerly `gpt_6_astra.md`) to cover GPT-6 Sol and Luna, and replaced its paraphrased snippets with OpenAI's official GPT-6 prompt templates for follow-through, approval timing, skill-instruction priority, writing style, delegation, and verification.

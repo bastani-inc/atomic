@@ -7,7 +7,6 @@ import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import type { ExtensionAPI, PiToolOpts, WorkflowToolArgs } from "../../packages/workflows/src/extension/index.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 import { buildMockPi, type CapturedCustomCall, factory, singletonStore } from "./overlay-entrypoints-helpers.js";
 
 type ExtensionEventHandler = Parameters<NonNullable<ExtensionAPI["on"]>>[1];
@@ -52,19 +51,10 @@ async function executeWorkflow(
 	workflow: "attach-enabled" | "attach-default",
 	hasUI: boolean,
 ) {
-	const ctx = { ...workflowRouterContext(workflow), hasUI };
-	const route = await tool.execute(
-		"route-auto-attach",
-		{ action: "route", state: workflowRouterState() },
-		undefined,
-		undefined,
-		ctx,
-	);
-	assert.equal(route.details.action, "route");
-	assert.ok("workflowId" in route.details);
+	const ctx = { hasUI };
 	const response = await tool.execute(
 		"workflow-auto-attach-test",
-		{ action: "run", workflowId: route.details.workflowId, inputs: {} },
+		{ action: "run", workflow, inputs: {} },
 		undefined,
 		undefined,
 		ctx,

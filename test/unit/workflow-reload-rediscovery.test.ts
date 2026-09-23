@@ -19,7 +19,6 @@ import { killAllRuns } from "../../packages/workflows/src/runs/background/status
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 
 const originalCwd = process.cwd();
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -120,19 +119,6 @@ function createHarness(overrides: Partial<ExtensionAPI> = {}): Harness {
 		messages,
 		async execute(args, ctx = { hasUI: false } as PiExecuteContext) {
 			ctx = { ...ctx, sessionId: "reload-fixture-owner" };
-			if (args.action === "run") {
-				ctx = { ...workflowRouterContext(args.workflow ?? "", args.budget), ...ctx };
-				const routed = await tool!.execute(
-					"route-reload-fixture",
-					{ action: "route", state: workflowRouterState(args.budget) },
-					undefined,
-					undefined,
-					ctx,
-				);
-				if (routed.details.action !== "route" || routed.details.status !== "reserved")
-					throw new Error(JSON.stringify(routed.details));
-				args = { action: "run", workflowId: routed.details.workflowId, inputs: args.inputs };
-			}
 			const result = await tool!.execute("reload-matrix-call", args, undefined, undefined, ctx);
 			return result.details;
 		},

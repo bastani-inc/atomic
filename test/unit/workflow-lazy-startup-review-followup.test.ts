@@ -15,7 +15,6 @@ import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
@@ -364,11 +363,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			},
 		);
 
-		const ctx = workflowRouterContext("lazy-model-run");
-		const route = await handler({ action: "route", state: workflowRouterState() }, ctx);
-		assert.equal(route.action, "route");
-		assert.equal(route.status, "reserved");
-		const result = await handler({ action: "run", workflowId: route.workflowId, inputs: {} }, ctx);
+		const result = await handler({ action: "run", workflow: "lazy-model-run", inputs: {} }, {});
 		assert.equal(ensureCalls, 1);
 		assert.equal(result.action, "run");
 		assert.equal(result.status, "running");

@@ -40,15 +40,8 @@ const contracts = [
 		],
 	},
 	{
-		name: "reports router estimates only after routing and never as budgets",
-		phrases: [
-			"estimatedDuration",
-			"unknown",
-			"critical path",
-			"not measured",
-			"budget",
-			"actual elapsed time against the estimate",
-		],
+		name: "reports duration estimates without treating them as budgets",
+		phrases: ["unknown", "critical path", "not measured", "budget", "actual elapsed time against the estimate"],
 	},
 	{
 		name: "inherits limits without a routine budget question and honors explicit overrides",
@@ -88,12 +81,12 @@ test("uses available question tools and continues autonomously when none is usab
 	assert.ok(!guidance.includes("prefer the `ask_user_question` tool"));
 });
 
-test("requires tool-returned estimates and preserves approval boundaries", async () => {
+test("keeps estimates honest and preserves approval boundaries", async () => {
 	const docs = await readText(resolve(root, "packages/coding-agent/docs/workflows/reliable-design.md"));
 	for (const text of [guidance, docs]) {
 		assert.ok(!text.includes("Immediately after a successful workflow launch"));
 		assert.ok(!text.includes("Before launching a workflow, give the user an estimated"));
-		assert.ok(text.includes("estimatedDuration"));
+		assert.ok(!text.includes("estimatedDuration"));
 		assert.ok(!text.includes("estimate as low-confidence"));
 		assert.ok(!text.includes("or nobody answers, do not stall"));
 		assert.ok(!text.includes("assuming no budget is always the correct default"));
@@ -109,6 +102,6 @@ test("tool description inherits limits without offering a routine budget choice"
 			"Preserve inherited budget limits and approval gates without asking for a budget before each launch",
 		),
 	);
-	assert.ok(WORKFLOW_TOOL_DESCRIPTION.includes("Explicit user limits belong in route state.userBudget"));
+	assert.ok(WORKFLOW_TOOL_DESCRIPTION.includes("Pass budget only for a user-specified limit"));
 	assert.ok(!WORKFLOW_TOOL_DESCRIPTION.includes("ask whether the user wants an explicit budget"));
 });

@@ -50,8 +50,6 @@ export interface ExtensionRuntimeOpts {
 	 * Pass the output of a discovery worker / createBundledWorkflowRegistry here.
 	 */
 	registry?: WorkflowRegistry;
-	/** Opaque publication token shared by context-specific views of one runtime. */
-	routingGeneration?: object;
 	/**
 	 * Seed definitions used when no registry is provided.
 	 * Typically populated by the discovery worker at startup.
@@ -118,8 +116,6 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 	 * Reflects all definitions registered at startup.
 	 */
 	readonly registry: WorkflowRegistry;
-	readonly routingGeneration?: object;
-	readonly routingBudget?: WorkflowBudget;
 
 	/**
 	 * Dispatch a `list`, `inputs`, or `run` action.
@@ -135,8 +131,7 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 	): Promise<ResumeFailedRunResult>;
 }
 export interface RuntimeDispatchOptions {
-	/** Reserved model-tool identity, supplied only by the registered admission door. */
-	readonly reservedRunId?: string;
+	/** Session identity that owns a model-tool launch and its lifecycle controls. */
 	readonly modelOwner?: string;
 	readonly policy?: WorkflowExecutionPolicy;
 	/** Who launched this run. Only an attributable launcher supplies it. */
@@ -149,8 +144,6 @@ export interface RuntimeDispatchOptions {
 	readonly signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
 	readonly onRunAccepted?: (runId: string) => void;
-	/** Revalidate a model-tool approval after initialization and immediately before launch. */
-	readonly assertRoutingCurrent?: () => void;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -363,18 +356,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	}
 
 	return {
-		routingGeneration: opts.routingGeneration ?? {},
-		routingBudget: config?.budget,
 		get registry(): WorkflowRegistry {
 			return registry;
 		},
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
 			options?.signal?.throwIfAborted();
-			options?.assertRoutingCurrent?.();
 			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
 			options?.signal?.throwIfAborted();
-			options?.assertRoutingCurrent?.();
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
 				registry,
@@ -390,8 +379,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				models,
 				resolvePossibleStageEntry,
 				policy: options?.policy,
-				assertRoutingCurrent: options?.assertRoutingCurrent,
-				reservedRunId: options?.reservedRunId,
 				modelOwner: options?.modelOwner,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),
 				...(options?.signal === undefined ? {} : { signal: options.signal }),

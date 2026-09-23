@@ -1,6 +1,5 @@
 import { type Static, Type } from "typebox";
 import { WorkflowBudgetSchema } from "./workflow-budget-schema.js";
-import { WorkflowRouterStateSchema } from "./workflow-router-schema.js";
 
 export { WorkflowBudgetSchema } from "./workflow-budget-schema.js";
 
@@ -34,31 +33,23 @@ const WorkflowResponseSchema = Type.Union(
 
 export const WorkflowParametersSchema = Type.Object(
 	{
-		workflowId: Type.Optional(
-			Type.String({
-				description: "Execution UUID registered by route, required by run. This is not a workflow definition name.",
-			}),
-		),
 		workflow: Type.Optional(
 			Type.String({
-				description:
-					"Workflow definition name for get/inputs inspection only. Cannot override a registered execution selection.",
+				description: "Registered workflow name for run, get, and inputs.",
 			}),
 		),
 		inputs: Type.Optional(
 			Type.Record(Type.String(), Type.Unknown(), {
 				default: {},
 				description:
-					"Unbound supplied inputs, validated with defaults against the router-selected workflow. Missing or invalid values return needs_input without launch.",
+					"Inputs for action 'run', validated with defaults against the named workflow's input contract. Invalid values fail without launching.",
 			}),
 		),
 		budget: Type.Optional(WorkflowBudgetSchema),
-		state: Type.Optional(WorkflowRouterStateSchema),
 		action: Type.Optional(
 			Type.Union(
 				[
 					Type.Literal("models"),
-					Type.Literal("route"),
 					Type.Literal("run"),
 					Type.Literal("list"),
 					Type.Literal("get"),

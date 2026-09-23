@@ -32,7 +32,6 @@ import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
-import type { WorkflowRouterOutput } from "./workflow-router.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
@@ -99,21 +98,8 @@ type GetResult = {
 	details?: WorkflowDetails;
 	error?: string;
 };
-type RouteResult = {
-	action: "route";
-	workflowId: string;
-	routerDecision?: WorkflowRouterOutput;
-	inputSchema?: import("../shared/types.js").WorkflowDefinition["inputs"];
-	status: "reserved" | "not_launched" | "failed";
-	message?: string;
-	error?: string;
-};
 type RunResult = {
 	action: "run";
-	/** Validated routing decision; absent on inference/validation failure. */
-	workflowId?: string;
-	routerDecision?: WorkflowRouterOutput;
-	inputContract?: import("../shared/types.js").WorkflowDefinition["inputs"];
 	name?: string;
 	runId: string;
 	status: string;
@@ -222,7 +208,6 @@ type DependencyResult = {
 };
 
 export type WorkflowToolResult =
-	| RouteResult
 	| DependencyResult
 	| ListResult
 	| StatusResult
@@ -420,19 +405,8 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 			);
 		}
 
-		case "route":
-			return renderNotice("WORKFLOW ROUTE", JSON.stringify(result, null, 2), opts, themed);
 		case "run": {
 			const r = result as RunResult;
-			if (r.status === "not_launched")
-				return renderNotice("WORKFLOW ROUTE", r.message ?? "No workflow launched.", opts, themed);
-			if (r.status === "needs_input")
-				return renderNotice(
-					"WORKFLOW INPUTS",
-					`${r.name ?? "Selected workflow"}: needs input — ${r.message ?? "No workflow was launched."}`,
-					opts,
-					themed,
-				);
 			if (partial) return renderNotice("WORKFLOW RUN", `${r.runId}: ${r.status} (in progress…)`, opts, themed);
 			if (r.status === "failed" && !r.runId) {
 				// Not-found path — render the error verbatim, no fake runId banner.

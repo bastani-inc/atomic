@@ -58,7 +58,7 @@ List and run it like any other workflow:
 
 Named workflow runs execute in the background. By default, after launch expect a full run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
 
-Call `workflow route` with actual request/message/document text and constraints. If it returns `none`, continue inline; otherwise prepare inputs from its input contract and call `workflow run` with its registered ID. For deliberately authored multi-item graphs, see [Task queues and software factories](/workflows/reliable-design#task-queues-and-software-factories).
+For deliberately authored multi-item graphs, see [Task queues and software factories](/workflows/reliable-design#task-queues-and-software-factories). To start a workflow, use `workflow({ action: "run", workflow: "<name>", inputs: {...} })` after inspecting its required inputs with `workflow({ action: "inputs", workflow: "<name>" })`.
 
 The below-editor `BACKGROUND` panel shows top-level runs, elapsed time, stage progress, and live tools. A blue `？` marks human-input waits; a single question may show a preview and connect command. Narrow terminals show counts only. Use `/workflow status` or `/workflow connect` for full details, including resumable quit runs that have left the panel. See [panel controls](/workflows/operations#reading-and-scrolling-the-panel).
 

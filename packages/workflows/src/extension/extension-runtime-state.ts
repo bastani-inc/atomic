@@ -348,12 +348,6 @@ export function createWorkflowExtensionRuntimeState(
 		get registry() {
 			return runtimeRef.current.registry;
 		},
-		get routingGeneration() {
-			return runtimeRef.current.routingGeneration;
-		},
-		get routingBudget() {
-			return runtimeRef.current.routingBudget;
-		},
 		dispatch(args, options) {
 			return runtimeRef.current.dispatch(args, options);
 		},
@@ -399,7 +393,6 @@ export function createWorkflowExtensionRuntimeState(
 		if (models === undefined && durabilityWarningSink === undefined) return runtimeProxy;
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
-			routingGeneration: runtimeRef.current.routingGeneration,
 			cwd: resolveCwd(),
 			adapters,
 			cancellation: cancellationRegistry,

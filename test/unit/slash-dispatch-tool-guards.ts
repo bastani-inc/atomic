@@ -1,6 +1,5 @@
 // @ts-nocheck
 import { describe, test, vi } from "vitest";
-import { workflowRouterContext, workflowRouterState } from "../helpers/workflow-router.js";
 import type {
 	ExtensionAPI,
 	ExtensionRuntime,
@@ -129,20 +128,12 @@ export default workflow({
 		);
 
 		try {
-			const ctx = { ...workflowRouterContext("tool-headless-lifecycle"), hasUI: false };
-			const route = await resource.tool.execute(
-				"route",
-				{ action: "route", state: workflowRouterState() },
-				undefined,
-				undefined,
-				ctx,
-			);
-			assert.equal(route.details.action, "route");
+			const ctx = { hasUI: false };
 			const result = await resource.tool.execute(
 				"tool-headless-lifecycle-call",
 				{
 					action: "run",
-					workflowId: route.details.workflowId,
+					workflow: "tool-headless-lifecycle",
 					inputs: {},
 				},
 				undefined,

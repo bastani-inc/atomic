@@ -65,11 +65,10 @@ describe("MockExtensionAPI — tool registration", () => {
 		assert.doesNotMatch(description, /kill/);
 	});
 
-	// #3106: caller docs keep the concise contract, not a duplicated full tool prompt.
-	test("README explains route then registered run without duplicating the tool description", () => {
+	test("README explains agent-decided runs by workflow name without duplicating the tool description", () => {
 		const readme = readFileSync(join(process.cwd(), "packages/workflows/README.md"), "utf8");
-		assert.ok(readme.includes("Call `workflow route` with the actual request"));
-		assert.ok(readme.includes("call `workflow run` with the registered workflow ID"));
+		assert.ok(!readme.includes("workflow route"));
+		assert.match(readme, /`workflow run`[^\n]*registered workflow name/);
 		assert.ok(!readme.includes(WORKFLOW_TOOL_DESCRIPTION));
 	});
 
@@ -85,6 +84,8 @@ describe("MockExtensionAPI — tool registration", () => {
 			properties: Record<string, unknown>;
 		};
 		assert.ok("workflow" in params.properties);
+		assert.ok(!("workflowId" in params.properties));
+		assert.ok(!("state" in params.properties));
 		assert.ok(!("name" in params.properties));
 		assert.ok("inputs" in params.properties);
 		assert.ok("action" in params.properties);
@@ -137,7 +138,6 @@ describe("MockExtensionAPI — tool registration", () => {
 			"quit",
 			"reload",
 			"resume",
-			"route",
 			"run",
 			"stage",
 			"stages",
@@ -327,8 +327,7 @@ describe("MockExtensionAPI — tool registration", () => {
 	test("tool renderCall slot delegates correctly", () => {
 		const slot = mock.tools[0]!.opts.renderCall!;
 		const out = slot({ workflow: "test-wf", inputs: {}, action: "run" }, {} as never, {} as never);
-		assert.ok(out.includes("workflow: run"));
-		assert.ok(!out.includes("test-wf"));
+		assert.ok(out.includes('workflow: run "test-wf"'));
 		const inspection = slot({ workflow: "test-wf", action: "inputs" }, {} as never, {} as never);
 		assert.ok(inspection.includes('workflow: show inputs for "test-wf"'));
 	});
