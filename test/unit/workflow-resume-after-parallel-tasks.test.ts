@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { isBrandedWorkflowDefinition, workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -17,7 +19,6 @@ import {
 	mockSession,
 	type StageSessionRuntime,
 	structuredOutputMockSession,
-	type WorkflowDefinition,
 } from "./executor-shared.js";
 
 afterEach(() => {
@@ -193,11 +194,21 @@ describe("resume after a completed ctx.parallel", () => {
 			resumable: true,
 		});
 
+		// The sidecar is the authoritative resume state the reloaded ledger comes from.
+		const artifactRoot = source.toolNodes?.find((node) => node.name === "artifact-root")?.result;
+		assert.equal(typeof artifactRoot, "string");
+		const ledgerStatePath = join(String(artifactRoot), "goal-ledger-state.json");
+		const readLedgerState = () => JSON.parse(readFileSync(ledgerStatePath, "utf8")) as Record<string, unknown>;
+		const ledgerBeforeResume = readLedgerState();
+
 		failPullRequest = false;
 		sessions.length = 0;
 		const jobs = createJobTracker();
+		// workflow() stamps the runtime definition brand; the guard narrows the
+		// authored definition to the registry's erased WorkflowDefinition.
+		assert.ok(isBrandedWorkflowDefinition(definition));
 		const runtime = createExtensionRuntime({
-			registry: createRegistry([definition as unknown as WorkflowDefinition]),
+			registry: createRegistry([definition]),
 			store,
 			jobs,
 			adapters,
@@ -211,6 +222,12 @@ describe("resume after a completed ctx.parallel", () => {
 		assert.equal(continuation.status, "completed", continuation.error);
 		assert.equal(continuation.result?.status, "complete");
 		assert.deepEqual(sessions, ["pull-request"], "completed turn stages must replay from checkpoints");
+
+		// The replayed turn is read-only for the ledger: the resume must not append
+		// another decision, lifecycle, convergence, blocker, reverification,
+		// receipt or review record for the turn the source run already recorded,
+		// and the successful pull-request stage records nothing in the ledger.
+		assert.deepEqual(readLedgerState(), ledgerBeforeResume);
 
 		const byName = new Map(continuation.stages.map((stage) => [stage.name, stage]));
 		const reviewerIds = ["completion-reviewer-1", "evidence-reviewer-1", "risk-reviewer-1"].map(

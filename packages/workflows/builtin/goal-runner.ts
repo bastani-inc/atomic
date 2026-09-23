@@ -157,10 +157,17 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     // terminal status. Replay the recorded turns anyway: their stages return
     // durable checkpoints, and skipping them would leave later stages such as
     // pull-request without the parents they had in the source run (#3207).
+    // A replayed turn is read-only for the ledger: its decisions, lifecycle,
+    // convergence, blocker, reverification and status history were already
+    // recorded by the source run, so appending them again would duplicate the
+    // authoritative history without new turn work.
     const recordedTurns = ledger.turns;
     for (let turn = 1; turn <= maxTurns && (ledger.status === "active" || turn <= recordedTurns); turn += 1) {
-      appendLifecycleEvent(ledger, "work_turn_started", "Orchestrator started.", turn);
-      await writeGoalLedger(ledgerPath, ledger);
+      const replayingRecordedTurn = turn <= recordedTurns;
+      if (!replayingRecordedTurn) {
+        appendLifecycleEvent(ledger, "work_turn_started", "Orchestrator started.", turn);
+        await writeGoalLedger(ledgerPath, ledger);
+      }
 
       const orchestratorReceiptPath = join(artifactDir, "orchestrator-receipt.md");
       const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
@@ -196,7 +203,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         latestReviews = [];
         latestReviewArtifactPaths = [];
         latestReviewReportPath = undefined;
-        ledger.turns = turn;
+        ledger.turns = Math.max(ledger.turns, turn);
         ledger.status = "needs_human";
         ledger.decisions.push({
           turn,
@@ -217,20 +224,22 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       }
 
       previousOrchestratorSessionFile = orchestrator.sessionFile;
-      ledger.turns = turn;
-      const receiptAlreadyRecorded = ledger.receipts.some(
-        (receipt) => receipt.turn === turn && receipt.artifact_path === orchestratorReceiptPath,
-      );
-      if (!receiptAlreadyRecorded) {
-        ledger.receipts.push({
-          turn,
-          stage: orchestrator.name ?? orchestrator.stageName,
-          artifact_path: orchestratorReceiptPath,
-          summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
-        });
-        appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
+      if (!replayingRecordedTurn) {
+        ledger.turns = turn;
+        const receiptAlreadyRecorded = ledger.receipts.some(
+          (receipt) => receipt.turn === turn && receipt.artifact_path === orchestratorReceiptPath,
+        );
+        if (!receiptAlreadyRecorded) {
+          ledger.receipts.push({
+            turn,
+            stage: orchestrator.name ?? orchestrator.stageName,
+            artifact_path: orchestratorReceiptPath,
+            summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
+          });
+          appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
+        }
+        await writeGoalLedger(ledgerPath, ledger);
       }
-      await writeGoalLedger(ledgerPath, ledger);
 
       const reviewerStep = (
         name: string,
@@ -355,7 +364,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         reverified.batch,
         reverified.audits,
       );
-      if (reverified.audits.length > 0) {
+      if (!replayingRecordedTurn && reverified.audits.length > 0) {
         ledger.reverification ??= [];
         ledger.reverification.push(...reverified.audits);
       }
@@ -365,7 +374,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       // A thrown reviewer batch or an all-unparsed reviewer batch produced no
       // decisions, so recording a zero-blocker round would fabricate progress
       // and can suppress the escalation evidence on the very escalation it triggers.
-      if (!reviewerBatchFailed && roundProducedDecisions) {
+      if (!replayingRecordedTurn && !reviewerBatchFailed && roundProducedDecisions) {
         ledger.convergence.push(record_convergence({
           unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
           meanFindingConfidence: findings.length === 0
@@ -383,15 +392,17 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           (recorded) => recorded.turn === review.turn && recorded.reviewer === review.reviewer,
         ),
       );
-      ledger.reviews.push(...newReviews);
+      if (!replayingRecordedTurn) ledger.reviews.push(...newReviews);
       // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
-      appendLifecycleEvent(
-        ledger,
-        "reviews_recorded",
-        `Recorded ${latestReviews.length} reviewer decisions.`,
-        turn,
-      );
+      if (!replayingRecordedTurn) {
+        appendLifecycleEvent(
+          ledger,
+          "reviews_recorded",
+          `Recorded ${latestReviews.length} reviewer decisions.`,
+          turn,
+        );
+      }
       if (reviewerBatchFailed) {
         terminalRemainingWork = collectRemainingWork(latestReviews);
         const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
@@ -408,6 +419,10 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         await writeGoalLedger(ledgerPath, ledger);
         break;
       }
+
+      // A replayed turn keeps the reloaded ledger's recorded decision and
+      // status; only a live turn may append and persist a new outcome.
+      if (replayingRecordedTurn) continue;
 
       const reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
         turn,
