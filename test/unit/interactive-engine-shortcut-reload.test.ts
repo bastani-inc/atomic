@@ -17,6 +17,13 @@ const serialTest = process.platform === "win32" ? test.sequential.skip : test.se
 const PREFIX = "@@ATOMIC_TEST@@";
 const ENGINE_BIND_SCENARIO_TIMEOUT_MS = 30_000;
 const ENGINE_REPORT_TIMEOUT_MS = 30_000;
+/**
+ * Structural cost, not a slow test: these scenarios spawn a real isolated
+ * InteractiveMode engine process, wait for terminal, heartbeat and state
+ * reports, and reload or restart it. Each report wait is bounded by
+ * ENGINE_REPORT_TIMEOUT_MS, so a scenario needs room for several of them.
+ */
+const ISOLATED_INTERACTIVE_MODE_SCENARIO_TIMEOUT_MS = 90_000;
 
 interface HarnessReport {
 	type?: string;
@@ -313,7 +320,7 @@ serialTest(
 			rmSync(temp, { recursive: true, force: true });
 		}
 	},
-	30_000,
+	ISOLATED_INTERACTIVE_MODE_SCENARIO_TIMEOUT_MS,
 );
 
 serialTest(
@@ -520,5 +527,5 @@ serialTest(
 			rmSync(temp, { recursive: true, force: true });
 		}
 	},
-	30_000,
+	ISOLATED_INTERACTIVE_MODE_SCENARIO_TIMEOUT_MS,
 );
