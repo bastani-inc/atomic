@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,8 +46,8 @@ describe("DefaultResourceLoader", () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
-			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toContain(extensionPath);
-			expect(loader.getExtensions().warnings).toEqual([]);
+			assert.ok(loader.getExtensions().extensions.some((extension) => extension.path === extensionPath));
+			assert.deepEqual(loader.getExtensions().warnings, []);
 		});
 
 		it("should warn about host dependencies in an extension package manifest (#9863)", async () => {
@@ -69,8 +70,8 @@ describe("DefaultResourceLoader", () => {
 			});
 			await loader.reload();
 
-			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toContain(extensionPath);
-			expect(loader.getExtensions().warnings).toEqual([
+			assert.ok(loader.getExtensions().extensions.some((extension) => extension.path === extensionPath));
+			assert.deepEqual(loader.getExtensions().warnings, [
 				{
 					path: join(packageRoot, "package.json"),
 					warning:
@@ -92,7 +93,7 @@ describe("DefaultResourceLoader", () => {
 				settingsManager: SettingsManager.inMemory({ packages: [packageRoot] }),
 			});
 
-			await expect(loader.reload()).rejects.toThrow(SyntaxError);
+			await assert.rejects(loader.reload(), SyntaxError);
 		});
 		it("should refresh package workflow resources without reloading extensions", async () => {
 			const settingsManager = SettingsManager.inMemory();

@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isDeepStrictEqual } from "node:util";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { APP_NAME } from "../src/config.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -35,6 +37,36 @@ interface PackageManagerInternals {
 	): Promise<string>;
 	parseSource(source: string): ParsedSourceForTest;
 	getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string; fetchArgs: string[] }>;
+}
+
+interface CallRecorder {
+	mock: { calls: unknown[][] };
+}
+
+function withoutTrailingUndefined(args: readonly unknown[]): unknown[] {
+	const trimmed = [...args];
+	while (trimmed.length > 0 && trimmed[trimmed.length - 1] === undefined) trimmed.pop();
+	return trimmed;
+}
+
+function wasCalledWith(spy: CallRecorder, expected: readonly unknown[]): boolean {
+	const wanted = withoutTrailingUndefined(expected);
+	return spy.mock.calls.some((call) => isDeepStrictEqual(withoutTrailingUndefined(call), wanted));
+}
+
+function assertCalledWith(spy: CallRecorder, ...expected: unknown[]): void {
+	assert.ok(
+		wasCalledWith(spy, expected),
+		`expected call ${JSON.stringify(expected)}, got ${JSON.stringify(spy.mock.calls)}`,
+	);
+}
+
+function assertNotCalledWith(spy: CallRecorder, ...unexpected: unknown[]): void {
+	assert.ok(!wasCalledWith(spy, unexpected), `unexpected call ${JSON.stringify(unexpected)}`);
+}
+
+function rejectsWithMessage(fragment: string): (error: Error) => boolean {
+	return (error) => error.message.includes(fragment);
 }
 
 // Helper to check if a resource is enabled
@@ -104,7 +136,8 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install("npm:@scope/pkg");
 
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assertCalledWith(
+				runCommandSpy,
 				"mise",
 				[
 					"exec",
@@ -135,7 +168,8 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install("npm:@scope/pkg");
 
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assertCalledWith(
+				runCommandSpy,
 				"mise",
 				["exec", "bun@1", "--", "bun", "install", "@scope/pkg", "--cwd", join(agentDir, "npm"), "--omit=peer"],
 				undefined,
@@ -157,7 +191,7 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
 				cwd: targetDir,
 			});
 		});
@@ -167,11 +201,12 @@ describe("DefaultPackageManager", () => {
 			mkdirSync(targetDir, { recursive: true });
 			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
 
-			await expect(packageManager.install("git:github.com/user/repo@--upload-pack=sh")).rejects.toThrow(
-				"Invalid git ref",
+			await assert.rejects(
+				packageManager.install("git:github.com/user/repo@--upload-pack=sh"),
+				rejectsWithMessage("Invalid git ref"),
 			);
 
-			expect(runCommandSpy).not.toHaveBeenCalled();
+			assert.equal(runCommandSpy.mock.calls.length, 0);
 		});
 
 		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
@@ -194,12 +229,12 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["fetch", "origin", "--", "v2"], { cwd: targetDir });
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["reset", "--hard", "FETCH_HEAD^{commit}"], {
+			assertCalledWith(runCommandSpy, "git", ["fetch", "origin", "--", "v2"], { cwd: targetDir });
+			assertCalledWith(runCommandSpy, "git", ["reset", "--hard", "FETCH_HEAD^{commit}"], {
 				cwd: targetDir,
 			});
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+			assertCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
+			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
 				cwd: targetDir,
 			});
 		});
@@ -229,11 +264,11 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("git", fetchArgs, { cwd: targetDir });
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["reset", "--hard", "origin/HEAD^{commit}"], {
+			assertCalledWith(runCommandSpy, "git", fetchArgs, { cwd: targetDir });
+			assertCalledWith(runCommandSpy, "git", ["reset", "--hard", "origin/HEAD^{commit}"], {
 				cwd: targetDir,
 			});
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
+			assertCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
 		it("should prefer the package manager after a separator over the outer executable (#9863)", async () => {
@@ -260,7 +295,8 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assertCalledWith(
+				runCommandSpy,
 				"npm",
 				[
 					"exec",
@@ -300,7 +336,8 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assertCalledWith(
+				runCommandSpy,
 				"corepack",
 				[
 					"pnpm",
@@ -336,11 +373,16 @@ describe("DefaultPackageManager", () => {
 					}
 				});
 
-			await expect(packageManager.install(source)).rejects.toThrow(
-				"Ambiguous npmCommand package managers: pnpm, bun",
+			await assert.rejects(
+				packageManager.install(source),
+				rejectsWithMessage("Ambiguous npmCommand package managers: pnpm, bun"),
 			);
 
-			expect(runCommandSpy).not.toHaveBeenCalledWith("corepack", expect.anything(), { cwd: targetDir });
+			assert.ok(
+				!runCommandSpy.mock.calls.some(
+					([command, , options]) => command === "corepack" && isDeepStrictEqual(options, { cwd: targetDir }),
+				),
+			);
 		});
 
 		it("should disable peer installation for git package dependencies with bun", async () => {
@@ -367,7 +409,7 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("bun", ["install", "--omit=dev", "--omit=peer"], {
+			assertCalledWith(runCommandSpy, "bun", ["install", "--omit=dev", "--omit=peer"], {
 				cwd: targetDir,
 			});
 		});
@@ -396,7 +438,7 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
 				cwd: targetDir,
 			});
 		});
@@ -423,10 +465,10 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
 				cwd: targetDir,
 			});
-			expect(runCommandSpy).not.toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
+			assertNotCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
 		it("retries an incomplete git update before clearing its repair marker", async () => {
@@ -458,18 +500,18 @@ describe("DefaultPackageManager", () => {
 					if (args[0] === "reset") localHead = "new-head";
 					if (args[0] === "clean" && !failedClean) {
 						failedClean = true;
-						expect(existsSync(markerPath)).toBe(true);
+						assert.equal(existsSync(markerPath), true);
 						throw new Error("simulated clean failure");
 					}
 				});
 
-			await expect(packageManager.update(source)).rejects.toThrow("simulated clean failure");
-			expect(existsSync(markerPath)).toBe(true);
+			await assert.rejects(packageManager.update(source), rejectsWithMessage("simulated clean failure"));
+			assert.equal(existsSync(markerPath), true);
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
-			expect(existsSync(markerPath)).toBe(false);
+			assertCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
+			assert.equal(existsSync(markerPath), false);
 		});
 
 		it("repairs deleted git dependencies when cleaning fails", async () => {
@@ -498,9 +540,9 @@ describe("DefaultPackageManager", () => {
 					if (args[0] === "clean") throw new Error("simulated clean failure");
 				});
 
-			await expect(packageManager.update(source)).rejects.toThrow("simulated clean failure");
+			await assert.rejects(packageManager.update(source), rejectsWithMessage("simulated clean failure"));
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
+			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
 				cwd: targetDir,
 			});
 		});
@@ -537,7 +579,8 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assertCalledWith(
+				runCommandSpy,
 				"mise",
 				[
 					"exec",

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -89,10 +90,10 @@ describe("extensions discovery", () => {
 
 		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 
-		expect(result.errors).toEqual([]);
-		expect(result.extensions).toHaveLength(1);
-		expect(result.extensions[0].commands.has("physical-dependency")).toBe(true);
-		expect(result.warnings).toEqual([]);
+		assert.deepEqual(result.errors, []);
+		assert.equal(result.extensions.length, 1);
+		assert.equal(result.extensions[0].commands.has("physical-dependency"), true);
+		assert.deepEqual(result.warnings, []);
 	});
 
 	it("discovers subdirectory with index.ts", async () => {
