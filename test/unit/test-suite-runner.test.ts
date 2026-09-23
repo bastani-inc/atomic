@@ -8,18 +8,9 @@ import { test } from "vitest";
 import { bunExecutable, fileExists, readStreamText, readText, spawnProcess } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const runner = join(root, "scripts/run-flaky-test-suite.ts");
+const runner = join(root, "scripts/run-test-suite.ts");
 
-type Mode =
-	| "success"
-	| "flake"
-	| "persistent"
-	| "deterministic"
-	| "deterministic-log-only"
-	| "headroom"
-	| "retry-headroom"
-	| "blind"
-	| "no-report";
+type Mode = "success" | "failure" | "headroom" | "blind" | "no-report";
 
 /**
  * A stand-in for vitest that the wrapper cannot tell from the real thing.
@@ -32,15 +23,14 @@ type Mode =
  * report itself is scripted.
  */
 const FAKE_VITEST = `#!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const outputFile = argv.find((arg) => arg.startsWith("--outputFile.json="))?.slice("--outputFile.json=".length);
 const mode = process.env.FIXTURE_MODE;
 const counter = process.env.FIXTURE_COUNTER;
-const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 : 1;
-writeFileSync(counter, String(attempt));
-console.log("fixture attempt " + attempt);
+writeFileSync(counter, "1");
+console.log("fixture run");
 
 const testFile = (name, tests) => ({ name, assertionResults: tests });
 const passed = (title, duration) => ({ ancestorTitles: [], title, status: "passed", duration });
@@ -58,29 +48,9 @@ if (mode === "headroom") {
   // The suite exits green having written nothing at all. A gate that cannot
   // see must say so rather than score an empty sample set as healthy.
   report = undefined;
-} else if (mode === "deterministic-log-only") {
-  // A corrupt report is worth exactly as much as no report, and the wrapper's
-  // last resort for naming the failing file is the step log it already teed.
-  report = "{ this is not json";
-  console.log("FAIL test/ci/ci-workflow-contracts.test.ts > deterministic contract");
-  code = 8;
-} else if (mode === "retry-headroom") {
-  if (attempt === 1) {
-    report = { numTotalTests: 2, testResults: [testFile("test/unit/drift.test.ts", [passed("drifting test", 25000)]), testFile("test/unit/unrelated.test.ts", [failed("unrelated failure")])] };
-    code = 7;
-  } else {
-    report = { numTotalTests: 1, testResults: [testFile("test/unit/drift.test.ts", [passed("drifting test", 120)])] };
-  }
-} else if (mode === "persistent" || (mode === "flake" && attempt === 1)) {
-  const files = [testFile("test/unit/unrelated.test.ts", [failed("unrelated failure")])];
-  // The deterministic file is present and green: a no-retry file that merely
-  // appears in the report must not suppress an unrelated flake's retry.
-  if (mode === "flake") files.push(testFile("test/ci/ci-workflow-contracts.test.ts", [passed("deterministic contract", 3)]));
-  report = { numTotalTests: files.length, testResults: files };
+} else if (mode === "failure") {
+  report = { numTotalTests: 1, testResults: [testFile("test/unit/unrelated.test.ts", [failed("unrelated failure")])] };
   code = 7;
-} else if (mode === "deterministic") {
-  report = { numTotalTests: 1, testResults: [testFile("test/ci/ci-workflow-contracts.test.ts", [failed("deterministic contract")])] };
-  code = 8;
 }
 
 if (outputFile && report !== undefined) writeFileSync(outputFile, typeof report === "string" ? report : JSON.stringify(report));
@@ -99,7 +69,7 @@ interface FixtureResult {
 }
 
 async function fixture(mode: Mode, options: { declareBudget?: boolean } = {}): Promise<FixtureResult> {
-	const dir = mkdtempSync(join(tmpdir(), "atomic-flake-runner-"));
+	const dir = mkdtempSync(join(tmpdir(), "atomic-test-suite-runner-"));
 	const counter = join(dir, "counter");
 	const diagnostics = join(dir, "diagnostics");
 	const summary = join(dir, "summary.md");
@@ -118,8 +88,6 @@ async function fixture(mode: Mode, options: { declareBudget?: boolean } = {}): P
 				"fixture suite",
 				"--diagnostics-dir",
 				diagnostics,
-				"--no-retry-file",
-				"ci-workflow-contracts.test.ts",
 				"--",
 				// Run the fake suite through Bun rather than relying on the shebang in
 				// an extensionless file: Windows has no shebang support, so Node cannot
@@ -160,12 +128,12 @@ function logArtifacts(files: string[]): string[] {
 
 /**
  * Structural: every fixture run spawns the real wrapper as a Bun child, which
- * itself spawns the fake vitest as a second Bun child (twice, for the retrying
- * modes). Two Bun cold starts plus the wrapper's transform can exceed the suite
- * default under full vitest file parallelism on a loaded machine, so the budget
- * is named here per the per-test timeout policy in AGENTS.md.
+ * itself spawns the fake vitest as a second Bun child. Two Bun cold starts plus
+ * the wrapper's transform can exceed the suite default under full vitest file
+ * parallelism on a loaded machine, so the budget is named here per the
+ * per-test timeout policy in AGENTS.md.
  */
-const WRAPPER_FIXTURE_TIMEOUT_MS = 120_000;
+const WRAPPER_FIXTURE_TIMEOUT_MS = 60_000;
 
 test(
 	"green suite exits immediately with only the duration table",
@@ -173,73 +141,23 @@ test(
 		const result = await fixture("success");
 		assert.equal(result.code, 0);
 		assert.deepEqual(logArtifacts(result.files), ["fixture-suite-durations.md"]);
-		assert.doesNotMatch(result.output, /Retrying/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );
 
+/** A failing run is never retried: the wrapper invokes the command exactly once and propagates its exit code. */
 test(
-	"a passing no-retry file does not suppress an unrelated flake retry",
+	"a failing run is not retried and its exit code propagates",
 	async () => {
-		const result = await fixture("flake");
-		assert.equal(result.code, 0);
-		assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
-		assert.match(result.summary, /Detected flake/);
+		const result = await fixture("failure");
+		assert.equal(result.code, 7);
+		assert.match(result.output, /fixture run/);
+		assert.doesNotMatch(result.output, /fixture run[\s\S]*fixture run/);
 		assert.deepEqual(logArtifacts(result.files), [
-			"fixture-suite-attempt-1.log",
-			"fixture-suite-attempt-2.log",
 			"fixture-suite-debug.txt",
 			"fixture-suite-durations.md",
+			"fixture-suite.log",
 		]);
-	},
-	WRAPPER_FIXTURE_TIMEOUT_MS,
-);
-
-test(
-	"persistent failure returns failure with both attempt logs",
-	async () => {
-		const result = await fixture("persistent");
-		assert.equal(result.code, 7);
-		assert.match(result.summary, /Persistent failure/);
-		assert.match(result.output, /fixture attempt 1[\s\S]*fixture attempt 2/);
-		assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
-		assert.ok(result.files.includes("fixture-suite-attempt-2.log"));
-	},
-	WRAPPER_FIXTURE_TIMEOUT_MS,
-);
-
-test(
-	"deterministic workflow contract failures are never retried",
-	async () => {
-		const result = await fixture("deterministic");
-		assert.equal(result.code, 8);
-		assert.match(result.output, /No retry: deterministic test file failed/);
-		assert.doesNotMatch(result.output, /fixture attempt 2/);
-		assert.ok(result.files.includes("fixture-suite-attempt-1.log"));
-		assert.ok(!result.files.includes("fixture-suite-attempt-2.log"));
-	},
-	WRAPPER_FIXTURE_TIMEOUT_MS,
-);
-
-/**
- * The report is the only structured record the wrapper gets, so its absence has
- * to be survivable *and* loud. `findFailedDeterministicFile` keeps a log scan
- * precisely for a suite that died before writing one, and the retry decision
- * must still be made correctly from the step log alone -- otherwise a broken
- * reporter silently converts a no-retry file into a retried one.
- */
-test(
-	"a corrupt report still blocks the retry, using the step log to name the file",
-	async () => {
-		const result = await fixture("deterministic-log-only");
-		// The wrapper's own exit code, not the guard's: a deterministic failure is
-		// reported as itself.
-		assert.equal(result.code, 8);
-		assert.match(result.output, /No retry: deterministic test file failed \(ci-workflow-contracts\.test\.ts\)/);
-		assert.doesNotMatch(result.output, /fixture attempt 2/);
-		// And the unreadable report is reported as blindness, never as a clean sheet.
-		assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
-		assert.match(result.durations, /no duration samples parsed/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );
@@ -267,21 +185,6 @@ test(
 		assert.equal(ungated.code, 0);
 		assert.doesNotMatch(ungated.output, /Timeout headroom exhausted/);
 		assert.match(ungated.durations, /not declared \(gate disabled\)[\s\S]*drifting test/);
-	},
-	WRAPPER_FIXTURE_TIMEOUT_MS,
-);
-
-test(
-	"a passing retry cannot hide the failed attempt's exhausted headroom",
-	async () => {
-		const result = await fixture("retry-headroom");
-		assert.equal(result.code, 1);
-		assert.match(
-			result.output,
-			/::error title=Timeout headroom exhausted[^\n]*attempt 1: test\/unit\/drift\.test\.ts > drifting test took 25000ms/,
-		);
-		assert.match(result.durations, /## attempt 1[\s\S]*25000[\s\S]*## attempt 2[\s\S]*120/);
-		assert.match(result.summary, /Detected flake/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );
@@ -317,8 +220,6 @@ test(
 		assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
 		assert.match(result.summary, /Duration guard blind/);
 		assert.match(result.durations, /no duration samples parsed/);
-		// A missing report must not be mistaken for a suite that ran nothing.
-		assert.doesNotMatch(result.output, /Retrying/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );
@@ -359,7 +260,7 @@ async function realVitestSuite(
 	files: Record<string, string>,
 	command: string[],
 ): Promise<{ code: number; output: string; durations: string }> {
-	const dir = mkdtempSync(join(root, ".tmp-flake-real-"));
+	const dir = mkdtempSync(join(root, ".tmp-test-suite-runner-real-"));
 	const diagnostics = join(dir, "diagnostics");
 	for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents);
 	try {
@@ -393,10 +294,7 @@ function assertScoredRealSuite(result: { code: number; output: string; durations
 
 /**
  * The gate is only as good as the report it reads, so this drives the real
- * vitest runner through the real wrapper. Under the previous Bun parser this
- * covered the two conditions that had silently emptied the table; the equivalent
- * risk now is the wrapper failing to request the JSON reporter, or requesting it
- * in a form that suppresses the human one. A populated table with the explicit
+ * vitest runner through the real wrapper. A populated table with the explicit
  * budget attached, produced alongside readable step output, is the proof.
  */
 test(

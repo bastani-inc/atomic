@@ -194,13 +194,13 @@ test("build-consuming steps stay in the job that produced the build", async () =
 	}
 	const unit = blocks.get("unit-tests") as string;
 	const integration = blocks.get("integration-tests") as string;
-	assert.match(unit, /--no-retry-file flaky-test-suite-runner\.test\.ts/u);
 	assert.match(unit, /-- npm run test:unit/u);
 	assert.doesNotMatch(unit, /npm run test:integration/u);
 	assert.match(integration, /-- npm run test:integration/u);
 	assert.doesNotMatch(integration, /npm run test:unit/u);
 	for (const block of [unit, integration]) {
-		assert.equal(block.split("run-flaky-test-suite.ts").length - 1, 1);
+		assert.equal(block.split("run-test-suite.ts").length - 1, 1);
+		assert.doesNotMatch(block, /flake|Flake|bounded retry/u);
 		const setup = jobSteps(block);
 		for (const [before, after] of [
 			["Install dependencies", "Alias @earendil-works/pi-ai"],
@@ -330,7 +330,8 @@ test("every retried suite still runs through the duration guard unmodified", asy
 		"npm run test:integration",
 		"npm run test --workspace=@bastani/atomic",
 	]);
-	assert.equal(workflow.split("run-flaky-test-suite.ts").length - 1, invocations.length);
+	assert.equal(workflow.split("run-test-suite.ts").length - 1, invocations.length);
+	assert.doesNotMatch(workflow, /run-flaky-test-suite|flake|Flake|bounded retry/u);
 	assert.doesNotMatch(workflow, /--parallel|--shard|--concurrent|--max-concurrency/u);
 	// The wrapper owns the reporter flags; a workflow that spelled them out would
 	// drift from the command developers run locally.

@@ -51,9 +51,9 @@ const project = (name: string, directory: string) => ({
 });
 
 /**
- * Three projects, one per suite directory, so the CI job split, the per-suite
- * flake retry and the diagnostics artifact names all survive the move off
- * `bun test <dir>` unchanged.
+ * Three projects, one per suite directory, so the CI job split and the
+ * diagnostics artifact names all survive the move off `bun test <dir>`
+ * unchanged.
  *
  * All projects use native setup: the CI project now executes the minified
  * extension/native binary boundary instead of limiting itself to source inspection.

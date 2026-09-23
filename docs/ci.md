@@ -131,7 +131,7 @@ Suite jobs upload `.ci-diagnostics/` under unique
 `test-diagnostics-<job>-<binary_platform>` artifact names. Preserve `always()`,
 `include-hidden-files: true`, the narrow upload path, 14-day retention and
 `if-no-files-found: ignore`. Jobs failing before test execution may have no
-diagnostic artifact. Inspect all attempts, not only the successful retry.
+diagnostic artifact.
 
 Archive smoke tests check bundled builtins, native modules, runtime dependencies,
 `--version` and startup without extension-load failures. The static job also runs

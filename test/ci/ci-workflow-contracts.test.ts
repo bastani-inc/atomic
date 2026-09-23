@@ -73,7 +73,7 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	for (const command of Object.values(manifest.scripts)) {
 		assert.doesNotMatch(command, /--timeout[= ]\d+/u, `the budget lives in vitest.config.ts only: ${command}`);
 	}
-	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-flaky-test-suite\.ts/u);
+	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-test-suite\.ts/u);
 });
 
 test("workflows workspace test scripts delegate to the root Vitest suites", async () => {
