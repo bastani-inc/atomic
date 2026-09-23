@@ -195,6 +195,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return run;
 	}
 
+	private async settleEngineResync(): Promise<void> {
+		await this.initializationTail;
+	}
+
 	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
@@ -715,6 +719,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>, options?: ModelMutationOptions) => {
+					await this.settleEngineResync();
 					const selected = await this.client.setModel(model.provider, model.id, options);
 					const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
 					session.agent.state.model = nextModel;
@@ -744,6 +749,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			cycleModel: {
 				configurable: true,
 				value: async (direction?: "forward" | "backward", options?: ModelMutationOptions) => {
+					await this.settleEngineResync();
 					const previousModel = session.model;
 					const result = await this.client.cycleModel(direction, options);
 					if (!result) return undefined;
