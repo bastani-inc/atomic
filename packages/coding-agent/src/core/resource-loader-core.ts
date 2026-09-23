@@ -352,10 +352,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 		sessionLifecycleScopes.set(candidate, scope);
 		await candidate.reload(this.loadOptions);
 		// Retain caller-added assets as well as its discovery configuration.
+		const pathsWithMetadata = (paths: readonly string[]) =>
+			paths.flatMap((path) => {
+				const metadata = this.resourceMetadataByPath.get(path);
+				return metadata ? [{ path, metadata }] : [];
+			});
 		await candidate.extendResources({
-			skillPaths: this.lastSkillPaths.map((path) => ({ path, metadata: this.resourceMetadataByPath.get(path)! })),
-			promptPaths: this.lastPromptPaths.map((path) => ({ path, metadata: this.resourceMetadataByPath.get(path)! })),
-			themePaths: this.lastThemePaths.map((path) => ({ path, metadata: this.resourceMetadataByPath.get(path)! })),
+			skillPaths: pathsWithMetadata(this.lastSkillPaths),
+			promptPaths: pathsWithMetadata(this.lastPromptPaths),
+			themePaths: pathsWithMetadata(this.lastThemePaths),
 		});
 		return candidate;
 	}

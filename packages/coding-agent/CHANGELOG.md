@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow stages with `model: "auto"` (and other stage sessions) crashing with `Cannot read properties of undefined (reading 'baseDir')` when Atomic was launched with `--theme <path>` or other CLI-provided resource paths ([#3229](https://github.com/bastani-inc/atomic/issues/3229)).
+
 ## [0.9.20-alpha.8] - 2026-09-22
 
 ### Added
