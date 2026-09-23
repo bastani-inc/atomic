@@ -294,6 +294,7 @@ test("unregistered data without Atomic's recorded loopback launch stays refused 
 	for (const opts of [
 		undefined,
 		legacyLaunch(join("/elsewhere", "v18")),
+		legacyLaunch("v18"),
 		`/opt/atomic/bin/postgres "-D" "DATA" "-p" "5439" "-c" "listen_addresses=*"\n`,
 		`/opt/atomic/bin/postgres "-D" "DATA" "-p" "5439"\n`,
 	]) {
@@ -328,7 +329,7 @@ test("unreadable or malformed legacy launch evidence is never adopted (#3235)", 
 	await assert.rejects(hooks.ensureCluster(dir.options), /Refusing to adopt unregistered/);
 	assert.ok(statSync(join(dir.data, "PG_VERSION")).isDirectory());
 	assert.throws(() => statSync(join(dir.root, "v18.shared")), { code: "ENOENT" });
-	if (process.getuid?.() === 0) return;
+	if (process.platform === "win32" || process.getuid?.() === 0) return;
 	const f = fixture();
 	legacyCluster(f, legacyLaunch(f.data));
 	chmodSync(join(f.data, "postmaster.opts"), 0o000);

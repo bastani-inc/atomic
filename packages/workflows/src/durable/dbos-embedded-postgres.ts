@@ -518,7 +518,7 @@ function launchedByPreOwnershipAtomic(dataDir: string): boolean {
 			/^.+[\\/]postgres(?:\.exe)? "-D" "([^"]+)" "-p" "\d+" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
 				readFileSync(optsFile, "utf8"),
 			);
-		if (!launch) return false;
+		if (!launch || !isAbsolute(launch[1])) return false;
 		if (launch[1] === dataDir) return true;
 		return realpathSync(launch[1]) === realpathSync(dataDir);
 	} catch {
