@@ -1769,7 +1769,7 @@ function global:Move-Item {
 
 $environmentNames = @(
     "ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN",
-    "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "PATHEXT",
+    "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "SystemTemp", "PATHEXT",
     "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION"
 )
 $originalEnvironment = @{}
@@ -2639,6 +2639,19 @@ try {
         $env:ATOMIC_BIN_DIR = $binDir
         $env:TEMP = $caseTemp
         $env:TMP = $caseTemp
+        if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
+            # GetTempPath2 ignores TEMP/TMP for SYSTEM. Its override must remain
+            # inaccessible to unprivileged users, just like Windows\SystemTemp.
+            $tempAcl = New-Object Security.AccessControl.DirectorySecurity
+            $tempAcl.SetAccessRuleProtection($true, $false)
+            foreach ($sid in @("S-1-5-18", "S-1-5-32-544")) {
+                $identity = New-Object Security.Principal.SecurityIdentifier($sid)
+                $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+                $tempAcl.AddAccessRule($rule)
+            }
+            Set-Acl -LiteralPath $caseTemp -AclObject $tempAcl
+            $env:SystemTemp = $caseTemp
+        }
         $resolvedTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
         Assert-Fixture ($resolvedTempRoot -ieq [IO.Path]::GetFullPath($caseTemp).TrimEnd('\')) "GetTempPath() resolved to $resolvedTempRoot instead of the isolated case temp root"
 
@@ -2729,6 +2742,7 @@ try {
 
         $env:TEMP = $fixtureTemp
         $env:TMP = $fixtureTemp
+        $env:SystemTemp = $originalEnvironment["SystemTemp"]
     }
     else {
         throw "Unknown fixture scenario: $Scenario"

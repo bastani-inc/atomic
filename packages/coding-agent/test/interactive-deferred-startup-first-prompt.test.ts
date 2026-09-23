@@ -85,6 +85,8 @@ describe("interactive deferred startup first prompt readiness", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			builtinPackagePaths: [],
+			noExtensions: true,
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_start", () => {
@@ -114,6 +116,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
 		});
 		try {
 			expect(session.getActiveToolNames()).not.toContain("startup_tool");
