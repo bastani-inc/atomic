@@ -511,14 +511,15 @@ async function stopActiveCluster(cluster: ActiveEmbeddedPostgres): Promise<void>
 function launchedByPreOwnershipAtomic(dataDir: string): boolean {
 	const versionFile = join(dataDir, "PG_VERSION");
 	const optsFile = join(dataDir, "postmaster.opts");
-	if (!existsSync(versionFile) || !existsSync(optsFile) || !lstatSync(optsFile).isFile()) return false;
-	if (readFileSync(versionFile, "utf8").trim() !== String(EMBEDDED_PG_MAJOR)) return false;
-	const launch = /^.+[\\/]postgres(?:\.exe)? "-D" "([^"]+)" "-p" "\d+" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
-		readFileSync(optsFile, "utf8"),
-	);
-	if (!launch) return false;
-	if (launch[1] === dataDir) return true;
 	try {
+		if (!lstatSync(versionFile).isFile() || !lstatSync(optsFile).isFile()) return false;
+		if (readFileSync(versionFile, "utf8").trim() !== String(EMBEDDED_PG_MAJOR)) return false;
+		const launch =
+			/^.+[\\/]postgres(?:\.exe)? "-D" "([^"]+)" "-p" "\d+" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
+				readFileSync(optsFile, "utf8"),
+			);
+		if (!launch) return false;
+		if (launch[1] === dataDir) return true;
 		return realpathSync(launch[1]) === realpathSync(dataDir);
 	} catch {
 		return false;

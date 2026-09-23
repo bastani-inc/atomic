@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { Client } from "pg";
@@ -296,6 +296,27 @@ test("recovery never adopts a legacy cluster that lost its ownership records (#3
 	legacyCluster(f, legacyLaunch(f.data));
 	await assert.rejects(hooks.ensureCluster({ ...f.options, recovery: f.metadata }), /Refusing to adopt unregistered/);
 	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+});
+
+test("unreadable or malformed legacy launch evidence is never adopted (#3235)", async () => {
+	const dir = fixture();
+	legacyCluster(dir, legacyLaunch(dir.data));
+	rmSync(join(dir.data, "PG_VERSION"));
+	mkdirSync(join(dir.data, "PG_VERSION"));
+	await assert.rejects(hooks.ensureCluster(dir.options), /Refusing to adopt unregistered/);
+	assert.ok(statSync(join(dir.data, "PG_VERSION")).isDirectory());
+	assert.throws(() => statSync(join(dir.root, "v18.shared")), { code: "ENOENT" });
+	if (process.getuid?.() === 0) return;
+	const f = fixture();
+	legacyCluster(f, legacyLaunch(f.data));
+	chmodSync(join(f.data, "postmaster.opts"), 0o000);
+	try {
+		await assert.rejects(hooks.ensureCluster(f.options), /Refusing to adopt unregistered/);
+		assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+		assert.throws(() => statSync(join(f.root, "v18.shared")), { code: "ENOENT" });
+	} finally {
+		chmodSync(join(f.data, "postmaster.opts"), 0o600);
+	}
 });
 
 test("preferred port validation rejects ambiguous or out-of-range values", () => {
