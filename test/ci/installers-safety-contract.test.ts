@@ -346,6 +346,11 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	assert.match(powershell, /RollbackCompleted = \$false/u);
 	assert.match(powershell, /\$transactionCommitted = \$false/u);
 	assert.match(powershell, /\$transactionCommitted = \$true[\s\S]+Remove-AtomicTransactionBackups/u);
+	assert.match(
+		powershell,
+		/\$transactionCommitted -and -not \$transactionBackupCleanupAttempted\) \{\s+Remove-AtomicTransactionBackups/u,
+		"the finally block must not repeat a committed backup cleanup",
+	);
 	for (const name of [
 		"VersionBackup",
 		"VersionInstall",

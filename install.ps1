@@ -1008,6 +1008,7 @@ $atomicCurrentNextPath = $null
 $shimNextPath = $null
 $transaction = $null
 $transactionCommitted = $false
+$transactionBackupCleanupAttempted = $false
 $transactionMissingDirectories = New-Object System.Collections.ArrayList
 $rollbackRetryLimit = 3
 $tempCleanupRetryLimit = 5
@@ -1346,6 +1347,7 @@ try {
         }
 
         $transactionCommitted = $true
+        $transactionBackupCleanupAttempted = $true
         Remove-AtomicTransactionBackups $transaction $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
     catch {
@@ -1401,7 +1403,7 @@ finally {
             Write-Warning -Message "Installation rollback remains incomplete after $rollbackRetryLimit final cleanup attempts; transaction backups were retained for recovery." -WarningAction Continue
         }
     }
-    if ($null -ne $transaction -and $transactionCommitted) {
+    if ($null -ne $transaction -and $transactionCommitted -and -not $transactionBackupCleanupAttempted) {
         Remove-AtomicTransactionBackups $transaction $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
 
