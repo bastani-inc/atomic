@@ -43,7 +43,10 @@ a *toolchain* goal, not a CI-topology goal.
 
 **CI runners:** pull-request-capable workflows (`test.yml`, `codeql.yml`) run every job on a
 repository Namespace runner profile (`namespace-profile-atomic-ci-*`) whose Access Level must be
-Restricted, so fork code gets no usable Namespace workload token. The release path
+Restricted, so fork runs of the committed workflows get no usable Namespace workload token. A fork
+pull request that edits `.github/workflows` runs its own `runs-on`, so maintainer approval is the
+only barrier there: before approving a fork run, check the diff for `.github/` changes (see
+`docs/ci.md`, "Approving fork workflow runs"). The release path
 (`publish.yml`, `warm-toolchain-cache.yml`) uses version-controlled inline labels (`nscloud-*`)
 except two GitHub-hosted jobs in `publish.yml`: `publish-npm` (`ubuntu-latest`, required by
 npm trusted publishing and provenance) and the `darwin-x64` leg of `native-artifacts`

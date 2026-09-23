@@ -940,8 +940,18 @@ interface Workflow {
 	jobs?: Record<string, WorkflowJob>;
 }
 
-/** Events that run a pull request's code, fork pull requests included. */
-const PULL_REQUEST_EVENTS = new Set(["pull_request", "pull_request_target"]);
+/**
+ * Events that run a pull request's code, fork pull requests included. The
+ * review events check out the pull request's merge ref like `pull_request`,
+ * and `merge_group` runs the queued pull request's changes.
+ */
+const PULL_REQUEST_EVENTS = new Set([
+	"pull_request",
+	"pull_request_target",
+	"pull_request_review",
+	"pull_request_review_comment",
+	"merge_group",
+]);
 
 /** Whether a workflow can run pull-request code, detected from its `on:` block rather than a file list. */
 function runsPullRequestCode(file: string, workflow: Workflow): boolean {
@@ -1091,6 +1101,29 @@ test("pull-request workflows run on Restricted profiles and the release path on 
 	assert.match(publish, /# Namespace macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
 	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,240}?runs-on: ubuntu-latest/u);
 	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
+});
+
+/**
+ * A new trigger that runs a contributor's revision is a trust decision too: any
+ * workflow on one of these events is held to the Restricted-profile allowlist,
+ * whichever shape its `on:` block takes. Release-path triggers are not.
+ */
+test("every event that runs pull-request code makes a workflow pull-request-capable", () => {
+	assert.deepEqual([...PULL_REQUEST_EVENTS].sort(), [
+		"merge_group",
+		"pull_request",
+		"pull_request_review",
+		"pull_request_review_comment",
+		"pull_request_target",
+	]);
+	for (const event of PULL_REQUEST_EVENTS) {
+		for (const on of [event, ["push", event], { push: null, [event]: { types: ["opened"] } }]) {
+			assert.equal(runsPullRequestCode("synthetic.yml", { on }), true, `${event} as ${JSON.stringify(on)}`);
+		}
+	}
+	for (const on of ["push", ["push", "workflow_dispatch"], { push: { tags: ["v*"] }, schedule: null }]) {
+		assert.equal(runsPullRequestCode("synthetic.yml", { on }), false, JSON.stringify(on));
+	}
 });
 
 /**

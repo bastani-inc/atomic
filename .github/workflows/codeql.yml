@@ -37,9 +37,11 @@ jobs:
     # label: `ci-workflow-contracts.test.ts` enumerates every workflow in this
     # directory, and a job in a pull_request workflow must run on an approved
     # `namespace-profile-atomic-ci-*` profile whose Access Level is Restricted,
-    # so fork code gets no usable Namespace workload token (docs/ci.md,
-    # "Checkout and cache trust model"). Default setup escaped that check only
-    # because it was not a file here; an advanced setup is subject to it.
+    # so fork runs of this committed file get no usable Namespace workload token.
+    # A fork pull request that edits this file runs its own `runs-on`; only
+    # maintainer approval stops that (docs/ci.md, "Approving fork workflow
+    # runs"). Default setup escaped the contract check only because it was not
+    # a file here; an advanced setup is subject to it.
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
     timeout-minutes: 30
     permissions:
