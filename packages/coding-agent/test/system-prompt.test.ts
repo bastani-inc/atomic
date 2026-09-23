@@ -348,6 +348,9 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("tie it to the requesting user with a `Co-authored-by: <name> <email>` trailer");
 			expect(prompt).toContain("Prioritize preferences tied to the requesting user");
 			expect(prompt).toContain("fall back to other contributors' relevant preferences as repository conventions");
+			expect(prompt).toContain(
+				"If the user, a context file, or `APPEND_SYSTEM.md` asks you not to record some or all of these records, skip those records.",
+			);
 		});
 
 		test("omits repository-intent guidance without a shell tool", () => {
