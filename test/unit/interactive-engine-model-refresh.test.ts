@@ -314,6 +314,106 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 		assert.equal(runtime.modelFallbackReason, "configured-provider-unsupported");
 	}
 });
+async function selectDuringEngineResync(
+	select: (session: AgentSession, model: Model<Api>) => Promise<unknown>,
+): Promise<{ runtime: IsolatedInteractiveRuntime; selected: Model<Api> }> {
+	const selected = await kimiModel();
+	type EngineState = Awaited<ReturnType<RpcClient["getState"]>>;
+	let engine: EngineState = {
+		model: undefined,
+		modelFallbackMessage: "locked",
+		modelFallbackReason: "configured-provider-unsupported",
+		thinkingLevel: "off",
+		isStreaming: false,
+		isCompacting: false,
+		steeringMode: "all",
+		followUpMode: "all",
+		sessionId: "test-session",
+		autoCompactionEnabled: true,
+		messageCount: 0,
+		pendingMessageCount: 0,
+		queuedMessagesPaused: false,
+	};
+	let snapshotTaken!: () => void;
+	const snapshotRequested = new Promise<void>((resolve) => {
+		snapshotTaken = resolve;
+	});
+	let releaseCatalog!: () => void;
+	const catalogReply = new Promise<void>((resolve) => {
+		releaseCatalog = resolve;
+	});
+	const client = {
+		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
+		getState: async () => {
+			snapshotTaken();
+			return { ...engine };
+		},
+		requestInternal: async () => {
+			await catalogReply;
+			return { models: [selected], scopedModels: [], customAuthProviders: [] };
+		},
+		cycleModel: async () => {
+			engine = { ...engine, model: selected, modelFallbackMessage: undefined, modelFallbackReason: undefined };
+			return { model: selected, thinkingLevel: "off" as const, isScoped: false };
+		},
+		setModel: async (provider: string, id: string) => {
+			engine = { ...engine, model: selected, modelFallbackMessage: undefined, modelFallbackReason: undefined };
+			return { provider, id };
+		},
+		getCommands: async () => [],
+	} as unknown as RpcClient;
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
+	const sessionFixture = {
+		modelRuntime,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		scopedModels: [],
+		sessionFile: undefined,
+		agent: {
+			state: { model: undefined, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
+	};
+	Object.defineProperty(sessionFixture, "model", { get: () => sessionFixture.agent.state.model });
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		sessionFixture as unknown as AgentSession,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+		[],
+		"locked",
+		"configured-provider-unsupported",
+	);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+
+	const resync = runtime.initializeFromEngine();
+	await snapshotRequested;
+	const selection = select(runtime.session, selected);
+	await sleep(0);
+	releaseCatalog();
+	await Promise.all([resync, selection]);
+	return { runtime, selected };
+}
+
+test("an explicit cycle during an in-flight engine resync is not reverted by the older snapshot", async () => {
+	const { runtime, selected } = await selectDuringEngineResync((session) => session.cycleModel());
+	assert.equal(runtime.session.model?.id, selected.id);
+	assert.equal(runtime.modelFallbackMessage, undefined);
+	assert.equal(runtime.modelFallbackReason, undefined);
+});
+
+test("an explicit model selection during an in-flight engine resync is not reverted by the older snapshot", async () => {
+	const { runtime, selected } = await selectDuringEngineResync((session, model) => session.setModel(model));
+	assert.equal(runtime.session.model?.id, selected.id);
+	assert.equal(runtime.modelFallbackMessage, undefined);
+	assert.equal(runtime.modelFallbackReason, undefined);
+});
+
 test("isolated session synchronization replaces each engine-selected session exactly once", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-isolated-session-sync-"));
 	const cwd = join(root, "cwd");
