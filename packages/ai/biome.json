@@ -27,13 +27,6 @@
 		"lineWidth": 120
 	},
 	"files": {
-		"includes": [
-			"src/**/*.ts",
-			"test/**/*.ts",
-			"!**/node_modules/**/*",
-			"!**/models.generated.ts",
-			"!**/*.models.ts",
-			"!src/image-models.generated.ts"
-		]
+		"includes": ["src/**/*.ts", "test/**/*.ts", "!**/node_modules/**/*", "!**/models.generated.ts", "!**/*.models.ts"]
 	}
 }

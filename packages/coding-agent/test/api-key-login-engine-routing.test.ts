@@ -97,7 +97,7 @@ describe("API-key login routing", () => {
 
 			assert.deepEqual(result, { modelsRefreshed: true });
 			assert.deepEqual(saveProviderCredential.mock.calls, [
-				["typesafe-ai", { type: "api_key", key: "isolated-routed-key" }, { refreshCatalog: false }],
+				["typesafe", { type: "api_key", key: "isolated-routed-key" }, { refreshCatalog: false }],
 			]);
 		} finally {
 			harness.cleanup();

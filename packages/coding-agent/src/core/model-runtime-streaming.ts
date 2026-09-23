@@ -4,6 +4,7 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type AuthResult,
+	assertChatModel,
 	type Context,
 	type DeferredCancelOptions,
 	type DeferredFetchOptions,
@@ -94,6 +95,7 @@ export class ModelRuntimeStreaming {
 		model: Model<Api>,
 		options: ModelRuntimePreparedStreamOptions | undefined,
 	): Promise<{ provider: Provider; model: Model<Api>; options: StreamOptions }> {
+		assertChatModel(model);
 		const provider = this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
 		const { transformHeaders, preparedRequestAuth, ...providerOptions } = options ?? {};

@@ -8,6 +8,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import {
 	type Api,
 	createAssistantMessageEventStream,
+	createProvider,
 	getCurrentTools,
 	type JsonObject,
 	type Model,
@@ -70,6 +71,86 @@ async function fixture() {
 	} as ExtensionContext;
 	return { ctx, infer, route: (task = "Fix the approved defect") => routeSubagentModel({ ctx, agent, task }) };
 }
+
+test("auto routing admits multimodal-input chat but excludes image and classifier models, even from a native provider", async () => {
+	const { runtime, registry } = await registeredDecisionRuntime(() => messageStream(decisionMessage()));
+	const multimodal = {
+		...decisionModel,
+		provider: "multimodal",
+		id: "chat",
+		input: ["text", "image"] as ("text" | "image")[],
+	};
+	runtime.registerProvider("multimodal", {
+		api: decisionModel.api,
+		baseUrl: decisionModel.baseUrl,
+		apiKey: "test-key",
+		models: [multimodal],
+	});
+	const image = {
+		...decisionModel,
+		type: "image" as const,
+		provider: "leaky",
+		id: "painter",
+		api: "openrouter-images" as const,
+		output: ["image" as const],
+	};
+	const classifier = {
+		...decisionModel,
+		type: "classifier" as const,
+		provider: "leaky",
+		id: "judge",
+		api: "typesafe-system-one" as const,
+	};
+	runtime.registerNativeProvider({
+		...createProvider({
+			id: "leaky",
+			auth: { apiKey: { name: "test", resolve: async () => ({ auth: { apiKey: "test-key" } }) } },
+			models: [image, classifier],
+			images: {
+				"openrouter-images": {
+					generateImages: async () => {
+						throw new Error("No image request expected");
+					},
+				},
+			},
+			classifiers: {
+				"typesafe-system-one": {
+					classify: async () => {
+						throw new Error("No classification expected");
+					},
+				},
+			},
+		}),
+		// Runtime-loaded native providers can return entries outside the declared chat-only interface.
+		getModels: () => [image, classifier] as never as Model<Api>[],
+	});
+	await runtime.setRuntimeApiKey("leaky", "test-key", {});
+	await runtime.setRuntimeApiKey("openrouter", "test-key", {});
+	await runtime.setRuntimeApiKey("typesafe", "test-key", {});
+	const ctx = { model: decisionModel, getRouterModel: () => "decision-test/chat", modelRegistry: registry };
+	const imageId = "black-forest-labs/flux.2-flex";
+	assert.ok(runtime.getModelOfType("image", "openrouter", imageId));
+	assert.equal(runtime.getModel("openrouter", imageId), undefined);
+	assert.ok(runtime.getModelOfType("classifier", "typesafe", "jev-latest"));
+	assert.ok((await runtime.getAvailableOfType("image", "openrouter")).some((model) => model.id === imageId));
+	assert.ok((await runtime.getAvailableOfType("classifier", "typesafe")).some((model) => model.id === "jev-latest"));
+	await assert.rejects(
+		routeExecutionModel({
+			ctx,
+			task: "Route",
+			agent,
+			constraints: [{ allowedModels: ["leaky/painter", "leaky/judge"] }],
+		}),
+		/no eligible model\/effort pairs/,
+	);
+	const route = (model: string) =>
+		routeExecutionModel({ ctx, task: "Route", agent, selection: { model, effort: null } });
+	assert.ok(registry.getAvailable().some((model) => model.provider === "leaky" && model.id === "painter"));
+	assert.equal((await route("multimodal/chat")).routerSelection.model, "multimodal/chat");
+	for (const id of ["leaky/painter", "leaky/judge", `openrouter/${imageId}`, "typesafe/jev-latest"]) {
+		await assert.rejects(route(id), /no longer eligible/);
+	}
+});
 
 function jevPayloadBytes(body: string): { total: number; stateAndLongestQuestion: number } {
 	const request = JSON.parse(body) as JevFixtureRequest & { model?: string };

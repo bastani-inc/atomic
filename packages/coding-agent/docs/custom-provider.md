@@ -78,6 +78,48 @@ export default function (pi: ExtensionAPI) {
 
 The extension factory can also be `async`. For dynamic model discovery, fetch and register models in the factory instead of `session_start`. Atomic waits for the factory before startup continues, so the provider is available during interactive startup and to `atomic --list-models`.
 
+Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces that provider's models across chat, image, and classifier operations. An omitted `type` means `"chat"`; image and classifier models require explicit discriminants and implementations keyed by their `api` values through the `images` and `classifiers` fields.
+
+For example, a mixed-operation provider can register non-chat models and their implementations together:
+
+```typescript
+pi.registerProvider("media-tools", {
+  apiKey: "$MEDIA_TOOLS_API_KEY",
+  models: [
+    {
+      type: "image",
+      id: "image-v1",
+      name: "Image V1",
+      api: "media-images",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      output: ["image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+    {
+      type: "classifier",
+      id: "classifier-v1",
+      name: "Classifier V1",
+      api: "media-classifier",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 64000,
+    },
+  ],
+  images: {
+    "media-images": { generateImages: async (model, context, options) => result },
+  },
+  classifiers: {
+    "media-classifier": { classify: async (model, context, options) => result },
+  },
+});
+```
+
+Model-level `baseUrl` values take precedence over the provider endpoint. If no `models` list is supplied, built-in models of every operation remain registered. Equal model IDs in different operations remain distinct, including their model-specific headers.
+
+Every model needs an ID, display name, input capabilities, and cost metadata. Chat and classifier models also need a context window; chat models need an output limit and reasoning support; image models declare their output modalities. Choose the API implementation at the provider level unless one model requires an override.
+
 ## Override Existing Provider
 
 Moved to [Override an existing provider](/custom-provider/override#override-existing-provider).
@@ -104,7 +146,7 @@ Moved to [Provider OAuth](/custom-provider/oauth#oauth-support).
 
 ## Dynamic model catalog refresh
 
-Moved to [Provider OAuth](/custom-provider/oauth#dynamic-model-catalog-refresh).
+Moved to [Provider OAuth](/custom-provider/oauth#dynamic-model-catalog-refresh). A complete `Provider` calls `context.publish({ update })` to install provider-owned model state, then exposes the latest list through `getModels()`. Legacy `ProviderConfig.refreshModels` returns mixed-operation model definitions that replace that registration's live models.
 
 ### OAuthLoginCallbacks
 

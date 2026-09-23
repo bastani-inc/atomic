@@ -32,7 +32,6 @@ export type {
 } from "./compat/extension-oauth-types.ts";
 export * from "./decision-models.ts";
 export { containsKnownEnvCredential } from "./env-api-keys.ts";
-export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
 export * from "./providers/faux.ts";

@@ -1,9 +1,10 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
+import { openrouterImagesApi } from "../api/openrouter-images.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadOpenRouterOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
-import { OPENROUTER_MODELS } from "./openrouter.models.ts";
+import { OPENROUTER_IMAGE_MODELS, OPENROUTER_MODELS } from "./openrouter.models.ts";
 
 export function openrouterProvider(): Provider<"anthropic-messages" | "openai-completions"> {
 	return createProvider<"anthropic-messages" | "openai-completions">({
@@ -18,10 +19,11 @@ export function openrouterProvider(): Provider<"anthropic-messages" | "openai-co
 				load: loadOpenRouterOAuth,
 			}),
 		},
-		models: Object.values(OPENROUTER_MODELS),
+		models: [...Object.values(OPENROUTER_MODELS), ...Object.values(OPENROUTER_IMAGE_MODELS)],
 		api: {
 			"anthropic-messages": anthropicMessagesApi(),
 			"openai-completions": openAICompletionsApi(),
 		},
+		images: { "openrouter-images": openrouterImagesApi() },
 	});
 }

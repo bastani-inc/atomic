@@ -18,7 +18,7 @@
     "hooks:install": "npx --no-install prek install --prepare-hooks",
     "hooks:run": "npx --no-install prek run --all-files",
     "build": "npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && npm --workspace=@bastani/atomic-natives run build && npm --workspace=@bastani/atomic run build",
-    "generate:models": "npm --workspace=@bastani/pi-ai run generate-models && npm --workspace=@bastani/pi-ai run generate-image-models && npm --workspace=@bastani/pi-ai run generate-decision-models",
+    "generate:models": "npm --workspace=@bastani/pi-ai run generate-models && npm --workspace=@bastani/pi-ai run generate-decision-models",
     "hydrate:model-data": "npm --workspace=@bastani/pi-ai run hydrate-model-data",
     "test": "npm run test:scripts && vitest --run && npm --workspaces --if-present run test",
     "test:unit": "vitest --run --project unit",

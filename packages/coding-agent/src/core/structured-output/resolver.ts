@@ -1,4 +1,11 @@
-import { type DecisionModel, getDecisionModels } from "@bastani/pi-ai";
+import {
+	type ClassifierApi,
+	type ClassifierModel,
+	type DecisionModel,
+	getDecisionModels,
+	isModelType,
+} from "@bastani/pi-ai";
+import { builtinModels } from "@bastani/pi-ai/providers/all";
 import type { RouterModelSelectionOptions, StructuredOutputModel } from "./types.js";
 
 const JEV_CAPABILITIES = Object.freeze({
@@ -10,7 +17,7 @@ const JEV_CAPABILITIES = Object.freeze({
 	jsonSchemaGeneration: false,
 } as const);
 
-/** One Jev registration: an Atomic provider ID, the endpoint it answers on, and the wire model. */
+/** A structured-decision route, resolved against the unified classifier registry for direct Jev. */
 export interface JevStructuredOutputProvider {
 	readonly id: string;
 	readonly name: string;
@@ -26,12 +33,12 @@ export interface JevStructuredOutputProvider {
 	readonly cost?: DecisionModel["cost"];
 }
 
-/** Decision-only registration: deliberately not a pi-ai chat Provider or Model. */
+/** Direct Jev uses the built-in TypeSafe classifier; gateways retain their own wire transports. */
 export const JEV_STRUCTURED_OUTPUT_PROVIDER = Object.freeze({
-	id: "typesafe-ai",
+	id: "typesafe",
 	name: "TypeSafe",
 	model: "jev-latest",
-	fullId: "typesafe-ai/jev-latest",
+	fullId: "typesafe/jev-latest",
 	wireModel: "jev-latest",
 	endpoint: "https://api.typesafe.ai/v1/systemone",
 	apiKeyEnv: "TYPESAFE_API_KEY",
@@ -103,8 +110,20 @@ export function getStructuredOutputProviders(): readonly JevStructuredOutputProv
 	return [JEV_STRUCTURED_OUTPUT_PROVIDER, OPENROUTER_JEV_STRUCTURED_OUTPUT_PROVIDER, ...gatewayProviders()];
 }
 
+/** Minimal SDK adapters use the same built-in classifier catalog as full runtimes. */
+export function directJevClassifier(
+	registry?: Pick<RouterModelSelectionOptions["modelRegistry"], "getClassifierModel">,
+): ClassifierModel<ClassifierApi> | undefined {
+	return registry?.getClassifierModel
+		? registry.getClassifierModel("typesafe", "jev-latest")
+		: builtinModels().getModelOfType("classifier", "typesafe", "jev-latest");
+}
+
 export function isStructuredOutputProviderModel(provider: string, modelId: string): boolean {
-	return getStructuredOutputProviders().some((candidate) => candidate.id === provider && candidate.model === modelId);
+	return (
+		(provider === "typesafe-ai" && modelId === "jev-latest") ||
+		getStructuredOutputProviders().some((candidate) => candidate.id === provider && candidate.model === modelId)
+	);
 }
 
 export function resolveRouterModel(options: RouterModelSelectionOptions): StructuredOutputModel {
@@ -112,10 +131,18 @@ export function resolveRouterModel(options: RouterModelSelectionOptions): Struct
 	if (typeof explicit !== "string" || explicit.trim() !== explicit || explicit === "auto") {
 		throw new Error("Invalid routerModel: use an exact provider/model ID or an empty string, not auto.");
 	}
-	const provider = getStructuredOutputProviders().find((candidate) => candidate.fullId === explicit);
-	if (provider) return { kind: "jev", fullId: provider.fullId };
+	const provider = getStructuredOutputProviders().find(
+		(candidate) => candidate.fullId === (explicit === "typesafe-ai/jev-latest" ? "typesafe/jev-latest" : explicit),
+	);
+	if (provider) {
+		if (provider.id === "typesafe" && !directJevClassifier(options.modelRegistry)) {
+			throw new Error("Invalid routerModel: TypeSafe Jev classifier is not available.");
+		}
+		return { kind: "jev", fullId: provider.fullId };
+	}
 	if (
 		!explicit &&
+		directJevClassifier(options.modelRegistry) &&
 		(options.modelRegistry.getProviderAuthStatus?.(JEV_STRUCTURED_OUTPUT_PROVIDER.id).configured ||
 			Boolean(process.env.TYPESAFE_API_KEY?.trim()))
 	) {
@@ -124,7 +151,7 @@ export function resolveRouterModel(options: RouterModelSelectionOptions): Struct
 	const model = explicit
 		? options.modelRegistry.getAll().find((candidate) => `${candidate.provider}/${candidate.id}` === explicit)
 		: options.currentModel;
-	if (!model || model.id === "auto" || model.provider === "typesafe-ai") {
+	if (!model || model.id === "auto" || !isModelType(model, "chat")) {
 		throw new Error(
 			explicit
 				? "Invalid routerModel: the exact model is not in the current chat catalog. Check settings.json."

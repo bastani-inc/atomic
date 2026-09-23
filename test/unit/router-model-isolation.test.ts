@@ -121,7 +121,7 @@ test("routing entrypoint alone applies the routerModel setting", async () => {
 		...decisionRequest(),
 		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 	});
-	assert.equal(result.model, "typesafe-ai/jev-latest");
+	assert.equal(result.model, "typesafe/jev-latest");
 	assert.equal(transport.mock.calls.length, 1);
 });
 

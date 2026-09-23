@@ -50,8 +50,8 @@ const FAST_RETRY = { enabled: true, maxRetries: 3, baseDelayMs: 1 };
 for (const [setting, key, expected] of [
 	["test/alternate", "mock-key", "test/alternate"],
 	["openrouter/~typesafe/jev-latest", "", "openrouter/~typesafe/jev-latest"],
-	["typesafe-ai/jev-latest", "", "typesafe-ai/jev-latest"],
-	["", "mock-key", "typesafe-ai/jev-latest"],
+	["typesafe-ai/jev-latest", "", "typesafe/jev-latest"],
+	["", "mock-key", "typesafe/jev-latest"],
 	["", "", "test/chat"],
 	["", "   ", "test/chat"],
 ] as const) {
@@ -81,11 +81,11 @@ test("Jev routing and direct requests use TYPESAFE_API_KEY without the old alias
 		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 	};
 	await assert.rejects(inferRouterDecision(request), {
-		message: "typesafe-ai/jev-latest requires an API key. Use /login typesafe-ai or set TYPESAFE_API_KEY.",
+		message: "typesafe/jev-latest requires an API key. Use /login typesafe or set TYPESAFE_API_KEY.",
 	});
 	assert.equal(transport.mock.calls.length, 0);
 	vi.stubEnv("TYPESAFE_API_KEY", "  synthetic-current-key  ");
-	assert.equal(resolveRouterModel(options).fullId, "typesafe-ai/jev-latest");
+	assert.equal(resolveRouterModel(options).fullId, "typesafe/jev-latest");
 	assert.deepEqual((await inferRouterDecision(request)).value, { route: "review", limit: 1.23456789 });
 	assert.equal(transport.mock.calls.length, 1);
 });
@@ -108,7 +108,7 @@ for (const explicit of ["auto", "missing/model", "chat", "test/chat:high", " typ
 
 test("Jev exposes only structured Choice capability, not a chat/tool model", () => {
 	const [provider] = getStructuredOutputProviders();
-	assert.equal(provider.fullId, "typesafe-ai/jev-latest");
+	assert.equal(provider.fullId, "typesafe/jev-latest");
 	assert.deepEqual(provider.capabilities, {
 		structuredDecisions: true,
 		choice: true,
@@ -265,7 +265,7 @@ test("Jev entrypoint sends both Choice judgments together and maps exact values 
 	const result = await inferRouterDecision(request);
 	assert.deepEqual(result, {
 		value: { route: "review", limit: 1.23456789 },
-		model: "typesafe-ai/jev-latest",
+		model: "typesafe/jev-latest",
 		responseModel: "jev-2026-09",
 		usage: { inputTokens: 20, outputTokens: 10 },
 	});
@@ -418,7 +418,7 @@ test("Jev 401 falls back to chat (#3206)", async () => {
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
-	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
+	assert.equal(result.fallback?.from, "typesafe/jev-latest");
 	assert.equal(result.fallback?.to, "decision-test/chat");
 	assert.equal(result.fallback?.reason, "Jev credentials are missing or were rejected.");
 	assert.equal(transport.mock.calls.length, 1);
@@ -440,7 +440,7 @@ test("pinned Jev falls back to chat (#3206)", async () => {
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
-	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
+	assert.equal(result.fallback?.from, "typesafe/jev-latest");
 	assert.equal(result.fallback?.reason, "Jev credentials are missing or were rejected.");
 	assert.doesNotMatch(result.fallback?.reason ?? "", /\/login|TYPESAFE_API_KEY/);
 	assert.equal(transport.mock.calls.length, 0);

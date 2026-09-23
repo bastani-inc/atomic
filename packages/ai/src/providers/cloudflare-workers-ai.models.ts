@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/cloudflare-workers-ai.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const CLOUDFLARE_WORKERS_AI_MODELS: ModelCatalog<typeof import("./data/cloudflare-workers-ai.json", { with: { type: "json" } }), "cloudflare-workers-ai"> =
-	flattenModelCatalog("cloudflare-workers-ai", values);
+export const CLOUDFLARE_WORKERS_AI_MODELS: ChatModelCatalog<typeof import("./data/cloudflare-workers-ai.json", { with: { type: "json" } }), "cloudflare-workers-ai"> =
+	flattenChatModelCatalog("cloudflare-workers-ai", values);
+
+export const CLOUDFLARE_WORKERS_AI_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/cloudflare-workers-ai.json", { with: { type: "json" } }), "cloudflare-workers-ai"> =
+	flattenImageModelCatalog("cloudflare-workers-ai", values);
+
+export const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/cloudflare-workers-ai.json", { with: { type: "json" } }), "cloudflare-workers-ai"> =
+	flattenClassifierModelCatalog("cloudflare-workers-ai", values);

@@ -360,7 +360,7 @@ for (const initialId of [fullId, "typesafe-ai/jev-latest"] as const) {
 			const result = await pending;
 			const calls = count === 2 ? 1 : 2;
 			const direct = initialId === "typesafe-ai/jev-latest";
-			assert.deepEqual(authIds, Array(calls).fill(direct ? "typesafe-ai" : "openrouter"));
+			assert.deepEqual(authIds, Array(calls).fill(direct ? "typesafe" : "openrouter"));
 			assert.deepEqual(
 				destinations,
 				Array(calls).fill({

@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/opencode.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const OPENCODE_MODELS: ModelCatalog<typeof import("./data/opencode.json", { with: { type: "json" } }), "opencode"> =
-	flattenModelCatalog("opencode", values);
+export const OPENCODE_MODELS: ChatModelCatalog<typeof import("./data/opencode.json", { with: { type: "json" } }), "opencode"> =
+	flattenChatModelCatalog("opencode", values);
+
+export const OPENCODE_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/opencode.json", { with: { type: "json" } }), "opencode"> =
+	flattenImageModelCatalog("opencode", values);
+
+export const OPENCODE_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/opencode.json", { with: { type: "json" } }), "opencode"> =
+	flattenClassifierModelCatalog("opencode", values);

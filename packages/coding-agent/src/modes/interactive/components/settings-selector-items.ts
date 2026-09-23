@@ -1,3 +1,4 @@
+import { isModelType } from "@bastani/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
@@ -287,17 +288,22 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 						label: provider.fullId,
 						description: `${provider.name} structured decisions · authenticate with /login ${provider.id}`,
 					})),
-					...(config.availableDefaultModels ?? []).map((model) => ({
-						value: `${model.provider}/${model.id}`,
-						label: `${model.provider}/${model.id}`,
-						description: model.name,
-					})),
+					...(config.availableDefaultModels ?? [])
+						.filter((model) => isModelType(model, "chat"))
+						.map((model) => ({
+							value: `${model.provider}/${model.id}`,
+							label: `${model.provider}/${model.id}`,
+							description: model.name,
+						})),
 				];
 				if (current && !options.some((option) => option.value === current)) {
 					options.push({
 						value: current,
 						label: current,
-						description: "Configured model is not currently available",
+						description:
+							current === "typesafe-ai/jev-latest"
+								? "Legacy Jev ID (still supported)"
+								: "Configured model is not currently available",
 					});
 				}
 				return new SelectSubmenu(

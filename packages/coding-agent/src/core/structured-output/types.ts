@@ -14,21 +14,23 @@ export interface StructuredChoiceQuestion {
 
 export interface RouterModelSelectionOptions {
 	readonly settings: Pick<SettingsManager, "getRouterModel"> & Partial<Pick<SettingsManager, "getRetrySettings">>;
-	readonly modelRegistry: Pick<ModelRegistry, "getAll"> & Partial<Pick<ModelRegistry, "getProviderAuthStatus">>;
+	readonly modelRegistry: Pick<ModelRegistry, "getAll"> &
+		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getClassifierModel">>;
 	/** Read the active chat model at invocation time; never change it to perform a decision. */
 	readonly currentModel?: Model<Api>;
 }
 
 export type StructuredOutputModel =
 	| { readonly kind: "chat"; readonly fullId: string; readonly model: Model<Api> }
-	/** A `fullId` returned by `getStructuredOutputProviders()`, such as `typesafe-ai/jev-latest`. */
+	/** A `fullId` returned by `getStructuredOutputProviders()`, such as `typesafe/jev-latest`. */
 	| { readonly kind: "jev"; readonly fullId: string };
 
 export interface StructuredOutputRequest<T extends TSchema> {
 	/** Explicit inference model. General structured output never reads routerModel or the chat selection. */
 	readonly model: StructuredOutputModel;
-	/** Full registries resolve Jev through normal provider auth; minimal adapters retain environment-only support. */
-	readonly modelRegistry: Pick<ModelRegistry, "streamSimple"> & Partial<Pick<ModelRegistry, "getProviderAuth">>;
+	/** Full registries resolve Jev through the unified classifier model and provider auth. */
+	readonly modelRegistry: Pick<ModelRegistry, "streamSimple"> &
+		Partial<Pick<ModelRegistry, "getProviderAuth" | "getClassifierModel">>;
 	/** Supply actual task, facts, constraints and reference text. Never supply credentials. */
 	readonly state: JsonObject;
 	readonly instructions: string;
@@ -52,7 +54,7 @@ export interface RouterDecisionRequest<T extends TSchema>
 	extends Omit<StructuredOutputRequest<T>, "model" | "modelRegistry">,
 		RouterModelSelectionOptions {
 	readonly modelRegistry: Pick<ModelRegistry, "getAll" | "streamSimple"> &
-		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth">>;
+		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel">>;
 }
 
 export interface StructuredOutputResult<T> {

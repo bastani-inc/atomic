@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/amazon-bedrock.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const AMAZON_BEDROCK_MODELS: ModelCatalog<typeof import("./data/amazon-bedrock.json", { with: { type: "json" } }), "amazon-bedrock"> =
-	flattenModelCatalog("amazon-bedrock", values);
+export const AMAZON_BEDROCK_MODELS: ChatModelCatalog<typeof import("./data/amazon-bedrock.json", { with: { type: "json" } }), "amazon-bedrock"> =
+	flattenChatModelCatalog("amazon-bedrock", values);
+
+export const AMAZON_BEDROCK_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/amazon-bedrock.json", { with: { type: "json" } }), "amazon-bedrock"> =
+	flattenImageModelCatalog("amazon-bedrock", values);
+
+export const AMAZON_BEDROCK_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/amazon-bedrock.json", { with: { type: "json" } }), "amazon-bedrock"> =
+	flattenClassifierModelCatalog("amazon-bedrock", values);

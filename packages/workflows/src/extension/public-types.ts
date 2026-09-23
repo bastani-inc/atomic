@@ -69,7 +69,12 @@ export interface PiRuntimeModelRegistry
 	extends Partial<
 		Pick<
 			ModelRegistry,
-			"getAll" | "streamSimple" | "containsConfiguredCredential" | "getProviderAuthStatus" | "getProviderAuth"
+			| "getAll"
+			| "streamSimple"
+			| "containsConfiguredCredential"
+			| "getProviderAuthStatus"
+			| "getProviderAuth"
+			| "getClassifierModel"
 		>
 	> {
 	getAvailable(): PiRuntimeModel[];

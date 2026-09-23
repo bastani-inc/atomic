@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	type AnyModel,
 	type Api,
+	type AssistantImages,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type AuthCheck,
@@ -10,21 +12,33 @@ import {
 	type AuthOperationOptions,
 	type AuthResult,
 	type AuthType,
+	type ClassifierApi,
+	type ClassifierContext,
+	type ClassifierModel,
+	type ClassifierResult,
 	type Context,
 	type Credential,
 	type CredentialInfo,
 	createModels,
 	type DeferredHandle,
+	type ImageApi,
+	type ImageModel,
+	type ImagesContext,
 	type Model,
 	type Models,
 	type ModelsApiStreamOptions,
+	type ModelsClassifierOptions,
 	type ModelsDeferredCancelOptions,
 	type ModelsDeferredFetchOptions,
+	type ModelsImagesOptions,
 	type ModelsRefreshOptions,
 	type ModelsRefreshResult,
 	type ModelsStore,
+	type ModelType,
+	type ModelTypeMap,
 	type MutableModels,
 	type Provider,
+	type ProviderHeaders,
 } from "@bastani/pi-ai";
 import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
 import { getAgentDir } from "../config.js";
@@ -32,7 +46,6 @@ import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { containsAuthConfig } from "./credential-screening.ts";
-import { jevAuthProvider } from "./decision-provider.js";
 import {
 	copilotAdvertisedFastModelIds,
 	copilotAdvertisesModelId,
@@ -65,17 +78,22 @@ import {
 	configuredRequestAuthStatus,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
+	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
-import { RuntimeCredentials } from "./runtime-credentials.ts";
+import { getLegacyJevProviderId, RuntimeCredentials } from "./runtime-credentials.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
 import { mergeConfiguredAuthHeaders } from "./model-runtime-auth.ts";
 import { configureBuiltinProviders } from "./model-runtime-providers.ts";
 import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
-import { type ModelRuntimeSimpleStreamOptions, ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
+import {
+	type ModelRuntimeSimpleStreamOptions,
+	ModelRuntimeStreaming,
+	mergeHeaders,
+} from "./model-runtime-streaming.ts";
 import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
 export type CredentialSynchronizationOperation =
@@ -193,7 +211,6 @@ export class ModelRuntime implements Models {
 					? provider
 					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
 			);
-		providers.push(jevAuthProvider());
 		const runtime = new ModelRuntime(
 			credentials,
 			config,
@@ -449,8 +466,32 @@ export class ModelRuntime implements Models {
 	getModel(providerId: string, modelId: string): Model<Api> | undefined {
 		return this.models.getModel(providerId, modelId);
 	}
-	async checkAuth(providerId: string): Promise<AuthCheck | undefined> {
-		return this.models.checkAuth(providerId);
+	getModelsOfType<TType extends ModelType>(type: TType, providerId?: string): readonly ModelTypeMap[TType][] {
+		return this.models.getModelsOfType(type, providerId);
+	}
+	getModelOfType<TType extends ModelType>(
+		type: TType,
+		providerId: string,
+		modelId: string,
+	): ModelTypeMap[TType] | undefined {
+		return this.models.getModelOfType(type, providerId, modelId);
+	}
+	getAllModels(providerId?: string): readonly AnyModel[] {
+		return this.models.getAllModels(providerId);
+	}
+	getAvailableOfType<TType extends ModelType>(
+		type: TType,
+		providerId?: string,
+		options?: AuthOperationOptions,
+	): Promise<readonly ModelTypeMap[TType][]> {
+		return this.models.getAvailableOfType(type, providerId, options);
+	}
+	getAllAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly AnyModel[]> {
+		return this.models.getAllAvailable(providerId, options);
+	}
+
+	async checkAuth(providerId: string, options?: AuthOperationOptions): Promise<AuthCheck | undefined> {
+		return this.models.checkAuth(providerId, options);
 	}
 	async getAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly Model<Api>[]> {
 		if (providerId) {
@@ -534,21 +575,22 @@ export class ModelRuntime implements Models {
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
-		return this.snapshot.configuredProviders.has(providerId);
+		return this.snapshot.configuredProviders.has(getLegacyJevProviderId(providerId));
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
 	getCredentialSnapshot(providerId: string): Credential | undefined {
-		return this.credentials.peek(providerId);
+		return this.credentials.peek(getLegacyJevProviderId(providerId));
 	}
 
 	getAuth(providerId: string, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
-	getAuth(model: Model<Api>, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
+	getAuth(model: AnyModel, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
 	async getAuth(
-		providerOrModel: string | Model<Api>,
+		providerOrModel: string | AnyModel,
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
-		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
+		if (typeof providerOrModel === "string")
+			return this.models.getAuth(getLegacyJevProviderId(providerOrModel), overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
 		return mergeConfiguredAuthHeaders(
@@ -740,6 +782,7 @@ export class ModelRuntime implements Models {
 		credential: Credential,
 		options: SaveCredentialOptions = {},
 	): Promise<void> {
+		providerId = getLegacyJevProviderId(providerId);
 		const refreshCatalog = options.refreshCatalog ?? true;
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
@@ -773,6 +816,7 @@ export class ModelRuntime implements Models {
 	 * separately.
 	 */
 	async setRuntimeApiKey(providerId: string, apiKey: string, options: AuthOperationOptions): Promise<void> {
+		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
@@ -784,6 +828,7 @@ export class ModelRuntime implements Models {
 	}
 
 	async removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
@@ -800,10 +845,11 @@ export class ModelRuntime implements Models {
 	}
 
 	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
-		return this.snapshot.storedCredentialTypes.get(providerId);
+		return this.snapshot.storedCredentialTypes.get(getLegacyJevProviderId(providerId));
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		providerId = getLegacyJevProviderId(providerId);
 		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,
 			providerId,
@@ -870,7 +916,46 @@ export class ModelRuntime implements Models {
 		return this.streaming.cancelDeferred(model, handle, options);
 	}
 
+	private operationHeaders(model: AnyModel, headers: ProviderHeaders, env?: Record<string, string>): ProviderHeaders {
+		const configured = resolveConfiguredModelHeaders(
+			model,
+			this.config.getProvider(model.provider),
+			this.extensionProviders.get(model.provider),
+			env,
+		);
+		return mergeHeaders(configured, headers) ?? {};
+	}
+
+	generateImages(
+		model: ImageModel<ImageApi>,
+		context: ImagesContext,
+		options?: ModelsImagesOptions,
+	): Promise<AssistantImages> {
+		return this.models.generateImages(model, context, {
+			...options,
+			transformHeaders: async (headers) => {
+				const prepared = this.operationHeaders(model, headers, options?.env);
+				return (await options?.transformHeaders?.(prepared)) ?? prepared;
+			},
+		});
+	}
+
+	classify(
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ModelsClassifierOptions,
+	): Promise<ClassifierResult> {
+		return this.models.classify(model, context, {
+			...options,
+			transformHeaders: async (headers) => {
+				const prepared = this.operationHeaders(model, headers, options?.env);
+				return (await options?.transformHeaders?.(prepared)) ?? prepared;
+			},
+		});
+	}
+
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
+		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal });
@@ -889,6 +974,7 @@ export class ModelRuntime implements Models {
 	}
 
 	async logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });

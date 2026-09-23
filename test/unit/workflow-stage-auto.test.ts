@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/pi-ai";
 import { convertResponsesTools } from "@bastani/pi-ai/api/openai-responses-shared";
 import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { decodeToCheckpoint, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
@@ -604,6 +607,52 @@ for (const auth of ["stored", "env"] as const) {
 		await ctx.__dispose();
 	});
 }
+
+test("stage auto sends stored Jev auth to the session's configured TypeSafe classifier endpoint", async () => {
+	vi.stubEnv("TYPESAFE_API_KEY", "");
+	const dir = mkdtempSync(join(tmpdir(), "workflow-stage-jev-endpoint-"));
+	try {
+		const modelsPath = join(dir, "models.json");
+		writeFileSync(modelsPath, JSON.stringify({ providers: { typesafe: { baseUrl: "https://proxy.example/v1" } } }));
+		const runtime = await ModelRuntime.create({
+			modelsPath,
+			credentials: AuthStorage.inMemory(),
+			refreshOnCreate: false,
+		});
+		runtime.registerProvider(decisionModel.provider, {
+			api: decisionModel.api,
+			baseUrl: decisionModel.baseUrl,
+			apiKey: "mock-chat-secret",
+			models: [decisionModel],
+			streamSimple: () => messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
+		});
+		const key = "synthetic-stored-proxy-jev-key";
+		await runtime.saveCredential("typesafe", { type: "api_key", key });
+		const modelRegistry = new ModelRegistry(runtime);
+		assert.equal(modelRegistry.getClassifierModel("typesafe", "jev-latest")?.baseUrl, "https://proxy.example/v1");
+		const endpoints: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				endpoints.push(String(url));
+				assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
+				return Response.json(jevFixtureResponse(JSON.parse(String(init?.body)) as JevFixtureRequest));
+			}),
+		);
+		const models = workflowModelCatalogFromContext({
+			model: decisionModel,
+			modelRegistry,
+			getRouterModel: () => "",
+		});
+		assert.ok(models?.routeModel);
+		const route = await models.routeModel({ task: "Actual task", stageName: "analyze", constraints: [] });
+		assert.equal(route.routerSelection.model, "decision-test/chat");
+		assert.ok(endpoints.length > 0);
+		assert.deepEqual([...new Set(endpoints)], ["https://proxy.example/v1/systemone"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("durable session checkpoint roundtrip restores selection without another inference", async () => {
 	const f = await fixture();

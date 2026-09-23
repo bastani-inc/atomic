@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelsPublication, ModelsStoreEntry, RefreshModelsContext } from "@bastani/pi-ai";
-import { InMemoryModelsStore } from "@bastani/pi-ai";
+import { InMemoryModelsStore, isModelType } from "@bastani/pi-ai";
 import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -161,7 +161,9 @@ describe("llama.cpp provider", () => {
 		const first = createLlamaProvider();
 		await first.provider.refreshModels?.(await refreshContext(backing, { credential, allowNetwork: true }));
 		assert.equal(first.provider.getModels()[0]?.id, "cached");
-		assert.equal((await backing.read("llama.cpp"))?.models[0]?.maxTokens, 65536);
+		const cached = (await backing.read("llama.cpp"))?.models[0];
+		assert.ok(cached && isModelType(cached, "chat"));
+		assert.equal(cached.maxTokens, 65536);
 
 		globalThis.fetch = mockFetch(async () => {
 			throw new Error("offline");

@@ -136,18 +136,18 @@ test("router settings offer Jev without a chat catalog and save exact values via
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
 	expect(render(submenu)).toContain("Automatic");
-	expect(render(submenu)).toContain("typesafe-ai/jev-latest");
+	expect(render(submenu)).toContain("typesafe/jev-latest");
 	expect(render(submenu)).toContain("OpenRouter structured decisions");
 	submenu.handleInput?.("\x1b[B");
 	expect(changed).not.toHaveBeenCalled();
 	submenu.handleInput?.("\r");
-	expect(changed).toHaveBeenCalledExactlyOnceWith("typesafe-ai/jev-latest");
-	expect(done).toHaveBeenCalledWith("typesafe-ai/jev-latest");
-	expect(config.routerModel).toBe("typesafe-ai/jev-latest");
+	expect(changed).toHaveBeenCalledExactlyOnceWith("typesafe/jev-latest");
+	expect(done).toHaveBeenCalledWith("typesafe/jev-latest");
+	expect(config.routerModel).toBe("typesafe/jev-latest");
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
-	expect(render(reopened)).toContain("→ ✓ typesafe-ai/jev-latest");
+	expect(render(reopened)).toContain("→ ✓ typesafe/jev-latest");
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
@@ -198,6 +198,22 @@ test("router settings preserve an unavailable selection and cancellation does no
 	expect(config.routerModel).toBe("missing/model");
 });
 
+test("router picker preserves a legacy Jev ID and does not offer image or classifier execution models", () => {
+	const config = settingsConfig({
+		routerModel: "typesafe-ai/jev-latest",
+		availableDefaultModels: [
+			{ type: "image", provider: "gallery", id: "paint", name: "Painter" },
+			{ type: "classifier", provider: "judge", id: "jev", name: "Judge" },
+		] as SettingsConfig["availableDefaultModels"],
+	});
+	const menu = openRouterSubmenu(config, vi.fn());
+	const output = render(menu);
+	expect(output).toContain("→ ✓ typesafe-ai/jev-latest");
+	expect(output).toContain("Legacy Jev ID (still supported)");
+	expect(output).not.toContain("gallery/paint");
+	expect(output).not.toContain("judge/jev");
+});
+
 test("router menu saves settings.json and Automatic clears only the router selection", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-router-settings-"));
 	try {
@@ -211,8 +227,8 @@ test("router menu saves settings.json and Automatic clears only the router selec
 		menu.handleInput?.("\x1b[B");
 		menu.handleInput?.("\r");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "typesafe-ai/jev-latest" });
-		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("typesafe-ai/jev-latest");
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "typesafe/jev-latest" });
+		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("typesafe/jev-latest");
 		const reopened = openRouterSubmenu(config, change);
 		reopened.handleInput?.("\x1b[A");
 		reopened.handleInput?.("\r");

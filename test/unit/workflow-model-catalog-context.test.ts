@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
@@ -67,4 +67,33 @@ test("workflow stage model catalog includes alternatives beyond the current mode
 		["provider-a/current", "provider-b/alternate"],
 	);
 	assert.equal(catalog.currentModel, current);
+});
+
+test("workflow stage auto routing refuses a host registry without classifier lookup instead of using built-in Jev", async () => {
+	const current = model("provider-a", "current");
+	const transport = vi.fn();
+	vi.stubGlobal("fetch", transport);
+	try {
+		const catalog = workflowModelCatalogFromContext({
+			model: current,
+			getRouterModel: () => "",
+			modelRegistry: {
+				getAvailable: () => [current],
+				getAll: () => [current],
+				streamSimple: () => {
+					throw new Error("no chat inference expected");
+				},
+				containsConfiguredCredential: async () => false,
+				getProviderAuth: async () => ({ auth: { apiKey: "synthetic-stored-key" } }),
+			},
+		});
+		assert.ok(catalog?.routeModel);
+		await assert.rejects(
+			catalog.routeModel({ task: "Actual task", stageName: "analyze", constraints: [] }),
+			/requires host routing, classifier model, and credential screening support/,
+		);
+		assert.equal(transport.mock.calls.length, 0);
+	} finally {
+		vi.unstubAllGlobals();
+	}
 });

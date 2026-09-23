@@ -111,6 +111,7 @@ test.each([
 		) as Record<string, { id: string; name: string; provider: string; baseUrl: string }>;
 		assert.deepEqual(completions["workers-ai/@cf/example/derived"], {
 			id: "workers-ai/@cf/example/derived",
+			type: "chat",
 			name: "Derived Workers Model",
 			api: "openai-completions",
 			provider: "cloudflare-ai-gateway",

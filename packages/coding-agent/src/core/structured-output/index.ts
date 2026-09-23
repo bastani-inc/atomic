@@ -1,4 +1,4 @@
-import { type Api, type AssistantMessage, type Model, retryAssistantCall } from "@bastani/pi-ai";
+import { type Api, type AssistantMessage, isModelType, type Model, retryAssistantCall } from "@bastani/pi-ai";
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
@@ -210,11 +210,16 @@ async function inferDecision<T extends TSchema>(
 	}
 	if (
 		selected.kind === "chat" &&
-		(!selected.model || selected.model.id === "auto" || selected.model.provider === "typesafe-ai")
+		(!selected.model || selected.model.id === "auto" || !isModelType(selected.model, "chat"))
 	) {
-		throw new Error("Structured output requires a concrete chat model or the decision-only Jev adapter.");
+		throw new Error(
+			"Structured output requires a concrete chat model or Jev classifier; image models cannot decide.",
+		);
 	}
 	const fallbackChat = fallbackModel ? structuredClone(fallbackModel) : undefined;
+	if (fallbackChat && !isModelType(fallbackChat, "chat")) {
+		throw new Error("Structured output fallback requires a chat model; image and classifier models cannot decide.");
+	}
 	let fallback: StructuredOutputResult<Static<T>>["fallback"];
 	const controller = new AbortController();
 	const abort = () => controller.abort(new Error("Structured output cancelled; no decision was accepted."));

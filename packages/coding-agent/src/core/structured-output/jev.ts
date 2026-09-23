@@ -2,7 +2,11 @@ import type { Questions } from "@typesafe-ai/sdk";
 import type { Static, TSchema } from "typebox";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
 import { DEFAULT_DECISION_RETRY, JevRequestError, jevCredentialError, requestJev } from "./jev-client.js";
-import { getStructuredOutputProviders, JEV_STRUCTURED_OUTPUT_PROVIDER as provider } from "./resolver.js";
+import {
+	directJevClassifier,
+	getStructuredOutputProviders,
+	JEV_STRUCTURED_OUTPUT_PROVIDER as provider,
+} from "./resolver.js";
 import type { StructuredChoiceQuestion, StructuredOutputRequest, StructuredOutputResult } from "./types.js";
 
 export const STRUCTURED_DECISION_POLICY =
@@ -93,9 +97,13 @@ async function askJev<T extends TSchema>(
 ) {
 	assertActive();
 	const selectedProvider = getStructuredOutputProviders().find(
-		(candidate) => candidate.fullId === request.model.fullId,
+		(candidate) =>
+			candidate.fullId ===
+			(request.model.fullId === "typesafe-ai/jev-latest" ? "typesafe/jev-latest" : request.model.fullId),
 	);
 	if (!selectedProvider) throw new Error("Invalid Jev model: use an exact structured-decision model ID.");
+	const classifier = selectedProvider.id === "typesafe" ? directJevClassifier(request.modelRegistry) : undefined;
+	if (selectedProvider.id === "typesafe" && !classifier) throw new Error("TypeSafe Jev classifier is not available.");
 	const authGuidance = `Use /login ${selectedProvider.id} or set ${selectedProvider.apiKeyEnv}.`;
 	const questions = compileQuestions(questionsToAsk, request.instructions);
 	assertRequestBudget(selectedProvider.wireModel, request.state, questions);
@@ -112,7 +120,9 @@ async function askJev<T extends TSchema>(
 	assertActive();
 	const response = await requestJev({
 		apiKey,
-		endpoint: selectedProvider.endpoint,
+		endpoint: classifier
+			? new URL("systemone", `${classifier.baseUrl.replace(/\/+$/u, "")}/`).toString()
+			: selectedProvider.endpoint,
 		request: { model: selectedProvider.wireModel, state: request.state, questions },
 		signal,
 		authGuidance,

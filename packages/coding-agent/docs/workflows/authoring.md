@@ -702,6 +702,114 @@ export default workflow({
 
 A `verified` result is cached durably, so a resumed run does not click again. A thrown `refuted`, `blocked`, or `unknown` result fails the node and is not replayed from cache; a new run executes the preflight and the scenario again from a fresh snapshot, and a durable retry of a resumable failure replays the completed preflight checkpoint and re-runs only the scenario. Keep the artifacts directory outside the repository unless the evidence belongs in the deliverable, and never post the installation UUID from `cua-driver telemetry status` in a result or reason. Safety is the same on both faces: one controller per desktop, a dedicated session or account where practical, and an explicit stopping point before destructive or publishing actions.
 
+### Classifier and image models in `ctx.tool`
+
+Workflow stages run chat language models. A classifier or image-generation model is called from workflow TypeScript instead, with `@bastani/pi-ai` (the model library Atomic ships) inside `ctx.tool(name, args, fn, { timeoutMs })`, so the request is a durable, replayable node. The boundaries stay fixed: `model: "auto"` selects only chat language models, including chat models that accept image or PDF input; an image-generation or classifier model never executes a workflow stage; and the structured decision model behind `model: "auto"` (chosen by `routerModel`) may be a chat LM or a classifier, never an image model.
+
+Discovery loads a workflow file with the project that owns it as the module root. The host provides `@bastani/atomic/workflows` and `typebox`; every other package resolves from that project's `node_modules`, in npm and standalone-binary installs alike. Install the library next to the workflow at the version `atomic --version` prints, because older releases have no `classify()` or `generateImages()`:
+
+```sh
+npm install --save-dev @bastani/pi-ai@"$(atomic --version)"
+```
+
+The library reads provider keys from the Atomic process environment (`TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`) or from an explicit `apiKey` request option. It does not read credentials stored by `/login`. Both operations resolve instead of throwing: check `stopReason === "stop"` before using a result, and forward the tool's `signal` so a quit or targeted abort cancels the request.
+
+#### Classify a request before choosing a stage
+
+Use a classifier for a narrow, structured decision such as routing an incoming request. This follows TypeSafe's [intent routing](https://docs.typesafe.ai/patterns/intent-routing.md) and [confidence-gated routing](https://docs.typesafe.ai/patterns/confidence-routing.md) patterns (index: [docs.typesafe.ai/llms.txt](https://docs.typesafe.ai/llms.txt)): one Choice question returns the selected option with a probability per option and a confidence value, and your code decides what to do with that answer. The classifier does **not** execute a stage; workflow code reads its answer and starts a chat stage or asks for human review. Pick thresholds for your own stakes, as TypeSafe's pattern pages do; a threshold is not a guarantee of correctness. In `.atomic/workflows/triage.ts`:
+
+```ts
+import { workflow } from "@bastani/atomic/workflows";
+import { builtinModels } from "@bastani/pi-ai/providers/all";
+import { Type } from "typebox";
+
+export default workflow({
+  name: "triage",
+  description: "Route a support request to a suitable handler.",
+  inputs: { request: Type.String() },
+  outputs: { handler: Type.String() },
+  run: async (ctx) => {
+    const request = ctx.inputs.request;
+    const decision = await ctx.tool("classify-intent", { request }, async ({ signal }) => {
+      const models = builtinModels();
+      const model = models.getModelOfType("classifier", "typesafe", "jev-latest");
+      if (!model) throw new Error("TypeSafe classifier is unavailable");
+      const result = await models.classify(model, {
+        state: { request },
+        questions: {
+          intent: {
+            type: "choice",
+            instructions: "Which support handler should review this request?",
+            criteria: {
+              account: "Questions about an existing account",
+              product: "Questions about product behavior",
+              other: "Neither account nor product",
+            },
+          },
+        },
+      }, { signal });
+      if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? "Classification failed");
+      const intent = result.answers.intent;
+      if (intent?.type !== "choice") throw new Error("Missing intent answer");
+      return { choice: intent.choice, confidence: intent.confidence };
+    }, { timeoutMs: 60_000 });
+
+    // Only workflow code chooses the next action; uncertain requests go to a person.
+    if (decision.confidence < 0.7 || decision.choice === "other") {
+      return { handler: "human review required" };
+    }
+    await ctx.task(`${decision.choice}-review`, {
+      prompt: `Review this ${decision.choice} request and propose a response: ${request}`,
+    });
+    return { handler: decision.choice };
+  },
+});
+```
+
+The cached `{ choice, confidence }` is what a resumed run replays; the classifier is not asked again. For a consequential action, add policy checks or `ctx.ui.confirm(...)` before the side effect. Without the extra install, a schema-backed stage or task (`ctx.task(name, { schema, prompt })`, as the `classify-and-act` builtin does) is the other way to make a validated decision; its answer comes from a chat LM, and any confidence it reports is text the model wrote, not a classifier probability.
+
+#### Generate an image artifact in a durable tool step
+
+For an illustrative asset or a design mock, call an image model inside `ctx.tool()` and write the returned base64 image to a file; the cached node returns only the path. Image generation uses `generateImages()`, never a stage prompt or `structured_output`. In `.atomic/workflows/preview-asset.ts`:
+
+```ts
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { workflow } from "@bastani/atomic/workflows";
+import { builtinModels } from "@bastani/pi-ai/providers/all";
+import { Type } from "typebox";
+
+export default workflow({
+  name: "preview-asset",
+  description: "Generate a draft visual asset for review.",
+  inputs: { brief: Type.String() },
+  outputs: { imagePath: Type.String() },
+  run: async (ctx) => {
+    const brief = ctx.inputs.brief;
+    const outputDir = join(ctx.cwd ?? process.cwd(), ".atomic", "workflow-assets", ctx.runId ?? "local");
+    const generated = await ctx.tool("generate-preview", { brief, outputDir }, async ({ signal }) => {
+      const models = builtinModels();
+      const model = models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
+      if (!model) throw new Error("OpenRouter image model is unavailable");
+      const result = await models.generateImages(model, {
+        input: [{ type: "text", text: `Draft visual asset: ${brief}` }],
+      }, { signal });
+      if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? "Image generation failed");
+      const image = result.output.find((block) => block.type === "image");
+      if (!image) throw new Error("The response contained no image");
+      const extension = image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/webp" ? "webp" : "png";
+      const imagePath = join(outputDir, `preview.${extension}`);
+      await mkdir(dirname(imagePath), { recursive: true });
+      await writeFile(imagePath, Buffer.from(image.data, "base64"));
+      return { imagePath };
+    }, { timeoutMs: 120_000 });
+    return { imagePath: generated.imagePath };
+  },
+});
+```
+
+Hand the path to a later chat stage in its prompt. Review generated assets before publishing them or citing them as evidence: a generated image is not proof of a real-world state.
+
 ### Workflow Composition
 
 Use workflow composition when a workflow calls a reusable user-defined workflow from the project or package, or a bundled builtin workflow, and consumes its outputs as a tracked boundary stage. Import the child definition with a normal TypeScript import, then pass it directly to `ctx.workflow(workflowDefinition, options)`. `ctx.workflow(...)` does not accept registry names, path objects, or string aliases.

@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/xiaomi.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const XIAOMI_MODELS: ModelCatalog<typeof import("./data/xiaomi.json", { with: { type: "json" } }), "xiaomi"> =
-	flattenModelCatalog("xiaomi", values);
+export const XIAOMI_MODELS: ChatModelCatalog<typeof import("./data/xiaomi.json", { with: { type: "json" } }), "xiaomi"> =
+	flattenChatModelCatalog("xiaomi", values);
+
+export const XIAOMI_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/xiaomi.json", { with: { type: "json" } }), "xiaomi"> =
+	flattenImageModelCatalog("xiaomi", values);
+
+export const XIAOMI_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/xiaomi.json", { with: { type: "json" } }), "xiaomi"> =
+	flattenClassifierModelCatalog("xiaomi", values);

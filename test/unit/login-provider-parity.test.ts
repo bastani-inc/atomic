@@ -46,6 +46,16 @@ test("API-key login options follow builtin provider auth metadata", () => {
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["qwen-token-plan-individual"], "Qwen Token Plan (Individual)");
 });
 
+test("legacy TypeSafe login ID resolves to the unified classifier provider", () => {
+	const options = getBuiltinApiKeyLoginOptions((id) => id);
+	assert.ok(options.some((option) => option.id === "typesafe"));
+	assert.ok(!options.some((option) => option.id === "typesafe-ai"));
+	assert.deepEqual(resolveLoginProviderReference(options, "typesafe-ai"), {
+		kind: "direct",
+		option: options.find((option) => option.id === "typesafe"),
+	});
+});
+
 test("login provider reference resolution handles ids, names, methods, and misses", () => {
 	assert.deepEqual(resolveLoginProviderReference(providers, "OPENAI"), {
 		kind: "direct",
@@ -78,7 +88,21 @@ test("login command advertises its provider argument", () => {
 });
 
 test("every adopted builtin provider has a preferred default", () => {
-	const missing = builtinProviders()
+	const providers = builtinProviders();
+	const chatless = providers.filter((provider) => provider.getModels().length === 0);
+	// A chatless builtin must be a non-chat catalog (such as the TypeSafe classifier)
+	// and must not carry a chat default; every chat provider needs one.
+	for (const provider of chatless) {
+		const models = provider.getAllModels?.() ?? [];
+		assert.ok(models.length > 0, `${provider.id} has no models`);
+		assert.ok(
+			models.every((model) => model.type === "classifier" || model.type === "image"),
+			`${provider.id} lost its chat models`,
+		);
+		assert.equal(defaultModelPerProvider[provider.id], undefined, `${provider.id} has no chat models`);
+	}
+	const missing = providers
+		.filter((provider) => provider.getModels().length > 0)
 		.map((provider) => provider.id)
 		.filter((providerId) => defaultModelPerProvider[providerId] === undefined);
 	assert.deepEqual(missing, []);

@@ -233,6 +233,14 @@ test("installed Pi runtime includes generated model data and bundled OAuth adapt
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules") });
 });
 
+test("binary and release asset gates use only the unified generated model catalog", async () => {
+	for (const path of ["packages/coding-agent/scripts/assert-pi-runtime-assets.ts", ".github/workflows/publish.yml"]) {
+		const source = await readText(join(root, path));
+		assert.ok(source.includes("models.generated.js"), path);
+		assert.equal(source.includes("image-models.generated.js"), false, path);
+	}
+});
+
 test("binary pipelines require generated Pi model data and OAuth assets", async () => {
 	const packageManifest = await readJson<Manifest>(join(root, "packages/coding-agent/package.json"));
 	assert.equal(packageManifest.scripts["build:binary"].includes("--cwd ../tui"), false);

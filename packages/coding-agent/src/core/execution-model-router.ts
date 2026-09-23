@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Api, containsKnownEnvCredential, getSupportedThinkingLevels, type Model } from "@bastani/pi-ai";
+import {
+	type Api,
+	containsKnownEnvCredential,
+	getSupportedThinkingLevels,
+	isModelType,
+	type Model,
+} from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
@@ -18,7 +24,7 @@ export interface ModelRoutingContext {
 		ModelRegistry,
 		"getAll" | "getAvailable" | "streamSimple" | "containsConfiguredCredential"
 	> &
-		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth">>;
+		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel">>;
 	readonly model?: Model<Api>;
 	getRouterModel(): string;
 }
@@ -127,7 +133,7 @@ export async function routeExecutionModel(input: {
 	const catalog = () =>
 		ctx.modelRegistry
 			.getAvailable()
-			.filter((model) => model.provider !== "typesafe-ai")
+			.filter((model) => isModelType(model, "chat"))
 			.map((model) => ({
 				model,
 				pairs: (model.reasoning ? getSupportedThinkingLevels(model) : [null])

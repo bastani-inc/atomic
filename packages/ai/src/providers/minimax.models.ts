@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/minimax.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const MINIMAX_MODELS: ModelCatalog<typeof import("./data/minimax.json", { with: { type: "json" } }), "minimax"> =
-	flattenModelCatalog("minimax", values);
+export const MINIMAX_MODELS: ChatModelCatalog<typeof import("./data/minimax.json", { with: { type: "json" } }), "minimax"> =
+	flattenChatModelCatalog("minimax", values);
+
+export const MINIMAX_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/minimax.json", { with: { type: "json" } }), "minimax"> =
+	flattenImageModelCatalog("minimax", values);
+
+export const MINIMAX_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/minimax.json", { with: { type: "json" } }), "minimax"> =
+	flattenClassifierModelCatalog("minimax", values);

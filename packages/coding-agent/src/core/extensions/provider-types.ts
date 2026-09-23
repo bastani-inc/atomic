@@ -1,4 +1,11 @@
-import type { RefreshModelsContext } from "@bastani/pi-ai";
+import type {
+	AnyModel,
+	ClassifierApi,
+	ImageApi,
+	ProviderClassifier,
+	ProviderImages,
+	RefreshModelsContext,
+} from "@bastani/pi-ai";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -29,6 +36,10 @@ export interface ProviderConfig {
 	 * Event data is adapter-owned and must be treated as read-only.
 	 */
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	/** Image API implementations keyed by each image model's api. */
+	images?: Partial<Record<ImageApi, ProviderImages>>;
+	/** Classifier API implementations keyed by each classifier model's api. */
+	classifiers?: Partial<Record<ClassifierApi, ProviderClassifier>>;
 	/** Custom headers to include in requests. */
 	headers?: Record<string, string>;
 	/** If true, adds Authorization: Bearer header with the resolved API key. */
@@ -60,37 +71,51 @@ export interface ProviderConfig {
 	};
 }
 
-/** Configuration for a model within a provider. */
-export interface ProviderModelConfig {
+interface ProviderModelConfigBase {
 	/** Model ID (e.g., "claude-sonnet-4-20250514"). */
 	id: string;
-	/** Display name (e.g., "Claude 4 Sonnet"). */
+	/** Display name. */
 	name: string;
-	/** API type override for this model. */
-	api?: Api;
-	/** API endpoint URL override for this model. */
+	api?: string;
 	baseUrl?: string;
+	input: AnyModel["input"];
+	inputLimits?: AnyModel["inputLimits"];
+	cost: AnyModel["cost"];
+	headers?: Record<string, string>;
+}
+
+/** Chat models are the default when `type` is omitted. */
+export interface ProviderChatModelConfig extends ProviderModelConfigBase {
+	type?: "chat";
+	api?: Api;
 	/** Whether the model supports extended thinking. */
 	reasoning: boolean;
 	/** Maps pi thinking levels to provider/model-specific values; null marks a level unsupported. */
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-	/** Supported input types. `"pdf"` only on runtimes that can serialize a document block. */
-	input: Model<Api>["input"];
-	/** Provider input limits and cache-safe image preprocessing metadata. */
-	inputLimits?: Model<Api>["inputLimits"];
-	/** Request pricing, including optional request-wide long-context tiers. */
-	cost: Model<Api>["cost"];
 	/** Default/effective context window size in tokens. */
 	contextWindow: number;
 	/** Maximum output tokens. */
 	maxTokens: number;
 	/** Default sampling parameters merged into OpenAI-compatible request bodies. */
 	samplingParams?: Record<string, unknown>;
-	/** Custom headers for this model. */
-	headers?: Record<string, string>;
 	/** Provider capability settings, including Atomic's `supportsGrammarTools` alias. */
 	compat?: AtomicProviderCompat;
 }
+
+export interface ProviderImageModelConfig extends ProviderModelConfigBase {
+	type: "image";
+	api?: ImageApi;
+	output: ("text" | "image")[];
+}
+
+export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
+	type: "classifier";
+	api?: ClassifierApi;
+	contextWindow: number;
+}
+
+/** Models for all supported operations in a provider registration. */
+export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
 
 /** Extension factory function type. Supports both sync and async initialization. */
 export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;

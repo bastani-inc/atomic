@@ -7,7 +7,6 @@ export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",
-	"dist/image-models.generated.js",
 	"dist/providers/data/.manifest.json",
 	"dist/providers/data/amazon-bedrock.json",
 	"dist/providers/data/anthropic.json",

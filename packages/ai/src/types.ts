@@ -28,9 +28,13 @@ export type KnownApi =
 
 export type Api = KnownApi | (string & {});
 
-export type KnownImagesApi = "openrouter-images";
+export type KnownImageApi = "openrouter-images";
 
-export type ImagesApi = KnownImagesApi | (string & {});
+export type ImageApi = KnownImageApi | (string & {});
+
+export type KnownClassifierApi = "typesafe-system-one";
+
+export type ClassifierApi = KnownClassifierApi | (string & {});
 
 export type KnownProvider =
 	| "amazon-bedrock"
@@ -42,6 +46,7 @@ export type KnownProvider =
 	| "azure-openai-responses"
 	| "openai-codex"
 	| "radius"
+	| "typesafe"
 	| "nvidia"
 	| "deepseek"
 	| "github-copilot"
@@ -75,10 +80,6 @@ export type KnownProvider =
 	| "xiaomi-token-plan-ams"
 	| "xiaomi-token-plan-sgp";
 export type ProviderId = KnownProvider | string;
-
-export type KnownImagesProvider = "openrouter";
-
-export type ImagesProviderId = KnownImagesProvider | string;
 
 export type ToolChoice = "auto" | "none";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -313,18 +314,29 @@ export interface ProviderStreams {
 /**
  * The uniform contract of an image-generation API implementation module:
  * every image API module under `src/api/` exports exactly `generateImages`,
- * so the module itself satisfies this interface. Lazy wrappers and image
- * provider factories pass these around as values.
+ * so the module itself satisfies this interface. Lazy wrappers and
+ * `createProvider({ images })` pass these around as values.
  */
 export interface ProviderImages {
 	generateImages(
-		model: ImagesModel<ImagesApi>,
+		model: ImageModel<ImageApi>,
 		context: ImagesContext,
 		options?: ImagesOptions,
 	): Promise<AssistantImages>;
 }
 
-export interface ImagesOptions extends ProviderRequestOptions<ImagesModel<ImagesApi>> {
+/** The uniform contract implemented by classifier API modules. */
+export interface ProviderClassifier {
+	classify(
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ClassifierOptions,
+	): Promise<ClassifierResult>;
+}
+
+export interface ClassifierOptions extends ProviderRequestOptions<ClassifierModel<ClassifierApi>> {}
+
+export interface ImagesOptions extends ProviderRequestOptions<ImageModel<ImageApi>> {
 	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.
@@ -368,11 +380,17 @@ export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOption
 	options?: TOptions,
 ) => AssistantMessageEventStream;
 
-export type ImagesFunction<TApi extends ImagesApi = ImagesApi, TOptions extends ImagesOptions = ImagesOptions> = (
-	model: ImagesModel<TApi>,
+export type ImagesFunction<TOptions extends ImagesOptions = ImagesOptions> = (
+	model: ImageModel<ImageApi>,
 	context: ImagesContext,
 	options?: TOptions,
 ) => Promise<AssistantImages>;
+
+export type ClassifierFunction<TOptions extends ClassifierOptions = ClassifierOptions> = (
+	model: ClassifierModel<ClassifierApi>,
+	context: ClassifierContext,
+	options?: TOptions,
+) => Promise<ClassifierResult>;
 
 export interface TextSignatureV1 {
 	v: 1;
@@ -636,13 +654,69 @@ export interface ImagesContext {
 export type ImagesStopReason = "stop" | "error" | "aborted";
 
 export interface AssistantImages {
-	api: ImagesApi;
-	provider: ImagesProviderId;
+	api: ImageApi;
+	provider: ProviderId;
 	model: string;
 	output: ImagesOutputContent[];
 	responseId?: string;
 	usage?: Usage;
 	stopReason: ImagesStopReason;
+	errorMessage?: string;
+	timestamp: number; // Unix timestamp in milliseconds
+}
+
+export interface ClassifierChoiceQuestion {
+	type: "choice";
+	instructions: string;
+	criteria: Record<string, string>;
+}
+
+export interface ClassifierScoreQuestion {
+	type: "score";
+	instructions: string;
+	criteria: string[];
+}
+
+export interface ClassifierBoolQuestion {
+	type: "bool";
+	instructions: string;
+	criteria: { true: string; false: string };
+}
+
+export type ClassifierQuestion = ClassifierChoiceQuestion | ClassifierScoreQuestion | ClassifierBoolQuestion;
+
+export interface ClassifierContext {
+	state: JsonObject;
+	questions: Record<string, ClassifierQuestion>;
+}
+
+export interface ClassifierChoiceAnswer {
+	type: "choice";
+	choice: string;
+	probabilities: Record<string, number>;
+	confidence: number;
+}
+
+export interface ClassifierScoreAnswer {
+	type: "score";
+	score: number;
+	confidence: number;
+}
+
+export interface ClassifierBoolAnswer {
+	type: "bool";
+	probability: number;
+}
+
+export type ClassifierAnswer = ClassifierChoiceAnswer | ClassifierScoreAnswer | ClassifierBoolAnswer;
+export type ClassifierStopReason = "stop" | "error" | "aborted";
+
+export interface ClassifierResult {
+	api: ClassifierApi;
+	provider: ProviderId;
+	model: string;
+	answers: Record<string, ClassifierAnswer>;
+	stopReason: ClassifierStopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
 }
@@ -1132,35 +1206,40 @@ export interface ModelFastRoute {
 	speed?: "fast";
 }
 
-// Model interface for the unified model system
-export interface Model<TApi extends Api> {
+/** Fields shared by every catalog entry, regardless of what you can do with it. */
+export interface BaseModel<TApi extends string> {
 	id: string;
 	name: string;
 	api: TApi;
 	provider: ProviderId;
 	baseUrl: string;
+	input: ("text" | "image" | "pdf")[];
+	/** Provider input limits and cache-safe preprocessing metadata. */
+	inputLimits?: ModelInputLimits;
+	cost: ModelCost;
+	headers?: Record<string, string>;
+}
+
+/** Chat model: usable with `stream()` and friends. */
+export interface Model<TApi extends Api> extends BaseModel<TApi> {
+	/**
+	 * Optional: chat is the default model type, so models without `type` are chat
+	 * models. Narrow mixed model lists with `isModelType()` instead of comparing
+	 * `type` directly.
+	 */
+	type?: "chat";
 	reasoning: boolean;
 	/**
 	 * Maps pi thinking levels to provider/model-specific values.
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
-	/**
-	 * Modalities Atomic can send to this model. `"pdf"` is set only where a runtime can serialize
-	 * a document block — the Anthropic Messages and Amazon Bedrock Converse paths — so a provider
-	 * that publishes PDF support but has no such path here stays at `["text", "image"]`.
-	 */
-	input: ("text" | "image" | "pdf")[];
-	/** Provider input limits and cache-safe preprocessing metadata. */
-	inputLimits?: ModelInputLimits;
-	cost: ModelCost;
 	/** Prompt cache lifetimes per retention tier. Unset when the provider's cache behavior is unknown. */
 	promptCache?: ModelPromptCache;
 	contextWindow: number;
 	maxTokens: number;
 	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
 	samplingParams?: Record<string, unknown>;
-	headers?: Record<string, string>;
 	/**
 	 * Marks this model as the fast-inference variant of {@link ModelFastRoute.baseModelId} and carries the
 	 * upstream routing it needs. Absent on every normal model.
@@ -1180,9 +1259,28 @@ export interface Model<TApi extends Api> {
 						: never;
 }
 
-export interface ImagesModel<TApi extends ImagesApi>
-	extends Omit<Model<Api>, "api" | "provider" | "reasoning" | "contextWindow" | "maxTokens" | "compat"> {
-	api: TApi;
-	provider: ImagesProviderId;
+/** Image-generation model: usable with `generateImages()` only. */
+export interface ImageModel<TApi extends ImageApi> extends BaseModel<TApi> {
+	type: "image";
+	/** Output modalities. Always includes `"image"`; `"text"` means the model can also return text blocks. */
 	output: ("text" | "image")[];
 }
+
+/** Structured classifier model: usable with `classify()` only. */
+export interface ClassifierModel<TApi extends ClassifierApi> extends BaseModel<TApi> {
+	type: "classifier";
+	contextWindow: number;
+}
+
+/** Model shape for each model type. */
+export interface ModelTypeMap {
+	chat: Model<Api>;
+	image: ImageModel<ImageApi>;
+	classifier: ClassifierModel<ClassifierApi>;
+}
+
+/** What a catalog entry is for. Decides which `Models` operation accepts it. */
+export type ModelType = keyof ModelTypeMap;
+
+/** Anything a provider can list. Narrow with `isModelType()`. */
+export type AnyModel = ModelTypeMap[ModelType];

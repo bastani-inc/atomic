@@ -4,9 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Image generation now uses `ImageModel` entries in the regular `Provider` and `Models` collection instead of the separate `ImagesModels`/`ImagesProvider` collection. Replace `createImagesModels()`, `createImagesProvider()`, `builtinImagesModels()`, and `openrouterImagesProvider()` with `createModels()`/`builtinModels()` and `models.getModelOfType("image", ...)`/`models.generateImages()`. The old plural image type names are removed; generated image catalog data now ships alongside chat and classifier entries.
+
 ### Added
 
 - Added `onProviderStreamEvent` to observe parsed provider stream events before normalization, including provider-specific fields not retained in assistant messages ([#9784](https://github.com/earendil-works/pi/issues/9784)).
+- Added operation-specific model accessors (`getModelsOfType()`, `getModelOfType()`, `getAvailableOfType()`, `getAllModels()`, `getAllAvailable()`), image and classifier dispatch on providers, and `classify()` for structured choice, score, and bool questions. The built-in TypeSafe `jev-latest` classifier uses `TYPESAFE_API_KEY`; OpenRouter image models share OpenRouter authentication. Chat-only reads and models with no `type` continue to mean chat.
+- Added typed JSON catalog variants (`models.all.json` and `providers/{id}.all.json`) alongside the existing chat-only variants for clients that request all operation types.
 
 ### Fixed
 

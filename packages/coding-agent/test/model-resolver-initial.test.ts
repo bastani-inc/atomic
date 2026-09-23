@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { Model } from "@bastani/pi-ai/compat";
 import { getBuiltinModels, getBuiltinProviders } from "@bastani/pi-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
@@ -98,13 +99,19 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.3");
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
 	});
-	test("built-in defaults exist in generated provider catalogs", () => {
+	test("built-in chat providers have defaults in their generated catalogs", () => {
 		for (const provider of getBuiltinProviders()) {
+			const chatModels = getBuiltinModels(provider);
 			const defaultId = defaultModelPerProvider[provider];
-			expect(
-				getBuiltinModels(provider).some((model) => model.id === defaultId),
+			if (chatModels.length === 0) {
+				assert.equal(defaultId, undefined, `${provider} has no chat models and should have no chat default`);
+				continue;
+			}
+			assert.equal(
+				chatModels.some((model) => model.id === defaultId),
+				true,
 				`${provider} default ${defaultId} should exist in its generated catalog`,
-			).toBe(true);
+			);
 		}
 	});
 	test("findInitialModel accepts explicit provider custom model ids", async () => {

@@ -219,7 +219,7 @@ test("explicit Jev without its key fails without a chat model to fall back to (#
 			currentModel: undefined,
 			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
 		}),
-		/requires an API key.*\/login typesafe-ai/,
+		/requires an API key.*\/login typesafe/,
 	);
 });
 

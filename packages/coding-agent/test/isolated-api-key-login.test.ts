@@ -62,7 +62,7 @@ describe("isolated API-key login", () => {
 
 		expect(result).toEqual({ modelsRefreshed: true });
 		expect(saveProviderCredential).toHaveBeenCalledWith(
-			PROVIDER,
+			"typesafe",
 			{ type: "api_key", key: "isolated-login-key" },
 			{ refreshCatalog: false },
 		);

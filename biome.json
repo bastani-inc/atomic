@@ -42,5 +42,6 @@
 			"!packages/ai",
 			"!test/fixtures/**/*"
 		]
-	}
+	},
+	"plugins": ["./scripts/biome/model-type-comparison.grit"]
 }

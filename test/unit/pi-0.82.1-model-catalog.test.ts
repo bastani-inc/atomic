@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { builtinImagesModels } from "@bastani/pi-ai/providers/all";
+import { builtinModels } from "@bastani/pi-ai/providers/all";
 import { describe, test } from "vitest";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 
@@ -43,8 +43,8 @@ describe("Pi 0.82.1 generated catalogs through Atomic", () => {
 	});
 
 	test("exposes the refreshed generated image catalog from the upgraded dependency", () => {
-		const ids = builtinImagesModels()
-			.getModels()
+		const ids = builtinModels()
+			.getModelsOfType("image")
 			.map((model) => model.id);
 		assert.ok(ids.includes("black-forest-labs/flux.2-flex"));
 		assert.ok(ids.includes("bytedance-seed/seedream-4.5"));

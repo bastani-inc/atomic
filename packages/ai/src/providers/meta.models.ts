@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/meta.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const META_MODELS: ModelCatalog<typeof import("./data/meta.json", { with: { type: "json" } }), "meta"> =
-	flattenModelCatalog("meta", values);
+export const META_MODELS: ChatModelCatalog<typeof import("./data/meta.json", { with: { type: "json" } }), "meta"> =
+	flattenChatModelCatalog("meta", values);
+
+export const META_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/meta.json", { with: { type: "json" } }), "meta"> =
+	flattenImageModelCatalog("meta", values);
+
+export const META_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/meta.json", { with: { type: "json" } }), "meta"> =
+	flattenClassifierModelCatalog("meta", values);

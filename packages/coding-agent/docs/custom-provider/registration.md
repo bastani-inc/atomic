@@ -68,7 +68,7 @@ pi.registerProvider("my-llm", {
 });
 ```
 
-When `models` is provided, it **replaces** all existing models for that provider.
+When `models` is provided, it **replaces** all existing chat, image, and classifier models for that provider. A missing `type` means chat; image and classifier models need `type: "image"` or `type: "classifier"` and implementations in the `images` or `classifiers` maps keyed by each model's `api`. See the [mixed-operation provider example](/custom-provider#quick-reference).
 
 ## Unregister Provider
 

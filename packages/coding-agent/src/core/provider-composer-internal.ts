@@ -1,9 +1,12 @@
 import type {
+	AnyModel,
 	Api,
 	ApiKeyAuth,
 	AssistantMessageEventStream,
 	AuthContext,
 	AuthResult,
+	ClassifierApi,
+	ImageApi,
 	Model,
 	ModelAuth,
 	OAuthAuth,
@@ -11,11 +14,14 @@ import type {
 	OAuthLoginCallbacks,
 	Provider,
 	ProviderAuthInteraction,
+	ProviderClassifier,
 	ProviderHeaders,
+	ProviderImages,
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TranscriptContext,
 } from "@bastani/pi-ai";
+import { isModelType } from "@bastani/pi-ai";
 import type { ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
 import {
 	clearConfigValueCache,
@@ -42,6 +48,43 @@ export interface ExtensionOAuthConfig {
 	modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 }
 
+interface ProviderModelConfigBase {
+	id: string;
+	name: string;
+	api?: string;
+	baseUrl?: string;
+	input: AnyModel["input"];
+	inputLimits?: AnyModel["inputLimits"];
+	cost: AnyModel["cost"];
+	headers?: Record<string, string>;
+}
+
+export interface ProviderChatModelConfig extends ProviderModelConfigBase {
+	type?: "chat";
+	api?: Api;
+	reasoning: boolean;
+	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
+	promptCache?: Model<Api>["promptCache"];
+	contextWindow: number;
+	maxTokens: number;
+	samplingParams?: Record<string, unknown>;
+	compat?: Model<Api>["compat"];
+}
+
+export interface ProviderImageModelConfig extends ProviderModelConfigBase {
+	type: "image";
+	api?: ImageApi;
+	output: ("text" | "image")[];
+}
+
+export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
+	type: "classifier";
+	api?: ClassifierApi;
+	contextWindow: number;
+}
+
+export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
+
 /** Input type for the extension registerProvider API. */
 export interface ProviderConfigInput {
 	name?: string;
@@ -53,26 +96,12 @@ export interface ProviderConfigInput {
 		context: TranscriptContext,
 		options?: SimpleStreamOptions,
 	) => AssistantMessageEventStream;
+	images?: Partial<Record<ImageApi, ProviderImages>>;
+	classifiers?: Partial<Record<ClassifierApi, ProviderClassifier>>;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
 	oauth?: ExtensionOAuthConfig;
-	models?: Array<{
-		id: string;
-		name: string;
-		api?: Api;
-		baseUrl?: string;
-		reasoning: boolean;
-		thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-		input: Model<Api>["input"];
-		inputLimits?: Model<Api>["inputLimits"];
-		cost: Model<Api>["cost"];
-		promptCache?: Model<Api>["promptCache"];
-		contextWindow: number;
-		maxTokens: number;
-		samplingParams?: Record<string, unknown>;
-		headers?: Record<string, string>;
-		compat?: Model<Api>["compat"];
-	}>;
+	models?: ProviderModelConfig[];
 	refreshModels?(context: RefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
 }
 
@@ -206,9 +235,9 @@ function findModelDefaults(models: readonly Model<Api>[], modelId: string, api?:
 
 export function applyModelsJson(
 	providerId: string,
-	baseModels: readonly Model<Api>[],
+	baseModels: readonly AnyModel[],
 	config: ModelsJsonProvider | undefined,
-): Model<Api>[] {
+): AnyModel[] {
 	if (!config) return [...baseModels];
 	if (config.oauth && !config.baseUrl) {
 		throw new Error(`Provider ${providerId}: "baseUrl" is required when "oauth" is set.`);
@@ -229,14 +258,22 @@ export function applyModelsJson(
 		);
 	}
 
-	const models: Model<Api>[] = baseModels.map((model) => ({
-		...model,
-		baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
-		compat: mergeCompat(model.compat, config.compat),
-	}));
+	const models: AnyModel[] = baseModels.map((model) =>
+		isModelType(model, "chat")
+			? {
+					...model,
+					baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
+					compat: mergeCompat(model.compat, config.compat),
+				}
+			: { ...model, baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl) },
+	);
 	for (const definition of config.models ?? []) {
-		const existingIndex = models.findIndex((model) => model.id === definition.id);
-		const defaults = findModelDefaults(models, definition.id, definition.api ?? config.api);
+		const existingIndex = models.findIndex((model) => isModelType(model, "chat") && model.id === definition.id);
+		const defaults = findModelDefaults(
+			models.filter((model) => isModelType(model, "chat")),
+			definition.id,
+			definition.api ?? config.api,
+		);
 		const model = modelFromJson(providerId, definition, config, defaults);
 		if (existingIndex >= 0) models[existingIndex] = model;
 		else models.push(model);
@@ -246,30 +283,30 @@ export function applyModelsJson(
 
 export function applyExtension(
 	providerId: string,
-	models: readonly Model<Api>[],
+	models: readonly AnyModel[],
 	config: ProviderConfigInput | undefined,
-): Model<Api>[] {
+): AnyModel[] {
 	if (!config) return [...models];
 	if (!config.models) {
 		return config.baseUrl ? models.map((model) => ({ ...model, baseUrl: config.baseUrl! })) : [...models];
 	}
 	return config.models.map((definition) => {
-		const defaults = findModelDefaults(models, definition.id, definition.api ?? config.api);
-		const api = definition.api ?? config.api ?? defaults?.api;
+		const type = definition.type ?? "chat";
+		const candidates = models.filter((model) => isModelType(model, type));
+		const defaults =
+			candidates.find((model) => model.id === definition.id) ??
+			(definition.api ? candidates.find((model) => model.api === definition.api) : undefined) ??
+			(type === "chat" ? candidates.find((model) => model.api === "openai-completions") : undefined) ??
+			candidates[0];
+		const api = definition.api ?? (type === "chat" ? config.api : undefined) ?? defaults?.api;
 		if (!api) {
 			throw new Error(
-				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
+				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set it at model level${type === "chat" ? " or provider level" : ""}.`,
 			);
 		}
 		const baseUrl = definition.baseUrl ?? config.baseUrl ?? defaults?.baseUrl;
 		if (!baseUrl) throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
-		return {
-			...definition,
-			api,
-			provider: providerId,
-			baseUrl,
-			headers: undefined,
-		};
+		return { ...definition, api, provider: providerId, baseUrl, headers: undefined } as AnyModel;
 	});
 }
 
@@ -432,14 +469,16 @@ export function composeOAuthAuth(
 }
 
 export function rawModelHeaders(
-	model: Model<Api>,
+	model: AnyModel,
 	config: ModelsJsonProvider | undefined,
 	extension: ProviderConfigInput | undefined,
 ): Record<string, string> | undefined {
-	const definition = config?.models?.find((entry) => entry.id === model.id);
-	const extensionModel = extension?.models?.find((entry) => entry.id === model.id);
+	const definition = isModelType(model, "chat") ? config?.models?.find((entry) => entry.id === model.id) : undefined;
+	const extensionModel = extension?.models?.find(
+		(entry) => (entry.type ?? "chat") === (model.type ?? "chat") && entry.id === model.id,
+	);
 	const headers = {
-		...config?.modelOverrides?.[model.id]?.headers,
+		...(isModelType(model, "chat") ? config?.modelOverrides?.[model.id]?.headers : undefined),
 		...definition?.headers,
 		...extensionModel?.headers,
 	};

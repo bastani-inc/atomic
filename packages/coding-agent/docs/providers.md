@@ -194,7 +194,7 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | OpenCode Go                        | `OPENCODE_API_KEY`                                                        | `opencode-go`                |
 | Radius                             | `RADIUS_API_KEY`                                                          | `radius`                     |
 | Hugging Face                       | `HF_TOKEN`                                                                | `huggingface`                |
-| TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe-ai`                |
+| TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe`                   |
 | Fireworks                          | `FIREWORKS_API_KEY`                                                       | `fireworks`                  |
 | Together AI                        | `TOGETHER_API_KEY`                                                        | `together`                   |
 | Baseten                            | `BASETEN_API_KEY`                                                         | `baseten`                    |
@@ -502,21 +502,21 @@ For router-mode discovery, load/unload management, and Hugging Face downloads wi
 
 ## TypeSafe Jev
 
-`typesafe-ai/jev-latest`, `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` are built-in structured-decision models, not chat or tool-calling models. They are available for automatic workflow-stage and subagent model selection and [SDK structured decisions](/sdk/structured-decisions), not `/model`, chat `--model`, or child execution model fields. SDK integrations can inspect their supported capabilities with `getStructuredOutputProviders()`.
+`typesafe/jev-latest` is the unified TypeSafe classifier model. Jev can make structured decisions for automatic workflow-stage and subagent model selection and [SDK structured decisions](/sdk/structured-decisions), but is never an execution `auto` candidate, chat `--model`, or `/model` choice. The gateway Jev decision IDs `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` remain available for explicit selection. SDK integrations can inspect decision routes with `getStructuredOutputProviders()`.
 
-Use `/login typesafe-ai` to save an API key in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key, just as for other API-key providers. `/logout` removes the saved key; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
+Use `/login typesafe` to save an API key in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Existing `/login typesafe-ai`, saved `typesafe-ai` keys, and `typesafe-ai/jev-latest` router settings remain accepted; new keys are saved for `typesafe`. Stored credentials take precedence over the environment key. `/logout typesafe` removes saved current and legacy TypeSafe keys; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
 
 For OpenRouter, select `openrouter/~typesafe/jev-latest` in `/settings` → **Router model**, or set `"routerModel": "openrouter/~typesafe/jev-latest"`. It uses your existing `/login openrouter` sign-in or saved API key, with the usual `OPENROUTER_API_KEY` fallback. No TypeSafe key or separate login is needed. Atomic sends wire model `~typesafe/jev-latest` to OpenRouter's Decisions API, not its chat endpoint. OpenRouter credentials alone do not change automatic router selection.
 
 Vercel AI Gateway and OpenCode Zen resell Jev on TypeSafe-compatible `systemone` endpoints. Select `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or the limited-time `opencode/jev-1.13-free` the same way. Each uses that provider's existing `/login` credentials or its `AI_GATEWAY_API_KEY` / `OPENCODE_API_KEY` environment key, never a TypeSafe or OpenRouter key. The gateway model IDs, context limits, and prices come from the [models.dev](https://models.dev/models/typesafe/jev-latest/) decision catalog that Atomic regenerates with its chat catalogs; Cloudflare AI Gateway, NanoGPT, and Vivgrid also list Jev there but are not registered because they need a different request envelope or have no verified `systemone` route. Like OpenRouter, gateway selections are explicit-only.
 
-Replace the former direct ID `typesafe-ai/jev` with `typesafe-ai/jev-latest` in saved router settings and SDK calls. Direct TypeSafe credentials and the wire model `jev-latest` are unchanged.
+The direct ID is now `typesafe/jev-latest`; older `typesafe-ai/jev-latest` settings and SDK calls remain compatible. The former `typesafe-ai/jev` ID still needs replacing with `typesafe/jev-latest`. Direct TypeSafe credentials and the wire model `jev-latest` are unchanged.
 
 With an empty `routerModel`, configured Jev credentials select Jev for workflow-stage and subagent `model: "auto"` selection. An explicit router selection takes precedence. General SDK structured-output requests select their inference model explicitly. This does not change the `structured_output` tool's model. User-issued `/workflow` commands launch directly.
 
 Routers can repair malformed or schema-invalid answers up to three times after the initial attempt, without a structured-decision deadline. Cancel the request to stop waiting; independent provider and enclosing tool-request limits still apply. Generic SDK decisions remain one-shot. Large choices can require several requests, increasing latency and usage; state is never trimmed automatically. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits) before sending large candidate lists or context.
 
-HTTP 401 means check the key saved through `/login typesafe-ai` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
+HTTP 401 means check the key saved through `/login typesafe` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
 
 ## Custom Providers
 

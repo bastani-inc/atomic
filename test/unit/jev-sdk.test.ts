@@ -70,7 +70,7 @@ test("automatic Jev routing falls back once to the current chat model with visib
 	});
 	assert.equal(result.model, "decision-test/chat");
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
-	assert.equal(result.fallback?.from, "typesafe-ai/jev-latest");
+	assert.equal(result.fallback?.from, "typesafe/jev-latest");
 	assert.match(result.fallback?.reason ?? "", /max_tokens_exceeded/);
 	assert.equal(warning.mock.calls.length, 1);
 	assert.match(

@@ -47,7 +47,7 @@ test("gateway Jev registrations come from the models.dev decision catalog", () =
 	const providers = getStructuredOutputProviders();
 	assert.deepEqual(
 		providers.slice(0, 2).map((provider) => provider.fullId),
-		["typesafe-ai/jev-latest", "openrouter/~typesafe/jev-latest"],
+		["typesafe/jev-latest", "openrouter/~typesafe/jev-latest"],
 	);
 	for (const gateway of gateways) {
 		const provider = providers.find((candidate) => candidate.fullId === gateway.fullId);

@@ -4,6 +4,8 @@ import type {
 	AssistantMessageEventStream,
 	AuthOperationOptions,
 	AuthResult,
+	ClassifierApi,
+	ClassifierModel,
 	Context,
 	Model,
 	ModelsApiStreamOptions,
@@ -62,6 +64,10 @@ export class ModelRegistry {
 
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		return this.runtime.getModel(provider, modelId);
+	}
+
+	getClassifierModel(provider: string, modelId: string): ClassifierModel<ClassifierApi> | undefined {
+		return this.runtime.getModelOfType("classifier", provider, modelId);
 	}
 
 	hasConfiguredAuth(model: Model<Api>): boolean {

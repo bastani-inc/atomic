@@ -50,7 +50,7 @@ describe("atomic update --models", () => {
 		await refreshModelCatalogs(agentDir);
 
 		const [url, init] = fetchMock.mock.calls[0]!;
-		expect(url.toString()).toBe("https://pi.dev/api/models/providers/anthropic");
+		expect(url.toString()).toBe("https://pi.dev/api/models/providers/anthropic?types=chat%2Cimage%2Cclassifier");
 		expect(init?.signal?.aborted).toBe(false);
 	});
 

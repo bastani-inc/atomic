@@ -74,6 +74,8 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://models.dev/api.json") {\n` +
 			`    return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 			`  }\n` +
+			`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { type: "decision", name: "Jev" } });\n` +
+			`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test/image", name: "Image", architecture: { output_modalities: ["image"] } }] });\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models") {\n` +
 			`    openRouterAttempts += 1;\n` +
 			`    const mode = ${JSON.stringify(mode)};\n` +
@@ -135,7 +137,7 @@ describe("strict model generation", () => {
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
 			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/2)",
 		);
-		expect(result.stdout).toContain("Fetched 0 tool-capable models from OpenRouter");
+		expect(result.stdout).toContain("Fetched 0 tool-capable and 1 image models from OpenRouter");
 		const individualCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/qwen-token-plan-individual.json"), "utf8"),
 		) as Record<string, { thinkingLevelMap?: Record<string, string | null> }>;

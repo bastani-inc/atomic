@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/vercel-ai-gateway.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const VERCEL_AI_GATEWAY_MODELS: ModelCatalog<typeof import("./data/vercel-ai-gateway.json", { with: { type: "json" } }), "vercel-ai-gateway"> =
-	flattenModelCatalog("vercel-ai-gateway", values);
+export const VERCEL_AI_GATEWAY_MODELS: ChatModelCatalog<typeof import("./data/vercel-ai-gateway.json", { with: { type: "json" } }), "vercel-ai-gateway"> =
+	flattenChatModelCatalog("vercel-ai-gateway", values);
+
+export const VERCEL_AI_GATEWAY_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/vercel-ai-gateway.json", { with: { type: "json" } }), "vercel-ai-gateway"> =
+	flattenImageModelCatalog("vercel-ai-gateway", values);
+
+export const VERCEL_AI_GATEWAY_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/vercel-ai-gateway.json", { with: { type: "json" } }), "vercel-ai-gateway"> =
+	flattenClassifierModelCatalog("vercel-ai-gateway", values);

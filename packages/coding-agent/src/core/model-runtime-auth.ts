@@ -1,4 +1,4 @@
-import type { Api, AuthResult, Model } from "@bastani/pi-ai";
+import type { AnyModel, AuthResult } from "@bastani/pi-ai";
 import type { ModelConfig } from "./model-config.ts";
 import { mergeHeaders } from "./model-runtime-streaming.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
@@ -8,7 +8,7 @@ import { resolveConfiguredModelHeaders } from "./provider-composer.ts";
 /** Apply models.json and extension headers after pi-ai resolves provider credentials. */
 export function mergeConfiguredAuthHeaders(
 	resolution: AuthResult,
-	model: Model<Api>,
+	model: AnyModel,
 	config: ModelConfig,
 	extension: ProviderConfigInput | undefined,
 	overrides: ModelRuntimeAuthOverrides,

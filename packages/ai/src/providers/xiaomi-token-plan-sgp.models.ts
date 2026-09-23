@@ -2,7 +2,13 @@
 // Do not edit manually - run 'npm run generate-models' to update
 
 import values from "./data/xiaomi-token-plan-sgp.json" with { type: "json" };
-import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";
+import { flattenChatModelCatalog, flattenImageModelCatalog, flattenClassifierModelCatalog, type ChatModelCatalog, type ImageModelCatalog, type ClassifierModelCatalog } from "../model-catalog.ts";
 
-export const XIAOMI_TOKEN_PLAN_SGP_MODELS: ModelCatalog<typeof import("./data/xiaomi-token-plan-sgp.json", { with: { type: "json" } }), "xiaomi-token-plan-sgp"> =
-	flattenModelCatalog("xiaomi-token-plan-sgp", values);
+export const XIAOMI_TOKEN_PLAN_SGP_MODELS: ChatModelCatalog<typeof import("./data/xiaomi-token-plan-sgp.json", { with: { type: "json" } }), "xiaomi-token-plan-sgp"> =
+	flattenChatModelCatalog("xiaomi-token-plan-sgp", values);
+
+export const XIAOMI_TOKEN_PLAN_SGP_IMAGE_MODELS: ImageModelCatalog<typeof import("./data/xiaomi-token-plan-sgp.json", { with: { type: "json" } }), "xiaomi-token-plan-sgp"> =
+	flattenImageModelCatalog("xiaomi-token-plan-sgp", values);
+
+export const XIAOMI_TOKEN_PLAN_SGP_CLASSIFIER_MODELS: ClassifierModelCatalog<typeof import("./data/xiaomi-token-plan-sgp.json", { with: { type: "json" } }), "xiaomi-token-plan-sgp"> =
+	flattenClassifierModelCatalog("xiaomi-token-plan-sgp", values);

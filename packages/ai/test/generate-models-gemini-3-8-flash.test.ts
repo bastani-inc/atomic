@@ -356,6 +356,7 @@ test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
 	// opencode zen routes Google models through the Gemini API with its own pricing.
 	assert.deepEqual(catalogs.opencode["gemini-3.8-flash"], {
 		id: "gemini-3.8-flash",
+		type: "chat",
 		name: "Gemini 3.8 Flash",
 		api: "google-generative-ai",
 		provider: "opencode",
