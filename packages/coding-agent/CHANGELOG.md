@@ -22,6 +22,7 @@
 
 - Fixed an API key saved with `/login` in an interactive session not reaching the running engine, so workflow routing and other engine-side work kept reporting `requires an API key` until Atomic was restarted. API-key logins are now persisted by the engine, like OAuth logins and `/logout`, and both sides report the provider consistently ([#3193](https://github.com/bastani-inc/atomic/issues/3193)).
 - Fixed the RPC extension UI example to disable extensions with the supported `--no-extensions` flag and safely frame split UTF-8 output.
+- The Windows installer now retries removing the previous version backup with a bounded backoff when a file inside it is briefly locked (for example by Defender or the search indexer), instead of leaving a `.backup-*` directory behind in the install root.
 
 ## [0.9.20-alpha.6] - 2026-09-22
 

@@ -639,27 +639,35 @@ function Remove-AtomicDirectoryLinkOrTree {
     Remove-Item -LiteralPath $item.FullName -Recurse -Force
 }
 
-function Remove-AtomicTemporaryDirectory {
+function Test-AtomicRemovalTargetExists {
+    param([string]$Path)
+
+    return ([IO.Directory]::Exists($Path) -or [IO.File]::Exists($Path))
+}
+
+function Remove-AtomicTreeWithRetry {
     param(
         [string]$Path,
         [int]$RetryLimit,
         [int]$RetryDelayMilliseconds
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Directory]::Exists($Path)) {
-        return
+    $result = [pscustomobject]@{ Removed = $true; Attempts = 0; LastError = $null }
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-AtomicRemovalTargetExists $Path)) {
+        return $result
     }
 
-    $attempt = 0
-    $lastCleanupError = $null
-    while ($attempt -lt $RetryLimit) {
-        $attempt++
+    while ($result.Attempts -lt $RetryLimit) {
+        $result.Attempts++
+        $isDirectory = [IO.Directory]::Exists($Path)
 
         try {
             $readOnlyCandidates = New-Object System.Collections.ArrayList
             [void]$readOnlyCandidates.Add($Path)
-            foreach ($entry in [IO.Directory]::GetFileSystemEntries($Path, "*", [IO.SearchOption]::AllDirectories)) {
-                [void]$readOnlyCandidates.Add($entry)
+            if ($isDirectory) {
+                foreach ($entry in [IO.Directory]::GetFileSystemEntries($Path, "*", [IO.SearchOption]::AllDirectories)) {
+                    [void]$readOnlyCandidates.Add($entry)
+                }
             }
             foreach ($candidate in $readOnlyCandidates) {
                 $candidateAttributes = [IO.File]::GetAttributes($candidate)
@@ -671,41 +679,66 @@ function Remove-AtomicTemporaryDirectory {
             }
         }
         catch {
-            $lastCleanupError = $_
+            $result.LastError = $_
         }
 
         try {
-            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $Path -Recurse:$isDirectory -Force -ErrorAction Stop
         }
         catch {
-            $lastCleanupError = $_
+            $result.LastError = $_
         }
-        if (-not [IO.Directory]::Exists($Path)) {
-            return
+        if (-not (Test-AtomicRemovalTargetExists $Path)) {
+            return $result
         }
 
         try {
-            [IO.Directory]::Delete($Path, $true)
+            if ($isDirectory) {
+                [IO.Directory]::Delete($Path, $true)
+            }
+            else {
+                [IO.File]::Delete($Path)
+            }
         }
         catch {
-            $lastCleanupError = $_
+            $result.LastError = $_
         }
-        if (-not [IO.Directory]::Exists($Path)) {
-            return
+        if (-not (Test-AtomicRemovalTargetExists $Path)) {
+            return $result
         }
 
-        if ($attempt -lt $RetryLimit) {
-            Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $attempt)
+        if ($result.Attempts -lt $RetryLimit) {
+            Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $result.Attempts)
         }
     }
 
-    $lastCleanupDetail = if ($null -eq $lastCleanupError) {
+    $result.Removed = $false
+    return $result
+}
+
+function Remove-AtomicTemporaryDirectory {
+    param(
+        [string]$Path,
+        [int]$RetryLimit,
+        [int]$RetryDelayMilliseconds
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Directory]::Exists($Path)) {
+        return
+    }
+
+    $removal = Remove-AtomicTreeWithRetry $Path $RetryLimit $RetryDelayMilliseconds
+    if ($removal.Removed) {
+        return
+    }
+
+    $lastCleanupDetail = if ($null -eq $removal.LastError) {
         "the directory still existed after every verified removal attempt"
     }
     else {
-        [string]$lastCleanupError
+        [string]$removal.LastError
     }
-    throw "Failed to remove the temporary download directory ${Path} after $attempt attempts; last error: $lastCleanupDetail"
+    throw "Failed to remove the temporary download directory ${Path} after $($removal.Attempts) attempts; last error: $lastCleanupDetail"
 }
 
 function Remove-AtomicEmptyDirectory {
@@ -930,7 +963,11 @@ function Invoke-AtomicTransactionRollback {
 }
 
 function Remove-AtomicTransactionBackups {
-    param([hashtable]$Transaction)
+    param(
+        [hashtable]$Transaction,
+        [int]$RetryLimit,
+        [int]$RetryDelayMilliseconds
+    )
 
     if ($null -eq $Transaction) {
         return
@@ -938,17 +975,28 @@ function Remove-AtomicTransactionBackups {
 
     $shimBackupItem = Get-AtomicDirectoryEntry $Transaction.ShimBackupPath
     if ($null -ne $shimBackupItem) {
-        try { Remove-Item -LiteralPath $shimBackupItem.FullName -Force }
-        catch { Write-Warning -Message "Installed successfully, but could not remove the previous shim backup: $_" -WarningAction Continue }
+        $removal = Remove-AtomicTreeWithRetry $shimBackupItem.FullName $RetryLimit $RetryDelayMilliseconds
+        if (-not $removal.Removed) {
+            Write-Warning -Message "Installed successfully, but could not remove the previous shim backup: $($removal.LastError)" -WarningAction Continue
+        }
     }
     foreach ($backup in @(
         @{ Name = "atomic-current"; Path = $Transaction.AtomicCurrentBackupPath },
         @{ Name = "current"; Path = $Transaction.CurrentBackupPath },
         @{ Name = "version"; Path = $Transaction.VersionBackupPath }
     )) {
-        if ($null -ne (Get-AtomicDirectoryEntry $backup.Path)) {
-            try { Remove-AtomicDirectoryLinkOrTree $backup.Path }
+        $backupItem = Get-AtomicDirectoryEntry $backup.Path
+        if ($null -eq $backupItem) {
+            continue
+        }
+        if (($backupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            try { [IO.Directory]::Delete($backupItem.FullName) }
             catch { Write-Warning -Message "Installed successfully, but could not remove the previous $($backup.Name) backup: $_" -WarningAction Continue }
+            continue
+        }
+        $removal = Remove-AtomicTreeWithRetry $backupItem.FullName $RetryLimit $RetryDelayMilliseconds
+        if (-not $removal.Removed) {
+            Write-Warning -Message "Installed successfully, but could not remove the previous $($backup.Name) backup: $($removal.LastError)" -WarningAction Continue
         }
     }
 }
@@ -1298,7 +1346,7 @@ try {
         }
 
         $transactionCommitted = $true
-        Remove-AtomicTransactionBackups $transaction
+        Remove-AtomicTransactionBackups $transaction $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
     catch {
         $commitError = $_
@@ -1354,7 +1402,7 @@ finally {
         }
     }
     if ($null -ne $transaction -and $transactionCommitted) {
-        Remove-AtomicTransactionBackups $transaction
+        Remove-AtomicTransactionBackups $transaction $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
 
     if ($null -ne $shimNextPath -and $null -ne (Get-AtomicDirectoryEntry $shimNextPath)) {

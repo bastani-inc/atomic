@@ -649,35 +649,49 @@ test("Windows installer cleans staged children before only snapshotted empty tra
 
 test("Windows installer removes its temporary download directory with bounded verified retries", () => {
 	const source = installerSource();
-	const helperStart = source.indexOf("function Remove-AtomicTemporaryDirectory");
-	assert.ok(helperStart >= 0, "the verified temporary-directory removal helper is missing");
-	const helper = source.slice(helperStart, source.indexOf("function Remove-AtomicEmptyDirectory"));
-	assert.ok(helper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
+	const retryStart = source.indexOf("function Remove-AtomicTreeWithRetry");
+	assert.ok(retryStart >= 0, "the shared verified removal helper is missing");
+	const helper = source.slice(retryStart, source.indexOf("function Remove-AtomicTemporaryDirectory"));
+	assert.ok(helper.length > 0, "the shared removal helper is not declared before Remove-AtomicTemporaryDirectory");
 
 	assert.match(helper, /\[string\]\$Path,\r?\n\s+\[int\]\$RetryLimit,\r?\n\s+\[int\]\$RetryDelayMilliseconds/u);
 	assert.match(
 		helper,
-		/if \(\[string\]::IsNullOrWhiteSpace\(\$Path\) -or -not \[IO\.Directory\]::Exists\(\$Path\)\)/u,
+		/if \(\[string\]::IsNullOrWhiteSpace\(\$Path\) -or -not \(Test-AtomicRemovalTargetExists \$Path\)\)/u,
 	);
-	assert.match(helper, /while \(\$attempt -lt \$RetryLimit\)/u);
+	assert.match(helper, /while \(\$result\.Attempts -lt \$RetryLimit\)/u);
 	assert.doesNotMatch(helper, /while \(\$true\)|do \{/u, "the removal helper must not loop without a bound");
 	assert.match(helper, /\[IO\.FileAttributes\]::ReadOnly/u);
 	assert.match(helper, /\[IO\.File\]::SetAttributes\(/u);
-	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse -Force -ErrorAction Stop/u);
+	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse:\$isDirectory -Force -ErrorAction Stop/u);
 	assert.doesNotMatch(helper, /SilentlyContinue/u, "the removal helper must not suppress deletion failures");
 	assert.match(helper, /\[IO\.Directory\]::Delete\(\$Path, \$true\)/u);
+	assert.match(helper, /\[IO\.File\]::Delete\(\$Path\)/u);
 	assert.equal(
-		(helper.match(/if \(-not \[IO\.Directory\]::Exists\(\$Path\)\) \{\r?\n\s+return\r?\n\s+\}/gu) ?? []).length,
+		(
+			helper.match(/if \(-not \(Test-AtomicRemovalTargetExists \$Path\)\) \{\r?\n\s+return \$result\r?\n\s+\}/gu) ??
+			[]
+		).length,
 		2,
 		"the removal helper does not verify absence after both removal strategies",
 	);
-	assert.match(helper, /Start-Sleep -Milliseconds \(\$RetryDelayMilliseconds \* \$attempt\)/u);
-	assert.match(
-		helper,
-		/throw "Failed to remove the temporary download directory \$\{Path\} after \$attempt attempts; last error: \$lastCleanupDetail"/u,
-	);
+	assert.match(helper, /Start-Sleep -Milliseconds \(\$RetryDelayMilliseconds \* \$result\.Attempts\)/u);
 	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u, "the helper removes a path it was not given");
 	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u, "the helper deletes a path it was not given");
+
+	const wrapperStart = source.indexOf("function Remove-AtomicTemporaryDirectory");
+	assert.ok(wrapperStart >= 0, "the verified temporary-directory removal helper is missing");
+	const wrapper = source.slice(wrapperStart, source.indexOf("function Remove-AtomicEmptyDirectory"));
+	assert.ok(wrapper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
+	assert.match(
+		wrapper,
+		/if \(\[string\]::IsNullOrWhiteSpace\(\$Path\) -or -not \[IO\.Directory\]::Exists\(\$Path\)\)/u,
+	);
+	assert.match(wrapper, /Remove-AtomicTreeWithRetry \$Path \$RetryLimit \$RetryDelayMilliseconds/u);
+	assert.match(
+		wrapper,
+		/throw "Failed to remove the temporary download directory \$\{Path\} after \$\(\$removal\.Attempts\) attempts; last error: \$lastCleanupDetail"/u,
+	);
 
 	assert.match(source, /\$tempCleanupRetryLimit = [2-9]\r?\n/u);
 	assert.match(source, /\$tempCleanupRetryDelayMilliseconds = [1-9][0-9]*\r?\n/u);
@@ -1540,6 +1554,10 @@ $global:AtomicFixtureTempLockMode = $null
 $global:AtomicFixtureTempLockPath = $null
 $global:AtomicFixtureTempLockStream = $null
 $global:AtomicFixtureTempRemovalAttempts = 0
+$global:AtomicFixtureBackupLockMode = $null
+$global:AtomicFixtureBackupLockPath = $null
+$global:AtomicFixtureBackupLockStream = $null
+$global:AtomicFixtureBackupRemovalAttempts = 0
 $global:AtomicFixtureWarnings = New-Object System.Collections.ArrayList
 
 function global:Write-Warning {
@@ -1572,6 +1590,16 @@ function global:Remove-Item {
             $null -ne $global:AtomicFixtureTempLockStream) {
             $global:AtomicFixtureTempLockStream.Dispose()
             $global:AtomicFixtureTempLockStream = $null
+        }
+    }
+
+    if ([IO.Path]::GetFileName($LiteralPath) -match '^\.backup-[0-9a-f]{32}$') {
+        $global:AtomicFixtureBackupRemovalAttempts++
+        if ($global:AtomicFixtureBackupLockMode -eq "one-shot" -and
+            $global:AtomicFixtureBackupRemovalAttempts -ge 2 -and
+            $null -ne $global:AtomicFixtureBackupLockStream) {
+            $global:AtomicFixtureBackupLockStream.Dispose()
+            $global:AtomicFixtureBackupLockStream = $null
         }
     }
 
@@ -1720,6 +1748,15 @@ function global:Move-Item {
     }
 
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureBackupLockMode) -and
+        $destinationLeaf -match '^\.backup-[0-9a-f]{32}$' -and
+        $null -eq $global:AtomicFixtureBackupLockStream) {
+        $backupLockPath = Join-Path $Destination "atomic.exe"
+        if ([IO.File]::Exists($backupLockPath)) {
+            $global:AtomicFixtureBackupLockPath = $backupLockPath
+            $global:AtomicFixtureBackupLockStream = [IO.File]::Open($backupLockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureRollbackFailurePoint) -and
         $leafName -match '^\.atomic-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") {
         $global:AtomicFixtureRollbackArmed = $true
@@ -2549,6 +2586,40 @@ try {
         Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "custom PATHEXT did not resolve atomic.cmd ahead of atomic.exe: $resolvedOutput"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "backup-cleanup") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the seed install did not complete"
+
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureBackupRemovalAttempts = 0
+        $global:AtomicFixtureBackupLockMode = "one-shot"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $global:AtomicFixtureBackupLockMode = $null
+        Assert-Fixture ($global:AtomicFixtureBackupRemovalAttempts -ge 2) "a real briefly locked version backup did not force a removal retry ($($global:AtomicFixtureBackupRemovalAttempts) removal calls)"
+        Assert-Fixture ($null -eq $global:AtomicFixtureBackupLockStream) "the one-shot backup handle was never released"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the locked-backup reinstall did not complete"
+        $recoveredWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'could not remove the previous' })
+        Assert-Fixture ($recoveredWarnings.Count -eq 0) "a recovered backup removal still warned: $($recoveredWarnings -join '; ')"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureBackupRemovalAttempts = 0
+        $global:AtomicFixtureBackupLockMode = "sticky"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $global:AtomicFixtureBackupLockMode = $null
+        Assert-Fixture ($global:AtomicFixtureBackupRemovalAttempts -ge 2) "an exhausted backup removal did not retry ($($global:AtomicFixtureBackupRemovalAttempts) removal calls)"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "an exhausted backup removal discarded a completed install"
+        $stickyWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'could not remove the previous version backup' })
+        Assert-Fixture ($stickyWarnings.Count -eq 1) "an exhausted backup removal did not warn exactly once ($($stickyWarnings.Count)): $($global:AtomicFixtureWarnings -join '; ')"
+        $global:AtomicFixtureBackupLockStream.Dispose()
+        $global:AtomicFixtureBackupLockStream = $null
+        $lockedBackupDir = [IO.Path]::GetDirectoryName($global:AtomicFixtureBackupLockPath)
+        Remove-Item -LiteralPath $lockedBackupDir -Recurse -Force
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     elseif ($Scenario -eq "temp-cleanup") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
@@ -3202,6 +3273,85 @@ test("Windows PowerShell 5.1 temp-cleanup fixture proves bounded removal against
 	);
 });
 
+test("Windows installer retries transaction backup removal after commit with the bounded shared helper", () => {
+	const source = installerSource();
+	const cleanupStart = source.indexOf("function Remove-AtomicTransactionBackups");
+	assert.ok(cleanupStart >= 0, "the committed backup cleanup helper is missing");
+	const cleanup = source.slice(cleanupStart, source.indexOf("$tempDir = $null", cleanupStart));
+	assert.ok(cleanup.length > 0, "the committed backup cleanup helper is not declared before the state block");
+
+	assert.match(
+		cleanup,
+		/\[hashtable\]\$Transaction,\r?\n\s+\[int\]\$RetryLimit,\r?\n\s+\[int\]\$RetryDelayMilliseconds/u,
+	);
+	assert.match(
+		cleanup,
+		/Remove-AtomicTreeWithRetry \$shimBackupItem\.FullName \$RetryLimit \$RetryDelayMilliseconds/u,
+		"the shim backup file is not removed with the bounded retry helper",
+	);
+	assert.match(
+		cleanup,
+		/Remove-AtomicTreeWithRetry \$backupItem\.FullName \$RetryLimit \$RetryDelayMilliseconds/u,
+		"directory backups are not removed with the bounded retry helper",
+	);
+	assert.match(
+		cleanup,
+		/\(\$backupItem\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint\) -ne 0/u,
+		"reparse-point backups are not detected before recursive removal",
+	);
+	assert.match(
+		cleanup,
+		/\[IO\.Directory\]::Delete\(\$backupItem\.FullName\)/u,
+		"reparse-point backups must be deleted with a single non-recursive link delete",
+	);
+	assert.doesNotMatch(
+		cleanup,
+		/Remove-AtomicDirectoryLinkOrTree/u,
+		"the single-attempt removal path is still present",
+	);
+	for (const warning of cleanup.matchAll(/^\s*Write-Warning[^\r\n]*$/gmu)) {
+		assert.match(warning[0], /-WarningAction Continue/u);
+	}
+	assert.match(
+		cleanup,
+		/if \(-not \$removal\.Removed\) \{\r?\n\s+Write-Warning -Message "Installed successfully, but could not remove the previous shim backup/u,
+		"the shim backup warning does not wait for exhausted retries",
+	);
+	assert.equal(
+		(
+			source.match(
+				/Remove-AtomicTransactionBackups \$transaction \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/gu,
+			) ?? []
+		).length,
+		2,
+		"both committed cleanup call sites must pass the bounded retry budget",
+	);
+});
+
+test("Windows PowerShell 5.1 backup-cleanup fixture proves committed backups survive brief real locks", () => {
+	assert.match(
+		fixtureHarness,
+		/\[IO\.File\]::Open\(\$backupLockPath, \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \[IO\.FileShare\]::None\)/u,
+	);
+	assert.match(
+		fixtureHarness,
+		/\$global:AtomicFixtureBackupLockMode -eq "one-shot" -and\r?\n\s+\$global:AtomicFixtureBackupRemovalAttempts -ge 2/u,
+	);
+	const scenario = fixtureHarness.slice(
+		fixtureHarness.indexOf('elseif ($Scenario -eq "backup-cleanup")'),
+		fixtureHarness.indexOf('elseif ($Scenario -eq "temp-cleanup")'),
+	);
+	assert.ok(scenario.length > 0, "the backup-cleanup fixture scenario is missing");
+	assert.doesNotMatch(scenario, /Start-Sleep/u, "the deterministic probe must not wait on wall-clock time");
+	assert.match(scenario, /a real briefly locked version backup did not force a removal retry/u);
+	assert.match(scenario, /the one-shot backup handle was never released/u);
+	assert.match(scenario, /the locked-backup reinstall did not complete/u);
+	assert.match(scenario, /a recovered backup removal still warned/u);
+	assert.match(scenario, /an exhausted backup removal did not retry/u);
+	assert.match(scenario, /an exhausted backup removal discarded a completed install/u);
+	assert.match(scenario, /an exhausted backup removal did not warn exactly once/u);
+});
+
 function runPowerShellFixture(
 	scenario:
 		| "install"
@@ -3221,6 +3371,7 @@ function runPowerShellFixture(
 		| "semicolon-bin"
 		| "shadowed-shim"
 		| "custom-pathext"
+		| "backup-cleanup"
 		| "temp-cleanup",
 ): string {
 	assert.ok(powershellExecutable);
@@ -3350,6 +3501,9 @@ powershellTest("PowerShell 5.1 fixture refuses same-stem launchers that PATHEXT 
 
 powershellTest("PowerShell 5.1 fixture honors custom PATHEXT order when .CMD precedes .EXE", () => {
 	runPowerShellFixture("custom-pathext");
+});
+powershellTest("PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue", () => {
+	runPowerShellFixture("backup-cleanup");
 });
 
 powershellTest(
