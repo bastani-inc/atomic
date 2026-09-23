@@ -174,4 +174,25 @@ describe("TypeSafe System One", () => {
 		expect(result.answers).toEqual({});
 		expect(result.errorMessage).toContain("did not return an answer for category");
 	});
+	it("rejects classifier answers outside the submitted criteria and probability bounds", async () => {
+		const invalidAnswers = [
+			{ category: { ...wireAnswers.category, choice: "unsubmitted" } },
+			{ category: { ...wireAnswers.category, probabilities: { success: 1.2, failure: -0.2 } } },
+			{ category: { ...wireAnswers.category, probabilities: { success: 0.9, failure: 0.1, unknown: 0 } } },
+			{ category: { ...wireAnswers.category, confidence: 1.1 } },
+			{ satisfaction: { ...wireAnswers.satisfaction, score: 3 } },
+			{ satisfaction: { ...wireAnswers.satisfaction, score: -0.5 } },
+			{ satisfaction: { ...wireAnswers.satisfaction, confidence: -0.1 } },
+			{ approved: { ...wireAnswers.approved, noul: 1.1 } },
+		];
+		for (const patch of invalidAnswers) {
+			const result = await classify(model, context, {
+				apiKey: "secret",
+				fetch: async () => Response.json({ answers: { ...wireAnswers, ...patch } }),
+			});
+			expect(result.stopReason).toBe("error");
+			expect(result.answers).toEqual({});
+		}
+	});
+
 });

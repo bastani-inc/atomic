@@ -28,6 +28,34 @@ function isSupportedModelType(model: { type?: unknown }): boolean {
 	);
 }
 
+function hasOperationShape(model: unknown): boolean {
+	if (typeof model !== "object" || model === null) return false;
+	if (!("type" in model) || (model.type !== "image" && model.type !== "classifier")) return true;
+	if (!("cost" in model)) return false;
+	const cost = model.cost;
+	return (
+		"id" in model &&
+		typeof model.id === "string" &&
+		model.id.length > 0 &&
+		"name" in model &&
+		typeof model.name === "string" &&
+		"api" in model &&
+		typeof model.api === "string" &&
+		"baseUrl" in model &&
+		typeof model.baseUrl === "string" &&
+		"input" in model &&
+		Array.isArray(model.input) &&
+		cost !== null &&
+		typeof cost === "object" &&
+		["input", "output", "cacheRead", "cacheWrite"].every(
+			(key) => key in cost && typeof (cost as Record<string, unknown>)[key] === "number",
+		) &&
+		(model.type === "image"
+			? "output" in model && Array.isArray(model.output) && model.output.includes("image")
+			: "contextWindow" in model && typeof model.contextWindow === "number" && model.contextWindow > 0)
+	);
+}
+
 function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynamic: readonly TModel[]): TModel[] {
 	const merged = [...baseline];
 	for (const model of dynamic) {
@@ -50,6 +78,7 @@ function parseCatalog(providerId: string, value: unknown): AnyModel[] {
 	return entries
 		.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && "id" in entry)
 		.filter(isSupportedModelType)
+		.filter(hasOperationShape)
 		.map((model) => ({ ...model, provider: providerId }) as AnyModel);
 }
 
@@ -83,7 +112,9 @@ export function withRemoteCatalog(
 			// dynamicModels now runs inside a generation-checked publish; a false return
 			// means a newer refresh already superseded this pass, so it must not continue.
 			const stored = context.stored;
-			const restored = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
+			const restored = remoteModels(stored, localGeneratedAt).filter(
+				(model) => model.provider === provider.id && hasOperationShape(model),
+			);
 			if (
 				!(await context.publish({
 					update: () => {

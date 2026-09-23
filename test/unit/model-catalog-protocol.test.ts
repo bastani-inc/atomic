@@ -73,6 +73,18 @@ test("redirects Pi user agents to an explicit catalog version", () => {
 	});
 });
 
+test("parses Pi user agents without backtracking over long invalid descriptors", () => {
+	const url = "https://pi.dev/api/models";
+	const invalid = `pi/0.84.4 (${" ".repeat(20_000)};${" ".repeat(20_000)};`;
+	assert.deepEqual(parseModelCatalogRequest(url, invalid), {
+		kind: "catalog",
+		piVersion: undefined,
+		representation: "legacy",
+	});
+	assert.equal(parseModelCatalogRequest(url, "pi/0.84.4 (linux; node/v22; x64; arm)").kind, "redirect");
+	assert.equal(parseModelCatalogRequest(url, "pi/0.84.4 (linux; ; x64)").kind, "catalog");
+});
+
 test("serves explicit and unversioned catalog requests without redirecting", () => {
 	assert.deepEqual(
 		parseModelCatalogRequest("https://pi.dev/api/models?pi-version=0.83.0", "pi/0.85.1 (linux; node/v22.0.0; x64)"),

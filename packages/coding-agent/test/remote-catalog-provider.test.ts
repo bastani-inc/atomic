@@ -116,6 +116,21 @@ describe("remote catalog provider", () => {
 		expect(stored?.models.map((entry) => entry.id)).toEqual(["chat", "flux", "jev"]);
 	});
 
+	it("ignores malformed operation entries instead of replacing usable models", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+			Response.json({
+				invalidImage: { id: "static", type: "image" },
+				invalidClassifier: { id: "judge", type: "classifier" },
+				validChat: model("dynamic"),
+			}),
+		);
+		const provider = testProvider();
+		const store = new InMemoryModelsStore();
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
+		expect(provider.getAllModels?.().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
+		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
+	});
+
 	it("prefers the newer of the generated and remote catalogs", async () => {
 		const localGeneratedAt = Date.parse("2026-07-23T10:00:00.000Z");
 		const newerHeader = new Date(localGeneratedAt + 60_000).toUTCString();

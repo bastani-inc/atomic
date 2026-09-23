@@ -2874,7 +2874,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesafe-system-one">[]> {
 	try {
 		console.log("Fetching classifier models from models.dev API...");
-		const response = await fetch("https://models.dev/models.json?type=decision");
+		const response = await fetchModelCatalog("https://models.dev/models.json?type=decision");
 		if (!response.ok) throw new Error(`models.dev classifier API returned ${response.status}`);
 		const data = (await response.json()) as Record<string, ModelsDevMetadata>;
 		const metadata = data["typesafe/jev-latest"];

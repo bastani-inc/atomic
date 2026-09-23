@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function runOpenRouterRetryFixture(
-	mode: "transient-success" | "transient-failure" | "http-429" | "http-400" | "cyclic-self" | "cyclic-mutual",
+	mode: "transient-success" | "transient-failure" | "http-429" | "http-400" | "classifier-429" | "cyclic-self" | "cyclic-mutual",
 ) {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-models-retry-"));
 	temporaryRoots.push(fixtureRoot);
@@ -69,17 +69,22 @@ function runOpenRouterRetryFixture(
 		preloadPath,
 		`const catalog = ${JSON.stringify(catalog)};\n` +
 			`let openRouterAttempts = 0;\n` +
+			`let classifierAttempts = 0;\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") {\n` +
 			`    return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 			`  }\n` +
-			`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { type: "decision", name: "Jev" } });\n` +
+			`  if (url === "https://models.dev/models.json?type=decision") {\n` +
+			`    classifierAttempts += 1;\n` +
+			`    if (${JSON.stringify(mode)} === "classifier-429" && classifierAttempts === 1) return new Response("rate limited", { status: 429 });\n` +
+			`    return Response.json({ "typesafe/jev-latest": { type: "decision", name: "Jev" } });\n` +
+			`  }\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test/image", name: "Image", architecture: { output_modalities: ["image"] } }] });\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models") {\n` +
 			`    openRouterAttempts += 1;\n` +
 			`    const mode = ${JSON.stringify(mode)};\n` +
-			`    if ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1) {\n` +
+			`    if (mode === "classifier-429" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
 			`      return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`    }\n` +
 			`    if (mode === "http-429") return new Response("rate limited", { status: 429 });\n` +
@@ -175,6 +180,14 @@ describe("strict model generation", () => {
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
 			"Model fetch from https://openrouter.ai/api/v1/models returned 429; retrying (attempt 2/2)",
+		);
+	});
+
+	it("retries a rate-limited classifier catalog response", () => {
+		const result = runOpenRouterRetryFixture("classifier-429");
+		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+		expect(`${result.stdout}\n${result.stderr}`).toContain(
+			"Model fetch from https://models.dev/models.json?type=decision returned 429; retrying (attempt 2/2)",
 		);
 	});
 

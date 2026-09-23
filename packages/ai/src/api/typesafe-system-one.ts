@@ -46,12 +46,18 @@ function requiredNumber(value: unknown, label: string): number {
 	return value;
 }
 
+function unitInterval(value: unknown, label: string): number {
+	const number = requiredNumber(value, label);
+	if (number < 0 || number > 1) throw new Error(`TypeSafe API returned an invalid ${label}`);
+	return number;
+}
+
 function probabilities(value: unknown, label: string): Record<string, number> {
 	if (!isRecord(value)) throw new Error(`TypeSafe API returned invalid probabilities for ${label}`);
 	return Object.fromEntries(
 		Object.entries(value).map(([key, probability]) => [
 			key,
-			requiredNumber(probability, `probability for ${label}.${key}`),
+			unitInterval(probability, `probability for ${label}.${key}`),
 		]),
 	);
 }
@@ -63,26 +69,34 @@ function parseAnswers(value: unknown, context: ClassifierContext): Record<string
 		const answer = value[id];
 		if (!isRecord(answer)) throw new Error(`TypeSafe API did not return an answer for ${id}`);
 		if (question.type === "choice") {
-			if (answer.type !== "choice" || typeof answer.choice !== "string") {
-				throw new Error(`TypeSafe API did not return a choice answer for ${id}`);
+			if (answer.type !== "choice" || typeof answer.choice !== "string" || !Object.hasOwn(question.criteria, answer.choice)) {
+				throw new Error(`TypeSafe API did not return a valid choice answer for ${id}`);
+			}
+			const choiceProbabilities = probabilities(answer.probabilities, id);
+			if (Object.keys(choiceProbabilities).some((key) => !Object.hasOwn(question.criteria, key))) {
+				throw new Error(`TypeSafe API returned an unknown choice probability for ${id}`);
 			}
 			answers.push([
 				id,
 				{
 					type: "choice",
 					choice: answer.choice,
-					probabilities: probabilities(answer.probabilities, id),
-					confidence: requiredNumber(answer.confidence, `confidence for ${id}`),
+					probabilities: choiceProbabilities,
+					confidence: unitInterval(answer.confidence, `confidence for ${id}`),
 				},
 			]);
 		} else if (question.type === "score") {
 			if (answer.type !== "score") throw new Error(`TypeSafe API did not return a score answer for ${id}`);
+			const score = requiredNumber(answer.score, `score for ${id}`);
+			if (score < 0 || score > question.criteria.length - 1) {
+				throw new Error(`TypeSafe API returned an invalid score for ${id}`);
+			}
 			answers.push([
 				id,
 				{
 					type: "score",
-					score: requiredNumber(answer.score, `score for ${id}`),
-					confidence: requiredNumber(answer.confidence, `confidence for ${id}`),
+					score,
+					confidence: unitInterval(answer.confidence, `confidence for ${id}`),
 				},
 			]);
 		} else {
@@ -91,7 +105,7 @@ function parseAnswers(value: unknown, context: ClassifierContext): Record<string
 				id,
 				{
 					type: "bool",
-					probability: requiredNumber(answer.noul, `probability for ${id}`),
+					probability: unitInterval(answer.noul, `probability for ${id}`),
 				},
 			]);
 		}

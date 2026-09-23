@@ -31,7 +31,7 @@ export const MODEL_CATALOG_INDEX_KEY = `${MODEL_CATALOG_PREFIX}/index.json`;
 export const MODEL_CATALOG_REVISION_RE = /^sha256-[0-9a-f]{64}$/;
 
 const PI_VERSION_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
-const PI_USER_AGENT_RE = /^pi\/([^\s()]+)(?: \([^;()]+(?:;\s*[^;()]+(?:;\s*[^()]+)?)?\))?$/i;
+const PI_USER_AGENT_RE = /^pi\/([^\s()]+)(?: \(([^()]*)\))?$/i;
 const MODEL_TYPE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 type ParsedPiVersion = readonly [major: number, minor: number, patch: number, prerelease: string];
@@ -94,6 +94,29 @@ export function parseModelCatalogRepresentation(
 	return "typed";
 }
 
+function piUserAgentVersion(userAgent: string): string | undefined {
+	const match = PI_USER_AGENT_RE.exec(userAgent);
+	if (!match) return undefined;
+	const detail = match[2];
+	if (detail !== undefined) {
+		const firstSeparator = detail.indexOf(";");
+		if (!detail || firstSeparator === 0) return undefined;
+		if (firstSeparator !== -1) {
+			const secondSeparator = detail.indexOf(";", firstSeparator + 1);
+			if (
+				!(
+					secondSeparator === -1
+						? detail.slice(firstSeparator + 1)
+						: detail.slice(firstSeparator + 1, secondSeparator)
+				).trim()
+			)
+				return undefined;
+			if (secondSeparator === detail.length - 1) return undefined;
+		}
+	}
+	return match[1];
+}
+
 /**
  * Decide how to answer a catalog request from its URL and User-Agent.
  *
@@ -111,7 +134,7 @@ export function parseModelCatalogRequest(url: string | URL, userAgent: string | 
 
 	const piVersion = requestUrl.searchParams.get("pi-version");
 	if (piVersion === null) {
-		const userAgentVersion = PI_USER_AGENT_RE.exec(userAgent ?? "")?.[1];
+		const userAgentVersion = piUserAgentVersion(userAgent ?? "");
 		if (userAgentVersion !== undefined && isValidModelCatalogPiVersion(userAgentVersion)) {
 			requestUrl.searchParams.set("pi-version", userAgentVersion);
 			return { kind: "redirect", location: requestUrl.toString() };
