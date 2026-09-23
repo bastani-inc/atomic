@@ -7,43 +7,45 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 Last Accessed: 2026-09-22.
 
+Benchmark descriptions checked against the [Artificial Analysis breakdown](https://artificialanalysis.ai/#intelligence-breakdown) and [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) on 2026-09-23. Scores retain the snapshot date above.
+
 Key:
 
 - `∅`=source null/absent, not zero.
 - Values are rounded to 1 decimal from the [model leaderboard](https://artificialanalysis.ai/leaderboards/models) payload, Coding Index and Agentic Index fields on free `GET /api/v2/language/models/free`, and default-chart constituent fields on the [Intelligence Index](https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index) page.
 - A chart label may show the nearest integer of `idx`.
-- `idx`: Intelligence Index points.
-- `Cod`: Coding Index points.
-- `Agt`: Agentic Index points.
-- `Brief`: AA-Briefcase normalized Elo `clamp((Elo-500)/2000)*100`.
-- `Gn`: GDPval-AA normalized Elo `clamp((Elo-500)/2000)*100`.
-- `Omni`: Omniscience Index, -100 to 100.
-- `Open`: Openness Index points.
+- `idx`: Intelligence Index points, aggregate performance across knowledge, reasoning, coding, and agentic work.
+- `Cod`: Coding Index points, aggregate coding capability, including scientific code generation and terminal tasks; distinct from the Coding Agent Index.
+- `Agt`: Agentic Index points, aggregate performance on multi-step tasks using tools.
+- `Brief`: AA-Briefcase, long-horizon business knowledge work producing spreadsheets, presentations, and memos; normalized Elo `clamp((Elo-500)/2000)*100`.
+- `Gn`: GDPval-AA, economically valuable professional work across occupations; normalized Elo `clamp((Elo-500)/2000)*100`.
+- `Omni`: Omniscience Index, factual knowledge reliability, rewarding correct answers and penalizing incorrect guesses without penalizing abstention; -100 to 100.
+- `Open`: Openness Index points, model availability and transparency of training data and methodology, not task-solving ability.
 - Other score columns are percent.
-- `OA`: Omniscience accuracy.
-- `ONH`: the 6,000-question ONH rate `(partial+notattempted)/(incorrect+partial+notattempted)`, not 1 minus the hallucination rate.
-- `PDF`: GDP.pdf All-pass.
-- `Auto`: AutomationBench-AA.
-- `TB4`: Terminal-Bench 4.0.
-- `TB21`: Terminal-Bench 2.1.
-- `TBh`: Terminal-Bench Hard.
-- `Sci`: SciCode.
-- `HLE`: Humanity's Last Exam.
-- `Crit`: CritPt.
-- `LCR`: AA-LCR.
-- `GPQA`: GPQA Diamond.
-- `IF`: IFBench.
-- `MMMU`: MMMU-Pro.
-- `tau2`: τ².
-- `tauB`: τ²-Banking.
-- `Analyst`: Analyst Agent.
-- `ITB`: ITBench SRE.
-- `Apex`: Apex Agents.
-- `AIME`: AIME 2025.
-- `LCB`: LiveCodeBench.
-- `Harvey`: Harvey Lab.
-- `MLCR`: MLCR overall.
-- `Ent`: EnterpriseOps Gym.
+- `OA`: Omniscience accuracy, factual recall across knowledge domains.
+- `ONH`: Omniscience non-hallucination, avoiding incorrect guesses when unable to answer fully; the 6,000-question ONH rate `(partial+notattempted)/(incorrect+partial+notattempted)`, not 1 minus the hallucination rate.
+- `PDF`: GDP.pdf All-pass, reasoning over long professional documents while satisfying every task-specific criterion.
+- `Auto`: AutomationBench-AA, completing multi-step SaaS workflows without guardrail violations.
+- `TB4`: Terminal-Bench 4.0, agentic coding and terminal work across software engineering, systems administration, data processing, model training, and security.
+- `TB21`: Terminal-Bench 2.1, an earlier terminal-task suite covering coding, systems administration, data processing, model training, and security.
+- `TBh`: Terminal-Bench Hard, the legacy hard terminal-task subset testing coding, systems administration, and data processing.
+- `Sci`: SciCode, writing scientific Python code to solve scientist-curated research problems, graded by execution tests.
+- `HLE`: Humanity's Last Exam, expert-level academic knowledge and reasoning across mathematics, sciences, and humanities.
+- `Crit`: CritPt, research-level physics reasoning.
+- `LCR`: AA-LCR, extracting, reasoning about, and synthesizing information across long documents.
+- `GPQA`: GPQA Diamond, graduate-level scientific reasoning in biology, physics, and chemistry.
+- `IF`: IFBench, precise instruction following under verifiable output constraints.
+- `MMMU`: MMMU-Pro, multimodal understanding and visual reasoning across academic disciplines.
+- `tau2`: τ²-Bench Telecom, conversational tool use and coordination with a simulated user to resolve telecom support issues.
+- `tauB`: Banking tool-use benchmark, knowledge retrieval and multi-step customer-support workflows; the snapshot labels this τ²-Banking, while the current source calls it τ³-Banking.
+- `Analyst`: AA-AnalystAgent, end-to-end quantitative analysis of real-world spreadsheets and documents.
+- `ITB`: ITBench SRE, identifying Kubernetes incident root causes from alerts, events, traces, and topology.
+- `Apex`: [APEX-Agents](https://www.mercor.com/apex/apex-agents-leaderboard/), long-horizon, cross-application work in investment banking, consulting, and corporate law.
+- `AIME`: AIME 2025, competition-level mathematical problem solving.
+- `LCB`: LiveCodeBench, generating correct code for recent competitive programming problems.
+- `Harvey`: Harvey LAB-AA, producing legal deliverables from case documents, graded against task-specific criteria.
+- `MLCR`: Medical Long Context Reasoning overall, synthesizing long, fragmented medical records for healthcare and insurance case review.
+- `Ent`: EnterpriseOps-Gym-AA, stateful, multi-step business workflows using tools, graded on the resulting database state.
 - `Brief`, `Auto`, `PDF`, `AIME`, `LCB`, `Harvey`, `MLCR`, `Open`, and `Ent` are published for default-chart models; other rows are `∅` for those columns.
 
 ## Artificial Analysis Intelligence Index v4.3.2
@@ -79,51 +81,3 @@ Table: top 26 catalog models by Intelligence Index, plus GPT-6 Luna (max) from b
 | qwen3-8-max | Qwen3.8 Max (0902) | 45.4 | 57 | 58.4 | 56.2 | 38.9 | 52.1 | 43.1 | 22.8 | 17.7 | 31.7 | 71.2 | 80.3 | 76.2 | 56 | 12 | 92.8 | 88.8 | ∅ | ∅ | 82.8 | ∅ | 47.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 20 | ∅ | ∅ |
 | muse-spark-1-3-xhigh | Muse Spark 1.3 (xhigh) | 45.1 | ∅ | 56.4 | 56.8 | 16.7 | 59.7 | 47.5 | 24.2 | 26 | 41.5 | 68.5 | 83 | 76.5 | 51.5 | 23.1 | 94.1 | 85.4 | ∅ | ∅ | 82 | ∅ | 47.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 95.5 | ∅ | ∅ | ∅ |
 | gpt-6-luna | GPT-6 Luna (max) | 37.3 | ∅ | 43.4 | ∅ | 12.6 | 54.6 | 38.5 | ∅ | 19.4 | 43.8 | 23.3 | 83.3 | ∅ | ∅ | 0.7 | ∅ | ∅ | ∅ | ∅ | 75.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-
-## Cognition FrontierCode 1.1
-
-[FrontierCode](https://cognition.com/frontiercode) 1.1 (revision 2026-07-07; [data](https://cognition.com/data/frontiercode-leaderboard/data.json); [methods](https://cognition.com/blog/frontier-code-1.1) and https://cognition.com/blog/frontier-code) measures code quality rather than only correctness: would the maintainer merge this PR. Tasks come from 36 open-source repositories whose maintainers wrote the rubrics, grading behavioral correctness, regression safety, lint and style, test correctness, scope discipline, and adherence to codebase conventions. A run passes only if it clears every blocker criterion; score is the weighted aggregate of all rubric items, and blocker or unfair-internet-use failures score zero. Main is 100 tasks and Extended is 150.
-
-Table: Main Best rows in source order. Columns: model, source effort label, harness, score, pass, flag (percent), USD/task, output k-tokens. Harness: `cc`=claude-code, `gb`=grok-build, `msa`=mini-swe-agent. `—`=source null, not 0; Inkling `0.99` is unexplained. Extended values remain linked (not routed).
-
-| ID | Model | Effort | Harness | score | pass | flag | USD/task | output k-tokens |
-| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| F01 | Claude Opus 5.5 | medium | cc | 54.6 | 59.6 | 0.0 | 0.80 | 18.5 |
-| F02 | Claude Fable 5 | xhigh | cc | 53.5 | 58.9 | 0.3 | 13.09 | 58.6 |
-| F03 | Claude Opus 5 | medium | cc | 53.4 | 58.9 | 0.6 | 4.31 | 33.6 |
-| F04 | GPT-6 Astra | max | codex | 53.3 | 58.8 | — | 4.59 | 30.1 |
-| F05 | Claude Fable 5.1 | medium | cc | 50.9 | 55.5 | 0.0 | 3.28 | 26.1 |
-| F06 | SWE-2 | max | devin | 50.0 | 55.5 | — | 1.18 | 72.8 |
-| F07 | GPT-6 Sol | max | codex | 49.3 | 54.3 | 0.0 | 2.07 | 41.3 |
-| F08 | Grok 4.6 | high | gb | 48.0 | 53.1 | 0.7 | 2.88 | 36.8 |
-| F09 | GPT-5.6 Sol | max | codex | 47.5 | 52.9 | 0.0 | 5.19 | 33.2 |
-| F10 | Claude Opus 4.8 | max | cc | 46.5 | 51.6 | 0.6 | 9.62 | 95.9 |
-| F11 | Kimi K3 | none | msa | 44.2 | 48.9 | 0.2 | 3.82 | 53.6 |
-| F12 | Gemini 3.7 Flash | medium | chisel | 43.6 | 48.9 | 0.0 | 1.82 | 51.1 |
-| F13 | GPT-5.5 | xhigh | codex | 43.0 | 48.2 | 0.4 | 4.03 | 25.0 |
-| F14 | Claude Sonnet 5 | xhigh | cc | 42.7 | 47.6 | 0.5 | 10.07 | 87.9 |
-| F15 | Grok 4.5 | high | gb | 42.4 | 47.2 | 0.0 | 1.30 | 15.3 |
-| F16 | GPT-6 Luna | max | codex | 42.4 | 47.8 | 0.0 | 0.10 | 56.6 |
-| F17 | SWE-1.7 | none | chisel | 42.0 | 47.4 | 1.2 | 1.97 | 64.8 |
-| F18 | GPT-5.6 Terra | max | codex | 41.3 | 46.3 | 0.1 | 1.87 | 40.5 |
-| F19 | Gemini 3.8 Flash | medium | chisel | 41.2 | 46.7 | 0.0 | 2.60 | 78.9 |
-| F20 | GLM 5.3 | max | chisel | 40.1 | 44.7 | 0.0 | 16.91 | 112.2 |
-| F21 | GPT-5.6 Luna | max | codex | 39.8 | 44.7 | 0.1 | 0.37 | 37.4 |
-| F22 | Claude Opus 4.7 | max | cc | 38.5 | 42.8 | 0.1 | 9.09 | 49.1 |
-| F23 | Gemini 3.6 Flash | medium | chisel | 34.4 | 38.9 | 0.0 | 4.04 | 46.7 |
-| F24 | GLM 5.3 Flash | max | chisel | 31.8 | 35.7 | 0.0 | 1.15 | 169.3 |
-| F25 | Kimi K2.7 | none | msa | 30.1 | 33.6 | 0.0 | 3.01 | 43.9 |
-| F26 | DeepSeek V4 Pro 0813 | high | chisel | 28.5 | 31.8 | 10.6 | 1.81 | 104.7 |
-| F27 | GPT-5.4-mini | xhigh | codex | 27.0 | 30.8 | 0.0 | 1.52 | 90.9 |
-| F28 | Claude Opus 4.6 | high | cc | 26.6 | 29.7 | 0.1 | 3.98 | 26.7 |
-| F29 | Composer 2.5 | none | cursor | 25.6 | 29.3 | 2.4 | 3.09 | 16.0 |
-| F30 | GLM 5.2 | none | msa | 24.5 | 27.4 | 0.0 | 2.47 | 17.8 |
-| F31 | Claude Sonnet 4.6 | max | cc | 24.3 | 27.5 | 0.2 | 2.90 | 44.2 |
-| F32 | DeepSeek V4 Flash 0731 | high | chisel | 18.8 | 21.1 | 25.5 | 1.53 | 94.4 |
-| F33 | DeepSeek V4 Pro | none | msa | 17.6 | 20.0 | 1.0 | 1.55 | 28.8 |
-| F34 | MiniMax M3 | none | msa | 14.7 | 16.6 | 1.5 | 0.68 | 34.0 |
-| F35 | Inkling | 0.99 | msa | 14.0 | 15.9 | 7.6 | 3.60 | 33.6 |
-| F36 | Nemotron 3 Ultra | none | chisel | 13.6 | 15.4 | 0.2 | 1.47 | 27.7 |
-| F37 | Qwen 3.7 Plus | none | msa | 10.2 | 11.5 | 0.9 | 0.24 | 45.3 |
-| F38 | SWE-1.6 | none | chisel | 9.4 | 10.4 | 0.0 | 0.49 | 19.8 |
-| F39 | Mistral 3.5 Medium | none | chisel | 8.0 | 9.0 | 0.6 | 1.35 | 22.5 |
