@@ -6,7 +6,7 @@ name: Warm toolchain cache
 # scope. It builds nothing and writes nothing else.
 #
 # GATE: dispatch-only on purpose. Whether a `refs/tags/*` run can read a
-# `refs/heads/main` cache entry on Blacksmith's colocated cache is unverified
+# `refs/heads/main` entry in GitHub's Actions cache is unverified
 # here. Run the experiment in docs/ci.md ("Warming the release toolchain
 # caches") first, then add a daily `schedule:` only if the hit is observed
 # (entries evict after 7 days). If the fallback does not apply, delete this
@@ -30,8 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: blacksmith-4vcpu-ubuntu-2404, arch: x64 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, arch: arm64 }
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, arch: x64 }
+          - { runner: nscloud-ubuntu-24.04-arm64-4x16, arch: arm64 }
     steps:
       # Keep version and cache settings identical to `publish.yml`, or this warms
       # a key that job never reads. The aarch64 key needs an arm64 runner.
@@ -46,7 +46,7 @@ jobs:
   msvc-crt:
     name: Warm MSVC CRT ${{ matrix.arch }}
     # Both Windows legs cross-compile on this Linux runner spec.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 15
     strategy:
       fail-fast: false

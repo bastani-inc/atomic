@@ -34,14 +34,14 @@ env:
 jobs:
   integrity:
     name: Verify release tag
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.verify.outputs.sha }}
       version: ${{ steps.verify.outputs.version }}
       npm-tag: ${{ steps.verify.outputs.npm-tag }}
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -104,28 +104,22 @@ jobs:
         # this leg's artifact, so two legs that share platform+arch (glibc and musl
         # Linux) can never collide on an artifact name.
         include:
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-gnu, target: x86_64-unknown-linux-gnu, timeout_minutes: 16, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, timeout_minutes: 17, build_timeout_minutes: 5 }
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: linux, arch: x64, slug: linux-x64-gnu, target: x86_64-unknown-linux-gnu, timeout_minutes: 16, build_timeout_minutes: 5 }
+          - { runner: nscloud-ubuntu-24.04-arm64-4x16, platform: linux, arch: arm64, slug: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, timeout_minutes: 17, build_timeout_minutes: 5 }
           # musl legs reuse the same zig toolchain; @napi-rs/cli adds
           # `-C target-feature=-crt-static` for a musl ABI, which is what keeps the
           # produced .node a dlopen-able shared object instead of a static-CRT blob.
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 17, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 18, build_timeout_minutes: 5 }
-          # Blacksmith macOS is Apple Silicon only, so darwin x64 stays GitHub-hosted.
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 17, build_timeout_minutes: 5 }
+          - { runner: nscloud-ubuntu-24.04-arm64-4x16, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 18, build_timeout_minutes: 5 }
+          # Namespace macOS is Apple Silicon only, so darwin x64 stays GitHub-hosted.
           - { runner: macos-26-intel, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
-          - { runner: blacksmith-6vcpu-macos-26, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
+          - { runner: nscloud-macos-tahoe-arm64-6x14, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
     steps:
-      # Sticky disks are Blacksmith-Linux-only; elsewhere this action stalls ~78s
-      # before falling back to a normal clone.
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
-        with:
-          ref: ${{ env.SOURCE_REF }}
-          persist-credentials: false
+      # Release jobs clone through actions/checkout only: no Namespace git mirror
+      # or cache volume, which pull-request jobs could write. See docs/ci.md.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: runner.os != 'Linux'
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -191,7 +185,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
-          # Blacksmith is not github-hosted, so the tool cache dies with the VM.
+          # Namespace runners are ephemeral, so the tool cache dies with the VM.
           use-tool-cache: false
           # Global .zig-cache, not the tarball cache. Its save key embeds the run id,
           # so it can never be reused, and disabling it keeps the retry's post step inert.
@@ -301,10 +295,10 @@ jobs:
   linux-binary-smoke:
     name: Smoke Linux binary
     needs: integrity
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -357,10 +351,9 @@ jobs:
   windows-binary-smoke:
     name: Build and smoke Windows archives
     needs: [integrity, native-artifacts]
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: nscloud-windows-2022-amd64-4x16
     timeout-minutes: 30
     steps:
-      # Windows has no sticky disk, so ask for the standard clone directly.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
@@ -449,10 +442,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: blacksmith-4vcpu-ubuntu-2404, arch: x64, slug: linux-x64-musl, platform: linux-x64-musl, docker_platform: linux/amd64 }
-          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, arch: arm64, slug: linux-arm64-musl, platform: linux-arm64-musl, docker_platform: linux/arm64 }
+          - { runner: nscloud-ubuntu-24.04-amd64-4x16, arch: x64, slug: linux-x64-musl, platform: linux-x64-musl, docker_platform: linux/amd64 }
+          - { runner: nscloud-ubuntu-24.04-arm64-4x16, arch: arm64, slug: linux-arm64-musl, platform: linux-arm64-musl, docker_platform: linux/arm64 }
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -498,10 +491,10 @@ jobs:
   build:
     name: Build release payload
     needs: [integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -631,7 +624,7 @@ jobs:
   stage-github-release:
     name: Stage draft GitHub Release
     needs: [integrity, build]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 10
     permissions:
       actions: read
@@ -662,7 +655,8 @@ jobs:
     name: Publish npm packages
     needs: [integrity, stage-github-release]
     # Must stay GitHub-hosted: npm trusted publishing rejects self-hosted runners,
-    # and Blacksmith registers through GitHub's org-level runner registration API.
+    # and Namespace runners register with GitHub as self-hosted, so the registry
+    # refuses their provenance (runner_environment=self-hosted). See docs/ci.md.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: npm-publish
@@ -707,7 +701,7 @@ jobs:
   publish-github-release:
     name: Publish GitHub Release
     needs: [stage-github-release, publish-npm]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 5
     permissions:
       contents: write
@@ -726,12 +720,20 @@ jobs:
   register-published-version:
     name: Register published version
     needs: [integrity, publish-github-release]
-    runs-on: ubuntu-latest
+    # The registration Worker checks the OIDC issuer, audience, repository, tag
+    # ref, workflow ref, subject, event and environment claims, never
+    # runner_environment, so this job does not need a GitHub-hosted runner.
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 5
     permissions:
       contents: read
       id-token: write
     steps:
+      # The step below runs `node -e`; the Namespace image does not promise Node
+      # on PATH the way GitHub-hosted images do.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
       - name: Register published version
         env:
           VERSION: ${{ needs.integrity.outputs.version }}
@@ -826,7 +828,7 @@ jobs:
     name: Clean up failed draft GitHub Release
     needs: [build, stage-github-release, publish-npm, publish-github-release]
     if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 5
     permissions:
       contents: write

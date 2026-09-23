@@ -26,6 +26,17 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const publishPath = join(root, ".github/workflows/publish.yml");
 const testPath = join(root, ".github/workflows/test.yml");
 const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
+const workflowDir = join(root, ".github/workflows");
+
+/**
+ * Every workflow file, enumerated rather than listed: a workflow added later must
+ * not be able to introduce an unapproved runner or checkout unnoticed.
+ */
+async function workflowFiles(): Promise<string[]> {
+	const files = (await readdir(workflowDir)).filter((name) => name.endsWith(".yml") || name.endsWith(".yaml")).sort();
+	assert.ok(files.length >= 3, "expected the workflows directory to be enumerable");
+	return files;
+}
 
 /**
  * The `test` job's own topology contracts live in test-workflow-topology.test.ts.
@@ -390,7 +401,10 @@ test("publish permissions, timeouts, runners, and OIDC are least privilege", asy
 	const register = jobBlock(workflow, "register-published-version", "cleanup-draft-github-release");
 	assert.match(register, /permissions:\s*\n\s*contents: read\s*\n\s*id-token: write/);
 	assert.doesNotMatch(register, /contents: write|environment:/);
-	assert.match(register, /runs-on: ubuntu-latest/);
+	// The registration Worker never checks runner_environment, so this job runs on
+	// Namespace and installs the Node its `node -e` URL check needs.
+	assert.match(register, /runs-on: nscloud-ubuntu-24\.04-amd64-4x16/);
+	assert.match(register, /uses: actions\/setup-node@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+node-version: 22\n/u);
 	assert.match(register, /set \+x/);
 	assert.match(register, /::add-mask::/);
 	assert.match(
@@ -412,10 +426,10 @@ test("publish permissions, timeouts, runners, and OIDC are least privilege", asy
 	assert.match(register, /OIDC request URL is not a GitHub Actions token endpoint/);
 	assert.doesNotMatch(register, /\[\[ "\$request_url" == https:\/\/\* \]\]/);
 	assert.equal([...workflow.matchAll(/^ {4}timeout-minutes:/gmu)].length, 11);
-	assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404-arm/);
+	assert.match(workflow, /nscloud-ubuntu-24\.04-arm64-4x16/);
 	assert.match(workflow, /macos-26-intel/);
-	assert.match(workflow, /blacksmith-6vcpu-macos-26/);
-	assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
+	assert.match(workflow, /nscloud-macos-tahoe-arm64-6x14/);
+	assert.match(workflow, /nscloud-windows-2022-amd64-4x16/);
 });
 
 test("native release matrix pins all shipped targets and the Linux glibc floor", async () => {
@@ -447,7 +461,7 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	assert.match(native, /fail-fast: false/);
 	assert.match(native, /name: atomic-natives-\$\{\{ matrix\.slug \}\}/u);
 	assert.match(native, /macos-26-intel/);
-	assert.match(native, /blacksmith-6vcpu-macos-26/);
+	assert.match(native, /nscloud-macos-tahoe-arm64-6x14/);
 	assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup/iu);
 	// The job may cache third-party toolchain acquisitions and nothing else.
 	// Caching Cargo build output would make a provenance-signed artifact depend
@@ -539,20 +553,6 @@ function removeMuslSmokeProbe(probe: MuslSmokeProbe): void {
 	removeTempDirectory(probe.root);
 }
 
-function matrixUsesOnlyBlacksmithLinuxRunners(runsOn: string, block: string): boolean {
-	if (runsOn !== "$" + "{{ matrix.runner }}") return false;
-	const inlineRunners = [...block.matchAll(/\brunner:\s*([^\s,}\n]+)/gu)]
-		.map(([, runner]) => runner as string)
-		.filter((runner) => runner !== "-");
-	const listBody = /\brunner:\s*\n(?<entries>(?:[ \t]*-[ \t]*[^\n#]+(?:\n|$))+)/u.exec(block)?.groups?.entries;
-	const listRunners =
-		listBody === undefined
-			? []
-			: [...listBody.matchAll(/^[ \t]*-[ \t]*([^\s#]+)/gmu)].map(([, runner]) => runner as string);
-	const runners = [...inlineRunners, ...listRunners];
-	return runners.length > 0 && runners.every((runner) => /^blacksmith-\dvcpu-ubuntu(?:-|$)/u.test(runner));
-}
-
 test("musl smoke forwards a complete staged shell script through stub docker", () => {
 	const probe = createMuslSmokeProbe();
 	try {
@@ -602,7 +602,7 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(alpine, /needs: \[integrity, native-artifacts\]/u);
 	assert.match(alpine, /atomic-natives-\$\{\{ matrix\.slug \}\}/u);
 	assert.match(alpine, /linux-x64-musl[\s\S]*linux-arm64-musl/u);
-	assert.match(alpine, /blacksmith-4vcpu-ubuntu-2404[\s\S]*blacksmith-4vcpu-ubuntu-2404-arm/u);
+	assert.match(alpine, /nscloud-ubuntu-24\.04-amd64-4x16[\s\S]*nscloud-ubuntu-24\.04-arm64-4x16/u);
 	assert.match(alpine, /test-musl-release-archive\.sh/u);
 	assert.doesNotMatch(alpine, /apk add/u);
 	assert.match(smoke, /alpine:3\.22/u);
@@ -785,67 +785,37 @@ test("native-artifacts bounds every dependency acquisition step", async () => {
 });
 
 /**
- * `useblacksmith/checkout` consumes a Blacksmith sticky disk. Sticky disks are
- * ext4 block devices, so they exist only on Blacksmith Linux runners; the
- * Windows leg warns and falls back, and the macOS ARM leg blocked 78s on a
- * gRPC connect timeout in 8 of 8 releases before falling back.
+ * Every job clones through `actions/checkout`. The Namespace git mirror
+ * (`nscloud-checkout-action` plus an `nscloud-git-mirror-*` label) is a cache
+ * volume that any successful job commits, pull-request jobs included, and a
+ * checkout reads the mirror's objects through git alternates. Namespace does not
+ * document whether branch-restricted commit labels cover the mirror, so no job
+ * uses it; docs/ci.md ("Checkout and cache trust model") records the decision.
+ * One unconditional clone also retires the Linux/non-Linux checkout pair that
+ * Blacksmith's Linux-only sticky disk needed.
  */
-test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
-	for (const path of [publishPath, testPath, warmPath]) {
-		const workflow = await readText(path);
+test("every job checks out through actions/checkout, never a runner-vendor mirror", async () => {
+	const testJobs = new Map(jobBlocks(await readText(testPath)));
+	for (const file of await workflowFiles()) {
+		const workflow = await readText(join(workflowDir, file));
+		assert.doesNotMatch(workflow, /useblacksmith\/|nscloud-checkout-action|nscloud-git-mirror-/u, file);
 		for (const [name, block] of jobBlocks(workflow)) {
-			const runsOn = /^\s+runs-on: (.+)$/mu.exec(block)?.[1].trim() ?? "";
-			for (const step of jobSteps(block)) {
-				if (!step.includes("useblacksmith/")) continue;
-				const guarded = /if: runner\.os == 'Linux'/u.test(step);
-				const matrixLinuxRunner = matrixUsesOnlyBlacksmithLinuxRunners(runsOn, block);
-				assert.ok(
-					guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn) || matrixLinuxRunner,
-					`${path}: job ${name} requests a sticky disk on ${runsOn || "a matrix runner"}`,
-				);
+			const checkouts = jobSteps(block).filter((step) => /uses: [\w.-]+\/checkout@/u.test(step));
+			for (const step of checkouts) {
+				assert.match(step, /^uses: actions\/checkout@[0-9a-f]{40} # v/u, `${file} ${name}`);
+				assert.doesNotMatch(step, /^\s+if:/mu, `${file} ${name}: the checkout no longer depends on the OS`);
 			}
+			assert.ok(checkouts.length <= 1, `${file} ${name} checks out more than once`);
 		}
 	}
-	assert.equal(
-		matrixUsesOnlyBlacksmithLinuxRunners(
-			"$" + "{{ matrix.runner }}",
-			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: blacksmith-4vcpu-ubuntu-2404-arm }",
-		),
-		true,
-		"an all-Blacksmith inline matrix must satisfy the sticky-disk Linux runner contract",
-	);
-	assert.equal(
-		matrixUsesOnlyBlacksmithLinuxRunners(
-			"$" + "{{ matrix.runner }}",
-			"strategy:\n  matrix:\n    runner:\n      - blacksmith-4vcpu-ubuntu-2404\n      - blacksmith-4vcpu-ubuntu-2404-arm",
-		),
-		true,
-		"an all-Blacksmith list matrix must satisfy the sticky-disk Linux runner contract",
-	);
-	assert.equal(
-		matrixUsesOnlyBlacksmithLinuxRunners(
-			"$" + "{{ matrix.runner }}",
-			"strategy:\n  matrix:\n    include:\n      - { runner: blacksmith-4vcpu-ubuntu-2404 }\n      - { runner: windows-latest }",
-		),
-		false,
-		"a mixed matrix must not satisfy the sticky-disk Linux runner contract",
-	);
-	const publish = await readText(publishPath);
-	const testWorkflow = await readText(testPath);
-	assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "alpine-binary-smoke"), /useblacksmith/u);
-	// Every cross-platform job in test.yml now checks out for itself, so each one
-	// must keep the Linux/non-Linux checkout pair.
-	const crossPlatformJobs = ["unit-tests", "integration-tests", "agent-suite", "release-archive"] as const;
-	const testJobs = new Map(jobBlocks(testWorkflow));
-	for (const block of [
-		jobBlock(publish, "native-artifacts", "linux-binary-smoke"),
-		...crossPlatformJobs.map((job) => testJobs.get(job) as string),
-	]) {
-		assert.match(block, /uses: useblacksmith\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os == 'Linux'/u);
-		assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os != 'Linux'/u);
+	// Every work job in test.yml still clones full history with LFS fixtures, and
+	// the result gate checks out nothing at all.
+	for (const job of ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"]) {
+		const block = testJobs.get(job) as string;
+		assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n(?:\s+#[^\n]*\n)*\s+with:/u, job);
+		assert.match(block, /^\s+lfs: true$/mu, job);
+		assert.match(block, /^\s+fetch-depth: 0$/mu, job);
 	}
-	// The Linux-only static-checks job needs no guard, and the result gate checks
-	// out nothing at all.
 	assert.doesNotMatch(testJobs.get("test") as string, /checkout/u);
 });
 
@@ -936,9 +906,9 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
 	const publish = await readText(publishPath);
 	assert.match(warm, /permissions:\s*\n\s*contents: read/u);
 	assert.doesNotMatch(warm, /contents: write|id-token: write|npm publish|gh release|upload-artifact/u);
-	// Gated: whether a refs/tags/* run reads a refs/heads/main cache entry on
-	// Blacksmith's colocated cache is documented but unverified here, so the
-	// daily schedule lands only after the docs/ci.md experiment observes a hit.
+	// Gated: whether a refs/tags/* run reads a refs/heads/main entry in GitHub's
+	// Actions cache is documented but unverified here, so the daily schedule
+	// lands only after the docs/ci.md experiment observes a hit.
 	assert.match(warm, /^on:\n {2}workflow_dispatch:\n/mu);
 	assert.doesNotMatch(warm, /\n\s+schedule:/u);
 	const key = /key: (xwin-v\d+-\$\{\{ matrix\.arch \}\}-\d+)/u;
@@ -967,15 +937,15 @@ interface Workflow {
 }
 
 /**
- * Every runner a job can select.
+ * Every label set a job's `runs-on` can resolve to, one per matrix leg.
  *
  * `runs-on: ${{ matrix.<key> }}` is resolved through the job's own matrix. Reading
  * the literal alone would let `matrix: { os: [ubuntu-24.04] }` pick an unapproved
  * GitHub-hosted runner that no contract here ever sees.
  */
-function jobRunners(label: string, job: NonNullable<Workflow["jobs"]>[string]): string[] {
+function runsOnLabelSets(label: string, job: NonNullable<Workflow["jobs"]>[string]): string[][] {
 	const runsOn = job["runs-on"] ?? [];
-	return (typeof runsOn === "string" ? [runsOn] : runsOn).flatMap((value) => {
+	const entries = (typeof runsOn === "string" ? [runsOn] : runsOn).map((value) => {
 		const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/u.exec(value)?.[1];
 		if (key === undefined) {
 			// An expression this cannot resolve must not pass as a literal runner name.
@@ -989,41 +959,123 @@ function jobRunners(label: string, job: NonNullable<Workflow["jobs"]>[string]): 
 		assert.ok(values.length > 0, `${label}: matrix.${key} names no runner`);
 		return values;
 	});
+	assert.ok(entries.length > 0, `${label}: declares no runs-on`);
+	return entries.reduce<string[][]>(
+		(sets, values) => sets.flatMap((set) => values.map((value) => [...set, value])),
+		[[]],
+	);
 }
 
-test("Blacksmith runners are used everywhere they are supported", async () => {
+/** Any Namespace machine label: `nscloud-{os}-{arch}-{shape}[-with-*]`. Namespace schedules at most one per job. */
+const NAMESPACE_MACHINE_LABEL = /^nscloud-(?:ubuntu|windows|macos)-/u;
+
+/** The machine labels this repository approves: bare shapes, no cache, feature, or builder suffix. */
+const APPROVED_NAMESPACE_RUNNERS = new Set([
+	"nscloud-ubuntu-24.04-amd64-4x16",
+	"nscloud-ubuntu-24.04-arm64-4x16",
+	"nscloud-windows-2022-amd64-4x16",
+	"nscloud-macos-tahoe-arm64-6x14",
+]);
+
+/**
+ * The only jobs that stay GitHub-hosted, each for a reason a future "move
+ * everything to Namespace" pass must not quietly undo. docs/ci.md carries the
+ * citations.
+ */
+const GITHUB_HOSTED_EXCEPTIONS: Record<string, { runner: string; reason: string }> = {
+	"publish.yml native-artifacts": {
+		runner: "macos-26-intel",
+		reason:
+			"Namespace macOS is Apple Silicon only; this is the only runner that builds the darwin x64 binding natively",
+	},
+	"publish.yml publish-npm": {
+		runner: "ubuntu-latest",
+		reason:
+			"npm trusted publishing and provenance reject runner_environment=self-hosted, which Namespace runners report",
+	},
+};
+
+test("Namespace runners are used everywhere they are supported", async () => {
 	const publish = await readText(publishPath);
-	// Enumerate the directory rather than a fixed list: a workflow added later
-	// must not be able to introduce an unapproved GitHub-hosted runner unnoticed.
-	const workflowDir = join(root, ".github/workflows");
-	const workflowFiles = (await readdir(workflowDir))
-		.filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
-		.sort();
-	assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
 	const hosted: string[] = [];
-	for (const file of workflowFiles) {
+	for (const file of await workflowFiles()) {
 		const workflow = parseYaml(await readText(join(workflowDir, file))) as Workflow;
 		for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-			hosted.push(...jobRunners(`${file} ${name}`, job).filter((runner) => !runner.startsWith("blacksmith-")));
+			const label = `${file} ${name}`;
+			for (const set of runsOnLabelSets(label, job)) {
+				const machines = set.filter((entry) => NAMESPACE_MACHINE_LABEL.test(entry));
+				// Namespace refuses to schedule a job whose runs-on names two machine labels.
+				assert.ok(machines.length <= 1, `${label}: more than one nscloud machine label in ${set.join(", ")}`);
+				if (machines.length === 1) {
+					assert.ok(APPROVED_NAMESPACE_RUNNERS.has(machines[0] as string), `${label}: unapproved ${machines[0]}`);
+					assert.deepEqual(set, machines, `${label}: companion labels need a docs/ci.md trust review`);
+					continue;
+				}
+				const exception = GITHUB_HOSTED_EXCEPTIONS[label];
+				assert.ok(exception, `${label}: ${set.join(", ")} is GitHub-hosted without a documented exception`);
+				assert.deepEqual(
+					set,
+					[exception.runner],
+					`${label} may stay GitHub-hosted only because ${exception.reason}`,
+				);
+				hosted.push(label);
+			}
 		}
 	}
-	// Only these jobs may stay GitHub-hosted, each for a reason a future
-	// "move everything to Blacksmith" pass must not quietly undo:
-	//   macos-26-intel - Blacksmith macOS is Apple Silicon only, so this is the
-	//     only runner that can produce the darwin x64 native binding.
-	//   ubuntu-latest  - GitHub OIDC (npm trusted publishing and published-version
-	//     registration) rejects self-hosted runners, and Blacksmith registers
-	//     through GitHub's org-level registration API.
-	assert.deepEqual(hosted.sort(), ["macos-26-intel", "ubuntu-latest", "ubuntu-latest"]);
-	assert.match(publish, /# Blacksmith macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
-	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,160}?runs-on: ubuntu-latest/u);
+	assert.deepEqual(hosted.sort(), Object.keys(GITHUB_HOSTED_EXCEPTIONS).sort());
+	assert.match(publish, /# Namespace macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
+	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,240}?runs-on: ubuntu-latest/u);
 	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
-	assert.equal(
-		jobBlock(publish, "register-published-version", "cleanup-draft-github-release").includes(
-			"runs-on: ubuntu-latest",
-		),
-		true,
-	);
+});
+
+/**
+ * Repository ruleset 9310196 still requires `test (blacksmith-4vcpu-ubuntu-2404,
+ * linux-x64)` and `test (blacksmith-4vcpu-windows-2025, windows-x64)`. Those
+ * strings are the only Blacksmith text allowed to survive the migration: they are
+ * context identifiers in the result gate's matrix, not runner labels.
+ */
+test("no Blacksmith runner, action, or comment survives outside the legacy required contexts", async () => {
+	const githubDir = join(root, ".github");
+	for (const entry of await readdir(githubDir, { recursive: true })) {
+		const path = join(githubDir, entry);
+		if (!/\.(?:ya?ml|md|json)$/u.test(entry)) continue;
+		let text = await readText(path);
+		if (path === testPath) {
+			const gateStart = text.indexOf("\n  # Result gate.");
+			assert.notEqual(gateStart, -1, "the result gate comment anchors the legacy context identifiers");
+			const gate = text.slice(gateStart);
+			for (const line of gate.split("\n").filter((candidate) => /blacksmith/iu.test(candidate))) {
+				assert.match(
+					line,
+					/^\s+(?:#.*|- test \(blacksmith-4vcpu-(?:ubuntu-2404, linux-x64|windows-2025, windows-x64)\))$/u,
+					`only the legacy context identifiers may name Blacksmith: ${line}`,
+				);
+			}
+			text = text.slice(0, gateStart);
+		}
+		assert.doesNotMatch(text, /blacksmith/iu, entry);
+	}
+});
+
+/**
+ * Namespace cache volumes, the git mirror, and remote-builder caches are shared
+ * across jobs and commit whenever a job exits 0. Pull-request jobs run untrusted
+ * code on the same runners, so nothing on the release path may read state they
+ * can write: publish.yml builds provenance-signed artifacts, and
+ * warm-toolchain-cache.yml fills the cache publish.yml restores. Both stay on
+ * GitHub's branch-scoped Actions cache. Neither builds a container image, so
+ * Namespace's remote builders never see release work either.
+ */
+test("release and cache-warming workflows use no Namespace cache, mirror, or builder state", async () => {
+	for (const path of [publishPath, warmPath]) {
+		const workflow = await readText(path);
+		assert.doesNotMatch(
+			workflow,
+			/namespacelabs\/|namespace-profile-|namespace-features|nscloud-(?:cache|git-mirror|runner-tool-cache|container-image-cache|in-runner-builder)|-with-(?:cache|builders|features)\b/u,
+			path,
+		);
+		assert.doesNotMatch(workflow, /docker (?:build|buildx)|setup-buildx/u, path);
+	}
 });
 
 /**

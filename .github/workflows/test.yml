@@ -33,40 +33,35 @@ on:
 #   agent-suite     build native bindings -> coding-agent vitest
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
-#   test            result gate; carries the two required check contexts
+#   test            result gate; carries the required check contexts
 #
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
 jobs:
   unit-tests:
-    name: unit-tests (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    name: unit-tests (${{ matrix.binary_platform }})
     strategy:
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
-            binary_platform: linux-x64
+          - binary_platform: linux-x64
+            runner: nscloud-ubuntu-24.04-amd64-4x16
             timeout_minutes: 22
-          - os: blacksmith-4vcpu-windows-2025
-            binary_platform: windows-x64
+          - binary_platform: windows-x64
+            runner: nscloud-windows-2022-amd64-4x16
             timeout_minutes: 22
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     # Run 34270757695: 869s Linux / 870s Windows, timeout-censored, plus 50%.
     # Measurements and retry/cold-cache limitations are recorded in docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
+      # One standard clone on every OS. The Namespace git mirror is not used: see
+      # docs/ci.md ("Checkout and cache trust model").
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # LFS fixtures are required by the coding-agent test suite.
           lfs: true
           # Full history and tags support CI contract fixtures and release tooling.
-          fetch-depth: 0
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: runner.os != 'Linux'
-        with:
-          lfs: true
           fetch-depth: 0
       # Bun is still a declared engine: it compiles the release binaries and runs
       # scripts/*.ts, including the flaky-suite wrapper invoked below. It no
@@ -128,28 +123,22 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    name: integration-tests (${{ matrix.binary_platform }})
     strategy:
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
-            binary_platform: linux-x64
+          - binary_platform: linux-x64
+            runner: nscloud-ubuntu-24.04-amd64-4x16
             timeout_minutes: 10
-          - os: blacksmith-4vcpu-windows-2025
-            binary_platform: windows-x64
+          - binary_platform: windows-x64
+            runner: nscloud-windows-2022-amd64-4x16
             timeout_minutes: 14
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     # Setup + two attempts at measured cost + 50% per host; September 11 Linux repair in docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
-        with:
-          lfs: true
-          fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: runner.os != 'Linux'
         with:
           lfs: true
           fetch-depth: 0
@@ -201,30 +190,24 @@ jobs:
           retention-days: 14
 
   agent-suite:
-    name: agent-suite (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    name: agent-suite (${{ matrix.binary_platform }})
     strategy:
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
-            binary_platform: linux-x64
+          - binary_platform: linux-x64
+            runner: nscloud-ubuntu-24.04-amd64-4x16
             timeout_minutes: 15
-          - os: blacksmith-4vcpu-windows-2025
-            binary_platform: windows-x64
+          - binary_platform: windows-x64
+            runner: nscloud-windows-2022-amd64-4x16
             timeout_minutes: 20
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     # Successful completions of 570s Linux (run 35543699213) / 766s Windows (run 35619483893), plus 50%; see docs/ci.md.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Package LFS assets include session fixtures and the runtime PNG.
-          lfs: true
-          fetch-depth: 0
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: runner.os != 'Linux'
-        with:
           lfs: true
           fetch-depth: 0
       # Bun still compiles binaries and runs scripts/*.ts, including the wrapper.
@@ -276,29 +259,23 @@ jobs:
           retention-days: 14
 
   release-archive:
-    name: release-archive (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    name: release-archive (${{ matrix.binary_platform }})
     strategy:
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
-            binary_platform: linux-x64
+          - binary_platform: linux-x64
+            runner: nscloud-ubuntu-24.04-amd64-4x16
             timeout_minutes: 4
-          - os: blacksmith-4vcpu-windows-2025
-            binary_platform: windows-x64
+          - binary_platform: windows-x64
+            runner: nscloud-windows-2022-amd64-4x16
             timeout_minutes: 7
       fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     # Linux: censored build + remaining packaging/smoke + 50%; September 11 repair in docs/ci.md.
     # Windows: run 34035777039 was cancelled at 244s after successful steps; ceil(244 * 1.5 / 60) = 7.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
-        if: runner.os == 'Linux'
-        with:
-          lfs: true
-          fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: runner.os != 'Linux'
         with:
           lfs: true
           fetch-depth: 0
@@ -447,11 +424,11 @@ jobs:
     name: static-checks (linux-x64)
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     # Run 34873678170: all steps passed, but 182s finalization hit the 3-minute cap. Add 50% headroom.
     timeout-minutes: 5
     steps:
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: true
           fetch-depth: 0
@@ -503,32 +480,35 @@ jobs:
       - name: Deterministic CI and release contracts
         run: npm run test:ci-contracts
 
-  # Result gate. This job exists to carry the two contexts required by
-  # repository ruleset 9310196:
+  # Result gate. It carries the two contexts required by repository ruleset
+  # 9310196 plus one readable context for the ruleset to move to:
   #
-  #   test (blacksmith-4vcpu-ubuntu-2404, linux-x64)
-  #   test (blacksmith-4vcpu-windows-2025, windows-x64)
+  #   test (blacksmith-4vcpu-ubuntu-2404, linux-x64)    legacy, required today
+  #   test (blacksmith-4vcpu-windows-2025, windows-x64) legacy, required today
+  #   test (all platforms)                               readable replacement
   #
-  # Its matrix reproduces those exact strings and nothing else; the gate does no
-  # platform work, so both legs run on the Linux runner. `if: always()` is
-  # mandatory: a job whose `needs` failed is *skipped*, and GitHub counts a
-  # skipped required check as satisfied, which would turn a red suite green.
-  # `needs.<job>.result` collapses a matrix to one value, so each leg asserts
-  # every platform's work jobs, which is strictly stronger than the per-platform
-  # meaning this context had before.
+  # The two legacy strings are ruleset identifiers, not runner labels: they name
+  # the Blacksmith runners CI used before Namespace. The ruleset lives outside
+  # this repository, so they stay byte-for-byte until it requires the readable
+  # context instead; docs/ci.md ("The `test` job is a result gate") has the
+  # transition. `name:` is the whole context string, so no matrix value can be
+  # appended to it. Every leg does identical bookkeeping on one Linux runner.
+  # `if: always()` is mandatory: a job whose `needs` failed is *skipped*, and
+  # GitHub counts a skipped required check as satisfied, which would turn a red
+  # suite green. `needs.<job>.result` collapses a matrix to one value, so each
+  # leg asserts every platform's work jobs.
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    name: ${{ matrix.required_context }}
     needs: [unit-tests, integration-tests, agent-suite, release-archive, static-checks]
     if: always()
     strategy:
       matrix:
-        include:
-          - os: blacksmith-4vcpu-ubuntu-2404
-            binary_platform: linux-x64
-          - os: blacksmith-4vcpu-windows-2025
-            binary_platform: windows-x64
+        required_context:
+          - test (blacksmith-4vcpu-ubuntu-2404, linux-x64)
+          - test (blacksmith-4vcpu-windows-2025, windows-x64)
+          - test (all platforms)
       fail-fast: false
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 1
     steps:
       - name: Require every work job to have succeeded

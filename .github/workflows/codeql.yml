@@ -33,12 +33,12 @@ on:
 jobs:
   analyze:
     name: Analyze
-    # Blacksmith, not ubuntu-latest: `ci-workflow-contracts.test.ts` enumerates
+    # Namespace, not ubuntu-latest: `ci-workflow-contracts.test.ts` enumerates
     # every workflow in this directory and allows exactly two GitHub-hosted jobs
     # (macos-26-intel for the darwin-x64 native binding, ubuntu-latest for npm
     # trusted publishing). Default setup escaped that check only because it was
     # not a file here; an advanced setup is subject to it.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 30
     permissions:
       # Uploading the SARIF results is the whole point of the job.
@@ -56,8 +56,9 @@ jobs:
         # so listing that one covers both without analyzing the tree twice.
         language: [actions, javascript-typescript, rust]
     steps:
-      # Sticky disks are Blacksmith-Linux-only, and this job is Linux-only.
-      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+      # A standard clone, like every other job; docs/ci.md explains why no job
+      # uses the Namespace git mirror.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # No `lfs: true` and no `fetch-depth: 0`: CodeQL analyzes the working
           # tree at one commit, so LFS fixtures and full history are cost with

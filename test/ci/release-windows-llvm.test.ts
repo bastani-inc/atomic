@@ -27,7 +27,7 @@ test("Windows release builds verify installed LLVM before cargo-xwin without apt
 	// alpha.4 failed twice downloading apt metapackages before either native compile.
 	// Both target architectures must use the same x64 Ubuntu host toolchain.
 	for (const arch of ["x64", "arm64"]) {
-		assert.ok(native.includes(`runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: ${arch},`));
+		assert.ok(native.includes(`runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: ${arch},`));
 	}
 });
 

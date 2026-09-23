@@ -12,7 +12,7 @@ Pull request / selected branch push
    ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
-   └─ test (2 legs): result gate carrying both required contexts
+   └─ test (3 legs): result gate carrying the required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
@@ -41,6 +41,90 @@ This release graph follows pi's draft-first publication shape. Public GitHub Rel
 
 The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. All eight native npm leaves receive a `postgres-runtime` payload. Pack verification extracts each tarball and validates target provenance, executable architecture/libc, required libraries/catalog/licenses, and the payload file checksums; missing or wrong payloads fail packaging. Every standalone archive independently stages its target under the archive-local `@bastani/atomic-natives` package rather than relying on host-installed optional leaves. Existing native Linux glibc and macOS runners exercise scriptless pack/install and SQL persistence across restart; Linux and Windows x64 archive jobs do the same against extracted runtime paths. The Alpine smoke legs execute initdb, protocol queries, restart, and persisted-row checks on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
 
+## Runners
+
+Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner selected by an inline machine label, `nscloud-{os}-{arch}-{shape}`, except the two GitHub-hosted exceptions below. Labels keep the whole runner configuration in the workflow files, where review and the contract tests can see it; no Namespace runner profile is used, and the workspace's existing profiles are untouched. Namespace refuses to schedule a job whose `runs-on` names more than one `nscloud` machine label, so each job names exactly one.
+
+`test/ci/ci-workflow-contracts.test.ts` enforces this policy. It fails on any runner outside the approved label set or the exception allowlist, on any Blacksmith text left in `.github/` other than the two legacy required-context identifiers, and on any Namespace cache, git mirror, or builder state in the release path.
+
+### Runner mapping
+
+| Workflow and jobs | Before | Now | Shape |
+| --- | --- | --- | --- |
+| `test.yml` unit, integration, agent-suite and release-archive (Linux legs); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `test.yml` unit, integration, agent-suite and release-archive (Windows legs) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
+| `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release, cleanup-draft-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `nscloud-macos-tahoe-arm64-6x14` | 6 vCPU, 14 GB |
+| `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `warm-toolchain-cache.yml` zig x64, msvc-crt / zig arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16` / `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
+| `publish.yml` native `darwin-x64` | `macos-26-intel` | `macos-26-intel` (GitHub-hosted exception) | GitHub standard |
+
+`4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`.
+
+### Sizing
+
+Each job keeps its previous vCPU class. The Blacksmith 4-vCPU runners had 16 GB of memory, so `4x16` keeps both CPU and memory. The Blacksmith era left no CPU or memory utilization data: GitHub's job API reports elapsed time only, and `.ci-diagnostics/` records per-test durations. There is therefore no measured load to justify a larger runner. The job caps and the per-test gate (warn at 40 %, fail at 70 % of each test's budget) are unchanged. Do not relax them to absorb a runner difference.
+
+Size from Namespace data once it exists:
+
+1. Let each job accumulate at least five successful runs on Namespace.
+2. Export `nsc instance report` (a CSV of every runner instance from the last seven days, with allocated shape and observed peak CPU and memory). Also read the dashboard's **p90 CPU per Job** and **Max Memory Used per Job** views.
+3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it. A job with low utilization can move down on the same evidence.
+
+### Platform differences imposed by Namespace
+
+- **Windows Server 2022, not 2025.** Namespace offers only a `windows-2022` runner image (amd64), so the Windows legs moved from Windows Server 2025. Coverage of `win32-x64` is unchanged. Windows ARM64 is still validated by content and architecture only, as before.
+- **Windows toolchain.** The Windows jobs build the native binding with the MSVC target and run `shell: bash` and PowerShell 7 steps. The image metadata lists no Visual Studio, so a Namespace Windows 4x16 instance was probed on 2026-09-23. It had Visual Studio Enterprise 2022 17.14 (MSVC 14.44, x64 `link.exe`), Windows SDK 10.0.26100, Git 2.54 with Git LFS 3.7.1 and Git Bash, PowerShell 7, `rustup`, and Node 20 (the jobs pin Node 22 through `setup-node`). No extra setup step is needed. The probe used `nsc create` rather than a runner label; its layout (`C:\hostedtoolcache`, `ImageOS=win22`) matches the GitHub Windows Server 2022 image lineage, but the first Namespace Windows job is the authoritative check.
+- **macOS Tahoe.** `darwin-arm64` runs on `macos-tahoe` (macOS 26), the same major version as before. The job still installs pinned Rust 1.97.0 and prefers it over the image's Rust.
+- **Node on Linux.** The Namespace Ubuntu image does not list Node, so `register-published-version` installs Node 22 with `setup-node` before its `node -e` URL check. Every other Node-using job already did.
+
+### GitHub-hosted exceptions
+
+Only these two jobs stay GitHub-hosted. Each is allowlisted, with its reason, in `GITHUB_HOSTED_EXCEPTIONS` in `test/ci/ci-workflow-contracts.test.ts`.
+
+1. **`publish-npm` (`ubuntu-latest`).** Namespace runners register with GitHub as self-hosted runners, so the job's GitHub OIDC token carries `runner_environment: self-hosted` ([GitHub OIDC reference](https://docs.github.com/en/actions/reference/security/oidc)). npm accepts trusted publishing and provenance only from cloud-hosted runners:
+   - "Trusted publishing currently supports only cloud-hosted runners. Support for self-hosted runners is intended for a future release." ([npm trusted publishers](https://docs.npmjs.com/trusted-publishers))
+   - "To publish a package with provenance, you must build your package with a supported cloud CI/CD provider using a cloud-hosted runner." ([Generating provenance statements](https://docs.npmjs.com/generating-provenance-statements))
+
+   The registry enforces this and returns HTTP 422 with the message `Unsupported GitHub Actions runner environment: "self-hosted"`. Other projects have hit exactly this error on Namespace runners. A static npm token is not a workaround: provenance from a self-hosted runner is rejected too, and this repository publishes without static credentials.
+2. **`native-artifacts` `darwin-x64` (`macos-26-intel`).** Namespace macOS runners are Apple Silicon only (the label table lists `arm64` as the only macOS architecture). This leg builds the x64 binding natively and runs the scriptless PostgreSQL persistence probe on x64 hardware. Cross-compiling on arm64 would drop that native smoke, so the leg stays GitHub-hosted.
+
+`register-published-version` is not an exception. It also uses GitHub OIDC, but the registration Worker (`bastani-inc/atomic-telemetry`, `src/index.ts`) checks the issuer, audience, repository and owner IDs, tag ref, workflow ref, subject, event name and environment claims. It never checks `runner_environment`, so the job moved to Namespace with its permissions unchanged.
+
+### Checkout and cache trust model
+
+This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on the same Namespace runner pool as releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
+
+- **Ephemeral runners.** Namespace starts a fresh runner for every job and discards it afterwards. The only cross-job channels Namespace adds are cache volumes, the git mirror, the toolchain cache volume, and remote Docker builders. **This repository uses none of them.**
+- **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
+- **Caches stay in GitHub's Actions cache.** `test.yml` keeps `setup-node`'s npm cache, and `publish.yml` and `warm-toolchain-cache.yml` keep `actions/cache` for the MSVC CRT. Actions cache entries are scoped by ref: a pull-request run writes only its own merge-ref scope, which `main` and release tags never read. Namespace cache volumes (`-with-cache`, `nscloud-cache-tag-*`) are not used. Linux `npm ci` already took 4–5 s with the npm cache hit, so the saving would be small. The documented poisoning controls also have gaps: it is undocumented whether `nscloud-cache-allow-commit-from-main` treats a `pull_request` job as its head branch or its merge ref, and `nscloud-cache-exp-do-not-commit` is marked experimental. A future cache volume on `test.yml` or `codeql.yml` would need a repository-specific tag (tags are shared across repositories), `nscloud-cache-allow-commit-from-main`, and `setup-node` caching disabled. The contract tests would need a deliberate update.
+- **The release path reads no Namespace state.** `publish.yml` and `warm-toolchain-cache.yml` (which fills the cache the publisher restores) use no Namespace action, cache label, git mirror, or builder label. Neither builds a container image: the Alpine smokes only `docker run` public images. Namespace's remote builders apply to BuildKit builds, so they never handle release work, and `nscloud-no-remote-builders` would change nothing. The contract test also forbids `docker build` in these files, so adding one forces a review of this premise.
+- **Fork pull-request approval.** The repository's fork-PR approval policy is currently `first_time_contributors` (read with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive secrets or a write token.
+- **Namespace access level.** Namespace can restrict what a runner workload may call (Permissive by default; Limited or Restricted), but only through a runner profile. Inline labels cannot set it, so pull-request jobs run with the workspace default.
+
+### Pre-baked base image decision
+
+Namespace can pre-bake dependencies into a [custom base image](https://namespace.so/docs/solutions/github-actions/custom-base-images). **It is not adopted.** The evidence:
+
+- **Little to save.** Measured per-job setup in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543) was `setup-bun` 2–5 s, `setup-node` 3–13 s, the Rust toolchain 8–13 s, and `npm ci` 4–5 s on Linux (18–20 s on Windows). An image could save roughly 15–30 s of that per job, while the jobs run for 2–14 minutes. The larger costs (native binding builds of 39–54 s, the package build, the suites) depend on the checked-out source and cannot be baked. Lockfile-dependent state such as `node_modules` and Cargo output belongs in a ref-scoped cache, not an image.
+- **Not version-controlled or cross-platform.** Custom images are configured per runner profile in the dashboard, as APT packages or a Dockerfile. `nsc github profile create` and `nsc github profile describe` expose no base-image fields, and `nsc github build-base-image` only test-builds a Dockerfile for `linux/amd64` and `linux/arm64`. Adopting an image would move runner definition out of the workflow files into dashboard state. It would also leave Windows and macOS, the slowest legs, unaffected.
+- **Trust and drift.** An image edited in the dashboard and shared with pull-request jobs is state the release path must not depend on. Its preinstalled Bun, Node and Rust would also have to be rebuilt in lockstep with the workflow pins (Bun 1.4.2, Node 22, Rust 1.97.0 in `publish.yml`). Otherwise the setup actions still run and the saving disappears.
+
+Revisit only if post-migration timings show setup dominating a job. Any adoption would need a Dockerfile committed to this repository, a dedicated repository-scoped profile limited to `test.yml` Linux jobs, the same version pins, a rebuild whenever a pin changes, no secrets or checked-out content in the image, and no use from `publish.yml`.
+
+### Follow-ups
+
+These are recorded here and deliberately not performed by the migration:
+
+1. **Ruleset rename.** Switch ruleset `9310196` from the legacy `test (blacksmith-…)` contexts to `test (all platforms)`, then drop the legacy rows. Follow [Moving the ruleset to the readable context](#moving-the-ruleset-to-the-readable-context). Until then, keep both legacy strings byte-for-byte.
+2. **Measurement-based resizing.** Follow [Sizing](#sizing) once each job has five successful Namespace runs.
+3. **First-run verification.** Confirm on the first Namespace runs that Windows native builds link with MSVC, Linux checkout time fits its caps, `docker run` bind mounts work in `static-checks` and both Alpine legs, `patchelf` and LLVM 18 are present on arm64, and `register-published-version` mints its OIDC token.
+4. **Pull-request hardening.** Consider tightening the fork-PR approval policy to all external contributors. Consider moving `pull_request` jobs to a dedicated Restricted-access Namespace profile; that requires dashboard work, and the profile must be recorded here.
+
 ## Tests (`test.yml`)
 
 The workflow runs on pushes to `main` and every pull request. Release branches
@@ -48,8 +132,8 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to nine work-job instances and two
-result gates. Unit and integration suites run on separate Linux/Windows VMs,
+Five independent job definitions expand to nine work-job instances and three
+result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
 serial dependencies between suites; it does not shard or remove tests.
 
@@ -75,15 +159,27 @@ Repository ruleset `9310196` requires these exact job contexts:
 - `test (blacksmith-4vcpu-ubuntu-2404, linux-x64)`
 - `test (blacksmith-4vcpu-windows-2025, windows-x64)`
 
-The `test` job keeps its id, its two matrix rows, and a display name built from only `matrix.os` and `matrix.binary_platform`, so both strings survive the split byte-for-byte and no ruleset edit is needed. Without an explicit name GitHub appends every matrix value, so timeout tuning would silently rename the required checks; per-platform timeouts therefore stay out of the gate's matrix. Change the display-name contract and the repository ruleset together.
+These are **legacy context identifiers, not runner labels.** They name the Blacksmith runners CI used before it moved to Namespace (see [Runners](#runners)). The ruleset lives outside this repository, so the gate keeps emitting both strings byte-for-byte. It also emits one readable context, `test (all platforms)`, that the ruleset can switch to.
 
-The gate does no platform work — both legs run on the Linux runner — and it exists to fail closed:
+The gate's matrix has a single key, `required_context`, and its display name is `${{ matrix.required_context }}`. Each matrix value is therefore the whole context string, and GitHub appends nothing to it. `test/ci/test-workflow-topology.test.ts` pins the list to the two legacy strings plus the readable one. Per-platform timeouts and runner labels stay out of the gate's matrix, so tuning either can never rename a required check.
 
-- Moving work into new jobs without a gate would silently un-protect every step that left `test`. The two contexts would still exist and still go green.
+Every leg does the same bookkeeping on one Namespace Linux runner. The gate exists to fail closed:
+
+- Moving work into new jobs without a gate would silently un-protect every step that left `test`. The contexts would still exist and still go green.
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
-- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, each leg asserts every platform's work jobs, which is strictly stronger than the per-platform meaning this context had before.
+- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, each leg asserts every platform's work jobs. That is strictly stronger than the per-platform meaning the legacy contexts once had, which is why a single readable context replaces both.
 
-If maintainers later prefer real per-job required contexts, that is a separate deliberate change: replace the two contexts in ruleset `9310196` with the eight work-job contexts in the same window as the workflow merge. Do not do both at once.
+The work jobs are named by platform only, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`. Their `runner` matrix key holds the Namespace label. No ruleset or contract depends on the work-job names.
+
+#### Moving the ruleset to the readable context
+
+The readable context is emitted now so that the external ruleset change never has to land in the same window as a workflow merge:
+
+1. Confirm that `test (all platforms)` reports on a recent `main` run and on an open pull request.
+2. In ruleset `9310196`, require `test (all platforms)` and remove the two legacy contexts in one edit.
+3. In a follow-up pull request, delete the two legacy rows from the gate's `required_context` list, along with `LEGACY_REQUIRED_CONTEXTS` in the topology test and the legacy exception in the no-Blacksmith contract.
+
+Reversing the order would orphan required checks: removing a legacy row before step 2 leaves the ruleset waiting for a context that never reports. If maintainers later prefer real per-job required contexts, follow the same order: emit, switch the ruleset, then drop.
 
 ### Per-job time limits
 
@@ -98,7 +194,7 @@ job deadline.
 | Agent suite | 15 min | 20 min | [Linux completion](https://github.com/bastani-inc/atomic/actions/runs/35543699213), [Windows completion](https://github.com/bastani-inc/atomic/actions/runs/35619483893/job/106398647825) |
 | Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
 | Static checks | 5 min | not run | [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) |
-| Result gate | 1 min | 1 min | Both labeled legs execute on Linux |
+| Result gate | 1 min | 1 min | All three context legs execute on Linux |
 
 The default calibration is `ceil(observed job seconds × 1.5 / 60)`. Integration
 caps instead reserve setup plus two full test attempts and teardown; the Linux
@@ -113,7 +209,7 @@ hit the old three-minute cap at 182 seconds despite every step succeeding;
 samples were [150 s](https://github.com/bastani-inc/atomic/actions/runs/34867753417/job/104055765352),
 [93 s](https://github.com/bastani-inc/atomic/actions/runs/34811244121/job/103872866251) and
 [106 s](https://github.com/bastani-inc/atomic/actions/runs/34809819763/job/103868771048),
-all on Blacksmith 4-vCPU Linux. These are a small observational sample, not
+all on the former Blacksmith 4-vCPU Linux runners. These are a small observational sample, not
 controlled cache or runner comparisons. Keep detailed incident history in PRs
 and linked runs rather than growing this guide with each calibration.
 
@@ -207,14 +303,14 @@ The native job always rebuilds and uploads one artifact for each shipped `@basta
 
 | Platform | Runner | Explicit rustup target |
 | --- | --- | --- |
-| Linux x64 (GNU) | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-gnu` |
-| Linux arm64 (GNU) | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-gnu` |
-| Linux x64 (musl) | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-musl` |
-| Linux arm64 (musl) | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-musl` |
-| macOS x64 | `macos-26-intel` | `x86_64-apple-darwin` |
-| macOS arm64 | `blacksmith-6vcpu-macos-26` | `aarch64-apple-darwin` |
-| Windows x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-pc-windows-msvc` |
-| Windows arm64 | `blacksmith-4vcpu-ubuntu-2404` | `aarch64-pc-windows-msvc` |
+| Linux x64 (GNU) | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-unknown-linux-gnu` |
+| Linux arm64 (GNU) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-gnu` |
+| Linux x64 (musl) | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-unknown-linux-musl` |
+| Linux arm64 (musl) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-musl` |
+| macOS x64 | `macos-26-intel` (GitHub-hosted) | `x86_64-apple-darwin` |
+| macOS arm64 | `nscloud-macos-tahoe-arm64-6x14` | `aarch64-apple-darwin` |
+| Windows x64 | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-pc-windows-msvc` |
+| Windows arm64 | `nscloud-ubuntu-24.04-amd64-4x16` | `aarch64-pc-windows-msvc` |
 
 GNU Linux builds use `GLIBC_FLOOR=2.17`: rustup installs the bare target while
 `build-native.ts` passes the glibc-suffixed target to cargo-zigbuild and copies
@@ -260,6 +356,9 @@ Both Windows targets build on x64 Ubuntu runners. The publisher selects `/usr/li
 
 LLVM comes from the runner image rather than apt downloads. Patch versions are
 image-provided; preserve both Windows build checks when changing the image or LLVM major.
+Namespace's `ubuntu-24.04` image lists `llvm-18`, `clang-18`, `lld-18` and
+`patchelf` (`nsc github base-image describe ubuntu-24.04`), so the checks below keep
+holding after the move; they still fail loudly if a future image drops them.
 
 The x64 and ARM64 Alpine smoke jobs and the payload job likewise verify the image-provided `patchelf` with `command -v` and `--version` instead of refreshing apt indexes. These checks have a one-minute bound and fail on missing tooling. Validate ELF editing on both host architectures when changing the runner image.
 
@@ -282,22 +381,16 @@ trailing `17` is `XWIN_VERSION`, the Visual Studio major version.
 
 Cache entries are scoped by branch or tag, with a default-branch read fallback.
 `warm-toolchain-cache.yml` acquires Zig and the CRT/SDK on `main` so release tags
-can reuse those entries. It is dispatch-only; cross-ref reuse on Blacksmith is
-not established by this guide.
+can reuse those entries. It is dispatch-only; cross-ref reuse from Namespace
+runners is not established by this guide. Both workflows use GitHub's Actions
+cache service, never a Namespace cache volume (see
+[Checkout and cache trust model](#checkout-and-cache-trust-model)).
 
 Before relying on warming, dispatch it on `main`, confirm the expected key was
 saved, then inspect an authorized release/recovery run for a matching cache hit.
 Do not dispatch publication solely to test a cache. Schedule warming only after
 cross-ref reuse is demonstrated; bounded acquisition steps must remain safe on
 a miss. Cache entries expire after seven days without access.
-
-### Sticky-disk checkout is Linux-only
-
-`useblacksmith/checkout` uses ext4 sticky disks and is restricted to Linux.
-Both workflows select it with `if: runner.os == 'Linux'` and use
-`actions/checkout` otherwise. The Windows native cross-compilation legs run on
-Linux and retain the mirror. Test checkouts preserve `fetch-depth: 0` and
-`lfs: true`.
 
 ### Pinned actions and build tools
 
@@ -358,7 +451,7 @@ After npm succeeds, `publish-github-release` changes the draft to public and set
 
 ## npm publication
 
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eleven package names:
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It runs on GitHub-hosted `ubuntu-latest` because npm trusted publishing and provenance reject self-hosted runners, which Namespace runners are (see [GitHub-hosted exceptions](#github-hosted-exceptions)). It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eleven package names:
 
 1. `@bastani/atomic-natives-darwin-arm64`
 2. `@bastani/atomic-natives-darwin-x64`

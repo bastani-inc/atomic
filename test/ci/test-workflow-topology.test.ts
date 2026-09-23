@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { jobBlock, jobBlocks, jobSteps, namedStep, readText, stepIndex } from "./workflow-text.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -11,30 +12,55 @@ const testPath = join(root, ".github/workflows/test.yml");
 /** The work jobs the result gate must depend on, in file and `needs` order. */
 const WORK_JOBS = ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"] as const;
 
+/** The Namespace machine labels the Linux and Windows work jobs run on. */
+const LINUX_RUNNER = "nscloud-ubuntu-24.04-amd64-4x16";
+const WINDOWS_RUNNER = "nscloud-windows-2022-amd64-4x16";
+
+/** A runner label as a regex fragment; its dots are literal. */
+function label(runner: string): string {
+	return runner.replaceAll(".", "\\.");
+}
+
+/**
+ * The contexts repository ruleset 9310196 requires today. They are legacy
+ * identifiers, not runner labels: they name the Blacksmith runners CI used before
+ * Namespace, and the ruleset lives outside this repository. Change them only in
+ * the transition docs/ci.md describes, never by editing this list alone.
+ */
+const LEGACY_REQUIRED_CONTEXTS = [
+	"test (blacksmith-4vcpu-ubuntu-2404, linux-x64)",
+	"test (blacksmith-4vcpu-windows-2025, windows-x64)",
+] as const;
+
+/** The readable context the ruleset is meant to require once it moves off the legacy names. */
+const READABLE_REQUIRED_CONTEXT = "test (all platforms)";
+
 /** Job blocks keyed by job id, in file order. */
 async function jobs(): Promise<Map<string, string>> {
 	return new Map(jobBlocks(await readText(testPath)));
 }
 
 /**
- * The two required contexts of repository ruleset 9310196 are produced by the
+ * The required contexts of repository ruleset 9310196 are produced by the
  * `test` job's matrix and nothing else. Splitting work into new jobs silently
  * un-protects every step that leaves `test`, and a `needs:` job without
  * `if: always()` is *skipped* when a dependency fails — which GitHub counts as a
  * satisfied required check. This contract is the guard against both.
  */
-test("the test job is a fail-closed result gate carrying both required contexts", async () => {
+test("the test job is a fail-closed result gate carrying every required context", async () => {
 	const workflow = await readText(testPath);
 	const gate = jobBlock(workflow, "test");
-	assert.match(gate, /^[ \t]+name: test \(\$\{\{ matrix\.os \}\}, \$\{\{ matrix\.binary_platform \}\}\)$/mu);
+	// The context is the whole name, so GitHub appends no matrix value to it.
+	assert.match(gate, /^ {4}name: \$\{\{ matrix\.required_context \}\}$/mu);
 
-	const contexts = [...gate.matchAll(/^[ \t]+- os: (\S+)\s+binary_platform: (\S+)$/gmu)].map(
-		([, os, platform]) => `test (${os}, ${platform})`,
-	);
-	assert.deepEqual(contexts, [
-		"test (blacksmith-4vcpu-ubuntu-2404, linux-x64)",
-		"test (blacksmith-4vcpu-windows-2025, windows-x64)",
-	]);
+	const parsed = parseYaml(workflow) as {
+		jobs: { test: { strategy: { matrix: { required_context?: string[]; include?: object[] } } } };
+	};
+	const matrix = parsed.jobs.test.strategy.matrix;
+	assert.equal(matrix.include, undefined, "an include row could add a context or rename one");
+	// The legacy pair must survive byte-for-byte until the ruleset stops requiring
+	// it; the readable context rides alongside so the ruleset can switch first.
+	assert.deepEqual(matrix.required_context, [...LEGACY_REQUIRED_CONTEXTS, READABLE_REQUIRED_CONTEXT]);
 
 	assert.match(gate, /^[ \t]+if: always\(\)$/mu, "a skipped required check counts as passed");
 	assert.match(gate, new RegExp(`^[ \\t]+needs: \\[${WORK_JOBS.join(", ")}\\]$`, "mu"));
@@ -46,9 +72,9 @@ test("the test job is a fail-closed result gate carrying both required contexts"
 	assert.match(guard, /\*,failure,\*\|\*,cancelled,\*\|\*,skipped,\*/u);
 	assert.match(guard, /exit 1/u);
 	assert.doesNotMatch(guard, /checkout|setup-bun|bun run/u);
-	// The gate is pure bookkeeping, so both legs run on Linux; a Windows runner
+	// The gate is pure bookkeeping, so every leg runs on Linux; a Windows runner
 	// would add its measured 33s queue for nothing.
-	assert.match(gate, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
+	assert.match(gate, new RegExp(`^[ \\t]+runs-on: ${label(LINUX_RUNNER)}$`, "mu"));
 });
 
 /**
@@ -143,18 +169,21 @@ test("each split job retains its measured timeout hang detector", async () => {
 		const block = blocks.get(job) as string;
 		assert.match(
 			block,
-			new RegExp(`blacksmith-4vcpu-ubuntu-2404\\s+binary_platform: linux-x64\\s+timeout_minutes: ${linux}`, "u"),
+			new RegExp(`binary_platform: linux-x64\\s+runner: ${label(LINUX_RUNNER)}\\s+timeout_minutes: ${linux}`, "u"),
 			job,
 		);
 		assert.match(
 			block,
 			new RegExp(
-				`blacksmith-4vcpu-windows-2025\\s+binary_platform: windows-x64\\s+timeout_minutes: ${windows}`,
+				`binary_platform: windows-x64\\s+runner: ${label(WINDOWS_RUNNER)}\\s+timeout_minutes: ${windows}`,
 				"u",
 			),
 			job,
 		);
 		assert.match(block, /timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}/u, job);
+		// Display names carry the platform only, so a runner or budget change never renames a check.
+		assert.match(block, new RegExp(`^ {4}name: ${job} \\(\\$\\{\\{ matrix\\.binary_platform \\}\\}\\)$`, "mu"), job);
+		assert.match(block, /^ {4}runs-on: \$\{\{ matrix\.runner \}\}$/mu, job);
 		assert.match(block, /fail-fast: false/u, job);
 	}
 	// Run 34873678170 / job 104075487913: all steps passed, but finalization hit the 3-minute cap at 182s.
@@ -236,7 +265,7 @@ test("build-consuming steps stay in the job that produced the build", async () =
 	assert.match(blocks.get("release-archive") as string, /uses: dtolnay\/rust-toolchain@/u);
 
 	const staticChecks = blocks.get("static-checks") as string;
-	assert.match(staticChecks, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
+	assert.match(staticChecks, new RegExp(`^[ \\t]+runs-on: ${label(LINUX_RUNNER)}$`, "mu"));
 	assert.doesNotMatch(staticChecks, /rust-toolchain/u);
 	for (const step of [
 		"Check",

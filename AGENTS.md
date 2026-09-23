@@ -32,14 +32,23 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
 | Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.4.2 |
 | npm-package smoke tests | Node (`node-version: 22` in CI, matching pi) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
-| Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
+| Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI. npm trusted publishing and provenance accept only cloud-hosted runners, so `publish.yml`'s `publish-npm` job must stay GitHub-hosted (`ubuntu-latest`): Namespace runners report `runner_environment=self-hosted` |
 
 **Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
-job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces eleven
-check contexts including full Windows coverage, runs on Blacksmith runners, and carries
+job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces twelve
+check contexts including full Windows coverage, runs on Namespace runners, and carries
 per-job timeout budgets that `test/ci/test-workflow-topology.test.ts` asserts. Adopting pi's
 topology would delete Windows coverage and orphan the two required check contexts. Parity is
 a *toolchain* goal, not a CI-topology goal.
+
+**CI runners:** every job runs on a version-controlled Namespace runner label (`nscloud-*`)
+except two GitHub-hosted jobs in `publish.yml`: `publish-npm` (`ubuntu-latest`, required by
+npm trusted publishing and provenance) and the `darwin-x64` leg of `native-artifacts`
+(`macos-26-intel`, because Namespace offers no Intel macOS). The required contexts still read
+`test (blacksmith-…)`: those are legacy identifiers kept for the external ruleset, not runner
+labels. The gate also emits `test (all platforms)` so the ruleset can move to it first.
+`docs/ci.md` ("Runners") has the mapping, the checkout/cache trust model, and the follow-ups;
+`test/ci/ci-workflow-contracts.test.ts` enforces the allowlist.
 
 - TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)
 - `@sinclair/typebox` for schema definitions
