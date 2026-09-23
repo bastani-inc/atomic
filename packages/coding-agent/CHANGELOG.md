@@ -6,6 +6,10 @@
 
 - Added the `provider_stream_event` extension event for observing each parsed provider stream event before normalization, including provider-specific fields that assistant messages drop, plus an opt-in `/debug-provider` example viewer ([#9784](https://github.com/earendil-works/pi/issues/9784)).
 
+### Changed
+
+- When a shell tool is available, the default system prompt now asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes: an `Assistant-workflow` trailer naming the workflow and run (or `inline`), an `Assistant-duration` trailer with measured time to converge against the estimate, and a `User-preference` trailer for durable preferences you express. Before choosing between a workflow and inline work, estimating duration, or resolving ambiguity, the agent mines these records for comparable tasks and reports sample size, median, and range. The history is used as a guide, not as the decision.
+
 ### Fixed
 
 - Fixed workflow stages with `model: "auto"` (and other stage sessions) crashing with `Cannot read properties of undefined (reading 'baseDir')` when Atomic was launched with `--theme <path>` or other CLI-provided resource paths ([#3229](https://github.com/bastani-inc/atomic/issues/3229)).

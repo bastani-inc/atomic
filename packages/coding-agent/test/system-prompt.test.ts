@@ -329,6 +329,22 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("interpret ambiguous requests the way they would");
 		});
 
+		test("teaches recording and mining execution history when a shell tool is available", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("**Execution history**");
+			expect(prompt).toContain("`Assistant-workflow: inline` when no workflow was used");
+			expect(prompt).toContain("`Assistant-duration: 42m converged, estimated 30m`");
+			expect(prompt).toContain("`User-preference: <one line, in the user's terms>`");
+			expect(prompt).toContain("never record secrets, credentials");
+			expect(prompt).toContain("Treat fewer than five comparable records as anecdotal");
+			expect(prompt).toContain("This history is a guide, not the decision");
+		});
+
 		test("omits repository-intent guidance without a shell tool", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "edit"],
@@ -338,6 +354,7 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).not.toContain("**Repository intent**");
+			expect(prompt).not.toContain("**Execution history**");
 		});
 	});
 

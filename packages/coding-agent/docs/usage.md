@@ -162,6 +162,16 @@ Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in eit
 
 The default prompt asks the agent to write self-describing code and not add code comments unless you ask for them or the task calls for them. To get comments, request them in your prompt (for example "add JSDoc to the exported functions"), or make it a standing rule in a context file or `APPEND_SYSTEM.md` (for example "Document every exported function with a JSDoc block"). The default guideline explicitly defers to those instructions, so no other configuration is needed.
 
+When a shell tool is available, the default prompt also asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes, so later sessions can learn from your history:
+
+```text
+Assistant-workflow: ralph (run 1a2b3c4d)
+Assistant-duration: 42m converged, estimated 30m
+User-preference: keep PRs under 500 changed lines
+```
+
+Tasks done without a workflow record `Assistant-workflow: inline`. Before choosing between a workflow and inline work or estimating how long a task will take, the agent looks up comparable records with `git log` and `gh` and uses them as a guide alongside your request. To opt out, or to keep preferences out of history, say so in a context file or `APPEND_SYSTEM.md`.
+
 ## Exporting and Sharing Sessions
 
 Use `/export [file]` to write a session to HTML.
