@@ -12,15 +12,19 @@ const testPath = join(root, ".github/workflows/test.yml");
 /** The work jobs the result gate must depend on, in file and `needs` order. */
 const WORK_JOBS = ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"] as const;
 
-/** The Namespace machine labels for bookkeeping, static checks and the release archive (4 vCPU). */
-const LINUX_RUNNER = "nscloud-ubuntu-24.04-amd64-4x16";
-const WINDOWS_RUNNER = "nscloud-windows-2022-amd64-4x16";
+/**
+ * The Restricted-access Namespace runner profiles for bookkeeping, static checks
+ * and the release archive (4 vCPU). This workflow runs fork pull requests, so it
+ * never names an inline `nscloud-*` label (ci-workflow-contracts.test.ts).
+ */
+const LINUX_RUNNER = "namespace-profile-atomic-ci-linux-amd64-4x16";
+const WINDOWS_RUNNER = "namespace-profile-atomic-ci-windows-amd64-4x16";
 /**
  * The three test suites were CPU-bound on 4 vCPU (docs/ci.md, "Sizing"), so they
- * run on 8 vCPU. Vitest sizes its worker pool from the available cores.
+ * run on 8 vCPU profiles. Vitest sizes its worker pool from the available cores.
  */
-const LINUX_SUITE_RUNNER = "nscloud-ubuntu-24.04-amd64-8x16";
-const WINDOWS_SUITE_RUNNER = "nscloud-windows-2022-amd64-8x16";
+const LINUX_SUITE_RUNNER = "namespace-profile-atomic-ci-linux-amd64-8x16";
+const WINDOWS_SUITE_RUNNER = "namespace-profile-atomic-ci-windows-amd64-8x16";
 
 /** The [Linux, Windows] runner pair of each split matrix job. */
 const SPLIT_JOB_RUNNERS: Record<string, [string, string]> = {

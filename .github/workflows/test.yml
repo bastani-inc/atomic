@@ -37,6 +37,12 @@ on:
 #
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
+#
+# Every job runs on a `namespace-profile-atomic-ci-*` repository runner profile,
+# never an inline `nscloud-*` label: this workflow runs fork pull requests, and
+# only a profile can set Namespace's Access Level to Restricted, which disables
+# Namespace API access for the runner workload. The profiles hold the machine
+# shape; see docs/ci.md ("Runners") before resizing one.
 jobs:
   unit-tests:
     name: unit-tests (${{ matrix.binary_platform }})
@@ -46,10 +52,10 @@ jobs:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16
             timeout_minutes: 22
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16
             timeout_minutes: 22
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -130,10 +136,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16
             timeout_minutes: 10
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -197,10 +203,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-8x16
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16
             timeout_minutes: 15
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-8x16
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16
             timeout_minutes: 20
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -266,10 +272,10 @@ jobs:
       matrix:
         include:
           - binary_platform: linux-x64
-            runner: nscloud-ubuntu-24.04-amd64-4x16
+            runner: namespace-profile-atomic-ci-linux-amd64-4x16
             timeout_minutes: 4
           - binary_platform: windows-x64
-            runner: nscloud-windows-2022-amd64-4x16
+            runner: namespace-profile-atomic-ci-windows-amd64-4x16
             timeout_minutes: 7
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -426,7 +432,7 @@ jobs:
     name: static-checks (linux-x64)
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
     # Run 34873678170: all steps passed, but 182s finalization hit the 3-minute cap. Add 50% headroom.
     timeout-minutes: 5
     steps:
@@ -510,7 +516,7 @@ jobs:
           - test (blacksmith-4vcpu-windows-2025, windows-x64)
           - test (all platforms)
       fail-fast: false
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
     timeout-minutes: 1
     steps:
       - name: Require every work job to have succeeded

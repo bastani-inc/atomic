@@ -41,13 +41,17 @@ per-job timeout budgets that `test/ci/test-workflow-topology.test.ts` asserts. A
 topology would delete Windows coverage and orphan the two required check contexts. Parity is
 a *toolchain* goal, not a CI-topology goal.
 
-**CI runners:** every job runs on a version-controlled Namespace runner label (`nscloud-*`)
+**CI runners:** pull-request-capable workflows (`test.yml`, `codeql.yml`) run every job on a
+repository Namespace runner profile (`namespace-profile-atomic-ci-*`) whose Access Level must be
+Restricted, so fork code gets no usable Namespace workload token. The release path
+(`publish.yml`, `warm-toolchain-cache.yml`) uses version-controlled inline labels (`nscloud-*`)
 except two GitHub-hosted jobs in `publish.yml`: `publish-npm` (`ubuntu-latest`, required by
 npm trusted publishing and provenance) and the `darwin-x64` leg of `native-artifacts`
 (`macos-26-intel`, because Namespace offers no Intel macOS). The required contexts still read
 `test (blacksmith-…)`: those are legacy identifiers kept for the external ruleset, not runner
 labels. The gate also emits `test (all platforms)` so the ruleset can move to it first.
-`docs/ci.md` ("Runners") has the mapping, the checkout/cache trust model, and the follow-ups;
+`docs/ci.md` ("Runners") has the mapping, the profiles and their dashboard-only settings, the
+checkout/cache trust model, and the follow-ups;
 `test/ci/ci-workflow-contracts.test.ts` enforces the allowlist.
 
 - TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)

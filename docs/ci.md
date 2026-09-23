@@ -43,19 +43,24 @@ The release build downloads checksum-pinned PostgreSQL artifacts while preparing
 
 ## Runners
 
-Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner selected by an inline machine label, `nscloud-{os}-{arch}-{shape}`, except the two GitHub-hosted exceptions below. Labels keep the whole runner configuration in the workflow files, where review and the contract tests can see it; no Namespace runner profile is used, and the workspace's existing profiles are untouched. Namespace refuses to schedule a job whose `runs-on` names more than one `nscloud` machine label, so each job names exactly one.
+Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner, except the two GitHub-hosted exceptions below. How the runner is selected depends on whether the workflow can run pull-request code:
 
-`test/ci/ci-workflow-contracts.test.ts` enforces this policy. It fails on any runner outside the approved label set or the exception allowlist, on any Blacksmith text left in `.github/` other than the two legacy required-context identifiers, and on any Namespace cache, git mirror, or builder state in the release path.
+- **Pull-request-capable workflows** (`test.yml` and `codeql.yml`, which trigger on `pull_request`) run every job on a repository-specific [runner profile](#runner-profiles), `namespace-profile-atomic-ci-*`, whose Access Level is Restricted. The profile, not the workflow, holds the machine shape.
+- **Release-path workflows** (`publish.yml`, triggered only by version-tag pushes and `workflow_dispatch`; `warm-toolchain-cache.yml`, triggered only by `workflow_dispatch`) never run pull-request code. They select runners with inline machine labels, `nscloud-{os}-{arch}-{shape}`, which keep the whole runner configuration in the workflow file.
+
+Namespace refuses to schedule a job whose `runs-on` names more than one Namespace machine label, so each job names exactly one profile or label.
+
+`test/ci/ci-workflow-contracts.test.ts` enforces this policy. It detects pull-request-capable workflows from their `on:` triggers (`pull_request` or `pull_request_target`) and fails when one of their jobs runs on anything but an approved `namespace-profile-atomic-ci-*` profile, including an inline `nscloud-*` label or a GitHub-hosted runner. It fails on any release-path runner outside the approved inline label set or the GitHub-hosted exception allowlist, on any Blacksmith text left in `.github/` other than the two legacy required-context identifiers, and on any Namespace cache, git mirror, or builder state in any workflow.
 
 ### Runner mapping
 
 | Workflow and jobs | Before | Now | Shape |
 | --- | --- | --- | --- |
-| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs) | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
-| `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
-| `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
-| `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs) | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
+| `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
+| `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
+| `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-4x16` | 4 vCPU, 16 GB |
+| `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release, cleanup-draft-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `nscloud-macos-tahoe-arm64-6x14` | 6 vCPU, 14 GB |
@@ -66,6 +71,37 @@ Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actio
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `macos-26-intel` (GitHub-hosted exception) | GitHub standard |
 
 `4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`. `8x16` is in the standard list.
+
+### Runner profiles
+
+`test.yml` and `codeql.yml` run fork pull requests. On Namespace, every job receives a workload token: "Each [compute instance](https://namespace.so/docs/architecture/compute) receives a dedicated workload token, granting access to Namespace features and APIs. [...] By default, workload tokens allow access to any Namespace feature" ([Workspace access controls](https://namespace.so/docs/workspaces/access)). A job on an inline `nscloud-*` label runs with the default [Access Level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels), Permissive, so fork code could use that token against the workspace. Access Level "is a profile-only setting": no inline label, `nsc` flag, or `--spec_file` field sets it. Every job in these two workflows therefore runs on one of four repository-specific profiles, each set to **Restricted**, under which "Namespace feature access is disabled for the runner workload".
+
+| Profile tag | OS | Arch | Shape | Builder mode | Access Level | Created with | Jobs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs) |
+| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
+| `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | Builders and caching off | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
+| `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | Builders and caching off | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
+
+A job selects a profile with `runs-on: namespace-profile-<tag>`. Recreate the Linux profiles with:
+
+```sh
+nsc github profile create --tag atomic-ci-linux-amd64-8x16 --os ubuntu-24.04 --machine_arch amd64 --machine_type 8x16 --builder_mode NO_CACHING --description "bastani-inc/atomic test.yml/codeql.yml PR-capable jobs; Access Level must be Restricted"
+nsc github profile create --tag atomic-ci-linux-amd64-4x16 --os ubuntu-24.04 --machine_arch amd64 --machine_type 4x16 --builder_mode NO_CACHING --description "bastani-inc/atomic test.yml/codeql.yml PR-capable jobs; Access Level must be Restricted"
+```
+
+Check them with `nsc github profile list -o json` or `nsc github profile describe --profile_id <id> -o json`.
+
+The rest is dashboard-only, in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles):
+
+1. **Windows profiles.** `nsc github profile create` accepts only Ubuntu images for `--os`, so create `atomic-ci-windows-amd64-8x16` and `atomic-ci-windows-amd64-4x16` in the editor: Windows Server 2022, amd64, the shape in the tag, remote builders and caching off.
+2. **Access Level.** Under **Advanced Settings**, set Access Level to **Restricted** on all four profiles. Neither `nsc github profile describe` nor `list` reports the access level, so the only way to verify it, or any later change to it, is to open each profile in the editor. Until all four read Restricted, fork jobs on that profile still run with Permissive access.
+
+Restricted blocks every Namespace API from inside the job, and these jobs call none: no Namespace action, cache volume, git mirror, toolchain cache, or remote builder (`--builder_mode NO_CACHING`). Checkout, the npm cache, and artifacts all go through GitHub.
+
+**Resizing.** The shape lives in the profile, not the workflow, and the tag names the shape. To resize a pull-request job, create a profile whose tag names the new shape (`nsc` for Linux, the editor for Windows), set its Access Level to Restricted, then update the tag in the workflow, this section and the tables above, `APPROVED_PULL_REQUEST_PROFILES` in `test/ci/ci-workflow-contracts.test.ts`, and, for `test.yml`, the runner constants in `test/ci/test-workflow-topology.test.ts`. Remove the old profile once no workflow uses it. Changing a profile's shape in place would make its tag, these docs, and the contract tests wrong.
+
+**If a profile is missing.** A job whose `runs-on` names a profile that does not exist (a missing Windows profile, or a mistyped tag) is never picked up. It stays queued, and GitHub cancels a self-hosted job after 24 hours in the queue ([Actions limits](https://docs.github.com/en/actions/reference/limits)). `timeout-minutes` counts from job start, so it does not bound that wait. Namespace also holds jobs in the queue while capacity is unavailable, so check the profile list first when a job stays queued far longer than usual.
 
 ### Sizing
 
@@ -111,7 +147,7 @@ Re-measure on Namespace:
 
 1. Let each job accumulate at least five successful runs on Namespace.
 2. Export `nsc instance report` (a CSV of every runner instance from the last seven days, with allocated shape and observed peak CPU and memory). Also read the dashboard's **p90 CPU per Job** and **Max Memory Used per Job** views.
-3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it, as the table above does. A job with low utilization can move down on the same evidence.
+3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it, as the table above does. A job with low utilization can move down on the same evidence. For a `test.yml` or `codeql.yml` job the new shape is a new profile; follow [Resizing](#runner-profiles).
 
 ### Platform differences imposed by Namespace
 
@@ -135,14 +171,14 @@ Only these two jobs stay GitHub-hosted. Each is allowlisted, with its reason, in
 
 ### Checkout and cache trust model
 
-This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on the same Namespace runner pool as releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
+This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on Namespace, the same provider that runs releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
 
-- **Ephemeral runners.** Namespace starts a fresh runner for every job and discards it afterwards. The only cross-job channels Namespace adds are cache volumes, the git mirror, the toolchain cache volume, and remote Docker builders. **This repository uses none of them.**
+- **Ephemeral runners.** Namespace starts a fresh runner for every job and discards it afterwards, so a job cannot leave anything on the machine for the next one. What can outlive a job is Namespace workspace state reachable from inside it: cache volumes, the git mirror, the toolchain cache volume and remote Docker builders, which later jobs read, and the job's own Namespace workload token, which reaches the workspace's APIs directly. **This repository uses none of that state**, and the pull-request workflows disable the token's Namespace access (next item).
+- **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` runs on a repository-specific profile whose Access Level is Restricted, which disables Namespace feature access for the runner workload. On an inline `nscloud-*` label the same job would get a workload token with the default Permissive access, and "by default, workload tokens allow access to any Namespace feature". Access Level can be set only on a profile, and only in the dashboard. [Runner profiles](#runner-profiles) lists the profiles, how to recreate them, and how to verify the setting. The contract tests fail if a job in a `pull_request` or `pull_request_target` workflow uses anything other than an approved profile.
 - **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
-- **Caches stay in GitHub's Actions cache.** `test.yml` keeps `setup-node`'s npm cache, and `publish.yml` and `warm-toolchain-cache.yml` keep `actions/cache` for the MSVC CRT. Actions cache entries are scoped by ref: a pull-request run writes only its own merge-ref scope, which `main` and release tags never read. Namespace cache volumes (`-with-cache`, `nscloud-cache-tag-*`) are not used. Linux `npm ci` already took 4–5 s with the npm cache hit, so the saving would be small. The documented poisoning controls also have gaps: it is undocumented whether `nscloud-cache-allow-commit-from-main` treats a `pull_request` job as its head branch or its merge ref, and `nscloud-cache-exp-do-not-commit` is marked experimental. A future cache volume on `test.yml` or `codeql.yml` would need a repository-specific tag (tags are shared across repositories), `nscloud-cache-allow-commit-from-main`, and `setup-node` caching disabled. The contract tests would need a deliberate update.
-- **The release path reads no Namespace state.** `publish.yml` and `warm-toolchain-cache.yml` (which fills the cache the publisher restores) use no Namespace action, cache label, git mirror, or builder label. Neither builds a container image: the Alpine smokes only `docker run` public images. Namespace's remote builders apply to BuildKit builds, so they never handle release work, and `nscloud-no-remote-builders` would change nothing. The contract test also forbids `docker build` in these files, so adding one forces a review of this premise.
-- **Fork pull-request approval.** The repository's fork-PR approval policy is currently `first_time_contributors` (read with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive secrets or a write token.
-- **Namespace access level.** Namespace can restrict what a runner workload may call (Permissive by default; Limited or Restricted), but only through a runner profile. Inline labels cannot set it, so pull-request jobs run with the workspace default.
+- **Caches stay in GitHub's Actions cache.** `test.yml` keeps `setup-node`'s npm cache, and `publish.yml` and `warm-toolchain-cache.yml` keep `actions/cache` for the MSVC CRT. Actions cache entries are scoped by ref: a pull-request run writes only its own merge-ref scope, which `main` and release tags never read. Namespace cache volumes (`-with-cache`, `nscloud-cache-tag-*`) are not used, and a Restricted profile could not reach them anyway. Linux `npm ci` already took 4–5 s with the npm cache hit, so the saving would be small. The documented poisoning controls also have gaps: it is undocumented whether `nscloud-cache-allow-commit-from-main` treats a `pull_request` job as its head branch or its merge ref, and `nscloud-cache-exp-do-not-commit` is marked experimental. A future cache volume on `test.yml` or `codeql.yml` would need a less restrictive Access Level on its profile (a trust decision, not a tuning change), a repository-specific tag (tags are shared across repositories), `nscloud-cache-allow-commit-from-main`, and `setup-node` caching disabled. The contract tests would need a deliberate update.
+- **The release path reads no Namespace state.** `publish.yml` (version-tag pushes and `workflow_dispatch` only) and `warm-toolchain-cache.yml` (`workflow_dispatch` only, and it fills the cache the publisher restores) never run pull-request code. They use inline labels rather than a profile a pull-request job shares, and no Namespace action, cache label, git mirror, or builder label. Neither builds a container image: the Alpine smokes only `docker run` public images. Namespace's remote builders apply to BuildKit builds, so they never handle release work, and `nscloud-no-remote-builders` would change nothing. The contract test also forbids `docker build` in these files, so adding one forces a review of this premise.
+- **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. On Namespace they would otherwise receive a Permissive workload token; the Restricted profiles are what remove that, and approval is the second layer.
 
 ### Pre-baked base image decision
 
@@ -152,7 +188,7 @@ Namespace can pre-bake dependencies into a [custom base image](https://namespace
 - **Linux-only, and profile state.** A committed Dockerfile *can* be applied from the CLI: `nsc github profile update --dockerfile <path>` (or `--spec_file`) sets a profile's custom image, and `nsc github profile rebuild-base-image` and `test-build-base-image` rebuild and test it. But the image belongs to a runner profile, not to the workflow file, so it lives in workspace state that each rebuild has to keep in sync. `test-build-base-image` builds only `linux/amd64` and `linux/arm64`, so an image would leave Windows and macOS unaffected, and Windows sets the length of every `test.yml` run.
 - **Trust and drift.** A profile image shared with pull-request jobs is state the release path must not depend on. Its preinstalled Bun, Node and Rust would also have to be rebuilt in lockstep with the workflow pins (Bun 1.4.2, Node 22, Rust 1.97.0 in `publish.yml`). Otherwise the setup actions still run and the saving disappears.
 
-Revisit only if post-migration timings show setup dominating a job. Any adoption would need a Dockerfile committed to this repository, a dedicated repository-scoped profile limited to `test.yml` Linux jobs, the same version pins, a rebuild whenever a pin changes, no secrets or checked-out content in the image, and no use from `publish.yml`.
+Revisit only if post-migration timings show setup dominating a job. Any adoption would need a Dockerfile committed to this repository, applied only to the Linux `atomic-ci-*` [runner profiles](#runner-profiles), the same version pins, a rebuild whenever a pin changes, no secrets or checked-out content in the image, and no use from `publish.yml`.
 
 ### Follow-ups
 
@@ -160,8 +196,7 @@ These are recorded here and deliberately not performed by the migration:
 
 1. **Ruleset rename.** Switch ruleset `9310196` from the legacy `test (blacksmith-…)` contexts to `test (all platforms)`, then drop the legacy rows. Follow [Moving the ruleset to the readable context](#moving-the-ruleset-to-the-readable-context). Until then, keep both legacy strings byte-for-byte.
 2. **Measurement-based resizing.** Follow [Sizing](#sizing) once each job has five successful Namespace runs.
-3. **First-run verification.** Confirm on the first Namespace runs that Windows native builds link with MSVC, Linux checkout time fits its caps, `docker run` bind mounts work in `static-checks` and both Alpine legs, `patchelf` and LLVM 18 are present on arm64, and `register-published-version` mints its OIDC token.
-4. **Pull-request hardening.** Consider tightening the fork-PR approval policy to all external contributors. Consider moving `pull_request` jobs to a dedicated Restricted-access Namespace profile; that requires dashboard work, and the profile must be recorded here.
+3. **First-run verification.** Before the first pull-request run, confirm in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles) that all four `atomic-ci-*` profiles exist and each reads Access Level Restricted. On the first runs, confirm that no `test.yml` or `codeql.yml` job stays queued (a missing profile queues until GitHub cancels it after 24 hours, and `timeout-minutes` does not count queue time), that each job's runner has the profile's shape, that Windows native builds link with MSVC, Linux checkout time fits its caps, `docker run` bind mounts work in `static-checks` and both Alpine legs, `patchelf` and LLVM 18 are present on arm64, and `register-published-version` mints its OIDC token.
 
 ## Tests (`test.yml`)
 
@@ -201,13 +236,13 @@ These are **legacy context identifiers, not runner labels.** They name the Black
 
 The gate's matrix has a single key, `required_context`, and its display name is `${{ matrix.required_context }}`. Each matrix value is therefore the whole context string, and GitHub appends nothing to it. `test/ci/test-workflow-topology.test.ts` pins the list to the two legacy strings plus the readable one. Per-platform timeouts and runner labels stay out of the gate's matrix, so tuning either can never rename a required check.
 
-Every leg does the same bookkeeping on one Namespace Linux runner. The gate exists to fail closed:
+Every leg does the same bookkeeping on the Linux 4x16 runner profile. The gate exists to fail closed:
 
 - Moving work into new jobs without a gate would silently un-protect every step that left `test`. The contexts would still exist and still go green.
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
 - The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, each leg asserts every platform's work jobs. That is strictly stronger than the per-platform meaning the legacy contexts once had, which is why a single readable context replaces both.
 
-The work jobs are named by platform only, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`. Their `runner` matrix key holds the Namespace label. No ruleset or contract depends on the work-job names.
+The work jobs are named by platform only, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names.
 
 #### Moving the ruleset to the readable context
 

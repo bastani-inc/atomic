@@ -33,12 +33,14 @@ on:
 jobs:
   analyze:
     name: Analyze
-    # Namespace, not ubuntu-latest: `ci-workflow-contracts.test.ts` enumerates
-    # every workflow in this directory and allows exactly two GitHub-hosted jobs
-    # (macos-26-intel for the darwin-x64 native binding, ubuntu-latest for npm
-    # trusted publishing). Default setup escaped that check only because it was
-    # not a file here; an advanced setup is subject to it.
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
+    # A repository runner profile, not ubuntu-latest or an inline `nscloud-*`
+    # label: `ci-workflow-contracts.test.ts` enumerates every workflow in this
+    # directory, and a job in a pull_request workflow must run on an approved
+    # `namespace-profile-atomic-ci-*` profile whose Access Level is Restricted,
+    # so fork code gets no usable Namespace workload token (docs/ci.md,
+    # "Checkout and cache trust model"). Default setup escaped that check only
+    # because it was not a file here; an advanced setup is subject to it.
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16
     timeout-minutes: 30
     permissions:
       # Uploading the SARIF results is the whole point of the job.

@@ -932,8 +932,23 @@ interface WorkflowJob {
 	steps?: { run?: string }[];
 }
 
+/** The `on:` block: one event, a list of events, or events keyed to their filters. */
+type WorkflowTriggers = string | string[] | Record<string, object | null>;
+
 interface Workflow {
+	on?: WorkflowTriggers;
 	jobs?: Record<string, WorkflowJob>;
+}
+
+/** Events that run a pull request's code, fork pull requests included. */
+const PULL_REQUEST_EVENTS = new Set(["pull_request", "pull_request_target"]);
+
+/** Whether a workflow can run pull-request code, detected from its `on:` block rather than a file list. */
+function runsPullRequestCode(file: string, workflow: Workflow): boolean {
+	const on = workflow.on;
+	assert.ok(on !== undefined, `${file}: declares no triggers`);
+	const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : Object.keys(on);
+	return events.some((event) => PULL_REQUEST_EVENTS.has(event));
 }
 
 /**
@@ -966,20 +981,36 @@ function runsOnLabelSets(label: string, job: NonNullable<Workflow["jobs"]>[strin
 	);
 }
 
-/** Any Namespace machine label: `nscloud-{os}-{arch}-{shape}[-with-*]`. Namespace schedules at most one per job. */
+/** Any inline Namespace machine label: `nscloud-{os}-{arch}-{shape}[-with-*]`. */
 const NAMESPACE_MACHINE_LABEL = /^nscloud-(?:ubuntu|windows|macos)-/u;
 
+/** Any Namespace runner profile label: `namespace-profile-{tag}`. */
+const NAMESPACE_PROFILE_LABEL = /^namespace-profile-/u;
+
 /**
- * The machine labels this repository approves: bare shapes, no cache, feature, or
- * builder suffix. The 8x16 shapes carry only the three CPU-bound test.yml suites
- * (pinned in test-workflow-topology.test.ts); docs/ci.md ("Sizing") has the data.
+ * The repository runner profiles a pull-request-capable workflow may run on.
+ * Fork code on an inline `nscloud-*` label receives a Namespace workload token
+ * with the default Permissive access. Access Level is profile-only, so every
+ * such job runs on one of these profiles, each of which must be set to
+ * Restricted in the Namespace dashboard. The machine shape lives in the profile,
+ * not here: resizing means changing the profile, docs/ci.md ("Runner
+ * profiles"), and this allowlist together.
  */
-const APPROVED_NAMESPACE_RUNNERS = new Set([
+const APPROVED_PULL_REQUEST_PROFILES: Record<string, { os: "linux" | "windows"; shape: string }> = {
+	"namespace-profile-atomic-ci-linux-amd64-4x16": { os: "linux", shape: "4x16" },
+	"namespace-profile-atomic-ci-linux-amd64-8x16": { os: "linux", shape: "8x16" },
+	"namespace-profile-atomic-ci-windows-amd64-4x16": { os: "windows", shape: "4x16" },
+	"namespace-profile-atomic-ci-windows-amd64-8x16": { os: "windows", shape: "8x16" },
+};
+
+/**
+ * The inline machine labels the release path (push, tag, and dispatch
+ * workflows) may use: bare shapes, no cache, feature, or builder suffix.
+ */
+const APPROVED_RELEASE_PATH_RUNNERS = new Set([
 	"nscloud-ubuntu-24.04-amd64-4x16",
-	"nscloud-ubuntu-24.04-amd64-8x16",
 	"nscloud-ubuntu-24.04-arm64-4x16",
 	"nscloud-windows-2022-amd64-4x16",
-	"nscloud-windows-2022-amd64-8x16",
 	"nscloud-macos-tahoe-arm64-6x14",
 ]);
 
@@ -989,7 +1020,7 @@ const MEASURED_8_VCPU_JOBS = new Set(["test.yml unit-tests", "test.yml integrati
 /**
  * The only jobs that stay GitHub-hosted, each for a reason a future "move
  * everything to Namespace" pass must not quietly undo. docs/ci.md carries the
- * citations.
+ * citations. Neither is in a pull-request-capable workflow.
  */
 const GITHUB_HOSTED_EXCEPTIONS: Record<string, { runner: string; reason: string }> = {
 	"publish.yml native-artifacts": {
@@ -1004,22 +1035,41 @@ const GITHUB_HOSTED_EXCEPTIONS: Record<string, { runner: string; reason: string 
 	},
 };
 
-test("Namespace runners are used everywhere they are supported", async () => {
+test("pull-request workflows run on Restricted profiles and the release path on approved Namespace labels", async () => {
 	const publish = await readText(publishPath);
 	const hosted: string[] = [];
+	const pullRequestWorkflows: string[] = [];
+	const usedProfiles = new Set<string>();
 	for (const file of await workflowFiles()) {
 		const workflow = parseYaml(await readText(join(workflowDir, file))) as Workflow;
+		const pullRequestCapable = runsPullRequestCode(file, workflow);
+		if (pullRequestCapable) pullRequestWorkflows.push(file);
 		for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
 			const label = `${file} ${name}`;
 			for (const set of runsOnLabelSets(label, job)) {
-				const machines = set.filter((entry) => NAMESPACE_MACHINE_LABEL.test(entry));
+				const machines = set.filter(
+					(entry) => NAMESPACE_MACHINE_LABEL.test(entry) || NAMESPACE_PROFILE_LABEL.test(entry),
+				);
 				// Namespace refuses to schedule a job whose runs-on names two machine labels.
-				assert.ok(machines.length <= 1, `${label}: more than one nscloud machine label in ${set.join(", ")}`);
-				if (machines.length === 1) {
-					assert.ok(APPROVED_NAMESPACE_RUNNERS.has(machines[0] as string), `${label}: unapproved ${machines[0]}`);
-					if (machines[0]?.endsWith("-8x16")) {
+				assert.ok(machines.length <= 1, `${label}: more than one Namespace machine label in ${set.join(", ")}`);
+				if (pullRequestCapable) {
+					const profile = machines[0] ?? "";
+					assert.ok(
+						Object.hasOwn(APPROVED_PULL_REQUEST_PROFILES, profile),
+						`${label}: a pull-request workflow must run on an approved Restricted profile, not ${set.join(", ")}`,
+					);
+					if (APPROVED_PULL_REQUEST_PROFILES[profile]?.shape === "8x16") {
 						assert.ok(MEASURED_8_VCPU_JOBS.has(label), `${label}: 8 vCPU needs sizing evidence in docs/ci.md`);
 					}
+					assert.deepEqual(set, [profile], `${label}: companion labels need a docs/ci.md trust review`);
+					usedProfiles.add(profile);
+					continue;
+				}
+				if (machines.length === 1) {
+					assert.ok(
+						APPROVED_RELEASE_PATH_RUNNERS.has(machines[0] as string),
+						`${label}: unapproved release-path runner ${machines[0]}`,
+					);
 					assert.deepEqual(set, machines, `${label}: companion labels need a docs/ci.md trust review`);
 					continue;
 				}
@@ -1034,10 +1084,39 @@ test("Namespace runners are used everywhere they are supported", async () => {
 			}
 		}
 	}
+	// Adding a pull-request-capable workflow is a trust decision, not a file drop.
+	assert.deepEqual(pullRequestWorkflows, ["codeql.yml", "test.yml"]);
+	assert.deepEqual([...usedProfiles].sort(), Object.keys(APPROVED_PULL_REQUEST_PROFILES).sort());
 	assert.deepEqual(hosted.sort(), Object.keys(GITHUB_HOSTED_EXCEPTIONS).sort());
 	assert.match(publish, /# Namespace macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
 	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,240}?runs-on: ubuntu-latest/u);
 	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
+});
+
+/**
+ * Access Level is dashboard-only and cannot be read back through `nsc`, so the
+ * repository cannot assert it. What it can assert is that docs/ci.md records
+ * every approved profile as Restricted, and the exact command that recreates
+ * each Linux profile at its approved shape.
+ */
+test("docs/ci.md records every approved runner profile and how to recreate it", async () => {
+	const docs = await readText(join(root, "docs/ci.md"));
+	assert.match(docs, /Access Level[^\n]*Restricted/u);
+	assert.match(docs, /https:\/\/cloud\.namespace\.so\/workspace\/actions\/profiles/u);
+	for (const [profile, { os, shape }] of Object.entries(APPROVED_PULL_REQUEST_PROFILES)) {
+		const tag = profile.replace(NAMESPACE_PROFILE_LABEL, "");
+		assert.match(docs, new RegExp(`\\| \`${tag}\` \\|[^\\n]*\\| ${shape} \\|[^\\n]*\\| Restricted \\|`, "u"), tag);
+		if (os === "linux") {
+			assert.match(
+				docs,
+				new RegExp(
+					`nsc github profile create --tag ${tag} --os ubuntu-24\\.04 --machine_arch amd64 --machine_type ${shape} --builder_mode NO_CACHING`,
+					"u",
+				),
+				tag,
+			);
+		}
+	}
 });
 
 /**
@@ -1071,21 +1150,27 @@ test("no Blacksmith runner, action, or comment survives outside the legacy requi
 
 /**
  * Namespace cache volumes, the git mirror, and remote-builder caches are shared
- * across jobs and commit whenever a job exits 0. Pull-request jobs run untrusted
- * code on the same runners, so nothing on the release path may read state they
- * can write: publish.yml builds provenance-signed artifacts, and
- * warm-toolchain-cache.yml fills the cache publish.yml restores. Both stay on
- * GitHub's branch-scoped Actions cache. Neither builds a container image, so
- * Namespace's remote builders never see release work either.
+ * across jobs and commit whenever a job exits 0. No workflow uses them: the
+ * pull-request workflows run on Restricted profiles, which cannot reach
+ * Namespace APIs, and nothing on the release path may read state a
+ * pull-request job could write. publish.yml builds provenance-signed artifacts,
+ * and warm-toolchain-cache.yml fills the cache publish.yml restores; both stay
+ * on GitHub's branch-scoped Actions cache and on inline labels, never a profile
+ * a pull-request job shares. Neither builds a container image, so Namespace's
+ * remote builders never see release work either.
  */
-test("release and cache-warming workflows use no Namespace cache, mirror, or builder state", async () => {
-	for (const path of [publishPath, warmPath]) {
-		const workflow = await readText(path);
+test("no workflow uses Namespace cache, mirror, or builder state, and the release path shares no profile", async () => {
+	for (const file of await workflowFiles()) {
+		const workflow = await readText(join(workflowDir, file));
 		assert.doesNotMatch(
 			workflow,
-			/namespacelabs\/|namespace-profile-|namespace-features|nscloud-(?:cache|git-mirror|runner-tool-cache|container-image-cache|in-runner-builder)|-with-(?:cache|builders|features)\b/u,
-			path,
+			/namespacelabs\/|namespace-features|nscloud-(?:cache|git-mirror|runner-tool-cache|container-image-cache|in-runner-builder)|-with-(?:cache|builders|features)\b/u,
+			file,
 		);
+	}
+	for (const path of [publishPath, warmPath]) {
+		const workflow = await readText(path);
+		assert.doesNotMatch(workflow, /namespace-profile-/u, path);
 		assert.doesNotMatch(workflow, /docker (?:build|buildx)|setup-buildx/u, path);
 	}
 });
