@@ -139,8 +139,8 @@ export function _buildRuntime(
 	const activeBuiltinTools = (options.activeToolNames ?? [...getDefaultToolNames()]).filter(isAllowedBuiltinTool);
 	// Resolve ownership per call, just like command execution. Each wait receives
 	// a stable binding so observation cleanup can finish after session disposal.
-	const getTaskOwner = () =>
-		this._subagentPolicy?.depth && this._subagentPolicy.depth >= 1 ? undefined : this.getAgentTaskHost().ownerBinding;
+	// Subagent children resolve their parent's owner, so their shells appear in its `/tasks`.
+	const getTaskOwner = () => this._getCommandTaskOwner();
 	const baseToolDefinitions = this._baseToolsOverride
 		? Object.fromEntries(
 				Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -166,17 +166,10 @@ export function _buildRuntime(
 					get taskOwner() {
 						return getTaskOwner();
 					},
-					...(!(this._subagentPolicy?.depth && this._subagentPolicy.depth >= 1)
-						? {
-								operations: {
-									exec: (command, cwd, options) =>
-										createLocalBashOperations({
-											shellPath,
-											taskOwner: this.getAgentTaskHost().ownerBinding,
-										}).exec(command, cwd, options),
-								},
-							}
-						: {}),
+					operations: {
+						exec: (command, cwd, options) =>
+							createLocalBashOperations({ shellPath, taskOwner: getTaskOwner() }).exec(command, cwd, options),
+					},
 					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
 					availableTools: activeBuiltinTools,
 					// Resolved per execution so bash spill files follow the live
@@ -196,19 +189,13 @@ export function _buildRuntime(
 					get taskOwner() {
 						return getTaskOwner();
 					},
-					...(!(this._subagentPolicy?.depth && this._subagentPolicy.depth >= 1)
-						? {
-								operations: {
-									exec: (command, cwd, options) =>
-										createLocalPowerShellOperations({
-											taskOwner: this.getAgentTaskHost().ownerBinding,
-										}).exec(command, cwd, options),
-								},
-							}
-						: {}),
+					operations: {
+						exec: (command, cwd, options) =>
+							createLocalPowerShellOperations({ taskOwner: getTaskOwner() }).exec(command, cwd, options),
+					},
 				},
 				kill: {
-					taskOwner: () => this.getAgentTaskHost().ownerBinding,
+					taskOwner: getTaskOwner,
 				},
 				search: {
 					contextBefore: this.settingsManager.getSearchContextBefore(),

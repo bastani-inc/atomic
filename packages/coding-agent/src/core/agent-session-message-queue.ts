@@ -382,7 +382,9 @@ export function _queueAgentMessage(
 	} else {
 		this.agent.steer(message);
 	}
-	this._agentTaskHost?.yieldTaskWaits(message.role === "user" ? "input-needed" : "intercom-coordination");
+	const yieldReason = message.role === "user" ? "input-needed" : "intercom-coordination";
+	this._agentTaskHost?.yieldTaskWaits(yieldReason);
+	this._childTaskWaits.yieldAll(yieldReason);
 }
 
 export function _drainQueuedAgentMessages(this: AgentSession): DrainedAgentQueues {

@@ -166,6 +166,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: import("./extensions/index.js").ExtensionRunner };
 	sessionStartEvent?: SessionStartEvent;
 	subagentPolicy?: SubagentChildPolicy;
+	/** Parent-issued shell task owner for an in-process subagent child. */
+	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	systemPromptTransform?: (prompt: string) => string;
 	/**
 	 * Transform the canonical session projection whenever it becomes the finalized

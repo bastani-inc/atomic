@@ -42,6 +42,7 @@ import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.ts";
 
@@ -553,6 +554,7 @@ async function constructAgentSession(
 
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
+	const childCommandTaskOwner = createChildCommandTaskOwner(() => session.getAgentTaskHost());
 	try {
 		session = new AgentSession({
 			agent,
@@ -576,6 +578,7 @@ async function constructAgentSession(
 						excludedTools: childExcludedTools,
 						customTools: options.customTools,
 						extensionBindings: session.extensionRunner.getChildHostBindings(),
+						parentCommandTaskOwner: childCommandTaskOwner,
 					},
 					child,
 				),
@@ -593,6 +596,7 @@ async function constructAgentSession(
 			sessionStartEvent: options.sessionStartEvent,
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy: options.subagentPolicy,
+			parentCommandTaskOwner: options.parentCommandTaskOwner,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,
 		});

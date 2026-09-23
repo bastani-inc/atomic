@@ -79,6 +79,17 @@ export interface SupervisedCommandOwner {
 		budgetMs?: number,
 		onRegistered?: (wait: WaitLease) => void,
 	) => ReturnType<TaskSupervisor["waitForTaskId"]>;
+	/** Narrow a shared owner to the tasks this binding launched. */
+	ownsTask?: (taskId: TaskId) => boolean;
+	onCommandStarted?: (taskId: TaskId) => void;
+}
+
+export function lookupOwnedTask(context: SupervisedCommandOwner, id: string): TaskLease {
+	const taskId = id as TaskId;
+	const task = context.supervisor.lookupTask(context.owner, taskId);
+	if (!task.ok) throw new Error(`${task.error.code}: ${task.error.message}`);
+	if (context.ownsTask && !context.ownsTask(taskId)) throw new Error("UnknownTask: task was not launched here");
+	return task.value;
 }
 export interface SupervisedCommandResult {
 	exitCode: number | null;
@@ -97,8 +108,7 @@ export async function waitForSupervisedCommand(
 ) {
 	if (!context) throw new Error("Shell task wait requires a supported task owner");
 	if (signal?.aborted) throw new Error("aborted");
-	const task = context.supervisor.lookupTask(context.owner, id as TaskId);
-	if (!task.ok) throw new Error(`${task.error.code}: ${task.error.message}`);
+	const task = lookupOwnedTask(context, id);
 	let lease: WaitLease | undefined;
 	const abort = () => {
 		if (lease) context.supervisor.disposeTaskWait(lease);
@@ -116,10 +126,10 @@ export async function waitForSupervisedCommand(
 		if (signal?.aborted) throw new Error("aborted");
 		if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 		let offset: string | undefined =
-			observed.value.kind === "yielded" ? (yieldedOutputOffsets.get(task.value) ?? "0") : "0";
+			observed.value.kind === "yielded" ? (yieldedOutputOffsets.get(task) ?? "0") : "0";
 		let nextOffset: string;
 		do {
-			const page = await context.supervisor.readTaskOutput(task.value, { start: offset, maximumBytes: 8192 });
+			const page = await context.supervisor.readTaskOutput(task, { start: offset, maximumBytes: 8192 });
 			if (!page.ok) throw new Error(`${page.error.code}: ${page.error.message}`);
 			const segments = [
 				...page.value.chunks.map((chunk) => ({ offsets: chunk.offsets, bytes: Buffer.from(chunk.bytes) })),
@@ -141,8 +151,8 @@ export async function waitForSupervisedCommand(
 		output.finish();
 		const snapshot = output.snapshot({ persistIfTruncated: true });
 		await output.closeTempFile();
-		if (observed.value.kind === "yielded" && BigInt(nextOffset) > BigInt(yieldedOutputOffsets.get(task.value) ?? "0"))
-			yieldedOutputOffsets.set(task.value, nextOffset);
+		if (observed.value.kind === "yielded" && BigInt(nextOffset) > BigInt(yieldedOutputOffsets.get(task) ?? "0"))
+			yieldedOutputOffsets.set(task, nextOffset);
 		const terminal = observed.value.kind === "settled" ? observed.value.result : undefined;
 		return {
 			content: [
@@ -236,6 +246,7 @@ export async function executeSupervisedCommand(
 	);
 	if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
 	const task = started.value;
+	context.onCommandStarted?.(context.supervisor.taskReference(task).taskId);
 	const abort = () => {
 		void context.supervisor.cancelTask(task, "user");
 	};

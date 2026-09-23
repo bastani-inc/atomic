@@ -3,6 +3,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
+import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
 import { COMMAND_DETAIL_TAIL_BYTES, taskOutputText } from "./tasks/command-output.js";
 import {
 	formatTaskCompletion,
@@ -13,14 +14,28 @@ import {
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { taskTranscriptSource } from "./tasks/supervisor.js";
+import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
 // Native owners identify live generations, never borrowed persisted storage.
 // Explicit workflow-stage owners remain borrowed across session replacement.
 const replacementOwnerScopes = new WeakMap<object, string>();
 
+/** An admitted in-process subagent child; top-level sessions may carry a policy without `depth`. */
+export function isSubagentChildSession(session: Pick<AgentSession, "_subagentPolicy">): boolean {
+	return (session._subagentPolicy?.depth ?? 0) >= 1;
+}
+
+/**
+ * A child launched from a workflow stage inherits the stage's admission boundary for
+ * message delivery, but must never bind or rebind the stage's own task owner.
+ */
+function stageTaskAdmission(session: AgentSession) {
+	return isSubagentChildSession(session) ? undefined : session._workflowStageAdmission;
+}
+
 export function replaceSessionTaskOwner(session: AgentSession): void {
-	if (session._workflowStageAdmission) return;
+	if (stageTaskAdmission(session)) return;
 	replacementOwnerScopes.set(session, randomUUID());
 	session._agentTaskHost = undefined;
 	session._taskAdmission = undefined;
@@ -30,8 +45,8 @@ export function replaceSessionTaskOwner(session: AgentSession): void {
 export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	if (this._disposed || sessionGenerationClosing.has(this)) throw new Error("Task owner is closed");
 	if (this._agentTaskHost) return this._agentTaskHost;
-	const admission =
-		this._workflowStageAdmission ?? WorkflowStageAdmissionBoundary.restore(this.sessionManager.getEntries());
+	const stageAdmission = stageTaskAdmission(this);
+	const admission = stageAdmission ?? WorkflowStageAdmissionBoundary.restore(this.sessionManager.getEntries());
 	this._taskAdmission = admission;
 	const outbox = new TaskCompletionOutbox(
 		this.sessionManager,
@@ -87,6 +102,22 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					output = "Output unavailable";
 				}
 			}
+			const message = {
+				customType: TASK_COMPLETION_MESSAGE_TYPE,
+				content: formatTaskCompletion(envelope, task, output),
+				details: { ...envelope, notification: taskCompletionNotice(envelope, task, output) },
+				display: true as const,
+			};
+			const childRoute =
+				host && task?.kind === "command" ? childTaskCompletionRoute(host, envelope.taskId) : undefined;
+			if (childRoute) {
+				try {
+					await childRoute.deliver(message);
+					return;
+				} catch {
+					// The launching child ended before delivery; the owning parent receives the notice.
+				}
+			}
 			const completionSource = source?.ok ? source.value.session.completionSource : undefined;
 			if (completionSource) {
 				await flushTaskCompletionMessages(
@@ -98,15 +129,11 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			await admission.admit(
 				envelope.completionId,
 				() =>
-					this.sendCustomMessage(
-						{
-							customType: TASK_COMPLETION_MESSAGE_TYPE,
-							content: formatTaskCompletion(envelope, task, output),
-							details: { ...envelope, notification: taskCompletionNotice(envelope, task, output) },
-							display: true,
-						},
-						{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
-					),
+					this.sendCustomMessage(message, {
+						triggerTurn: true,
+						persistWhenStreaming: true,
+						stageAdmissionKey: envelope.completionId,
+					}),
 				() => {
 					throw new Error("Task owner is closed");
 				},
@@ -118,10 +145,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		authorizeLaunch: () => {
 			if (this._disposed || sessionGenerationClosing.has(this) || !admission.isOpen())
 				throw new Error("Task owner is closed");
-			// Top-level sessions (main chat, workflow stages) may carry a policy without `depth`;
-			// only an admitted in-process child (depth >= 1) is refused delegation.
-			if ((this._subagentPolicy?.depth ?? 0) >= 1)
-				throw new Error("Subagent delegation is not available inside a subagent");
+			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
 		onTaskSettled: (
 			...[ref, receipt]: Parameters<NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>>
@@ -130,10 +154,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			void outbox.flush();
 		},
 	};
-	if (!this._workflowStageAdmission && !replacementOwnerScopes.has(this))
-		replacementOwnerScopes.set(this, randomUUID());
-	this._agentTaskHost = this._workflowStageAdmission
-		? this._workflowStageAdmission.bindAgentTaskHost(binding)
+	if (!stageAdmission && !replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
+	this._agentTaskHost = stageAdmission
+		? stageAdmission.bindAgentTaskHost(binding)
 		: new AgentTaskHost({
 				...binding,
 				scope: {
@@ -149,9 +172,27 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	return this._agentTaskHost;
 }
 
+/**
+ * Shell task owner for this session. A subagent child runs shells in its parent's owner,
+ * so they appear in the parent's `/tasks` and outlive the child.
+ */
+export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner | undefined {
+	if (!isSubagentChildSession(this)) return this.getAgentTaskHost().ownerBinding;
+	if (!this._parentCommandTaskOwner || this._disposed) return undefined;
+	const route: ChildTaskCompletionRoute = {
+		isOpen: () => !this._disposed && this._subagentPolicy?.messageAdmission?.isOpen() === true,
+		deliver: async (message) => {
+			const admission = this._subagentPolicy?.messageAdmission;
+			if (!admission) throw new Error("Subagent execution cannot accept messages");
+			await admission.run(() => this.sendCustomMessage(message, { triggerTurn: true, persistWhenStreaming: true }));
+		},
+	};
+	return this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits);
+}
+
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	// Replacement stage sessions share generation lifetime; disposal is not stage closure.
-	if (this._workflowStageAdmission) return;
+	if (stageTaskAdmission(this)) return;
 	this._taskAdmission?.seal();
 	const closed = await this._agentTaskHost?.close("session-close");
 	if (closed && !closed.ok) throw new Error(`${closed.error.code}: ${closed.error.message}`);
@@ -166,4 +207,10 @@ export function resumeTasks(this: AgentSession): void {
 	this._agentTaskHost?.resumeTasks();
 }
 
-export const agentSessionTaskMethods = { getAgentTaskHost, closeSessionTasks, pauseTasks, resumeTasks };
+export const agentSessionTaskMethods = {
+	getAgentTaskHost,
+	_getCommandTaskOwner,
+	closeSessionTasks,
+	pauseTasks,
+	resumeTasks,
+};

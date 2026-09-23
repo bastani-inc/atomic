@@ -90,6 +90,11 @@ export interface CreateAgentSessionOptions {
 	orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
+	/**
+	 * Internal: parent-issued shell task owner for an in-process subagent child. Supplied by the
+	 * parent's child-session options, so child background shells appear in the parent's `/tasks`.
+	 */
+	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
 	/** Filter inherited session messages before they enter the new AgentSession. */

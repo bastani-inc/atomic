@@ -27,7 +27,7 @@ import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
-import { agentSessionTaskMethods } from "./agent-session-tasks.js";
+import { agentSessionTaskMethods, isSubagentChildSession } from "./agent-session-tasks.js";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
@@ -56,6 +56,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
+import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
@@ -213,6 +214,8 @@ class AgentSessionBase {
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _subagentMessageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
+	protected _parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
+	protected _childTaskWaits = new ChildTaskWaits();
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	protected _taskAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
@@ -252,6 +255,7 @@ class AgentSessionBase {
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
 		this._subagentPolicy = config.subagentPolicy;
+		this._parentCommandTaskOwner = config.parentCommandTaskOwner;
 		let removeExecutionEndedListener: (() => void) | undefined;
 		try {
 			if (config.subagentPolicy?.executionEnded !== undefined) {
@@ -339,7 +343,8 @@ class AgentSessionBase {
 				includeAllExtensionTools: true,
 			});
 			if (this._initialActiveToolNames === undefined) internals._restoreToolsFromTranscript();
-			if (this._workflowStageAdmission?.hasAgentTaskHost()) internals.getAgentTaskHost();
+			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))
+				internals.getAgentTaskHost();
 		} catch (error) {
 			// No session escapes a failed constructor to release these acquisitions later.
 			const failures: unknown[] = [];

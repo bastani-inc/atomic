@@ -171,7 +171,7 @@ Completed, failed, and stopped tasks retain inspection but do not offer executio
 
 ## Background shells
 
-Top-level model `bash` calls on POSIX and native Windows, and `powershell` calls on native Windows, use the session's task owner. A long command can outlive its foreground observation budget and return a task ID while continuing to run. Its status then appears below the prompt and under **Shells** in `/tasks`. An explicit execution timeout still ends the command; it is separate from observation yielding.
+Model `bash` calls on POSIX and native Windows, and `powershell` calls on native Windows, use the session's task owner. Subagent shells use their parent's owner; see [Shells started by subagents](#shells-started-by-subagents). A long command can outlive its foreground observation budget and return a task ID while continuing to run. Its status then appears below the prompt and under **Shells** in `/tasks`. An explicit execution timeout still ends the command; it is separate from observation yielding.
 
 ```ts
 // Ordinary commands use the owner's observation budget, normally 10 seconds.
@@ -213,7 +213,16 @@ Shell completions use the same shaded card as subagents, with a retained output 
 
 Native Windows refuses owned shell launches it cannot supervise. Legacy Windows WSL `bash.exe` stdin transport is unsupported; run Atomic inside WSL for the normal POSIX/Bash path.
 
-Bash calls inside subagent sessions retain their existing execution paths. Without a supported task owner, explicit background requests are refused before execution; foreground calls wait for completion rather than automatically yielding. Custom operations adapters receive `wait` but must implement it themselves. External-terminal processes are not adopted into `/tasks`. A child's own tool use appears in that subagent's activity and transcript.
+### Shells started by subagents
+
+Subagents can run background `bash` and `powershell` commands too. Their shell tasks belong to the parent that launched the subagent: in main chat they appear under **Shells** in the main chat's `/tasks`, and in a workflow the subagent's shells appear in the current stage's `/tasks`. The subagent itself still cannot launch other subagents.
+
+- The subagent can wait on and `kill` the shells it launched, but not the parent's own tasks or another subagent's.
+- The parent can inspect, wait on, and stop those shells from its own `/tasks`, `bash({ action: "wait", id })`, or `kill({ id })`.
+- While the subagent is still running, a background shell's completion notice goes to the subagent. After the subagent finishes, the notice goes to the parent.
+- Shells keep running after the subagent finishes. They stop when the parent's session or workflow stage closes, or when a workflow stage pauses.
+
+Custom operations adapters receive `wait` but must implement it themselves. External-terminal processes are not adopted into `/tasks`. A child's own tool use appears in that subagent's activity and transcript.
 
 ## Lifetime and scope
 

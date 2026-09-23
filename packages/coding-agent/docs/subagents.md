@@ -270,7 +270,7 @@ subagent({ agent: "worker", task: "Implement the approved fix.", progress: true 
 
 ## Delegation and child boundaries
 
-Delegation is exactly one level deep and cannot be configured. Children complete their assigned tasks directly; they cannot launch or kill other children. They may inspect definitions and status with `list`, `get`, and `status`; management-restricted children also cannot `create`, `update`, or `delete` definitions.
+Delegation is exactly one level deep and cannot be configured. Children complete their assigned tasks directly; they cannot launch or kill other children. Children can still run background shells. Those shells appear in the parent's `/tasks`: the main chat's, or the current workflow stage's. See [Shells started by subagents](/background-tasks#shells-started-by-subagents). They may inspect definitions and status with `list`, `get`, and `status`; management-restricted children also cannot `create`, `update`, or `delete` definitions.
 
 Child prompts omit parent orchestration artifacts and prior subagent control traffic. Tool availability does not grant delegation authority. The parent remains responsible for orchestration.
 

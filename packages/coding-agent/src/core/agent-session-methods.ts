@@ -192,6 +192,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_disconnectFromAgent(): void;
 	dispose(): Promise<void>;
 	getAgentTaskHost(): import("./tasks/agent-adapter.js").AgentTaskHost;
+	_getCommandTaskOwner(): import("./tools/bash-pty-native.js").SupervisedCommandOwner | undefined;
 	closeSessionTasks(): Promise<void>;
 	/** Internal workflow pause: cancel owned execution without closing message admission. */
 	pauseTasks(): Promise<void>;
@@ -582,6 +583,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
+	_parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
+	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	_taskAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }

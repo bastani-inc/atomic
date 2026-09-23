@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import type { CancelReceipt, TaskId } from "../tasks/contracts.js";
-import type { SupervisedCommandOwner } from "./bash-pty-native.js";
+import type { CancelReceipt } from "../tasks/contracts.js";
+import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const killSchema = Type.Object({
@@ -11,7 +11,7 @@ const killSchema = Type.Object({
 
 export interface KillToolOptions {
 	/** Resolve the live trusted owner at execution time, including after session switches. */
-	taskOwner?: () => SupervisedCommandOwner;
+	taskOwner?: () => SupervisedCommandOwner | undefined;
 }
 
 export function createKillToolDefinition(options?: KillToolOptions): ToolDefinition<typeof killSchema, CancelReceipt> {
@@ -27,14 +27,13 @@ export function createKillToolDefinition(options?: KillToolOptions): ToolDefinit
 			const binding = options?.taskOwner?.();
 			if (!binding) throw new Error("kill requires a supported task owner");
 			const { supervisor, owner } = binding;
-			const task = supervisor.lookupTask(owner, id as TaskId);
-			if (!task.ok) throw new Error(`${task.error.code}: ${task.error.message}`);
+			const task = lookupOwnedTask(binding, id);
 			const watched = supervisor.watchOwnerTasks(owner);
 			if (!watched.ok) throw new Error(`${watched.error.code}: ${watched.error.message}`);
 			try {
 				const record = watched.value.snapshot.tasks.find((entry) => entry.ref.taskId === id);
 				if (record?.kind !== "command") throw new Error("kill only supports shell tasks");
-				const result = await supervisor.cancelTask(task.value, "user");
+				const result = await supervisor.cancelTask(task, "user");
 				if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
 				const receipt = result.value;
 				return {

@@ -9,6 +9,7 @@
 - Recorded Artificial Analysis Intelligence Index and Cognition FrontierCode 1.1 results for GPT-6 Sol and GPT-6 Luna in the model evals used by automatic routing.
 - Added Vercel AI Gateway and OpenCode Zen as Jev structured-decision providers (`vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, `opencode/jev-1.13-free`) for the router model setting and SDK decisions, reusing each gateway's existing login or its AI_GATEWAY_API_KEY / OPENCODE_API_KEY environment key. Gateway model IDs, limits, and prices come from the models.dev decision catalog, and `getStructuredOutputProviders()` entries now carry the published context window and price.
 - Added inherited Claude Opus 5.5 support for Anthropic with adaptive thinking and a 1M context window.
+- Subagents can now run background `bash` and `powershell` commands instead of being refused with "Background bash observation requires a supported task owner". These shells appear in the parent's `/tasks` (the main chat's, or the current workflow stage's) and keep running after the subagent finishes. The subagent can wait on and `kill` only the shells it launched. Completion notices go to the subagent while it runs, then to the parent. Subagents still cannot launch other subagents.
 
 ### Changed
 
@@ -23,6 +24,7 @@
 - Fixed an API key saved with `/login` in an interactive session not reaching the running engine, so workflow routing and other engine-side work kept reporting `requires an API key` until Atomic was restarted. API-key logins are now persisted by the engine, like OAuth logins and `/logout`, and both sides report the provider consistently ([#3193](https://github.com/bastani-inc/atomic/issues/3193)).
 - Fixed the RPC extension UI example to disable extensions with the supported `--no-extensions` flag and safely frame split UTF-8 output.
 - The Windows installer now retries removing the previous version backup with a bounded backoff when a file inside it is briefly locked (for example by Defender or the search indexer), instead of leaving a `.backup-*` directory behind in the install root.
+- Fixed a subagent launched from a workflow stage taking over the stage's task owner when it inspected its tasks, which could send the stage's background task completions to that subagent.
 
 ## [0.9.20-alpha.6] - 2026-09-22
 
