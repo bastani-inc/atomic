@@ -233,12 +233,16 @@ async function ensureCluster(
 			if (!existsSync(join(dataDir, "PG_VERSION")) && registered) {
 				throw new Error(`Managed Postgres data is missing PG_VERSION; preserve its ownership records: ${dataDir}`);
 			}
-			if (!registered && existsSync(dataDir) && readdirSync(dataDir).length > 0) {
+			const unregisteredData = !registered && existsSync(dataDir) && readdirSync(dataDir).length > 0;
+			if (unregisteredData && (options.recovery || !launchedByPreOwnershipAtomic(dataDir))) {
 				throw new Error(
 					`Refusing to adopt unregistered Postgres data: ${dataDir}. Preserve it and configure DBOS_SYSTEM_DATABASE_URL explicitly.`,
 				);
 			}
-			let metadata = registered ? managedPostgresMetadata(root, EMBEDDED_PG_MAJOR, false) : undefined;
+			let metadata =
+				registered || unregisteredData
+					? managedPostgresMetadata(root, EMBEDDED_PG_MAJOR, unregisteredData)
+					: undefined;
 			if (options.recovery && !metadata)
 				throw new Error("Managed Postgres recovery requires existing ownership records.");
 			if (
@@ -501,6 +505,23 @@ async function stopActiveCluster(cluster: ActiveEmbeddedPostgres): Promise<void>
 		// orderly-shutdown attempt can retry without reconstructing ownership.
 		cluster.stopPromise = undefined;
 		throw error;
+	}
+}
+
+function launchedByPreOwnershipAtomic(dataDir: string): boolean {
+	const versionFile = join(dataDir, "PG_VERSION");
+	const optsFile = join(dataDir, "postmaster.opts");
+	if (!existsSync(versionFile) || !existsSync(optsFile) || !lstatSync(optsFile).isFile()) return false;
+	if (readFileSync(versionFile, "utf8").trim() !== String(EMBEDDED_PG_MAJOR)) return false;
+	const launch = /^.+[\\/]postgres(?:\.exe)? "-D" "([^"]+)" "-p" "\d+" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
+		readFileSync(optsFile, "utf8"),
+	);
+	if (!launch) return false;
+	if (launch[1] === dataDir) return true;
+	try {
+		return realpathSync(launch[1]) === realpathSync(dataDir);
+	} catch {
+		return false;
 	}
 }
 

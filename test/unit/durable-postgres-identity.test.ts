@@ -242,6 +242,62 @@ test("unregistered existing data is never adopted or initialized", async () => {
 	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
 });
 
+function legacyCluster(f: ReturnType<typeof fixture>, opts: string) {
+	removeTempDirectory(join(f.root, "v18.shared"));
+	writeTextSync(join(f.data, "postmaster.opts"), opts);
+}
+const legacyLaunch = (data: string, port = 5439) =>
+	`/opt/atomic natives/postgres-runtime/bin/postgres "-D" "${data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`;
+
+test("adopts a legacy Atomic-provisioned cluster without reinitializing (#3235)", async () => {
+	const f = fixture();
+	legacyCluster(f, legacyLaunch(f.data));
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let starts = 0;
+	hooks.setRetainedPostgresSpawner(() => {
+		starts++;
+		throw new Error("unexpected start");
+	});
+	await hooks.ensureCluster(f.options);
+	assert.equal(starts, 0);
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	const adopted = managedPostgresMetadata(f.root, 18, false);
+	assert.equal(statSync(adopted.dataDir).ino, statSync(f.data).ino);
+	assert.equal(adopted.directoryIdentity, f.metadata.directoryIdentity);
+	assert.ok(statSync(join(f.root, "v18.shared", "cluster.json")).isFile());
+});
+
+test("unregistered data without Atomic's recorded loopback launch stays refused (#3235)", async () => {
+	for (const opts of [
+		undefined,
+		legacyLaunch(join("/elsewhere", "v18")),
+		`/opt/atomic/bin/postgres "-D" "DATA" "-p" "5439" "-c" "listen_addresses=*"\n`,
+		`/opt/atomic/bin/postgres "-D" "DATA" "-p" "5439"\n`,
+	]) {
+		const f = fixture();
+		legacyCluster(f, opts === undefined ? "" : opts.replace("DATA", f.data));
+		if (opts === undefined) rmSync(join(f.data, "postmaster.opts"));
+		await assert.rejects(hooks.ensureCluster(f.options), /Refusing to adopt unregistered/);
+		assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	}
+});
+
+test("a different PostgreSQL major is never adopted as a legacy cluster (#3235)", async () => {
+	const f = fixture();
+	legacyCluster(f, legacyLaunch(f.data));
+	writeTextSync(join(f.data, "PG_VERSION"), "17\n");
+	await assert.rejects(hooks.ensureCluster(f.options), /Refusing to adopt unregistered/);
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "17\n");
+});
+
+test("recovery never adopts a legacy cluster that lost its ownership records (#3235)", async () => {
+	const f = fixture();
+	legacyCluster(f, legacyLaunch(f.data));
+	await assert.rejects(hooks.ensureCluster({ ...f.options, recovery: f.metadata }), /Refusing to adopt unregistered/);
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+});
+
 test("preferred port validation rejects ambiguous or out-of-range values", () => {
 	for (const value of ["", "0", "65536", "1.5", "-1", " 5439", "abc"])
 		assert.throws(() => preferredPostgresPort(value), /ATOMIC_POSTGRES_PORT/);

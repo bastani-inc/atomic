@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow durability being disabled after upgrading from 0.9.10–0.9.19: Atomic now registers the embedded Postgres cluster that older Atomic provisioned instead of refusing it ([#3235](https://github.com/bastani-inc/atomic/issues/3235)).
+
 ## [0.9.20-alpha.8] - 2026-09-22
 
 ### Fixed
