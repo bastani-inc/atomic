@@ -220,6 +220,8 @@ describe("interactive deferred startup first prompt readiness", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			builtinPackagePaths: [],
+			noExtensions: true,
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_start", async () => {
@@ -256,6 +258,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
 		});
 		try {
 			await session.bindExtensions({ commandContextActions: createCommandActions() });

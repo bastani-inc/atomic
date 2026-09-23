@@ -2649,6 +2649,7 @@ try {
                 $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
                 $tempAcl.AddAccessRule($rule)
             }
+            Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
             Set-Acl -LiteralPath $caseTemp -AclObject $tempAcl
             $env:SystemTemp = $caseTemp
         }

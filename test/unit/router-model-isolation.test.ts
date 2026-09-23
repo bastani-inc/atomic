@@ -152,6 +152,7 @@ for (const routerModel of ["typesafe-ai/jev-latest", "auto"]) {
 				cwd,
 				agentDir: cwd,
 				settingsManager: settings,
+				builtinPackagePaths: [],
 				noExtensions: true,
 				noSkills: true,
 				noPromptTemplates: true,
@@ -168,6 +169,7 @@ for (const routerModel of ["typesafe-ai/jev-latest", "auto"]) {
 					settingsManager: settings,
 					sessionManager: SessionManager.inMemory(cwd),
 					resourceLoader: loader,
+					builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
 					customTools: [tool],
 					tools: ["structured_output"],
 				});

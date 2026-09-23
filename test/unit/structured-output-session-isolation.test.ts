@@ -49,6 +49,8 @@ async function createIsolatedSession(
 		cwd: tempDir,
 		agentDir,
 		settingsManager,
+		builtinPackagePaths: [],
+		noExtensions: true,
 	});
 	await resourceLoader.reload();
 
@@ -59,6 +61,7 @@ async function createIsolatedSession(
 		settingsManager,
 		sessionManager,
 		resourceLoader,
+		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
 		tools: options.tools,
 		excludedTools: options.excludedTools,
 		customTools: options.customTools,
