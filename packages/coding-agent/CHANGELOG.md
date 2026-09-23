@@ -8,7 +8,7 @@
 
 ### Changed
 
-- When a shell tool is available, the default system prompt now asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes: an `Assistant-workflow` trailer naming the workflow and run (or `inline`), an `Assistant-duration` trailer with measured time to converge against the estimate, and a `User-preference` trailer for durable preferences you express. Before choosing between a workflow and inline work, estimating duration, or resolving ambiguity, the agent mines these records for comparable tasks and reports sample size, median, and range. The history is used as a guide, not as the decision.
+- When a shell tool is available, the default system prompt now asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes: an `Assistant-workflow` trailer naming the workflow and run (or `inline`), an `Assistant-duration` trailer with measured time to converge against the estimate, and a `User-preference` trailer for durable preferences you express. Before choosing between a workflow and inline work, estimating duration, or resolving ambiguity, the agent mines these records for comparable tasks with your version control system and its hosting CLI (for example `git log` and `gh`), and reports sample size, median, and range. The history is used as a guide, not as the decision.
 
 ### Fixed
 

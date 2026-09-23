@@ -343,6 +343,8 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("never record secrets, credentials");
 			expect(prompt).toContain("Treat fewer than five comparable records as anecdotal");
 			expect(prompt).toContain("This history is a guide, not the decision");
+			expect(prompt).toContain("using the repository's version control system and its hosting CLI");
+			expect(prompt).toContain("`gh pr list --state all --search 'Assistant-workflow in:body'` on GitHub");
 		});
 
 		test("omits repository-intent guidance without a shell tool", () => {

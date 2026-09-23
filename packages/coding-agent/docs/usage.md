@@ -170,7 +170,7 @@ Assistant-duration: 42m converged, estimated 30m
 User-preference: keep PRs under 500 changed lines
 ```
 
-Tasks done without a workflow record `Assistant-workflow: inline`. Before choosing between a workflow and inline work or estimating how long a task will take, the agent looks up comparable records with `git log` and `gh` and uses them as a guide alongside your request. To opt out, or to keep preferences out of history, say so in a context file or `APPEND_SYSTEM.md`.
+Tasks done without a workflow record `Assistant-workflow: inline`. Before choosing between a workflow and inline work or estimating how long a task will take, the agent looks up comparable records with your version control system and its hosting CLI (for example `git log` and `gh` on GitHub) and uses them as a guide alongside your request. To opt out, or to keep preferences out of history, say so in a context file or `APPEND_SYSTEM.md`.
 
 ## Exporting and Sharing Sessions
 
