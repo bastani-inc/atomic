@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
@@ -12,6 +11,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { WorkflowTaskOptions, WorkflowTaskStep } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { readJson } from "../helpers/runtime.js";
 import {
 	appendProseTurn,
 	type CreateAgentSessionOptions,
@@ -198,8 +198,8 @@ describe("resume after a completed ctx.parallel", () => {
 		const artifactRoot = source.toolNodes?.find((node) => node.name === "artifact-root")?.result;
 		assert.equal(typeof artifactRoot, "string");
 		const ledgerStatePath = join(String(artifactRoot), "goal-ledger-state.json");
-		const readLedgerState = () => JSON.parse(readFileSync(ledgerStatePath, "utf8")) as Record<string, unknown>;
-		const ledgerBeforeResume = readLedgerState();
+		const readLedgerState = () => readJson<Record<string, unknown>>(ledgerStatePath);
+		const ledgerBeforeResume = await readLedgerState();
 
 		failPullRequest = false;
 		sessions.length = 0;
@@ -227,7 +227,7 @@ describe("resume after a completed ctx.parallel", () => {
 		// another decision, lifecycle, convergence, blocker, reverification,
 		// receipt or review record for the turn the source run already recorded,
 		// and the successful pull-request stage records nothing in the ledger.
-		assert.deepEqual(readLedgerState(), ledgerBeforeResume);
+		assert.deepEqual(await readLedgerState(), ledgerBeforeResume);
 
 		const byName = new Map(continuation.stages.map((stage) => [stage.name, stage]));
 		const reviewerIds = ["completion-reviewer-1", "evidence-reviewer-1", "risk-reviewer-1"].map(
