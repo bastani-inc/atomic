@@ -52,7 +52,7 @@ test("Jev partitions fewer than 255 verbose candidates before dispatch without l
 	const original = decisionRequest();
 	const result = await inferRouterDecision({
 		...original,
-		settings: { getRouterModel: () => "typesafe-ai/jev-latest" },
+		settings: { getRouterModel: () => "typesafe/jev-latest" },
 		jev: {
 			questions: {
 				route: {
@@ -85,7 +85,7 @@ for (const task of ["x".repeat(36_000), "界".repeat(11_000)]) {
 			const request = {
 				...original,
 				state: { task },
-				settings: { getRouterModel: () => (pinned ? "typesafe-ai/jev-latest" : "") },
+				settings: { getRouterModel: () => (pinned ? "typesafe/jev-latest" : "") },
 				modelRegistry: { ...original.modelRegistry, streamSimple: chat },
 			};
 			// #3206: the pinned Jev context overflow falls back to chat too.
@@ -95,7 +95,7 @@ for (const task of ["x".repeat(36_000), "界".repeat(11_000)]) {
 			assert.equal(transport.mock.calls.length, 0);
 			assert.equal(chat.mock.calls.length, 1);
 			await assert.rejects(
-				inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe-ai/jev-latest" } }),
+				inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe/jev-latest" } }),
 				/conservative input budget/,
 			);
 			assert.equal(chat.mock.calls.length, 1);
@@ -119,7 +119,7 @@ test("independent small questions are packed against the aggregate budget", asyn
 	vi.stubGlobal("fetch", transport);
 	await inferRouterDecision({
 		...original,
-		settings: { getRouterModel: () => "typesafe-ai/jev-latest" },
+		settings: { getRouterModel: () => "typesafe/jev-latest" },
 		jev: {
 			questions: Object.fromEntries(
 				Array.from({ length: 12 }, (_, i) => [
@@ -197,7 +197,7 @@ for (const pinned of [true, false]) {
 		vi.stubGlobal("fetch", transport);
 		const result = await inferRouterDecision({
 			...decisionRequest(),
-			settings: { getRouterModel: () => (pinned ? "typesafe-ai/jev-latest" : "") },
+			settings: { getRouterModel: () => (pinned ? "typesafe/jev-latest" : "") },
 			jev: {
 				questions: {
 					route: {

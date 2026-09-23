@@ -39,7 +39,7 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function (
 
 	let selectedModel: Model<Api> | undefined;
 	let selectionError: string | undefined;
-	if (providerId !== "typesafe" && providerId !== "typesafe-ai" && isUnknownModel(previousModel)) {
+	if (providerId !== "typesafe" && isUnknownModel(previousModel)) {
 		const availableModels = this.session.modelRuntime.getAvailableSnapshot();
 		const providerModels = availableModels.filter((model) => model.provider === providerId);
 		if (providerId === "llama.cpp") {

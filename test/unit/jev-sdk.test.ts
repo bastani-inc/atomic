@@ -30,7 +30,7 @@ test("Jev reports a safe SDK error class, context-limit code and request ID with
 		inferRouterDecision({
 			...decisionRequest(),
 			currentModel: undefined,
-			settings: { getRouterModel: () => "typesafe-ai/jev-latest" },
+			settings: { getRouterModel: () => "typesafe/jev-latest" },
 		}),
 		(error: Error) => {
 			assert.match(error.message, /BadRequestError/);
@@ -108,7 +108,7 @@ for (const status of [400, 401, 403, 404, 422, 429, 500, 529]) {
 		await assert.rejects(
 			inferStructuredOutput({
 				...decisionRequest(),
-				model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
+				model: { kind: "jev", fullId: "typesafe/jev-latest" },
 				retry: FAST_RETRY,
 			}),
 			(error: Error) => {
@@ -334,3 +334,13 @@ for (const succeeds of [true, false]) {
 		assert.equal(warning.mock.calls.length, 1);
 	});
 }
+
+test("structured-output SDK rejects obsolete Jev model IDs before dispatch", async () => {
+	const transport = vi.fn();
+	vi.stubGlobal("fetch", transport);
+	await assert.rejects(
+		inferStructuredOutput({ ...decisionRequest(), model: { kind: "jev", fullId: "typesafe-ai/jev-latest" } }),
+		/Invalid Jev model/,
+	);
+	assert.equal(transport.mock.calls.length, 0);
+});

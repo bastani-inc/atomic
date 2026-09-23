@@ -39,8 +39,7 @@ export function resolveLoginProviderReference(
 	providerOptions: readonly AuthSelectorProvider[],
 	providerRef: string,
 ): LoginProviderResolution {
-	const normalizedRef =
-		providerRef.trim().toLowerCase() === "typesafe-ai" ? "typesafe" : providerRef.trim().toLowerCase();
+	const normalizedRef = providerRef.trim().toLowerCase();
 	const matches = providerOptions.filter(
 		(provider) => provider.id.toLowerCase() === normalizedRef || provider.name.toLowerCase() === normalizedRef,
 	);

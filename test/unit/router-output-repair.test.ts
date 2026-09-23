@@ -142,7 +142,7 @@ test("pinned Jev HTTP authentication failure does not retry and stays fatal with
 		inferRouterDecision({
 			...decisionRequest(),
 			currentModel: undefined,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		}),
 		/HTTP 401/,
 	);
@@ -253,7 +253,7 @@ test("slow Jev auth can start transport after the former deadline", async () => 
 		const request = decisionRequest();
 		const result = await inferRouterDecision({
 			...request,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 			modelRegistry: {
 				...request.modelRegistry,
 				getProviderAuth: async () => {

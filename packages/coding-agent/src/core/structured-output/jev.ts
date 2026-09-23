@@ -97,9 +97,7 @@ async function askJev<T extends TSchema>(
 ) {
 	assertActive();
 	const selectedProvider = getStructuredOutputProviders().find(
-		(candidate) =>
-			candidate.fullId ===
-			(request.model.fullId === "typesafe-ai/jev-latest" ? "typesafe/jev-latest" : request.model.fullId),
+		(candidate) => candidate.fullId === request.model.fullId,
 	);
 	if (!selectedProvider) throw new Error("Invalid Jev model: use an exact structured-decision model ID.");
 	const classifier = selectedProvider.id === "typesafe" ? directJevClassifier(request.modelRegistry) : undefined;

@@ -1,7 +1,6 @@
 import type { AuthInteraction } from "@bastani/pi-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import { type AtomicOAuthLoginCallbacks, normalizeOAuthLoginError } from "../../core/oauth-login.ts";
-import { getLegacyJevProviderId } from "../../core/runtime-credentials.ts";
 import { operationSignal, raceWithAbortSignal } from "../../utils/abort.js";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import { loginRpcOAuthProvider } from "../rpc/rpc-oauth-client.ts";
@@ -47,7 +46,6 @@ export async function loginIsolatedApiKeyProvider(
 	provider: string,
 	interaction: AuthInteraction,
 ): Promise<{ modelsRefreshed: true }> {
-	provider = getLegacyJevProviderId(provider);
 	const apiKeyAuth = session.modelRuntime.getProvider(provider)?.auth.apiKey;
 	if (!apiKeyAuth?.login) throw new Error(`Provider does not support api_key login: ${provider}`);
 	const signal = operationSignal(interaction.signal);

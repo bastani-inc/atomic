@@ -6,7 +6,7 @@ import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
 
 afterEach(() => vi.unstubAllEnvs());
 
-test("Jev uses the unified classifier provider for legacy login and logout without exposing chat models", async () => {
+test("Jev uses canonical login and logout without exposing chat models", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "environment-test-key");
 	const credentials = AuthStorage.inMemory();
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
@@ -14,7 +14,7 @@ test("Jev uses the unified classifier provider for legacy login and logout witho
 	expect(runtime.getProvider("typesafe")?.auth.apiKey).toBeTruthy();
 	expect(runtime.getModelOfType("classifier", "typesafe", "jev-latest")?.api).toBe("typesafe-system-one");
 	expect((await runtime.getAuth("typesafe"))?.auth.apiKey).toBe("environment-test-key");
-	await runtime.login("typesafe-ai", "api_key", {
+	await runtime.login("typesafe", "api_key", {
 		signal: new AbortController().signal,
 		prompt: async () => "stored-test-key",
 		notify: () => {},
@@ -24,23 +24,42 @@ test("Jev uses the unified classifier provider for legacy login and logout witho
 	expect((await runtime.getAuth("typesafe"))?.auth.apiKey).toBe("stored-test-key");
 	expect(runtime.getModels("typesafe")).toEqual([]);
 	expect(await runtime.getAvailable("typesafe")).toEqual([]);
-	await runtime.logout("typesafe-ai");
+	await runtime.logout("typesafe");
 	expect(credentials.peek("typesafe")).toBeUndefined();
 	expect((await runtime.getAuth("typesafe"))?.auth.apiKey).toBe("environment-test-key");
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	expect(await runtime.getAuth("typesafe")).toBeUndefined();
 });
 
-test("legacy saved Jev key resolves through the classifier provider and is removed on logout", async () => {
+test("legacy saved Jev credentials do not authenticate the canonical provider", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const credentials = AuthStorage.inMemory({
-		"typesafe-ai": { type: "api_key", key: "$JEV_TEST_KEY", env: { JEV_TEST_KEY: "scoped-test-key" } },
+		"typesafe-ai": { type: "api_key", key: "obsolete-test-key" },
 	});
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
-	expect(runtime.getProviderAuthStatus("typesafe").source).toBe("stored");
-	expect((await runtime.getAuth("typesafe"))?.auth.apiKey).toBe("scoped-test-key");
-	await runtime.logout("typesafe-ai");
-	expect(credentials.peek("typesafe-ai")).toBeUndefined();
+	expect(runtime.hasConfiguredAuth("typesafe")).toBe(false);
+	expect(await runtime.getAuth("typesafe")).toBeUndefined();
+	await expect(
+		runtime.login("typesafe-ai", "api_key", {
+			signal: new AbortController().signal,
+			prompt: async () => "unused-test-key",
+			notify: () => {},
+		}),
+	).rejects.toThrow();
+});
+
+test("canonical Jev credentials take precedence without migrating or deleting obsolete credentials", async () => {
+	vi.stubEnv("TYPESAFE_API_KEY", "");
+	const credentials = AuthStorage.inMemory({
+		typesafe: { type: "api_key", key: "canonical-test-key" },
+		"typesafe-ai": { type: "api_key", key: "obsolete-test-key" },
+	});
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+	expect((await runtime.getAuth("typesafe"))?.auth.apiKey).toBe("canonical-test-key");
+	expect(await runtime.getAuth("typesafe-ai")).toBeUndefined();
+	await runtime.logout("typesafe");
+	expect(credentials.peek("typesafe")).toBeUndefined();
+	expect(credentials.peek("typesafe-ai")?.type).toBe("api_key");
 	expect(await runtime.getAuth("typesafe")).toBeUndefined();
 });
 

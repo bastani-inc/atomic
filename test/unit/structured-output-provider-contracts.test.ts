@@ -174,13 +174,13 @@ test("global/project settings honor trust, explicit empty override and reload wi
 			defaultProvider: "saved-provider",
 		}),
 	);
-	storage.withLock("project", () => JSON.stringify({ routerModel: "typesafe-ai/jev-latest" }));
+	storage.withLock("project", () => JSON.stringify({ routerModel: "typesafe/jev-latest" }));
 	const settings = SettingsManager.fromStorage(storage);
-	assert.equal(settings.getRouterModel(), "typesafe-ai/jev-latest");
+	assert.equal(settings.getRouterModel(), "typesafe/jev-latest");
 	const untrusted = SettingsManager.fromStorage(storage, { projectTrusted: false });
 	assert.equal(untrusted.getRouterModel(), "decision-test/chat");
 	untrusted.setProjectTrusted(true);
-	assert.equal(untrusted.getRouterModel(), "typesafe-ai/jev-latest");
+	assert.equal(untrusted.getRouterModel(), "typesafe/jev-latest");
 	storage.withLock("project", () => JSON.stringify({ routerModel: "" }));
 	await settings.reload();
 	assert.equal(settings.getRouterModel(), "");
@@ -217,7 +217,7 @@ test("explicit Jev without its key fails without a chat model to fall back to (#
 		inferRouterDecision({
 			...decisionRequest(),
 			currentModel: undefined,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		}),
 		/requires an API key.*\/login typesafe/,
 	);
@@ -234,7 +234,7 @@ test("Jev network errors do not leak transport messages and honor a disabled ret
 			...decisionRequest(),
 			currentModel: undefined,
 			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		}),
 		/Jev request failed/,
 	);

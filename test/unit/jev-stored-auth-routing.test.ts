@@ -26,7 +26,7 @@ afterEach(() => {
 async function storedRuntime(key = "mock-stored-jev-key") {
 	const runtime = await ModelRuntime.create({
 		modelsPath: null,
-		credentials: AuthStorage.inMemory({ "typesafe-ai": { type: "api_key", key } }),
+		credentials: AuthStorage.inMemory({ typesafe: { type: "api_key", key } }),
 		allowModelNetwork: false,
 	});
 	return { runtime, registry: new ModelRegistry(runtime) };
@@ -92,7 +92,7 @@ for (const nextAuth of ["stored", "deleted", "environment"] as const) {
 			phase = "idle";
 			if (nextAuth !== "stored") {
 				if (nextAuth === "environment") vi.stubEnv("TYPESAFE_API_KEY", "mock-next-env-key");
-				await runtime.logout("typesafe-ai");
+				await runtime.logout("typesafe");
 				assert.equal(runtime.getStoredCredentialType("typesafe"), undefined);
 				assert.equal(resolveRouterModel(request).kind, nextAuth === "deleted" ? "chat" : "jev");
 			}
@@ -121,8 +121,8 @@ for (const environmentKey of ["", "mock-env-jev-key"]) {
 		assert.equal(resolveRouterModel(request).kind, "jev");
 		assert.equal((await inferRouterDecision(request)).model, "typesafe/jev-latest");
 		assert.equal(
-			(await inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe-ai/jev-latest" } })).model,
-			"typesafe-ai/jev-latest",
+			(await inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe/jev-latest" } })).model,
+			"typesafe/jev-latest",
 		);
 		assert.equal(transport.mock.calls.length, 2);
 		assert.equal(
@@ -152,19 +152,19 @@ test("Jev logout removes stored routing preference and falls back to environment
 	const { runtime, registry } = await storedRuntime();
 	const request = { ...decisionRequest(), settings: SettingsManager.inMemory(), modelRegistry: registry };
 	assert.equal(resolveRouterModel(request).kind, "jev");
-	await runtime.logout("typesafe-ai");
+	await runtime.logout("typesafe");
 	assert.equal(resolveRouterModel(request).kind, "chat");
 	const transport = vi.fn(async () => Response.json(jevResponse()));
 	vi.stubGlobal("fetch", transport);
 	await assert.rejects(
-		inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe-ai/jev-latest" } }),
+		inferStructuredOutput({ ...request, model: { kind: "jev", fullId: "typesafe/jev-latest" } }),
 		/requires an API key/,
 	);
 	assert.equal(transport.mock.calls.length, 0);
 
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-env-remaining");
 	const next = await storedRuntime();
-	await next.runtime.logout("typesafe-ai");
+	await next.runtime.logout("typesafe");
 	assert.equal(resolveRouterModel({ ...request, modelRegistry: next.registry }).kind, "jev");
 	assert.equal((await next.registry.getProviderAuth("typesafe"))?.auth.apiKey, "mock-env-remaining");
 });
@@ -181,7 +181,7 @@ test("saved Jev key interpolation uses ordinary auth resolution", async () => {
 	await inferStructuredOutput({
 		...decisionRequest(),
 		modelRegistry: registry,
-		model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
+		model: { kind: "jev", fullId: "typesafe/jev-latest" },
 	});
 	assert.equal(transport.mock.calls.length, 1);
 });
@@ -200,7 +200,7 @@ test("Jev auth failures are redacted and cannot fall back to environment credent
 					throw new Error("private-key-material");
 				},
 			},
-			model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
+			model: { kind: "jev", fullId: "typesafe/jev-latest" },
 		}),
 		(error: Error) => {
 			assert.match(error.message, /Jev credential resolution failed/);
@@ -228,7 +228,7 @@ test("Jev credential resolution receives caller cancellation", async () => {
 					return new Promise(() => {});
 				},
 			},
-			model: { kind: "jev", fullId: "typesafe-ai/jev-latest" },
+			model: { kind: "jev", fullId: "typesafe/jev-latest" },
 			signal: controller.signal,
 		}),
 		/cancelled/,
@@ -258,7 +258,7 @@ test("direct Jev decisions resolve the classifier model and auth from the unifie
 	vi.stubGlobal("fetch", transport);
 	const request = {
 		...decisionRequest(),
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		modelRegistry: registry,
 	};
 	assert.deepEqual(resolveRouterModel(request), { kind: "jev", fullId: "typesafe/jev-latest" });

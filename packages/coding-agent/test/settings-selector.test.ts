@@ -198,7 +198,7 @@ test("router settings preserve an unavailable selection and cancellation does no
 	expect(config.routerModel).toBe("missing/model");
 });
 
-test("router picker preserves a legacy Jev ID and does not offer image or classifier execution models", () => {
+test("router picker marks an obsolete Jev ID unavailable and excludes image or classifier execution models", () => {
 	const config = settingsConfig({
 		routerModel: "typesafe-ai/jev-latest",
 		availableDefaultModels: [
@@ -209,7 +209,7 @@ test("router picker preserves a legacy Jev ID and does not offer image or classi
 	const menu = openRouterSubmenu(config, vi.fn());
 	const output = render(menu);
 	expect(output).toContain("→ ✓ typesafe-ai/jev-latest");
-	expect(output).toContain("Legacy Jev ID (still supported)");
+	expect(output).toContain("Configured model is not currently available");
 	expect(output).not.toContain("gallery/paint");
 	expect(output).not.toContain("judge/jev");
 });
@@ -241,11 +241,11 @@ test("router menu saves settings.json and Automatic clears only the router selec
 });
 
 test("router setter rejects malformed values without changing saved selection", () => {
-	const manager = SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" });
-	for (const value of ["auto", " typesafe-ai/jev-latest", "typesafe-ai/jev-latest "]) {
+	const manager = SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" });
+	for (const value of ["auto", " typesafe/jev-latest", "typesafe/jev-latest "]) {
 		expect(() => manager.setRouterModel(value)).toThrow(/Invalid routerModel/);
 	}
-	expect(manager.getRouterModel()).toBe("typesafe-ai/jev-latest");
+	expect(manager.getRouterModel()).toBe("typesafe/jev-latest");
 });
 
 test("router menu edits the project override including Automatic without changing global defaults", async () => {
@@ -256,7 +256,7 @@ test("router menu edits the project override including Automatic without changin
 		const projectFile = join(directory, ".atomic", "settings.json");
 		const global = { routerModel: "global/model", theme: "dark" };
 		writeFileSync(globalFile, JSON.stringify(global));
-		writeFileSync(projectFile, JSON.stringify({ routerModel: "typesafe-ai/jev-latest", quietStartup: true }));
+		writeFileSync(projectFile, JSON.stringify({ routerModel: "typesafe/jev-latest", quietStartup: true }));
 		const manager = SettingsManager.create(directory, directory);
 		for (const next of ["", "test/nested/model"]) {
 			const scope = manager.getProjectSettings().routerModel !== undefined ? "project" : "global";

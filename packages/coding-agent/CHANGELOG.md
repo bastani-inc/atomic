@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Direct TypeSafe Jev decisions now use the canonical `typesafe/jev-latest` classifier model and `typesafe` provider authentication. Replace `typesafe-ai/jev-latest` or `typesafe-ai/jev` in router settings and SDK requests, and re-save keys stored under `typesafe-ai` with `/login typesafe`; old direct IDs, `/login typesafe-ai`, and automatic migration of those saved keys are not supported. `TYPESAFE_API_KEY`, gateway-owned Jev IDs such as `vercel-ai-gateway/typesafe-ai/jev`, and Atomic's `-fast` model behavior are unchanged.
+
 ### Added
 
 - Added the `provider_stream_event` extension event for observing each parsed provider stream event before normalization, including provider-specific fields that assistant messages drop, plus an opt-in `/debug-provider` example viewer ([#9784](https://github.com/earendil-works/pi/issues/9784)).
@@ -12,7 +16,7 @@
 
 - When a shell tool is available, the default system prompt now asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes: an `Assistant-workflow` trailer naming the workflow and run (or `Assistant-workflow: inline` when no workflow ran), an `Assistant-duration` trailer with measured time to converge against the estimate, and a `User-preference` trailer for durable preferences you express, tied to you by a `Co-authored-by` trailer. Before choosing between a workflow and inline work, estimating duration, or resolving ambiguity, the agent mines these records for comparable tasks with your version control system and its hosting CLI (for example `git log` and the GitHub CLI), and reports sample size, median, and range. Your own recorded preferences take priority; other contributors' preferences apply only as repository conventions when yours do not cover the situation. The history is used as a guide, not as the decision. Ask in your request, a context file, or `APPEND_SYSTEM.md` to turn off any of these records.
 - `FILE_MUTATION_CONFLICT` errors from `edit` and `write` now use one labeled line each for the problem, the next step, the first divergence, the live file, and the requester identity, instead of a single wrapped paragraph. The next step names the file to read. A rejected snapshot tag now explains that shell output and tags quoted in errors do not count as reads, and the current tag is marked as for comparison only, so agents stop retrying with it.
-- Direct TypeSafe Jev decisions now resolve the unified `typesafe/jev-latest` classifier model and its provider authentication. Existing `typesafe-ai/jev-latest` router settings, SDK requests, `/login typesafe-ai` commands, and saved keys remain accepted. Decision selection rejects image-generation models; execution `auto` remains restricted to chat language models, including those with multimodal input.
+- Decision selection rejects image-generation models; execution `auto` remains restricted to chat language models, including those with multimodal input.
 
 ### Fixed
 

@@ -93,7 +93,7 @@ describe("API-key login routing", () => {
 			} as never;
 			const runtime = new IsolatedInteractiveRuntime(local, unusedCreateRuntime, client);
 
-			const result = await runtime.loginApiKeyProvider("typesafe-ai", interaction("isolated-routed-key"));
+			const result = await runtime.loginApiKeyProvider("typesafe", interaction("isolated-routed-key"));
 
 			assert.deepEqual(result, { modelsRefreshed: true });
 			assert.deepEqual(saveProviderCredential.mock.calls, [
@@ -110,9 +110,9 @@ describe("API-key login routing", () => {
 		const runtime = new AgentSessionRuntime(session, { cwd: ".", agentDir: "." } as never, unusedCreateRuntime);
 		const loginInteraction = interaction("base-runtime-key");
 
-		const result = await runtime.loginApiKeyProvider("typesafe-ai", loginInteraction);
+		const result = await runtime.loginApiKeyProvider("typesafe", loginInteraction);
 
 		assert.deepEqual(result, { modelsRefreshed: true });
-		assert.deepEqual(login.mock.calls, [["typesafe-ai", "api_key", loginInteraction]]);
+		assert.deepEqual(login.mock.calls, [["typesafe", "api_key", loginInteraction]]);
 	});
 });

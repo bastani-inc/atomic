@@ -50,7 +50,7 @@ const FAST_RETRY = { enabled: true, maxRetries: 3, baseDelayMs: 1 };
 for (const [setting, key, expected] of [
 	["test/alternate", "mock-key", "test/alternate"],
 	["openrouter/~typesafe/jev-latest", "", "openrouter/~typesafe/jev-latest"],
-	["typesafe-ai/jev-latest", "", "typesafe/jev-latest"],
+	["typesafe/jev-latest", "", "typesafe/jev-latest"],
 	["", "mock-key", "typesafe/jev-latest"],
 	["", "", "test/chat"],
 	["", "   ", "test/chat"],
@@ -78,7 +78,7 @@ test("Jev routing and direct requests use TYPESAFE_API_KEY without the old alias
 	const request = {
 		...decisionRequest(),
 		currentModel: undefined,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 	};
 	await assert.rejects(inferRouterDecision(request), {
 		message: "typesafe/jev-latest requires an API key. Use /login typesafe or set TYPESAFE_API_KEY.",
@@ -98,7 +98,15 @@ test("empty default reads the current chat model on each invocation", () => {
 	assert.throws(() => resolveRouterModel({ settings, modelRegistry }), /selected chat model/);
 });
 
-for (const explicit of ["auto", "missing/model", "chat", "test/chat:high", " typesafe-ai/jev-latest", " "]) {
+for (const explicit of [
+	"auto",
+	"missing/model",
+	"chat",
+	"test/chat:high",
+	"typesafe-ai/jev-latest",
+	" typesafe/jev-latest",
+	" ",
+]) {
 	test(`invalid explicit selection ${JSON.stringify(explicit)} never falls back to Jev or chat`, () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const settings = SettingsManager.inMemory({ routerModel: explicit });
@@ -287,7 +295,7 @@ for (const [status, calls] of [
 				...decisionRequest(),
 				currentModel: undefined,
 				retry: FAST_RETRY,
-				settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+				settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 			}),
 			(error: Error) => {
 				assert.match(error.message, new RegExp(`HTTP ${status}`));
@@ -323,7 +331,7 @@ test("Jev body reader failure is private, retried as transient, and never decode
 			...request,
 			currentModel: undefined,
 			retry: FAST_RETRY,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 			jev: { ...request.jev, decode },
 		}),
 		(error: Error) => {
@@ -355,7 +363,7 @@ for (const [kind, code] of Object.entries({
 			inferRouterDecision({
 				...request,
 				currentModel: undefined,
-				settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+				settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 				jev: { ...request.jev, decode },
 			}),
 			(error: Error) => {
@@ -381,7 +389,7 @@ test("a Jev response with only valid choices (no usage, model or probabilities) 
 	vi.stubGlobal("fetch", transport);
 	const result = await inferRouterDecision({
 		...decisionRequest(),
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.responseModel, "");
@@ -398,7 +406,7 @@ test("Jev 529 then success retries (#3206)", async () => {
 	const result = await inferRouterDecision({
 		...decisionRequest(),
 		retry: FAST_RETRY,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.fallback, undefined);
@@ -414,7 +422,7 @@ test("Jev 401 falls back to chat (#3206)", async () => {
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
 	const result = await inferRouterDecision({
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
@@ -436,7 +444,7 @@ test("pinned Jev falls back to chat (#3206)", async () => {
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
 	const result = await inferRouterDecision({
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
@@ -476,7 +484,7 @@ test("Jev decoded result must still satisfy the normalized schema", async () => 
 		inferRouterDecision({
 			...request,
 			currentModel: undefined,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe-ai/jev-latest" }),
+			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
 			jev: { ...request.jev, decode: () => ({ route: "review" as const, limit: -1 }) },
 		}),
 		/Invalid structured output/,

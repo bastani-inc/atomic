@@ -300,10 +300,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					options.push({
 						value: current,
 						label: current,
-						description:
-							current === "typesafe-ai/jev-latest"
-								? "Legacy Jev ID (still supported)"
-								: "Configured model is not currently available",
+						description: "Configured model is not currently available",
 					});
 				}
 				return new SelectSubmenu(

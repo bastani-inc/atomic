@@ -171,7 +171,7 @@ test("long stage prompts are excerpted only for routing, never for execution", a
 	const models = workflowModelCatalogFromContext({
 		model: decisionModel,
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "typesafe-ai/jev-latest",
+		getRouterModel: () => "typesafe/jev-latest",
 	});
 	const executed: string[] = [];
 	const ctx = createStageContext(
@@ -585,7 +585,7 @@ for (const auth of ["stored", "env"] as const) {
 		const key = "synthetic-stage-jev-key";
 		if (auth === "env") vi.stubEnv("TYPESAFE_API_KEY", key);
 		else {
-			await f.decisionRuntime.saveCredential("typesafe-ai", { type: "api_key", key });
+			await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key });
 		}
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 			assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);

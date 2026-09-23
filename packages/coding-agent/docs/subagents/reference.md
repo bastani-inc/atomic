@@ -30,8 +30,10 @@ Long tasks use a model-selection excerpt capped at 9,000 JSON-encoded UTF-8 byte
 The shared [`routerModel`](/settings#routermodel) setting chooses the model making the decision, not the child model. Selection follows this order:
 
 1. An explicit setting.
-2. Jev, when credentials are saved through `/login typesafe` (legacy `/login typesafe-ai` remains accepted) or supplied by `TYPESAFE_API_KEY`.
+2. Jev (`typesafe/jev-latest`), when credentials are saved through `/login typesafe` or supplied by `TYPESAFE_API_KEY`.
 3. The current chat model.
+
+Replace old direct `typesafe-ai/jev-latest` or `typesafe-ai/jev` router settings with `typesafe/jev-latest`. `/login typesafe-ai` and keys stored under `typesafe-ai` are no longer supported for direct Jev routing; re-save your key with `/login typesafe`. `TYPESAFE_API_KEY` is unchanged.
 
 Neither routing nor child fallback changes the parent chat model or the `structured_output` tool.
 

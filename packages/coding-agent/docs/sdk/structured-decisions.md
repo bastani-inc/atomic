@@ -11,12 +11,12 @@ Use `inferStructuredOutput()` from `@bastani/atomic` when an SDK integration nee
 
 ## Select the inference model
 
-For a general structured-output call, pass `model: { kind: "chat", fullId, model }` with a concrete chat language model from the current registry (multimodal input is allowed), or `model: { kind: "jev", fullId: "typesafe/jev-latest" }` for the unified TypeSafe classifier. Image-generation models cannot decide, even when requested with `kind: "chat"`; such requests fail before inference. Legacy `typesafe-ai/jev-latest` requests remain accepted. For Jev through a gateway, use any `fullId` from `getStructuredOutputProviders()`: `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or `opencode/jev-1.13-free`. Setting `routerModel` or exporting a TypeSafe key does not change this explicit selection.
+For a general structured-output call, pass `model: { kind: "chat", fullId, model }` with a concrete chat language model from the current registry (multimodal input is allowed), or `model: { kind: "jev", fullId: "typesafe/jev-latest" }` for the unified TypeSafe classifier. Image-generation models cannot decide, even when requested with `kind: "chat"`; such requests fail before inference. Use canonical catalog IDs; old direct TypeSafe IDs are not aliases. For Jev through a gateway, use any `fullId` from `getStructuredOutputProviders()`: `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or `opencode/jev-1.13-free`. Setting `routerModel` or exporting a TypeSafe key does not change this explicit selection.
 
 `inferRouterDecision()` is the shared entrypoint for automatic subagent/workflow-stage model selection. Only this entrypoint consults `routerModel` in [settings.json](/settings#routermodel). It takes `settings`, `modelRegistry` and the invocation-time `currentModel` instead of an explicit inference `model`. Resolution is:
 
 1. A nonempty explicit, exact `routerModel` value.
-2. Otherwise `typesafe/jev-latest` when Jev credentials are configured through `/login typesafe` (legacy `/login typesafe-ai` is accepted) or `TYPESAFE_API_KEY`.
+2. Otherwise `typesafe/jev-latest` when Jev credentials are configured through `/login typesafe` or `TYPESAFE_API_KEY`.
 3. Otherwise the chat model supplied as `currentModel` at invocation time.
 
 An invalid explicit router selection fails instead of falling back. `auto`, image-generation models, model patterns, reasoning suffixes, and surrounding whitespace are not supported. Ordinary decision models must be chat language models in the current configured catalog; Jev is a classifier used only for inference, never as an execution `auto` candidate. Catalog presence and an environment key do not prove live access, quota, or entitlement. The resolver never changes the chat model, the `structured_output` tool's model or saved defaults.

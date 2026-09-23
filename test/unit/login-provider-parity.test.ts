@@ -46,13 +46,17 @@ test("API-key login options follow builtin provider auth metadata", () => {
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["qwen-token-plan-individual"], "Qwen Token Plan (Individual)");
 });
 
-test("legacy TypeSafe login ID resolves to the unified classifier provider", () => {
+test("TypeSafe login uses the canonical provider ID without resolving the obsolete ID", () => {
 	const options = getBuiltinApiKeyLoginOptions((id) => id);
 	assert.ok(options.some((option) => option.id === "typesafe"));
 	assert.ok(!options.some((option) => option.id === "typesafe-ai"));
-	assert.deepEqual(resolveLoginProviderReference(options, "typesafe-ai"), {
+	assert.deepEqual(resolveLoginProviderReference(options, "typesafe"), {
 		kind: "direct",
 		option: options.find((option) => option.id === "typesafe"),
+	});
+	assert.deepEqual(resolveLoginProviderReference(options, "typesafe-ai"), {
+		kind: "search",
+		initialSearch: "typesafe-ai",
 	});
 });
 

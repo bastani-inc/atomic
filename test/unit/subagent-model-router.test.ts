@@ -203,7 +203,7 @@ test("execution routing keeps the real evals, guide, budget-sized task, and nine
 	const result = await routeExecutionModel({
 		ctx: {
 			model: decisionModel,
-			getRouterModel: () => "typesafe-ai/jev-latest",
+			getRouterModel: () => "typesafe/jev-latest",
 			modelRegistry: {
 				getAll: () => candidates,
 				getAvailable: () => candidates,
@@ -699,7 +699,7 @@ test("Jev uses one Choice over complete pairs and deterministically maps the sel
 	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
 	assert.equal(fetch.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 0);
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	fetch.mockImplementation(async () =>
 		Response.json({
@@ -795,7 +795,7 @@ for (const failure of ["stale", "provider"] as const) {
 			.spyOn(f.ctx.modelRegistry, "getAvailable")
 			.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-		f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+		f.ctx.getRouterModel = () => "typesafe/jev-latest";
 		// No current chat model, so the routing failure stays observable (#3206).
 		if (failure === "provider") f.ctx.model = undefined;
 		const fetch = vi.fn(async (_url: string, init: RequestInit) => {
@@ -816,7 +816,7 @@ for (const failure of ["stale", "provider"] as const) {
 test("hello-world routing receives evals and fits one small Jev request", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...decisionModel, id: "gpt-5.6-luna" }]);
 	const transport = vi.fn(async (_url: string, init: RequestInit) =>
 		Response.json(jevFixtureResponse(JSON.parse(String(init.body)) as JevFixtureRequest)),
@@ -849,7 +849,7 @@ test("hello-world routing receives evals and fits one small Jev request", async 
 test("maximal real eval routing payload preserves prompt and stays under conservative Jev bytes", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	const models = [
 		{ ...decisionModel, id: "small-a" },
 		{ ...decisionModel, id: "small-b", cost: { ...decisionModel.cost, input: 0.25, output: 0.5 } },
@@ -880,7 +880,7 @@ test("maximal real eval routing payload preserves prompt and stays under conserv
 test("real eval routing tournament preserves evals in every Jev request", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
 		Array.from({ length: 9 }, (_, index) => ({ ...decisionModel, id: `candidate-${index}` })),
 	);
@@ -909,7 +909,7 @@ test("long auto-routing tasks fit Jev while preserving protected requirements an
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	const protectedText = "<keepContext>Review only. Never edit files.</keepContext>";
 	const task = `Review this change.\n${"reference data ".repeat(10000)}${protectedText}${"more data ".repeat(10000)}\nReport defects.`;
 	const transport = vi.fn(async (_url: string, init: RequestInit) => {
@@ -942,7 +942,7 @@ test("oversized protected tasks still fall back intact or fail when Jev is pinne
 	const transport = vi.fn();
 	vi.stubGlobal("fetch", transport);
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
-	f.ctx.getRouterModel = () => "typesafe-ai/jev-latest";
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	// #3206: the pinned Jev context overflow falls back to the chat router too.
 	await f.route(task);
 	f.ctx.getRouterModel = () => "";

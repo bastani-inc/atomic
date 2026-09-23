@@ -38,7 +38,7 @@ for (const kind of ["chat", "typesafe", "openrouter"] as const) {
 					? { kind: "chat", fullId: "decision-test/chat", model: decisionModel }
 					: {
 							kind: "jev",
-							fullId: kind === "typesafe" ? "typesafe-ai/jev-latest" : "openrouter/~typesafe/jev-latest",
+							fullId: kind === "typesafe" ? "typesafe/jev-latest" : "openrouter/~typesafe/jev-latest",
 						},
 		});
 		const outcome = pending.then(

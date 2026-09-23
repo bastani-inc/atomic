@@ -86,9 +86,9 @@ describe("interactive API-key login persistence failures", () => {
 			providerId: string,
 			providerName: string,
 		) => Promise<void>;
-		await showApiKeyLoginDialog.call(harness, "typesafe-ai", "TypeSafe Jev");
+		await showApiKeyLoginDialog.call(harness, "typesafe", "TypeSafe Jev");
 
-		expect(completeProviderAuthentication).toHaveBeenCalledWith("typesafe-ai", "TypeSafe Jev", "api_key", undefined, {
+		expect(completeProviderAuthentication).toHaveBeenCalledWith("typesafe", "TypeSafe Jev", "api_key", undefined, {
 			modelsRefreshed: true,
 		});
 		expect(harness.showError).not.toHaveBeenCalled();
@@ -341,7 +341,7 @@ describe("post-login model refresh", () => {
 			previousModel: Model<Api> | undefined,
 		) => Promise<void>;
 		const loggedOutModel = { provider: "unknown", id: "unknown", api: "unknown" } as Model<Api>;
-		await complete.call(harness, "typesafe-ai", "TypeSafe Jev", "api_key", loggedOutModel);
+		await complete.call(harness, "typesafe", "TypeSafe Jev", "api_key", loggedOutModel);
 		expect(harness.session.setModel).not.toHaveBeenCalled();
 		expect(harness.showError).not.toHaveBeenCalled();
 		expect(harness.showStatus).toHaveBeenCalledWith(expect.stringContaining("Saved API key for TypeSafe Jev"));

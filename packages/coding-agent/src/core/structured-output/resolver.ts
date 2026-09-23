@@ -120,10 +120,7 @@ export function directJevClassifier(
 }
 
 export function isStructuredOutputProviderModel(provider: string, modelId: string): boolean {
-	return (
-		(provider === "typesafe-ai" && modelId === "jev-latest") ||
-		getStructuredOutputProviders().some((candidate) => candidate.id === provider && candidate.model === modelId)
-	);
+	return getStructuredOutputProviders().some((candidate) => candidate.id === provider && candidate.model === modelId);
 }
 
 export function resolveRouterModel(options: RouterModelSelectionOptions): StructuredOutputModel {
@@ -131,9 +128,7 @@ export function resolveRouterModel(options: RouterModelSelectionOptions): Struct
 	if (typeof explicit !== "string" || explicit.trim() !== explicit || explicit === "auto") {
 		throw new Error("Invalid routerModel: use an exact provider/model ID or an empty string, not auto.");
 	}
-	const provider = getStructuredOutputProviders().find(
-		(candidate) => candidate.fullId === (explicit === "typesafe-ai/jev-latest" ? "typesafe/jev-latest" : explicit),
-	);
+	const provider = getStructuredOutputProviders().find((candidate) => candidate.fullId === explicit);
 	if (provider) {
 		if (provider.id === "typesafe" && !directJevClassifier(options.modelRegistry)) {
 			throw new Error("Invalid routerModel: TypeSafe Jev classifier is not available.");

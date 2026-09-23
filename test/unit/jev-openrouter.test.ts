@@ -22,7 +22,7 @@ for (const method of ["api_key", "oauth", "environment", "interpolated"] as cons
 		vi.stubEnv("OPENROUTER_API_KEY", "synthetic-env");
 		vi.stubEnv("JEV_OPENROUTER_TEST_KEY", "synthetic-interpolated");
 		const credentials = AuthStorage.inMemory({
-			"typesafe-ai": { type: "api_key", key: "synthetic-wrong-stored" },
+			typesafe: { type: "api_key", key: "synthetic-wrong-stored" },
 			...(method === "environment"
 				? {}
 				: {
@@ -80,7 +80,7 @@ test("OpenRouter Jev does not use TypeSafe credentials when OpenRouter auth is m
 	vi.stubEnv("OPENROUTER_API_KEY", "");
 	const runtime = await ModelRuntime.create({
 		modelsPath: null,
-		credentials: AuthStorage.inMemory({ "typesafe-ai": { type: "api_key", key: "synthetic-wrong-stored" } }),
+		credentials: AuthStorage.inMemory({ typesafe: { type: "api_key", key: "synthetic-wrong-stored" } }),
 		allowModelNetwork: false,
 	});
 	const transport = vi.fn();
@@ -149,7 +149,7 @@ for (const [status, calls] of [
 			}),
 			(error: Error) => {
 				assert.match(error.message, new RegExp(`Jev HTTP ${status}`));
-				assert.doesNotMatch(error.message, /private-upstream-material|typesafe-ai|TYPESAFE_API_KEY/);
+				assert.doesNotMatch(error.message, /private-upstream-material|typesafe|TYPESAFE_API_KEY/);
 				if (status === 401) assert.match(error.message, /\/login openrouter.*OPENROUTER_API_KEY/);
 				return true;
 			},
@@ -237,12 +237,12 @@ test("OpenRouter auth errors are redacted without bypassing the resolver through
 });
 
 // #3118: Jev may return rounded probabilities that do not sum to one.
-for (const selected of ["typesafe-ai/jev-latest", fullId] as const) {
+for (const selected of ["typesafe/jev-latest", fullId] as const) {
 	test(`${selected} preserves non-normalized probability acceptance and provider isolation`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-typesafe");
 		vi.stubEnv("OPENROUTER_API_KEY", "synthetic-openrouter");
 		const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-			const direct = selected === "typesafe-ai/jev-latest";
+			const direct = selected === "typesafe/jev-latest";
 			assert.equal(
 				url,
 				direct ? "https://api.typesafe.ai/v1/systemone" : "https://openrouter.ai/api/alpha/decisions",
@@ -291,14 +291,14 @@ test("OpenRouter auth receives caller cancellation", async () => {
 	assert.equal(transport.mock.calls.length, 0);
 });
 
-for (const initialId of [fullId, "typesafe-ai/jev-latest"] as const) {
+for (const initialId of [fullId, "typesafe/jev-latest"] as const) {
 	for (const count of [2, 256]) {
 		test(`${initialId} preserves selection during delayed auth with ${count} choices`, async () => {
 			const runtime = await ModelRuntime.create({
 				modelsPath: null,
 				credentials: AuthStorage.inMemory({
 					openrouter: { type: "api_key", key: "synthetic-openrouter" },
-					"typesafe-ai": { type: "api_key", key: "synthetic-typesafe" },
+					typesafe: { type: "api_key", key: "synthetic-typesafe" },
 				}),
 				allowModelNetwork: false,
 			});
@@ -322,7 +322,7 @@ for (const initialId of [fullId, "typesafe-ai/jev-latest"] as const) {
 			});
 			vi.stubGlobal("fetch", transport);
 			const request = decisionRequest();
-			const model: { kind: "jev"; fullId: typeof fullId | "typesafe-ai/jev-latest" } = {
+			const model: { kind: "jev"; fullId: typeof fullId | "typesafe/jev-latest" } = {
 				kind: "jev",
 				fullId: initialId,
 			};
@@ -355,11 +355,11 @@ for (const initialId of [fullId, "typesafe-ai/jev-latest"] as const) {
 				},
 			});
 			await entered.promise;
-			model.fullId = initialId === fullId ? "typesafe-ai/jev-latest" : fullId;
+			model.fullId = initialId === fullId ? "typesafe/jev-latest" : fullId;
 			release.resolve();
 			const result = await pending;
 			const calls = count === 2 ? 1 : 2;
-			const direct = initialId === "typesafe-ai/jev-latest";
+			const direct = initialId === "typesafe/jev-latest";
 			assert.deepEqual(authIds, Array(calls).fill(direct ? "typesafe" : "openrouter"));
 			assert.deepEqual(
 				destinations,

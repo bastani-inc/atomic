@@ -7,7 +7,7 @@ import { isOAuthLoginCancelled } from "../src/core/oauth-login.ts";
 import { loginIsolatedApiKeyProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
 import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
 
-const PROVIDER = "typesafe-ai";
+const PROVIDER = "typesafe";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -48,6 +48,21 @@ async function createIsolatedRuntimes() {
 }
 
 describe("isolated API-key login", () => {
+	it("rejects the obsolete provider ID before prompting or saving", async () => {
+		const { frontendSession, client, saveProviderCredential, catalog } = await createIsolatedRuntimes();
+		const prompt = vi.fn(async () => "unused-test-key");
+		await expect(
+			loginIsolatedApiKeyProvider(frontendSession, client, catalog as never, "typesafe-ai", {
+				signal: new AbortController().signal,
+				prompt,
+				notify: () => {},
+			}),
+		).rejects.toThrow("Provider does not support api_key login: typesafe-ai");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(saveProviderCredential).not.toHaveBeenCalled();
+		expect(catalog.apply).not.toHaveBeenCalled();
+	});
+
 	it("makes the key resolvable in the engine registry without a restart (#3193)", async () => {
 		const { engineRuntime, frontendRuntime, frontendSession, client, saveProviderCredential, catalog } =
 			await createIsolatedRuntimes();

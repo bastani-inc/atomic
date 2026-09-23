@@ -82,7 +82,7 @@ import {
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
-import { getLegacyJevProviderId, RuntimeCredentials } from "./runtime-credentials.ts";
+import { RuntimeCredentials } from "./runtime-credentials.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
@@ -575,12 +575,12 @@ export class ModelRuntime implements Models {
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
-		return this.snapshot.configuredProviders.has(getLegacyJevProviderId(providerId));
+		return this.snapshot.configuredProviders.has(providerId);
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
 	getCredentialSnapshot(providerId: string): Credential | undefined {
-		return this.credentials.peek(getLegacyJevProviderId(providerId));
+		return this.credentials.peek(providerId);
 	}
 
 	getAuth(providerId: string, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
@@ -589,8 +589,7 @@ export class ModelRuntime implements Models {
 		providerOrModel: string | AnyModel,
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
-		if (typeof providerOrModel === "string")
-			return this.models.getAuth(getLegacyJevProviderId(providerOrModel), overrides);
+		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
 		return mergeConfiguredAuthHeaders(
@@ -782,7 +781,6 @@ export class ModelRuntime implements Models {
 		credential: Credential,
 		options: SaveCredentialOptions = {},
 	): Promise<void> {
-		providerId = getLegacyJevProviderId(providerId);
 		const refreshCatalog = options.refreshCatalog ?? true;
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
@@ -816,7 +814,6 @@ export class ModelRuntime implements Models {
 	 * separately.
 	 */
 	async setRuntimeApiKey(providerId: string, apiKey: string, options: AuthOperationOptions): Promise<void> {
-		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
@@ -828,7 +825,6 @@ export class ModelRuntime implements Models {
 	}
 
 	async removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
-		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
@@ -845,11 +841,10 @@ export class ModelRuntime implements Models {
 	}
 
 	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
-		return this.snapshot.storedCredentialTypes.get(getLegacyJevProviderId(providerId));
+		return this.snapshot.storedCredentialTypes.get(providerId);
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
-		providerId = getLegacyJevProviderId(providerId);
 		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,
 			providerId,
@@ -955,7 +950,6 @@ export class ModelRuntime implements Models {
 	}
 
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
-		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal });
@@ -974,7 +968,6 @@ export class ModelRuntime implements Models {
 	}
 
 	async logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
-		providerId = getLegacyJevProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });

@@ -76,7 +76,7 @@ for (const gateway of gateways) {
 			vi.stubEnv("TYPESAFE_API_KEY", "synthetic-wrong-provider");
 			vi.stubEnv(gateway.apiKeyEnv, "synthetic-env");
 			const credentials = AuthStorage.inMemory({
-				"typesafe-ai": { type: "api_key", key: "synthetic-wrong-stored" },
+				typesafe: { type: "api_key", key: "synthetic-wrong-stored" },
 				...(method === "api_key"
 					? { [gateway.providerId]: { type: "api_key" as const, key: "synthetic-api_key" } }
 					: {}),
@@ -120,7 +120,7 @@ for (const gateway of gateways) {
 		const runtime = await ModelRuntime.create({
 			modelsPath: null,
 			credentials: AuthStorage.inMemory({
-				"typesafe-ai": { type: "api_key", key: "synthetic-wrong-stored" },
+				typesafe: { type: "api_key", key: "synthetic-wrong-stored" },
 				openrouter: { type: "api_key", key: "synthetic-wrong-stored" },
 			}),
 			allowModelNetwork: false,
