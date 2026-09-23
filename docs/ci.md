@@ -35,6 +35,10 @@ Manual dispatch on `main`
 └─ warm-toolchain-cache.yml
    ├─ zig-tarball: fetch Zig on Linux x64 and arm64
    └─ msvc-crt: fetch the MSVC CRT and Windows SDK for each Windows arch
+
+Push or manual dispatch on `main`
+└─ warm-macos-release-cache.yml
+   └─ dependencies: populate the isolated macOS release dependency cache
 ```
 
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
@@ -43,14 +47,14 @@ The release build downloads checksum-pinned PostgreSQL artifacts while preparing
 
 ## Runners
 
-Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner, except the two GitHub-hosted exceptions below. How the runner is selected depends on whether the workflow can run pull-request code:
+Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner except npm publication, which stays on GitHub-hosted Linux for trusted publishing and provenance. How the runner is selected depends on whether the workflow can run pull-request code:
 
 - **Pull-request-capable workflows** (`test.yml` and `codeql.yml`, which trigger on `pull_request`) run every job on a repository-specific [runner profile](#runner-profiles), `namespace-profile-atomic-ci-*`, whose Access Level is Restricted. The profile, not the workflow, holds the machine shape.
-- **Release-path workflows** (`publish.yml`, triggered only by version-tag pushes and `workflow_dispatch`; `warm-toolchain-cache.yml`, triggered only by `workflow_dispatch`) never run pull-request code. They select runners with inline machine labels, `nscloud-{os}-{arch}-{shape}`, which keep the whole runner configuration in the workflow file.
+- **Release-path workflows** never run pull-request code. Most jobs use inline machine labels, `nscloud-{os}-{arch}-{shape}`. Both macOS native builds and `warm-macos-release-cache.yml` share the dedicated `namespace-profile-atomic-release-macos-arm64-6x14` profile, never a PR profile.
 
 Namespace refuses to schedule a job whose `runs-on` names more than one Namespace machine label, so each job names exactly one profile or label.
 
-`test/ci/ci-workflow-contracts.test.ts` enforces this policy. It detects pull-request-capable workflows from their `on:` triggers (`pull_request`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`, or `merge_group`) and fails when one of their jobs runs on anything but an approved `namespace-profile-atomic-ci-*` profile, including an inline `nscloud-*` label or a GitHub-hosted runner. It fails on any release-path runner outside the approved inline label set or the GitHub-hosted exception allowlist, on any Blacksmith text left in `.github/` other than the two legacy required-context identifiers, and on any Namespace cache, git mirror, or builder state in any workflow. The tests run on the revision under test, so they catch a mistaken change but cannot stop a fork pull request that edits a workflow and the tests with it; see [Approving fork workflow runs](#approving-fork-workflow-runs).
+`test/ci/ci-workflow-contracts.test.ts` enforces approved PR profiles, the dedicated macOS release profile, inline release labels, and the npm publication exception. It also checks pinned cache actions, dependency-only release caching, and the main-only warmer. The tests run on the revision under test, so they catch a mistaken change but cannot stop a fork pull request that edits a workflow and the tests with it; see [Approving fork workflow runs](#approving-fork-workflow-runs).
 
 ### Runner mapping
 
@@ -63,12 +67,12 @@ Namespace refuses to schedule a job whose `runs-on` names more than one Namespac
 | `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release, cleanup-draft-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `nscloud-macos-tahoe-arm64-6x14` | 6 vCPU, 14 GB |
+| `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
 | `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `warm-toolchain-cache.yml` zig x64, msvc-crt / zig arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16` / `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
-| `publish.yml` native `darwin-x64` | `macos-26-intel` | `macos-26-intel` (GitHub-hosted exception) | GitHub standard |
+| `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
 
 `4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`. `8x16` is in the standard list.
 
@@ -80,8 +84,8 @@ Namespace refuses to schedule a job whose `runs-on` names more than one Namespac
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs) |
 | `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No caching | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
-| `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | Builders and caching off | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
-| `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | Builders and caching off | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
+| `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | No remote builder | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
+| `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | No remote builder | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
 
 A job selects a profile with `runs-on: namespace-profile-<tag>`. Recreate the Linux profiles with:
 
@@ -94,10 +98,10 @@ Check them with `nsc github profile list -o json` or `nsc github profile describ
 
 The rest is dashboard-only, in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles):
 
-1. **Windows profiles.** `nsc github profile create` accepts only Ubuntu images for `--os`, so create `atomic-ci-windows-amd64-8x16` and `atomic-ci-windows-amd64-4x16` in the editor: Windows Server 2022, amd64, the shape in the tag, remote builders and caching off.
+1. **Windows profiles.** `nsc github profile create` accepts only Ubuntu images for `--os`, so create `atomic-ci-windows-amd64-8x16` and `atomic-ci-windows-amd64-4x16` in the editor: Windows Server 2022, amd64, and the shape in the tag. Configure the cache and builder settings under [Cache setup and validation](#cache-setup-and-validation).
 2. **Access Level.** Under **Advanced Settings**, set Access Level to **Restricted** on all four profiles. Neither `nsc github profile describe` nor `list` reports the access level, so the only way to verify it, or any later change to it, is to open each profile in the editor. Until all four read Restricted, fork jobs on that profile still run with Permissive access.
 
-Restricted blocks every Namespace API from inside the job, and these jobs call none: no Namespace action, cache volume, git mirror, toolchain cache, or remote builder (`--builder_mode NO_CACHING`). Checkout, the npm cache, and artifacts all go through GitHub.
+All four CI profiles retain Restricted access and have 50 GB cache volumes with updates allowed only from `main`. Toolchain and action caches are enabled in the profiles. `test.yml` configures npm and Rust caches through the pinned Namespace cache action after checkout and toolchain installation. This uses attached storage; no broader Namespace API permission is granted. Hosted validation must establish that the action works with Restricted access on each platform. If it fails, do not silently change Access Level. `NO_CACHING` disables the remote Docker builder cache, not the attached cache volume.
 
 **Resizing.** The shape lives in the profile, not the workflow, and the tag names the shape. To resize a pull-request job, create a profile whose tag names the new shape (`nsc` for Linux, the editor for Windows), set its Access Level to Restricted, then update the tag in the workflow, this section and the tables above, `APPROVED_PULL_REQUEST_PROFILES` in `test/ci/ci-workflow-contracts.test.ts`, and, for `test.yml`, the runner constants in `test/ci/test-workflow-topology.test.ts`. Remove the old profile once no workflow uses it. Changing a profile's shape in place would make its tag, these docs, and the contract tests wrong.
 
@@ -153,19 +157,20 @@ Re-measure on Namespace:
 
 - **Windows Server 2022, not 2025.** Namespace offers only a `windows-2022` runner image (amd64), so the Windows legs moved from Windows Server 2025. Coverage of `win32-x64` is unchanged. Windows ARM64 is still validated by content and architecture only, as before.
 - **Windows toolchain.** The Windows jobs build the native binding with the MSVC target and run `shell: bash` and PowerShell 7 steps. The image metadata lists no Visual Studio, so a Namespace Windows 4x16 instance was probed on 2026-09-23. It had Visual Studio Enterprise 2022 17.14 (MSVC 14.44, x64 `link.exe`), Windows SDK 10.0.26100, Git 2.54 with Git LFS 3.7.1 and Git Bash, PowerShell 7, `rustup`, and Node 20 (the jobs pin Node 22 through `setup-node`). No extra setup step is needed. The probe used `nsc create` rather than a runner label; its layout (`C:\hostedtoolcache`, `ImageOS=win22`) matches the GitHub Windows Server 2022 image lineage, but the first Namespace Windows job is the authoritative check.
-- **macOS Tahoe.** `darwin-arm64` runs on `macos-tahoe` (macOS 26), the same major version as before. The job still installs pinned Rust 1.97.0 and prefers it over the image's Rust.
+- **macOS Tahoe.** Both macOS targets build on Apple Silicon with pinned Rust 1.97.0. The Intel target cross-compiles with `x86_64-apple-darwin`, then selects x64 Node 22, installs the x64 smoke dependencies, loads the x64 native binding, and runs PostgreSQL persistence under Rosetta. The job fails if Rosetta or x64 execution is unavailable. This preserves translated execution coverage, not real Intel hardware coverage.
 - **Node on Linux.** The Namespace Ubuntu image does not list Node, so `register-published-version` installs Node 22 with `setup-node` before its `node -e` URL check. Every other Node-using job already did.
+
+The Intel replacement was probed on a short-lived Namespace Tahoe 6x14 instance on 2026-09-23 with Xcode 26.1.1. Rust 1.97.0 produced an x86_64 Mach-O binding in 19.32 seconds. Node 22.23.3 x64 loaded it under Rosetta, and the packaged PostgreSQL 18 runtime passed initdb, SQL insert, stop, restart, and persisted-row verification. This was an isolated runner probe, not a production release or evidence of native Intel execution.
 
 ### GitHub-hosted exceptions
 
-Only these two jobs stay GitHub-hosted. Each is allowlisted, with its reason, in `GITHUB_HOSTED_EXCEPTIONS` in `test/ci/ci-workflow-contracts.test.ts`.
+Only `publish-npm` stays GitHub-hosted. Its reason is recorded in `GITHUB_HOSTED_EXCEPTIONS` in `test/ci/ci-workflow-contracts.test.ts`.
 
 1. **`publish-npm` (`ubuntu-latest`).** Namespace runners register with GitHub as self-hosted runners, so the job's GitHub OIDC token carries `runner_environment: self-hosted` ([GitHub OIDC reference](https://docs.github.com/en/actions/reference/security/oidc)). npm accepts trusted publishing and provenance only from cloud-hosted runners:
    - "Trusted publishing currently supports only cloud-hosted runners. Support for self-hosted runners is intended for a future release." ([npm trusted publishers](https://docs.npmjs.com/trusted-publishers))
    - "To publish a package with provenance, you must build your package with a supported cloud CI/CD provider using a cloud-hosted runner." ([Generating provenance statements](https://docs.npmjs.com/generating-provenance-statements))
 
    The registry enforces this and returns HTTP 422 with the message `Unsupported GitHub Actions runner environment: "self-hosted"`. Other projects have hit exactly this error on Namespace runners. A static npm token is not a workaround: provenance from a self-hosted runner is rejected too, and this repository publishes without static credentials.
-2. **`native-artifacts` `darwin-x64` (`macos-26-intel`).** Namespace macOS runners are Apple Silicon only (the label table lists `arm64` as the only macOS architecture). This leg builds the x64 binding natively and runs the scriptless PostgreSQL persistence probe on x64 hardware. Cross-compiling on arm64 would drop that native smoke, so the leg stays GitHub-hosted.
 
 `register-published-version` is not an exception. It also uses GitHub OIDC, but the registration Worker (`bastani-inc/atomic-telemetry`, `src/index.ts`) checks the issuer, audience, repository and owner IDs, tag ref, workflow ref, subject, event name and environment claims. It never checks `runner_environment`, so the job moved to Namespace with its permissions unchanged.
 
@@ -173,12 +178,22 @@ Only these two jobs stay GitHub-hosted. Each is allowlisted, with its reason, in
 
 This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on Namespace, the same provider that runs releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
 
-- **Ephemeral runners.** Namespace starts a fresh runner for every job and discards it afterwards, so a job cannot leave anything on the machine for the next one. What can outlive a job is Namespace workspace state reachable from inside it: cache volumes, the git mirror, the toolchain cache volume and remote Docker builders, which later jobs read, and the job's own Namespace workload token, which reaches the workspace's APIs directly. **This repository uses none of that state**, and the pull-request workflows disable the token's Namespace access (next item).
+- **Ephemeral runners, persistent caches.** Namespace starts a fresh runner for each job. Attached caches outlive it, so their update policy and profile isolation are part of the security boundary. Each profile has its own cache per repository; no custom cache-sharing tags are used.
 - **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` runs on a repository-specific profile whose Access Level is Restricted, which disables Namespace feature access for the runner workload. On an inline `nscloud-*` label the same job would get a workload token with the default Permissive access, and "by default, workload tokens allow access to any Namespace feature". Access Level can be set only on a profile, and only in the dashboard. [Runner profiles](#runner-profiles) lists the profiles, how to recreate them, and how to verify the setting. The contract tests fail if a job in a pull-request-capable workflow uses anything other than an approved profile. This protects fork runs that use the committed workflow files. For `pull_request`, GitHub runs the workflow files from the pull request's merge commit, so a fork pull request can change `runs-on` to an inline `nscloud-*` label and get a Permissive token, and the contract tests in that same revision cannot prevent it.
 - **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
-- **Caches stay in GitHub's Actions cache.** `test.yml` keeps `setup-node`'s npm cache, and `publish.yml` and `warm-toolchain-cache.yml` keep `actions/cache` for the MSVC CRT. Actions cache entries are scoped by ref: a pull-request run writes only its own merge-ref scope, which `main` and release tags never read. Namespace cache volumes (`-with-cache`, `nscloud-cache-tag-*`) are not used, and a Restricted profile could not reach them anyway. Linux `npm ci` already took 4–5 s with the npm cache hit, so the saving would be small. The documented poisoning controls also have gaps: it is undocumented whether `nscloud-cache-allow-commit-from-main` treats a `pull_request` job as its head branch or its merge ref, and `nscloud-cache-exp-do-not-commit` is marked experimental. A future cache volume on `test.yml` or `codeql.yml` would need a less restrictive Access Level on its profile (a trust decision, not a tuning change), a repository-specific tag (tags are shared across repositories), `nscloud-cache-allow-commit-from-main`, and `setup-node` caching disabled. The contract tests would need a deliberate update.
-- **The release path reads no Namespace state.** `publish.yml` (version-tag pushes and `workflow_dispatch` only) and `warm-toolchain-cache.yml` (`workflow_dispatch` only, and it fills the cache the publisher restores) never run pull-request code. They use inline labels rather than a profile a pull-request job shares, and no Namespace action, cache label, git mirror, or builder label. Neither builds a container image: the Alpine smokes only `docker run` public images. Namespace's remote builders apply to BuildKit builds, so they never handle release work, and `nscloud-no-remote-builders` would change nothing. The contract test also forbids `docker build` in these files, so adding one forces a review of this premise.
+- **Main-only cache updates.** The four `atomic-ci-*` profiles have 50 GB cache volumes. Namespace's [protected cache updates](https://namespace.so/docs/solutions/github-actions/caching#protect-caches-from-updates) allow jobs from `main` to persist changes; PR jobs read the cache and discard their local changes. `test.yml` uses `namespacelabs/nscloud-cache-action` pinned to `1124a6f3ce44e5cf84cc22111530961f4d2a15f9` for npm downloads and, in jobs that build native bindings, Cargo dependencies and build output. `setup-node` has `package-manager-cache: false` to avoid duplicate archive transfers. `npm ci --ignore-scripts` still installs from the lockfile on every run. Cold caches remain valid; no cache miss skips installation or tests. The profile also enables automatic action and toolchain caching. Git checkout still uses `actions/checkout`, not the Namespace mirror action.
+- **Separate macOS release cache.** `atomic-release-macos-arm64-6x14` uses Tahoe Slim, arm64, 6 vCPU and 14 GB RAM, with a separate 50 GB volume writable only from `main`. `warm-macos-release-cache.yml` runs on main pushes or manual dispatch on main, installs the same Bun/Node/Rust versions as the publisher, and downloads locked npm and Cargo dependencies. The release-tag job reads that cache without persisting changes. Both workflows cache npm downloads plus `~/.cargo/registry` and `~/.cargo/git`; neither caches Cargo build output, `node_modules`, native bindings, or release artifacts. All other release jobs retain their existing caching configuration, including the GitHub Actions cache for MSVC CRT downloads. Remote Docker builders remain disabled on the cache-enabled profiles.
 - **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. Against a pull request that changes anything under `.github/workflows`, approval is the only barrier: the Restricted profiles protect only runs that use the committed workflows. Follow [Approving fork workflow runs](#approving-fork-workflow-runs).
+
+### Cache setup and validation
+
+In the [profile editor](https://cloud.namespace.so/workspace/actions/profiles), enable a 50 GB Cache Volume for each of the four CI profiles and `atomic-release-macos-arm64-6x14`. Under the cache's advanced settings, allow updates only from `main`. Leave custom sharing tags empty and retain Restricted access. Enable toolchain and action caching. The Linux profiles also cache container pulls; these are not remote Docker builds.
+
+Read back the volume size, `allow_commit_from_branch: [main]`, and builder mode with `nsc github profile list -o json`. The dashboard may reset the hidden builder mode to `USE_REMOTE_BUILDER` when editing a Windows or macOS profile. Restore only that field with `nsc github profile update --profile_id <id> --builder_mode NO_CACHING`, then verify the volume settings remain intact. Access Level must be checked in the dashboard because the CLI does not expose it.
+
+The first main run populates the caches. PRs and release tags cannot warm them persistently, so pre-merge cache misses are expected. The macOS warmer checks `github.ref == 'refs/heads/main'`, including on manual dispatch. It performs no build or publication. Once merged, it can also be started with `gh workflow run warm-macos-release-cache.yml --ref main`.
+
+The cache action runs after checkout and after the relevant tools are installed, following the [action reference](https://namespace.so/docs/reference/github-actions/nscloud-cache-action). Both the action SHA and `spacectl-version: 0.12.3` are pinned. This version includes the Windows Rust junction-path fix introduced in 0.12.2. The action configures local mounts without calling Namespace APIs; profile access remains Restricted. Verify Linux, Windows, and macOS logs for configured paths and cache hits, compare setup/build timings after a successful main population, and confirm Restricted access remains unchanged. No warm-hit or performance claim is made until those runs complete. Cache wiring does not resolve the separate Windows SYSTEM temporary-directory ACL failures or per-test duration regressions found in the first migration run.
 
 ### Approving fork workflow runs
 
@@ -407,8 +422,8 @@ The native job always rebuilds and uploads one artifact for each shipped `@basta
 | Linux arm64 (GNU) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-gnu` |
 | Linux x64 (musl) | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-unknown-linux-musl` |
 | Linux arm64 (musl) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-musl` |
-| macOS x64 | `macos-26-intel` (GitHub-hosted) | `x86_64-apple-darwin` |
-| macOS arm64 | `nscloud-macos-tahoe-arm64-6x14` | `aarch64-apple-darwin` |
+| macOS x64 | `namespace-profile-atomic-release-macos-arm64-6x14` | `x86_64-apple-darwin`; smoke under Rosetta |
+| macOS arm64 | `namespace-profile-atomic-release-macos-arm64-6x14` | `aarch64-apple-darwin` |
 | Windows x64 | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-pc-windows-msvc` |
 | Windows arm64 | `nscloud-ubuntu-24.04-amd64-4x16` | `aarch64-pc-windows-msvc` |
 
@@ -416,7 +431,7 @@ GNU Linux builds use `GLIBC_FLOOR=2.17`: rustup installs the bare target while
 `build-native.ts` passes the glibc-suffixed target to cargo-zigbuild and copies
 the result from Cargo's bare-target output directory. Musl targets stay bare
 and use NAPI-RS `--cross-compile`; Windows uses LLVM and cargo-xwin. Both Darwin
-targets build on their native architecture. The matrix uses `fail-fast: false`,
+targets build on Apple Silicon, with the x64 target cross-compiled and smoke-tested under Rosetta. The matrix uses `fail-fast: false`,
 distinct platform/libc artifact names and only same-run native artifacts.
 
 The build job downloads the eight same-run bindings, generates the eight platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.

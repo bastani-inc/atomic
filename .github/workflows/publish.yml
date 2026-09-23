@@ -111,14 +111,12 @@ jobs:
           # produced .node a dlopen-able shared object instead of a static-CRT blob.
           - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: linux, arch: x64, slug: linux-x64-musl, target: x86_64-unknown-linux-musl, timeout_minutes: 17, build_timeout_minutes: 5 }
           - { runner: nscloud-ubuntu-24.04-arm64-4x16, platform: linux, arch: arm64, slug: linux-arm64-musl, target: aarch64-unknown-linux-musl, timeout_minutes: 18, build_timeout_minutes: 5 }
-          # Namespace macOS is Apple Silicon only, so darwin x64 stays GitHub-hosted.
-          - { runner: macos-26-intel, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
-          - { runner: nscloud-macos-tahoe-arm64-6x14, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
+          - { runner: namespace-profile-atomic-release-macos-arm64-6x14, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
+          - { runner: namespace-profile-atomic-release-macos-arm64-6x14, platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
           - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: x64, slug: win32-x64-msvc, target: x86_64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
           - { runner: nscloud-ubuntu-24.04-amd64-4x16, platform: win32, arch: arm64, slug: win32-arm64-msvc, target: aarch64-pc-windows-msvc, timeout_minutes: 20, build_timeout_minutes: 5 }
     steps:
-      # Release jobs clone through actions/checkout only: no Namespace git mirror
-      # or cache volume, which pull-request jobs could write. See docs/ci.md.
+      # Release checkout does not use the Namespace git mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
@@ -129,6 +127,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          package-manager-cache: false
       # rustup needs the bare target; only the glibc Linux legs separately receive
       # the glibc-suffixed target consumed by cargo-zigbuild.
       - id: rust
@@ -155,6 +154,15 @@ jobs:
         run: |
           toolchain_bin="$(dirname "$(rustup which cargo)")"
           echo "$toolchain_bin" >> "$GITHUB_PATH"
+      - name: Configure macOS release dependency cache
+        if: matrix.platform == 'darwin'
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: npm
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Resolve explicit native build target
@@ -271,7 +279,24 @@ jobs:
           NATIVE_TARGET: ${{ matrix.platform == 'darwin' && matrix.target || '' }}
           XWIN_ACCEPT_LICENSE: "1"
         run: bun run --cwd packages/natives build
-      - name: Prove scriptless PostgreSQL persistence on native Linux and macOS
+      - name: Verify Rosetta for Intel macOS smoke
+        if: matrix.slug == 'darwin-x64'
+        shell: bash
+        run: test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
+      - name: Select Intel Node for translated macOS smoke
+        if: matrix.slug == 'darwin-x64'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          architecture: x64
+          package-manager-cache: false
+      - name: Install Intel smoke dependencies
+        if: matrix.slug == 'darwin-x64'
+        run: npm ci --ignore-scripts --cpu=x64
+      - name: Load Intel native binding under Rosetta
+        if: matrix.slug == 'darwin-x64'
+        run: node -e "require('node:assert/strict').equal(process.arch, 'x64'); require('./packages/natives/native/atomic_natives.darwin-x64.node'); console.log('Intel native binding loaded under Rosetta')"
+      - name: Prove scriptless PostgreSQL persistence on Linux and macOS
         if: matrix.platform == 'darwin' || endsWith(matrix.slug, '-gnu')
         shell: bash
         run: |

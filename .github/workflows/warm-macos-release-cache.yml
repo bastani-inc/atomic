@@ -1,0 +1,49 @@
+name: Warm macOS release cache
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-macos-release-cache
+  cancel-in-progress: false
+
+jobs:
+  dependencies:
+    if: github.ref == 'refs/heads/main'
+    runs-on: namespace-profile-atomic-release-macos-arm64-6x14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        timeout-minutes: 4
+        with:
+          toolchain: 1.97.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Configure macOS release dependency cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: npm
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+      - name: Download locked npm dependencies
+        run: npm ci --ignore-scripts
+      - name: Download locked Cargo dependencies
+        run: |
+          cargo fetch --locked --target aarch64-apple-darwin
+          cargo fetch --locked --target x86_64-apple-darwin

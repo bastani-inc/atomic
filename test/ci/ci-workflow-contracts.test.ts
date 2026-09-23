@@ -427,8 +427,8 @@ test("publish permissions, timeouts, runners, and OIDC are least privilege", asy
 	assert.doesNotMatch(register, /\[\[ "\$request_url" == https:\/\/\* \]\]/);
 	assert.equal([...workflow.matchAll(/^ {4}timeout-minutes:/gmu)].length, 11);
 	assert.match(workflow, /nscloud-ubuntu-24\.04-arm64-4x16/);
-	assert.match(workflow, /macos-26-intel/);
-	assert.match(workflow, /nscloud-macos-tahoe-arm64-6x14/);
+	assert.doesNotMatch(workflow, /macos-26-intel/);
+	assert.match(workflow, /namespace-profile-atomic-release-macos-arm64-6x14/);
 	assert.match(workflow, /nscloud-windows-2022-amd64-4x16/);
 });
 
@@ -460,8 +460,8 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	assert.match(native, /RUSTFLAGS=-C target-cpu=x86-64-v2/);
 	assert.match(native, /fail-fast: false/);
 	assert.match(native, /name: atomic-natives-\$\{\{ matrix\.slug \}\}/u);
-	assert.match(native, /macos-26-intel/);
-	assert.match(native, /nscloud-macos-tahoe-arm64-6x14/);
+	assert.doesNotMatch(native, /macos-26-intel/);
+	assert.match(native, /namespace-profile-atomic-release-macos-arm64-6x14/);
 	assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup/iu);
 	// The job may cache third-party toolchain acquisitions and nothing else.
 	// Caching Cargo build output would make a provenance-signed artifact depend
@@ -469,7 +469,7 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	assert.doesNotMatch(native, /rust-cache|sccache|CARGO_TARGET_DIR/iu);
 	assert.deepEqual(
 		[...native.matchAll(/^\s+path: (\S+)$/gmu)].map(([, value]) => value),
-		["~/.cache/cargo-xwin", "packages/natives/native/*.node"],
+		["|", "~/.cache/cargo-xwin", "packages/natives/native/*.node"],
 	);
 });
 
@@ -820,12 +820,17 @@ test("every job checks out through actions/checkout, never a runner-vendor mirro
 });
 
 test("every third-party action is pinned to a full commit SHA with a version comment", async () => {
-	for (const path of [publishPath, testPath, warmPath]) {
+	for (const file of await workflowFiles()) {
+		const path = join(workflowDir, file);
 		const workflow = await readText(path);
 		const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)(.*)$/gmu)];
 		assert.ok(uses.length > 0, `${path} declares no actions`);
 		for (const [, action, trailer] of uses) {
-			assert.match(action as string, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/u, `${path}: ${action} is not SHA-pinned`);
+			assert.match(
+				action as string,
+				/^[\w.-]+\/[\w.-]+(?:\/[\w.-]+)*@[0-9a-f]{40}$/u,
+				`${path}: ${action} is not SHA-pinned`,
+			);
 			assert.match(trailer as string, /^ # v?[\w.-]+$/u, `${path}: ${action} needs a version comment`);
 		}
 	}
@@ -1013,15 +1018,12 @@ const APPROVED_PULL_REQUEST_PROFILES: Record<string, { os: "linux" | "windows"; 
 	"namespace-profile-atomic-ci-windows-amd64-8x16": { os: "windows", shape: "8x16" },
 };
 
-/**
- * The inline machine labels the release path (push, tag, and dispatch
- * workflows) may use: bare shapes, no cache, feature, or builder suffix.
- */
+const MACOS_RELEASE_PROFILE = "namespace-profile-atomic-release-macos-arm64-6x14";
 const APPROVED_RELEASE_PATH_RUNNERS = new Set([
 	"nscloud-ubuntu-24.04-amd64-4x16",
 	"nscloud-ubuntu-24.04-arm64-4x16",
 	"nscloud-windows-2022-amd64-4x16",
-	"nscloud-macos-tahoe-arm64-6x14",
+	MACOS_RELEASE_PROFILE,
 ]);
 
 /** The jobs whose measured 4-vCPU CPU load justified 8 vCPU (docs/ci.md, "Sizing"). */
@@ -1033,11 +1035,6 @@ const MEASURED_8_VCPU_JOBS = new Set(["test.yml unit-tests", "test.yml integrati
  * citations. Neither is in a pull-request-capable workflow.
  */
 const GITHUB_HOSTED_EXCEPTIONS: Record<string, { runner: string; reason: string }> = {
-	"publish.yml native-artifacts": {
-		runner: "macos-26-intel",
-		reason:
-			"Namespace macOS is Apple Silicon only; this is the only runner that builds the darwin x64 binding natively",
-	},
 	"publish.yml publish-npm": {
 		runner: "ubuntu-latest",
 		reason:
@@ -1098,7 +1095,7 @@ test("pull-request workflows run on Restricted profiles and the release path on 
 	assert.deepEqual(pullRequestWorkflows, ["codeql.yml", "test.yml"]);
 	assert.deepEqual([...usedProfiles].sort(), Object.keys(APPROVED_PULL_REQUEST_PROFILES).sort());
 	assert.deepEqual(hosted.sort(), Object.keys(GITHUB_HOSTED_EXCEPTIONS).sort());
-	assert.match(publish, /# Namespace macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
+	assert.doesNotMatch(publish, /macos-26-intel/u);
 	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,240}?runs-on: ubuntu-latest/u);
 	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
 });
@@ -1181,31 +1178,64 @@ test("no Blacksmith runner, action, or comment survives outside the legacy requi
 	}
 });
 
-/**
- * Namespace cache volumes, the git mirror, and remote-builder caches are shared
- * across jobs and commit whenever a job exits 0. No workflow uses them: the
- * pull-request workflows run on Restricted profiles, which cannot reach
- * Namespace APIs, and nothing on the release path may read state a
- * pull-request job could write. publish.yml builds provenance-signed artifacts,
- * and warm-toolchain-cache.yml fills the cache publish.yml restores; both stay
- * on GitHub's branch-scoped Actions cache and on inline labels, never a profile
- * a pull-request job shares. Neither builds a container image, so Namespace's
- * remote builders never see release work either.
- */
-test("no workflow uses Namespace cache, mirror, or builder state, and the release path shares no profile", async () => {
+test("Namespace caches use a pinned action and releases never share PR profiles or build output", async () => {
+	const cacheAction = "namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9";
 	for (const file of await workflowFiles()) {
 		const workflow = await readText(join(workflowDir, file));
-		assert.doesNotMatch(
-			workflow,
-			/namespacelabs\/|namespace-features|nscloud-(?:cache|git-mirror|runner-tool-cache|container-image-cache|in-runner-builder)|-with-(?:cache|builders|features)\b/u,
-			file,
-		);
+		for (const match of workflow.matchAll(/uses: (namespacelabs\/\S+)/gu)) {
+			assert.equal(match[1], cacheAction, `${file}: unreviewed Namespace action`);
+		}
+		assert.doesNotMatch(workflow, /nscloud-(?:git-mirror|in-runner-builder)|overrides\.cache-tag/u, file);
 	}
-	for (const path of [publishPath, warmPath]) {
+	for (const path of [publishPath, warmPath, join(workflowDir, "warm-macos-release-cache.yml")]) {
 		const workflow = await readText(path);
-		assert.doesNotMatch(workflow, /namespace-profile-/u, path);
-		assert.doesNotMatch(workflow, /docker (?:build|buildx)|setup-buildx/u, path);
+		assert.doesNotMatch(workflow, /namespace-profile-atomic-ci-|docker (?:build|buildx)|setup-buildx/u, path);
 	}
+	const publish = await readText(publishPath);
+	const releaseCache = namedStep(
+		jobSteps(jobBlock(publish, "native-artifacts", "linux-binary-smoke")),
+		"Configure macOS release dependency cache",
+	);
+	assert.match(releaseCache, /if: matrix\.platform == 'darwin'/u);
+	assert.match(releaseCache, /cache: npm/u);
+	assert.match(releaseCache, /~\/\.cargo\/registry\n\s+~\/\.cargo\/git/u);
+	assert.doesNotMatch(releaseCache, /cache: rust|\btarget\b|node_modules/u);
+});
+
+test("Namespace caches replace duplicate npm caching after checkout and toolchain setup", async () => {
+	const workflow = await readText(testPath);
+	for (const name of ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"]) {
+		const job = new Map(jobBlocks(workflow)).get(name) as string;
+		const cache = job.indexOf("uses: namespacelabs/nscloud-cache-action@");
+		assert.ok(cache > job.indexOf("uses: actions/checkout@"), name);
+		assert.ok(cache > job.indexOf("uses: actions/setup-node@"), name);
+		assert.ok(cache < job.indexOf("run: npm ci --ignore-scripts"), name);
+		assert.match(job, /node-version: 22\n\s+package-manager-cache: false/u, name);
+		if (name !== "static-checks") {
+			assert.ok(cache > job.lastIndexOf("uses: dtolnay/rust-toolchain@"), name);
+			assert.match(job, /cache: \|\n\s+npm\n\s+rust/u, name);
+		}
+	}
+});
+
+test("macOS release cache is warmed only by main and contains dependency downloads, not build outputs", async () => {
+	const warm = await readText(join(workflowDir, "warm-macos-release-cache.yml"));
+	const publish = await readText(publishPath);
+	assert.match(warm, /push:\n\s+branches: \[main\]/u);
+	assert.match(warm, /if: github\.ref == 'refs\/heads\/main'/u);
+	assert.match(warm, /permissions:\n\s+contents: read/u);
+	assert.match(warm, /persist-credentials: false/u);
+	assert.match(warm, /cargo fetch --locked --target aarch64-apple-darwin/u);
+	assert.doesNotMatch(warm, /pull_request|npm publish|cargo build|cache: rust/u);
+	assert.ok(warm.includes(`runs-on: ${MACOS_RELEASE_PROFILE}`));
+	assert.ok(publish.includes(`runner: ${MACOS_RELEASE_PROFILE}, platform: darwin`));
+	for (const pin of ["bun-version", "node-version", "toolchain"]) {
+		const pattern = new RegExp(`${pin}: (\\S+)`, "u");
+		assert.equal(pattern.exec(warm)?.[1], pattern.exec(publish)?.[1], `${pin} differs from release`);
+	}
+	const cache = namedStep(jobSteps(jobBlock(warm, "dependencies")), "Configure macOS release dependency cache");
+	assert.match(cache, /cache: npm/u);
+	assert.match(cache, /~\/\.cargo\/registry\n\s+~\/\.cargo\/git/u);
 });
 
 /**
@@ -1256,4 +1286,24 @@ test("existing hardware jobs execute PostgreSQL SQL persistence gates without ch
 	assert.match(alpine, /INSERT INTO atomic_durability_probe/u);
 	assert.match(alpine, /SELECT value FROM atomic_durability_probe/u);
 	assert.match(alpine, /persisted-row/u);
+});
+
+test("Intel macOS cross-compiles on Namespace and runs x64 native and PostgreSQL smoke under Rosetta", async () => {
+	const workflow = await readText(publishPath);
+	const native = jobBlock(workflow, "native-artifacts", "linux-binary-smoke");
+	assert.ok(
+		native.includes(
+			`runner: ${MACOS_RELEASE_PROFILE}, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin`,
+		),
+	);
+	const steps = jobSteps(native);
+	assert.match(namedStep(steps, "Verify Rosetta"), /arch -x86_64/u);
+	assert.match(namedStep(steps, "Select Intel Node"), /architecture: x64/u);
+	assert.match(namedStep(steps, "Install Intel smoke dependencies"), /npm ci --ignore-scripts --cpu=x64/u);
+	const binding = namedStep(steps, "Load Intel native binding");
+	assert.match(binding, /process\.arch, 'x64'/u);
+	assert.match(binding, /atomic_natives\.darwin-x64\.node/u);
+	const persistence = namedStep(steps, "Prove scriptless PostgreSQL persistence");
+	assert.match(persistence, /matrix\.platform == 'darwin'/u);
+	assert.ok(steps.indexOf(persistence) > steps.indexOf(binding));
 });

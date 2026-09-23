@@ -47,10 +47,10 @@ Restricted, so fork runs of the committed workflows get no usable Namespace work
 pull request that edits `.github/workflows` runs its own `runs-on`, so maintainer approval is the
 only barrier there: before approving a fork run, check the diff for `.github/` changes (see
 `docs/ci.md`, "Approving fork workflow runs"). The release path
-(`publish.yml`, `warm-toolchain-cache.yml`) uses version-controlled inline labels (`nscloud-*`)
-except two GitHub-hosted jobs in `publish.yml`: `publish-npm` (`ubuntu-latest`, required by
-npm trusted publishing and provenance) and the `darwin-x64` leg of `native-artifacts`
-(`macos-26-intel`, because Namespace offers no Intel macOS). The required contexts still read
+uses inline labels (`nscloud-*`) except the dedicated macOS release cache profile and
+`publish-npm` on GitHub-hosted Linux (`ubuntu-latest`, required by npm trusted publishing
+and provenance). Both macOS targets build on Namespace Apple Silicon; Intel artifacts
+are cross-compiled and smoke-tested under Rosetta, not on native Intel hardware. The required contexts still read
 `test (blacksmith-…)`: those are legacy identifiers kept for the external ruleset, not runner
 labels. The gate also emits `test (all platforms)` so the ruleset can move to it first.
 `docs/ci.md` ("Runners") has the mapping, the profiles and their dashboard-only settings, the

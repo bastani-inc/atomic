@@ -83,7 +83,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: npm
+          package-manager-cache: false
       # packages/subagents now drives its children through the Rust control
       # plane in crates/atomic-natives, so the bundled subagent extension fails
       # to load at import without a binding. That takes the root unit and
@@ -101,6 +101,13 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Configure Namespace dependency and Rust build cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: |
+            npm
+            rust
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -156,7 +163,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: npm
+          package-manager-cache: false
       - id: rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
@@ -169,6 +176,13 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Configure Namespace dependency and Rust build cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: |
+            npm
+            rust
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -225,7 +239,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: npm
+          package-manager-cache: false
       - id: rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         continue-on-error: true
@@ -239,6 +253,13 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Configure Namespace dependency and Rust build cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: |
+            npm
+            rust
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -294,7 +315,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: npm
+          package-manager-cache: false
       # scripts/build-binaries.sh reuses packages/natives/native/*.node when they
       # exist and otherwise builds them, so this job needs the Rust toolchain and
       # pays the native build again rather than waiting on agent-suite. That is a
@@ -311,6 +332,13 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: stable
+      - name: Configure Namespace dependency and Rust build cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: |
+            npm
+            rust
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -448,6 +476,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          package-manager-cache: false
+      - name: Configure Namespace npm cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts

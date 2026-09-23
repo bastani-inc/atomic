@@ -316,7 +316,7 @@ test("every work job installs with npm ci and sets up both runtimes it uses", as
 	for (const job of WORK_JOBS) {
 		const block = blocks.get(job) as string;
 		assert.match(block, /uses: actions\/setup-node@/u, `${job} installs with npm and must pin Node`);
-		assert.match(block, /^[ \t]+cache: npm$/mu, `${job} must cache the npm download`);
+		assert.match(block, /^[ \t]+cache: (?:npm|\|\n[ \t]+npm)$/mu, `${job} must cache the npm download`);
 		assert.match(block, /uses: oven-sh\/setup-bun@/u, `${job} runs Bun scripts, binaries, or fixtures`);
 		assert.match(namedStep(jobSteps(block), "Install dependencies"), /run: npm ci --ignore-scripts/u, job);
 		assert.doesNotMatch(block, /bun install/u, `${job} must not install with Bun`);
