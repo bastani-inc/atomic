@@ -5,7 +5,6 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { bunExecutable, readJson, spawnSyncCollect } from "../helpers/runtime.js";
-import { readText } from "./workflow-text.js";
 
 type NativeManifest = {
 	name: string;
@@ -119,43 +118,3 @@ test(
 	},
 	NATIVE_RELEASE_PACK_TIMEOUT_MS,
 );
-
-test("publish pipeline prepares exact native package set and publishes in dependency order", async () => {
-	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
-	const expectedOrder = [...nativePackageNames, "@bastani/atomic-natives", "@bastani/pi-ai", "@bastani/atomic"].join(
-		" ",
-	);
-	assert.match(workflow, /prepublish:native -- --skip-optional-publish/u);
-	assert.match(workflow, /Expected exactly eleven npm packages/u);
-	assert.match(workflow, /atomic-linux-x64-musl\.tar\.gz.*atomic-linux-arm64-musl\.tar\.gz/u);
-	assert.ok(
-		workflow.includes(`packages=(${expectedOrder})`),
-		"npm packages must publish native leaves, native root, then coding agent",
-	);
-	assert.match(
-		workflow,
-		/npm view "\$name@\$VERSION" version[\s\S]*already exists; skipping[\s\S]*npm publish "\$\{tarballs\[\$name\]\}" --provenance/u,
-	);
-});
-
-test("release notes merge every package changelog and never fall back to a contentless body", async () => {
-	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
-	assert.match(
-		workflow,
-		/bun run scripts\/build-release-notes\.ts "\$VERSION" --out release-assets\/RELEASE_NOTES\.md/u,
-		"release notes must come from the merging builder, not a single package changelog",
-	);
-	// Reading one changelog silently dropped the five packages bundled into
-	// @bastani/atomic; the fallback then published the commit subject as the
-	// entire body (0.9.16-alpha.7).
-	assert.doesNotMatch(
-		workflow,
-		/RELEASE_NOTES\.md[\s\S]{0,80}\|\|[\s\S]{0,40}echo "Release \$VERSION"/u,
-		"an empty-notes fallback must not mask a missing changelog entry",
-	);
-	assert.doesNotMatch(
-		workflow,
-		/awk[^\n]*packages\/coding-agent\/CHANGELOG\.md/u,
-		"notes must not be extracted from packages/coding-agent/CHANGELOG.md alone",
-	);
-});

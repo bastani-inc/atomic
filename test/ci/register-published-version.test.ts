@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "vitest";
 import { spawnSyncCollect } from "../helpers/runtime.js";
-import { jobBlock, readText } from "./workflow-text.js";
+import { jobBlock } from "./workflow-text.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const publishPath = join(root, ".github/workflows/publish.yml");
@@ -123,12 +123,7 @@ printf '%s\\n' "$*" >> ${JSON.stringify(sleepLog)}
 	};
 }
 
-test("registration client posts the exact audience and version and succeeds on 204", async () => {
-	const workflow = await readText(publishPath);
-	assert.match(
-		jobBlock(workflow, "register-published-version", "cleanup-draft-github-release"),
-		/needs: \[integrity, publish-github-release\]/,
-	);
+test("registration client posts the exact audience and version and succeeds on 204", () => {
 	const result = runRegistration({ version: "0.9.20" });
 	assert.equal(result.exitCode, 0, result.stderr);
 	assert.match(result.stdout, /::add-mask::oidc-secret-token-value/);
@@ -239,13 +234,4 @@ test("registration client refuses 0.0.0 before any network call", () => {
 	assert.equal(result.exitCode, 1);
 	assert.match(result.stderr, /Refusing 0\.0\.0/);
 	assert.equal(result.curlLog.length, 0);
-});
-
-test("cleanup does not depend on registration and registration has no environment", async () => {
-	const workflow = await readText(publishPath);
-	const cleanup = jobBlock(workflow, "cleanup-draft-github-release");
-	assert.doesNotMatch(cleanup, /register-published-version/);
-	const register = jobBlock(workflow, "register-published-version", "cleanup-draft-github-release");
-	assert.doesNotMatch(register, /environment:/);
-	assert.match(register, /needs: \[integrity, publish-github-release\]/);
 });

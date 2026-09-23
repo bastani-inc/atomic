@@ -99,15 +99,3 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.termux, /Do not run the root `install\.sh`/u);
 	assert.match(docs.termux, /bionic libc/u);
 });
-
-test("CI runs the POSIX installer smoke in Alpine and Debian slim", async () => {
-	const [workflow, smoke] = await Promise.all([
-		readText(`${root}/.github/workflows/test.yml`),
-		readText(`${root}/scripts/test-installers-containers.sh`),
-	]);
-	assert.match(workflow, /run: \.\/scripts\/test-installers-containers\.sh/u);
-	assert.match(smoke, /alpine:3\.22/u);
-	assert.match(smoke, /debian:bookworm-slim/u);
-	assert.match(smoke, /\/bin\/sh \/repo\/install\.sh --ref 1\.0\.0/u);
-	assert.match(smoke, /! command -v ldd/u);
-});

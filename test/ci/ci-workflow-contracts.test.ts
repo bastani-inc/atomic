@@ -4,7 +4,6 @@ import { readdir } from "node:fs/promises";
 import { delimiter, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { parse as parseYaml } from "yaml";
 import {
 	canonicalReleaseBaseRef,
 	parseReleaseBaseTrailers,
@@ -20,29 +19,9 @@ import {
 	spawnSyncCollect,
 	writeTextSync,
 } from "../helpers/runtime.js";
-import { jobBlock, jobBlocks, jobSteps, namedStep, readText } from "./workflow-text.js";
+import { readText } from "./workflow-text.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const publishPath = join(root, ".github/workflows/publish.yml");
-const testPath = join(root, ".github/workflows/test.yml");
-const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
-const workflowDir = join(root, ".github/workflows");
-
-/**
- * Every workflow file, enumerated rather than listed: a workflow added later must
- * not be able to introduce an unapproved runner or checkout unnoticed.
- */
-async function workflowFiles(): Promise<string[]> {
-	const files = (await readdir(workflowDir)).filter((name) => name.endsWith(".yml") || name.endsWith(".yaml")).sort();
-	assert.ok(files.length >= 3, "expected the workflows directory to be enumerable");
-	return files;
-}
-
-/**
- * The `test` job's own topology contracts live in test-workflow-topology.test.ts.
- * It is now a result gate over five concurrent work jobs, and the
- * anti-un-protection assertions belong beside the ones describing that split.
- */
 /**
  * The per-test timeout budget is declared once, in vitest.config.ts.
  *
@@ -84,7 +63,6 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 	for (const command of Object.values(manifest.scripts)) {
 		assert.doesNotMatch(command, /--timeout[= ]\d+/u, `the budget lives in vitest.config.ts only: ${command}`);
 	}
-	assert.match(await readText(join(root, ".github/workflows/test.yml")), /run-test-suite\.ts/u);
 });
 
 test("workflows workspace test scripts delegate to the root Vitest suites", async () => {
@@ -101,20 +79,7 @@ test("workflows workspace test scripts delegate to the root Vitest suites", asyn
 	}
 });
 
-/**
- * Run 33833721342 reached `npm ci` with an exact-key cache hit, then emitted
- * nothing for the full six-minute static-checks job cap. npm's former default
- * allowed one HTTP request to wait 300 seconds before either of its retries,
- * so the install policy could not recover before the job that owned it died.
- *
- * Bound one request conservatively as every attempt consuming fetch-timeout
- * plus every retry consuming the maximum backoff. The measured job caps no
- * longer reserve three times that allowance. Keep it below the smallest cap
- * among jobs that install with npm; the npm-free result gate is irrelevant.
- * This is not a completion guarantee: setup and other work share the cap, and
- * the enclosing job deadline can interrupt a request or its retries.
- */
-test("npm registry request retries are bounded below npm-installing CI job caps", async () => {
+test("npm registry retries declare integer timeouts and ordered backoffs", async () => {
 	const npmConfig = new Map(
 		(await readText(join(root, ".npmrc")))
 			.split("\n")
@@ -128,32 +93,13 @@ test("npm registry request retries are bounded below npm-installing CI job caps"
 		assert.match(value, /^\d+$/u, `${name} must be an integer, received ${value}`);
 		return Number(value);
 	};
-	const fetchTimeoutMs = integerConfig("fetch-timeout");
+	integerConfig("fetch-timeout");
 	const fetchRetries = integerConfig("fetch-retries");
 	const retryMinTimeoutMs = integerConfig("fetch-retry-mintimeout");
 	const retryMaxTimeoutMs = integerConfig("fetch-retry-maxtimeout");
 	assert.ok(fetchRetries >= 1, "a transient registry stall must receive at least one retry");
 	assert.ok(retryMinTimeoutMs > 0, "registry retries need a positive backoff");
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
-
-	const workflow = parseYaml(await readText(testPath)) as Workflow;
-	const jobBudgetsMinutes = Object.values(workflow.jobs ?? {}).flatMap((job) => {
-		if (!job.steps?.some((step) => /\bnpm ci\b/u.test(step.run ?? ""))) return [];
-		const directBudget = job["timeout-minutes"];
-		const direct = typeof directBudget === "number" ? [directBudget] : [];
-		const matrix = (job.strategy?.matrix?.include ?? []).flatMap((entry) => {
-			const budget = entry.timeout_minutes;
-			return typeof budget === "number" ? [budget] : [];
-		});
-		return [...direct, ...matrix];
-	});
-	assert.ok(jobBudgetsMinutes.length > 0, "test.yml must declare npm-installing job timeout budgets");
-	const smallestJobBudgetMs = Math.min(...jobBudgetsMinutes) * 60_000;
-	const stalledRequestBudgetMs = fetchTimeoutMs * (fetchRetries + 1) + retryMaxTimeoutMs * fetchRetries;
-	assert.ok(
-		stalledRequestBudgetMs < smallestJobBudgetMs,
-		`one stalled npm request can consume ${stalledRequestBudgetMs}ms, not below the smallest npm-installing CI job cap (${smallestJobBudgetMs}ms)`,
-	);
 });
 
 test("global setups isolate Herdr and provide artifacts and native bindings to every project", async () => {
@@ -278,199 +224,12 @@ test("SQLite selectors resolve on either runtime and their tests cannot silently
 	};
 	assert.equal(manifest.scripts.test, "vitest --run");
 	assert.ok(manifest.scripts["test:bun"] === undefined, "the Bun-hosted half must not come back");
-	assert.doesNotMatch(await readText(join(root, ".github/workflows/test.yml")), /test:bun/u);
 });
 
-test("active CI workflows contain no removed Cursor builtin smoke checks", async () => {
-	for (const path of [join(root, ".github/workflows/test.yml"), publishPath]) {
-		assert.doesNotMatch(await readText(path), /builtin\/cursor/iu, path);
-	}
-});
-
-test("binary staging and every release smoke verify the exact builtin directory set", async () => {
-	const checker = /scripts\/assert-builtin-set\.ts/u;
-	const testWorkflow = await readText(join(root, ".github/workflows/test.yml"));
-	const publishWorkflow = await readText(publishPath);
+test("binary staging verifies the exact builtin directory set", async () => {
 	const buildScript = await readText(join(root, "scripts/build-binaries.sh"));
 
-	// Both smoke steps now live in the release-archive job. Anchor on the job so
-	// the assertion does not depend on which step happens to follow them.
-	const archiveSteps = jobSteps(jobBlock(testWorkflow, "release-archive", "static-checks"));
-	for (const platform of ["Linux", "Windows"]) {
-		assert.match(namedStep(archiveSteps, `Smoke test ${platform} release archive`), checker);
-	}
-	assert.equal(testWorkflow.split("scripts/assert-builtin-set.ts").length - 1, 2);
-	assert.match(jobBlock(publishWorkflow, "linux-binary-smoke", "windows-binary-smoke"), checker);
-	assert.match(jobBlock(publishWorkflow, "windows-binary-smoke", "build"), checker);
-	assert.match(jobBlock(publishWorkflow, "build", "stage-github-release"), checker);
-	assert.equal(publishWorkflow.split("scripts/assert-builtin-set.ts").length - 1, 3);
 	assert.match(buildScript, /assert-builtin-set\.ts "binaries\/\$platform\/builtin"/u);
-});
-
-test("publish workflow has direct tag and recovery triggers", async () => {
-	const workflow = await readText(publishPath);
-	assert.match(workflow, /push:\s*\n\s*tags:/);
-	assert.match(workflow, /"\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*"/);
-	assert.match(
-		workflow,
-		/workflow_dispatch:\s*\n\s*inputs:\s*\n\s*tag:[\s\S]*required: true[\s\S]*source_ref:[\s\S]*required: false/,
-	);
-	assert.match(
-		workflow,
-		/SOURCE_REF: \$\{\{ github\.event\.inputs\.source_ref \|\| github\.event\.inputs\.tag \|\| github\.ref_name \}\}/,
-	);
-	assert.doesNotMatch(workflow, /workflow_run:|create:|repository_dispatch:/);
-});
-
-test("publish workflow uses one lightweight integrity gate", async () => {
-	const workflow = await readText(publishPath);
-	const integrity = jobBlock(workflow, "integrity", "native-artifacts");
-	assert.equal([...workflow.matchAll(/^ {2}integrity:$/gmu)].length, 1);
-	assert.match(integrity, /ref: \$\{\{ env\.RELEASE_TAG \}\}/);
-	assert.match(integrity, /packages\/coding-agent\/package\.json/);
-	assert.match(integrity, /Package version \$version does not match tag \$RELEASE_TAG/);
-	assert.match(integrity, /subject.*git show -s --format=%s/);
-	assert.match(integrity, /Release \$RELEASE_TAG/);
-	assert.doesNotMatch(
-		integrity,
-		/Release-base-|merge-base|workflow_ref|workflow_sha|git archive|bump-version|generate-coding-agent-shrinkwrap/iu,
-	);
-});
-
-test("publish graph stages a draft before npm and undrafts last", async () => {
-	const workflow = await readText(publishPath);
-	for (const job of [
-		"integrity",
-		"native-artifacts",
-		"linux-binary-smoke",
-		"windows-binary-smoke",
-		"alpine-binary-smoke",
-		"build",
-		"stage-github-release",
-		"publish-npm",
-		"publish-github-release",
-		"register-published-version",
-		"cleanup-draft-github-release",
-	]) {
-		assert.match(workflow, new RegExp(`^  ${job}:$`, "mu"));
-	}
-	assert.match(
-		jobBlock(workflow, "build", "stage-github-release"),
-		/needs: \[integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke\]/,
-	);
-	const stage = jobBlock(workflow, "stage-github-release", "publish-npm");
-	assert.match(stage, /needs: \[integrity, build\]/);
-	assert.match(stage, /already published.*Refusing to mutate[\s\S]*--verify-tag --draft/s);
-	assert.match(
-		jobBlock(workflow, "publish-npm", "publish-github-release"),
-		/needs: \[integrity, stage-github-release\]/,
-	);
-	assert.match(
-		jobBlock(workflow, "publish-github-release", "register-published-version"),
-		/needs: \[stage-github-release, publish-npm\][\s\S]*--draft=false/,
-	);
-	assert.match(
-		jobBlock(workflow, "register-published-version", "cleanup-draft-github-release"),
-		/needs: \[integrity, publish-github-release\]/,
-	);
-	assert.match(
-		jobBlock(workflow, "cleanup-draft-github-release"),
-		/always\(\).*needs\.stage-github-release\.result != 'skipped'.*needs\.publish-npm\.result != 'success'/,
-	);
-	assert.doesNotMatch(jobBlock(workflow, "cleanup-draft-github-release"), /register-published-version/);
-});
-
-test("publish permissions, timeouts, runners, and OIDC are least privilege", async () => {
-	const workflow = await readText(publishPath);
-	assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /permissions:\s*\n\s*contents: read/);
-	const npm = jobBlock(workflow, "publish-npm", "publish-github-release");
-	assert.match(npm, /environment: npm-publish/);
-	assert.match(npm, /permissions:\s*\n\s*contents: read\s*\n\s*id-token: write/);
-	assert.doesNotMatch(npm, /contents: write/);
-	assert.match(npm, /npm publish .*--provenance.*--tag "\$NPM_TAG"/);
-	assert.match(npm, /npm view .*@\$VERSION.*already exists; skipping/s);
-	for (const writeJob of [
-		jobBlock(workflow, "stage-github-release", "publish-npm"),
-		jobBlock(workflow, "publish-github-release", "register-published-version"),
-		jobBlock(workflow, "cleanup-draft-github-release"),
-	]) {
-		assert.match(writeJob, /contents: write/);
-		assert.match(writeJob, /GH_REPO: \$\{\{ github\.repository \}\}/);
-		assert.doesNotMatch(writeJob, /id-token: write|npm publish/);
-	}
-	const register = jobBlock(workflow, "register-published-version", "cleanup-draft-github-release");
-	assert.match(register, /permissions:\s*\n\s*contents: read\s*\n\s*id-token: write/);
-	assert.doesNotMatch(register, /contents: write|environment:/);
-	// The registration Worker never checks runner_environment, so this job runs on
-	// Namespace and installs the Node its `node -e` URL check needs.
-	assert.match(register, /runs-on: nscloud-ubuntu-24\.04-amd64-4x16/);
-	assert.match(register, /uses: actions\/setup-node@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+node-version: 22\n/u);
-	assert.match(register, /set \+x/);
-	assert.match(register, /::add-mask::/);
-	assert.match(
-		register,
-		/https%3A%2F%2Fatomic-version-adoption\.bastani-atomic\.workers\.dev%2Fv1%2Fpublished-versions/,
-	);
-	assert.match(register, /--max-redirs 0/);
-	assert.doesNotMatch(register, /\s-L\s|curl -[^\n]*L/);
-	assert.match(register, /max_attempts=3/);
-	assert.match(register, /oidc_code=000/);
-	assert.match(register, /http_code=000/);
-	assert.match(register, /type == "string"/);
-	assert.match(register, /OIDC token acquisition failed/);
-	assert.doesNotMatch(register, /curl --fail/);
-	assert.match(register, /needs\.integrity\.outputs\.version/);
-	assert.match(register, /set -euo pipefail/);
-	assert.match(register, /new URL/);
-	assert.match(register, /actions\.githubusercontent\.com/);
-	assert.match(register, /OIDC request URL is not a GitHub Actions token endpoint/);
-	assert.doesNotMatch(register, /\[\[ "\$request_url" == https:\/\/\* \]\]/);
-	assert.equal([...workflow.matchAll(/^ {4}timeout-minutes:/gmu)].length, 11);
-	assert.match(workflow, /nscloud-ubuntu-24\.04-arm64-4x16/);
-	assert.doesNotMatch(workflow, /macos-26-intel/);
-	assert.match(workflow, /namespace-profile-atomic-release-macos-arm64-6x14/);
-	assert.match(workflow, /nscloud-windows-2022-amd64-4x16/);
-});
-
-test("native release matrix pins all shipped targets and the Linux glibc floor", async () => {
-	const workflow = await readText(publishPath);
-	const native = jobBlock(workflow, "native-artifacts", "linux-binary-smoke");
-	for (const target of [
-		"x86_64-unknown-linux-gnu",
-		"aarch64-unknown-linux-gnu",
-		"x86_64-apple-darwin",
-		"x86_64-unknown-linux-musl",
-		"aarch64-unknown-linux-musl",
-		"aarch64-apple-darwin",
-		"x86_64-pc-windows-msvc",
-		"aarch64-pc-windows-msvc",
-	])
-		assert.match(native, new RegExp(target));
-	assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /GLIBC_FLOOR: "2\.17"/);
-	assert.match(
-		native,
-		/\[\[ "\$BARE_TARGET" != \*-unknown-linux-gnu \]\] \|\| build_target="\$\{BARE_TARGET\}\.\$\{GLIBC_FLOOR\}"/u,
-	);
-	assert.doesNotMatch(native, /linux-musl[^\n]*GLIBC_FLOOR/u);
-	assert.match(native, /toolchain: 1\.97\.0/);
-	assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /RUSTUP_TOOLCHAIN: "1\.97\.0"/);
-	assert.match(native, /NATIVE_TARGET: \$\{\{ matrix\.platform == 'darwin' && matrix\.target \|\| '' \}\}/);
-	assert.match(native, /CROSS_TARGET: \$\{\{ matrix\.platform != 'darwin'/);
-	assert.match(native, /cargo-zigbuild/);
-	assert.match(native, /RUSTFLAGS=-C target-cpu=x86-64-v2/);
-	assert.match(native, /fail-fast: false/);
-	assert.match(native, /name: atomic-natives-\$\{\{ matrix\.slug \}\}/u);
-	assert.doesNotMatch(native, /macos-26-intel/);
-	assert.match(native, /namespace-profile-atomic-release-macos-arm64-6x14/);
-	assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup/iu);
-	// The job may cache third-party toolchain acquisitions and nothing else.
-	// Caching Cargo build output would make a provenance-signed artifact depend
-	// on restored build state.
-	assert.doesNotMatch(native, /rust-cache|sccache|CARGO_TARGET_DIR/iu);
-	assert.deepEqual(
-		[...native.matchAll(/^\s+path: (\S+)$/gmu)].map(([, value]) => value),
-		["|", "~/.cache/cargo-xwin", "packages/natives/native/*.node"],
-	);
 });
 
 interface MuslSmokeProbe {
@@ -593,18 +352,8 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 	}
 });
 
-test("Alpine smoke covers both musl archives on stock Alpine without runtime package installation", async () => {
-	const [workflow, smoke] = await Promise.all([
-		readText(publishPath),
-		readText(join(root, "scripts/test-musl-release-archive.sh")),
-	]);
-	const alpine = jobBlock(workflow, "alpine-binary-smoke", "build");
-	assert.match(alpine, /needs: \[integrity, native-artifacts\]/u);
-	assert.match(alpine, /atomic-natives-\$\{\{ matrix\.slug \}\}/u);
-	assert.match(alpine, /linux-x64-musl[\s\S]*linux-arm64-musl/u);
-	assert.match(alpine, /nscloud-ubuntu-24\.04-amd64-4x16[\s\S]*nscloud-ubuntu-24\.04-arm64-4x16/u);
-	assert.match(alpine, /test-musl-release-archive\.sh/u);
-	assert.doesNotMatch(alpine, /apk add/u);
+test("musl smoke uses stock Alpine without runtime package installation", async () => {
+	const smoke = await readText(join(root, "scripts/test-musl-release-archive.sh"));
 	assert.match(smoke, /alpine:3\.22/u);
 	assert.match(smoke, /docker run --rm --platform/u);
 	assert.match(smoke, /atomic --version|"\$atomic" --version/u);
@@ -612,32 +361,6 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(smoke, /\/bin\/sh \/smoke\/smoke\.sh/u);
 	assert.match(smoke, /app\.js[\s\S]*builtin[\s\S]*node_modules/u);
 	assert.doesNotMatch(smoke, /apk add/u);
-	const nativeLoad = namedStep(jobSteps(alpine), "Load the musl native binding under musl libc");
-	assert.match(nativeLoad, /^name: Load the musl native binding under musl libc$/mu);
-	assert.match(nativeLoad, /node:22-alpine/u);
-	assert.match(nativeLoad, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
-	assert.match(nativeLoad, /\["glob", "grep"\]/u);
-	assert.match(nativeLoad, /typeof binding\[name\] !== "function"/u);
-});
-
-test("release packaging stages PostgreSQL in all eight native leaves and validates packed payloads", async () => {
-	const workflow = await readText(publishPath);
-	const build = jobBlock(workflow, "build", "stage-github-release");
-	for (const command of [
-		"linux-x64 packages/natives/npm/linux-x64-gnu",
-		"linux-arm64 packages/natives/npm/linux-arm64-gnu",
-		"darwin-x64 packages/natives/npm/darwin-x64",
-		"darwin-arm64 packages/natives/npm/darwin-arm64",
-		"windows-x64 packages/natives/npm/win32-x64-msvc",
-		"linux-x64-musl packages/natives/npm/linux-x64-musl",
-		"linux-arm64-musl packages/natives/npm/linux-arm64-musl",
-		"windows-arm64 packages/natives/npm/win32-arm64-msvc",
-	]) {
-		assert.match(build, new RegExp(`node scripts/stage-postgres-runtime\\.mjs ${command}`, "u"));
-	}
-	assert.match(build, /@bastani\/atomic-natives-\*/u);
-	assert.match(build, /package\/postgres-runtime\/POSTGRESQL-LICENSE/u);
-	assert.match(build, /stage-postgres-runtime\.mjs.*--validate/u);
 });
 
 test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {
@@ -651,57 +374,11 @@ test("musl archive build bundles pinned C++ runtimes and patches payload-local s
 	assert.match(buildScript, /\$ORIGIN/u);
 });
 
-test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
-	const workflow = await readText(publishPath);
-	assert.match(workflow, /"win32-arm64-msvc"/);
-	assert.match(workflow, /atomic-windows-arm64\.zip/);
-	assert.match(workflow, /npm run check:shrinkwrap/);
-	assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
-	assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
-	// Bun 1.4.0 Windows bytecode launchers crash unless compiled on a Windows
-	// host, so the Windows runner builds both shipped archives and the Linux
-	// payload build must not compile Windows targets itself.
-	assert.match(workflow, /Build Windows arm64 archive[\s\S]*--platform windows-arm64/);
-	assert.match(workflow, /Build release archives\n\s+run: \.\/scripts\/build-binaries\.sh [^\n]*--skip-windows/);
-	assert.match(workflow, /name: atomic-windows-archives/);
-	assert.match(
-		jobBlock(workflow, "build", "stage-github-release"),
-		/Stage Windows-built release archives[\s\S]*name: atomic-windows-archives[\s\S]*path: packages\/coding-agent\/binaries/,
-	);
-	assert.match(workflow, /Failed to load extension/);
-	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
-	assert.match(workflow, /test .* = 11/u);
-	assert.match(workflow, /Build Linux musl archive[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"/u);
-	assert.match(workflow, /Verify installed musl archive tooling[\s\S]*patchelf/u);
-	assert.doesNotMatch(
-		workflow,
-		/Release-base-ref|Release-base-sha|RELEASE_BASE_REFS|deterministic release tree|create-event binding/iu,
-	);
-});
-
-test("obsolete release workflow files and publisher-only verifiers are absent", () => {
-	for (const path of [
-		".github/workflows/publish" + "-tag-created.yml",
-		".github/workflows/publish" + "-release.yml",
-		"scripts/verify" + "-publish-context.ts",
-		"scripts/verify" + "-release-integrity.ts",
-	])
+test("obsolete publisher-only verifiers are absent", () => {
+	for (const path of ["scripts/verify" + "-publish-context.ts", "scripts/verify" + "-release-integrity.ts"])
 		assert.equal(existsSync(join(root, path)), false, path);
 });
 
-test("developer release setup documents only the direct publish workflow", async () => {
-	const setup = await readText(join(root, "DEV_SETUP.md"));
-	assert.match(setup, /tag push starts `\.github\/workflows\/publish\.yml` directly/u);
-	assert.match(setup, /trusted publishers with workflow filename `publish\.yml` and environment `npm-publish`/u);
-	for (const forbidden of [
-		"publish" + "-tag-created.yml",
-		"publish" + "-release.yml",
-		"RELEASE" + "_BASE_REFS",
-		"NPM" + "_TOKEN",
-		"NODE" + "_AUTH_TOKEN",
-	])
-		assert.equal(setup.includes(forbidden), false, forbidden);
-});
 test("release-base metadata remains available to the versionless cut flow", () => {
 	const sha = "0123456789abcdef0123456789abcdef01234567";
 	assert.equal(canonicalReleaseBaseRef("main"), "refs/heads/main");
@@ -724,538 +401,7 @@ test("cut-release still creates the detached version-stamped tag", async () => {
 	assert.doesNotMatch(script, /Bun\.sleep|setTimeout/);
 });
 
-/**
- * Run 30517879019 (`Publish 0.9.11-alpha.8`) spent 13m27s inside one stalled
- * Zig mirror, was cancelled by the blanket 15-minute job cap 8s after its
- * artifact upload had already succeeded, and the cancelled `needs` dependency
- * then skipped the payload build, the draft, npm, and the release. A job cap
- * cannot detect that; only a bound on the acquisition step itself can.
- */
-test("native-artifacts bounds every dependency acquisition step", async () => {
-	const native = jobBlock(await readText(publishPath), "native-artifacts", "linux-binary-smoke");
-	const steps = jobSteps(native);
-	const budget = (needle: string): number => {
-		const matches = steps.filter((step) => step.includes(needle));
-		assert.equal(matches.length, 1, `expected exactly one step containing: ${needle}`);
-		const bound = /^\s*timeout-minutes: (\d+)$/mu.exec(matches[0] as string);
-		assert.ok(bound, `unbounded acquisition step: ${needle}`);
-		return Number(bound[1]);
-	};
-	assert.equal(budget("tool: cargo-zigbuild@"), 3);
-	assert.equal(budget("tool: cargo-xwin@"), 3);
-	assert.equal(budget("Select installed Windows cross-compile tooling"), 1);
-	assert.equal(budget("cargo-xwin xwin cache xwin"), 8);
-
-	// The rustup fetch that killed both 0.9.16-alpha.5 publish runs overran this
-	// same 4-minute cap. The curl inside the action already retries, so a second
-	// attempt on a fresh step clock is the only thing that helps — and it has to
-	// stay bounded, or the retry reintroduces the stall the cap exists to stop.
-	const rustSteps = steps.filter((step) => step.includes("uses: dtolnay/rust-toolchain@"));
-	assert.equal(rustSteps.length, 2, "the Rust toolchain acquisition must keep exactly one bounded retry");
-	const [rust, rustRetry] = rustSteps as [string, string];
-	assert.match(
-		rust,
-		/id: rust\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+continue-on-error: true\n\s+timeout-minutes: 4\n/u,
-	);
-	assert.match(
-		rustRetry,
-		/if: steps\.rust\.outcome == 'failure'\n\s+uses: dtolnay\/rust-toolchain@\w{40} # v1\n\s+timeout-minutes: 4\n/u,
-	);
-
-	const zigSteps = steps.filter((step) => step.includes("mlugg/setup-zig@"));
-	assert.equal(zigSteps.length, 2, "the Zig acquisition must keep exactly one bounded retry");
-	const [zig, retry] = zigSteps as [string, string];
-	assert.match(
-		zig,
-		/id: zig\n\s+if: matrix\.platform == 'linux'\n\s+continue-on-error: true\n\s+timeout-minutes: 2\n/u,
-	);
-	assert.match(retry, /if: matrix\.platform == 'linux' && steps\.zig\.outcome == 'failure'\n\s+timeout-minutes: 2\n/u);
-	for (const step of zigSteps) {
-		// The tool cache is copied into an ephemeral VM, and the global Zig cache
-		// has never been read back on a release tag. Disabling both also keeps a
-		// killed attempt's post step inert so the retry adds no failure mode.
-		assert.match(step, /use-tool-cache: false/u);
-		assert.match(step, /use-cache: false/u);
-	}
-
-	for (const step of steps) {
-		if (!/uses: (dtolnay|mlugg|taiki-e)\//u.test(step)) continue;
-		assert.match(step, /timeout-minutes: \d+/u, `unbounded acquisition step:\n${step}`);
-	}
-});
-
-/**
- * Every job clones through `actions/checkout`. The Namespace git mirror
- * (`nscloud-checkout-action` plus an `nscloud-git-mirror-*` label) is a cache
- * volume that any successful job commits, pull-request jobs included, and a
- * checkout reads the mirror's objects through git alternates. Namespace does not
- * document whether branch-restricted commit labels cover the mirror, so no job
- * uses it; docs/ci.md ("Checkout and cache trust model") records the decision.
- * One unconditional clone also retires the Linux/non-Linux checkout pair that
- * Blacksmith's Linux-only sticky disk needed.
- */
-test("every job checks out through actions/checkout, never a runner-vendor mirror", async () => {
-	const testJobs = new Map(jobBlocks(await readText(testPath)));
-	for (const file of await workflowFiles()) {
-		const workflow = await readText(join(workflowDir, file));
-		assert.doesNotMatch(workflow, /useblacksmith\/|nscloud-checkout-action|nscloud-git-mirror-/u, file);
-		for (const [name, block] of jobBlocks(workflow)) {
-			const checkouts = jobSteps(block).filter((step) => /uses: [\w.-]+\/checkout@/u.test(step));
-			for (const step of checkouts) {
-				assert.match(step, /^uses: actions\/checkout@[0-9a-f]{40} # v/u, `${file} ${name}`);
-				assert.doesNotMatch(step, /^\s+if:/mu, `${file} ${name}: the checkout no longer depends on the OS`);
-			}
-			assert.ok(checkouts.length <= 1, `${file} ${name} checks out more than once`);
-		}
-	}
-	// Every work job in test.yml still clones full history with LFS fixtures, and
-	// the result gate checks out nothing at all.
-	for (const job of ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"]) {
-		const block = testJobs.get(job) as string;
-		assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n(?:\s+#[^\n]*\n)*\s+with:/u, job);
-		assert.match(block, /^\s+lfs: true$/mu, job);
-		assert.match(block, /^\s+fetch-depth: 0$/mu, job);
-	}
-	assert.doesNotMatch(testJobs.get("test") as string, /checkout/u);
-});
-
-test("every third-party action is pinned to a full commit SHA with a version comment", async () => {
-	for (const file of await workflowFiles()) {
-		const path = join(workflowDir, file);
-		const workflow = await readText(path);
-		const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)(.*)$/gmu)];
-		assert.ok(uses.length > 0, `${path} declares no actions`);
-		for (const [, action, trailer] of uses) {
-			assert.match(
-				action as string,
-				/^[\w.-]+\/[\w.-]+(?:\/[\w.-]+)*@[0-9a-f]{40}$/u,
-				`${path}: ${action} is not SHA-pinned`,
-			);
-			assert.match(trailer as string, /^ # v?[\w.-]+$/u, `${path}: ${action} needs a version comment`);
-		}
-	}
-});
-
-test("the shipped build toolchain and Bun do not float", async () => {
-	const publish = await readText(publishPath);
-	const warm = await readText(warmPath);
-	for (const workflow of [publish, warm]) {
-		for (const [, tool] of workflow.matchAll(/^\s+tool: (\S+)$/gmu)) {
-			assert.match(tool as string, /^cargo-(zigbuild|xwin)@\d+\.\d+\.\d+$/u, `floating build tool: ${tool}`);
-		}
-	}
-	const bunVersions = new Set(
-		[...`${publish}\n${await readText(testPath)}`.matchAll(/bun-version: (\S+)/gu)].map(
-			([, value]) => value as string,
-		),
-	);
-	assert.deepEqual([...bunVersions], ["1.4.2"], "test.yml and publish.yml must exercise one pinned Bun");
-});
-
-test("each native leg declares its own measured job and compile budget", async () => {
-	const native = jobBlock(await readText(publishPath), "native-artifacts", "linux-binary-smoke");
-	assert.match(native, /^ {4}timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}$/mu);
-	assert.match(
-		native,
-		/- name: Build native binding\n\s+id: native_build\n\s+continue-on-error: true\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u,
-	);
-	assert.match(
-		native,
-		/- name: Retry native binding\n\s+if: steps\.native_build\.outcome == 'failure'\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u,
-	);
-	const buildSteps = jobSteps(native).filter((step) => /(?:Build|Retry) native binding/u.test(step));
-	assert.deepEqual(
-		buildSteps.map((step) => /^name: .+$/mu.exec(step)?.[0]),
-		["name: Build native binding", "name: Retry native binding"],
-	);
-	assert.equal(
-		[...native.matchAll(/timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/gu)].length,
-		2,
-		"both native compile attempts need their own bounded timeout",
-	);
-	assert.match(buildSteps[0] as string, /continue-on-error: true/u);
-	assert.doesNotMatch(buildSteps[1] as string, /continue-on-error/u);
-	const legMatches = [
-		...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu),
-	];
-	const legs = legMatches.map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
-	assert.deepEqual(legs, [
-		"linux x64 16/5",
-		"linux arm64 17/5",
-		"linux x64 17/5",
-		"linux arm64 18/5",
-		"darwin x64 19/8",
-		"darwin arm64 12/5",
-		"win32 x64 20/5",
-		"win32 arm64 20/5",
-	]);
-	// A cap sized on a green run's setup cancels the job mid-retry, which is the
-	// failure the retry exists to survive. Every leg must still contain the bounded
-	// recovery paths it owns: both zig attempts (linux), the CRT populate bound
-	// (win32), two compile attempts, and the artifact upload.
-	const RESERVED_BOUND_MINUTES: Record<string, number> = { linux: 2 + 2, win32: 8, darwin: 0 };
-	const UPLOAD_RESERVE_MINUTES = 1;
-	for (const [, platform, arch, job, build] of legMatches) {
-		const floor = (RESERVED_BOUND_MINUTES[platform as string] ?? 0) + 2 * Number(build) + UPLOAD_RESERVE_MINUTES;
-		assert.ok(
-			Number(job) >= floor,
-			`${platform} ${arch} job cap ${job} cannot contain its bounded recovery path (needs >= ${floor})`,
-		);
-	}
-	// No leg may fall back to the former blanket cap.
-	assert.doesNotMatch(native, /timeout-minutes: 15/u);
-});
-
-test("the toolchain warm workflow stays read-only, gated, and key-compatible", async () => {
-	const warm = await readText(warmPath);
-	const publish = await readText(publishPath);
-	assert.match(warm, /permissions:\s*\n\s*contents: read/u);
-	assert.doesNotMatch(warm, /contents: write|id-token: write|npm publish|gh release|upload-artifact/u);
-	// Gated: whether a refs/tags/* run reads a refs/heads/main entry in GitHub's
-	// Actions cache is documented but unverified here, so the daily schedule
-	// lands only after the docs/ci.md experiment observes a hit.
-	assert.match(warm, /^on:\n {2}workflow_dispatch:\n/mu);
-	assert.doesNotMatch(warm, /\n\s+schedule:/u);
-	const key = /key: (xwin-v\d+-\$\{\{ matrix\.arch \}\}-\d+)/u;
-	assert.equal(key.exec(warm)?.[1], key.exec(publish)?.[1], "warm and release CRT cache keys must match");
-	const zigVersion = /uses: mlugg\/setup-zig@[^\n]*\n\s+with:\n\s+version: (\S+)/u;
-	assert.equal(zigVersion.exec(warm)?.[1], zigVersion.exec(publish)?.[1], "warm and release Zig versions must match");
-	assert.match(await readText(join(root, "docs/ci.md")), /xwin-v1/u);
-});
-
-type MatrixEntry = Record<string, string | number | boolean>;
-
-interface WorkflowMatrix {
-	include?: MatrixEntry[];
-	[key: string]: string[] | MatrixEntry[] | undefined;
-}
-
-interface WorkflowJob {
-	"runs-on"?: string | string[];
-	"timeout-minutes"?: number | string;
-	strategy?: { matrix?: WorkflowMatrix };
-	steps?: { run?: string }[];
-}
-
-/** The `on:` block: one event, a list of events, or events keyed to their filters. */
-type WorkflowTriggers = string | string[] | Record<string, object | null>;
-
-interface Workflow {
-	on?: WorkflowTriggers;
-	jobs?: Record<string, WorkflowJob>;
-}
-
-/**
- * Events that run a pull request's code, fork pull requests included. The
- * review events check out the pull request's merge ref like `pull_request`,
- * and `merge_group` runs the queued pull request's changes.
- */
-const PULL_REQUEST_EVENTS = new Set([
-	"pull_request",
-	"pull_request_target",
-	"pull_request_review",
-	"pull_request_review_comment",
-	"merge_group",
-]);
-
-/** Whether a workflow can run pull-request code, detected from its `on:` block rather than a file list. */
-function runsPullRequestCode(file: string, workflow: Workflow): boolean {
-	const on = workflow.on;
-	assert.ok(on !== undefined, `${file}: declares no triggers`);
-	const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : Object.keys(on);
-	return events.some((event) => PULL_REQUEST_EVENTS.has(event));
-}
-
-/**
- * Every label set a job's `runs-on` can resolve to, one per matrix leg.
- *
- * `runs-on: ${{ matrix.<key> }}` is resolved through the job's own matrix. Reading
- * the literal alone would let `matrix: { os: [ubuntu-24.04] }` pick an unapproved
- * GitHub-hosted runner that no contract here ever sees.
- */
-function runsOnLabelSets(label: string, job: NonNullable<Workflow["jobs"]>[string]): string[][] {
-	const runsOn = job["runs-on"] ?? [];
-	const entries = (typeof runsOn === "string" ? [runsOn] : runsOn).map((value) => {
-		const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/u.exec(value)?.[1];
-		if (key === undefined) {
-			// An expression this cannot resolve must not pass as a literal runner name.
-			assert.doesNotMatch(value, /\$\{\{/u, `${label}: unresolvable runs-on ${value}`);
-			return [value];
-		}
-		const matrix = job.strategy?.matrix ?? {};
-		const values = [...(matrix[key] ?? []), ...(matrix.include ?? []).map((entry) => entry[key])].filter(
-			(entry): entry is string => typeof entry === "string",
-		);
-		assert.ok(values.length > 0, `${label}: matrix.${key} names no runner`);
-		return values;
-	});
-	assert.ok(entries.length > 0, `${label}: declares no runs-on`);
-	return entries.reduce<string[][]>(
-		(sets, values) => sets.flatMap((set) => values.map((value) => [...set, value])),
-		[[]],
-	);
-}
-
-/** Any inline Namespace machine label: `nscloud-{os}-{arch}-{shape}[-with-*]`. */
-const NAMESPACE_MACHINE_LABEL = /^nscloud-(?:ubuntu|windows|macos)-/u;
-
-/** Any Namespace runner profile label: `namespace-profile-{tag}`. */
-const NAMESPACE_PROFILE_LABEL = /^namespace-profile-/u;
-
-/**
- * The repository runner profiles a pull-request-capable workflow may run on.
- * Fork code on an inline `nscloud-*` label receives a Namespace workload token
- * with the default Permissive access. Access Level is profile-only, so every
- * such job runs on one of these profiles, each of which must be set to
- * Restricted in the Namespace dashboard. The machine shape lives in the profile,
- * not here: resizing means changing the profile, docs/ci.md ("Runner
- * profiles"), and this allowlist together.
- */
-const APPROVED_PULL_REQUEST_PROFILES: Record<string, { os: "linux" | "windows"; shape: string }> = {
-	"namespace-profile-atomic-ci-linux-amd64-4x16": { os: "linux", shape: "4x16" },
-	"namespace-profile-atomic-ci-linux-amd64-8x16": { os: "linux", shape: "8x16" },
-	"namespace-profile-atomic-ci-windows-amd64-4x16": { os: "windows", shape: "4x16" },
-	"namespace-profile-atomic-ci-windows-amd64-8x16": { os: "windows", shape: "8x16" },
-};
-
-const MACOS_RELEASE_PROFILE = "namespace-profile-atomic-release-macos-arm64-6x14";
-const APPROVED_RELEASE_PATH_RUNNERS = new Set([
-	"nscloud-ubuntu-24.04-amd64-4x16",
-	"nscloud-ubuntu-24.04-arm64-4x16",
-	"nscloud-windows-2022-amd64-4x16",
-	MACOS_RELEASE_PROFILE,
-]);
-
-/** The jobs whose measured 4-vCPU CPU load justified 8 vCPU (docs/ci.md, "Sizing"). */
-const MEASURED_8_VCPU_JOBS = new Set(["test.yml unit-tests", "test.yml integration-tests", "test.yml agent-suite"]);
-
-/**
- * The only jobs that stay GitHub-hosted, each for a reason a future "move
- * everything to Namespace" pass must not quietly undo. docs/ci.md carries the
- * citations. Neither is in a pull-request-capable workflow.
- */
-const GITHUB_HOSTED_EXCEPTIONS: Record<string, { runner: string; reason: string }> = {
-	"publish.yml publish-npm": {
-		runner: "ubuntu-latest",
-		reason:
-			"npm trusted publishing and provenance reject runner_environment=self-hosted, which Namespace runners report",
-	},
-};
-
-test("pull-request workflows run on Restricted profiles and the release path on approved Namespace labels", async () => {
-	const publish = await readText(publishPath);
-	const hosted: string[] = [];
-	const pullRequestWorkflows: string[] = [];
-	const usedProfiles = new Set<string>();
-	for (const file of await workflowFiles()) {
-		const workflow = parseYaml(await readText(join(workflowDir, file))) as Workflow;
-		const pullRequestCapable = runsPullRequestCode(file, workflow);
-		if (pullRequestCapable) pullRequestWorkflows.push(file);
-		for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
-			const label = `${file} ${name}`;
-			for (const set of runsOnLabelSets(label, job)) {
-				const machines = set.filter(
-					(entry) => NAMESPACE_MACHINE_LABEL.test(entry) || NAMESPACE_PROFILE_LABEL.test(entry),
-				);
-				// Namespace refuses to schedule a job whose runs-on names two machine labels.
-				assert.ok(machines.length <= 1, `${label}: more than one Namespace machine label in ${set.join(", ")}`);
-				if (pullRequestCapable) {
-					const profile = machines[0] ?? "";
-					assert.ok(
-						Object.hasOwn(APPROVED_PULL_REQUEST_PROFILES, profile),
-						`${label}: a pull-request workflow must run on an approved Restricted profile, not ${set.join(", ")}`,
-					);
-					if (APPROVED_PULL_REQUEST_PROFILES[profile]?.shape === "8x16") {
-						assert.ok(MEASURED_8_VCPU_JOBS.has(label), `${label}: 8 vCPU needs sizing evidence in docs/ci.md`);
-					}
-					assert.deepEqual(set, [profile], `${label}: companion labels need a docs/ci.md trust review`);
-					usedProfiles.add(profile);
-					continue;
-				}
-				if (machines.length === 1) {
-					assert.ok(
-						APPROVED_RELEASE_PATH_RUNNERS.has(machines[0] as string),
-						`${label}: unapproved release-path runner ${machines[0]}`,
-					);
-					assert.deepEqual(set, machines, `${label}: companion labels need a docs/ci.md trust review`);
-					continue;
-				}
-				const exception = GITHUB_HOSTED_EXCEPTIONS[label];
-				assert.ok(exception, `${label}: ${set.join(", ")} is GitHub-hosted without a documented exception`);
-				assert.deepEqual(
-					set,
-					[exception.runner],
-					`${label} may stay GitHub-hosted only because ${exception.reason}`,
-				);
-				hosted.push(label);
-			}
-		}
-	}
-	// Adding a pull-request-capable workflow is a trust decision, not a file drop.
-	assert.deepEqual(pullRequestWorkflows, ["codeql.yml", "test.yml"]);
-	assert.deepEqual([...usedProfiles].sort(), Object.keys(APPROVED_PULL_REQUEST_PROFILES).sort());
-	assert.deepEqual(hosted.sort(), Object.keys(GITHUB_HOSTED_EXCEPTIONS).sort());
-	assert.doesNotMatch(publish, /macos-26-intel/u);
-	assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,240}?runs-on: ubuntu-latest/u);
-	assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
-});
-
-/**
- * A new trigger that runs a contributor's revision is a trust decision too: any
- * workflow on one of these events is held to the Restricted-profile allowlist,
- * whichever shape its `on:` block takes. Release-path triggers are not.
- */
-test("every event that runs pull-request code makes a workflow pull-request-capable", () => {
-	assert.deepEqual([...PULL_REQUEST_EVENTS].sort(), [
-		"merge_group",
-		"pull_request",
-		"pull_request_review",
-		"pull_request_review_comment",
-		"pull_request_target",
-	]);
-	for (const event of PULL_REQUEST_EVENTS) {
-		for (const on of [event, ["push", event], { push: null, [event]: { types: ["opened"] } }]) {
-			assert.equal(runsPullRequestCode("synthetic.yml", { on }), true, `${event} as ${JSON.stringify(on)}`);
-		}
-	}
-	for (const on of ["push", ["push", "workflow_dispatch"], { push: { tags: ["v*"] }, schedule: null }]) {
-		assert.equal(runsPullRequestCode("synthetic.yml", { on }), false, JSON.stringify(on));
-	}
-});
-
-/**
- * Access Level is dashboard-only and cannot be read back through `nsc`, so the
- * repository cannot assert it. What it can assert is that docs/ci.md records
- * every approved profile as Restricted, and the exact command that recreates
- * each Linux profile at its approved shape.
- */
-test("docs/ci.md records every approved runner profile and how to recreate it", async () => {
-	const docs = await readText(join(root, "docs/ci.md"));
-	assert.match(docs, /Access Level[^\n]*Restricted/u);
-	assert.match(docs, /https:\/\/cloud\.namespace\.so\/workspace\/actions\/profiles/u);
-	for (const [profile, { os, shape }] of Object.entries(APPROVED_PULL_REQUEST_PROFILES)) {
-		const tag = profile.replace(NAMESPACE_PROFILE_LABEL, "");
-		assert.match(docs, new RegExp(`\\| \`${tag}\` \\|[^\\n]*\\| ${shape} \\|[^\\n]*\\| Restricted \\|`, "u"), tag);
-		if (os === "linux") {
-			assert.match(
-				docs,
-				new RegExp(
-					`nsc github profile create --tag ${tag} --os ubuntu-24\\.04 --machine_arch amd64 --machine_type ${shape} --builder_mode NO_CACHING`,
-					"u",
-				),
-				tag,
-			);
-		}
-	}
-});
-
-/**
- * Repository ruleset 9310196 still requires `test (blacksmith-4vcpu-ubuntu-2404,
- * linux-x64)` and `test (blacksmith-4vcpu-windows-2025, windows-x64)`. Those
- * strings are the only Blacksmith text allowed to survive the migration: they are
- * context identifiers in the result gate's matrix, not runner labels.
- */
-test("no Blacksmith runner, action, or comment survives outside the legacy required contexts", async () => {
-	const githubDir = join(root, ".github");
-	for (const entry of await readdir(githubDir, { recursive: true })) {
-		const path = join(githubDir, entry);
-		if (!/\.(?:ya?ml|md|json)$/u.test(entry)) continue;
-		let text = await readText(path);
-		if (path === testPath) {
-			const gateStart = text.indexOf("\n  # Result gate.");
-			assert.notEqual(gateStart, -1, "the result gate comment anchors the legacy context identifiers");
-			const gate = text.slice(gateStart);
-			for (const line of gate.split("\n").filter((candidate) => /blacksmith/iu.test(candidate))) {
-				assert.match(
-					line,
-					/^\s+(?:#.*|- test \(blacksmith-4vcpu-(?:ubuntu-2404, linux-x64|windows-2025, windows-x64)\))$/u,
-					`only the legacy context identifiers may name Blacksmith: ${line}`,
-				);
-			}
-			text = text.slice(0, gateStart);
-		}
-		assert.doesNotMatch(text, /blacksmith/iu, entry);
-	}
-});
-
-test("Namespace caches use a pinned action and releases never share PR profiles or build output", async () => {
-	const cacheAction = "namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9";
-	for (const file of await workflowFiles()) {
-		const workflow = await readText(join(workflowDir, file));
-		for (const match of workflow.matchAll(/uses: (namespacelabs\/\S+)/gu)) {
-			assert.equal(match[1], cacheAction, `${file}: unreviewed Namespace action`);
-		}
-		assert.doesNotMatch(workflow, /nscloud-(?:git-mirror|in-runner-builder)|overrides\.cache-tag/u, file);
-	}
-	for (const path of [publishPath, warmPath, join(workflowDir, "warm-macos-release-cache.yml")]) {
-		const workflow = await readText(path);
-		assert.doesNotMatch(workflow, /namespace-profile-atomic-ci-|docker (?:build|buildx)|setup-buildx/u, path);
-	}
-	const publish = await readText(publishPath);
-	const releaseCache = namedStep(
-		jobSteps(jobBlock(publish, "native-artifacts", "linux-binary-smoke")),
-		"Configure macOS release dependency cache",
-	);
-	assert.match(releaseCache, /if: matrix\.platform == 'darwin'/u);
-	assert.match(releaseCache, /cache: npm/u);
-	assert.match(releaseCache, /~\/\.cargo\/registry\n\s+~\/\.cargo\/git/u);
-	assert.doesNotMatch(releaseCache, /cache: rust|\btarget\b|node_modules/u);
-});
-
-test("Namespace caches replace duplicate npm caching after checkout and toolchain setup", async () => {
-	const workflow = await readText(testPath);
-	for (const name of ["unit-tests", "integration-tests", "agent-suite", "release-archive", "static-checks"]) {
-		const job = new Map(jobBlocks(workflow)).get(name) as string;
-		const cache = job.indexOf("uses: namespacelabs/nscloud-cache-action@");
-		assert.ok(cache > job.indexOf("uses: actions/checkout@"), name);
-		assert.ok(cache > job.indexOf("uses: actions/setup-node@"), name);
-		assert.ok(cache < job.indexOf("run: npm ci --ignore-scripts"), name);
-		assert.match(job, /node-version: 22\n\s+package-manager-cache: false/u, name);
-		if (name !== "static-checks") {
-			assert.ok(cache > job.lastIndexOf("uses: dtolnay/rust-toolchain@"), name);
-			assert.match(job, /cache: \|\n\s+npm\n\s+rust/u, name);
-		}
-	}
-});
-
-test("macOS release cache is warmed only by main and contains dependency downloads, not build outputs", async () => {
-	const warm = await readText(join(workflowDir, "warm-macos-release-cache.yml"));
-	const publish = await readText(publishPath);
-	assert.match(warm, /push:\n\s+branches: \[main\]/u);
-	assert.match(warm, /if: github\.ref == 'refs\/heads\/main'/u);
-	assert.match(warm, /permissions:\n\s+contents: read/u);
-	assert.match(warm, /persist-credentials: false/u);
-	assert.match(warm, /cargo fetch --locked --target aarch64-apple-darwin/u);
-	assert.doesNotMatch(warm, /pull_request|npm publish|cargo build|cache: rust/u);
-	assert.ok(warm.includes(`runs-on: ${MACOS_RELEASE_PROFILE}`));
-	assert.ok(publish.includes(`runner: ${MACOS_RELEASE_PROFILE}, platform: darwin`));
-	for (const pin of ["bun-version", "node-version", "toolchain"]) {
-		const pattern = new RegExp(`${pin}: (\\S+)`, "u");
-		assert.equal(pattern.exec(warm)?.[1], pattern.exec(publish)?.[1], `${pin} differs from release`);
-	}
-	const cache = namedStep(jobSteps(jobBlock(warm, "dependencies")), "Configure macOS release dependency cache");
-	assert.match(cache, /cache: npm/u);
-	assert.match(cache, /~\/\.cargo\/registry\n\s+~\/\.cargo\/git/u);
-});
-
-/**
- * Nothing local gates a push any more, so CI has to run every suite.
- *
- * The hooks used to run test:unit, test:integration and test:ci-contracts at
- * `pre-push`, which cost ~110 s on every push. Scoping that to the changed
- * surface was measured and rejected: `vitest related` took 42 s cold, 21 s warm
- * and 95 s on a third attempt to run *zero* tests on this repository. The cost is
- * vite transform and setup across three projects, not test execution, so a
- * targeted hook cannot be made cheap. `node_modules/.vite` caching helps but
- * cannot reach a floor worth paying per push.
- *
- * Two bugs — a Windows-only line-ending bug in a changelog check, and an
- * integration fixture broken by a change in the same branch — once reached CI
- * because the hooks stopped at test:unit. With no push gate at all, CI is now the
- * only thing between that class of bug and main, so this asserts the suites are
- * actually wired into the workflow rather than merely declared in package.json.
- */
-test("CI runs every test suite, because no hook gates a push", async () => {
+test("suite entry points remain available without a pre-push hook", async () => {
 	const prek = await readText(join(root, "prek.toml"));
 	assert.doesNotMatch(
 		prek,
@@ -1264,46 +410,16 @@ test("CI runs every test suite, because no hook gates a push", async () => {
 	);
 
 	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, "package.json"));
-	const workflow = await readText(testPath);
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
 		assert.ok(manifest.scripts[script], `missing script: ${script}`);
-		assert.match(
-			workflow,
-			new RegExp(String.raw`npm run ${script}`, "u"),
-			`.github/workflows/test.yml never runs \`npm run ${script}\`; with no push gate, a suite CI skips is a suite nothing runs`,
-		);
 	}
 });
 
-test("existing hardware jobs execute PostgreSQL SQL persistence gates without changing the platform matrix", async () => {
-	const workflow = await readText(publishPath);
-	for (const job of ["native-artifacts", "linux-binary-smoke", "windows-binary-smoke"]) {
-		assert.match(jobBlock(workflow, job), /smoke-postgres-runtime\.mjs/u);
-	}
+test("Alpine smoke exercises PostgreSQL SQL persistence", async () => {
 	const alpine = await readText(join(root, "scripts/test-musl-release-archive.sh"));
 	assert.match(alpine, /initdb.*-U postgres/u);
 	assert.match(alpine, /CREATE TABLE atomic_durability_probe/u);
 	assert.match(alpine, /INSERT INTO atomic_durability_probe/u);
 	assert.match(alpine, /SELECT value FROM atomic_durability_probe/u);
 	assert.match(alpine, /persisted-row/u);
-});
-
-test("Intel macOS cross-compiles on Namespace and runs x64 native and PostgreSQL smoke under Rosetta", async () => {
-	const workflow = await readText(publishPath);
-	const native = jobBlock(workflow, "native-artifacts", "linux-binary-smoke");
-	assert.ok(
-		native.includes(
-			`runner: ${MACOS_RELEASE_PROFILE}, platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin`,
-		),
-	);
-	const steps = jobSteps(native);
-	assert.match(namedStep(steps, "Verify Rosetta"), /arch -x86_64/u);
-	assert.match(namedStep(steps, "Select Intel Node"), /architecture: x64/u);
-	assert.match(namedStep(steps, "Install Intel smoke dependencies"), /npm ci --ignore-scripts --cpu=x64/u);
-	const binding = namedStep(steps, "Load Intel native binding");
-	assert.match(binding, /process\.arch, 'x64'/u);
-	assert.match(binding, /atomic_natives\.darwin-x64\.node/u);
-	const persistence = namedStep(steps, "Prove scriptless PostgreSQL persistence");
-	assert.match(persistence, /matrix\.platform == 'darwin'/u);
-	assert.ok(steps.indexOf(persistence) > steps.indexOf(binding));
 });

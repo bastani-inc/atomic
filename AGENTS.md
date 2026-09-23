@@ -37,7 +37,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 **Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
 job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces twelve
 check contexts including full Windows coverage, runs on Namespace runners, and carries
-per-job timeout budgets that `test/ci/test-workflow-topology.test.ts` asserts. Adopting pi's
+per-job timeout budgets. Adopting pi's
 topology would delete Windows coverage and orphan the two required check contexts. Parity is
 a *toolchain* goal, not a CI-topology goal.
 
@@ -54,8 +54,11 @@ are cross-compiled and smoke-tested under Rosetta, not on native Intel hardware.
 `test (blacksmith-…)`: those are legacy identifiers kept for the external ruleset, not runner
 labels. The gate also emits `test (all platforms)` so the ruleset can move to it first.
 `docs/ci.md` ("Runners") has the mapping, the profiles and their dashboard-only settings, the
-checkout/cache trust model, and the follow-ups;
-`test/ci/ci-workflow-contracts.test.ts` enforces the allowlist.
+checkout/cache trust model, and the follow-ups.
+
+Validate CI configuration through YAML parsing, actionlint, review, and actual hosted runs.
+Do not add tests that duplicate workflow YAML, including runners, matrices, cache settings,
+action pins, permissions, and required checks. Keep product and executable release-tooling tests.
 
 - TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)
 - `@sinclair/typebox` for schema definitions
@@ -176,8 +179,7 @@ vitest runs test *files* in parallel by default, and this repository deliberatel
 only passes on an idle machine is a bug in that test. Fix it where it lives: give the real
 work headroom and derive the assertion from a named constant (see `STALLED_ATTEMPT_CAP_MS` in
 `test/unit/subagents-attempt-watchdog-helpers.ts`). Do not skip it, do not serialize the
-suite, and do not shard — `test/ci/test-workflow-topology.test.ts` forbids
-`--parallel|--shard|--concurrent|--max-concurrency` for exactly this reason.
+suite, and do not shard to hide load-sensitive failures.
 
 ### Hook name compatibility
 
