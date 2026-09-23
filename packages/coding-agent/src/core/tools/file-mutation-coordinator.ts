@@ -206,53 +206,59 @@ export interface FileMutationConflictDetails {
 }
 
 interface ReasonCopy {
-	/** Why the mutation was refused. */
+	/** Why the mutation was refused, as a full sentence. */
 	readonly diagnosis: string;
-	/** What to do about it. */
-	readonly instruction: string;
+	/** What to do about it, addressed to the model and naming the path it acts on. */
+	readonly instruction: (path: string) => string;
 }
+
+const SHELL_OUTPUT_IS_NOT_A_READ =
+	"Shell output (cat, sed, head) and tags quoted in error messages do not count as reads.";
 
 /**
  * Paired so the instruction cannot contradict the diagnosis it follows.
  *
- * A single shared instruction cannot be true of all six reasons. "Read the file again" is
- * false for the two that fail precisely because the file was never read, and impossible for
+ * A single shared instruction cannot be true of all seven reasons. "Read the file again" is
+ * false for the ones that fail precisely because the file was never read, and impossible for
  * `target_missing`, where there is nothing left to read.
  */
 const REASON_COPY: Record<FileMutationConflictReason, ReasonCopy> = {
 	changed_before_write: {
-		diagnosis: "the file changed after this edit was prepared",
-		instruction: "Read the file again and rebuild this edit from what it says now; do not resend it unchanged.",
+		diagnosis: "The file changed after this edit was prepared.",
+		instruction: (path) =>
+			`Read ${path} again and rebuild the edit from its current content and tag. Do not resend the same edit.`,
 	},
 	no_prior_observation: {
-		diagnosis: "this session has not read the file it is overwriting",
-		instruction: "Read the file first, then decide whether this overwrite is still the change you want.",
+		diagnosis: `This session has not read the file it is overwriting. ${SHELL_OUTPUT_IS_NOT_A_READ}`,
+		instruction: (path) =>
+			`Read ${path} with the read tool, then decide whether this overwrite is still the change you want.`,
 	},
 	changed_since_observation: {
-		diagnosis: "the file changed since this session last read it",
-		instruction: "Read the file again and reconcile this change with what is there now.",
+		diagnosis: "The file changed since this session last read it.",
+		instruction: (path) => `Read ${path} again and reconcile this change with its current content.`,
 	},
 	target_exists: {
-		diagnosis: "the file already exists",
-		instruction: "Read the existing file and edit it in place, or write to a different path.",
+		diagnosis: "The file already exists.",
+		instruction: (path) => `Read ${path} and edit it in place, or write to a different path.`,
 	},
 	target_missing: {
-		diagnosis: "the file no longer exists",
-		instruction: "Do not read it; confirm the removal was intended, then recreate the file or drop this change.",
+		diagnosis: "The file no longer exists.",
+		instruction: () =>
+			"Do not read it. Confirm the removal was intended, then recreate the file or drop this change.",
 	},
 	target_unreadable: {
-		diagnosis: "the file still exists but could no longer be read",
-		instruction:
-			"Something replaced or locked the path rather than editing it. Inspect what is there now before retrying; a second identical edit will fail the same way.",
+		diagnosis: "The file still exists but can no longer be read.",
+		instruction: (path) =>
+			`Something replaced or locked ${path} rather than editing it. Inspect what is there before retrying; an identical edit will fail the same way.`,
 	},
 	foreign_snapshot: {
-		diagnosis: "the snapshot tag was not issued in this session",
-		instruction: "Read the file in this session to obtain a valid tag before editing it.",
+		diagnosis: `The presented tag was not issued to this session. Only read, search, write, and edit results issue tags. ${SHELL_OUTPUT_IS_NOT_A_READ}`,
+		instruction: (path) =>
+			`Read ${path} with the read tool (a line range such as ${path}:10-40 is enough), then retry with the tag and line numbers from that result. Nothing was written.`,
 	},
 };
 
-function describeRequester(requester: MutationRequester | undefined): string {
-	if (!requester) return "";
+function describeRequester(requester: MutationRequester): string {
 	const parts = [`session=${requester.sessionId}`];
 	if (requester.parentSessionId) parts.push(`parent=${requester.parentSessionId}`);
 	if (requester.workflowRunId) parts.push(`run=${requester.workflowRunId}`);
@@ -265,11 +271,11 @@ function describeRequester(requester: MutationRequester | undefined): string {
 	if (requester.subagentIndex !== undefined) parts.push(`index=${requester.subagentIndex}`);
 	if (requester.attemptId) parts.push(`attempt=${requester.attemptId}`);
 	if (requester.toolCallId) parts.push(`call=${requester.toolCallId}`);
-	return ` [${parts.join(" ")}]`;
+	return parts.join(" ");
 }
 
 /**
- * Quote an excerpt of file content for inclusion in a single-line message.
+ * Quote an excerpt of file content so it stays on its own line of the message.
  *
  * `JSON.stringify` rather than wrapping in backticks or quotes of our own: source lines
  * routinely contain both, and a template literal in a TypeScript file would otherwise close
@@ -281,13 +287,12 @@ function quoteExcerpt(text: string): string {
 	return JSON.stringify(text);
 }
 
-function describeEvidence(evidence: FileMutationConflictEvidence | undefined): string {
-	if (!evidence) return "";
+function describeEvidence(evidence: FileMutationConflictEvidence): string {
 	const span =
 		evidence.assumedLines === 1 && evidence.foundLines === 1
 			? ""
 			: ` (${evidence.assumedLines} lines replaced by ${evidence.foundLines})`;
-	const at = ` First divergence at line ${evidence.line}`;
+	const at = `line ${evidence.line}`;
 	if (evidence.assumed !== undefined && evidence.found !== undefined) {
 		return `${at}: assumed ${quoteExcerpt(evidence.assumed)}, found ${quoteExcerpt(evidence.found)}${span}.`;
 	}
@@ -297,11 +302,14 @@ function describeEvidence(evidence: FileMutationConflictEvidence | undefined): s
 	return `${at}: assumed ${quoteExcerpt(evidence.assumed ?? "")}, which is no longer present${span}.`;
 }
 
-function describeLiveState(state: FileMutationLiveState | undefined): string {
-	if (!state) return "";
-	if (!state.tag) return " The target does not exist.";
-	const first = state.firstLine ? `, starting ${quoteExcerpt(state.firstLine)}` : "";
-	return ` Target now holds ${state.lines} lines, #${state.tag}${first}.`;
+/**
+ * The live tag is labeled as unusable because it is not minted by the refusal: an agent that
+ * copies it into a retry is rejected again with the same conflict.
+ */
+function describeLiveState(state: FileMutationLiveState): string {
+	if (!state.tag) return "does not exist.";
+	const first = state.firstLine ? `, first line ${quoteExcerpt(state.firstLine)}` : "";
+	return `${state.lines} lines${first}. Current tag #${state.tag} is for comparison only; edits need a tag from your own read.`;
 }
 
 /**
@@ -334,21 +342,24 @@ export class FileMutationConflict extends Error {
 	}
 
 	/**
-	 * Ordered by what must survive truncation: the code first, then the reason and guidance,
-	 * then the divergence, and the live-state summary last. The tail is the most expendable
-	 * because it is the part a reader can always recover by opening the file.
+	 * One labeled line per concern, ordered by what must survive truncation: the code, reason,
+	 * and path first, then why and what to do, then the divergence and live state, and the
+	 * requester identity last. Identity is correlation for logs, never guidance, so it is the
+	 * most expendable part of the message for the model reading it.
 	 */
 	static formatMessage(details: FileMutationConflictDetails): string {
-		const tag = details.presentedTag ? ` (presented #${details.presentedTag})` : "";
 		const copy = REASON_COPY[details.reason];
-		const cause = details.causeCode ? ` (${details.causeCode})` : "";
-		return (
-			`${FILE_MUTATION_CONFLICT_CODE}:${details.reason} ${details.path}${tag}: ` +
-			`${copy.diagnosis}${cause}.${describeRequester(details.requester)} ` +
-			copy.instruction +
-			describeEvidence(details.evidence) +
-			describeLiveState(details.liveState)
-		);
+		const presented = details.presentedTag ? ` (presented #${details.presentedTag})` : "";
+		const cause = details.causeCode ? ` Filesystem error: ${details.causeCode}.` : "";
+		const lines = [
+			`${FILE_MUTATION_CONFLICT_CODE}:${details.reason} ${details.path}${presented}`,
+			`Why: ${copy.diagnosis}${cause}`,
+			`Next: ${copy.instruction(details.path)}`,
+		];
+		if (details.evidence) lines.push(`First divergence: ${describeEvidence(details.evidence)}`);
+		if (details.liveState) lines.push(`Live file: ${describeLiveState(details.liveState)}`);
+		if (details.requester) lines.push(`Requester: ${describeRequester(details.requester)}`);
+		return lines.join("\n");
 	}
 }
 

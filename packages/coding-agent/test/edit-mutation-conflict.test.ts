@@ -173,7 +173,7 @@ describe("edit raises a typed conflict when the file moves under a prepared patc
 		const conflict = error as FileMutationConflict;
 		expect(conflict.reason).toBe("target_unreadable");
 		expect(conflict.causeCode).toBe("EISDIR");
-		expect(conflict.message).toContain("(EISDIR)");
+		expect(conflict.message).toContain("Filesystem error: EISDIR.");
 		expect(conflict.liveState).toBeUndefined();
 		expect(conflict.message).not.toContain("does not exist");
 	});

@@ -9,6 +9,7 @@
 ### Changed
 
 - When a shell tool is available, the default system prompt now asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes: an `Assistant-workflow` trailer naming the workflow and run (or `Assistant-workflow: inline` when no workflow ran), an `Assistant-duration` trailer with measured time to converge against the estimate, and a `User-preference` trailer for durable preferences you express, tied to you by a `Co-authored-by` trailer. Before choosing between a workflow and inline work, estimating duration, or resolving ambiguity, the agent mines these records for comparable tasks with your version control system and its hosting CLI (for example `git log` and the GitHub CLI), and reports sample size, median, and range. Your own recorded preferences take priority; other contributors' preferences apply only as repository conventions when yours do not cover the situation. The history is used as a guide, not as the decision. Ask in your request, a context file, or `APPEND_SYSTEM.md` to turn off any of these records.
+- `FILE_MUTATION_CONFLICT` errors from `edit` and `write` now use one labeled line each for the problem, the next step, the first divergence, the live file, and the requester identity, instead of a single wrapped paragraph. The next step names the file to read. A rejected snapshot tag now explains that shell output and tags quoted in errors do not count as reads, and the current tag is marked as for comparison only, so agents stop retrying with it.
 
 ### Fixed
 

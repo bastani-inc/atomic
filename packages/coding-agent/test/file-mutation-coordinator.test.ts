@@ -227,7 +227,7 @@ describe("conflict message", () => {
 			liveState: computeLiveState(undefined),
 		});
 		expect(message).toContain("Do not read it");
-		expect(message).toContain("The target does not exist.");
+		expect(message).toContain("Live file: does not exist.");
 	});
 
 	it("does not claim a prior read for the reasons that fail from never having read", () => {
@@ -273,6 +273,36 @@ describe("conflict message", () => {
 		});
 		expect(message).toContain('stageName="fix it up"');
 	});
+
+	it("puts each concern on its own labeled line, with identity last", () => {
+		const message = FileMutationConflict.formatMessage({
+			reason: "foreign_snapshot",
+			path: "docs/CHANGELOG.md",
+			canonicalKey: KEY,
+			presentedTag: "54FB",
+			liveState: computeLiveState("# Changelog\n\nentry\n"),
+			requester: { sessionId: "s1", toolCallId: "call-1" },
+		});
+		const lines = message.split("\n");
+		expect(lines[0]).toBe(`${FILE_MUTATION_CONFLICT_CODE}:foreign_snapshot docs/CHANGELOG.md (presented #54FB)`);
+		expect(lines.slice(1).map((line) => line.split(":")[0])).toEqual(["Why", "Next", "Live file", "Requester"]);
+		expect(lines.at(-1)).toBe("Requester: session=s1 call=call-1");
+	});
+
+	it("tells an agent with a foreign tag which reads count and how to get a usable tag", () => {
+		const liveState = computeLiveState("# Changelog\n");
+		const message = FileMutationConflict.formatMessage({
+			reason: "foreign_snapshot",
+			path: "docs/CHANGELOG.md",
+			canonicalKey: KEY,
+			presentedTag: liveState.tag,
+			liveState,
+		});
+		expect(message).toContain("Shell output (cat, sed, head) and tags quoted in error messages do not count");
+		expect(message).toContain("Read docs/CHANGELOG.md with the read tool");
+		expect(message).toContain("docs/CHANGELOG.md:10-40");
+		expect(message).toContain(`Current tag #${liveState.tag} is for comparison only`);
+	});
 });
 
 describe("an unreadable target", () => {
@@ -284,12 +314,12 @@ describe("an unreadable target", () => {
 			causeCode: "EISDIR",
 		});
 		expect(message).toContain("target_unreadable");
-		expect(message).toContain("(EISDIR)");
+		expect(message).toContain("Filesystem error: EISDIR.");
 	});
 
 	it("claims neither a size nor a tag for a file it could not read", () => {
 		// The failure mode this guards: reusing the missing-target live state would print
-		// "The target does not exist." for a path that is very much still occupied.
+		// "Live file: does not exist." for a path that is very much still occupied.
 		const message = FileMutationConflict.formatMessage({
 			reason: "target_unreadable",
 			path: "src/app.ts",
@@ -297,7 +327,7 @@ describe("an unreadable target", () => {
 			causeCode: "EACCES",
 		});
 		expect(message).not.toContain("does not exist");
-		expect(message).not.toContain("Target now holds");
+		expect(message).not.toContain("Live file:");
 	});
 });
 
