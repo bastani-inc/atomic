@@ -345,6 +345,9 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("This history is a guide, not the decision");
 			expect(prompt).toContain("using the repository's version control system and its hosting CLI");
 			expect(prompt).toContain("`gh pr list --state all --search 'Assistant-workflow in:body'` on GitHub");
+			expect(prompt).toContain("tie it to the requesting user with a `Co-authored-by: <name> <email>` trailer");
+			expect(prompt).toContain("Prioritize preferences tied to the requesting user");
+			expect(prompt).toContain("fall back to other contributors' relevant preferences as repository conventions");
 		});
 
 		test("omits repository-intent guidance without a shell tool", () => {
