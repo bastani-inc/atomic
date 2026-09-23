@@ -57,7 +57,7 @@ jobs:
           version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
           [[ "$RELEASE_TAG" =~ ^$version_re$ ]] || { echo "Invalid release tag: $RELEASE_TAG" >&2; exit 1; }
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          sha=$(git rev-parse HEAD^{commit})
+          sha=$(git rev-parse 'HEAD^{commit}')
           tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
           [[ "$sha" == "$tag_sha" ]] || { echo "Source ref does not resolve to tag commit $tag_sha" >&2; exit 1; }
           version=$(bun -e 'console.log((await Bun.file("packages/coding-agent/package.json").json()).version)')
@@ -66,9 +66,11 @@ jobs:
           [[ "$subject" == "Release $RELEASE_TAG" ]] || { echo "Commit subject must be Release $RELEASE_TAG; found: $subject" >&2; exit 1; }
           npm_tag=latest
           [[ "$version" == *-alpha.* ]] && npm_tag=next
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "npm-tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "npm-tag=$npm_tag"
+          } >> "$GITHUB_OUTPUT"
 
   native-artifacts:
     name: Native ${{ matrix.slug }}
@@ -405,7 +407,9 @@ jobs:
           status=$?
           set -e
           echo "$output"
-          ! grep -q 'Failed to load extension' <<<"$output"
+          if grep -q 'Failed to load extension' <<<"$output"; then
+            exit 1
+          fi
           [[ "$status" -eq 0 ]] || grep -Eq 'No models available|No model selected|No API key found' <<<"$output"
 
   # Bun 1.4.0 Windows bytecode executables must be compiled on a Windows host:
@@ -624,7 +628,7 @@ jobs:
         run: |
           set -euo pipefail
           bun run scripts/assert-builtin-set.ts packages/coding-agent/dist/builtin
-          bun -e '
+          bun run - <<'JAVASCRIPT'
             import { existsSync, readdirSync } from "node:fs";
             const atomic = await Bun.file("packages/coding-agent/package.json").json();
             const natives = await Bun.file("packages/natives/package.json").json();
@@ -645,7 +649,8 @@ jobs:
             for (const pkg of [atomic, natives, piAi]) for (const deps of [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies]) for (const [name, range] of Object.entries(deps ?? {})) if (String(range).startsWith("workspace:")) failures.push(`workspace range: ${name}`);
             for (const path of [atomic.main, atomic.types, atomic.bin?.atomic, "dist/builtin", "dist/builtin/workflows/package.json", "dist/builtin/subagents/package.json", "dist/builtin/mcp/package.json", "dist/builtin/web-access/package.json", "dist/builtin/intercom/package.json"]) if (!path || !existsSync(`packages/coding-agent/${path}`)) failures.push(`missing ${path}`);
             for (const native of ["darwin-arm64","darwin-x64","linux-arm64-gnu","linux-arm64-musl","linux-x64-gnu","linux-x64-musl","win32-arm64-msvc","win32-x64-msvc"]) if (!existsSync(`packages/natives/native/atomic_natives.${native}.node`)) failures.push(`missing native ${native}`);
-            if (failures.length) throw new Error(failures.join("\n"));'
+            if (failures.length) throw new Error(failures.join("\n"));
+          JAVASCRIPT
           rm -rf release-assets npm-packages
           mkdir release-assets npm-packages
           cp packages/coding-agent/binaries/atomic-*.tar.gz packages/coding-agent/binaries/atomic-*.zip release-assets/
