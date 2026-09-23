@@ -3,11 +3,12 @@
 # Give this job a fresh private temp parent; never relax the runtime ACL checks.
 $ErrorActionPreference = 'Stop'
 
-if (-not $env:GITHUB_WORKSPACE -or -not $env:GITHUB_ENV) {
-    throw 'GITHUB_WORKSPACE and GITHUB_ENV are required'
+if (-not $env:RUNNER_TEMP -or -not $env:GITHUB_ENV) {
+    throw 'RUNNER_TEMP and GITHUB_ENV are required'
 }
 
-$tempDir = Join-Path $env:GITHUB_WORKSPACE ('.ci-temp-' + [guid]::NewGuid().ToString('N'))
+# Keep fixtures outside the checkout: context and git discovery walk ancestors.
+$tempDir = Join-Path $env:RUNNER_TEMP ('.ci-temp-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempDir -ErrorAction Stop | Out-Null
 
 # Build a new protected DACL rather than retaining inherited or explicit grants.
