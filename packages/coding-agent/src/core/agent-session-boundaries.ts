@@ -34,11 +34,15 @@ type BoundaryKind = "turn_end" | "agent_before_settle";
  * transform; the durable transcript is never rewritten.
  */
 export function _projectFinalizedMessages(this: AgentSession): AgentMessage[] {
-	const projection = this.sessionManager.buildSessionProjection();
+	return finalizeProjectedMessages(this, projectSessionMessages(this));
+}
+
+function projectSessionMessages(session: AgentSession): AgentMessage[] {
+	const projection = session.sessionManager.buildSessionProjection();
 	for (const entry of projection.entries) {
-		for (const message of entry.messages) this._entryIdsByMessage.set(message, entry.sourceEntry.id);
+		for (const message of entry.messages) session._entryIdsByMessage.set(message, entry.sourceEntry.id);
 	}
-	return finalizeProjectedMessages(this, projection.messages);
+	return projection.messages;
 }
 
 function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
@@ -51,7 +55,12 @@ function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage
 
 /** Refresh the public finalized transcript from the canonical session projection. */
 export function _refreshFinalizedContext(this: AgentSession): void {
-	this.agent.state.messages = this._projectFinalizedMessages();
+	const unpersisted = this.agent.state.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
+	const projected = projectSessionMessages(this);
+	this.agent.state.messages = finalizeProjectedMessages(
+		this,
+		unpersisted.length === 0 ? projected : [...projected, ...unpersisted],
+	);
 }
 
 /** Refresh the public finalized transcript from the canonical session projection. */

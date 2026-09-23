@@ -169,6 +169,7 @@ class AgentSessionBase {
 	protected readonly _entryIdsByMessage = new WeakMap<object, string>();
 	/** Assistant messages whose actionable turn_end already ran from finishTurn. */
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
+	protected readonly _messagesAwaitingPersistence = new WeakSet<object>();
 	protected _lastAssistantToolResults: AgentMessage[] = [];
 	protected _lastActivityOutcome: AgentActivityOutcome = "completed";
 	protected _isBeforeSettle = false;

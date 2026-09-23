@@ -84,6 +84,7 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 		event.type === "message_end" && event.message.role === "custom"
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
+	if (event.type === "message_end") this._messagesAwaitingPersistence.add(event.message);
 
 	const processing = this._agentEventQueue.then(
 		() => this._processAgentEvent(event),
@@ -200,6 +201,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 			retryConsumedProtectedStreamingCustomMessages(this);
 		}
+		if (event.type === "message_end") this._messagesAwaitingPersistence.delete(event.message);
 	}
 	if (event.type === "turn_end") {
 		this._lastAssistantToolResults = event.toolResults;

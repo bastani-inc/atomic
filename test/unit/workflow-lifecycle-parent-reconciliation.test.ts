@@ -139,6 +139,95 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.equal(harness.session.getLastAssistantText(), "Correction: fast-final already completed successfully.");
 	});
 
+	test("a terminal notice admitted after agent-core finalized the stale final text keeps that text in the live transcript", async () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-finalized-first",
+			name: "finalized-first",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		const staleFinalized = Promise.withResolvers<void>();
+		const noticeAdmitted = Promise.withResolvers<void>();
+		let delayedSessionQueue = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("message_update", async (event) => {
+						if (delayedSessionQueue || event.assistantMessageEvent.type !== "text_delta") return;
+						delayedSessionQueue = true;
+						await staleFinalized.promise;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => {
+					const delivery = harness.session.sendCustomMessage(message, options);
+					void delivery.then(noticeAdmitted.resolve, noticeAdmitted.reject);
+					return delivery;
+				},
+			}),
+		);
+		unsubscriptions.push(
+			harness.session.agent.subscribe(async (event) => {
+				if (event.type !== "message_end" || event.message.role !== "assistant") return;
+				if (!getMessageText(event.message).includes("still proceeding")) return;
+				staleFinalized.resolve();
+				await noticeAdmitted.promise;
+			}),
+		);
+		let terminalized = false;
+		let finalizedBeforeFirstDelta = false;
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (terminalized || event.type !== "message_update" || event.assistantMessageEvent.type !== "text_delta")
+					return;
+				terminalized = true;
+				finalizedBeforeFirstDelta = harness.session.messages.some((message) =>
+					getMessageText(message).includes("still proceeding"),
+				);
+				assert.equal(store.recordRunEnd("run-finalized-first", "completed", {}), true);
+			}),
+		);
+		harness.setResponses([
+			fauxAssistantMessage("The workflow is still proceeding; I will keep monitoring it."),
+			fauxAssistantMessage("Correction: finalized-first already completed successfully."),
+		]);
+
+		await harness.session.prompt("Run finalized-first and keep me updated.");
+
+		assert.equal(terminalized, true);
+		assert.equal(
+			finalizedBeforeFirstDelta,
+			true,
+			"agent-core finalized the stale reply before the session caught up",
+		);
+		assert.equal(harness.faux.state.callCount, 2);
+		assert.equal(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+			).length,
+			1,
+		);
+		const staleFinal = harness.session.messages.find(
+			(message) => message.role === "assistant" && getMessageText(message).includes("still proceeding"),
+		);
+		assert.equal(staleFinal?.role, "assistant", "admitting the card must not drop an unpersisted final reply");
+		if (staleFinal?.role === "assistant") assert.equal(staleFinal.stopReason, "stop");
+		assert.equal(
+			harness.session.getLastAssistantText(),
+			"Correction: finalized-first already completed successfully.",
+		);
+	});
+
 	test("clearQueue at the core-local in-flight boundary does not restore a duplicate notice alias", async () => {
 		const store = createStore();
 		store.recordRunStart({
