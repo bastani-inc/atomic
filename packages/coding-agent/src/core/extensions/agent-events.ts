@@ -1,4 +1,4 @@
-import type { ProviderHeaders } from "@bastani/pi-ai";
+import type { ProviderHeaders, ProviderId } from "@bastani/pi-ai";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -58,6 +58,15 @@ export interface AfterProviderResponseEvent {
 	type: "after_provider_response";
 	status: number;
 	headers: Record<string, string>;
+}
+
+/** Fired for a parsed provider stream event before Atomic normalizes it. */
+export interface ProviderStreamEvent {
+	type: "provider_stream_event";
+	provider: ProviderId;
+	api: Api;
+	model: string;
+	data: unknown;
 }
 
 /** Fired after user submits prompt but before agent loop. */

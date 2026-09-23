@@ -157,6 +157,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 				output,
 				stream,
 				withStreamDeadline(mistralStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				options?.onProviderStreamEvent,
 			);
 
 			if (options?.signal?.aborted) {
@@ -569,6 +570,7 @@ async function consumeChatStream(
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 	mistralStream: AsyncIterable<MistralCompletionEvent>,
+	onProviderStreamEvent: StreamOptions["onProviderStreamEvent"],
 ): Promise<void> {
 	let currentBlock: TextContent | ThinkingContent | null = null;
 	const blocks = output.content;
@@ -598,6 +600,7 @@ async function consumeChatStream(
 
 	for await (const event of mistralStream) {
 		const chunk = event.data;
+		await onProviderStreamEvent?.(chunk, model);
 		// Mistral's streamed CompletionChunk carries an id field. Keep the first non-empty one,
 		// mirroring how OpenAI-style streaming exposes a stable response identifier per stream.
 		output.responseId ||= chunk.id;

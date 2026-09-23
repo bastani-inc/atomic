@@ -88,6 +88,7 @@ export type {
 	ProjectTrustHandler,
 	ProviderConfig,
 	ProviderModelConfig,
+	ProviderStreamEvent,
 	ReactiveWidgetAction,
 	ReactiveWidgetComponent,
 	ReactiveWidgetController,

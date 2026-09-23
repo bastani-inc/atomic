@@ -382,6 +382,21 @@ async function constructAgentSession(
 		(refresh) => trackSessionWork(session, refresh),
 	);
 
+	const handleProviderStreamEvent: NonNullable<ModelRuntimeSimpleStreamOptions["onProviderStreamEvent"]> = async (
+		data,
+		model,
+	) => {
+		const runner = extensionRunnerRef.current;
+		if (!runner?.hasHandlers("provider_stream_event")) return;
+		await runner.emit({
+			type: "provider_stream_event",
+			provider: model.provider,
+			api: model.api,
+			model: model.id,
+			data,
+		});
+	};
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -485,16 +500,14 @@ async function constructAgentSession(
 					);
 				});
 			}
-			if (usesExtensionStream) {
-				return modelRuntime.streamSimple(requestModel, context, preparedStreamOptions);
-			}
-			if (fastRoute?.serviceTier !== undefined) {
-				return streamWithFastRoute(requestModel, context, fastRouteStreamOptions);
+			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
+			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream) {
+				return streamWithFastRoute(requestModel, context, { ...fastRouteStreamOptions, onProviderStreamEvent });
 			}
 			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are
 			// merged. Applying it here would be inert: `mergeHeaders` copies the header object the
 			// wrapper mutates.
-			return modelRuntime.streamSimple(requestModel, context, preparedStreamOptions);
+			return modelRuntime.streamSimple(requestModel, context, { ...preparedStreamOptions, onProviderStreamEvent });
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;

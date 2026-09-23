@@ -36,6 +36,7 @@ user sends prompt ────────────────────�
   │   ├─► context_with_system (can modify the full transcript)
   │   ├─► before_provider_request (can inspect or replace payload)
   │   ├─► after_provider_response (status + headers, before stream consume)
+  │   ├─► provider_stream_event (each parsed provider event, before normalization)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
   │   │     ├─► tool_execution_start               │       │
@@ -536,6 +537,23 @@ pi.on("after_provider_response", (event, ctx) => {
 ```
 
 Header availability depends on provider and transport. Providers that abstract HTTP responses may not expose headers.
+
+#### provider_stream_event
+
+Fired for each parsed provider stream event before Atomic normalizes it into assistant message events. Use it to inspect provider-specific fields that Atomic does not keep in the assistant message.
+
+```typescript
+pi.on("provider_stream_event", (event, ctx) => {
+  // event.provider, event.api, event.model - the model that produced the event
+  // event.data - the parsed provider event (read-only)
+  const chunk = event.data as Record<string, unknown>;
+  if (chunk.openrouter_metadata) console.log(chunk.openrouter_metadata);
+});
+```
+
+`event.data` is the earliest structured value available to Atomic, not necessarily the original HTTP bytes or SSE frame, and SDK-backed providers expose only the fields their SDK keeps. Treat it as read-only: changing it can change how the response is normalized. The event is notification-only and is not saved to the session. Cache-warming requests do not emit it.
+
+Handlers run in stream order and are awaited, so a slow handler delays the response. Handler errors are reported without changing the provider response. Custom providers registered with `streamSimple` emit this event only if they call `options.onProviderStreamEvent`. See [`debug-provider.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/debug-provider.ts) for an opt-in viewer.
 
 ### Model Events
 

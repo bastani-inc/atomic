@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `provider_stream_event` extension event for observing each parsed provider stream event before normalization, including provider-specific fields that assistant messages drop, plus an opt-in `/debug-provider` example viewer ([#9784](https://github.com/earendil-works/pi/issues/9784)).
+
 ### Fixed
 
 - Fixed workflow stages with `model: "auto"` (and other stage sessions) crashing with `Cannot read properties of undefined (reading 'baseDir')` when Atomic was launched with `--theme <path>` or other CLI-provided resource paths ([#3229](https://github.com/bastani-inc/atomic/issues/3229)).

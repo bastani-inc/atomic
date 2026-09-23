@@ -80,6 +80,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `custom-provider-gitlab-duo/` | GitLab Duo integration | `registerProvider` with OAuth |
 | **Messages & Communication** |||
 | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
+| `debug-provider.ts` | Capture raw provider stream events per assistant message with `/debug-provider` | `on("provider_stream_event")`, `registerEntryRenderer`, `appendEntry` |
 | `event-bus.ts` | Inter-extension events | `pi.events` |
 | **Session Metadata** |||
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |

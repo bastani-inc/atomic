@@ -16,6 +16,7 @@ import type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ProjectTrustEvent,
+	ProviderStreamEvent,
 	ThinkingLevelSelectEvent,
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
@@ -41,6 +42,7 @@ export type ExtensionEvent =
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
+	| ProviderStreamEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent

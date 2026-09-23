@@ -28,6 +28,7 @@ import type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ProjectTrustHandler,
+	ProviderStreamEvent,
 	ThinkingLevelSelectEvent,
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
@@ -144,6 +145,7 @@ export interface ExtensionAPI {
 	): () => void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): () => void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): () => void;
+	on(event: "provider_stream_event", handler: ExtensionHandler<ProviderStreamEvent>): () => void;
 	on(
 		event: "before_agent_start",
 		handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>,

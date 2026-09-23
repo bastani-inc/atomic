@@ -231,6 +231,7 @@ function buildFastRouteBaseProviderOptions(
 		sessionId: options?.sessionId,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
+		onProviderStreamEvent: options?.onProviderStreamEvent,
 		headers: options?.headers,
 		timeoutMs: options?.timeoutMs,
 		websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,

@@ -843,6 +843,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				streamDeadline.deadlineMs,
 				streamDeadline.abort,
 			)) {
+				await options?.onProviderStreamEvent?.(event, model);
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
 					const responseModel = event.message.model;

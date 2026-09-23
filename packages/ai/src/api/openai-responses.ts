@@ -198,6 +198,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				stream,
 				model,
 				{
+					onProviderStreamEvent: options?.onProviderStreamEvent,
 					serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
 					grammarToolInputProperties,
 					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),

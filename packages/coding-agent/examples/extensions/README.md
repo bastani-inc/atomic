@@ -112,6 +112,7 @@ cp permission-gate.ts ~/.atomic/agent/extensions/
 | Extension | Description |
 |-----------|-------------|
 | `message-renderer.ts` | Custom message rendering with colors and expandable details via `registerMessageRenderer` |
+| `debug-provider.ts` | Toggle raw provider stream capture with `/debug-provider` and inspect each assistant message in a TUI-only session entry |
 | `event-bus.ts` | Inter-extension communication via `pi.events` |
 
 ### Session Metadata

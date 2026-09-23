@@ -92,6 +92,7 @@ describe("createAgentSession stream options", () => {
 		extensionSource?: string,
 		authResult?: AuthResult,
 		capturedRequest?: { model?: Model<Api> },
+		providerEvent?: unknown,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
@@ -112,7 +113,14 @@ describe("createAgentSession stream options", () => {
 			streamSimple: (requestModel, _context, providerOptions) => {
 				if (capturedRequest) capturedRequest.model = requestModel;
 				capturedOptions = providerOptions;
-				return createDoneStream(api);
+				if (providerEvent === undefined) return createDoneStream(api);
+				const stream = createAssistantMessageEventStream();
+				void (async () => {
+					await providerOptions?.onProviderStreamEvent?.(providerEvent, requestModel);
+					const done = createDoneStream(api);
+					stream.end(await done.result());
+				})();
+				return stream;
 			},
 		});
 
@@ -137,6 +145,40 @@ describe("createAgentSession stream options", () => {
 			modelRegistry.unregisterProvider(model.provider);
 		}
 	}
+
+	it("forwards provider stream events to extensions (#9784)", async () => {
+		const providerEvent = { openrouter_metadata: { strategy: "direct" } };
+		const received: unknown[] = [];
+		(globalThis as { __providerStreamEvents?: unknown[] }).__providerStreamEvents = received;
+		try {
+			const options = await captureStreamOptions(
+				"openai-completions",
+				{},
+				{},
+				`export default function (pi) {
+					pi.on("provider_stream_event", (event) => {
+						globalThis.__providerStreamEvents.push(event);
+					});
+				}`,
+				undefined,
+				undefined,
+				providerEvent,
+			);
+
+			assert.equal(typeof options?.onProviderStreamEvent, "function");
+			assert.deepEqual(received, [
+				{
+					type: "provider_stream_event",
+					provider: "capture-provider",
+					api: "openai-completions",
+					model: "capture-model",
+					data: providerEvent,
+				},
+			]);
+		} finally {
+			delete (globalThis as { __providerStreamEvents?: unknown[] }).__providerStreamEvents;
+		}
+	});
 
 	it("defaults session prompt-cache retention to long", async () => {
 		vi.stubEnv("PI_CACHE_RETENTION", undefined);
