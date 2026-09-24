@@ -996,7 +996,7 @@ test("auto ranks three distinct models, excludes their other efforts, and replay
 	);
 });
 
-test("auto routing keeps exact benchmark identity and provenance distinctions", async () => {
+test("auto routing retains the full benchmark snapshot and distinct provider model IDs", async () => {
 	const f = await fixture();
 	const models = ["anthropic", "github-copilot"].map((provider) => ({
 		...decisionModel,
@@ -1008,9 +1008,10 @@ test("auto routing keeps exact benchmark identity and provenance distinctions", 
 	let rank = 0;
 	f.infer.mockImplementation((_model, context) => {
 		const { state } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-		assert.match(String(state.evals), /Harness: `cc`=claude-code, `gb`=grok-build, `msa`=mini-swe-agent/);
-		assert.match(String(state.evals), /\| claude-fable-5 /);
-		assert.match(String(state.evals), /\| F\d\d \| Claude Fable 5 \|/);
+		assert.match(String(state.evals), /## Artificial Analysis Intelligence Index/);
+		assert.match(String(state.evals), /\| claude-fable-5 \| Claude Fable 5 \(/);
+		assert.match(String(state.evals), /`Cod`: Coding Index points/);
+		assert.match(String(state.evals), /`Agt`: Agentic Index points/);
 		assert.equal(state.evals, evals);
 		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
 		return messageStream(decisionMessage({ model: `${models[rank++]!.provider}/claude-fable-5`, effort: null }));
