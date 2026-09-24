@@ -1070,7 +1070,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Sponsors
 
-Thanks to [Namespace](https://namespace.so) for powering our CI/CD pipelines with fast macOS, Linux, and Windows runners.
+Thanks to [Namespace](https://namespace.so/github-actions/?utm_source=oss&utm_campaign=atomic) for powering our CI/CD pipelines with fast macOS, Linux, and Windows runners.
 
 [![CI powered by namespace badge](assets/namespace-badge.svg)](https://namespace.so/github-actions/?utm_source=oss&utm_campaign=atomic)
 
