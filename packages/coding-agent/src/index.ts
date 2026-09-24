@@ -347,11 +347,8 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
-	getStructuredOutputProviders,
 	inferRouterDecision,
 	inferStructuredOutput,
-	JEV_STRUCTURED_OUTPUT_PROVIDER,
-	type JevStructuredOutputProvider,
 	type RouterDecisionRequest,
 	type RouterModelSelectionOptions,
 	resolveRouterModel,

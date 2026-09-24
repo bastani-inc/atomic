@@ -162,8 +162,8 @@ runTest(
 			`installed supervisor construction failed:\n${supervisorProbe.stdout}\n${supervisorProbe.stderr}`,
 		);
 		assert.match(supervisorProbe.stdout, /repeated supervisor construction passed/);
-		// #3089/#3090: exercise the public installed SDK and the host-module map shared
-		// with Bun binaries. No provider inference or real credential is used.
+		// Exercise the public installed SDK and host-module map with a registered classifier.
+		// No real provider request or credential is used.
 		for (const executable of [nodeExe, bunExecutable()]) {
 			const probe = spawnSyncCollect(
 				[
@@ -180,25 +180,43 @@ runTest(
 				assert.equal(hosted.inferRouterDecision, sdk.inferRouterDecision);
 				assert.equal(hosted.resolveRouterModel, sdk.resolveRouterModel);
 				assert.equal(sdk.SettingsManager.inMemory().getRouterModel(), "");
-				assert.equal(sdk.getStructuredOutputProviders()[0].capabilities.chat, false);
-				process.env.TYPESAFE_API_KEY = "mock-installed-key";
-				let requests = 0;
-				globalThis.fetch = async () => {
-					requests++;
-					return Response.json({model: "jev-latest", answers: {result: {
-						type: "choice", choice: "yes", confidence: 1, probabilities: {yes: 1}
-					}}, usage: {input_tokens: 1, output_tokens: 1}});
+				const classifier = {
+					type: "classifier", provider: "fixture", id: "intent", api: "typesafe-system-one",
+					name: "Fixture classifier", baseUrl: "https://example.invalid", input: ["text"],
+					cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, contextWindow: 4096
 				};
+				let requests = 0;
+				const registry = {
+					getAll: () => [],
+					streamSimple: () => {throw Error("unexpected chat request")},
+					getClassifierModel: (provider, id) => provider === "fixture" && id === "intent" ? classifier : undefined,
+					classify: async (model, context) => {
+						assert.equal(model.provider, "fixture");
+						assert.equal(model.id, "intent");
+						requests++;
+						const question = "ok" in context.questions ? "ok" : "result";
+						const choice = question === "ok" ? "true" : "yes";
+						return {api: classifier.api, provider: classifier.provider, model: classifier.id,
+							answers: {[question]: {type: "choice", choice, probabilities: {[choice]: 1}, confidence: 1}},
+							stopReason: "stop", timestamp: Date.now()};
+					}
+				};
+				const schema = Type.Object({ok: Type.Literal(true)}, {additionalProperties: false});
 				const result = await sdk.inferRouterDecision({
-					settings: sdk.SettingsManager.inMemory(),
-					modelRegistry: {getAll: () => [], streamSimple: () => {throw Error("unexpected chat request")}},
-					state: {task: "classify this fixture"}, instructions: "Choose yes.",
-					schema: Type.Object({ok: Type.Literal(true)}, {additionalProperties: false}),
-					jev: {questions: {result: {instructions: "Choose yes.", criteria: {yes: "The fixture matches"}}},
+					settings: sdk.SettingsManager.inMemory({routerModel: "fixture/intent"}),
+					modelRegistry: registry,
+					state: {task: "classify this fixture"}, instructions: "Choose yes.", schema,
+					classifier: {questions: {result: {instructions: "Choose yes.", criteria: {yes: "The fixture matches"}}},
 						decode: () => ({ok: true})}
 				});
 				assert.deepEqual(result.value, {ok: true});
-				assert.equal(requests, 1);
+				assert.equal(result.model, "fixture/intent");
+				const general = await sdk.inferStructuredOutput({
+					model: "fixture/intent", modelRegistry: registry, schema,
+					state: {task: "classify this fixture"}, instructions: "Choose yes."
+				});
+				assert.deepEqual(general.value, {ok: true});
+				assert.equal(requests, 2);
 				console.log("installed structured decision passed");
 			`,
 				],

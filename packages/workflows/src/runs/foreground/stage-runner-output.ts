@@ -221,7 +221,7 @@ export function validatePromptOutputOptions(outputOptions: StageOutputOptions): 
 export function stageOutputInstruction(outputOptions: StageOutputOptions, hasStructuredOutput = false): string {
 	if (typeof outputOptions.output !== "string" || outputOptions.output.length === 0) return "";
 	if (hasStructuredOutput) {
-		return "\n\n[This stage has two final output channels. In the same final assistant message, write the complete human-readable artifact as ordinary assistant text before calling structured_output. That text is saved verbatim as the artifact and is what later stages read; the structured_output tool arguments are the machine-readable result for workflow logic. Do not replace the artifact text with JSON or a pointer to another file. Files you write yourself are not the artifact.]";
+		return "\n\n[This stage has two final output channels. In the same final assistant message, write the complete human-readable artifact as ordinary assistant text before calling structured_output. That text is saved verbatim as the artifact and is what later stages read; the structured_output tool infers the separate machine-readable result for workflow logic from its instructions and state. Do not replace the artifact text with JSON or a pointer to another file. Files you write yourself are not the artifact.]";
 	}
 	return "\n\n[This stage's completed answers are saved as its artifact and are what later stages read. Return the complete result as ordinary assistant text rather than a pointer to it. Follow-up answers within this stage are appended as numbered supplements, not replacements; state corrections explicitly. Tool-call progress is transcript-only. Files you write yourself are not the artifact.]";
 }

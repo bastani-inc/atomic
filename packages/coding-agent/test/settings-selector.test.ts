@@ -130,38 +130,51 @@ function openRouterSubmenu(
 	return item!.submenu!(item!.currentValue, done) as Container;
 }
 
-test("router settings offer Jev without a chat catalog and save exact values via keyboard", () => {
-	const config = settingsConfig({ routerModel: "", availableDefaultModels: [] });
+test("router settings list registered classifiers and use the current chat model by default", () => {
+	const config = settingsConfig({
+		routerModel: "",
+		availableDefaultModels: [],
+		availableClassifierModels: [
+			{ type: "classifier", provider: "judge", id: "custom", name: "Custom classifier" },
+		] as SettingsConfig["availableClassifierModels"],
+	});
 	const changed = vi.fn();
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
 	expect(render(submenu)).toContain("Automatic");
-	expect(render(submenu)).toContain("typesafe/jev-latest");
-	expect(render(submenu)).toContain("OpenRouter structured decisions");
+	expect(render(submenu)).toContain("Use the current chat model");
+	expect(render(submenu)).toContain("judge/custom");
+	expect(render(submenu)).not.toContain("typesafe/jev-latest");
 	submenu.handleInput?.("\x1b[B");
 	expect(changed).not.toHaveBeenCalled();
 	submenu.handleInput?.("\r");
-	expect(changed).toHaveBeenCalledExactlyOnceWith("typesafe/jev-latest");
-	expect(done).toHaveBeenCalledWith("typesafe/jev-latest");
-	expect(config.routerModel).toBe("typesafe/jev-latest");
+	expect(changed).toHaveBeenCalledExactlyOnceWith("judge/custom");
+	expect(done).toHaveBeenCalledWith("judge/custom");
+	expect(config.routerModel).toBe("judge/custom");
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
-	expect(render(reopened)).toContain("→ ✓ typesafe/jev-latest");
+	expect(render(reopened)).toContain("→ ✓ judge/custom");
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
 	expect(config.routerModel).toBe("");
 });
 
-test("router settings select the exact OpenRouter Jev ID through search without changing chat defaults", () => {
-	const config = settingsConfig({ routerModel: "", availableDefaultModels: [] });
+test("router settings search a registered non-Jev classifier without changing chat defaults", () => {
+	const config = settingsConfig({
+		routerModel: "",
+		availableDefaultModels: [],
+		availableClassifierModels: [
+			{ type: "classifier", provider: "vendor", id: "judge-v2", name: "Vendor judge" },
+		] as SettingsConfig["availableClassifierModels"],
+	});
 	const changed = vi.fn();
 	const submenu = openRouterSubmenu(config, changed);
-	for (const character of "openrouter/~typesafe/jev-latest") submenu.handleInput?.(character);
+	for (const character of "judge-v2") submenu.handleInput?.(character);
 	submenu.handleInput?.("\r");
-	expect(changed).toHaveBeenCalledExactlyOnceWith("openrouter/~typesafe/jev-latest");
-	expect(config.routerModel).toBe("openrouter/~typesafe/jev-latest");
+	expect(changed).toHaveBeenCalledExactlyOnceWith("vendor/judge-v2");
+	expect(config.routerModel).toBe("vendor/judge-v2");
 	expect(config.availableDefaultModels).toEqual([]);
 	expect(config.thinkingLevel).toBe("off");
 });
@@ -198,7 +211,7 @@ test("router settings preserve an unavailable selection and cancellation does no
 	expect(config.routerModel).toBe("missing/model");
 });
 
-test("router picker marks an obsolete Jev ID unavailable and excludes image or classifier execution models", () => {
+test("router picker marks an unavailable classifier ID and excludes non-chat execution models", () => {
 	const config = settingsConfig({
 		routerModel: "typesafe-ai/jev-latest",
 		availableDefaultModels: [
@@ -221,14 +234,19 @@ test("router menu saves settings.json and Automatic clears only the router selec
 		const defaults = { defaultProvider: "test", defaultModel: "chat", theme: "dark" };
 		writeFileSync(file, JSON.stringify(defaults));
 		const manager = SettingsManager.create(directory, directory);
-		const config = settingsConfig({ routerModel: manager.getRouterModel() });
+		const config = settingsConfig({
+			routerModel: manager.getRouterModel(),
+			availableClassifierModels: [
+				{ type: "classifier", provider: "judge", id: "custom", name: "Custom classifier" },
+			] as SettingsConfig["availableClassifierModels"],
+		});
 		const change = (model: string) => manager.setRouterModel(model);
 		const menu = openRouterSubmenu(config, change);
 		menu.handleInput?.("\x1b[B");
 		menu.handleInput?.("\r");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "typesafe/jev-latest" });
-		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("typesafe/jev-latest");
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "judge/custom" });
+		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("judge/custom");
 		const reopened = openRouterSubmenu(config, change);
 		reopened.handleInput?.("\x1b[A");
 		reopened.handleInput?.("\r");
@@ -240,12 +258,16 @@ test("router menu saves settings.json and Automatic clears only the router selec
 	}
 });
 
-test("router setter rejects malformed values without changing saved selection", () => {
-	const manager = SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" });
-	for (const value of ["auto", " typesafe/jev-latest", "typesafe/jev-latest "]) {
+test("router setter accepts auto and rejects malformed IDs", () => {
+	const manager = SettingsManager.inMemory({ routerModel: "judge/custom" });
+	for (const value of [" judge/custom", "judge/custom "]) {
 		expect(() => manager.setRouterModel(value)).toThrow(/Invalid routerModel/);
 	}
-	expect(manager.getRouterModel()).toBe("typesafe/jev-latest");
+	expect(manager.getRouterModel()).toBe("judge/custom");
+	manager.setRouterModel("auto");
+	expect(manager.getRouterModel()).toBe("auto");
+	const submenu = openRouterSubmenu(settingsConfig({ routerModel: manager.getRouterModel() }), vi.fn());
+	expect(render(submenu)).toContain("→ ✓ Automatic");
 });
 
 test("router menu edits the project override including Automatic without changing global defaults", async () => {

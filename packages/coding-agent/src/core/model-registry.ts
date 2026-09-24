@@ -5,10 +5,13 @@ import type {
 	AuthOperationOptions,
 	AuthResult,
 	ClassifierApi,
+	ClassifierContext,
 	ClassifierModel,
+	ClassifierResult,
 	Context,
 	Model,
 	ModelsApiStreamOptions,
+	ModelsClassifierOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
 	ModelsSimpleStreamOptions,
@@ -139,6 +142,14 @@ export class ModelRegistry {
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		return this.runtime.complete(model, context, options);
+	}
+
+	classify(
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ModelsClassifierOptions,
+	): Promise<ClassifierResult> {
+		return this.runtime.classify(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {

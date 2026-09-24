@@ -315,9 +315,7 @@ pi.registerTool({
 
 Return `terminate: true` from `execute()` to skip the automatic follow-up model call only when every finalized result in the tool batch also terminates.
 
-For a schema-backed final-answer tool, use `createStructuredOutputTool({ schema, capture, output, name })`. Atomic does not register `structured_output` in normal sessions by default. The factory uses your schema directly as tool parameters, captures the matching JSON value, returns pretty-printed JSON as terminating result text, and optionally writes `output.outputPath`. Text print mode emits that result as the final stdout response.
-
-Include a custom name such as `final_decision` in any explicit tool allowlist. The default `structured_output` name is likewise available only in the session/runtime where you register it.
+For a schema-backed decision, use `createStructuredOutputTool({ schema, name })`. Atomic does not register `structured_output` in normal sessions by default. The calling model supplies `instructions`, nonempty named `state`, and optional `model` and `fallbackModels`. The tool resolves those exact IDs through the session model registry, infers a value matching `schema`, and returns that value as terminating JSON. It does not treat the calling model's arguments as the result. Omit `model` to use the current session chat model; explicit fallbacks run next, and the current chat model is the terminal fallback. A registered classifier runs only for a finite Choice schema. An incompatible schema skips that classifier. A runtime classifier failure advances to the next model, except cancellation and a safety refusal, which stop the call. Include a custom name such as `final_decision` in any explicit tool allowlist.
 
 ```typescript
 // Correct: throw to signal an error

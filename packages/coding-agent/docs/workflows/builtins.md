@@ -100,7 +100,7 @@ Builtin stages report evidence and bounded results. Give each run a concrete obj
 
 All nine builtins default to `model: "auto"` for every model stage, including review, scoring, repair and final handoff stages. This also applies when you import a builtin as a child with `ctx.workflow(...)`. Each stage routes independently from its actual prompt; reviewers may select the same model. Builtins no longer ship concrete fallback chains.
 
-Use `/settings` → **Router model** to choose the decision provider without changing your main-chat model. Routing failures stop that stage before execution; inspect `/workflow status <run-id>` and correct the reported router, credentials or eligibility problem before retrying. See [automatic stage models](/workflows/operations#automatic-stage-models) for failure and resume behavior.
+Use `/settings` → **Router model** to choose the decision provider without changing your main-chat model. Unset and `auto` use the current chat model. A complete routing failure can still run the stage on that chat model when it satisfies the stage constraints; otherwise the stage stops before execution. Inspect `/workflow status <run-id>` and correct the reported router, credentials, or eligibility problem before retrying. See [automatic stage models](/workflows/operations#automatic-stage-models) for failure and resume behavior.
 
 Explicit `tournament` `models` inputs still assign attempt models in their supplied order, round-robin; an omitted or empty list uses automatic routing. Custom workflow definitions keep their existing defaults. For an explicit model, effort or capability requirement in your own stages, use the [stage model options](/workflows/authoring#automatic-stage-model-selection).
 

@@ -1,6 +1,7 @@
 import { describe, test } from "vitest";
 import type { AgentSessionAdapter, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import { assert, createStageContext, makeMockSession, makeOpts, Type } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 describe("createStageContext — stage surface", () => {
 	test("does not expose a subagent helper", () => {
@@ -48,7 +49,7 @@ describe("createStageContext — error paths", () => {
 				state.promptCalls += 1;
 				const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 				assert.ok(structuredTool);
-				await structuredTool.execute("structured-call-1", { ok: true }, undefined, undefined, undefined as never);
+				await executeWorkflowDecision(structuredTool, "structured-call-1", { ok: true });
 			},
 		});
 		const agentSession: AgentSessionAdapter = {

@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Static, TSchema } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { defineTool, type ToolDefinition } from "../extensions/types.ts";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
@@ -20,15 +20,39 @@ export interface StructuredOutputFileCapture {
 }
 
 export interface StructuredOutputToolOptions<TSchemaDef extends TSchema> {
-	/** Tool parameter schema. */
 	schema: TSchemaDef;
-	/** In-process result sink for SDK and workflow callers. */
 	capture?: StructuredOutputCapture<Static<TSchemaDef>>;
-	/** Cross-process result sink for subagent child runtimes. */
 	output?: StructuredOutputFileCapture;
-	/** Tool name. Defaults to `structured_output`. */
 	name?: string;
 }
+
+export const StructuredOutputParameters = Type.Object(
+	{
+		instructions: Type.String({ minLength: 1, description: "Complete judgment instructions for the result." }),
+		state: Type.Object(
+			{},
+			{
+				additionalProperties: true,
+				minProperties: 1,
+				description:
+					"Named finite JSON values holding the task, relevant context, constraints and reference text. Never include secrets.",
+			},
+		),
+		model: Type.Optional(
+			Type.String({
+				description:
+					"Exact provider/model ID of a chat or classifier model, such as typesafe/jev-latest. Omit to use the current chat model.",
+			}),
+		),
+		fallbackModels: Type.Optional(
+			Type.Array(Type.String(), {
+				description: "Ordered exact fallback model IDs. The current chat model is always tried last.",
+			}),
+		),
+	},
+	{ additionalProperties: false },
+);
+export type StructuredOutputParams = Static<typeof StructuredOutputParameters>;
 
 function stringifyParams<TSchemaDef extends TSchema>(params: Static<TSchemaDef>): string {
 	try {
@@ -63,34 +87,48 @@ export function createStructuredOutputCapture<TValue = unknown>(): StructuredOut
 
 export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 	options: StructuredOutputToolOptions<TSchemaDef>,
-): ToolDefinition<TSchemaDef, Static<TSchemaDef>> {
+): ToolDefinition<typeof StructuredOutputParameters, Static<TSchemaDef>> {
 	const name = options.name ?? STRUCTURED_OUTPUT_TOOL_NAME;
 
 	return defineTool({
 		name,
 		label: "Structured Output",
-		description: "Return the final machine-readable result.",
+		description:
+			"Infer the final machine-readable result from instructions and named state using the selected model, then any fallbacks, then the current chat model.",
 		promptSnippet: "Return final machine-readable output",
 		promptGuidelines: [
 			`${name} is the final machine-readable result channel; call ${name} exactly once when done.`,
+			"Pass complete instructions and named state; omit model to use the current chat model.",
 			`Do not write a prose final answer after calling ${name}.`,
 		],
-		parameters: options.schema,
+		parameters: StructuredOutputParameters,
 		maxResultSizeChars: Infinity,
 		structuredOutput: true,
-		async execute(_toolCallId, params): Promise<AgentToolResult<Static<TSchemaDef>>> {
-			const serializedParams = stringifyParams(params);
+		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<AgentToolResult<Static<TSchemaDef>>> {
+			const { inferStructuredOutput } = await import("../structured-output/index.js");
+			const result = await inferStructuredOutput({
+				schema: options.schema,
+				instructions: params.instructions,
+				state: params.state as JsonObject,
+				...(params.model !== undefined ? { model: params.model } : {}),
+				...(params.fallbackModels !== undefined ? { fallbackModels: params.fallbackModels } : {}),
+				currentModel: ctx.model,
+				modelRegistry: ctx.modelRegistry,
+				...(signal ? { signal } : {}),
+			});
+			const value = result.value;
+			const serializedValue = stringifyParams(value);
 			if (options.output) {
-				await writeCapturedOutput(options.output, serializedParams);
+				await writeCapturedOutput(options.output, serializedValue);
 			}
 			if (options.capture) {
-				options.capture.value = params;
+				options.capture.value = value;
 				options.capture.called = true;
 			}
 
 			return {
-				content: [{ type: "text", text: serializedParams }],
-				details: params,
+				content: [{ type: "text", text: serializedValue }],
+				details: value,
 				terminate: true,
 			};
 		},

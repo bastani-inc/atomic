@@ -1,11 +1,24 @@
-import type { Api, AssistantMessage, JsonObject, Model, SimpleStreamOptions, TranscriptContext } from "@bastani/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	ClassifierApi,
+	ClassifierModel,
+	ClassifierResult,
+	JsonObject,
+	Model,
+	SimpleStreamOptions,
+	TranscriptContext,
+} from "@bastani/pi-ai";
 import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import type { RouterDecisionRequest } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import type {
+	RouterDecisionRequest,
+	StructuredOutputRequest,
+} from "../../packages/coding-agent/src/core/structured-output/index.js";
 
 /** 0.86 folds systemPrompt/tools into a leading system message before provider streamSimple. */
 export function inferenceUserContent(context: { messages: Array<{ role: string; content?: unknown }> }): unknown {
@@ -40,6 +53,36 @@ export const decisionModel: Model<Api> = {
 	contextWindow: 32000,
 	maxTokens: 4096,
 };
+
+export const decisionClassifier: ClassifierModel<ClassifierApi> = {
+	provider: "decision-test",
+	id: "classifier",
+	name: "Test classifier",
+	api: "typesafe-system-one",
+	type: "classifier",
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 32000,
+	baseUrl: "https://example.invalid",
+};
+
+export function classifierResult(
+	choices: Record<string, string> = { route: "review", budget: "exact" },
+): ClassifierResult {
+	return {
+		api: decisionClassifier.api,
+		provider: decisionClassifier.provider,
+		model: decisionClassifier.id,
+		answers: Object.fromEntries(
+			Object.entries(choices).map(([key, choice]) => [
+				key,
+				{ type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 1 },
+			]),
+		),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
 export const decisionSchema = Type.Object(
 	{
 		route: Type.Union([Type.Literal("none"), Type.Literal("review")]),
@@ -69,7 +112,7 @@ export function decisionRequest(): RouterDecisionRequest<typeof decisionSchema> 
 		},
 		instructions: "Select a matching route or none. Preserve the exact cost limit if selecting review.",
 		schema: decisionSchema,
-		jev: {
+		classifier: {
 			questions: {
 				route: {
 					instructions: "Which route matches the actual task? Choose none when no route fits.",
@@ -87,6 +130,14 @@ export function decisionRequest(): RouterDecisionRequest<typeof decisionSchema> 
 			}),
 		},
 	};
+}
+export const choiceDecisionSchema = Type.Object(
+	{ route: Type.Union([Type.Literal("none"), Type.Literal("review")]) },
+	{ additionalProperties: false },
+);
+export function structuredOutputRequest(): StructuredOutputRequest<typeof choiceDecisionSchema> {
+	const { modelRegistry, currentModel, state, instructions } = decisionRequest();
+	return { modelRegistry, currentModel, state, instructions, schema: choiceDecisionSchema };
 }
 export function decisionMessage(args: JsonObject = { route: "review", limit: 1.23456789 }): AssistantMessage {
 	return {
@@ -115,16 +166,6 @@ export function messageStream(message: AssistantMessage) {
 			: { type: "done", reason: message.stopReason as "toolUse" | "stop" | "length", message },
 	);
 	return stream;
-}
-export function jevResponse() {
-	return {
-		model: "jev-2026-09",
-		answers: {
-			route: { type: "choice", choice: "review", probabilities: { none: 0.49, review: 0.51 }, confidence: 0.001 },
-			budget: { type: "choice", choice: "exact", probabilities: { inherit: 0, exact: 1 }, confidence: 1 },
-		},
-		usage: { input_tokens: 20, output_tokens: 10 },
-	};
 }
 export async function registeredDecisionRuntime(
 	streamSimple: (

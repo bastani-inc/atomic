@@ -52,7 +52,8 @@ describe("AgentSession dynamic tool registration", () => {
 			expect(context.getRouterModel()).toBe("anthropic/claude-sonnet-4-5");
 			expect(context.model).toBe(model);
 			settingsManager.applyOverrides({ routerModel: "auto" });
-			expect(() => context.getRouterModel()).toThrow("Invalid routerModel");
+			expect(context.getRouterModel()).toBe("auto");
+			expect(context.model).toBe(model);
 		} finally {
 			session.dispose();
 		}

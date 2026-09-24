@@ -1,10 +1,10 @@
 // Regression for #3090: full model/effort catalogs must retain strict pair validation.
 import assert from "node:assert/strict";
-import type { JsonObject } from "@bastani/pi-ai";
+import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionMessage, decisionRequest, messageStream } from "../helpers/structured-output.js";
+import { decisionMessage, decisionModel, decisionRequest, messageStream } from "../helpers/structured-output.js";
 
 const pairs = Array.from({ length: 1997 }, (_, index) => ({
 	model: `provider/model-${index}`,
@@ -32,7 +32,7 @@ function requestFor(value: JsonObject) {
 			...request,
 			schema,
 			modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
-			jev: {
+			classifier: {
 				questions: { pair: { instructions: "Choose an eligible pair.", criteria: { last: "Last pair" } } },
 				decode: () => pairs.at(-1)!,
 			},
@@ -67,36 +67,37 @@ for (const [name, value] of [
 	});
 }
 
+const classifier: ClassifierModel<ClassifierApi> = {
+	...decisionModel,
+	type: "classifier",
+	provider: "fixture",
+	id: "pair",
+	api: "typesafe-system-one",
+};
+
 for (const valid of [true, false]) {
-	test(`Jev decoded output is ${valid ? "accepted" : "rejected"} against the full 1997-pair schema`, async () => {
+	test(`classifier output is ${valid ? "accepted" : "rejected"} against the full 1997-pair schema`, async () => {
 		const value = { ...pairs.at(-1)!, effort: valid ? "high" : "low" };
 		const { request, dispatch } = requestFor(value);
-		request.settings = { getRouterModel: () => "typesafe/jev-latest" };
-		// No chat fallback: the Jev-side repair budget stays observable (#3206).
+		const classify = vi.fn(async () => ({
+			api: classifier.api,
+			provider: classifier.provider,
+			model: classifier.id,
+			answers: { pair: { type: "choice" as const, choice: "last", probabilities: { last: 1 }, confidence: 1 } },
+			stopReason: "stop" as const,
+			timestamp: Date.now(),
+		}));
+		request.settings = { getRouterModel: () => "fixture/pair" };
 		request.currentModel = undefined;
-		request.jev.decode = () => value;
-		const fetch = vi.fn(async () =>
-			Response.json({
-				model: "jev-test",
-				answers: { pair: { type: "choice", choice: "last", probabilities: { last: 1 }, confidence: 1 } },
-				usage: { input_tokens: 1, output_tokens: 1 },
-			}),
-		);
-		vi.stubEnv("TYPESAFE_API_KEY", "test-key");
-		vi.stubGlobal("fetch", fetch);
-		try {
-			if (valid) assert.deepEqual((await inferRouterDecision(request)).value, value);
-			else
-				await assert.rejects(inferRouterDecision(request), {
-					name: "Error",
-					message:
-						"Invalid structured output: response does not match the decision schema. Routing output repair exhausted after 4 attempts.",
-				});
-			assert.equal(fetch.mock.calls.length, valid ? 1 : 4);
-			assert.equal(dispatch.mock.calls.length, 0);
-		} finally {
-			vi.unstubAllGlobals();
-			vi.unstubAllEnvs();
-		}
+		request.classifier.decode = () => value;
+		request.modelRegistry = {
+			...request.modelRegistry,
+			getClassifierModel: (provider, id) => (provider === "fixture" && id === "pair" ? classifier : undefined),
+			classify,
+		};
+		if (valid) assert.deepEqual((await inferRouterDecision(request)).value, value);
+		else await assert.rejects(inferRouterDecision(request), /Classifier returned no valid decision/);
+		assert.equal(classify.mock.calls.length, 1);
+		assert.equal(dispatch.mock.calls.length, 0);
 	});
 }

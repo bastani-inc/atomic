@@ -21,6 +21,7 @@ import {
 	Type,
 	workflow,
 } from "./executor-shared.js";
+import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 function assistantMessageWithContent(content: AssistantMessage["content"]): AssistantMessage {
 	return {
@@ -136,7 +137,7 @@ test("Intercom received inside structured_output remains admitted but does not r
 		async prompt() {
 			const tool = createOptions?.customTools?.find((candidate) => candidate.name === "structured_output");
 			assert.ok(tool);
-			await tool.execute("structured-call", { approved: true }, undefined, undefined, undefined as never);
+			await executeWorkflowDecision(tool, "structured-call", { approved: true });
 			const orchestrationContext = createOptions?.orchestrationContext;
 			assert.ok(orchestrationContext);
 			surface._orchestrationContext = orchestrationContext;
@@ -245,11 +246,11 @@ test("a real late admitted assistant turn cannot replace the successful structur
 						type: "toolCall",
 						id: "structured-call-admitted",
 						name: "structured_output",
-						arguments: { approved: true },
+						arguments: workflowDecisionArgs({ approved: true }),
 					},
 				]),
 			);
-			await tool.execute("structured-call-admitted", { approved: true }, undefined, undefined, undefined as never);
+			await executeWorkflowDecision(tool, "structured-call-admitted", { approved: true });
 			const orchestrationContext = createOptions?.orchestrationContext;
 			assert.ok(orchestrationContext);
 			surface._orchestrationContext = orchestrationContext;

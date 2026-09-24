@@ -15,6 +15,7 @@ import {
 	test,
 	workflow,
 } from "./executor-shared.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 describe("executor.run", () => {
 	test("continuation replays multiple completed parallel siblings without topology drift", async () => {
@@ -466,13 +467,7 @@ describe("executor.run", () => {
 										appendProseTurn(session.messages);
 										return;
 									}
-									await structuredTool.execute(
-										"structured-call-fallback",
-										{ ok: true } as Parameters<ToolDefinition["execute"]>[1],
-										undefined,
-										undefined,
-										{} as Parameters<ToolDefinition["execute"]>[4],
-									);
+									await executeWorkflowDecision(structuredTool, "structured-call-fallback", { ok: true });
 								},
 							};
 						},

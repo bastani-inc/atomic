@@ -1,4 +1,11 @@
-import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type ImageContent,
+	type Model,
+	type ToolResultMessage,
+} from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";
@@ -41,6 +48,50 @@ type FakeRuntimeHost = {
 	dispose: ReturnType<typeof vi.fn>;
 	setRebindSession: ReturnType<typeof vi.fn>;
 };
+
+const inferenceModel: Model<Api> = {
+	provider: "print-test",
+	id: "chat",
+	name: "Print test chat",
+	api: "openai-completions",
+	baseUrl: "https://example.invalid",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 32000,
+	maxTokens: 4096,
+};
+
+function inferenceContext(result: Record<string, boolean>): ExtensionContext {
+	const streamSimple = () => {
+		const stream = createAssistantMessageEventStream();
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "result", name: "structured_output", arguments: result }],
+			api: inferenceModel.api,
+			provider: inferenceModel.provider,
+			model: inferenceModel.id,
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: Date.now(),
+		};
+		stream.push({ type: "done", reason: "toolUse", message });
+		return stream;
+	};
+	return {
+		model: inferenceModel,
+		modelRegistry: { getAll: () => [inferenceModel], streamSimple },
+	} as unknown as ExtensionContext;
+}
+
+const inferenceArgs = { instructions: "Return the final decision.", state: { task: "Decide." } };
 
 function createAssistantMessage(options?: {
 	text?: string;
@@ -249,10 +300,10 @@ describe("runPrintMode", () => {
 		});
 		const result = await structuredOutputTool.execute(
 			"structured-call-1",
-			{ ok: true },
+			inferenceArgs,
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			inferenceContext({ ok: true }),
 		);
 
 		expect(result.content).toEqual([{ type: "text", text: finalJson }]);
@@ -299,10 +350,10 @@ describe("runPrintMode", () => {
 		});
 		const result = await structuredOutputTool.execute(
 			"custom-structured-call-1",
-			{ approved: true },
+			inferenceArgs,
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			inferenceContext({ approved: true }),
 		);
 
 		expect(result.content).toEqual([{ type: "text", text: finalJson }]);

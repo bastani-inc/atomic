@@ -154,7 +154,7 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 ### Structured decisions
 
-Use `inferStructuredOutput()` with an explicit inference model for a single schema-validated semantic decision without starting an agent session or executing tools. It supports ordinary configured models and the decision-only Jev integrations listed by `getStructuredOutputProviders()` (direct TypeSafe, OpenRouter, Vercel AI Gateway, OpenCode Zen), and never reads `routerModel`. Gateway Jev reuses that gateway's existing authentication. The separate `inferRouterDecision()` entrypoint shares `routerModel` resolution for workflow-stage and subagent `model: "auto"` selection only. Neither API changes the selected chat model or the `structured_output` tool. See [Structured decisions](/sdk/structured-decisions) for state preparation, examples, provider limits and failure handling.
+Use `inferStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model; the current chat model is also the terminal fallback. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema and never read `routerModel`. `inferRouterDecision()` owns `routerModel` for workflow-stage and subagent `model: "auto"` selection and takes `classifier: { questions, decode }`. Neither API changes the selected chat model. See [Structured decisions](/sdk/structured-decisions).
 
 ### System Prompt
 
@@ -306,68 +306,48 @@ Normal sessions also expose `kill({ id: taskId })` for their owned bash and Powe
 
 #### Structured output final results
 
-`structured_output` is not registered in normal agent sessions by default. Add it only when a caller needs a machine-readable final-answer contract by registering the exported factory as a custom tool:
+`structured_output` is not registered in normal agent sessions by default. Register the factory when a caller needs a schema-validated decision inferred by a selected model:
 
 ```typescript
-import { Type, type Static } from "typebox";
-import {
-  createAgentSession,
-  createStructuredOutputTool,
-  type StructuredOutputCapture,
-} from "@bastani/atomic";
+import { Type } from "typebox";
+import { createAgentSession, createStructuredOutputTool } from "@bastani/atomic";
 
 const DecisionSchema = Type.Object({
-  approved: Type.Boolean(),
-  findings: Type.Array(Type.String()),
+  category: Type.Union([Type.Literal("question"), Type.Literal("statement")]),
 }, { additionalProperties: false });
 
-type Decision = Static<typeof DecisionSchema>;
-const capture: StructuredOutputCapture<Decision> = {
-  called: false,
-  value: undefined,
-};
-
-const structuredOutput = createStructuredOutputTool({
-  schema: DecisionSchema,
-  capture,
-});
+const structuredOutput = createStructuredOutputTool({ schema: DecisionSchema });
 
 const { session } = await createAgentSession({
   customTools: [structuredOutput],
+  tools: ["structured_output"],
 });
 ```
 
-The tool parameters are exactly the supplied schema. With `DecisionSchema`, the model calls `structured_output({ approved, findings })`. The factory also accepts array and primitive schemas when the target provider/tool runtime supports them; the captured value is whatever JSON value matches the schema.
+The calling model does not supply the decision fields. It calls `structured_output` with:
 
-A successful call:
+- `instructions`: the judgment to make.
+- `state`: a nonempty named object containing the task and relevant context. Do not put secrets here.
+- `model`: optional exact `provider/model` ID of a chat model or a registered classifier. Omit it to use the current stage or session chat model.
+- `fallbackModels`: optional ordered exact IDs tried after the primary.
 
-- Stores the parameters in `capture.value`.
-- Returns pretty-printed JSON tool-result text for text print mode and keeps the flat value in tool `details`.
-- Writes the same JSON to `output.outputPath` when an `output` file sink is configured.
-- Sets `terminate: true`, preventing an extra follow-up assistant turn.
+The tool infers the result through the session model registry. A successful call returns the schema-validated value as pretty-printed JSON, stores that value in `details`, and sets `terminate: true`. It does not capture the calling model's arguments as the decision. A classifier is used only when the registered schema is a finite Choice; otherwise that candidate is skipped and the next fallback, then the current chat model, is tried. A classifier failure such as missing credentials, an unavailable provider, an unsupported classify operation, or a malformed answer advances the same chain. Cancellation and a safety refusal stop the call. Saved `/login` credentials are used through the session model registry; a listed model does not prove live access.
 
-Atomic relies on the tool schema, not extra structured-output parsing or sidecar validation. Structured-output tool definitions opt out of oversized-result persistence.
-
-Custom tool names are supported, and the prompt metadata follows the configured name. If you use a custom name such as `final_decision`, include that name in any explicit `tools` allowlist. If the standard `structured_output` name is required, register the factory with its default name:
+A custom tool name still works. Include that name in any explicit `tools` allowlist:
 
 ```typescript
 const finalDecision = createStructuredOutputTool({
   name: "final_decision",
   schema: DecisionSchema,
-  capture,
 });
-// The model is prompted to call final_decision exactly once, not structured_output.
 
 await createAgentSession({
   customTools: [finalDecision],
-  tools: ["final_decision"], // only this tool is enabled
-});
-
-await createAgentSession({
-  customTools: [createStructuredOutputTool({ schema: DecisionSchema, capture })],
-  // Registers the standard structured_output tool for this session only.
+  tools: ["final_decision"],
 });
 ```
+
+Custom tool names are supported, and the prompt metadata follows the configured name. The examples above use `final_decision` and the default `structured_output` name. Include the name you register in any explicit `tools` allowlist.
 
 > See [examples/sdk/05-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/05-tools.ts)
 
@@ -848,8 +828,6 @@ createStructuredOutputCapture
 inferStructuredOutput
 inferRouterDecision
 resolveRouterModel
-getStructuredOutputProviders
-JEV_STRUCTURED_OUTPUT_PROVIDER
 getAgentDir
 getPackageDir
 getReadmePath

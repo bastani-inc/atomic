@@ -1,4 +1,4 @@
-import type { Api, Model, Transport } from "@bastani/pi-ai/compat";
+import type { Api, ClassifierApi, ClassifierModel, Model, Transport } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import type {
@@ -30,6 +30,7 @@ export interface SettingsConfig {
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
 	availableDefaultModels?: Model<Api>[];
+	availableClassifierModels?: ClassifierModel<ClassifierApi>[];
 	routerModel?: string;
 	routerModelScope?: "global" | "project";
 	modelThinkingLevels?: Record<string, ThinkingLevel>;

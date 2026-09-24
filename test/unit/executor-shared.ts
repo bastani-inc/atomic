@@ -28,6 +28,8 @@ import {
 	WORKFLOW_UNKNOWN_MODEL_MESSAGE,
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { decisionMessage } from "../helpers/structured-output.js";
+import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 async function waitForExecutorStagePendingPrompt(
 	store: ReturnType<typeof createStore>,
@@ -284,15 +286,29 @@ function structuredOutputMockSession(
 				return;
 			}
 			messages.push({
-				role: "assistant",
-				content: [{ type: "toolCall", id: "structured-call", name: "structured_output" }],
-			} as AgentSession["messages"][number]);
-			const result = await structuredTool.execute(
+				...decisionMessage(),
+				// Usage-sensitive callers append their own accounting turn.
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				content: [
+					{
+						type: "toolCall",
+						id: "structured-call",
+						name: "structured_output",
+						arguments: workflowDecisionArgs(payload as Parameters<typeof workflowDecisionArgs>[0]),
+					},
+				],
+			});
+			const result = await executeWorkflowDecision(
+				structuredTool,
 				"structured-call",
-				payload as Parameters<ToolDefinition["execute"]>[1],
-				undefined,
-				undefined,
-				{} as Parameters<ToolDefinition["execute"]>[4],
+				payload as Parameters<typeof executeWorkflowDecision>[2],
 			);
 			for (const listener of listeners) {
 				listener({

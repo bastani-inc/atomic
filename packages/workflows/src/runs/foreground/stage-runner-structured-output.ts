@@ -58,10 +58,10 @@ export function formatStructuredOutputCorrectionPrompt(
 		"Error:",
 		error,
 		"",
-		"You must finish by calling the `structured_output` tool exactly once with arguments matching the registered schema.",
-		"If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
+		"You must finish by calling the `structured_output` tool exactly once with instructions and nonempty named state for the registered result schema.",
+		"If you attempted `structured_output` and inference failed, correct its model, fallbackModels, instructions, or state and call it again.",
 		needsArtifactText
-			? "In the same final assistant message, include the complete human-readable artifact as ordinary text before calling `structured_output`; the tool arguments are the separate machine-readable result. Do not put prose after the tool call, and do not write the artifact as plain JSON text or Markdown code."
+			? "In the same final assistant message, include the complete human-readable artifact as ordinary text before calling `structured_output`; its inferred result is the separate machine-readable value. Do not put prose after the tool call, and do not write the artifact as plain JSON text or Markdown code."
 			: "Do not answer with plain JSON text, Markdown, or prose.",
 	].join("\n");
 }
@@ -98,7 +98,7 @@ export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
 			if (executionCapture !== undefined && capture.called) {
 				executionCapture.snapshot = {
 					toolCallId: args[0],
-					value: args[1],
+					value: capture.value as Static<TSchemaDef>,
 				};
 			}
 			return result;

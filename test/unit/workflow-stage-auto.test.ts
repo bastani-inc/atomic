@@ -19,7 +19,6 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { type JevFixtureRequest, jevFixtureResponse } from "../helpers/jev-tournament.js";
 import {
 	decisionMessage,
 	decisionModel,
@@ -35,6 +34,32 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	setDurableBackend(undefined);
 });
+
+interface ClassifierWireRequest {
+	model: string;
+	state: Record<string, unknown>;
+	questions: Record<string, { type: string; instructions: string; criteria: Record<string, string> }>;
+}
+
+function classifierWireResponse(request: ClassifierWireRequest) {
+	return {
+		answers: Object.fromEntries(
+			Object.entries(request.questions).map(([id, question]) => {
+				const keys = Object.keys(question.criteria);
+				return [
+					id,
+					{
+						type: "choice",
+						choice: keys[0],
+						confidence: 1,
+						probabilities: Object.fromEntries(keys.map((key, index) => [key, index === 0 ? 1 : 0])),
+					},
+				];
+			}),
+		),
+	};
+}
+
 async function fixture() {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
@@ -160,12 +185,14 @@ test("long stage prompts are excerpted only for routing, never for execution", a
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 	const task = `Review this implementation.\n${"reference ".repeat(20_000)}\n<keepContext>Read-only review.</keepContext>\nReport defects.`;
-	const transport = vi.fn(async (_url: string, init: RequestInit) => {
-		const body = JSON.parse(String(init.body));
-		assert.ok(Buffer.byteLength(String(init.body)) < 30_000);
-		assert.match(body.state.task, /omitted/);
-		assert.match(body.state.task, /<keepContext>Read-only review.<\/keepContext>/);
-		return Response.json(jevFixtureResponse(body));
+	const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+		assert.match(String(url), /\/systemone$/);
+		const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
+		assert.ok(Buffer.byteLength(String(init?.body)) < 30_000);
+		assert.equal(body.model, "jev-latest");
+		assert.match(String(body.state.task), /omitted/);
+		assert.match(String(body.state.task), /<keepContext>Read-only review.<\/keepContext>/);
+		return Response.json(classifierWireResponse(body));
 	});
 	vi.stubGlobal("fetch", transport);
 	const models = workflowModelCatalogFromContext({
@@ -580,35 +607,59 @@ test("reasoning fallback preserves explicit and inherited efforts and immutable 
 });
 
 for (const auth of ["stored", "env"] as const) {
-	test(`stage auto selects Jev through normal ${auth} auth without Jev execution`, async () => {
+	test(`stage auto routes through an explicit registered classifier with ${auth} auth without classifier execution`, async () => {
 		const f = await fixture();
 		const key = "synthetic-stage-jev-key";
 		if (auth === "env") vi.stubEnv("TYPESAFE_API_KEY", key);
-		else {
-			await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key });
-		}
+		else await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key });
+		const classify = vi.spyOn(f.modelRegistry, "classify");
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 			assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
-			const body = JSON.parse(String(init?.body)) as JevFixtureRequest;
+			const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
 			assert.equal(JSON.stringify(body).includes(key), false);
-			return Response.json(jevFixtureResponse(body));
+			return Response.json(classifierWireResponse(body));
 		});
 		vi.stubGlobal("fetch", fetch);
 		const models = workflowModelCatalogFromContext({
 			model: decisionModel,
 			modelRegistry: f.modelRegistry,
-			getRouterModel: () => "",
+			getRouterModel: () => "typesafe/jev-latest",
 		});
 		const ctx = createStageContext(makeOpts({ adapters: f.adapters, models, stageOptions: { model: "auto" } }));
 		await ctx.prompt("Actual task");
 		assert.deepEqual(f.admissions, ["decision-test/chat"]);
+		assert.equal(classify.mock.calls.length, 1);
+		assert.equal(classify.mock.calls[0]?.[0].id, "jev-latest");
 		assert.equal(f.infer.mock.calls.length, 0);
 		assert.equal(fetch.mock.calls.length, 1);
 		await ctx.__dispose();
 	});
 }
 
-test("stage auto sends stored Jev auth to the session's configured TypeSafe classifier endpoint", async () => {
+for (const routerModel of ["", "auto"]) {
+	test(`stage auto with routerModel=${JSON.stringify(routerModel)} routes on the current chat model even with classifier credentials`, async () => {
+		const f = await fixture();
+		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-stage-jev-key");
+		await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key: "synthetic-stored-jev-key" });
+		const classify = vi.spyOn(f.modelRegistry, "classify");
+		const fetch = vi.fn();
+		vi.stubGlobal("fetch", fetch);
+		const models = workflowModelCatalogFromContext({
+			model: decisionModel,
+			modelRegistry: f.modelRegistry,
+			getRouterModel: () => routerModel,
+		});
+		const ctx = createStageContext(makeOpts({ adapters: f.adapters, models, stageOptions: { model: "auto" } }));
+		await ctx.prompt("Actual task");
+		assert.deepEqual(f.admissions, ["decision-test/chat"]);
+		assert.equal(classify.mock.calls.length, 0);
+		assert.equal(fetch.mock.calls.length, 0);
+		assert.equal(f.infer.mock.calls.length, 1);
+		await ctx.__dispose();
+	});
+}
+
+test("stage auto sends stored classifier auth to the session's configured TypeSafe classifier endpoint", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const dir = mkdtempSync(join(tmpdir(), "workflow-stage-jev-endpoint-"));
 	try {
@@ -636,13 +687,13 @@ test("stage auto sends stored Jev auth to the session's configured TypeSafe clas
 			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 				endpoints.push(String(url));
 				assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
-				return Response.json(jevFixtureResponse(JSON.parse(String(init?.body)) as JevFixtureRequest));
+				return Response.json(classifierWireResponse(JSON.parse(String(init?.body)) as ClassifierWireRequest));
 			}),
 		);
 		const models = workflowModelCatalogFromContext({
 			model: decisionModel,
 			modelRegistry,
-			getRouterModel: () => "",
+			getRouterModel: () => "typesafe/jev-latest",
 		});
 		assert.ok(models?.routeModel);
 		const route = await models.routeModel({ task: "Actual task", stageName: "analyze", constraints: [] });

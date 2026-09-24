@@ -17,6 +17,7 @@ import {
 	makeOpts,
 	Type,
 } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 const retrySettings = (
 	overrides: Partial<ReturnType<NonNullable<WorkflowSettingsManager["getRetrySettings"]>>> = {},
@@ -534,7 +535,7 @@ describe("createStageContext — thrown model failure retry", () => {
 						promptCalls += 1;
 						const tool = createOptions?.customTools?.find((entry) => entry.name === "structured_output");
 						assert.ok(tool);
-						await tool.execute("structured-call", { ok: true }, undefined, undefined, undefined as never);
+						await executeWorkflowDecision(tool, "structured-call", { ok: true });
 						throw new Error("503 service unavailable after structured output");
 					},
 					{ getLastAssistantText: () => undefined },

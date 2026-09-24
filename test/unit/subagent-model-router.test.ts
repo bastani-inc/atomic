@@ -1,4 +1,3 @@
-// #3090: real shared inference with mocked provider transports, never live API calls.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -7,6 +6,8 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import {
 	type Api,
+	type ClassifierContext,
+	type ClassifierResult,
 	createAssistantMessageEventStream,
 	createProvider,
 	getCurrentTools,
@@ -31,7 +32,6 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js"
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.js";
 import { routeSubagentModel } from "../../packages/subagents/src/runs/shared/model-router.js";
 import { parseModelConstraints } from "../../packages/subagents/src/shared/model-constraints.js";
-import { type JevFixtureRequest, jevFixtureResponse } from "../helpers/jev-tournament.js";
 import {
 	decisionMessage,
 	decisionModel,
@@ -70,6 +70,36 @@ async function fixture() {
 		getRouterModel: () => "decision-test/chat",
 	} as ExtensionContext;
 	return { ctx, infer, route: (task = "Fix the approved defect") => routeSubagentModel({ ctx, agent, task }) };
+}
+
+function mockClassifier(
+	f: Awaited<ReturnType<typeof fixture>>,
+	select: (keys: string[], id: string, context: ClassifierContext) => string = (keys) => keys[0]!,
+) {
+	const model = f.ctx.modelRegistry.getClassifierModel("typesafe", "jev-latest");
+	assert.ok(model);
+	f.ctx.getRouterModel = () => `${model.provider}/${model.id}`;
+	return vi.spyOn(f.ctx.modelRegistry, "classify").mockImplementation(async (_selected, context) => {
+		const answers: ClassifierResult["answers"] = {};
+		for (const [id, question] of Object.entries(context.questions)) {
+			assert.equal(question.type, "choice");
+			if (question.type !== "choice") throw new Error("Expected Choice question");
+			answers[id] = {
+				type: "choice",
+				choice: select(Object.keys(question.criteria), id, context),
+				probabilities: {},
+				confidence: 1,
+			};
+		}
+		return {
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			answers,
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+	});
 }
 
 test("auto routing admits multimodal-input chat but excludes image and classifier models, even from a native provider", async () => {
@@ -152,26 +182,8 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 	}
 });
 
-function jevPayloadBytes(body: string): { total: number; stateAndLongestQuestion: number } {
-	const request = JSON.parse(body) as JevFixtureRequest & { model?: string };
-	return {
-		total: Buffer.byteLength(body, "utf8"),
-		stateAndLongestQuestion: Math.max(
-			...Object.entries(request.questions).map(([id, question]) =>
-				Buffer.byteLength(
-					JSON.stringify({ model: request.model, state: request.state, questions: { [id]: question } }),
-					"utf8",
-				),
-			),
-		),
-	};
-}
-
-const ROUTING_STATE_AND_LONGEST_BYTES = 30_000;
-const ROUTING_STATE_AND_ALL_BYTES = 48_000;
-
-test("execution routing keeps the real evals, guide, budget-sized task, and nine verbose candidates within Jev budgets", async () => {
-	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
+test("explicit classifier routing receives evals, guide, task, and all eligible candidates", async () => {
+	const f = await fixture();
 	const candidates = Array.from({ length: 9 }, (_, index) => ({
 		...decisionModel,
 		id: `candidate-${index + 1}`,
@@ -179,50 +191,25 @@ test("execution routing keeps the real evals, guide, budget-sized task, and nine
 		contextWindow: 128_000,
 		cost: { input: 1.25, output: 7.5, cacheRead: 0.2, cacheWrite: 1.5 },
 	}));
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(candidates);
+	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
 	const seen = new Set<string>();
-	let maxTotal = 0;
-	let maxStateAndLongest = 0;
-	const transport = vi.fn(async (_url: string, init: RequestInit) => {
-		const body = String(init.body);
-		const size = jevPayloadBytes(body);
-		maxTotal = Math.max(maxTotal, size.total);
-		maxStateAndLongest = Math.max(maxStateAndLongest, size.stateAndLongestQuestion);
-		const request = JSON.parse(body) as JevFixtureRequest;
-		assert.equal(request.state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
-		assert.equal(request.state.model_selection_guide, MODEL_SELECTION_GUIDE);
-		for (const question of Object.values(request.questions)) {
+	const classify = mockClassifier(f, (keys, _id, context) => {
+		assert.equal(context.state.evals, expectedEvals);
+		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
+		for (const question of Object.values(context.questions)) {
+			assert.equal(question.type, "choice");
+			if (question.type !== "choice") continue;
 			for (const [key, value] of Object.entries(question.criteria)) {
-				const candidate = JSON.parse(value) as { model: string };
-				seen.add(candidate.model);
+				seen.add((JSON.parse(value) as { model: string }).model);
 				assert.match(key, /^pair_\d+$/u);
 			}
 		}
-		return Response.json(jevFixtureResponse(request));
+		return keys[0]!;
 	});
-	vi.stubGlobal("fetch", transport);
-	const result = await routeExecutionModel({
-		ctx: {
-			model: decisionModel,
-			getRouterModel: () => "typesafe/jev-latest",
-			modelRegistry: {
-				getAll: () => candidates,
-				getAvailable: () => candidates,
-				containsConfiguredCredential: async () => false,
-				streamSimple: () => {
-					throw new Error("Jev should make the decision");
-				},
-			},
-		},
-		task: taskNearRoutingLimit(),
-		agent,
-	});
-	assert.equal(transport.mock.calls.length, 3);
+	const result = await f.route(taskNearRoutingLimit());
+	assert.equal(classify.mock.calls.length, 3);
 	assert.equal(seen.size, candidates.length);
-	assert.ok(
-		maxStateAndLongest <= ROUTING_STATE_AND_LONGEST_BYTES,
-		`${maxStateAndLongest} > ${ROUTING_STATE_AND_LONGEST_BYTES}`,
-	);
-	assert.ok(maxTotal <= ROUTING_STATE_AND_ALL_BYTES, `${maxTotal} > ${ROUTING_STATE_AND_ALL_BYTES}`);
 	assert.equal(result.routerSelection.model, "decision-test/candidate-1");
 });
 
@@ -680,59 +667,45 @@ test("routing accepts a valid selection after the former deadline without retry"
 	assert.equal(f.infer.mock.calls.length, 1);
 });
 
-test("Jev uses one Choice over complete pairs and deterministically maps the selected key", async () => {
+test("an explicit registered classifier selects complete pairs and falls back from invalid answers", async () => {
 	const f = await fixture();
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 	f.ctx.getRouterModel = () => "";
-	const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-		const body = JSON.parse(init?.body as string);
-		assert.equal(body.model, "jev-latest");
-		assert.equal(body.state.task, "Fix the approved defect");
-		assert.deepEqual(body.state.agent, { name: agent.name, description: agent.description });
-		return Response.json({
-			model: "jev-latest",
-			answers: { pair: { type: "choice", choice: "pair_0", probabilities: { pair_0: 1 }, confidence: 1 } },
-			usage: { input_tokens: 1, output_tokens: 1 },
-		});
-	});
-	vi.stubGlobal("fetch", fetch);
-	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
-	assert.equal(fetch.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 0);
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
-	vi.spyOn(console, "warn").mockImplementation(() => {});
-	fetch.mockImplementation(async () =>
-		Response.json({
-			answers: { pair: { type: "choice", choice: "bogus", probabilities: { bogus: 1 }, confidence: 1 } },
-		}),
-	);
-	// #3206: the malformed pinned-Jev decision falls back to the chat router.
 	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
 	assert.equal(f.infer.mock.calls.length, 1);
+	let choice = "pair_0";
+	const classify = mockClassifier(f, (_keys, _id, context) => {
+		assert.equal(context.state.task, "Fix the approved defect");
+		assert.deepEqual(context.state.agent, { name: agent.name, description: agent.description });
+		return choice;
+	});
+	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 1);
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	choice = "bogus";
+	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
+	assert.equal(f.infer.mock.calls.length, 2);
 	f.ctx.model = undefined;
-	await assert.rejects(f.route(), /choice|invalid|malformed/i);
+	await assert.rejects(f.route(), /Classifier returned no valid decision/);
 });
 
-test("Jev covers 1997 pairs without filtering; ordinary router retains full catalog", async () => {
+test("registered classifiers and chat routers both receive all 1997 eligible model pairs", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
 		Array.from({ length: 1997 }, (_, index) => ({ ...decisionModel, id: `m${index}` })),
 	);
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "";
 	const seen = new Set<string>();
-	const fetch = vi.fn(async (_url: string, init: RequestInit) => {
-		const request = JSON.parse(String(init.body)) as JevFixtureRequest;
-		for (const q of Object.values(request.questions)) {
-			assert.ok(Object.keys(q.criteria).length <= 255);
-			for (const key of Object.keys(q.criteria)) seen.add(key);
-		}
-		return Response.json(jevFixtureResponse(request));
+	const classify = mockClassifier(f, (keys, id, context) => {
+		assert.equal(id, "pair");
+		const question = context.questions[id];
+		assert.equal(question?.type, "choice");
+		if (question?.type !== "choice") throw new Error("Expected Choice question");
+		for (const key of Object.keys(question.criteria)) seen.add(key);
+		return keys[0]!;
 	});
-	vi.stubGlobal("fetch", fetch);
 	assert.equal((await f.route()).routerSelection.model, "decision-test/m0");
 	assert.equal(seen.size, 1997);
-	assert.ok(fetch.mock.calls.length > 1);
+	assert.ok(classify.mock.calls.length >= 1);
 	f.ctx.getRouterModel = () => "decision-test/chat";
 	let rank = 255;
 	f.infer.mockImplementation(() =>
@@ -775,157 +748,101 @@ test("default reasoning catalog does not invent extended effort support (#3206)"
 	f.ctx.model = decisionModel;
 });
 
-test("router model precedence preserves chat fallback and rejects recursive or invalid explicit configuration", async () => {
+test("router defaults and auto use current chat while invalid explicit configuration fails", async () => {
 	const f = await fixture();
 	f.ctx.getRouterModel = () => "";
 	await f.route();
 	assert.equal(f.infer.mock.calls[0]![0].id, decisionModel.id);
 	f.ctx.getRouterModel = () => "auto";
-	await assert.rejects(f.route(), /auto|concrete/i);
+	await f.route();
 	f.ctx.getRouterModel = () => "missing/model";
 	await assert.rejects(f.route(), /Invalid routerModel/);
-	assert.equal(f.infer.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 2);
 	assert.equal(f.ctx.model, decisionModel);
 });
 
-for (const failure of ["stale", "provider"] as const) {
-	test(`overflow subagent ${failure} fails before returning a route`, async () => {
-		const f = await fixture();
-		const catalog = vi
-			.spyOn(f.ctx.modelRegistry, "getAvailable")
-			.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
-		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-		f.ctx.getRouterModel = () => "typesafe/jev-latest";
-		// No current chat model, so the routing failure stays observable (#3206).
-		if (failure === "provider") f.ctx.model = undefined;
-		const fetch = vi.fn(async (_url: string, init: RequestInit) => {
-			const request = JSON.parse(String(init.body)) as JevFixtureRequest;
-			if (request.questions.pair) {
-				if (failure === "provider") return new Response("private", { status: 422 });
-				catalog.mockReturnValue([]);
-			}
-			return Response.json(jevFixtureResponse(request));
-		});
-		vi.stubGlobal("fetch", fetch);
-		await assert.rejects(f.route(), failure === "stale" ? /no longer eligible/ : /HTTP 422/);
-		assert.ok(fetch.mock.calls.length > 1);
-		assert.equal(f.infer.mock.calls.length, 0);
-	});
-}
-
-test("hello-world routing receives evals and fits one small Jev request", async () => {
+test("a stale model catalog fails before a classifier selection can launch a subagent", async () => {
 	const f = await fixture();
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...decisionModel, id: "gpt-5.6-luna" }]);
-	const transport = vi.fn(async (_url: string, init: RequestInit) =>
-		Response.json(jevFixtureResponse(JSON.parse(String(init.body)) as JevFixtureRequest)),
+	const catalog = vi
+		.spyOn(f.ctx.modelRegistry, "getAvailable")
+		.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
+	const classify = mockClassifier(f, (keys) => {
+		catalog.mockReturnValue([]);
+		return keys[0]!;
+	});
+	await assert.rejects(f.route(), /no longer eligible/);
+	assert.ok(classify.mock.calls.length >= 1);
+	assert.equal(f.infer.mock.calls.length, 0);
+});
+
+test("classifier provider failure cannot return a route without a current chat model", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
+		Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })),
 	);
-	vi.stubGlobal("fetch", transport);
+	const classify = mockClassifier(f);
+	f.ctx.model = undefined;
+	classify.mockRejectedValue(new Error("HTTP 422 private provider detail"));
+	await assert.rejects(f.route(), /Classifier returned no valid decision/);
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 0);
+});
+
+test("a registered classifier receives a complete short subagent task and its evals", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...decisionModel, id: "gpt-5.6-luna" }]);
+	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
+	const classify = mockClassifier(f, (keys, _id, context) => {
+		assert.equal(context.state.task, "Reply with exactly: Hello, world! No tools or file changes.");
+		assert.equal(context.state.evals, expectedEvals);
+		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
+		assert.equal(context.state.policy, undefined);
+		assert.equal(context.state.evidence, undefined);
+		return keys[0]!;
+	});
 	const result = await f.route("Reply with exactly: Hello, world! No tools or file changes.");
 	assert.equal(result.modelOverride, "decision-test/gpt-5.6-luna");
-	assert.equal(transport.mock.calls.length, 1);
-	const body = String(transport.mock.calls[0]![1].body);
-	const payload = JSON.parse(body);
-	assert.equal(payload.state.task, "Reply with exactly: Hello, world! No tools or file changes.");
-	assert.equal(payload.state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
-	assert.equal(payload.state.model_selection_guide, MODEL_SELECTION_GUIDE);
-	const stateAndQuestionBytes = Math.max(
-		...Object.entries(payload.questions as Record<string, unknown>).map(([id, question]) =>
-			Buffer.byteLength(
-				JSON.stringify({ model: payload.model, state: payload.state, questions: { [id]: question } }),
-				"utf8",
-			),
-		),
-	);
-	assert.ok(Buffer.byteLength(body) <= 48_000);
-	assert.ok(stateAndQuestionBytes <= 30_000);
-	assert.match(String(payload.state.evals), /# Evals/);
-	assert.equal(payload.state.model_selection_guide, MODEL_SELECTION_GUIDE);
-	assert.equal(payload.state.policy, undefined);
-	assert.equal(payload.state.evidence, undefined);
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("maximal real eval routing payload preserves prompt and stays under conservative Jev bytes", async () => {
+test("a classifier receives the intact near-limit task, evals, and two eligible pairs", async () => {
 	const f = await fixture();
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
-	const models = [
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
 		{ ...decisionModel, id: "small-a" },
 		{ ...decisionModel, id: "small-b", cost: { ...decisionModel.cost, input: 0.25, output: 0.5 } },
-	];
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(models);
+	]);
 	const task = taskNearRoutingLimit();
 	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > MODEL_ROUTING_TASK_BYTES - 200);
-	const transport = vi.fn(async (_url: string, init: RequestInit) => {
-		const body = String(init.body);
-		const bytes = jevPayloadBytes(body);
-		assert.ok(bytes.stateAndLongestQuestion <= 30_000, String(bytes.stateAndLongestQuestion));
-		assert.ok(bytes.total <= 48_000, String(bytes.total));
-		const request = JSON.parse(body) as JevFixtureRequest & { model: string };
-		assert.equal(request.state.task, task);
-		assert.equal(request.state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
-		assert.match(String(request.state.task), /{"quoted":"value\\n"}/);
-		assert.match(String(request.state.task), /Ω界/);
-		assert.ok(Object.keys(request.questions.pair.criteria).length <= 2);
-		return Response.json(jevFixtureResponse(request, (keys) => keys[1] ?? keys[0]!));
+	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
+	const classify = mockClassifier(f, (keys, _id, context) => {
+		assert.equal(context.state.task, task);
+		assert.equal(context.state.evals, expectedEvals);
+		assert.match(String(context.state.task), /{"quoted":"value\\n"}/);
+		assert.match(String(context.state.task), /Ω界/);
+		return keys[1] ?? keys[0]!;
 	});
-	vi.stubGlobal("fetch", transport);
 	const result = await f.route(task);
 	assert.equal(result.modelOverride, "decision-test/small-b");
-	assert.equal(transport.mock.calls.length, 2);
+	assert.equal(classify.mock.calls.length, 2);
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("real eval routing tournament preserves evals in every Jev request", async () => {
-	const f = await fixture();
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
-		Array.from({ length: 9 }, (_, index) => ({ ...decisionModel, id: `candidate-${index}` })),
-	);
-	const seen = new Set<string>();
-	const transport = vi.fn(async (_url: string, init: RequestInit) => {
-		const body = String(init.body);
-		const bytes = jevPayloadBytes(body);
-		assert.ok(bytes.stateAndLongestQuestion <= 30_000, String(bytes.stateAndLongestQuestion));
-		assert.ok(bytes.total <= 48_000, String(bytes.total));
-		const request = JSON.parse(body) as JevFixtureRequest;
-		assert.equal(request.state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
-		for (const question of Object.values(request.questions)) {
-			for (const criterion of Object.values(question.criteria)) seen.add(JSON.parse(criterion).model as string);
-		}
-		return Response.json(jevFixtureResponse(request));
-	});
-	vi.stubGlobal("fetch", transport);
-	const result = await f.route("Select among a practical tournament catalog without editing the execution prompt.");
-	assert.equal(result.modelOverride, "decision-test/candidate-0");
-	assert.equal(seen.size, 9);
-	assert.ok(transport.mock.calls.length > 1);
-	assert.equal(f.infer.mock.calls.length, 0);
-});
-
-test("long auto-routing tasks fit Jev while preserving protected requirements and both ends", async () => {
+test("long auto-routing tasks preserve protected requirements and both ends for a classifier", async () => {
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
 	const protectedText = "<keepContext>Review only. Never edit files.</keepContext>";
 	const task = `Review this change.\n${"reference data ".repeat(10000)}${protectedText}${"more data ".repeat(10000)}\nReport defects.`;
-	const transport = vi.fn(async (_url: string, init: RequestInit) => {
-		const body = JSON.parse(String(init.body));
-		assert.ok(Buffer.byteLength(String(init.body)) < 30_000);
-		assert.ok(body.state.task.includes(protectedText));
-		assert.match(body.state.task, /Review this change/);
-		assert.match(body.state.task, /Report defects/);
-		assert.match(body.state.task, /omitted/);
-		return Response.json(jevFixtureResponse(body));
+	const classify = mockClassifier(f, (keys, _id, context) => {
+		assert.ok(String(context.state.task).includes(protectedText));
+		assert.match(String(context.state.task), /Review this change/);
+		assert.match(String(context.state.task), /Report defects/);
+		assert.match(String(context.state.task), /omitted/);
+		return keys[0]!;
 	});
-	vi.stubGlobal("fetch", transport);
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
-	assert.equal(transport.mock.calls.length, 1);
+	assert.equal(classify.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 0);
-	// Routing-only truncation is invisible to the user: no console notice.
 	assert.deepEqual(notice.mock.calls, []);
 });
 
@@ -935,19 +852,16 @@ test("auto routing screens credentials even in omitted middle text", async () =>
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("oversized protected tasks still fall back intact or fail when Jev is pinned", async () => {
+test("classifier size rejection falls back to chat with the intact protected task", async () => {
 	const f = await fixture();
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
 	vi.spyOn(console, "warn").mockImplementation(() => {});
-	const transport = vi.fn();
-	vi.stubGlobal("fetch", transport);
+	const classify = mockClassifier(f);
+	classify.mockRejectedValue(new Error("request too large"));
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
-	// #3206: the pinned Jev context overflow falls back to the chat router too.
 	await f.route(task);
 	f.ctx.getRouterModel = () => "";
 	await f.route(task);
-	assert.equal(transport.mock.calls.length, 0);
+	assert.equal(classify.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 2);
 	assert.equal(
 		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state

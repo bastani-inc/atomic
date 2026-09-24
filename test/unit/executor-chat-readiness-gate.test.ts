@@ -18,6 +18,7 @@ import {
 	test,
 	workflow,
 } from "./executor-shared.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 interface PendingReadiness {
 	readonly runId: string;
@@ -501,13 +502,7 @@ describe("executor — chat answer readiness integration", () => {
 											result: { details: { answers: [{ kind: "chat", answer: "Chat about this" }] } },
 										});
 									}
-									await structuredTool.execute(
-										"structured",
-										{ approved: true },
-										undefined,
-										undefined,
-										{} as Parameters<ToolDefinition["execute"]>[4],
-									);
+									await executeWorkflowDecision(structuredTool, "structured", { approved: true });
 								},
 								subscribe(listener) {
 									const typed = listener as (event: { type: string; [key: string]: unknown }) => void;

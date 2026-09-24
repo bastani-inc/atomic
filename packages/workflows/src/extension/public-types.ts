@@ -75,6 +75,7 @@ export interface PiRuntimeModelRegistry
 			| "getProviderAuthStatus"
 			| "getProviderAuth"
 			| "getClassifierModel"
+			| "classify"
 		>
 	> {
 	getAvailable(): PiRuntimeModel[];

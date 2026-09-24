@@ -24,7 +24,7 @@ export interface ModelRoutingContext {
 		ModelRegistry,
 		"getAll" | "getAvailable" | "streamSimple" | "containsConfiguredCredential"
 	> &
-		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel">>;
+		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
 	readonly model?: Model<Api>;
 	getRouterModel(): string;
 }
@@ -237,7 +237,7 @@ export async function routeExecutionModel(input: {
 						state,
 						instructions,
 						schema,
-						jev: {
+						classifier: {
 							questions: {
 								pair: {
 									instructions:

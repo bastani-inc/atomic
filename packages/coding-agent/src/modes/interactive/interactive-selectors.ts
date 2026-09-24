@@ -64,6 +64,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				thinkingLevel: this.session.thinkingLevel,
 				availableThinkingLevels: this.session.getAvailableThinkingLevels(),
 				availableDefaultModels: [...this.session.modelRuntime.getAvailableSnapshot()],
+				availableClassifierModels: [...this.session.modelRuntime.getModelsOfType("classifier")],
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				routerModel: this.settingsManager.getRouterModel(),
 				routerModelScope,

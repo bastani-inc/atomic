@@ -19,7 +19,7 @@ Subagent and workflow-stage `model: "auto"` routes before execution starts. Atom
 - hard `modelConstraints`, and
 - the factual markdown tables in [Evals](/models/evals).
 
-The router returns one primary `{ model, effort }` pair and up to two ordered fallback pairs. It cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: a classifier such as TypeSafe Jev or a chat language model, never an image-generation model.
+The router returns one primary `{ model, effort }` pair and up to two ordered fallback pairs. It cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: an explicit registered classifier or chat language model. Unset and `auto` use the current chat model, regardless of saved classifier credentials. An image-generation model cannot decide.
 
 Only chat language models are eligible for execution `auto`, including models that accept image or PDF input. Image-generation and classifier models cannot be execution candidates, even when a classifier makes the routing decision.
 

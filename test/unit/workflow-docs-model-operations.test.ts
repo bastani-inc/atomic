@@ -20,9 +20,12 @@ const authoringDoc = join(repositoryRoot, "packages/coding-agent/docs/workflows/
 const SECTION_HEADING = "### Classifier and image models in `ctx.tool`";
 
 const tempDirs: string[] = [];
+const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 });
 
 function documentedExamples(): { triage: string; previewAsset: string } {
@@ -39,14 +42,21 @@ function documentedExamples(): { triage: string; previewAsset: string } {
 	return { triage, previewAsset };
 }
 
-/** A user project with the guide's install step applied: `@bastani/pi-ai` in its own node_modules. */
 function userProject(): string {
 	const project = mkdtempSync(join(tmpdir(), "atomic-docs-model-ops-"));
 	tempDirs.push(project);
 	const piAi = join(repositoryRoot, "packages/ai");
+	const atomic = join(repositoryRoot, "packages/coding-agent");
+	assert.ok(existsSync(join(atomic, "dist/index.js")), "build @bastani/atomic before running this suite");
 	assert.ok(existsSync(join(piAi, "dist/providers/all.js")), "build @bastani/pi-ai before running this suite");
 	mkdirSync(join(project, "node_modules/@bastani"), { recursive: true });
 	symlinkSync(piAi, join(project, "node_modules/@bastani/pi-ai"), process.platform === "win32" ? "junction" : "dir");
+	symlinkSync(
+		atomic,
+		join(project, "node_modules/@bastani/atomic"),
+		process.platform === "win32" ? "junction" : "dir",
+	);
+	process.env.ATOMIC_CODING_AGENT_DIR = join(project, "agent-config");
 	mkdirSync(join(project, ".atomic/workflows"), { recursive: true });
 	const { triage, previewAsset } = documentedExamples();
 	writeFileSync(join(project, ".atomic/workflows/triage.ts"), triage);
@@ -94,7 +104,7 @@ const jsonResponse = (value: unknown): Response =>
 	new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
 
 describe("workflow authoring guide: classifier and image examples", () => {
-	test("both documented workflows register through discovery from a project that installed @bastani/pi-ai", async () => {
+	test("both documented workflows register through discovery from a project that installed both libraries", async () => {
 		const project = userProject();
 		const { registry, errors } = await discoverWorkflows({
 			cwd: project,

@@ -108,5 +108,5 @@ test("the runtime requests prose before structured_output when both output chann
 	const instruction = stageOutputInstruction({ output: "/tmp/report.md" }, true);
 	assert.match(instruction, /ordinary assistant text/);
 	assert.match(instruction, /before calling structured_output/);
-	assert.match(instruction, /tool arguments are the machine-readable result/);
+	assert.match(instruction, /tool infers the separate machine-readable result/);
 });

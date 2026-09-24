@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAskUserQuestionToolDefinition } from "../src/core/tools/ask-user-question/index.ts";
 import { QuestionParamsSchema } from "../src/core/tools/ask-user-question/tool/types.ts";
 import { allToolNames, createToolDefinition, type ToolDef } from "../src/core/tools/index.ts";
-import { createStructuredOutputTool } from "../src/core/tools/structured-output.ts";
+import { createStructuredOutputTool, StructuredOutputParameters } from "../src/core/tools/structured-output.ts";
 import { wrapToolDefinition } from "../src/core/tools/tool-definition-wrapper.ts";
 
 function createBuiltInToolDefinitions(): ToolDef[] {
@@ -122,7 +122,7 @@ describe("experimental strict built-in tools", () => {
 		).toBe(false);
 	});
 
-	it("composes structured-output's own schema constraint with strict mode rather than double-wrapping", () => {
+	it("keeps structured-output's inference arguments outside strict sampling rather than double-wrapping", () => {
 		delete process.env.ATOMIC_EXPERIMENTAL;
 		const schema = Type.Object({ verdict: Type.String() });
 		const normalTool = createStructuredOutputTool({ schema });
@@ -130,22 +130,32 @@ describe("experimental strict built-in tools", () => {
 		process.env.PI_EXPERIMENTAL = "1";
 		const experimentalTool = createStructuredOutputTool({ schema });
 
-		// Layer 1 — structured-output constrains its output with the caller's
-		// schema itself. That constraint is shared, never re-wrapped: the same
-		// schema object, with strict mode on or off.
-		expect(experimentalTool.parameters).toBe(schema);
-		expect(normalTool.parameters).toBe(schema);
+		// Layer 1 — the model-visible arguments are the shared inference request
+		// (instructions, state, optional model and fallbacks), never the caller's
+		// result schema, with strict mode on or off. The result schema constrains
+		// the inferred value instead.
+		expect(experimentalTool.parameters).toBe(StructuredOutputParameters);
+		expect(normalTool.parameters).toBe(StructuredOutputParameters);
+		expect(experimentalTool.parameters).not.toBe(schema);
+		expect(
+			Value.Check(StructuredOutputParameters, {
+				instructions: "Judge the patch.",
+				state: { task: "Review" },
+				model: "typesafe/jev-latest",
+				fallbackModels: ["openai/gpt-5-mini"],
+			}),
+		).toBe(true);
+		expect(Value.Check(StructuredOutputParameters, { verdict: "approve" })).toBe(false);
 
 		// Layer 2 — experimental strict sampling applies to the built-in tools
-		// only; it does not bolt a second constraint onto a tool whose
-		// constraint already lives in its parameters.
+		// only; it does not bolt a constraint onto structured_output.
 		expect(experimentalTool.constrainedSampling).toBeUndefined();
 		expect(normalTool.constrainedSampling).toBeUndefined();
 
-		// Crossing into the agent runtime preserves both facts: one schema,
-		// zero added wrappers, even with the experimental flag set.
+		// Crossing into the agent runtime preserves both facts, even with the
+		// experimental flag set.
 		const wrapped = wrapToolDefinition(experimentalTool);
-		expect(wrapped.parameters).toBe(schema);
+		expect(wrapped.parameters).toBe(StructuredOutputParameters);
 		expect(wrapped.constrainedSampling).toBeUndefined();
 		expect(Object.hasOwn(wrapped, "constrainedSampling")).toBe(false);
 	});

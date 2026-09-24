@@ -1,6 +1,11 @@
-// Transport and preparation regression coverage for #3089 / #3090.
 import assert from "node:assert/strict";
-import { type Model, REQUEST_AUTH_PREPARATION_TIMEOUT_MS } from "@bastani/pi-ai";
+import {
+	type ClassifierApi,
+	type ClassifierContext,
+	type ClassifierModel,
+	type Model,
+	REQUEST_AUTH_PREPARATION_TIMEOUT_MS,
+} from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
@@ -9,10 +14,10 @@ import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-
 import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import type { JsonObject } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
+	classifierResult,
 	decisionMessage,
 	decisionModel,
 	decisionRequest,
-	jevResponse,
 	messageStream,
 } from "../helpers/structured-output.js";
 
@@ -152,7 +157,7 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 	}
 }
 
-for (const invalid of [null, false, 7, [], {}, "auto", " "]) {
+for (const invalid of [null, false, 7, [], {}, " "]) {
 	test(`loaded invalid setting ${JSON.stringify(invalid)} rejects before inference`, async () => {
 		const storage = new InMemorySettingsStorage();
 		storage.withLock("global", () => JSON.stringify({ routerModel: invalid }));
@@ -211,88 +216,111 @@ for (const maxTokens of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
 	});
 }
 
-test("explicit Jev without its key fails without a chat model to fall back to (#3206)", async () => {
-	vi.stubEnv("TYPESAFE_API_KEY", "");
-	await assert.rejects(
-		inferRouterDecision({
-			...decisionRequest(),
-			currentModel: undefined,
-			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
-		}),
-		/requires an API key.*\/login typesafe/,
-	);
-});
+const classifierModel: ClassifierModel<ClassifierApi> = {
+	...decisionModel,
+	type: "classifier",
+	provider: "fixture",
+	id: "intent",
+	api: "typesafe-system-one",
+};
 
-test("Jev network errors do not leak transport messages and honor a disabled retry policy (#3206)", async () => {
-	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-	const transport = vi.fn(async () => {
-		throw new Error("private request body and key");
-	});
-	vi.stubGlobal("fetch", transport);
-	await assert.rejects(
-		inferRouterDecision({
-			...decisionRequest(),
-			currentModel: undefined,
-			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
-			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
-		}),
-		/Jev request failed/,
-	);
-	assert.equal(transport.mock.calls.length, 1);
-});
-
-test("Jev input snapshot cannot be changed while awaiting transport", async () => {
-	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-	const late = Promise.withResolvers<Response>();
-	vi.stubGlobal("fetch", () => late.promise);
+function classifierRequest(classify?: ModelRegistry["classify"]) {
 	const request = decisionRequest();
-	const questions = {
-		...request.jev.questions,
-		route: { ...request.jev.questions.route, criteria: { ...request.jev.questions.route.criteria } },
-	};
-	const pending = inferRouterDecision({
+	return {
 		...request,
-		settings: SettingsManager.inMemory(),
-		jev: { ...request.jev, questions },
-	});
-	Reflect.deleteProperty(questions.route.criteria, "review");
-	late.resolve(Response.json(jevResponse()));
-	assert.equal((await pending).value.route, "review");
-});
-
-for (const reason of ["cancel", "oversized"] as const) {
-	test(`Jev ${reason} body is cancelled before mapping`, async () => {
-		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-		vi.useFakeTimers();
-		const controller = new AbortController();
-		const cancelled = vi.fn();
-		const body = new ReadableStream<Uint8Array>({
-			start(controller) {
-				if (reason === "oversized") controller.enqueue(new Uint8Array(1024 * 1024 + 1));
-			},
-			cancel: cancelled,
-		});
-		vi.stubGlobal("fetch", async () => new Response(body));
-		const request = decisionRequest();
-		const decode = vi.fn(request.jev.decode);
-		const pending = assert.rejects(
-			inferRouterDecision({
-				...request,
-				currentModel: undefined,
-				settings: SettingsManager.inMemory(),
-				signal: controller.signal,
-				jev: { ...request.jev, decode },
-			}),
-			reason === "cancel" ? /cancelled/ : /1 MiB/,
-		);
-		await vi.advanceTimersByTimeAsync(120_000);
-		if (reason === "cancel") controller.abort();
-		await pending;
-		assert.equal(cancelled.mock.calls.length, 1);
-		assert.equal(decode.mock.calls.length, 0);
-	});
+		settings: SettingsManager.inMemory({ routerModel: "fixture/intent" }),
+		modelRegistry: {
+			...request.modelRegistry,
+			getClassifierModel: (provider: string, id: string) =>
+				provider === "fixture" && id === "intent" ? classifierModel : undefined,
+			...(classify ? { classify } : {}),
+		},
+	};
 }
 
+test("routerModel auto uses the current chat model even with classifier credentials", async () => {
+	vi.stubEnv("TYPESAFE_API_KEY", "unused-key");
+	const dispatch = vi.fn(() => messageStream(decisionMessage()));
+	const request = decisionRequest();
+	const result = await inferRouterDecision({
+		...request,
+		settings: SettingsManager.inMemory({ routerModel: "auto" }),
+		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
+	});
+	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(dispatch.mock.calls.length, 1);
+});
+
+test("a registered classifier with no classify operation fails without chat fallback", async () => {
+	await assert.rejects(
+		inferRouterDecision({ ...classifierRequest(), currentModel: undefined }),
+		/Classifier returned no valid decision/,
+	);
+});
+
+test("classifier provider exceptions never expose the provider response", async () => {
+	const classify: ModelRegistry["classify"] = async () => {
+		throw new Error("private request body and key");
+	};
+	await assert.rejects(
+		inferRouterDecision({ ...classifierRequest(classify), currentModel: undefined }),
+		(error: Error) => {
+			assert.match(error.message, /Classifier returned no valid decision/);
+			assert.doesNotMatch(error.message, /private request body|key/);
+			return true;
+		},
+	);
+});
+
+test("classifier input is snapshotted across an asynchronous operation", async () => {
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<ReturnType<typeof classifierResult>>();
+	const seen: ClassifierContext[] = [];
+	const classify: ModelRegistry["classify"] = async (_model, context) => {
+		seen.push(context);
+		started.resolve();
+		return release.promise;
+	};
+	const request = classifierRequest(classify);
+	const questions = structuredClone(request.classifier.questions);
+	const state = { task: "Review the patch" };
+	const pending = inferRouterDecision({ ...request, state, classifier: { ...request.classifier, questions } });
+	await started.promise;
+	state.task = "changed after dispatch";
+	Reflect.deleteProperty(questions.route.criteria, "review");
+	release.resolve(classifierResult());
+	assert.equal((await pending).value.route, "review");
+	assert.equal(seen.length, 1);
+	assert.deepEqual(seen[0]?.state, { task: "Review the patch" });
+	const route = seen[0]?.questions.route;
+	assert.equal(route?.type, "choice");
+	if (route?.type !== "choice") throw new Error("Expected choice question");
+	assert.equal("review" in route.criteria, true);
+});
+
+test("cancelled classifier inference never accepts a late answer", async () => {
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<ReturnType<typeof classifierResult>>();
+	const classify: ModelRegistry["classify"] = async () => {
+		started.resolve();
+		return release.promise;
+	};
+	const controller = new AbortController();
+	const request = classifierRequest(classify);
+	const decode = vi.fn(request.classifier.decode);
+	const pending = inferRouterDecision({
+		...request,
+		classifier: { ...request.classifier, decode },
+		signal: controller.signal,
+	});
+	const rejected = assert.rejects(pending, /cancel|abort/i);
+	await started.promise;
+	controller.abort();
+	await rejected;
+	release.resolve(classifierResult());
+	await Promise.resolve();
+	assert.equal(decode.mock.calls.length, 0);
+});
 for (const reason of ["cancel", "delayed-cancel"] as const) {
 	test(`ordinary ${reason} during credential preparation cannot dispatch after late OAuth refresh`, async () => {
 		vi.useFakeTimers();

@@ -29,6 +29,7 @@ import {
 	Type,
 	tmpdir,
 } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 function assistantMessageWithContent(content: AssistantMessage["content"]): AssistantMessage {
 	return {
@@ -89,7 +90,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 				if (prompts.length === 1) return skippedStructuredOutputTurn(messages);
 				const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 				assert.ok(structuredTool);
-				await structuredTool.execute("structured-call-1", { ok: true }, undefined, undefined, undefined as never);
+				await executeWorkflowDecision(structuredTool, "structured-call-1", { ok: true });
 			},
 		});
 		const agentSession: AgentSessionAdapter = {
@@ -122,7 +123,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 		let createOptions: StageSessionCreateOptions | undefined;
 		const prompts: string[] = [];
 		const messages = [] as AgentSession["messages"];
-		const validationError = 'Validation failed for tool "structured_output": ok: Expected boolean';
+		const validationError = 'Validation failed for tool "structured_output": instructions: Expected string';
 		let emit: ((event: { type: string; [k: string]: unknown }) => void) | undefined;
 		const mock = makeMockSession({
 			messages,
@@ -136,7 +137,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-invalid",
 								name: "structured_output",
-								arguments: { ok: "not-a-boolean" },
+								arguments: { state: { scriptedResult: { ok: true } } },
 							},
 						]),
 					);
@@ -161,11 +162,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 							type: "toolCall",
 							id: "structured-call-2",
 							name: "structured_output",
-							arguments: { ok: true },
+							arguments: workflowDecisionArgs({ ok: true }),
 						},
 					]),
 				);
-				await structuredTool.execute("structured-call-2", { ok: true }, undefined, undefined, undefined as never);
+				await executeWorkflowDecision(structuredTool, "structured-call-2", { ok: true });
 				// A later turn can mention the same tool name without being the execution
 				// whose arguments were captured. Name-based reverse scans pick this decoy.
 				messages.push(
@@ -175,7 +176,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 							type: "toolCall",
 							id: "structured-call-decoy",
 							name: "structured_output",
-							arguments: { ok: false },
+							arguments: workflowDecisionArgs({ ok: false }),
 						},
 					]),
 				);
@@ -203,7 +204,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 			assert.equal(prompts.length, 2);
 			assert.match(prompts[1] ?? "", new RegExp(validationError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			assert.match(prompts[1] ?? "", /artifact as ordinary text before calling `structured_output`/);
-			assert.match(prompts[1] ?? "", /correct the tool arguments and call `structured_output` again/);
+			assert.match(prompts[1] ?? "", /correct its model, fallbackModels, instructions, or state/);
 			assert.equal(await readFile(output, "utf8"), "# Corrected review\n\nReady to merge.");
 			const receipt = (ctx as InternalStageContext).getLastAssistantText();
 			assert.ok(receipt);
@@ -237,17 +238,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-schema",
 								name: "structured_output",
-								arguments: { ok: true },
+								arguments: workflowDecisionArgs({ ok: true }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-schema",
-						{ ok: true },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-schema", { ok: true });
 					messages.push({
 						role: "custom",
 						customType: "subagent-notify",
@@ -311,17 +306,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-empty",
 								name: "structured_output",
-								arguments: { ok: true },
+								arguments: workflowDecisionArgs({ ok: true }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-empty",
-						{ ok: true },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-empty", { ok: true });
 				},
 			});
 			const agentSession: AgentSessionAdapter = {
@@ -382,17 +371,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-late",
 								name: "structured_output",
-								arguments: { ok: true },
+								arguments: workflowDecisionArgs({ ok: true }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-late",
-						{ ok: true },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-late", { ok: true });
 				},
 			});
 			const agentSession: AgentSessionAdapter = {
@@ -445,17 +428,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-from-abandoned-session",
 								name: "structured_output",
-								arguments: { ok: false },
+								arguments: workflowDecisionArgs({ ok: false }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-live",
-						{ ok: true },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-live", { ok: true });
 				},
 			});
 			const agentSession: AgentSessionAdapter = {
@@ -506,17 +483,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-first",
 								name: "structured_output",
-								arguments: { ok: false },
+								arguments: workflowDecisionArgs({ ok: false }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-first",
-						{ ok: false },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-first", { ok: false });
 					// The session is recreated and the model repeats the call: the
 					// live session's pairing must win over the abandoned one.
 					messages.push(
@@ -526,17 +497,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 								type: "toolCall",
 								id: "structured-call-second",
 								name: "structured_output",
-								arguments: { ok: true },
+								arguments: workflowDecisionArgs({ ok: true }),
 							},
 						]),
 					);
-					await structuredTool.execute(
-						"structured-call-second",
-						{ ok: true },
-						undefined,
-						undefined,
-						undefined as never,
-					);
+					await executeWorkflowDecision(structuredTool, "structured-call-second", { ok: true });
 				},
 			});
 			const agentSession: AgentSessionAdapter = {
@@ -585,17 +550,11 @@ describe("createStageContext — structured_output corrective retry", () => {
 							type: "toolCall",
 							id: "structured-call-schema-only",
 							name: "structured_output",
-							arguments: { ok: true },
+							arguments: workflowDecisionArgs({ ok: true }),
 						},
 					]),
 				);
-				await structuredTool.execute(
-					"structured-call-schema-only",
-					{ ok: true },
-					undefined,
-					undefined,
-					undefined as never,
-				);
+				await executeWorkflowDecision(structuredTool, "structured-call-schema-only", { ok: true });
 			},
 		});
 		const agentSession: AgentSessionAdapter = {
@@ -695,13 +654,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 						if (model === "anthropic/primary") return skippedStructuredOutputTurn(messages);
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-fallback",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-fallback", { ok: true });
 					},
 					dispose() {
 						disposed.push(model);
@@ -786,7 +739,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 										type: "toolCall",
 										id: "structured-call-invalid",
 										name: "structured_output",
-										arguments: { ok: "not-a-boolean" },
+										arguments: { state: { scriptedResult: { ok: true } } },
 									},
 								]),
 							);
@@ -796,20 +749,14 @@ describe("createStageContext — structured_output correction exhaustion and mod
 								isError: true,
 								result: {
 									isError: true,
-									content: [{ type: "text", text: "structured_output arguments failed schema validation" }],
+									content: [{ type: "text", text: "structured_output requires instructions" }],
 								},
 							});
 							return;
 						}
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-fallback",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-fallback", { ok: true });
 					},
 				});
 				emit = mock.emit;
@@ -843,10 +790,10 @@ describe("createStageContext — structured_output correction exhaustion and mod
 		// The validation error is what the candidate failed on, so it — not the
 		// generic missing-call sentence — is what the attempt records.
 		for (const attempt of meta.modelAttempts?.slice(0, 4) ?? []) {
-			assert.equal(attempt.error, "structured_output arguments failed schema validation");
+			assert.equal(attempt.error, "structured_output requires instructions");
 		}
 		assert.deepEqual(meta.warnings, [
-			"[fallback] anthropic/primary failed: structured_output arguments failed schema validation. Retrying with openai/fallback.",
+			"[fallback] anthropic/primary failed: structured_output requires instructions. Retrying with openai/fallback.",
 		]);
 	});
 
@@ -925,13 +872,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 						if (promptCount === 1) return skippedStructuredOutputTurn(messages);
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-corrected",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-corrected", { ok: true });
 					},
 					dispose() {
 						disposed.push(model);
@@ -1020,13 +961,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
 						captured.push({ model, value: { ok: true } });
-						await structuredTool.execute(
-							"structured-call-fallback",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-fallback", { ok: true });
 					},
 				});
 				return session;
@@ -1075,7 +1010,7 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 	async function callStructuredOutput(createOptions: StageSessionCreateOptions | undefined, id: string) {
 		const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 		assert.ok(structuredTool);
-		await structuredTool.execute(id, { ok: true }, undefined, undefined, undefined as never);
+		await executeWorkflowDecision(structuredTool, id, { ok: true });
 	}
 
 	test("classifies the empty-completion failure as a same-model retryable provider failure", () => {

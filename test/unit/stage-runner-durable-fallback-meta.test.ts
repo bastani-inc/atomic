@@ -16,6 +16,7 @@ import {
 	skippedStructuredOutputTurn,
 	Type,
 } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 const SCHEMA = Type.Object({ ok: Type.Boolean() }, { additionalProperties: false });
 const FALLBACK_USAGE = { input: 13, output: 26, cacheRead: 39, cacheWrite: 52, cost: 0.013 };
@@ -55,13 +56,7 @@ describe("createStageContext — durable model-fallback metadata notification", 
 						if (model === "anthropic/primary") return skippedStructuredOutputTurn(messages);
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-fallback",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-fallback", { ok: true });
 					},
 				});
 				return session;
@@ -147,13 +142,7 @@ describe("createStageContext — durable model-fallback metadata notification", 
 						if (promptCount === 1) return skippedStructuredOutputTurn(messages);
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-corrected",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-corrected", { ok: true });
 					},
 				});
 				return session;

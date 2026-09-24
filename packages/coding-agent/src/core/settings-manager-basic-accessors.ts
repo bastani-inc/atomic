@@ -174,15 +174,15 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	getRouterModel() {
 		const value = settingsInternals(this).settings.routerModel;
 		if (value === undefined) return "";
-		if (typeof value !== "string" || value.trim() !== value || value === "auto") {
-			throw new Error("Invalid routerModel: expected an exact provider/model ID or an empty string, not auto.");
+		if (typeof value !== "string" || value.trim() !== value) {
+			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
 		}
 		return value;
 	},
 
 	setRouterModel(model, scope = "global") {
-		if (typeof model !== "string" || model.trim() !== model || model === "auto") {
-			throw new Error("Invalid routerModel: expected an exact provider/model ID or an empty string, not auto.");
+		if (typeof model !== "string" || model.trim() !== model) {
+			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
 		}
 		const state = settingsInternals(this);
 		if (scope === "project") {

@@ -14,6 +14,7 @@ import {
 	type StageUserMessageContent,
 	Type,
 } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 describe("createStageContext — sendUserMessage", () => {
 	test("sends an idle post-prompt user turn through the SDK session", async () => {
@@ -374,13 +375,7 @@ describe("createStageContext — sendUserMessage", () => {
 				prompts.push(promptText);
 				const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 				assert.ok(structuredTool);
-				await structuredTool.execute(
-					"structured-call-send-user-message",
-					{ ok: true },
-					undefined,
-					undefined,
-					undefined as never,
-				);
+				await executeWorkflowDecision(structuredTool, "structured-call-send-user-message", { ok: true });
 			},
 			async sendUserMessage(text) {
 				if (typeof text !== "string") throw new Error("expected string content");

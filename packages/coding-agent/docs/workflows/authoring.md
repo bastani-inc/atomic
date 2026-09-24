@@ -62,7 +62,7 @@ const result = await ctx.task("analyze", {
 
 Long prompts are excerpted for model selection only; the stage still receives the full execution prompt. The excerpt preserves the beginning, end, and `<keepContext>...</keepContext>` spans. Protect essential selection requirements with those tags, since unprotected middle text may be omitted. If protected text cannot fit, the normal router context-limit and fallback behavior applies. Hard `modelConstraints` remain enforced independently.
 
-The shared `routerModel` setting chooses the decision provider. It does not choose which workflow to launch. Jev can make the decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
+An explicit `routerModel` chooses the routing decision provider. An unset or `auto` value uses the current chat model; saved classifier credentials do not change that choice. The setting does not choose which workflow to launch. A classifier can make the routing decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
 
 **Write workflow code for both Atomic hosts.** Standalone binaries run under Bun; npm installs run under Node. A `Bun.*` global is available only when Atomic itself runs under Bun. Otherwise it fails with `Bun is not defined`, even if Bun is installed separately.
 
@@ -706,21 +706,22 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 ### Classifier and image models in `ctx.tool`
 
-Workflow stages run chat language models. A classifier or image-generation model is called from workflow TypeScript instead, with `@bastani/pi-ai` (the model library Atomic ships) inside `ctx.tool(name, args, fn, { timeoutMs })`, so the request is a durable, replayable node. The boundaries stay fixed: `model: "auto"` selects only chat language models, including chat models that accept image or PDF input; an image-generation or classifier model never executes a workflow stage; and the structured decision model behind `model: "auto"` (chosen by `routerModel`) may be a chat LM or a classifier, never an image model.
+Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `routerModel` may select a classifier for routing, but a classifier never executes a chat stage.
 
-Discovery loads a workflow file with the project that owns it as the module root. The host provides `@bastani/atomic/workflows` and `typebox`; every other package resolves from that project's `node_modules`, in npm and standalone-binary installs alike. Install the library next to the workflow at the version `atomic --version` prints, because older releases have no `classify()` or `generateImages()`:
+Discovery loads a workflow file with the project that owns it as the module root. The host provides `@bastani/atomic/workflows` and `typebox`; other imports, including `@bastani/atomic` for `AuthStorage`, resolve from that project's `node_modules` in npm and standalone-binary installs alike. Install both libraries next to the workflow at the version `atomic --version` prints, because older releases have no `classify()` or `generateImages()`:
 
 ```sh
-npm install --save-dev @bastani/pi-ai@"$(atomic --version)"
+npm install --save-dev @bastani/atomic@"$(atomic --version)" @bastani/pi-ai@"$(atomic --version)"
 ```
 
-The library reads provider keys from the Atomic process environment (`TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`) or from an explicit `apiKey` request option. It does not read credentials stored by `/login`. Both operations resolve instead of throwing: check `stopReason === "stop"` before using a result, and forward the tool's `signal` so a quit or targeted abort cancels the request.
+Pass `AuthStorage.create()` to `builtinModels()` so classifier and image requests use credentials saved by Atomic's `/login` flows in `auth.json`; this is the recommended default for workflows running inside Atomic. Ambient provider environment variables such as `TYPESAFE_API_KEY` and `OPENROUTER_API_KEY` continue to work. Never read, print, or pass credential values in workflow state, prompts, or artifacts. Both operations resolve instead of throwing: check `stopReason === "stop"` before using a result, and forward the tool's `signal` so a quit or targeted abort cancels the request.
 
 #### Classify a request before choosing a stage
 
 Use a classifier for a narrow, structured decision such as routing an incoming request. This follows TypeSafe's [intent routing](https://docs.typesafe.ai/patterns/intent-routing.md) and [confidence-gated routing](https://docs.typesafe.ai/patterns/confidence-routing.md) patterns (index: [docs.typesafe.ai/llms.txt](https://docs.typesafe.ai/llms.txt)): one Choice question returns the selected option with a probability per option and a confidence value, and your code decides what to do with that answer. The classifier does **not** execute a stage; workflow code reads its answer and starts a chat stage or asks for human review. Pick thresholds for your own stakes, as TypeSafe's pattern pages do; a threshold is not a guarantee of correctness. In `.atomic/workflows/triage.ts`:
 
 ```ts
+import { AuthStorage } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
 import { builtinModels } from "@bastani/pi-ai/providers/all";
 import { Type } from "typebox";
@@ -733,7 +734,7 @@ export default workflow({
   run: async (ctx) => {
     const request = ctx.inputs.request;
     const decision = await ctx.tool("classify-intent", { request }, async ({ signal }) => {
-      const models = builtinModels();
+      const models = builtinModels({ credentials: AuthStorage.create() });
       const model = models.getModelOfType("classifier", "typesafe", "jev-latest");
       if (!model) throw new Error("TypeSafe classifier is unavailable");
       const result = await models.classify(model, {
@@ -768,7 +769,7 @@ export default workflow({
 });
 ```
 
-The cached `{ choice, confidence }` is what a resumed run replays; the classifier is not asked again. For a consequential action, add policy checks or `ctx.ui.confirm(...)` before the side effect. Without the extra install, a schema-backed stage or task (`ctx.task(name, { schema, prompt })`, as the `classify-and-act` builtin does) is the other way to make a validated decision; its answer comes from a chat LM, and any confidence it reports is text the model wrote, not a classifier probability.
+The cached `{ choice, confidence }` is what a resumed run replays; the classifier is not asked again. For a consequential action, add policy checks or `ctx.ui.confirm(...)` before the side effect. Without the extra install, a schema-backed stage or task (`ctx.task(name, { schema, prompt })`, as the `classify-and-act` builtin does) can also make a validated decision. Its `structured_output` call can name a registered classifier or omit `model` and use the current chat model. A classifier probability is available only from a direct `classify()` call like the example above; a chat result does not supply one.
 
 #### Generate an image artifact in a durable tool step
 
@@ -777,6 +778,7 @@ For an illustrative asset or a design mock, call an image model inside `ctx.tool
 ```ts
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { AuthStorage } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
 import { builtinModels } from "@bastani/pi-ai/providers/all";
 import { Type } from "typebox";
@@ -790,7 +792,7 @@ export default workflow({
     const brief = ctx.inputs.brief;
     const outputDir = join(ctx.cwd ?? process.cwd(), ".atomic", "workflow-assets", ctx.runId ?? "local");
     const generated = await ctx.tool("generate-preview", { brief, outputDir }, async ({ signal }) => {
-      const models = builtinModels();
+      const models = builtinModels({ credentials: AuthStorage.create() });
       const model = models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
       if (!model) throw new Error("OpenRouter image model is unavailable");
       const result = await models.generateImages(model, {

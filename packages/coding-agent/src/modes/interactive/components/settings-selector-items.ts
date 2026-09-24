@@ -2,7 +2,6 @@ import { isModelType } from "@bastani/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
-import { getStructuredOutputProviders } from "../../../core/structured-output/resolver.js";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
@@ -274,19 +273,19 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			id: "router-model",
 			label: "Router model",
 			description: `Saves to ${config.routerModelScope ?? "global"} settings; affects routing decisions, not the chat model`,
-			currentValue: config.routerModel || "Automatic",
+			currentValue: config.routerModel && config.routerModel !== "auto" ? config.routerModel : "Automatic",
 			submenu: (_currentValue, done) => {
-				const current = config.routerModel ?? "";
+				const current = config.routerModel === "auto" ? "" : (config.routerModel ?? "");
 				const options = [
 					{
 						value: "",
 						label: "Automatic",
-						description: "Use Jev when authenticated, otherwise the current chat model",
+						description: "Use the current chat model",
 					},
-					...getStructuredOutputProviders().map((provider) => ({
-						value: provider.fullId,
-						label: provider.fullId,
-						description: `${provider.name} structured decisions · authenticate with /login ${provider.id}`,
+					...(config.availableClassifierModels ?? []).map((model) => ({
+						value: `${model.provider}/${model.id}`,
+						label: `${model.provider}/${model.id}`,
+						description: model.name,
 					})),
 					...(config.availableDefaultModels ?? [])
 						.filter((model) => isModelType(model, "chat"))

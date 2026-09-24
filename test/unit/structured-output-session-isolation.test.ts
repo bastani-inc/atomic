@@ -81,7 +81,7 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 			assert.ok(activeNames.includes("final_decision"));
 			assert.equal(allNames.includes("structured_output"), false);
 			assert.ok(allNames.includes("final_decision"));
-			assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
+			assert.equal(session.getToolDefinition("final_decision")?.parameters, finalDecision.parameters);
 			assert.equal(session.getToolDefinition("structured_output"), undefined);
 		} finally {
 			await session.dispose();
@@ -103,7 +103,7 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 					session.getAllTools().map((tool) => tool.name),
 					["final_decision"],
 				);
-				assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
+				assert.equal(session.getToolDefinition("final_decision")?.parameters, finalDecision.parameters);
 				assert.equal(session.getToolDefinition("structured_output"), undefined);
 			} finally {
 				await session.dispose();
@@ -130,7 +130,7 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 		}
 	});
 
-	test("standard-name structured_output custom tool registers a schema-specific tool", async () => {
+	test("standard-name structured_output registers inference arguments for its result schema", async () => {
 		const strictStructuredOutput = createStructuredOutputTool({ schema: gateSchema });
 		const session = await createIsolatedSession({ customTools: [strictStructuredOutput] });
 		try {
@@ -139,7 +139,7 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 				.filter((name) => name === "structured_output");
 
 			assert.deepEqual(activeStructuredOutputNames, ["structured_output"]);
-			assert.equal(session.getToolDefinition("structured_output")?.parameters, gateSchema);
+			assert.equal(session.getToolDefinition("structured_output")?.parameters, strictStructuredOutput.parameters);
 			assert.equal(session.getAllTools().filter((tool) => tool.name === "structured_output").length, 1);
 		} finally {
 			await session.dispose();

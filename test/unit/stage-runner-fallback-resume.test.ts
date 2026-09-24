@@ -26,6 +26,7 @@ import type {
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
 import { assistantMessageWithUsage, Type } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 interface FakeSessionConfig {
 	/** Model object the session reports via `.model` (drives workflowModelId). */
@@ -267,7 +268,7 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 				onPrompt: async () => {
 					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 					assert.ok(structuredTool);
-					await structuredTool.execute("structured-call", { ok: true }, undefined, undefined, undefined as never);
+					await executeWorkflowDecision(structuredTool, "structured-call", { ok: true });
 				},
 			});
 		}, createdWith);

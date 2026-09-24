@@ -13,6 +13,7 @@ import {
 	test,
 	workflow,
 } from "./executor-shared.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 /**
  * A resume continuation must not erase a stage result the stage already
@@ -80,13 +81,7 @@ function liveReviewSession(input: {
 			}
 			pushAssistant(LABELED_REPORT);
 			if (structuredTool) {
-				const result = await structuredTool.execute(
-					"structured-call",
-					FEEDBACK_PAYLOAD as Parameters<ToolDefinition["execute"]>[1],
-					undefined,
-					undefined,
-					{} as Parameters<ToolDefinition["execute"]>[4],
-				);
+				const result = await executeWorkflowDecision(structuredTool, "structured-call", FEEDBACK_PAYLOAD);
 				emit({
 					type: "tool_execution_end",
 					toolCallId: "structured-call",

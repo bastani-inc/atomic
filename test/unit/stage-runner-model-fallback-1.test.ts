@@ -13,6 +13,7 @@ import {
 	makeOpts,
 	Type,
 } from "./stage-runner-helpers.js";
+import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 const USAGE_A = { input: 11, output: 22, cacheRead: 33, cacheWrite: 44, cost: 0.011 };
 const USAGE_B = { input: 111, output: 222, cacheRead: 333, cacheWrite: 444, cost: 0.111 };
@@ -367,13 +368,7 @@ describe("createStageContext — model fallback", () => {
 						messages.push(assistantMessageWithUsage("structured tool call", USAGE_A));
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
-						await structuredTool.execute(
-							"structured-call-1",
-							{ ok: true },
-							undefined,
-							undefined,
-							undefined as never,
-						);
+						await executeWorkflowDecision(structuredTool, "structured-call-1", { ok: true });
 						throw new Error("429 rate limit exceeded after structured_output");
 					},
 					dispose() {

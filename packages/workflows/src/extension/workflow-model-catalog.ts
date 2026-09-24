@@ -21,9 +21,6 @@ export function workflowModelCatalogFromContext(
 		routeModel: async (input) => {
 			const current = live();
 			const registry = current.modelRegistry;
-			// Direct Jev resolves through the session's classifier model, so its
-			// configured endpoint receives the session's TypeSafe credential. Without
-			// the lookup, routing would silently fall back to the built-in endpoint.
 			if (
 				!current.getRouterModel ||
 				!registry?.getAll ||
@@ -45,6 +42,7 @@ export function workflowModelCatalogFromContext(
 						streamSimple: (...args) => registry.streamSimple!(...args),
 						containsConfiguredCredential: (text) => registry.containsConfiguredCredential!(text),
 						getClassifierModel: (provider, modelId) => registry.getClassifierModel!(provider, modelId),
+						...(registry.classify ? { classify: registry.classify.bind(registry) } : {}),
 						...(registry.getProviderAuth ? { getProviderAuth: registry.getProviderAuth.bind(registry) } : {}),
 						...(registry.getProviderAuthStatus
 							? { getProviderAuthStatus: registry.getProviderAuthStatus.bind(registry) }
