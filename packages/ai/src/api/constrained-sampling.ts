@@ -28,6 +28,25 @@ const UNSUPPORTED_STRICT_SCHEMA_KEYS = [
 	"else",
 ] as const;
 
+export interface StrictJsonSchemaProfile {
+	readonly unsupportedKeywords: readonly string[];
+	readonly maxMinItems?: number;
+}
+
+export const ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE: StrictJsonSchemaProfile = Object.freeze({
+	unsupportedKeywords: Object.freeze([
+		"minimum",
+		"maximum",
+		"exclusiveMinimum",
+		"exclusiveMaximum",
+		"multipleOf",
+		"minLength",
+		"maxLength",
+		"maxItems",
+	]),
+	maxMinItems: 1,
+});
+
 function isJsonSchemaObject(value: unknown): value is JsonSchemaObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -50,14 +69,21 @@ function schemaAllowsNull(schema: unknown): boolean {
 	return Array.isArray(schema.anyOf) && schema.anyOf.some((variant) => schemaAllowsNull(variant));
 }
 
-function makeJsonSchemaNodeStrict(schema: unknown): void {
+function makeJsonSchemaNodeStrict(schema: unknown, profile: StrictJsonSchemaProfile | undefined): void {
 	if (!isJsonSchemaObject(schema)) {
 		throw new UnsupportedStrictJsonSchemaError("boolean schemas are unsupported");
 	}
-	for (const key of UNSUPPORTED_STRICT_SCHEMA_KEYS) {
+	for (const key of [...UNSUPPORTED_STRICT_SCHEMA_KEYS, ...(profile?.unsupportedKeywords ?? [])]) {
 		if (schema[key] !== undefined) {
 			throw new UnsupportedStrictJsonSchemaError(`${key} schemas are unsupported`);
 		}
+	}
+	if (
+		profile?.maxMinItems !== undefined &&
+		typeof schema.minItems === "number" &&
+		schema.minItems > profile.maxMinItems
+	) {
+		throw new UnsupportedStrictJsonSchemaError(`minItems above ${profile.maxMinItems} is unsupported`);
 	}
 
 	if (schema.anyOf !== undefined) {
@@ -68,7 +94,7 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 			if (isStructuredSchema(variant)) {
 				throw new UnsupportedStrictJsonSchemaError("object and array unions are unsupported");
 			}
-			makeJsonSchemaNodeStrict(variant);
+			makeJsonSchemaNodeStrict(variant, profile);
 		}
 	}
 
@@ -76,7 +102,7 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 		if (Array.isArray(schema.items)) {
 			throw new UnsupportedStrictJsonSchemaError("tuple schemas are unsupported");
 		}
-		makeJsonSchemaNodeStrict(schema.items);
+		makeJsonSchemaNodeStrict(schema.items, profile);
 	}
 
 	const isObjectSchema = schema.type === "object";
@@ -104,7 +130,7 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 		throw new UnsupportedStrictJsonSchemaError("required contains an unknown property");
 	}
 	for (const [key, property] of Object.entries(properties)) {
-		makeJsonSchemaNodeStrict(property);
+		makeJsonSchemaNodeStrict(property, profile);
 		if (!required.has(key) && !schemaAllowsNull(property)) {
 			properties[key] = { anyOf: [property, { type: "null" }] };
 		}
@@ -114,20 +140,27 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 }
 
 /** Convert a tool schema to the strict subset expected by provider constrained sampling. */
-export function makeStrictJsonSchema(schema: Tool["parameters"]): Record<string, unknown> {
+export function makeStrictJsonSchema(
+	schema: Tool["parameters"],
+	profile?: StrictJsonSchemaProfile,
+): Record<string, unknown> {
 	const cloned: unknown = structuredClone(schema);
 	if (!isJsonSchemaObject(cloned)) {
 		throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
 	}
-	makeJsonSchemaNodeStrict(cloned);
+	makeJsonSchemaNodeStrict(cloned, profile);
 	if (cloned.type !== "object") {
 		throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
 	}
 	return cloned;
 }
 
-export function getJsonSchemaToolParameters(tool: Tool, strict: boolean | undefined): Tool["parameters"] {
-	return (strict === true ? makeStrictJsonSchema(tool.parameters) : tool.parameters) as Tool["parameters"];
+export function getJsonSchemaToolParameters(
+	tool: Tool,
+	strict: boolean | undefined,
+	profile?: StrictJsonSchemaProfile,
+): Tool["parameters"] {
+	return (strict === true ? makeStrictJsonSchema(tool.parameters, profile) : tool.parameters) as Tool["parameters"];
 }
 
 export interface GrammarConstrainedSampling {
@@ -205,13 +238,17 @@ function inferGrammarInputProperty(tool: Tool): string {
 	return inputProperty;
 }
 
-export function resolveJsonSchemaStrictSampling(tool: Tool, supportsStrictMode: boolean): boolean | undefined {
+export function resolveJsonSchemaStrictSampling(
+	tool: Tool,
+	supportsStrictMode: boolean,
+	profile?: StrictJsonSchemaProfile,
+): boolean | undefined {
 	const config = tool.constrainedSampling;
 	if (!config || config.type !== "json_schema") return undefined;
 
 	if (supportsStrictMode) {
 		try {
-			makeStrictJsonSchema(tool.parameters);
+			makeStrictJsonSchema(tool.parameters, profile);
 			return true;
 		} catch (error) {
 			if (!(error instanceof UnsupportedStrictJsonSchemaError)) throw error;

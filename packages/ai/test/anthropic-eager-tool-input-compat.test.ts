@@ -47,6 +47,15 @@ const strictTool: Tool = {
 	constrainedSampling: { type: "json_schema", strict: "prefer" },
 };
 
+const boundedStrictTool: Tool = {
+	...tool,
+	parameters: Type.Object(
+		{ category: Type.String({ minLength: 1 }), confidence: Type.Number({ minimum: 0, maximum: 1 }) },
+		{ additionalProperties: false },
+	),
+	constrainedSampling: { type: "json_schema", strict: "prefer" },
+};
+
 function createContext(tools: Tool[] = [tool]): Context {
 	return {
 		messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],
@@ -167,5 +176,37 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 			properties: { optional: { anyOf: [{ type: "number" }, { type: "null" }] } },
 			title: "StrictLookupInput",
 		});
+	});
+
+	it("falls back to a non-strict tool when the schema uses constraints Anthropic strict mode rejects", async () => {
+		const request = await captureAnthropicRequest({ supportsStrictTools: true }, createContext([boundedStrictTool]));
+
+		expect(getFirstTool(request.body).strict).toBeUndefined();
+		expect(getFirstToolInputSchema(request.body)).toEqual({
+			type: "object",
+			properties: (boundedStrictTool.parameters as { properties: unknown }).properties,
+			required: ["category", "confidence"],
+		});
+	});
+
+	it("rejects a required strict tool whose schema uses constraints Anthropic strict mode rejects", async () => {
+		const requiredTool: Tool = {
+			...boundedStrictTool,
+			constrainedSampling: { type: "json_schema", strict: "require" },
+		};
+		const stream = streamAnthropic(
+			createModel("http://127.0.0.1:9", { supportsStrictTools: true }),
+			normalizeContext(createContext([requiredTool])),
+			{
+				apiKey: "test-key",
+				cacheRetention: "none",
+			},
+		);
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toMatch(
+			/requires JSON-schema constrained sampling, but (minLength|minimum|maximum) schemas are unsupported/,
+		);
 	});
 });

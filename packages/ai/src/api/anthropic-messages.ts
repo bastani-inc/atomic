@@ -48,7 +48,11 @@ import {
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 
-import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
+import {
+	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
+	getJsonSchemaToolParameters,
+	resolveJsonSchemaStrictSampling,
+} from "./constrained-sampling.ts";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
@@ -1921,8 +1925,8 @@ function convertTools(
 	// declaration, as the pre-transcript tool serializer did, without sending duplicate names.
 	if (isOAuthToken) tools = [...new Map(tools.map((tool) => [toClaudeCodeName(tool.name), tool])).values()];
 	return tools.map((tool, index) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools);
-		const parameters = getJsonSchemaToolParameters(tool, strict);
+		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
+		const parameters = getJsonSchemaToolParameters(tool, strict, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
 		const schema = parameters as ToolSchemaObject;
 		// Anthropic rejects top-level combinators, so project object-union fields for advertising only.
 		// Local runtime validation still enforces the complete authored union without mutating it.

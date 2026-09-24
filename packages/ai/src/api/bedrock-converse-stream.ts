@@ -68,7 +68,11 @@ import {
 	type TranscriptContext,
 	withoutInitialSystemMessage,
 } from "../utils/transcript.ts";
-import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
+import {
+	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
+	getJsonSchemaToolParameters,
+	resolveJsonSchemaStrictSampling,
+} from "./constrained-sampling.ts";
 import {
 	adjustMaxTokensForThinking,
 	buildBaseOptions,
@@ -1163,13 +1167,14 @@ function convertToolConfig(
 	// `none` is never a forced choice, so this return can never skip a rejection above.
 	if (toolChoice === "none") return undefined;
 
+	const strictProfile = isAnthropicClaudeModel(model) ? ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE : undefined;
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
+		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode, strictProfile);
 		return {
 			toolSpec: {
 				name: tool.name,
 				description: tool.description,
-				inputSchema: { json: getJsonSchemaToolParameters(tool, strict) as unknown as DocumentType },
+				inputSchema: { json: getJsonSchemaToolParameters(tool, strict, strictProfile) as unknown as DocumentType },
 				...(strict === true ? { strict: true } : {}),
 			},
 		};

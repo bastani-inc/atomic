@@ -123,6 +123,26 @@ describe("Bedrock constrained sampling", () => {
 		).toolConfig;
 		expect(novaToolConfig.tools[0].toolSpec.strict).toBeUndefined();
 	});
+
+	it("falls back to a non-strict Claude tool when the schema uses constraints Anthropic strict mode rejects", async () => {
+		const context: Context = {
+			messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],
+			tools: [
+				{
+					name: "classify",
+					description: "Classify the task",
+					parameters: Type.Object({ confidence: Type.Number({ minimum: 0, maximum: 1 }) }),
+					constrainedSampling: { type: "json_schema", strict: "prefer" },
+				},
+			],
+		};
+		const payload = await capturePayload(context);
+		const toolSpec = (
+			payload as { toolConfig: { tools: Array<{ toolSpec: { strict?: boolean; inputSchema: { json: unknown } } }> } }
+		).toolConfig.tools[0].toolSpec;
+		expect(toolSpec.strict).toBeUndefined();
+		expect(toolSpec.inputSchema.json).toMatchObject({ properties: { confidence: { minimum: 0, maximum: 1 } } });
+	});
 });
 
 describe("Bedrock tool arguments", () => {
