@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
+import pg from "pg";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -43,6 +44,17 @@ interface ProcessOwnerView {
 let graphGeneration = 0;
 let originalDatabaseUrl: string | undefined;
 const emptyHandle = { getStatus: async () => null, getResult: async () => null };
+
+class GrantingLaunchLockClient {
+	on(): this {
+		return this;
+	}
+	async connect(): Promise<void> {}
+	async query(): Promise<{ rows: { locked: boolean }[] }> {
+		return { rows: [{ locked: true }] };
+	}
+	async end(): Promise<void> {}
+}
 
 function createSharedFakeDbos(options: { readonly launch?: () => Promise<void> } = {}): SharedFakeDbos {
 	const wrappers = new Map<string, RegisteredWrapper>();
@@ -128,6 +140,7 @@ async function evaluateDurabilityGraph(sdk: SharedFakeDbos): Promise<DurableGrap
 		virtualModules: {
 			"@bastani/atomic": atomic,
 			"@dbos-inc/dbos-sdk": { DBOS: sdk },
+			pg: { ...pg, default: { ...pg, Client: GrantingLaunchLockClient }, Client: GrantingLaunchLockClient },
 			"@dbos-inc/dbos-sdk/datasource": {
 				ensurePGDatabase: async () => ({ status: "success" }),
 				getPGClientConfig: (connectionString: string) => ({ connectionString }),

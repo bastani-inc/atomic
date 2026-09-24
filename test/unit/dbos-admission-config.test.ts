@@ -10,6 +10,7 @@ vi.mock("@dbos-inc/dbos-sdk/datasource", async (importOriginal) => ({
 	ensurePGDatabase: vi.fn(async () => ({ status: "already_exists", notes: [], message: "exists" })),
 }));
 const sdk = { setConfig: vi.fn<(config: DbosConfiguration) => void>(), launch: vi.fn(async () => {}) };
+const runWithoutLaunchLock = async (_url: string, launch: () => Promise<void>) => await launch();
 const config: DbosConfiguration = {
 	name: "atomic-workflows",
 	runAdminServer: false,
@@ -53,7 +54,7 @@ for (const [name, database] of [
 // #3072: preserve DBOS's warning-and-launch behavior when verification fails.
 test("failed database verification warns before launching the configured pool", async () => {
 	vi.mocked(ensurePGDatabase).mockResolvedValueOnce({ status: "failed", notes: [], message: "unavailable" });
-	const database = configureAdmissionDatabase(sdk, config);
+	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
 	await database.launch();
 	assert.equal(vi.mocked(config.logger.warn).mock.calls.length, 1);
 	assert.equal(sdk.launch.mock.calls.length, 1);
@@ -72,7 +73,7 @@ test("explicit endpoint overrides PG environment and provisions that same databa
 	}))
 		vi.stubEnv(key, value);
 	const systemDatabaseUrl = "postgresql://fixture:unused@127.0.0.1:1/explicit?connect_timeout=3&sslmode=disable";
-	const database = configureAdmissionDatabase(sdk, { ...config, systemDatabaseUrl });
+	const database = configureAdmissionDatabase(sdk, { ...config, systemDatabaseUrl }, runWithoutLaunchLock);
 	const initial = configured();
 	assert.equal(initial.systemDatabaseUrl, systemDatabaseUrl);
 	assert.equal(initial.systemDatabasePool.options.connectionString, systemDatabaseUrl);
@@ -144,7 +145,7 @@ for (const host of ["::1", "/var/run/postgresql"]) {
 
 // #3072: failed-launch shutdown ends DBOS's custom pool. Retry replaces only that pool.
 test("launch after shutdown replaces the ended pool and checks readiness on the replacement", async () => {
-	const database = configureAdmissionDatabase(sdk, config);
+	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
 	const initial = configured();
 	const failure = new Error("isolated launch failure");
 	sdk.launch.mockRejectedValueOnce(failure);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
 	DBOS_LAUNCH_LOCK_KEY,
+	DbosLaunchLockTimeoutError,
 	type LaunchLockClient,
 	withDbosLaunchLock,
 } from "../../packages/workflows/src/durable/dbos-launch-lock.js";
@@ -115,42 +116,157 @@ describe("DBOS launch advisory lock", () => {
 		assert.ok(locks.queries.some((query) => query.includes("pg_advisory_unlock")));
 	});
 
-	test("launches without the lock when the lock connection cannot be opened", async () => {
+	test("retries a refused lock connection with backoff, then fails without launching", async () => {
 		let launched = false;
+		let attempts = 0;
+		const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
+
+		await assert.rejects(
+			withDbosLaunchLock(
+				"postgresql://db/x",
+				async () => {
+					launched = true;
+				},
+				{
+					...fastPolling,
+					connectRetries: 2,
+					connectRetryDelayMs: 1,
+					connect: async () => {
+						attempts += 1;
+						throw refused;
+					},
+				},
+			),
+			(error) => error === refused,
+		);
+
+		assert.equal(attempts, 3);
+		assert.equal(launched, false);
+	});
+
+	test("launches under the lock once a refused connection recovers", async () => {
+		const locks = new FakeAdvisoryLocks();
+		let attempts = 0;
+		let heldDuringLaunch = false;
 
 		await withDbosLaunchLock(
 			"postgresql://db/x",
 			async () => {
-				launched = true;
+				heldDuringLaunch = locks.holder !== undefined;
 			},
 			{
 				...fastPolling,
+				connectRetryDelayMs: 1,
 				connect: async () => {
-					throw new Error("ECONNREFUSED");
+					attempts += 1;
+					if (attempts === 1) throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+					return locks.connect();
 				},
 			},
 		);
 
-		assert.equal(launched, true);
+		assert.equal(attempts, 2);
+		assert.equal(heldDuringLaunch, true);
+		assert.equal(locks.holder, undefined);
 	});
 
-	test("launches without the lock after the bounded wait", async () => {
+	test("reconnects when the lock connection drops while waiting", async () => {
 		const locks = new FakeAdvisoryLocks();
-		const stuck = locks.connect();
-		await stuck.query("SELECT pg_try_advisory_lock($1) AS locked", [DBOS_LAUNCH_LOCK_KEY]);
-		let launched = false;
-		const started = performance.now();
+		const holder = locks.connect();
+		await holder.query("SELECT pg_try_advisory_lock($1) AS locked", [DBOS_LAUNCH_LOCK_KEY]);
+		let connections = 0;
+		let heldDuringLaunch = false;
 
 		await withDbosLaunchLock(
 			"postgresql://db/x",
 			async () => {
-				launched = true;
+				heldDuringLaunch = locks.holder !== undefined && locks.holder !== holder;
 			},
-			{ pollIntervalMs: 5, maxWaitMs: 60, connect: async () => locks.connect() },
+			{
+				...fastPolling,
+				connectRetryDelayMs: 1,
+				connect: async () => {
+					connections += 1;
+					const client = locks.connect();
+					if (connections > 1) return client;
+					return {
+						query: async () => {
+							setTimeout(() => void holder.end(), 0);
+							throw new Error("Connection terminated unexpectedly");
+						},
+						end: client.end,
+					};
+				},
+			},
 		);
 
-		assert.equal(launched, true);
+		assert.equal(connections, 2);
+		assert.equal(heldDuringLaunch, true);
+	});
+
+	test("fails with a lock timeout instead of launching without the lock", async () => {
+		const locks = new FakeAdvisoryLocks();
+		const stuck = locks.connect();
+		await stuck.query("SELECT pg_try_advisory_lock($1) AS locked", [DBOS_LAUNCH_LOCK_KEY]);
+		let launched = false;
+		let ended = 0;
+		const started = performance.now();
+
+		await assert.rejects(
+			withDbosLaunchLock(
+				"postgresql://db/x",
+				async () => {
+					launched = true;
+				},
+				{
+					pollIntervalMs: 5,
+					maxWaitMs: 60,
+					connect: async () => {
+						const client = locks.connect();
+						return {
+							query: client.query,
+							end: async () => {
+								ended += 1;
+								await client.end();
+							},
+						};
+					},
+				},
+			),
+			DbosLaunchLockTimeoutError,
+		);
+
+		assert.equal(launched, false);
+		assert.equal(ended, 1);
 		assert.ok(performance.now() - started >= 60);
 		await stuck.end();
+	});
+
+	test("propagates a non-connection lock query error without launching", async () => {
+		let launched = false;
+		const denied = Object.assign(new Error("permission denied for function pg_try_advisory_lock"), {
+			code: "42501",
+		});
+
+		await assert.rejects(
+			withDbosLaunchLock(
+				"postgresql://db/x",
+				async () => {
+					launched = true;
+				},
+				{
+					...fastPolling,
+					connect: async () => ({
+						query: async () => {
+							throw denied;
+						},
+						end: async () => {},
+					}),
+				},
+			),
+			(error) => error === denied,
+		);
+
+		assert.equal(launched, false);
 	});
 });

@@ -14,6 +14,7 @@ vi.mock("@dbos-inc/dbos-sdk/datasource", async (original) => ({
 	...(await original<typeof import("@dbos-inc/dbos-sdk/datasource")>()),
 	ensurePGDatabase: vi.fn(async () => ({ status: "already_exists", notes: [], message: "exists" })),
 }));
+const runWithoutLaunchLock = async (_url: string, launch: () => Promise<void>) => await launch();
 const initialUrl = "postgresql://fixture:unused@127.0.0.1:1/isolated?sslmode=disable";
 const config: DbosConfiguration = {
 	name: "isolated-health-config",
@@ -46,7 +47,7 @@ test("configured DBOS consumers follow recovered ports without relaunch or recon
 		.spyOn(Pool.prototype, "connect")
 		.mockImplementation(async () => Object.assign(new Client(), { release: vi.fn() }));
 	const sdk = { setConfig: vi.fn<(config: DbosConfiguration) => void>(), launch: vi.fn(async () => {}) };
-	const database = configureAdmissionDatabase(sdk, config);
+	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
 	const pool = sdk.setConfig.mock.calls[0][0].systemDatabasePool!;
 	try {
 		await database.launch();
@@ -143,7 +144,7 @@ test.each(["acquisition", "timer"])("managed %s health preserves checkouts on 53
 	} as Pool["connect"]);
 	const end = vi.spyOn(Pool.prototype, "end");
 	const sdk = { setConfig: vi.fn<(config: DbosConfiguration) => void>(), launch: vi.fn(async () => {}) };
-	const database = configureAdmissionDatabase(sdk, config);
+	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
 	const pool = sdk.setConfig.mock.calls[0][0].systemDatabasePool!;
 	const consumerError = vi.fn();
 	pool.on("error", consumerError);
