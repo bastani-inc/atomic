@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { chmodSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { createServer, type Server } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Client } from "pg";
 import { afterEach, test, vi } from "vitest";
 import {
@@ -12,12 +22,17 @@ import {
 	resetEmbeddedDbosPostgresForTests,
 	shutdownEmbeddedDbosPostgres,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
-import { fingerprintPreparedRuntime } from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
+import {
+	fingerprintPreparedRuntime,
+	prepareBinariesForOwner,
+} from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
 import {
 	availablePostgresPort,
+	managedPostgresLaunchExecutable,
 	managedPostgresRuntimeHealthy,
 	managedPostmaster,
 	POSTGRES_IDENTITY_SQL,
+	postgresRuntimeFilesExist,
 	preferredPostgresPort,
 	probePostgresIdentity,
 	verifyPostgresIdentity,
@@ -34,13 +49,24 @@ import {
 	writeTextSync,
 } from "../helpers/runtime.js";
 
+function unsealRuntimeDirectories(path: string): void {
+	if (!existsSync(path)) return;
+	chmodSync(path, 0o755);
+	for (const entry of readdirSync(path)) {
+		const child = join(path, entry);
+		if (lstatSync(child).isDirectory()) unsealRuntimeDirectories(child);
+	}
+}
 const roots: string[] = [];
 const listeners: Server[] = [];
 afterEach(async () => {
 	resetEmbeddedDbosPostgresForTests();
 	vi.unstubAllEnvs();
 	for (const listener of listeners.splice(0)) await new Promise<void>((resolve) => listener.close(() => resolve()));
-	for (const root of roots.splice(0)) removeTempDirectory(root);
+	for (const root of roots.splice(0)) {
+		unsealRuntimeDirectories(join(root, "pg-runtime"));
+		removeTempDirectory(root);
+	}
 });
 async function listener() {
 	const server = createServer((socket) => {
@@ -259,6 +285,91 @@ test("detects missing PostgreSQL support files after its source worktree is remo
 	assert.equal(managedPostgresRuntimeHealthy(f.metadata), false);
 });
 
+test("Windows PostgreSQL support files use share/timezonesets, with Default required", () => {
+	const f = fixture();
+	const native = join(f.root, "windows", "native");
+	const postgres = join(native, "bin", "postgres.exe");
+	const timezone = join(native, "share", "timezonesets", "Default");
+	mkdirSync(dirname(postgres), { recursive: true });
+	mkdirSync(dirname(timezone), { recursive: true });
+	writeTextSync(postgres, "binary");
+	writeTextSync(timezone, "timezone");
+	assert.equal(postgresRuntimeFilesExist(postgres), true);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${postgres} "-D" "${f.data}" "-p" "5439" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	assert.equal(managedPostgresRuntimeHealthy(f.metadata), true);
+	rmSync(timezone);
+	assert.equal(postgresRuntimeFilesExist(postgres), false);
+	assert.equal(managedPostgresRuntimeHealthy(f.metadata), false);
+});
+
+test("a verified launch identifies its runtime even when the executable was removed", () => {
+	const f = fixture();
+	f.pidfile(5439);
+	const launch = managedPostgresLaunchExecutable(f.metadata);
+	assert.equal(launch, join(f.root, "runtime", "native", "bin", "postgres"));
+	rmSync(launch);
+	assert.equal(managedPostgresLaunchExecutable(f.metadata), launch);
+});
+
+test("a fresh client reserves the deleted launch generation when replacing a verified server", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	const old = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, old);
+	const initiallyStaged = await prepareBinariesForOwner(f.options.binaries, f.options.context);
+	const launchGeneration = dirname(dirname(initiallyStaged.postgres));
+	unsealRuntimeDirectories(launchGeneration);
+	removeTempDirectory(launchGeneration);
+	assert.equal(existsSync(launchGeneration), false);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(launchGeneration, "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	let stops = 0;
+	let starts = 0;
+	hooks.setRetainedPostgresSpawner((options) => {
+		starts++;
+		assert.ok(options.executable.startsWith(`${join(f.root, "pg-runtime")}${sep}`));
+		assert.notEqual(dirname(dirname(options.executable)), launchGeneration);
+		f.pidfile(port);
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${options.executable} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		return {
+			pid: process.pid,
+			wait: async () => {
+				throw new Error("Timed out waiting for the retained Postgres process to exit");
+			},
+			interruptAndWait: async () => {
+				throw new Error("must not signal a published server through a lease");
+			},
+			release() {},
+		};
+	});
+	await hooks.ensureCluster({
+		...f.options,
+		prepared: false,
+		context: {
+			baseDir: f.root,
+			runAsOwner: async (_command, args) => {
+				assert.equal(realpathSync(args[1]), realpathSync(f.data));
+				stops++;
+				rmSync(join(f.data, "postmaster.pid"));
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+		},
+	});
+	assert.equal(stops, 1);
+	assert.equal(starts, 1);
+	assert.equal(existsSync(launchGeneration), false);
+	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	assert.equal(managedPostgresMetadata(f.root, 18, false).clusterId, f.metadata.clusterId);
+});
 test("restarts only an identity-verified managed server whose launch runtime disappeared", async () => {
 	const f = fixture();
 	const port = await availablePostgresPort(0);
@@ -398,6 +509,10 @@ test("corrupt cached replacement runtime preserves the running managed server", 
 	);
 	const runtimeIdentity = await fingerprintPreparedRuntime(f.options.binaries);
 	writeTextSync(join(f.root, "runtime", "native", "bin", "postgres"), "corrupt-but-present");
+	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", join(f.root, "runtime", "native"));
+	writeTextSync(join(f.root, "runtime", "native", "bin", "pg_ctl"), "fixture");
+	writeTextSync(join(f.root, "runtime", "native", "bin", "initdb"), "fixture");
+	rmSync(join(f.root, "runtime", "native", "share", "postgresql", "timezonesets", "Default"));
 	let stops = 0;
 	await assert.rejects(
 		hooks.ensureCluster({
@@ -412,7 +527,7 @@ test("corrupt cached replacement runtime preserves the running managed server", 
 				},
 			},
 		}),
-		/Replacement managed Postgres runtime.*changed/,
+		/Replacement managed Postgres source runtime is incomplete/,
 	);
 	assert.equal(stops, 0);
 	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.pid, old.pid);
@@ -427,6 +542,10 @@ test("corrupt cached runtime cannot restart a stopped managed server", async () 
 	const runtimeIdentity = await fingerprintPreparedRuntime(f.options.binaries);
 	rmSync(join(f.data, "postmaster.pid"));
 	writeTextSync(join(f.root, "runtime", "native", "bin", "postgres"), "corrupt-but-present");
+	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", join(f.root, "runtime", "native"));
+	writeTextSync(join(f.root, "runtime", "native", "bin", "pg_ctl"), "fixture");
+	writeTextSync(join(f.root, "runtime", "native", "bin", "initdb"), "fixture");
+	rmSync(join(f.root, "runtime", "native", "share", "postgresql", "timezonesets", "Default"));
 	let starts = 0;
 	hooks.setRetainedPostgresSpawner(() => {
 		starts++;
@@ -434,7 +553,7 @@ test("corrupt cached runtime cannot restart a stopped managed server", async () 
 	});
 	await assert.rejects(
 		hooks.ensureCluster({ ...f.options, recovery: { ...f.metadata, server: old }, runtimeIdentity }),
-		/Replacement managed Postgres runtime.*changed/,
+		/Replacement managed Postgres source runtime is incomplete/,
 	);
 	assert.equal(starts, 0);
 	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.pid, old.pid);

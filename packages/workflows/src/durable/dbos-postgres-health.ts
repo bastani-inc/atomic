@@ -11,6 +11,7 @@ interface PostgresHealthOperations {
 	readonly recover: () => Promise<void>;
 	readonly validate?: (client: PoolClient) => Promise<void>;
 	readonly wait?: (ms: number) => Promise<void>;
+	readonly now?: () => number;
 }
 
 const HEALTH_INTERVAL_MS = 5_000;
@@ -23,6 +24,7 @@ export class PostgresHealth {
 	private stopped = false;
 	private available?: PostgresHealthIdentity;
 	private attempts = 0;
+	private nextRecoveryAt = 0;
 	private failure?: Error;
 	private revision = 0;
 	private readonly listeners = new Set<() => void>();
@@ -91,6 +93,7 @@ export class PostgresHealth {
 		if (this.available && this.available.identity !== identity.identity) this.invalidate();
 		this.available = identity;
 		this.attempts = 0;
+		this.nextRecoveryAt = 0;
 		return identity.url;
 	}
 
@@ -109,6 +112,8 @@ export class PostgresHealth {
 		if (this.attempts === 0)
 			this.failure = new DbosDependencyError("Managed PostgreSQL failed its live health check.");
 		this.invalidate();
+		if ((this.operations.now ?? Date.now)() < this.nextRecoveryAt)
+			throw new DbosDependencyError("Managed Postgres recovery is cooling down after bounded attempts.");
 		while (!this.stopped && this.attempts < RECOVERY_ATTEMPTS) {
 			const attempt = this.attempts++;
 			if (attempt > 0)
@@ -124,9 +129,8 @@ export class PostgresHealth {
 				this.failure = error instanceof Error ? error : new Error(String(error));
 			}
 		}
-		// Each health check has a bounded retry budget; a later check can recover
-		// once an installation is repaired without requiring a manual command.
 		this.attempts = 0;
+		this.nextRecoveryAt = (this.operations.now ?? Date.now)() + HEALTH_INTERVAL_MS;
 		throw new DbosDependencyError(
 			"Managed Postgres is unavailable after bounded recovery. Preserve its data and ownership records.",
 		);

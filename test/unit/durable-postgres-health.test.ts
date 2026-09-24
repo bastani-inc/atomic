@@ -33,6 +33,7 @@ test("health loss invalidates before a single shared recovery and reconnects", a
 // A repaired installation must be retried automatically on the next bounded health check.
 test("exhausted recovery retries after installation repair without a manual command", async () => {
 	let healthy = false;
+	let now = 0;
 	let recoveries = 0;
 	const waits: number[] = [];
 	const health = new PostgresHealth({
@@ -44,11 +45,15 @@ test("exhausted recovery retries after installation repair without a manual comm
 		wait: async (ms) => {
 			waits.push(ms);
 		},
+		now: () => now,
 	});
 	await assert.rejects(health.check(), /unavailable after bounded recovery/);
 	assert.equal(health.lastFailure?.message, "owned restart failed");
 	assert.equal(recoveries, 3);
 	assert.deepEqual(waits, [250, 500]);
+	await assert.rejects(health.check(), /cooling down/);
+	assert.equal(recoveries, 3);
+	now += 5_000;
 	await assert.rejects(health.check(), /unavailable after bounded recovery/);
 	assert.equal(recoveries, 6);
 	healthy = true;

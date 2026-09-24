@@ -13,17 +13,23 @@ import { stageControlRegistry } from "../../packages/workflows/src/runs/foregrou
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 
-class FailingHydrationBackend extends InMemoryDurableBackend {
+class TrackingHydrationBackend extends InMemoryDurableBackend {
+	targetedHydrationCalls: string[] = [];
+	catalogHydrationCalls = 0;
+
+	override async hydrateWorkflow(workflowId: string): Promise<void> {
+		this.targetedHydrationCalls.push(workflowId);
+	}
+
 	override async hydrateResumableWorkflows(): Promise<void> {
-		throw new Error("durable hydration exploded");
+		this.catalogHydrationCalls += 1;
 	}
 }
 
-class TrackingHydrationBackend extends InMemoryDurableBackend {
-	hydrationCalls = 0;
-
-	override async hydrateResumableWorkflows(): Promise<void> {
-		this.hydrationCalls += 1;
+class FailingHydrationBackend extends TrackingHydrationBackend {
+	override async hydrateWorkflow(workflowId: string): Promise<void> {
+		await super.hydrateWorkflow(workflowId);
+		throw new Error("durable hydration exploded");
 	}
 }
 
@@ -123,7 +129,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		await resumedJob.promise;
 		assert.equal(store.runs().find((run) => run.id === workflowId)?.status, "completed");
 	});
-	test.sequential("unknown resume hydrates durability while ordinary status remains local", async () => {
+	test.sequential("unknown full-ID resume hydrates only its target while ordinary status remains local", async () => {
 		const backend = new TrackingHydrationBackend();
 		setDurableBackend(backend);
 		const definition = workflow({ name: "lookup", description: "", inputs: {}, outputs: {}, run: () => ({}) });
@@ -136,16 +142,22 @@ describe("workflow tool durable-only checkpoint replay", () => {
 
 		const status = await execute({ action: "status" }, {} as never);
 		assert.equal(status.action, "status");
-		assert.equal(backend.hydrationCalls, 0, "status must not eagerly hydrate durable history");
+		assert.deepEqual(backend.targetedHydrationCalls, [], "status must not hydrate individual durable workflows");
+		assert.equal(backend.catalogHydrationCalls, 0, "status must not eagerly hydrate durable history");
 
 		const result = await execute({ action: "resume", runId: target }, {} as never);
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
 		assert.equal(result.message, `Run not found: ${target}`);
-		assert.ok(backend.hydrationCalls > 0, "not-found must follow authoritative hydration");
+		assert.deepEqual(
+			backend.targetedHydrationCalls,
+			[target],
+			"not-found must follow authoritative targeted hydration",
+		);
+		assert.equal(backend.catalogHydrationCalls, 0, "full-ID resume must not hydrate the durable catalog");
 	});
 
-	test.sequential("resume surfaces durable hydration failures and keeps --all unsupported", async () => {
+	test.sequential("full-ID resume surfaces targeted hydration failures and keeps --all unsupported", async () => {
 		const backend = new FailingHydrationBackend();
 		setDurableBackend(backend);
 		const definition = workflow({
@@ -161,11 +173,14 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			() => undefined,
 		);
 
-		const failed = await execute({ action: "resume", runId: testRunId("durable-failure") }, {} as never);
+		const target = testRunId("durable-failure");
+		const failed = await execute({ action: "resume", runId: target }, {} as never);
 		assert.equal(failed.action, "resume");
 		assert.equal(failed.status, "noop");
 		assert.match(failed.message, /durable hydration exploded/);
 		assert.doesNotMatch(failed.message, /Run not found/);
+		assert.deepEqual(backend.targetedHydrationCalls, [target], "the error must come from the requested workflow");
+		assert.equal(backend.catalogHydrationCalls, 0, "targeted hydration failure must not fall back to a catalog scan");
 
 		const all = await execute({ action: "resume", all: true }, {} as never);
 		assert.deepEqual(all, {
@@ -174,6 +189,8 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			status: "noop",
 			message: "Resume does not support --all.",
 		});
+		assert.deepEqual(backend.targetedHydrationCalls, [target], "--all must be rejected without further hydration");
+		assert.equal(backend.catalogHydrationCalls, 0, "--all must not hydrate the durable catalog");
 	});
 
 	test.sequential("quit with an in-flight tool re-runs only that call at the same node identity", async () => {

@@ -30,7 +30,7 @@
 - Atomic no longer warns at startup that its bundled workflows, subagents, MCP, and intercom extensions list `typebox` under dependencies. They now declare it as a `*` peer dependency, so they use the host's TypeBox.
 - Fixed an assistant reply occasionally disappearing from the live chat when a workflow completion notice arrived just as the reply finished streaming. The reply was still saved to the session, but the conversation shown and sent to the model could omit it until the session was reloaded.
 - Fixed a model switch made with Ctrl+P or `/model` just as Atomic finished loading startup resources sometimes being undone on screen: the footer went back to the previous model even though the new model was already in use.
-- New managed PostgreSQL servers use a retained runtime separate from workflow data and project checkouts; removing the source worktree or reinstalling packages no longer removes files needed by that server.
+- Managed PostgreSQL now runs from a retained runtime separate from workflow data and project checkouts. Removing a source worktree no longer breaks its server; reinstalling a complete healthy package lets automatic recovery replace a damaged runtime, including the same version, without deleting the database or restarting Atomic.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

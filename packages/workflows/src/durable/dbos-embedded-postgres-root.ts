@@ -188,10 +188,13 @@ export interface RuntimePreparationOptions {
 	readonly afterPublishValidation?: (publishedRuntime: string) => void | Promise<void>;
 	/** Test seam for deterministic event-loop cooperation without real delays. */
 	readonly yieldToEventLoop?: () => Promise<void>;
+	readonly repairCorruptGeneration?: boolean;
+	readonly reservedGeneration?: string;
 }
 
 const STAGE_OWNER_FILE = ".atomic-stage-owner";
 const STAGE_PAYLOAD_DIR = "runtime";
+const MAX_RUNTIME_REPAIR_GENERATIONS = 8;
 const TRAVERSAL_OPERATIONS_PER_YIELD = 16;
 const HASH_CHUNK_BYTES = 64 * 1024;
 
@@ -307,12 +310,23 @@ async function findOrCreateRuntimeGeneration(
 	}
 	if (needsPrivilegeDrop) await chown(copiedRuntimeDir, publisher.uid, publisher.gid);
 	await chmod(copiedRuntimeDir, 0o755);
-	const generationNativeDir = join(copiedRuntimeDir, `native-${sourceSnapshot.sourceIdentity}`);
-	const existing = await lstatOrUndefined(generationNativeDir);
-	if (existing !== undefined) {
+	const canonical = join(copiedRuntimeDir, `native-${sourceSnapshot.sourceIdentity}`);
+	if (options.repairCorruptGeneration && !options.publicationLease?.refresh()) {
+		throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime repair requires its setup lease.");
+	}
+	let generationNativeDir: string | undefined;
+	for (let repair = 0; repair <= MAX_RUNTIME_REPAIR_GENERATIONS; repair++) {
+		const candidate = repair === 0 ? canonical : `${canonical}-repair-${repair}`;
+		const existing = await lstatOrUndefined(candidate);
+		if (existing === undefined) {
+			if (candidate === options.reservedGeneration) continue;
+			generationNativeDir ??= candidate;
+			if (!options.repairCorruptGeneration) break;
+			continue;
+		}
 		try {
-			if ((await snapshotSealedRuntime(generationNativeDir, progress)) !== sourceSnapshot.sealedIdentity) {
-				throw new Error("sealed identity mismatch");
+			if ((await snapshotSealedRuntime(candidate, progress)) !== sourceSnapshot.sealedIdentity) {
+				throw new CorruptRuntimeGenerationError("sealed identity mismatch");
 			}
 			await assertSourceSnapshotUnchanged(
 				sourceNativeDir,
@@ -321,15 +335,23 @@ async function findOrCreateRuntimeGeneration(
 				progress,
 				"Embedded Postgres source package changed while selecting an existing generation.",
 			);
-			return generationNativeDir;
+			return candidate;
 		} catch (error) {
-			if (error instanceof SourceRuntimeChangedError) throw error;
-			const detail = error instanceof Error ? error.message : String(error);
-			throw new Error(
-				`Embedded Postgres runtime generation is corrupt and cannot be replaced while it may be in use (${generationNativeDir}): ${detail}`,
-			);
+			if (error instanceof SourceRuntimeChangedError || error instanceof RuntimePublicationLeaseLostError)
+				throw error;
+			if (!isCorruptRuntimeGeneration(error)) throw error;
+			if (!options.repairCorruptGeneration) {
+				const detail = error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`Embedded Postgres runtime generation is corrupt and cannot be replaced while it may be in use (${candidate}): ${detail}`,
+				);
+			}
+			if (!options.publicationLease?.refresh())
+				throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime repair lost its setup lease.");
 		}
 	}
+	if (generationNativeDir === undefined)
+		throw new Error("Embedded Postgres runtime repair slots are exhausted; preserve the existing generations.");
 
 	const stageOwner = options.publicationLease?.ownerToken ?? `unmanaged-${process.pid}-${crypto.randomUUID()}`;
 	const stagedRoot = join(copiedRuntimeDir, `.native-staged-${process.pid}-${crypto.randomUUID()}`);
@@ -386,6 +408,16 @@ async function findOrCreateRuntimeGeneration(
 }
 
 class SourceRuntimeChangedError extends Error {}
+class RuntimePublicationLeaseLostError extends Error {}
+class CorruptRuntimeGenerationError extends Error {}
+
+function isCorruptRuntimeGeneration(error: unknown): boolean {
+	if (error instanceof CorruptRuntimeGenerationError) return true;
+	if (!(error instanceof Error)) return false;
+	if (/^Embedded Postgres runtime (?:root|contains)/.test(error.message)) return true;
+	const code = "code" in error ? error.code : undefined;
+	return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EACCES";
+}
 
 async function assertSourceSnapshotUnchanged(
 	sourceNativeDir: string,
@@ -401,7 +433,8 @@ async function assertSourceSnapshotUnchanged(
 }
 
 function assertPublicationLease(options: RuntimePreparationOptions, message: string): void {
-	if (options.publicationLease !== undefined && !options.publicationLease.refresh()) throw new Error(message);
+	if (options.publicationLease !== undefined && !options.publicationLease.refresh())
+		throw new RuntimePublicationLeaseLostError(message);
 }
 function runtimeProgress(options: RuntimePreparationOptions): RuntimeProgress {
 	let operations = 0;
@@ -409,12 +442,14 @@ function runtimeProgress(options: RuntimePreparationOptions): RuntimeProgress {
 	return async () => {
 		if (operations % TRAVERSAL_OPERATIONS_PER_YIELD === 0) {
 			if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
-				throw new Error("Embedded Postgres runtime publication lost its setup lease.");
+				throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime publication lost its setup lease.");
 			}
 			if (operations > 0) {
 				await yieldToEventLoop();
 				if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
-					throw new Error("Embedded Postgres runtime publication lost its setup lease.");
+					throw new RuntimePublicationLeaseLostError(
+						"Embedded Postgres runtime publication lost its setup lease.",
+					);
 				}
 			}
 		}

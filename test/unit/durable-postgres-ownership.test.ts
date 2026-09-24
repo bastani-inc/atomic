@@ -219,6 +219,16 @@ test("failed ensure retains a timed-out startup lease until a later shutdown", a
 	const root = makeTempDirectory("atomic-pg-startup-rollback-");
 	roots.push(root);
 	const data = join(root, "v18");
+	const native = join(root, "runtime", "native");
+	makeDirectorySync(join(native, "bin"), { recursive: true });
+	makeDirectorySync(join(native, "share", "postgresql", "timezonesets"), { recursive: true });
+	writeTextSync(join(native, "share", "postgresql", "timezonesets", "Default"), "timezone");
+	const binaries = {
+		pg_ctl: join(native, "bin", "pg_ctl"),
+		initdb: join(native, "bin", "initdb"),
+		postgres: join(native, "bin", "postgres"),
+	};
+	for (const binary of Object.values(binaries)) writeTextSync(binary, "fixture");
 	const cleanupError = new Error("Timed out waiting for retained Postgres");
 	const interruptCalls: number[] = [];
 	let releaseCalls = 0;
@@ -250,14 +260,14 @@ test("failed ensure retains a timed-out startup lease until a later shutdown", a
 					return { exitCode: 0, stdout: "", stderr: "" };
 				},
 			},
-			binaries: { pg_ctl: "fake-pg_ctl", initdb: "fake-initdb", postgres: "fake-postgres" },
+			binaries,
 			prepared: true,
 			isReachable: async () => false,
 		}),
 	);
 
 	await assert.rejects(hooks.ensure(), (error: unknown) => {
-		assert.ok(error instanceof EmbeddedPostgresCleanupPendingError);
+		assert.ok(error instanceof EmbeddedPostgresCleanupPendingError, String(error));
 		assert.equal(error.errors.length, 2);
 		assert.ok(error.errors[0] instanceof Error);
 		assert.ok(!(error.errors[0] instanceof AggregateError));

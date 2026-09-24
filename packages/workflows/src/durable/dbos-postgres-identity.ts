@@ -41,6 +41,13 @@ export function managedPostgresRuntimeHealthy(
 	metadata: ManagedPostgresMetadata,
 	port = metadata.server?.port,
 ): boolean {
+	return postgresRuntimeFilesExist(managedPostgresLaunchExecutable(metadata, port));
+}
+
+export function managedPostgresLaunchExecutable(
+	metadata: ManagedPostgresMetadata,
+	port = metadata.server?.port,
+): string {
 	const optsPath = join(metadata.dataDir, "postmaster.opts");
 	if (!lstatSync(optsPath).isFile()) throw new Error("Managed Postgres launch options are missing or untrusted.");
 	const launch =
@@ -53,12 +60,12 @@ export function managedPostgresRuntimeHealthy(
 	if (realpathSync(launch[2]) !== metadata.dataDir || (port !== undefined && Number(launch[3]) !== port)) {
 		throw new Error("Managed Postgres launch options do not match its owned data directory and port.");
 	}
-	return postgresRuntimeFilesExist(launch[1]);
+	return launch[1];
 }
 
 export function postgresRuntimeFilesExist(postgres: string): boolean {
 	const native = dirname(dirname(postgres));
-	const timezoneSets = join(native, "share", "postgresql", "timezonesets");
+	const timezoneSets = join(native, "share", ...(postgres.endsWith(".exe") ? [] : ["postgresql"]), "timezonesets");
 	return (
 		lstatSync(postgres, { throwIfNoEntry: false })?.isFile() === true &&
 		lstatSync(timezoneSets, { throwIfNoEntry: false })?.isDirectory() === true &&

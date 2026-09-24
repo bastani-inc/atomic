@@ -421,6 +421,136 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 		}
 	});
 
+	test("reuses one immutable repair generation after canonical corruption", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-repair-reuse-"));
+		try {
+			const native = join(scratch, "pkg", "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["pg_ctl", "initdb", "postgres"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const binaries = {
+				pg_ctl: join(native, "bin", "pg_ctl"),
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+			};
+			const context: EmbeddedPostgresRunContext = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			const original = await prepareBinariesForOwner(binaries, context, noCommands);
+			chmodSync(original.postgres, 0o755);
+			writeFileSync(original.postgres, "corrupt");
+			const options = {
+				repairCorruptGeneration: true,
+				publicationLease: { ownerToken: "test", refresh: () => true },
+			};
+			const replacement = await prepareBinariesForOwner(binaries, context, noCommands, options);
+			assert.notEqual(replacement.postgres, original.postgres);
+			assert.equal(readFileSync(original.postgres, "utf8"), "corrupt");
+			assert.equal(readFileSync(replacement.postgres, "utf8"), "postgres");
+			assert.equal(
+				(await prepareBinariesForOwner(binaries, context, noCommands, options)).postgres,
+				replacement.postgres,
+			);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("a lost setup lease cannot publish a repair over corrupt evidence", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-repair-lease-"));
+		try {
+			const native = join(scratch, "pkg", "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["pg_ctl", "initdb", "postgres"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const binaries = {
+				pg_ctl: join(native, "bin", "pg_ctl"),
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+			};
+			const context: EmbeddedPostgresRunContext = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			const original = await prepareBinariesForOwner(binaries, context, noCommands);
+			chmodSync(original.postgres, 0o755);
+			writeFileSync(original.postgres, "corrupt");
+			await assert.rejects(
+				prepareBinariesForOwner(binaries, context, noCommands, {
+					repairCorruptGeneration: true,
+					publicationLease: { ownerToken: "lost", refresh: () => false },
+				}),
+				/setup lease/,
+			);
+			assert.deepEqual(
+				readdirSync(join(context.baseDir, "pg-runtime")).filter((name) => name.startsWith("native-")),
+				[basename(dirname(dirname(original.postgres)))],
+			);
+			assert.equal(readFileSync(original.postgres, "utf8"), "corrupt");
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("reuses a healthy repair when the canonical slot disappears", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-repair-peer-"));
+		try {
+			const native = join(scratch, "pkg", "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["pg_ctl", "initdb", "postgres"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const binaries = {
+				pg_ctl: join(native, "bin", "pg_ctl"),
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+			};
+			const context: EmbeddedPostgresRunContext = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			const canonical = await prepareBinariesForOwner(binaries, context, noCommands);
+			chmodSync(canonical.postgres, 0o755);
+			writeFileSync(canonical.postgres, "corrupt");
+			const options = {
+				repairCorruptGeneration: true,
+				publicationLease: { ownerToken: "test", refresh: () => true },
+			};
+			const repair = await prepareBinariesForOwner(binaries, context, noCommands, options);
+			removeSealedScratch(dirname(dirname(canonical.postgres)));
+			const selected = await prepareBinariesForOwner(binaries, context, noCommands, options);
+			assert.equal(selected.postgres, repair.postgres);
+			assert.equal(existsSync(dirname(dirname(canonical.postgres))), false);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("reserves a deleted running generation and does not republish at its path", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-repair-reserved-"));
+		try {
+			const native = join(scratch, "pkg", "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["pg_ctl", "initdb", "postgres"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const binaries = {
+				pg_ctl: join(native, "bin", "pg_ctl"),
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+			};
+			const context: EmbeddedPostgresRunContext = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			const first = await prepareBinariesForOwner(binaries, context, noCommands);
+			const reservedGeneration = dirname(dirname(first.postgres));
+			const reused = await prepareBinariesForOwner(binaries, context, noCommands, {
+				repairCorruptGeneration: true,
+				reservedGeneration,
+				publicationLease: { ownerToken: "test", refresh: () => true },
+			});
+			assert.equal(reused.postgres, first.postgres, "a healthy live generation permits read-only reuse");
+			removeSealedScratch(reservedGeneration);
+			const replacement = await prepareBinariesForOwner(binaries, context, noCommands, {
+				repairCorruptGeneration: true,
+				reservedGeneration,
+				publicationLease: { ownerToken: "test", refresh: () => true },
+			});
+			assert.notEqual(dirname(dirname(replacement.postgres)), reservedGeneration);
+			assert.equal(existsSync(reservedGeneration), false);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
 	test("owner-accessible binaries are staged rather than used in place", async () => {
 		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-accessible-runtime-"));
 		try {

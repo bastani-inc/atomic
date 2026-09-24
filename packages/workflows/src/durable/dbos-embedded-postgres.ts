@@ -64,6 +64,7 @@ import {
 import { PostgresHealth } from "./dbos-postgres-health.js";
 import {
 	availablePostgresPort,
+	managedPostgresLaunchExecutable,
 	managedPostgresRuntimeHealthy,
 	managedPostmaster,
 	POSTGRES_IDENTITY_SQL,
@@ -256,14 +257,71 @@ async function ensureCluster(
 			}
 			let verified: ManagedPostgresServer | undefined;
 			let prepared = options.prepared ? options.binaries : undefined;
-			const assertCachedRuntimeIntegrity = async (binaries: EmbeddedPostgresBinaries) => {
-				if (
-					options.runtimeIdentity !== undefined &&
-					(await fingerprintPreparedRuntime(binaries, { publicationLease: setup.runtimePublicationLease })) !==
-						options.runtimeIdentity
-				) {
-					throw new Error("Replacement managed Postgres runtime changed; preserving the running server.");
+			let selectedIdentity = options.runtimeIdentity;
+			let reservedLiveGeneration: string | undefined;
+			const verifyReplacementSource = async (source: EmbeddedPostgresBinaries): Promise<void> => {
+				if (!postgresRuntimeFilesExist(source.postgres)) {
+					throw new Error(
+						"Replacement managed Postgres source runtime is incomplete; preserving the running server.",
+					);
 				}
+				if (options.probeIdentity !== undefined) return;
+				hydrateBinaryLibraryLinks(source.pg_ctl);
+				for (const binary of [source.postgres, source.pg_ctl, source.initdb]) {
+					const result = await runLocalCommand(binary, ["--version"]);
+					const version = /\(PostgreSQL\)\s+(\d+)\b/.exec(result.stdout);
+					if (result.exitCode !== 0 || Number(version?.[1]) !== EMBEDDED_PG_MAJOR)
+						throw new Error(
+							`incompatible PostgreSQL runtime: ${binary} --version expected major ${EMBEDDED_PG_MAJOR}: ${commandFailureDetail(result)}`,
+						);
+				}
+			};
+			const chooseRuntime = async (): Promise<EmbeddedPostgresBinaries> => {
+				if (prepared !== undefined && selectedIdentity !== undefined) {
+					let retainedValid = false;
+					try {
+						retainedValid =
+							(await fingerprintPreparedRuntime(prepared, {
+								publicationLease: setup.runtimePublicationLease,
+							})) === selectedIdentity;
+					} catch (error) {
+						if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+					}
+					if (retainedValid) return prepared;
+					const source = await loadEmbeddedPostgresBinaries();
+					await verifyReplacementSource(source);
+					const reservedGeneration = reservedLiveGeneration ?? dirname(dirname(prepared.postgres));
+					prepared = await prepareBinariesForOwner(source, context, undefined, {
+						publicationLease: setup.runtimePublicationLease,
+						repairCorruptGeneration: true,
+						reservedGeneration,
+					});
+					selectedIdentity = prepared.sealedIdentity;
+				} else {
+					if (prepared === undefined) {
+						const source = options.binaries ?? (await loadEmbeddedPostgresBinaries());
+						await verifyReplacementSource(source);
+						prepared = await prepareBinariesForOwner(source, context, undefined, {
+							publicationLease: setup.runtimePublicationLease,
+							repairCorruptGeneration: true,
+							reservedGeneration: reservedLiveGeneration,
+						});
+					}
+				}
+				if (
+					!postgresRuntimeFilesExist(prepared.postgres) ||
+					![prepared.pg_ctl, prepared.initdb].every((binary) =>
+						lstatSync(binary, { throwIfNoEntry: false })?.isFile(),
+					) ||
+					(prepared.sealedIdentity !== undefined &&
+						(await fingerprintPreparedRuntime(prepared, { publicationLease: setup.runtimePublicationLease })) !==
+							prepared.sealedIdentity)
+				) {
+					throw new Error(
+						"Replacement managed Postgres runtime is incomplete or changed; preserving the running server.",
+					);
+				}
+				return prepared;
 			};
 			if (existing) {
 				await waitForClusterReadiness(
@@ -281,20 +339,10 @@ async function ensureCluster(
 					port,
 				);
 			}
+			if (verified)
+				reservedLiveGeneration = dirname(dirname(managedPostgresLaunchExecutable(metadata!, verified.port)));
 			if (verified && !managedPostgresRuntimeHealthy(metadata!, port)) {
-				const loaded = options.binaries ?? (await loadEmbeddedPostgresBinaries());
-				prepared ??= await prepareBinariesForOwner(loaded, context, undefined, {
-					publicationLease: setup.runtimePublicationLease,
-				});
-				if (
-					!postgresRuntimeFilesExist(prepared.postgres) ||
-					![prepared.pg_ctl, prepared.initdb].every((binary) =>
-						lstatSync(binary, { throwIfNoEntry: false })?.isFile(),
-					)
-				) {
-					throw new Error("Replacement managed Postgres runtime is incomplete; preserving the running server.");
-				}
-				await assertCachedRuntimeIntegrity(prepared);
+				prepared = await chooseRuntime();
 				if (adoptedRegistry !== undefined) {
 					if (!setup.runtimePublicationLease.refresh())
 						throw new Error("Postgres setup lease lost before legacy adoption.");
@@ -317,14 +365,8 @@ async function ensureCluster(
 				}
 			}
 			if (!verified) {
-				const loaded = options.binaries ?? (await loadEmbeddedPostgresBinaries());
-				const binaries =
-					prepared ??
-					(await prepareBinariesForOwner(loaded, context, undefined, {
-						publicationLease: setup.runtimePublicationLease,
-					}));
+				const binaries = await chooseRuntime();
 				prepared = binaries;
-				await assertCachedRuntimeIntegrity(binaries);
 				if (!existsSync(join(dataDir, "PG_VERSION"))) {
 					if (options.recovery) throw new Error("Managed Postgres recovery must not initialize data.");
 					if (existsSync(postgresOwnershipDirectory(root, EMBEDDED_PG_MAJOR))) {
@@ -376,12 +418,7 @@ async function ensureCluster(
 			if (options.probeIdentity === undefined) await probePostgresTimezoneData(verified.port);
 			let runtimeIdentity: string | undefined;
 			if (health === undefined) {
-				prepared ??= await prepareBinariesForOwner(
-					options.binaries ?? (await loadEmbeddedPostgresBinaries()),
-					context,
-					undefined,
-					{ publicationLease: setup.runtimePublicationLease },
-				);
+				prepared = await chooseRuntime();
 				runtimeIdentity =
 					prepared.sealedIdentity ??
 					(await fingerprintPreparedRuntime(prepared, { publicationLease: setup.runtimePublicationLease }));
@@ -394,6 +431,10 @@ async function ensureCluster(
 			const nextConsumer = acquirePostgresConsumer(root, metadata, `${process.execPath} | ${import.meta.url}`);
 			consumer?.release();
 			consumer = nextConsumer;
+			if (health !== undefined && options.recovery !== undefined && prepared?.sealedIdentity !== undefined) {
+				options.binaries = prepared;
+				options.runtimeIdentity = selectedIdentity ?? prepared.sealedIdentity;
+			}
 			if (health === undefined) {
 				const pinned = { ...metadata, server: verified };
 				const recoveryOptions = {

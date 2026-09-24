@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { embeddedPostgresHealth } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import { shutdownDbos } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { managedPostgresMetadata } from "../../packages/workflows/src/durable/dbos-postgres-ownership.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -83,6 +84,10 @@ for await (const line of lines) {
 		} else if (command === "metadata") {
 			// Disk-only observation: do not call ensure, doctor, recover or construct a SQL client.
 			result = { metadata: managedPostgresMetadata(base, 18, false) };
+		} else if (command === "health-diagnostics") {
+			// Read-only: observing a failure must not trigger recovery.
+			const failure = embeddedPostgresHealth()?.lastFailure;
+			result = { lastFailure: failure?.stack ?? failure?.message };
 		} else if (command === "resume") {
 			assert.ok(backend && runId);
 			const resumed = await workflowResumeAction(
@@ -119,6 +124,6 @@ for await (const line of lines) {
 		} else throw new Error(`Unknown command ${command}`);
 		console.log(JSON.stringify({ id, result }));
 	} catch (error) {
-		console.log(JSON.stringify({ id, error: String(error) }));
+		console.log(JSON.stringify({ id, error: error instanceof Error ? error.stack : String(error) }));
 	}
 }

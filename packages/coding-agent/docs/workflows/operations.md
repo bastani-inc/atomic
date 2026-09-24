@@ -488,10 +488,10 @@ Cluster ownership records live beside the data in `~/.atomic/postgres/v18.shared
 
 New managed PostgreSQL servers start from a complete, immutable runtime under
 `~/.atomic/postgres/pg-runtime` (or `/var/lib/atomic-postgres/pg-runtime` when
-running as root on Linux), separate from data and project checkouts. Once a
-server starts from that runtime, removing its original worktree or reinstalling
-packages does not remove its binaries, libraries, or support files. Do not
-remove a runtime generation while a managed server is using it.
+running as root on Linux), separate from data and project checkouts. Removing
+the original worktree or reinstalling packages does not remove files needed by
+a server already using that runtime. Do not delete a runtime generation,
+including a damaged one, while a managed server may still use it.
 
 **Running as root on Linux.** Atomic needs an available unprivileged account, `postgres`, `nobody`, or `daemon`, because PostgreSQL cannot run as root. The cluster is stored under `/var/lib/atomic-postgres`. If privilege or runtime preparation fails, inspect the diagnostic rather than changing data ownership blindly.
 
@@ -503,7 +503,19 @@ Atomic checks PostgreSQL readiness and matches the server to the managed data an
 
 After attachment, Atomic checks the managed server's SQL and process identity before borrowing database connections and every five seconds while idle. Lost health discards old connections. One elected process may restart the existing managed cluster under the shared setup lock; other sessions reconnect to its verified, persisted port. Recovery never initializes missing data, signals an unrelated listener, switches to Docker, or restarts the DBOS executor.
 
-Each process makes at most three recovery attempts per outage, with 250ms and 500ms backoffs. If they fail, monitoring still detects a restored server but does not keep restarting it. Inspect `v18.log`, correct the reported runtime or identity problem, and preserve both the data and ownership records. New admission keeps its 10-second deadline even if shared recovery takes longer. Restoring the connection does not automatically resume a paused run or prove that an interrupted write or external side effect committed. Inspect the original run before retrying. External database URLs receive no managed recovery; restore that exact endpoint yourself.
+Each process makes at most three recovery attempts per check, with short
+backoffs. Later health checks retry after a cooldown if the problem persists.
+If the retained PostgreSQL runtime is damaged or missing, reinstall a complete
+healthy Atomic package or repair your `ATOMIC_POSTGRES_RUNTIME_DIR` override,
+then inspect `v18.log`. Automatic recovery can select a verified replacement,
+including after a same-version reinstall, without restarting an updated Atomic
+process. Preserve both the data and ownership records; identity mismatches and
+database corruption require investigation, not a package reinstall.
+New admission keeps its 10-second deadline even if
+shared recovery takes longer. Restoring the connection does not automatically
+resume a paused run or prove that an interrupted write or external side effect
+committed. Inspect the original run before retrying. External database URLs
+receive no managed recovery; restore that exact endpoint yourself.
 
 Restart Atomic after upgrading to enable health supervision in a session whose database executor was already initialized by an older version.
 
@@ -679,7 +691,7 @@ Recovery requires saved checkpoints proving one unfinished tool and its complete
 
 A tool-frontier continuation must reach and consume the exact unfinished tool before reporting `completed`, whether the body returns normally or calls `ctx.exit({ status: "completed" })`. Omitting the call, including by changing control flow, fails with `insufficient_state: replay topology mismatch` and the pending tool's exact ID. A substituted tool is rejected before its callback runs. While that frontier is pending, completed model and child-workflow predecessors can replay, but new model stages, tasks, and child workflows cannot execute in its place. Stage and task worktree setup also waits for live admission. Replaying completed predecessors alone is not proof of completion. Failed replay publishes no successful result; inspect the same ID and restore the matching flow before another supported resume. Quit, kill, caught targeted cancellation, and intentional non-completed exits retain their existing behavior.
 
-After upgrading or applying a runtime fix, start a new Atomic process; `/workflow reload` refreshes definitions, not the installed runtime. A process-local non-durable warning means cross-process recovery is unavailable.
+After upgrading Atomic itself or applying a code fix, start a new Atomic process; `/workflow reload` refreshes definitions, not loaded code. A process-local non-durable warning means cross-process recovery is unavailable.
 
 If saved state cannot prove safe replay, reconcile the original run and external effects before choosing recovery. Do not restart the original workflow from the beginning to bypass the error. A separately authorized recovery-only workflow may perform verified remaining operations, but must not repeat completed side effects or fabricate checkpoints.
 
@@ -708,7 +720,7 @@ Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bi
 
 Keep the complete extracted archive, not only the `atomic` executable. `ATOMIC_POSTGRES_RUNTIME_DIR` accepts complete legacy runtimes without provenance; an incomplete override falls through to installed candidates. Packaging failures do not require deleting or reinitializing the v18 cluster.
 
-If installation reports **incomplete PostgreSQL runtime**, or macOS reports a missing library such as `libzstd.1.dylib`, download a repaired release and reinstall the complete archive. A rejected upgrade leaves your previous installation selected. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
+If installation reports **incomplete PostgreSQL runtime**, or macOS reports a missing library such as `libzstd.1.dylib`, download a repaired release and reinstall the complete archive. A rejected installation leaves the running server untouched. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
 
 To check an archive runtime, set `runtime` to its `node_modules/@bastani/atomic-natives/postgres-runtime`, then run `"$runtime/bin/postgres" --version` and `"$runtime/bin/pg_ctl" --version`. On Windows use the corresponding `.exe` files in PowerShell. Both must succeed. If a library-link or copy error is reported, repair the complete installation instead of mixing libraries from different releases.
 
