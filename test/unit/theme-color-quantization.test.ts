@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { ansi256ToHex, bgAnsi } from "../../packages/coding-agent/src/modes/interactive/theme/color-utils.ts";
+import { ansi256ToHex, bgAnsi } from "../../packages/coding-agent/src/modes/interactive/theme/color-utils.js";
 
 /**
  * `rgbTo256` is module-private; `bgAnsi(hex, "256color")` is the public surface that
