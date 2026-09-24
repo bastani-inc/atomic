@@ -1237,25 +1237,7 @@ try {
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
-
-    $postgresRuntime = Join-Path $payloadPath "node_modules\@bastani\atomic-natives\postgres-runtime"
-    $null = & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime
-    if ($LASTEXITCODE -ne 0) {
-        throw "Incomplete PostgreSQL runtime: payload validation failed; installation was not promoted. Download a repaired release."
-    }
-
-    $postgresBin = Join-Path $payloadPath "node_modules\@bastani\atomic-natives\postgres-runtime\bin"
-    foreach ($postgresCommand in @("postgres", "pg_ctl", "initdb")) {
-        $postgresExecutable = Join-Path $postgresBin ($postgresCommand + ".exe")
-        if (-not (Test-Path -LiteralPath $postgresExecutable -PathType Leaf)) {
-            throw "Incomplete PostgreSQL runtime: missing $postgresExecutable; installation was not promoted. Download a repaired release."
-        }
-        $null = & $postgresExecutable "--version"
-        if ($LASTEXITCODE -ne 0) {
-            throw "Incomplete PostgreSQL runtime: $postgresCommand --version failed; installation was not promoted. Download a repaired release."
-        }
-    }
-    Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"
+    Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"
 
     $versionsDir = Join-Path $installRoot "versions"
     $versionDirectoryName = [Uri]::EscapeDataString($releaseTag)

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Durable workflows work again on Ubuntu and Debian with the default umask 002. Atomic had refused its own group-writable `~/.atomic` as an ancestor of the PostgreSQL runtime cache and ran workflows in memory, so runs couldn't be resumed after closing Atomic. A group-writable folder is now accepted when its group is your private group: no other account in `/etc/passwd` uses it as its primary group, and `/etc/group` lists no member other than you. World-writable folders and shared groups are still rejected.
 - DBOS no longer launches without its migration lock. Previously, when another process held the lock for more than 60 seconds, or the lock connection or query failed, Atomic launched anyway. Two processes could then migrate the same fresh workflow database at once and fail with duplicate-key errors. Atomic now retries lock contention for up to 60 seconds and reopens a failed or dropped lock connection with increasing delays, as Flyway does. If it still has no lock, launch fails with a clear error instead of running unlocked.
 
 ## [0.9.20-alpha.9] - 2026-09-24

@@ -24,6 +24,7 @@ import {
 	type EmbeddedPostgresRunContext,
 	ensureRuntimeCacheDirectory,
 	fingerprintPreparedRuntime,
+	isUserPrivateGroup,
 	type LocalCommandRunner,
 	prepareBinariesForOwner,
 	ROOT_EMBEDDED_BASE_DIR,
@@ -1952,6 +1953,103 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 				ensureRuntimeCacheDirectory(cache, publisher, true, { uid: 65534, gid: 65534, name: "nobody" }, inspect),
 				/cannot traverse/,
 			);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("cache ancestors may be group-writable only through the publisher's private group", async () => {
+		if (process.platform === "win32") return;
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-cache-private-group-"));
+		try {
+			const ancestor = join(scratch, "atomic-home");
+			const cache = join(ancestor, "postgres", "pg-runtime");
+			mkdirSync(cache, { recursive: true });
+			const realAncestor = realpathSync(ancestor);
+			const publisher = { uid: process.getuid?.() ?? 0, gid: 4242 };
+			const inspectAs =
+				(mode: number, gid = publisher.gid) =>
+				async (path: string) => {
+					const info = lstatSync(path);
+					return Object.assign(Object.create(Object.getPrototypeOf(info)), info, {
+						uid: publisher.uid,
+						gid: path === realAncestor ? gid : publisher.gid,
+						mode: path === realAncestor ? (info.mode & ~0o7777) | mode : (info.mode & ~0o7777) | 0o755,
+					}) as typeof info;
+				};
+			const privateGroup = async (gid: number) => gid === publisher.gid;
+			const sharedGroup = async () => false;
+			await ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775), privateGroup);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775), sharedGroup),
+				/Untrusted.*ancestor/,
+			);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775, 20), async () => true),
+				/Untrusted.*ancestor/,
+			);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o777), privateGroup),
+				/Untrusted.*ancestor/,
+			);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("a user private group has no other primary or supplementary members", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-group-file-"));
+		try {
+			const files = { group: join(scratch, "group"), passwd: join(scratch, "passwd") };
+			const ada = { uid: 1000, username: "ada" };
+			const grace = { uid: 1001, username: "grace" };
+			writeFileSync(
+				files.group,
+				[
+					"root:x:0:",
+					"staff:*:20:root",
+					"ada:x:1000:",
+					"grace:x:1001:grace",
+					"dev:x:1002:ada,grace",
+					"empty:x:1003:",
+					"",
+				].join("\n"),
+			);
+			writeFileSync(
+				files.passwd,
+				[
+					"root:x:0:0::/root:/bin/sh",
+					"ada:x:1000:1000::/home/ada:/bin/sh",
+					"grace:x:1001:1001::/home/grace:/bin/sh",
+					"",
+				].join("\n"),
+			);
+			assert.equal(await isUserPrivateGroup(1000, ada, files), true);
+			assert.equal(await isUserPrivateGroup(1001, grace, files), true);
+			assert.equal(await isUserPrivateGroup(1001, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1002, ada, files), false);
+			assert.equal(await isUserPrivateGroup(20, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1003, ada, files), false);
+			assert.equal(await isUserPrivateGroup(9999, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1000, ada, { ...files, group: join(scratch, "missing") }), false);
+			assert.equal(await isUserPrivateGroup(1000, ada, { ...files, passwd: join(scratch, "missing") }), false);
+			writeFileSync(files.group, "ada:x:1000:\nada-shadow:x:1000:mallory\n");
+			assert.equal(await isUserPrivateGroup(1000, ada, files), false);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("an account sharing the primary GID makes the group untrusted", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-primary-gid-"));
+		try {
+			const files = { group: join(scratch, "group"), passwd: join(scratch, "passwd") };
+			writeFileSync(files.group, "ada:x:1000:\n");
+			writeFileSync(
+				files.passwd,
+				"ada:x:1000:1000::/home/ada:/bin/sh\nmallory:x:1666:1000::/home/mallory:/bin/sh\n",
+			);
+			assert.equal(await isUserPrivateGroup(1000, { uid: 1000, username: "ada" }, files), false);
 		} finally {
 			removeSealedScratch(scratch);
 		}
