@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A background subagent's intercom `ask` to its parent now reaches the parent as a normal intercom question, and the child waits for the reply. Previously it became a fresh-start handoff, which only a `subagent` call still waiting in the foreground can return, so the child stopped with `parent-handoff` and the question was lost. The handoff still applies while the parent waits in the foreground ([#3251](https://github.com/bastani-inc/atomic/issues/3251)).
+
 ## [0.9.20-alpha.7] - 2026-09-22
 
 ### Fixed

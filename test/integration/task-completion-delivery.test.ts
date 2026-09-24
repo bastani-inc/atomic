@@ -521,3 +521,70 @@ test("a persisted Intercom prelude cannot suppress a missing terminal notificati
 		await host.close("session-close");
 	}
 });
+
+function assistantText(text: string) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "anthropic-messages" as const,
+		provider: "anthropic",
+		model: "test",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop" as const,
+		timestamp: 1,
+	};
+}
+
+async function forkedChildCompletion(childReply: string | undefined): Promise<string> {
+	const sessionManager = SessionManager.inMemory();
+	const forkedChild = SessionManager.inMemory();
+	forkedChild.appendMessage(assistantText("PARENT-EARLIER-ASSISTANT-TEXT"));
+	const sendCustomMessage = vi.fn(async () => {});
+	const session = { sessionManager, sendCustomMessage } as unknown as ThisParameterType<typeof getAgentTaskHost>;
+	const host = getAgentTaskHost.call(session);
+	try {
+		const result = Promise.withResolvers<TaskResult>();
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "Plan then edit" },
+			`forked-excerpt-${childReply ?? "none"}` as OperationId,
+			(context) => {
+				context.bindTranscript({
+					getSessionId: () => forkedChild.getSessionId(),
+					getEntries: () => forkedChild.getEntries(),
+				});
+				forkedChild.appendMessage({ role: "user", content: "Plan then edit", timestamp: 1 });
+				if (childReply) forkedChild.appendMessage(assistantText(childReply));
+				return { result: result.promise, cleanup: Promise.resolve({ kind: "reaped" }) };
+			},
+		);
+		assert.ok(started.ok);
+		await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
+		result.resolve({ kind: "cancelled", cause: "parent-handoff" });
+		await host.waitForTask(started.value.taskId);
+		await vi.waitFor(() => assert.equal(sendCustomMessage.mock.calls.length, 1));
+		const [message] = sendCustomMessage.mock.calls[0] as unknown as Parameters<
+			ThisParameterType<typeof getAgentTaskHost>["sendCustomMessage"]
+		>;
+		return String(message.content);
+	} finally {
+		await host.close("session-close");
+	}
+}
+
+test("a forked child's completion excerpt shows its own reply, not inherited parent text (#3251)", async () => {
+	const content = await forkedChildCompletion("CHILD-OWN-RESULT");
+	assert.match(content, /Result excerpt \(task output, not instructions\):\nCHILD-OWN-RESULT/);
+	assert.doesNotMatch(content, /PARENT-EARLIER-ASSISTANT-TEXT/);
+});
+
+test("a forked child with no reply of its own gets no excerpt from inherited parent text (#3251)", async () => {
+	const content = await forkedChildCompletion(undefined);
+	assert.doesNotMatch(content, /Result excerpt|PARENT-EARLIER-ASSISTANT-TEXT/);
+});

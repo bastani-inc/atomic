@@ -13,7 +13,7 @@ import {
 } from "./tasks/completion.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
-import { taskTranscriptSource } from "./tasks/supervisor.js";
+import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
@@ -67,9 +67,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			if (task?.kind === "command" && !task.wasBackground) return;
 			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
-			const response = source?.ok
-				? source.value.session
-						.getEntries()
+			const ownEntries = lease?.ok ? taskOwnTranscriptEntries(lease.value) : undefined;
+			const response = ownEntries
+				? ownEntries
 						.slice()
 						.reverse()
 						.find(

@@ -49,11 +49,15 @@ function isParentAskHandoffRequest(payload: unknown): payload is ParentAskHandof
 	);
 }
 
-/** Claim a blocking ask only for the exact live child attempt that issued it. */
+/**
+ * Claim a blocking ask only for the exact live child attempt that issued it, and only while
+ * the parent tool call still waits on that child so the handoff can become its result.
+ */
 export function registerExecutionParentAskHandoff(options: RunSyncOptions, state: ExecutionParentAskState): () => void {
 	if (!options.onParentAskHandoff) return () => {};
 	const handleRequest = (payload: unknown): void => {
 		if (state.isUnavailable() || !isParentAskHandoffRequest(payload)) return;
+		if (options.taskExecution && !options.taskExecution.isParentObserving()) return;
 		if (
 			payload.claimed ||
 			payload.runId !== options.runId ||

@@ -79,6 +79,7 @@ export async function runAgentTask(input: {
 }): Promise<ModelSingleResponse> {
 	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
 	let pendingYield = false;
+	let parentObserving = input.wait?.kind === "foreground";
 	const registered = Promise.withResolvers<void>();
 	input.options.modelRoute?.assertCurrent();
 	const started = await input.host.startAgentTask(
@@ -129,9 +130,11 @@ export async function runAgentTask(input: {
 								);
 							},
 							yieldTaskWait: () => {
+								parentObserving = false;
 								if (yieldWait) yieldWait("intercom-coordination");
 								else pendingYield = true;
 							},
+							isParentObserving: () => parentObserving,
 						},
 					});
 					if (child.model !== undefined || child.thinking !== undefined)
@@ -181,6 +184,7 @@ export async function runAgentTask(input: {
 	// A queued execution has no runSync listener yet. Release its observation too,
 	// without spending a concurrency slot or cancelling its owner-bound execution.
 	const yieldForIntercom = () => {
+		parentObserving = false;
 		if (yieldWait) yieldWait("intercom-coordination");
 		else pendingYield = true;
 	};
@@ -192,9 +196,10 @@ export async function runAgentTask(input: {
 		registered.resolve();
 	});
 	registered.resolve();
-	const observed = await observation.finally(() =>
-		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom),
-	);
+	const observed = await observation.finally(() => {
+		parentObserving = false;
+		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom);
+	});
 	if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 	return { kind: "admitted", observation: observed.value };
 }

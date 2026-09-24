@@ -14,7 +14,7 @@ import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { taskOutputText } from "../../../core/tasks/command-output.js";
 import type { OperationId, PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { taskOwnTranscriptEntries, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { readTaskTranscriptSnapshot } from "../../../core/tasks/transcript.js";
 import { theme } from "../theme/theme.js";
 import { chatEntriesFromAgentMessages, renderChatMessageEntry } from "./chat-message-renderer.ts";
@@ -304,11 +304,9 @@ export class TaskInspector implements Component {
 			this.navigation.selectedTaskId === task.ref.taskId;
 		const lease = this.store.resolveTask(task.ref.taskId);
 		if (!lease.ok) return;
-		const source = taskTranscriptSource(lease.value);
-		if (source.ok) {
-			const prompt = source.value.session
-				.getEntries()
-				.find((entry) => entry.type === "message" && entry.message.role === "user");
+		const ownEntries = taskOwnTranscriptEntries(lease.value);
+		if (ownEntries) {
+			const prompt = ownEntries.find((entry) => entry.type === "message" && entry.message.role === "user");
 			if (prompt?.type === "message" && prompt.message.role === "user")
 				this.detailContent.prompt =
 					typeof prompt.message.content === "string"
@@ -317,8 +315,7 @@ export class TaskInspector implements Component {
 								.filter((block) => block.type === "text")
 								.map((block) => block.text)
 								.join("");
-			const response = source.value.session
-				.getEntries()
+			const response = ownEntries
 				.slice()
 				.reverse()
 				.find((entry) => entry.type === "message" && entry.message.role === "assistant");

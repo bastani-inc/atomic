@@ -24,6 +24,8 @@ export interface TaskExecutionHooks {
 	bindTranscript?(source: TaskTranscriptSource): void;
 	onExecution(execution: { result: Promise<AttemptOutcome>; cleanup: Promise<Cleanup> }): void;
 	yieldTaskWait(reason: "intercom-coordination"): void;
+	/** True only while the launching tool call still blocks on this task and can return a handoff as its result. */
+	isParentObserving(): boolean;
 }
 
 export interface RunSyncOptions extends BaseRunSyncOptions {

@@ -4,14 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitEnvironment, type ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
+import { getAgentTaskHost } from "../../packages/coding-agent/src/core/agent-session-tasks.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { requestParentAskHandoff } from "../../packages/intercom/parent-ask-handoff.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { registerExecutionParentAskHandoff } from "../../packages/subagents/src/runs/foreground/execution-parent-ask-handoff.js";
 import { formatParentAskHandoffOutput } from "../../packages/subagents/src/runs/foreground/parent-ask-output.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import {
 	PARENT_ASK_HANDOFF_REQUEST_EVENT,
@@ -461,4 +466,90 @@ test("PARALLEL retains dirty worktrees through parent coordination and cleans th
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+type ParentWait = "foreground" | "background" | "foreground-yielded";
+
+async function childAskClaimedWhileParent(wait: ParentWait): Promise<boolean> {
+	const session = {
+		sessionManager: SessionManager.inMemory(),
+		sendCustomMessage: async () => {},
+	} as unknown as ThisParameterType<typeof getAgentTaskHost>;
+	const host = getAgentTaskHost.call(session);
+	const events = new TestEvents();
+	const childRunning = Promise.withResolvers<void>();
+	const askNow = Promise.withResolvers<void>();
+	const asked = Promise.withResolvers<boolean>();
+	const interruptController = new AbortController();
+	const metadata = {
+		orchestratorTarget: "parent",
+		runId: "run-3251",
+		agent: "worker",
+		index: "0",
+		sessionName: "child",
+	};
+	const runSyncFake: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, agent, task, options) => {
+		const cleanup = registerExecutionParentAskHandoff(options, { agent, isUnavailable: () => false });
+		childRunning.resolve();
+		await askNow.promise;
+		const claimed = requestParentAskHandoff(events as never, metadata, {
+			kind: "intercom",
+			question: "Approve plan?",
+		});
+		cleanup();
+		asked.resolve(claimed);
+		return {
+			agent,
+			task,
+			exitCode: 0,
+			status: claimed ? "cancelled" : "ok",
+			messages: [],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+			...(claimed ? { interrupted: true } : {}),
+		} as never;
+	};
+	try {
+		const launch = runAgentTask({
+			host,
+			cwd: "/repo",
+			agents: [worker()],
+			agent: "worker",
+			task: "Send the plan to the parent with intercom ask before editing.",
+			options: {
+				runId: "run-3251",
+				index: 0,
+				intercomEvents: events,
+				intercomSessionName: "child",
+				orchestratorIntercomTarget: "parent",
+				interruptSignal: interruptController.signal,
+				onParentAskHandoff: () => interruptController.abort(),
+			},
+			wait: { kind: wait === "background" ? "background" : "foreground" },
+			runtime: { runSync: runSyncFake },
+		});
+		await childRunning.promise;
+		if (wait === "background") await launch;
+		if (wait === "foreground-yielded") {
+			host.yieldTaskWaits("input-needed");
+			await launch;
+		}
+		askNow.resolve();
+		const claimed = await asked.promise;
+		await launch;
+		return claimed;
+	} finally {
+		await host.close("session-close");
+	}
+}
+
+test("a background child's parent ask is not claimed as a handoff, so intercom delivers it (#3251)", async () => {
+	assert.equal(await childAskClaimedWhileParent("background"), false);
+});
+
+test("a parent ask after the foreground observation yielded is not claimed as a handoff (#3251)", async () => {
+	assert.equal(await childAskClaimedWhileParent("foreground-yielded"), false);
+});
+
+test("a parent ask while the parent waits in the foreground is still claimed as a handoff (#3251)", async () => {
+	assert.equal(await childAskClaimedWhileParent("foreground"), true);
 });

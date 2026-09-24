@@ -445,6 +445,7 @@ test("task hooks retain the live result through tool activity and exact Intercom
 					reports.push(report);
 					if (report.change.kind === "action") tools.push(report.change.tool);
 				},
+				isParentObserving: () => true,
 				yieldTaskWait: (reason) => {
 					assert.equal(reason, "intercom-coordination");
 					yields++;
@@ -517,6 +518,7 @@ test("task cleanup failure preserves successful execution and is not reaped", as
 			taskExecution: {
 				signal: new AbortController().signal,
 				reportActivity: () => {},
+				isParentObserving: () => true,
 				yieldTaskWait: () => {},
 				onExecution: (value) => {
 					execution = value;
@@ -554,6 +556,7 @@ test("task signal cancels the original execution after Intercom yields", async (
 			taskExecution: {
 				signal: controller.signal,
 				reportActivity: () => {},
+				isParentObserving: () => true,
 				yieldTaskWait: () => {},
 				onExecution: (value) => {
 					execution = value;
@@ -599,6 +602,7 @@ test("task group detach yields every active sibling once without ending their pr
 					onExecution: (execution) => {
 						executions.push(execution);
 					},
+					isParentObserving: () => true,
 					yieldTaskWait: () => {
 						yields[index]++;
 					},

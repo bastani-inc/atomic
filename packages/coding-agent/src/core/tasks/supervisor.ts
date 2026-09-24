@@ -84,6 +84,7 @@ type TaskState = {
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
+	inheritedEntryCount?: number;
 };
 type WaitState = { native: native.WaitLease; outcome: Promise<C.Result<C.WaitOutcome, C.WaitError>> };
 
@@ -107,6 +108,12 @@ export function taskTranscriptSource(
 	if (!state.transcript)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
 	return { ok: true, value: { session: state.transcript, taskId: state.ref.taskId } };
+}
+
+/** History the runner produced; a forked child's inherited parent entries are excluded. */
+export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTranscriptSource["getEntries"]> | undefined {
+	const state = environment.tasks.get(task);
+	return state?.transcript?.getEntries().slice(state.inheritedEntryCount ?? 0);
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
@@ -771,6 +778,7 @@ export class TaskSupervisor {
 						ref: reference(taskState.ref),
 						signal: taskState.controller.signal,
 						bindTranscript: (session) => {
+							taskState.inheritedEntryCount ??= session.getEntries().length;
 							taskState.transcript = session;
 						},
 						reportActivity: (report) =>
