@@ -1,4 +1,4 @@
-import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
+import type { SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -130,14 +130,38 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		assertToolPairingInvariant(guarded);
 		const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
 		if (forced === undefined) return guarded;
-		const current = getCurrentSystemMessage(guarded);
-		const head: SystemMessage = {
-			role: "system",
-			content: forced,
-			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
-			timestamp: current?.timestamp ?? Date.now(),
-		};
-		return [head, ...guarded.filter((message) => message.role !== "system")];
+		let sawInitialSystem = false;
+		const rebuilt: typeof guarded = [];
+		for (const message of guarded) {
+			if (message.role !== "system") {
+				rebuilt.push(message);
+				continue;
+			}
+			if (!sawInitialSystem) {
+				sawInitialSystem = true;
+				const head: SystemMessage = {
+					role: "system",
+					content: forced,
+					...(message.toolsAdded ? { toolsAdded: message.toolsAdded } : {}),
+					timestamp: message.timestamp,
+				};
+				rebuilt.push(head);
+				continue;
+			}
+			if (!message.toolsAdded?.length && !message.toolsRemoved?.length) continue;
+			const toolDelta: SystemMessage = {
+				role: "system",
+				content: "",
+				...(message.toolsAdded ? { toolsAdded: message.toolsAdded } : {}),
+				...(message.toolsRemoved ? { toolsRemoved: message.toolsRemoved } : {}),
+				timestamp: message.timestamp,
+			};
+			rebuilt.push(toolDelta);
+		}
+		if (!sawInitialSystem) {
+			rebuilt.unshift({ role: "system", content: forced, timestamp: Date.now() });
+		}
+		return rebuilt;
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {

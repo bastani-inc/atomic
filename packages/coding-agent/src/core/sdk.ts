@@ -10,6 +10,7 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
+import { CACHE_PREFIX_CUSTOM_TYPE, computeCachePrefixFingerprint } from "./cache-prefix-fingerprint.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
@@ -525,6 +526,10 @@ async function constructAgentSession(
 					: extensionPayload;
 			}
 			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
+			sessionManager.appendCustomEntry(
+				CACHE_PREFIX_CUSTOM_TYPE,
+				computeCachePrefixFingerprint(sanitizedPayload, { provider: model.provider, modelId: model.id }),
+			);
 			markLifecycleTiming("before-provider-request");
 			return sanitizedPayload;
 		},

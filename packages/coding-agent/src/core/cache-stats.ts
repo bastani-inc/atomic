@@ -1,10 +1,17 @@
 import type { Api, Model } from "@bastani/pi-ai";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import {
+	CACHE_PREFIX_CUSTOM_TYPE,
+	type CachePrefixFingerprint,
+	describeCachePrefixDifference,
+	isCachePrefixFingerprint,
+} from "./cache-prefix-fingerprint.ts";
 import { getPromptCacheTtlMs } from "./cache-warmer.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
 const MISS_TOKEN_THRESHOLD = 20_000;
 const MISS_COST_THRESHOLD = 0.1;
+const UNKNOWN_ATTRIBUTION = "prefix unchanged";
 
 export interface CacheMiss {
 	missedTokens: number;
@@ -12,6 +19,8 @@ export interface CacheMiss {
 	idleMs: number;
 	modelChanged: boolean;
 	cacheExpired: boolean;
+	/** First differing request segment since the previous request, e.g. "tool list changed: +mcp". */
+	attribution: string;
 }
 export interface CacheWasteTotals {
 	missedTokens: number;
@@ -42,14 +51,15 @@ interface PreviousRequest {
 }
 
 export function describeCacheMissCause(miss: CacheMiss): string {
-	if (miss.modelChanged) return " after model switch";
-	return miss.cacheExpired ? " after cache TTL expiry" : "";
+	const known = miss.modelChanged ? " after model switch" : miss.cacheExpired ? " after cache TTL expiry" : "";
+	return `${known} (${miss.attribution})`;
 }
 
 function detect(
 	prev: PreviousRequest | undefined,
 	message: AssistantMessage,
 	models: ModelPriceSource,
+	attribution: string,
 ): CacheMiss | undefined {
 	const usage = message.usage;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -73,6 +83,7 @@ function detect(
 		idleMs,
 		modelChanged: message.provider !== prev.provider || message.model !== prev.model,
 		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
+		attribution,
 	};
 }
 
@@ -92,9 +103,20 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 
 function scan(entries: SessionEntry[], models: ModelPriceSource) {
 	let prev: PreviousRequest | undefined;
+	let lastCachePrefix: CachePrefixFingerprint | undefined;
+	let pendingAttribution: string | undefined;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0 };
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
+		if (
+			entry.type === "custom" &&
+			entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+			isCachePrefixFingerprint(entry.data)
+		) {
+			pendingAttribution = describeCachePrefixDifference(lastCachePrefix, entry.data);
+			lastCachePrefix = entry.data;
+			continue;
+		}
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			prev = undefined;
 			continue;
@@ -112,7 +134,9 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 			continue;
 		}
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const miss = detect(prev, entry.message, models);
+		const attribution = pendingAttribution ?? UNKNOWN_ATTRIBUTION;
+		pendingAttribution = undefined;
+		const miss = detect(prev, entry.message, models, attribution);
 		if (miss) {
 			totals.missedTokens += miss.missedTokens;
 			totals.missedCost += miss.missedCost;
@@ -121,7 +145,7 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 		}
 		prev = previous(entry.message, prev?.reportedCache ?? false) ?? prev;
 	}
-	return { prev, totals, misses };
+	return { prev, totals, misses, pendingAttribution };
 }
 
 export function computeCacheWaste(entries: SessionEntry[], models: ModelPriceSource): CacheWasteTotals {
@@ -138,5 +162,6 @@ export function detectCacheMiss(
 	message: AssistantMessage,
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
-	return detect(scan(entries, models).prev, message, models);
+	const scanned = scan(entries, models);
+	return detect(scanned.prev, message, models, scanned.pendingAttribution ?? UNKNOWN_ATTRIBUTION);
 }
