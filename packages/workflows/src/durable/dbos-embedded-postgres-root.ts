@@ -36,7 +36,7 @@ import {
 	rm,
 	writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { type LocalCommandOptions, type LocalCommandResult, runLocalCommand } from "./local-command.js";
 
@@ -534,12 +534,43 @@ async function findOrCreateRuntimeGeneration(
 		await rm(stagedRoot, { recursive: true, force: true });
 	}
 }
+export async function isUserPrivateGroup(
+	gid: number,
+	username: string | undefined,
+	groupFile = "/etc/group",
+): Promise<boolean> {
+	let entries: string;
+	try {
+		entries = await readFile(groupFile, "utf8");
+	} catch {
+		return false;
+	}
+	const matches = entries
+		.split(/\r?\n/u)
+		.map((line) => line.split(":"))
+		.filter((fields) => fields.length >= 4 && /^\d+$/u.test(fields[2]) && Number(fields[2]) === gid);
+	return (
+		matches.length > 0 &&
+		matches.every((fields) =>
+			fields[3]
+				.split(",")
+				.map((member) => member.trim())
+				.every((member) => member === "" || member === username),
+		)
+	);
+}
+
+function publisherUsername(publisher: PublisherIdentity): string | undefined {
+	return process.getuid?.() === publisher.uid ? userInfo().username : undefined;
+}
+
 export async function ensureRuntimeCacheDirectory(
 	path: string,
 	publisher: PublisherIdentity = publisherIdentity(),
 	needsPrivilegeDrop = false,
 	owner?: EmbeddedPostgresOwner,
 	inspect: (path: string) => Promise<Stats> = lstat,
+	privateGroup: (gid: number) => Promise<boolean> = (gid) => isUserPrivateGroup(gid, publisherUsername(publisher)),
 ): Promise<void> {
 	if (!isAbsolute(path)) throw new Error(`Embedded Postgres runtime cache override must be absolute: ${path}`);
 	await mkdir(path, { recursive: true, mode: 0o755 });
@@ -549,11 +580,15 @@ export async function ensureRuntimeCacheDirectory(
 	let ancestor = await realpath(path);
 	while (true) {
 		const info = await inspect(ancestor);
+		const sticky = (info.mode & 0o1000) !== 0;
+		const writableByOthers = !sticky && (info.mode & 0o002) !== 0;
+		const writableByGroup = !sticky && (info.mode & 0o020) !== 0;
 		if (
 			!info.isDirectory() ||
 			(process.platform !== "win32" &&
 				((info.uid !== 0 && info.uid !== publisher.uid) ||
-					((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0)))
+					writableByOthers ||
+					(writableByGroup && (info.gid !== publisher.gid || !(await privateGroup(info.gid))))))
 		)
 			throw new Error(`Untrusted embedded Postgres runtime cache directory ancestor: ${ancestor}`);
 		if (needsPrivilegeDrop && owner && publisher.uid === 0 && process.platform !== "win32") {

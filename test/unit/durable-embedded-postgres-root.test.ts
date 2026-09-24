@@ -24,6 +24,7 @@ import {
 	type EmbeddedPostgresRunContext,
 	ensureRuntimeCacheDirectory,
 	fingerprintPreparedRuntime,
+	isUserPrivateGroup,
 	type LocalCommandRunner,
 	prepareBinariesForOwner,
 	ROOT_EMBEDDED_BASE_DIR,
@@ -1952,6 +1953,69 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 				ensureRuntimeCacheDirectory(cache, publisher, true, { uid: 65534, gid: 65534, name: "nobody" }, inspect),
 				/cannot traverse/,
 			);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("cache ancestors may be group-writable only through the publisher's private group", async () => {
+		if (process.platform === "win32") return;
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-cache-private-group-"));
+		try {
+			const ancestor = join(scratch, "atomic-home");
+			const cache = join(ancestor, "postgres", "pg-runtime");
+			mkdirSync(cache, { recursive: true });
+			const realAncestor = realpathSync(ancestor);
+			const publisher = { uid: process.getuid?.() ?? 0, gid: 4242 };
+			const inspectAs =
+				(mode: number, gid = publisher.gid) =>
+				async (path: string) => {
+					const info = lstatSync(path);
+					return Object.assign(Object.create(Object.getPrototypeOf(info)), info, {
+						uid: publisher.uid,
+						gid: path === realAncestor ? gid : publisher.gid,
+						mode: path === realAncestor ? (info.mode & ~0o7777) | mode : (info.mode & ~0o7777) | 0o755,
+					}) as typeof info;
+				};
+			const privateGroup = async (gid: number) => gid === publisher.gid;
+			const sharedGroup = async () => false;
+			await ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775), privateGroup);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775), sharedGroup),
+				/Untrusted.*ancestor/,
+			);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o775, 20), async () => true),
+				/Untrusted.*ancestor/,
+			);
+			await assert.rejects(
+				ensureRuntimeCacheDirectory(cache, publisher, false, undefined, inspectAs(0o777), privateGroup),
+				/Untrusted.*ancestor/,
+			);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("a user private group has no /etc/group members besides its user", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-group-file-"));
+		try {
+			const groupFile = join(scratch, "group");
+			writeFileSync(
+				groupFile,
+				["root:x:0:", "staff:*:20:root", "ada:x:1000:", "grace:x:1001:grace", "dev:x:1002:ada,grace", ""].join(
+					"\n",
+				),
+			);
+			assert.equal(await isUserPrivateGroup(1000, "ada", groupFile), true);
+			assert.equal(await isUserPrivateGroup(1001, "grace", groupFile), true);
+			assert.equal(await isUserPrivateGroup(1001, "ada", groupFile), false);
+			assert.equal(await isUserPrivateGroup(1002, "ada", groupFile), false);
+			assert.equal(await isUserPrivateGroup(20, "ada", groupFile), false);
+			assert.equal(await isUserPrivateGroup(9999, "ada", groupFile), false);
+			assert.equal(await isUserPrivateGroup(1000, "ada", join(scratch, "missing")), false);
+			writeFileSync(groupFile, "ada:x:1000:\nada-shadow:x:1000:mallory\n");
+			assert.equal(await isUserPrivateGroup(1000, "ada", groupFile), false);
 		} finally {
 			removeSealedScratch(scratch);
 		}

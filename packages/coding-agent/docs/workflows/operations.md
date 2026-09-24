@@ -496,6 +496,8 @@ a server already using that runtime. Do not delete a runtime generation,
 including a damaged one, while a managed server may still use it.
 Set `ATOMIC_POSTGRES_RUNTIME_CACHE_DIR` before starting Atomic to share retained runtime generations across separate cluster homes; only the runtime cache moves, not cluster data or ownership records. Keep this directory private to a trusted account and do not remove generations while a server may use them.
 
+Atomic only uses a runtime cache whose parent folders other accounts can't write to. A folder that only its group can write to is accepted when that group is your own private group: your primary group, with no other members listed in `/etc/group`. That's the default on Ubuntu and Debian, where umask 002 makes `~/.atomic` group-writable. If Atomic reports an **Untrusted embedded Postgres runtime cache directory ancestor** and falls back to in-memory workflows, run `chmod go-w` on the folder named in the message and restart Atomic.
+
 **Running as root on Linux.** Atomic needs an available unprivileged account, `postgres`, `nobody`, or `daemon`, because PostgreSQL cannot run as root. The cluster is stored under `/var/lib/atomic-postgres`. If privilege or runtime preparation fails, inspect the diagnostic rather than changing data ownership blindly.
 
 **Administrator accounts (Windows).** Atomic can start embedded Postgres from an elevated terminal or an administrative account without changing your account or system permissions. The server runs with reduced privileges, as it does under PostgreSQL's own launcher. Regular Windows accounts remain supported.
