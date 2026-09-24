@@ -38,13 +38,17 @@ function toolCallBlocks(message: AgentMessage): ToolCallBlock[] {
 	return Array.isArray(content) ? content.filter(isToolCallBlock) : [];
 }
 
-function toolCallSignature(message: AgentMessage): string {
-	return JSON.stringify(toolCallBlocks(message).map(({ id, name, arguments: args }) => [id, name, args]));
+function responseId(message: AgentMessage): string | undefined {
+	const id = (message as { responseId?: unknown }).responseId;
+	return typeof id === "string" && id !== "" ? id : undefined;
 }
 
 function isSameAssistantTurn(first: AgentMessage, second: AgentMessage): boolean {
 	if (first === second) return true;
-	return first.timestamp === second.timestamp && toolCallSignature(first) === toolCallSignature(second);
+	const firstResponse = responseId(first);
+	const secondResponse = responseId(second);
+	if (firstResponse !== undefined && secondResponse !== undefined) return firstResponse === secondResponse;
+	return first.timestamp === second.timestamp && JSON.stringify(first) === JSON.stringify(second);
 }
 
 export function findDuplicateToolCallIds(messages: readonly AgentMessage[]): string[] {

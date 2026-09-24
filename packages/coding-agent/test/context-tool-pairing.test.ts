@@ -122,6 +122,27 @@ describe("tool call ids reused across assistant turns (#3243)", () => {
 		expect(() => assertToolPairingInvariant(messages)).toThrow(/call-a appears in more than one assistant message/);
 	});
 
+	test("separate turns in the same millisecond with a reused id are not treated as a copy", () => {
+		const first = assistantWithToolCalls(["bash:0"], 10);
+		const second = { ...assistantWithToolCalls(["bash:0"], 10), usage: { ...first.usage, output: 7 } };
+		const messages = [first, toolResult("bash:0", "first"), second, toolResult("bash:0", "second")] as AgentMessage[];
+
+		expect(findDuplicateToolCallIds(messages)).toEqual([]);
+		expect(resultPairs(convertToLlm(messages))).toEqual([
+			["bash:0", "first"],
+			["bash:0_2", "second"],
+		]);
+	});
+
+	test("distinct provider response ids mark separate turns even when every other field matches", () => {
+		const first = { ...assistantWithToolCalls(["bash:0"], 10), responseId: "resp-1" };
+		const second = { ...assistantWithToolCalls(["bash:0"], 10), responseId: "resp-2" };
+		const copy = { ...first };
+
+		expect(findDuplicateToolCallIds([first, toolResult("bash:0"), second] as AgentMessage[])).toEqual([]);
+		expect(findDuplicateToolCallIds([first, toolResult("bash:0"), copy] as AgentMessage[])).toEqual(["bash:0"]);
+	});
+
 	test("conversion renames reused ids per turn and keeps each result with its own call", () => {
 		const converted = convertToLlm(kimiTurns());
 

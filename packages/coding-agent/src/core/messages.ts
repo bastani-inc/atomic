@@ -7,7 +7,7 @@
 
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { uniquifyToolCallIds } from "./context-tool-pairing.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 
 export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
