@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
 	chmodSync,
@@ -7,12 +8,12 @@ import {
 	lstatSync,
 	mkdirSync,
 	readdirSync,
-	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer, type Server } from "node:net";
 import { dirname, join, sep } from "node:path";
 import { Client } from "pg";
@@ -38,6 +39,7 @@ import {
 	postgresRuntimeFilesExist,
 	preferredPostgresPort,
 	probePostgresIdentity,
+	verifyManagedPostmasterProcess,
 	verifyPostgresIdentity,
 } from "../../packages/workflows/src/durable/dbos-postgres-identity.js";
 import {
@@ -62,9 +64,15 @@ function unsealRuntimeDirectories(path: string): void {
 }
 const roots: string[] = [];
 const listeners: Server[] = [];
+const postmasters: ChildProcess[] = [];
 afterEach(async () => {
 	resetEmbeddedDbosPostgresForTests();
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
+	for (const child of postmasters.splice(0)) {
+		child.kill();
+		await once(child, "exit");
+	}
 	for (const listener of listeners.splice(0)) await new Promise<void>((resolve) => listener.close(() => resolve()));
 	for (const root of roots.splice(0)) {
 		unsealRuntimeDirectories(join(root, "pg-runtime"));
@@ -123,6 +131,373 @@ function fixture() {
 	};
 	return { root, data, metadata, pidfile, row, options };
 }
+
+function externalPostmaster(f: ReturnType<typeof fixture>, port: number): void {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	postmasters.push(child);
+	assert.ok(child.pid);
+	const { postgresProcessStartTime } = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	const started = postgresProcessStartTime(child.pid).startTime;
+	assert.ok(started);
+	writeTextSync(join(f.data, "postmaster.pid"), `${child.pid}\n${f.data}\n${started}\n${port}\n`);
+}
+function emulateVerifiedShutdown(f: ReturnType<typeof fixture>, onSignal: () => void): void {
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+		signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
+	};
+	const original = binding.postgresProcessStartTime;
+	let exited = false;
+	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
+		exited ? { found: false } : original(pid),
+	);
+	vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation(() => {
+		onSignal();
+		exited = true;
+		rmSync(join(f.data, "postmaster.pid"));
+		return "signaled";
+	});
+}
+function assertWindowsShutdown(
+	command: string,
+	args: readonly string[],
+	pgCtl: string,
+	pid: number,
+	mode: "INT" | "QUIT" = "INT",
+): void {
+	assert.equal(command, pgCtl);
+	assert.deepEqual(args, ["kill", mode, String(pid)]);
+}
+test("OS process identity accepts a live non-self postmaster and rejects PID reuse", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	const current = managedPostgresMetadata(f.root, 18, false);
+	assert.deepEqual(verifyManagedPostmasterProcess(current, server), {
+		status: "live",
+		server,
+		observedCreateTime: server.started,
+	});
+	writeTextSync(join(f.data, "postmaster.pid"), `${server.pid}\n${f.data}\n${server.started + 10}\n${port}\n`);
+	assert.throws(() => verifyManagedPostmasterProcess(current, server), /identity mismatch/);
+});
+
+test("OS creation before PostgreSQL pidfile publication remains the same live postmaster after a long startup", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true, startTime: server.started - 10 });
+	assert.deepEqual(verifyManagedPostmasterProcess(managedPostgresMetadata(f.root, 18, false), server), {
+		status: "live",
+		server,
+		observedCreateTime: server.started - 10,
+	});
+});
+
+test("a postmaster that exits between process probes is confirmed absent without removing its pidfile", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: false });
+	assert.deepEqual(verifyManagedPostmasterProcess(managedPostgresMetadata(f.root, 18, false), server), {
+		status: "absent",
+	});
+	assert.ok(existsSync(join(f.data, "postmaster.pid")));
+});
+
+test("an exited and reaped child is absent from native postmaster lookup", async () => {
+	const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+	assert.ok(child.pid);
+	await once(child, "exit");
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	assert.deepEqual(binding.postgresProcessStartTime(child.pid), { found: false });
+});
+
+test.each([
+	"pid reuse",
+	"OS start mismatch",
+	"parent process",
+	"port mismatch",
+	"data directory mismatch",
+	"system identifier mismatch",
+	"launch mismatch",
+	"start time unavailable",
+])("never stops a runtime-broken server with %s", async (fault) => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	if (fault === "parent process") {
+		const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+			postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+		};
+		const started = binding.postgresProcessStartTime(process.ppid).startTime;
+		assert.ok(started);
+		writeTextSync(join(f.data, "postmaster.pid"), `${process.ppid}\n${f.data}\n${started}\n${port}\n`);
+	} else externalPostmaster(f, port);
+	if (fault === "pid reuse") {
+		const recorded = managedPostmaster(f.metadata)!;
+		writeTextSync(join(f.data, "postmaster.pid"), `${recorded.pid}\n${f.data}\n${recorded.started - 10}\n${port}\n`);
+	}
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "removed-worktree", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	switch (fault) {
+		case "parent process":
+			break;
+		case "OS start mismatch": {
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+			};
+			vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true, startTime: server.started + 2 });
+			assert.throws(
+				() => verifyManagedPostmasterProcess(managedPostgresMetadata(f.root, 18, false), server),
+				/OS process start identity mismatch/,
+			);
+			break;
+		}
+		case "port mismatch":
+			writeTextSync(
+				join(f.data, "postmaster.pid"),
+				`${server.pid}\n${f.data}\n${server.started}\n${port === 65535 ? port - 1 : port + 1}\n`,
+			);
+			break;
+		case "data directory mismatch":
+			writeTextSync(join(f.data, "postmaster.pid"), `${server.pid}\n${f.root}\n${server.started}\n${port}\n`);
+			break;
+		case "system identifier mismatch":
+			writeTextSync(join(f.data, "global", "pg_control"), "BBBBBBBB");
+			break;
+		case "launch mismatch":
+			writeTextSync(
+				join(f.data, "postmaster.opts"),
+				`${join(f.root, "removed-worktree", "bin", "postgres")} "-D" "${f.data}" "-p" "${port === 65535 ? port - 1 : port + 1}" "-c" "listen_addresses=127.0.0.1"\n`,
+			);
+			break;
+		case "start time unavailable": {
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+			};
+			vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true });
+			break;
+		}
+	}
+	let stops = 0;
+	await assert.rejects(
+		hooks.ensureCluster({
+			...f.options,
+			recovery: { ...f.metadata, server },
+			context: {
+				baseDir: f.root,
+				runAsOwner: async () => {
+					stops++;
+					throw new Error("unsafe stop");
+				},
+			},
+		}),
+	);
+	assert.equal(stops, 0);
+});
+test("OS identity changing after verification is rejected before any shutdown signal", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "gone", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+		signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
+	};
+	const observed = server.started - 10;
+	vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true, startTime: observed });
+	const signal = vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, expected) => {
+		assert.equal(expected, observed);
+		return "mismatch";
+	});
+	let pgCtlCalls = 0;
+	await assert.rejects(
+		hooks.stopBrokenManagedPostmaster(
+			f.metadata,
+			server,
+			f.options.binaries.pg_ctl,
+			{
+				baseDir: f.root,
+				runAsOwner: async () => {
+					pgCtlCalls++;
+					throw new Error("unsafe pg_ctl");
+				},
+			},
+			{ ownerToken: "fixture", refresh: () => true },
+		),
+		/OS process start identity mismatch/,
+	);
+	assert.equal(signal.mock.calls.length, 1);
+	assert.equal(pgCtlCalls, 0);
+});
+
+test("Windows shutdown invokes pg_ctl kill for the exact verified PID and both shutdown modes", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "gone", "bin", "postgres.exe")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+		signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
+	};
+	const original = binding.postgresProcessStartTime;
+	let released = false;
+	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
+		released ? { found: false } : original(pid),
+	);
+	vi.spyOn(binding, "signalVerifiedPostgres").mockReturnValue("signaled");
+	const commands: Array<{ command: string; args: readonly string[] }> = [];
+	await hooks.stopBrokenManagedPostmaster(
+		f.metadata,
+		server,
+		f.options.binaries.pg_ctl,
+		{
+			baseDir: f.root,
+			runAsOwner: async (command, args) => {
+				commands.push({ command, args });
+				if (commands.length === 2) {
+					released = true;
+					rmSync(join(f.data, "postmaster.pid"));
+				}
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+		},
+		{ ownerToken: "fixture", refresh: () => true },
+		async () => {},
+		"win32",
+	);
+	assert.deepEqual(commands, [
+		{ command: f.options.binaries.pg_ctl, args: ["kill", "INT", String(server.pid)] },
+		{ command: f.options.binaries.pg_ctl, args: ["kill", "QUIT", String(server.pid)] },
+	]);
+});
+
+test.each(["fast exit", "timeout with matching identity", "timeout with changed identity", "lease lost after timeout"])(
+	"verified shutdown handles %s without signaling a replacement process",
+	async (scenario) => {
+		const f = fixture();
+		const port = await availablePostgresPort(0);
+		f.pidfile(port);
+		externalPostmaster(f, port);
+		const server = managedPostmaster(f.metadata)!;
+		publishPostgresServer(f.root, f.metadata, server);
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${join(f.root, "removed-worktree", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+			postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+			signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
+		};
+		const originalStartTime = binding.postgresProcessStartTime;
+		let released = false;
+		let signals = 0;
+		vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
+			released ? { found: false } : originalStartTime(pid),
+		);
+		const modes: string[] = [];
+		vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, _started, mode) => {
+			modes.push(mode);
+			signals++;
+			if (mode === "immediate" || scenario === "fast exit") {
+				released = true;
+				rmSync(join(f.data, "postmaster.pid"));
+			}
+			return "signaled";
+		});
+		hooks.setRetainedPostgresSpawner((options) => {
+			f.pidfile(port);
+			writeTextSync(
+				join(f.data, "postmaster.opts"),
+				`${options.executable} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+			);
+			return {
+				pid: process.pid,
+				wait: async () => {
+					throw new Error("Timed out waiting for the retained Postgres process to exit");
+				},
+				interruptAndWait: async () => {
+					throw new Error("must not signal published lease");
+				},
+				release() {},
+			};
+		});
+		let ticks = 0;
+		const recover = hooks.ensureCluster({
+			...f.options,
+			recovery: { ...f.metadata, server },
+			shutdownWait: async () => {
+				if (++ticks === 120) {
+					if (scenario === "timeout with changed identity")
+						vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({
+							found: true,
+							startTime: server.started + 2,
+						});
+					if (scenario === "lease lost after timeout")
+						renameSync(join(f.root, "v18.setup-lock"), join(f.root, "v18.setup-lock.displaced"));
+				}
+			},
+			context: {
+				baseDir: f.root,
+				runAsOwner: async (command, args) => {
+					if (process.platform !== "win32") throw new Error("POSIX shutdown must not use pg_ctl");
+					assertWindowsShutdown(
+						command,
+						args,
+						f.options.binaries.pg_ctl,
+						server.pid,
+						modes.at(-1) === "fast" ? "INT" : "QUIT",
+					);
+					return { exitCode: 0, stdout: "", stderr: "" };
+				},
+			},
+		});
+		if (scenario === "timeout with changed identity" || scenario === "lease lost after timeout") {
+			await assert.rejects(recover);
+			assert.deepEqual(modes, ["fast"]);
+		} else {
+			await recover;
+			assert.deepEqual(modes, scenario === "fast exit" ? ["fast"] : ["fast", "immediate"]);
+		}
+		assert.equal(signals, modes.length);
+	},
+);
 
 function incompleteSourceRuntime(root: string, platform: NodeJS.Platform = process.platform) {
 	const runtime = join(root, "incomplete-source");
@@ -349,6 +724,7 @@ test("a fresh client reserves the deleted launch generation when replacing a ver
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
+	externalPostmaster(f, port);
 	const old = managedPostmaster(f.metadata)!;
 	publishPostgresServer(f.root, f.metadata, old);
 	const initiallyStaged = await prepareBinariesForOwner(f.options.binaries, f.options.context);
@@ -360,7 +736,15 @@ test("a fresh client reserves the deleted launch generation when replacing a ver
 		join(f.data, "postmaster.opts"),
 		`${join(launchGeneration, "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
 	);
+	const replacement = await prepareBinariesForOwner(f.options.binaries, f.options.context, undefined, {
+		repairCorruptGeneration: true,
+		publicationLease: { ownerToken: "fixture", refresh: () => true },
+		reservedGeneration: launchGeneration,
+	});
 	let stops = 0;
+	emulateVerifiedShutdown(f, () => {
+		stops++;
+	});
 	let starts = 0;
 	hooks.setRetainedPostgresSpawner((options) => {
 		starts++;
@@ -387,10 +771,9 @@ test("a fresh client reserves the deleted launch generation when replacing a ver
 		prepared: false,
 		context: {
 			baseDir: f.root,
-			runAsOwner: async (_command, args) => {
-				assert.equal(realpathSync(args[1]), realpathSync(f.data));
-				stops++;
-				rmSync(join(f.data, "postmaster.pid"));
+			runAsOwner: async (command, args) => {
+				assertWindowsShutdown(command, args, replacement.pg_ctl, old.pid);
+				assert.equal(existsSync(join(f.data, "postmaster.pid")), false);
 				return { exitCode: 0, stdout: "", stderr: "" };
 			},
 		},
@@ -401,10 +784,11 @@ test("a fresh client reserves the deleted launch generation when replacing a ver
 	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
 	assert.equal(managedPostgresMetadata(f.root, 18, false).clusterId, f.metadata.clusterId);
 });
-test("restarts only an identity-verified managed server whose launch runtime disappeared", async () => {
+test("restarts exactly once from verified replacement when damaged runtime prevents new SQL probes", async () => {
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
+	externalPostmaster(f, port);
 	const old = managedPostmaster(f.metadata)!;
 	publishPostgresServer(f.root, f.metadata, old);
 	writeTextSync(
@@ -422,6 +806,9 @@ test("restarts only an identity-verified managed server whose launch runtime dis
 	};
 	for (const binary of Object.values(binaries)) writeTextSync(binary, "binary");
 	let stops = 0;
+	emulateVerifiedShutdown(f, () => {
+		stops++;
+	});
 	let starts = 0;
 	hooks.setRetainedPostgresSpawner((options) => {
 		starts++;
@@ -446,14 +833,16 @@ test("restarts only an identity-verified managed server whose launch runtime dis
 		...f.options,
 		binaries,
 		prepared: true,
+		probeIdentity: async (candidatePort) => {
+			if (managedPostmaster(f.metadata)?.pid === old.pid) throw new Error("new SQL backends cannot start");
+			return f.row(candidatePort);
+		},
 		recovery: { ...f.metadata, server: old },
 		context: {
 			baseDir: f.root,
 			runAsOwner: async (command, args) => {
-				assert.equal(command, binaries.pg_ctl);
-				assert.deepEqual(args.slice(0, 2), ["-D", f.metadata.dataDir]);
-				stops++;
-				rmSync(join(f.data, "postmaster.pid"));
+				assertWindowsShutdown(command, args, binaries.pg_ctl, old.pid);
+				assert.equal(existsSync(join(f.data, "postmaster.pid")), false);
 				return { exitCode: 0, stdout: "", stderr: "" };
 			},
 		},
@@ -461,6 +850,7 @@ test("restarts only an identity-verified managed server whose launch runtime dis
 	assert.equal(stops, 1);
 	assert.equal(starts, 1);
 	assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.systemIdentifier, old.systemIdentifier);
 	assert.equal(managedPostgresMetadata(f.root, 18, false).clusterId, f.metadata.clusterId);
 });
 
@@ -468,22 +858,26 @@ test("a displaced setup lease cannot stop a verified managed postmaster", async 
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
+	externalPostmaster(f, port);
 	const old = managedPostmaster(f.metadata)!;
 	publishPostgresServer(f.root, f.metadata, old);
 	writeTextSync(
 		join(f.data, "postmaster.opts"),
 		`${join(f.root, "removed-runtime", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
 	);
-	let verifies = 0;
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	const originalStartTime = binding.postgresProcessStartTime;
+	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) => {
+		renameSync(join(f.root, "v18.setup-lock"), join(f.root, "v18.setup-lock.displaced"));
+		return originalStartTime(pid);
+	});
 	let stops = 0;
 	await assert.rejects(
 		hooks.ensureCluster({
 			...f.options,
 			recovery: { ...f.metadata, server: old },
-			probeIdentity: async () => {
-				if (++verifies === 2) renameSync(join(f.root, "v18.setup-lock"), join(f.root, "v18.setup-lock.displaced"));
-				return f.row(port);
-			},
 			context: {
 				baseDir: f.root,
 				runAsOwner: async () => {
@@ -585,6 +979,7 @@ test.each(["regular file", "cyclic support-file link"])(
 		vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", source);
 		const port = await availablePostgresPort(0);
 		f.pidfile(port);
+		externalPostmaster(f, port);
 		const old = managedPostmaster(f.metadata)!;
 		publishPostgresServer(f.root, f.metadata, old);
 		writeTextSync(
@@ -592,6 +987,9 @@ test.each(["regular file", "cyclic support-file link"])(
 			`${join(f.root, "removed-runtime", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
 		);
 		let stops = 0;
+		emulateVerifiedShutdown(f, () => {
+			stops++;
+		});
 		let starts = 0;
 		hooks.setRetainedPostgresSpawner((options) => {
 			starts++;
@@ -615,10 +1013,10 @@ test.each(["regular file", "cyclic support-file link"])(
 			recovery: { ...f.metadata, server: old },
 			context: {
 				baseDir: f.root,
-				runAsOwner: async (command) => {
+				runAsOwner: async (command, args) => {
 					assert.ok(command.startsWith(join(f.root, "pg-runtime")));
-					stops++;
-					rmSync(join(f.data, "postmaster.pid"));
+					assertWindowsShutdown(command, args, command, old.pid);
+					assert.equal(existsSync(join(f.data, "postmaster.pid")), false);
 					return { exitCode: 0, stdout: "", stderr: "" };
 				},
 			},
@@ -660,12 +1058,17 @@ test("adopts and restarts a legacy Atomic server whose launch runtime disappeare
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
+	externalPostmaster(f, port);
+	const legacy = managedPostmaster(f.metadata)!;
 	rmSync(join(f.root, "v18.shared"), { recursive: true });
 	writeTextSync(
 		join(f.data, "postmaster.opts"),
 		`${join(f.root, "removed-worktree", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
 	);
 	let stops = 0;
+	emulateVerifiedShutdown(f, () => {
+		stops++;
+	});
 	let starts = 0;
 	hooks.setRetainedPostgresSpawner((options) => {
 		starts++;
@@ -686,11 +1089,10 @@ test("adopts and restarts a legacy Atomic server whose launch runtime disappeare
 		...f.options,
 		context: {
 			baseDir: f.root,
-			runAsOwner: async (command) => {
-				assert.equal(command, f.options.binaries.pg_ctl);
+			runAsOwner: async (command, args) => {
+				assertWindowsShutdown(command, args, f.options.binaries.pg_ctl, legacy.pid);
 				assert.ok(managedPostgresMetadata(f.root, 18, false).server, "legacy server published before stop");
-				stops++;
-				rmSync(join(f.data, "postmaster.pid"));
+				assert.equal(existsSync(join(f.data, "postmaster.pid")), false);
 				return { exitCode: 0, stdout: "", stderr: "" };
 			},
 		},
@@ -701,16 +1103,13 @@ test("adopts and restarts a legacy Atomic server whose launch runtime disappeare
 	assert.ok(managedPostgresMetadata(f.root, 18, false).server);
 });
 
-test("does not stop a server whose SQL identity differs even if runtime files are gone", async () => {
+test("does not attach a server whose SQL identity differs", async () => {
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
+	externalPostmaster(f, port);
 	const old = managedPostmaster(f.metadata)!;
 	publishPostgresServer(f.root, f.metadata, old);
-	writeTextSync(
-		join(f.data, "postmaster.opts"),
-		`${join(f.root, "missing", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
-	);
 	let stops = 0;
 	await assert.rejects(
 		hooks.ensureCluster({
@@ -1015,6 +1414,137 @@ test("an unavailable but present postmaster stays on the attach path", async () 
 	);
 	assert.equal(probes, 2);
 	assert.equal(starts, 0);
+});
+
+test.each(["removed pidfile", "dead PID pidfile", "cold attach dead PID"])(
+	"recovers damaged runtime with %s without stopping a server",
+	async (condition) => {
+		const f = fixture();
+		const port = await availablePostgresPort(0);
+		f.pidfile(port);
+		const initial = managedPostmaster(f.metadata)!;
+		publishPostgresServer(f.root, f.metadata, initial);
+		let stops = 0;
+		await hooks.ensureCluster({
+			...f.options,
+			context: {
+				baseDir: f.root,
+				runAsOwner: async () => {
+					stops++;
+					throw new Error("must not stop absent postmaster");
+				},
+			},
+		});
+		const health = embeddedPostgresHealth()!;
+		externalPostmaster(f, port);
+		const old = managedPostmaster(f.metadata)!;
+		publishPostgresServer(f.root, f.metadata, old);
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${join(f.root, "missing", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		if (condition === "removed pidfile") rmSync(join(f.data, "postmaster.pid"));
+		else {
+			const child = postmasters.pop()!;
+			child.kill();
+			await once(child, "exit");
+		}
+		if (condition === "cold attach dead PID") resetEmbeddedDbosPostgresForTests();
+		let starts = 0;
+		hooks.setRetainedPostgresSpawner((options) => {
+			starts++;
+			f.pidfile(Number(options.args[options.args.indexOf("-p") + 1]));
+			writeTextSync(
+				join(f.data, "postmaster.opts"),
+				`${options.executable} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+			);
+			return {
+				pid: process.pid,
+				wait: async () => {
+					throw new Error("Timed out waiting for the retained Postgres process to exit");
+				},
+				interruptAndWait: async () => {
+					throw new Error("must not signal published server");
+				},
+				release() {},
+			};
+		});
+		if (condition === "cold attach dead PID") {
+			await hooks.ensureCluster({
+				...f.options,
+				recovery: { ...f.metadata, server: old },
+				context: {
+					baseDir: f.root,
+					runAsOwner: async () => {
+						stops++;
+						throw new Error("must not stop absent postmaster");
+					},
+				},
+			});
+		} else await health.check();
+		assert.equal(stops, 0);
+		assert.equal(starts, 1);
+		assert.equal(managedPostgresMetadata(f.root, 18, false).server?.systemIdentifier, old.systemIdentifier);
+	},
+);
+
+test("health recovers a damaged runtime before attempting a new SQL connection", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let stops = 0;
+	let starts = 0;
+	let probes = 0;
+	const probeIdentity = async (candidatePort: number) => {
+		probes++;
+		if (stops === 0 && probes > 1) throw new Error("new SQL backends cannot start");
+		return f.row(candidatePort);
+	};
+	await hooks.ensureCluster({
+		...f.options,
+		probeIdentity,
+		context: {
+			baseDir: f.root,
+			runAsOwner: async (command, args) => {
+				assertWindowsShutdown(command, args, f.options.binaries.pg_ctl, old.pid);
+				assert.equal(existsSync(join(f.data, "postmaster.pid")), false);
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+		},
+	});
+	const health = embeddedPostgresHealth()!;
+	externalPostmaster(f, port);
+	const old = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, old);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "removed-worktree", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	emulateVerifiedShutdown(f, () => {
+		stops++;
+	});
+	hooks.setRetainedPostgresSpawner((options) => {
+		starts++;
+		f.pidfile(Number(options.args[options.args.indexOf("-p") + 1]));
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${options.executable} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		return {
+			pid: process.pid,
+			wait: async () => {
+				throw new Error("Timed out waiting for the retained Postgres process to exit");
+			},
+			interruptAndWait: async () => {
+				throw new Error("published server must not be signaled by lease");
+			},
+			release() {},
+		};
+	});
+	await health.check();
+	assert.equal(stops, 1);
+	assert.equal(starts, 1);
+	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.systemIdentifier, old.systemIdentifier);
 });
 
 test("live health refuses replaced ownership and never initializes missing data", async () => {

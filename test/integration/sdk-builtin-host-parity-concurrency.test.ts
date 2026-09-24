@@ -77,6 +77,7 @@ test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
 				ATOMIC_POSTGRES_PORT: String(managed.metadata.server.port),
 				DBOS_SYSTEM_DATABASE_URL: undefined,
 				ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
+				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: home.runtimeCache,
 				// Embedded resolution supplies its own URL. Refuse Docker before it can start a container.
 				PGPORT: "0",
 			});

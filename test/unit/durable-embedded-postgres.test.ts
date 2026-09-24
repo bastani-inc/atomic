@@ -109,7 +109,26 @@ test("Windows command-line fixture preserves Postgres paths and options as direc
 	assert.equal(result, lease);
 	assert.deepEqual(options, {
 		executable: "C:\\Program Files\\Atomic PostgreSQL\\bin\\postgres.exe",
-		args: ["-D", "C:\\Users\\Atomic User\\postgres data\\v18", "-p", "5439", "-c", "listen_addresses=127.0.0.1"],
+		args: [
+			"-D",
+			"C:\\Users\\Atomic User\\postgres data\\v18",
+			"-p",
+			"5439",
+			"-c",
+			"listen_addresses=127.0.0.1",
+			"-c",
+			"logging_collector=on",
+			"-c",
+			"log_directory=log",
+			"-c",
+			"log_filename=postgresql-%a.log",
+			"-c",
+			"log_truncate_on_rotation=on",
+			"-c",
+			"log_rotation_age=1d",
+			"-c",
+			"log_rotation_size=0",
+		],
 		cwd: "C:\\Users\\Atomic User\\postgres data\\v18",
 		logFile: "C:\\Users\\Atomic User\\postgres data\\v18.log",
 	});

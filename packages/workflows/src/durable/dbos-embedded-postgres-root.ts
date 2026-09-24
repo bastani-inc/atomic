@@ -15,7 +15,7 @@
  * candidates fall back to `setpriv`, `runuser`, or `su`.
  *
  * Every managed cluster launches from a complete immutable runtime generation
- * under the cluster base directory, never directly from a package/worktree.
+ * in its retained runtime cache, never directly from a package/worktree.
  * Root-owned generations remain executable by a drop-privilege server account.
  */
 
@@ -29,6 +29,7 @@ import {
 	mkdir,
 	open,
 	readdir,
+	readFile,
 	readlink,
 	realpath,
 	rename,
@@ -36,7 +37,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { type LocalCommandOptions, type LocalCommandResult, runLocalCommand } from "./local-command.js";
 
 export interface EmbeddedPostgresOwner {
@@ -186,23 +187,43 @@ export interface RuntimePreparationOptions {
 	readonly afterPublish?: (publishedRuntime: string) => void | Promise<void>;
 	/** Test seam after published content/source validation but before final lease selection. */
 	readonly afterPublishValidation?: (publishedRuntime: string) => void | Promise<void>;
+	readonly renameStage?: (source: string, destination: string) => Promise<void>;
 	/** Test seam for deterministic event-loop cooperation without real delays. */
 	readonly yieldToEventLoop?: () => Promise<void>;
+	readonly onContentRead?: (path: string) => void;
 	readonly repairCorruptGeneration?: boolean;
 	readonly reservedGeneration?: string;
+	readonly reuseOnly?: boolean;
 }
 
 const STAGE_OWNER_FILE = ".atomic-stage-owner";
 const STAGE_PAYLOAD_DIR = "runtime";
+const RUNTIME_MARKER = ".atomic-runtime-complete.json";
 const MAX_RUNTIME_REPAIR_GENERATIONS = 8;
 const TRAVERSAL_OPERATIONS_PER_YIELD = 16;
 const HASH_CHUNK_BYTES = 64 * 1024;
+type RuntimeEntry = readonly [
+	string,
+	"directory" | "file" | "link",
+	number,
+	number,
+	number,
+	string?,
+	(readonly [number, number, number])?,
+];
+interface RuntimeManifest {
+	readonly version: 1;
+	readonly sealedIdentity: string;
+	readonly entries: readonly RuntimeEntry[];
+}
+interface SourceIndexEntry {
+	readonly signature: string;
+	readonly snapshot: SourceRuntimeSnapshot;
+	readonly indexWrittenAt: number;
+}
+const sourceMemo = new Map<string, SourceIndexEntry>();
+const legacyMemo = new Map<string, RuntimeManifest>();
 
-/**
- * Stage a complete, content-addressed PostgreSQL runtime for every managed
- * cluster. The source package may disappear while a shared server is running;
- * retained generations keep its binaries, libraries, and support files intact.
- */
 export async function prepareBinariesForOwner(
 	binaries: EmbeddedPostgresBinaryPaths,
 	context: EmbeddedPostgresRunContext,
@@ -213,12 +234,17 @@ export async function prepareBinariesForOwner(
 	// binaries keep their relative `../lib` runtime library references. Do not
 	// resolve or rewrite the configured caller paths or any relative link text.
 	const sourceNativeDir = dirname(dirname(binaries.initdb));
-	const copiedRuntimeDir = join(context.baseDir, "pg-runtime");
+	const override = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
+	if (override !== undefined && !isAbsolute(override))
+		throw new Error(`Embedded Postgres runtime cache override must be absolute: ${override}`);
+	const copiedRuntimeDir = override === undefined ? join(context.baseDir, "pg-runtime") : normalize(override);
 	const publisher = publisherIdentity();
 	const progress = runtimeProgress(options);
-	const sourceSnapshot = await snapshotSourceRuntime(sourceNativeDir, publisher, progress);
+	await ensureRuntimeCacheDirectory(copiedRuntimeDir, publisher, context.owner !== undefined, context.owner);
+	const sourceSnapshot = await memoizedSourceSnapshot(sourceNativeDir, copiedRuntimeDir, publisher, progress);
 	await options.afterInitialSourceSnapshot?.();
 	const copiedNativeDir = await findOrCreateRuntimeGeneration(
+		binaries,
 		sourceNativeDir,
 		sourceSnapshot,
 		copiedRuntimeDir,
@@ -239,7 +265,7 @@ export async function fingerprintPreparedRuntime(
 	binaries: EmbeddedPostgresBinaryPaths,
 	options: RuntimePreparationOptions = {},
 ): Promise<string> {
-	return snapshotSealedRuntime(dirname(dirname(binaries.postgres)), runtimeProgress(options));
+	return validatePreparedRuntime(dirname(dirname(binaries.postgres)), binaries, runtimeProgress(options));
 }
 
 /**
@@ -285,7 +311,7 @@ interface SourceRuntimeSnapshot {
 	readonly sealedIdentity: string;
 }
 
-type RuntimeProgress = () => Promise<void>;
+type RuntimeProgress = (() => Promise<void>) & { readonly onContentRead?: (path: string) => void };
 
 /**
  * One exact source identity owns one deterministic path. If that path is
@@ -294,6 +320,7 @@ type RuntimeProgress = () => Promise<void>;
  * unique generations, selected `native`, or `.native-retired-*` evidence.
  */
 async function findOrCreateRuntimeGeneration(
+	binaries: EmbeddedPostgresBinaryPaths,
 	sourceNativeDir: string,
 	sourceSnapshot: SourceRuntimeSnapshot,
 	copiedRuntimeDir: string,
@@ -303,13 +330,7 @@ async function findOrCreateRuntimeGeneration(
 	options: RuntimePreparationOptions,
 	needsPrivilegeDrop: boolean,
 ): Promise<string> {
-	await mkdir(copiedRuntimeDir, { recursive: true, mode: 0o755 });
-	const runtimeStat = await lstat(copiedRuntimeDir);
-	if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) {
-		throw new Error(`Embedded Postgres runtime parent must be a real directory: ${copiedRuntimeDir}`);
-	}
-	if (needsPrivilegeDrop) await chown(copiedRuntimeDir, publisher.uid, publisher.gid);
-	await chmod(copiedRuntimeDir, 0o755);
+	await ensureRuntimeCacheDirectory(copiedRuntimeDir, publisher, needsPrivilegeDrop);
 	const canonical = join(copiedRuntimeDir, `native-${sourceSnapshot.sourceIdentity}`);
 	if (options.repairCorruptGeneration && !options.publicationLease?.refresh()) {
 		throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime repair requires its setup lease.");
@@ -325,9 +346,18 @@ async function findOrCreateRuntimeGeneration(
 				if (!options.repairCorruptGeneration) break;
 				continue;
 			}
-			if ((await snapshotSealedRuntime(candidate, progress)) !== sourceSnapshot.sealedIdentity) {
+			const identity = await validatePreparedRuntime(
+				candidate,
+				{
+					pg_ctl: join(candidate, "bin", basename(binaries.pg_ctl)),
+					initdb: join(candidate, "bin", basename(binaries.initdb)),
+					postgres: join(candidate, "bin", basename(binaries.postgres)),
+				},
+				progress,
+				sourceSnapshot.sealedIdentity,
+			);
+			if (identity !== sourceSnapshot.sealedIdentity)
 				throw new CorruptRuntimeGenerationError("sealed identity mismatch");
-			}
 		} catch (error) {
 			if (error instanceof RuntimePublicationLeaseLostError) throw error;
 			if (!isCorruptRuntimeGeneration(error, candidate)) throw error;
@@ -353,6 +383,7 @@ async function findOrCreateRuntimeGeneration(
 	if (generationNativeDir === undefined)
 		throw new Error("Embedded Postgres runtime repair slots are exhausted; preserve the existing generations.");
 
+	if (options.reuseOnly) throw new RuntimeGenerationMissingError();
 	const stageOwner = options.publicationLease?.ownerToken ?? `unmanaged-${process.pid}-${crypto.randomUUID()}`;
 	const stagedRoot = join(copiedRuntimeDir, `.native-staged-${process.pid}-${crypto.randomUUID()}`);
 	const stagedNativeDir = join(stagedRoot, STAGE_PAYLOAD_DIR);
@@ -361,18 +392,27 @@ async function findOrCreateRuntimeGeneration(
 	try {
 		await progress();
 		await cp(sourceNativeDir, stagedNativeDir, { recursive: true, verbatimSymlinks: true });
-		const copiedSnapshot = await snapshotSourceRuntime(stagedNativeDir, publisher, progress);
-		if (copiedSnapshot.sourceIdentity !== sourceSnapshot.sourceIdentity) {
-			throw new Error("Copied embedded Postgres runtime did not match its source package.");
-		}
+		await assertSourceSnapshotUnchanged(
+			sourceNativeDir,
+			sourceSnapshot,
+			publisher,
+			progress,
+			"Embedded Postgres source package changed while preparing a generation.",
+		);
 		await sealRuntimeForPublisher(stagedNativeDir, publisher, runner, progress, needsPrivilegeDrop);
-		if ((await snapshotSealedRuntime(stagedNativeDir, progress)) !== sourceSnapshot.sealedIdentity) {
-			throw new Error("Sealed embedded Postgres runtime did not match its source package.");
-		}
 		await options.beforePublish?.(stagedNativeDir);
-		if ((await snapshotSealedRuntime(stagedNativeDir, progress)) !== sourceSnapshot.sealedIdentity) {
+		await assertSourceSnapshotUnchanged(
+			sourceNativeDir,
+			sourceSnapshot,
+			publisher,
+			progress,
+			"Embedded Postgres source package changed while preparing a generation.",
+		);
+		const manifest = await snapshotSealedManifest(stagedNativeDir, progress);
+		if (manifest.sealedIdentity !== sourceSnapshot.sealedIdentity)
 			throw new Error("Embedded Postgres runtime changed after sealed validation and before publication.");
-		}
+		await writeFile(join(stagedNativeDir, RUNTIME_MARKER), JSON.stringify(manifest), { mode: 0o444, flag: "wx" });
+		await chmod(join(stagedNativeDir, RUNTIME_MARKER), 0o444);
 		await assertSourceSnapshotUnchanged(
 			sourceNativeDir,
 			sourceSnapshot,
@@ -384,12 +424,54 @@ async function findOrCreateRuntimeGeneration(
 		await progress();
 		// The stage is publisher-owned and has no write bit for any uid before
 		// this single same-parent rename. The Postgres uid therefore has no
-		// validation-to-publication mutation window. Root mutation is caught by
-		// validation through the deterministic path after the rename.
-		await rename(stagedNativeDir, generationNativeDir);
+		// validation-to-publication mutation window.
+		try {
+			await (options.renameStage ?? rename)(stagedNativeDir, generationNativeDir);
+			legacyMemo.delete(generationNativeDir);
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			if (
+				!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(String(code)) ||
+				!(await lstatOrUndefined(generationNativeDir))
+			)
+				throw error;
+			if (
+				(await validatePreparedRuntime(
+					generationNativeDir,
+					{
+						pg_ctl: join(generationNativeDir, "bin", basename(binaries.pg_ctl)),
+						initdb: join(generationNativeDir, "bin", basename(binaries.initdb)),
+						postgres: join(generationNativeDir, "bin", basename(binaries.postgres)),
+					},
+					progress,
+					sourceSnapshot.sealedIdentity,
+				)) !== sourceSnapshot.sealedIdentity
+			)
+				throw new CorruptRuntimeGenerationError("Concurrent runtime publication disagrees with its source.");
+			assertPublicationLease(options, "Embedded Postgres runtime publication lost its setup lease.");
+			return generationNativeDir;
+		}
 		await options.afterPublish?.(generationNativeDir);
-		if ((await snapshotSealedRuntime(generationNativeDir, progress)) !== sourceSnapshot.sealedIdentity) {
-			throw new Error("Embedded Postgres published runtime changed during publication.");
+		try {
+			if (
+				(await validatePreparedRuntime(
+					generationNativeDir,
+					{
+						pg_ctl: join(generationNativeDir, "bin", basename(binaries.pg_ctl)),
+						initdb: join(generationNativeDir, "bin", basename(binaries.initdb)),
+						postgres: join(generationNativeDir, "bin", basename(binaries.postgres)),
+					},
+					progress,
+					sourceSnapshot.sealedIdentity,
+				)) !== sourceSnapshot.sealedIdentity
+			)
+				throw new CorruptRuntimeGenerationError("sealed identity mismatch");
+		} catch (error) {
+			if (error instanceof CorruptRuntimeGenerationError)
+				throw new Error(`Embedded Postgres published runtime changed during publication: ${error.message}`, {
+					cause: error,
+				});
+			throw error;
 		}
 		await assertSourceSnapshotUnchanged(
 			sourceNativeDir,
@@ -406,10 +488,44 @@ async function findOrCreateRuntimeGeneration(
 		await rm(stagedRoot, { recursive: true, force: true });
 	}
 }
-
+export async function ensureRuntimeCacheDirectory(
+	path: string,
+	publisher: PublisherIdentity = publisherIdentity(),
+	needsPrivilegeDrop = false,
+	owner?: EmbeddedPostgresOwner,
+	inspect: (path: string) => Promise<Stats> = lstat,
+): Promise<void> {
+	if (!isAbsolute(path)) throw new Error(`Embedded Postgres runtime cache override must be absolute: ${path}`);
+	await mkdir(path, { recursive: true, mode: 0o755 });
+	const stat = await inspect(path);
+	if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid !== undefined && stat.uid !== publisher.uid))
+		throw new Error(`Untrusted embedded Postgres runtime cache directory: ${path}`);
+	let ancestor = await realpath(path);
+	while (true) {
+		const info = await inspect(ancestor);
+		if (
+			!info.isDirectory() ||
+			(process.platform !== "win32" &&
+				((info.uid !== 0 && info.uid !== publisher.uid) ||
+					((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0)))
+		)
+			throw new Error(`Untrusted embedded Postgres runtime cache directory ancestor: ${ancestor}`);
+		if (needsPrivilegeDrop && owner && publisher.uid === 0 && process.platform !== "win32") {
+			const execute = info.uid === owner.uid ? 0o100 : info.gid === owner.gid ? 0o010 : 0o001;
+			if ((info.mode & execute) === 0)
+				throw new Error(`Embedded Postgres dropped owner cannot traverse runtime cache directory: ${ancestor}`);
+		}
+		const parent = dirname(ancestor);
+		if (parent === ancestor) break;
+		ancestor = parent;
+	}
+	if (needsPrivilegeDrop) await chown(path, publisher.uid, publisher.gid);
+	await chmod(path, 0o755);
+}
 class SourceRuntimeChangedError extends Error {}
 class RuntimePublicationLeaseLostError extends Error {}
 class CorruptRuntimeGenerationError extends Error {}
+export class RuntimeGenerationMissingError extends Error {}
 
 export function isCorruptRuntimeGeneration(error: unknown, candidate: string): boolean {
 	if (error instanceof CorruptRuntimeGenerationError) return true;
@@ -430,7 +546,12 @@ async function assertSourceSnapshotUnchanged(
 	progress: RuntimeProgress,
 	message: string,
 ): Promise<void> {
-	const current = await snapshotSourceRuntime(sourceNativeDir, publisher, progress);
+	const current = await memoizedSourceSnapshot(
+		sourceNativeDir,
+		process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR ?? "",
+		publisher,
+		progress,
+	);
 	if (current.sourceIdentity !== expected.sourceIdentity || current.sealedIdentity !== expected.sealedIdentity) {
 		throw new SourceRuntimeChangedError(message);
 	}
@@ -443,22 +564,27 @@ function assertPublicationLease(options: RuntimePreparationOptions, message: str
 function runtimeProgress(options: RuntimePreparationOptions): RuntimeProgress {
 	let operations = 0;
 	const yieldToEventLoop = options.yieldToEventLoop ?? (() => new Promise<void>((resolve) => setImmediate(resolve)));
-	return async () => {
-		if (operations % TRAVERSAL_OPERATIONS_PER_YIELD === 0) {
-			if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
-				throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime publication lost its setup lease.");
-			}
-			if (operations > 0) {
-				await yieldToEventLoop();
+	return Object.assign(
+		async () => {
+			if (operations % TRAVERSAL_OPERATIONS_PER_YIELD === 0) {
 				if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
 					throw new RuntimePublicationLeaseLostError(
 						"Embedded Postgres runtime publication lost its setup lease.",
 					);
 				}
+				if (operations > 0) {
+					await yieldToEventLoop();
+					if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
+						throw new RuntimePublicationLeaseLostError(
+							"Embedded Postgres runtime publication lost its setup lease.",
+						);
+					}
+				}
 			}
-		}
-		operations += 1;
-	};
+			operations += 1;
+		},
+		{ onContentRead: options.onContentRead },
+	);
 }
 
 /** Hash source bytes/raw link text/modes and its exact sealed projection. */
@@ -533,13 +659,205 @@ async function hashSourceEntry(
 	throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime contains an unsupported entry: ${relativePath}`);
 }
 
-async function snapshotSealedRuntime(root: string, progress: RuntimeProgress): Promise<string> {
+async function memoizedSourceSnapshot(
+	root: string,
+	cacheDir: string,
+	publisher: PublisherIdentity,
+	progress: RuntimeProgress,
+): Promise<SourceRuntimeSnapshot> {
+	const realRoot = await realpath(root);
+	const key = `${publisher.uid}:${publisher.gid}:${realRoot}`;
+	const entries = await statRuntimeEntries(root, progress, true);
+	const signature = JSON.stringify([realRoot, entries]);
+	const cached = sourceMemo.get(key);
+	if (cached?.signature === signature && !sourceEntriesRacy(entries, cached.indexWrittenAt)) return cached.snapshot;
+	const indexPath = cacheDir ? join(cacheDir, ".atomic-source-index.json") : undefined;
+	let index: Record<string, SourceIndexEntry> = {};
+	if (indexPath) {
+		try {
+			const stat = await lstat(indexPath);
+			if (
+				!stat.isFile() ||
+				stat.isSymbolicLink() ||
+				(process.getuid !== undefined && stat.uid !== publisher.uid) ||
+				(process.platform !== "win32" && (stat.mode & 0o022) !== 0)
+			)
+				throw new Error("Untrusted source index");
+			index = JSON.parse(await readFile(indexPath, "utf8")) as typeof index;
+			if (!index || typeof index !== "object" || Array.isArray(index)) throw new Error("Invalid source index");
+			const entry = index[key];
+			if (
+				entry?.signature === signature &&
+				!sourceEntriesRacy(entries, entry.indexWrittenAt) &&
+				/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
+				/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
+			) {
+				sourceMemo.set(key, entry);
+				return entry.snapshot;
+			}
+		} catch {
+			index = {};
+		}
+	}
+	const snapshot = await snapshotSourceRuntime(root, publisher, progress);
+	if (signature !== JSON.stringify([await realpath(root), await statRuntimeEntries(root, progress, true)]))
+		throw new SourceRuntimeChangedError("Embedded Postgres source package changed during snapshot.");
+	const indexed = { snapshot, signature, indexWrittenAt: Date.now() };
+	sourceMemo.set(key, indexed);
+	if (indexPath) {
+		await ensureRuntimeCacheDirectory(cacheDir, publisher);
+		const temporary = `${indexPath}.${process.pid}-${crypto.randomUUID()}`;
+		try {
+			await writeFile(temporary, JSON.stringify({ ...index, [key]: indexed }), {
+				mode: 0o600,
+				flag: "wx",
+			});
+			await rename(temporary, indexPath);
+		} catch {
+			return snapshot;
+		} finally {
+			await rm(temporary, { force: true });
+		}
+	}
+	return snapshot;
+}
+
+function sourceEntriesRacy(entries: readonly RuntimeEntry[], indexWrittenAt: number): boolean {
+	if (!Number.isFinite(indexWrittenAt)) return true;
+	return entries.some((entry) => {
+		const fields = entry[5]?.split(":");
+		if (!fields || fields.length < 7) return true;
+		return Number(fields.at(-5)) >= indexWrittenAt - 2000 || Number(fields.at(-4)) >= indexWrittenAt - 2000;
+	});
+}
+
+async function validatePreparedRuntime(
+	root: string,
+	binaries: EmbeddedPostgresBinaryPaths,
+	progress: RuntimeProgress,
+	expected?: string,
+): Promise<string> {
+	const marker = join(root, RUNTIME_MARKER);
+	let manifest: RuntimeManifest;
+	try {
+		const markerStat = await lstat(marker);
+		if (!markerStat.isFile() || (markerStat.mode & 0o222) !== 0)
+			throw new CorruptRuntimeGenerationError("untrusted runtime completion marker");
+		const text = await readFile(marker, "utf8");
+		manifest = JSON.parse(text) as RuntimeManifest;
+		if (manifest.version !== 1 || !Array.isArray(manifest.entries) || !/^[a-f0-9]{64}$/.test(manifest.sealedIdentity))
+			throw new CorruptRuntimeGenerationError("invalid runtime completion marker");
+	} catch (error) {
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+			if (error instanceof CorruptRuntimeGenerationError) throw error;
+			throw new CorruptRuntimeGenerationError("invalid runtime completion marker");
+		}
+		const cached = legacyMemo.get(root);
+		if (cached !== undefined) manifest = cached;
+		else {
+			manifest = await snapshotSealedManifest(root, progress);
+			if (expected !== undefined && manifest.sealedIdentity !== expected)
+				throw new CorruptRuntimeGenerationError("legacy sealed identity mismatch");
+			legacyMemo.set(root, manifest);
+		}
+	}
+	const entries = await statRuntimeEntries(root, progress, false);
+	const metadataChanged =
+		JSON.stringify(entries.map((entry) => (entry[0] === "." ? entry.slice(0, 6) : entry))) !==
+		JSON.stringify(manifest.entries.map((entry) => (entry[0] === "." ? entry.slice(0, 6) : entry)));
+	if (metadataChanged) {
+		if (
+			JSON.stringify(entries.map((entry) => entry.slice(0, 6))) !==
+			JSON.stringify(manifest.entries.map((entry) => entry.slice(0, 6)))
+		)
+			throw new CorruptRuntimeGenerationError("runtime completion manifest mismatch");
+		if ((await snapshotSealedManifest(root, progress)).sealedIdentity !== manifest.sealedIdentity)
+			throw new CorruptRuntimeGenerationError("runtime completion manifest mismatch");
+	}
+	for (const binary of [binaries.pg_ctl, binaries.initdb, binaries.postgres]) {
+		if (!entries.some(([name, kind]) => name === relative(root, binary) && kind === "file"))
+			throw new CorruptRuntimeGenerationError("required Postgres executable missing");
+	}
+	const timezone = join(
+		"share",
+		...(binaries.postgres.endsWith(".exe") ? [] : ["postgresql"]),
+		"timezonesets",
+		"Default",
+	);
+	if (
+		entries.some(([name]) => name === "share") &&
+		!entries.some(([name, kind]) => name === timezone && kind === "file")
+	)
+		throw new CorruptRuntimeGenerationError("required Postgres timezone data missing");
+	return manifest.sealedIdentity;
+}
+
+async function statRuntimeEntries(root: string, progress: RuntimeProgress, source: boolean): Promise<RuntimeEntry[]> {
+	const entries: RuntimeEntry[] = [];
+	const rootStat = await lstat(root);
+	assertRuntimeRoot(root, rootStat);
+	const realRoot = await realpath(root);
+	const visit = async (path: string, name: string): Promise<void> => {
+		await progress();
+		const info = await lstat(path);
+		const suffix = source
+			? `${info.size}:${info.mode & 0o777}:${info.mtimeMs}:${info.ctimeMs}:${info.birthtimeMs}:${info.dev}:${info.ino}`
+			: undefined;
+		if (info.isSymbolicLink()) {
+			const target = await validatedLinkTarget(path, name, realRoot);
+			entries.push([
+				name,
+				"link",
+				0,
+				info.uid,
+				info.gid,
+				source ? `${target}:${suffix}` : target,
+				source ? undefined : [info.ctimeMs, info.ino, info.dev],
+			]);
+		} else if (info.isDirectory()) {
+			entries.push(
+				source
+					? [name, "directory", info.mode & 0o777, info.uid, info.gid, suffix]
+					: name === "."
+						? [name, "directory", info.mode & 0o777, info.uid, info.gid, undefined]
+						: [
+								name,
+								"directory",
+								info.mode & 0o777,
+								info.uid,
+								info.gid,
+								undefined,
+								[info.ctimeMs, info.ino, info.dev],
+							],
+			);
+			for (const child of (await readdir(path)).sort()) {
+				if (!source && name === "." && child === RUNTIME_MARKER) continue;
+				await visit(join(path, child), name === "." ? child : join(name, child));
+			}
+		} else if (info.isFile()) {
+			entries.push([
+				name,
+				"file",
+				info.mode & 0o777,
+				info.uid,
+				info.gid,
+				source ? `${info.size}:${suffix}` : String(info.size),
+				source ? undefined : [info.ctimeMs, info.ino, info.dev],
+			]);
+		} else throw new CorruptRuntimeGenerationError(`Unsupported runtime entry: ${name}`);
+	};
+	await visit(root, ".");
+	return entries;
+}
+
+async function snapshotSealedManifest(root: string, progress: RuntimeProgress): Promise<RuntimeManifest> {
 	const rootStat = await lstat(root);
 	assertRuntimeRoot(root, rootStat);
 	const rootRealPath = await realpath(root);
 	const hash = createHash("sha256");
-	await hashSealedEntry(hash, root, ".", rootRealPath, progress);
-	return hash.digest("hex");
+	const entries: RuntimeEntry[] = [];
+	await hashSealedEntry(hash, root, ".", rootRealPath, progress, entries);
+	return { version: 1, sealedIdentity: hash.digest("hex"), entries };
 }
 
 async function hashSealedEntry(
@@ -548,28 +866,54 @@ async function hashSealedEntry(
 	relativePath: string,
 	rootRealPath: string,
 	progress: RuntimeProgress,
+	entries: RuntimeEntry[],
 ): Promise<void> {
 	await progress();
 	const stat = await lstat(path);
 	if (stat.isSymbolicLink()) {
 		const target = await validatedLinkTarget(path, relativePath, rootRealPath);
+		entries.push([relativePath, "link", 0, stat.uid, stat.gid, target, [stat.ctimeMs, stat.ino, stat.dev]]);
 		hashField(hash, "link", relativePath, String(stat.uid), String(stat.gid), target);
 		return;
 	}
 	if (stat.isDirectory()) {
 		hashField(hash, "directory", relativePath, String(stat.mode & 0o777), String(stat.uid), String(stat.gid));
+		entries.push(
+			relativePath === "."
+				? [relativePath, "directory", stat.mode & 0o777, stat.uid, stat.gid, undefined]
+				: [
+						relativePath,
+						"directory",
+						stat.mode & 0o777,
+						stat.uid,
+						stat.gid,
+						undefined,
+						[stat.ctimeMs, stat.ino, stat.dev],
+					],
+		);
 		for (const entry of (await readdir(path)).sort()) {
+			if (relativePath === "." && entry === RUNTIME_MARKER) continue;
 			await hashSealedEntry(
 				hash,
 				join(path, entry),
 				relativePath === "." ? entry : join(relativePath, entry),
 				rootRealPath,
 				progress,
+				entries,
 			);
 		}
 		return;
 	}
 	if (stat.isFile()) {
+		entries.push([
+			relativePath,
+			"file",
+			stat.mode & 0o777,
+			stat.uid,
+			stat.gid,
+			String(stat.size),
+			[stat.ctimeMs, stat.ino, stat.dev],
+		]);
 		hashField(
 			hash,
 			"file",
@@ -605,6 +949,7 @@ async function hashFileInto(hashes: readonly Hash[], path: string, progress: Run
 			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
 			if (bytesRead === 0) return;
 			const chunk = buffer.subarray(0, bytesRead);
+			progress.onContentRead?.(path);
 			for (const hash of hashes) hash.update(chunk);
 			await progress();
 		}

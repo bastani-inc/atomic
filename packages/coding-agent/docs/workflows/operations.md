@@ -492,10 +492,13 @@ running as root on Linux), separate from data and project checkouts. Removing
 the original worktree or reinstalling packages does not remove files needed by
 a server already using that runtime. Do not delete a runtime generation,
 including a damaged one, while a managed server may still use it.
+Set `ATOMIC_POSTGRES_RUNTIME_CACHE_DIR` before starting Atomic to share retained runtime generations across separate cluster homes; only the runtime cache moves, not cluster data or ownership records. Keep this directory private to a trusted account and do not remove generations while a server may use them.
 
 **Running as root on Linux.** Atomic needs an available unprivileged account, `postgres`, `nobody`, or `daemon`, because PostgreSQL cannot run as root. The cluster is stored under `/var/lib/atomic-postgres`. If privilege or runtime preparation fails, inspect the diagnostic rather than changing data ownership blindly.
 
-**Administrator accounts (Windows).** Atomic can start embedded Postgres from an elevated terminal or an administrative account without changing your account or system permissions. The server runs with reduced privileges, as it does under PostgreSQL's own launcher. Regular Windows accounts remain supported. On either path, server output goes to `~/.atomic/postgres/v18.log`, not your terminal; unrelated commands starting concurrently do not keep the server's log file open. If Postgres exits during startup, Atomic reports the recent log output instead of waiting for a generic readiness timeout. Check that log for configuration or cluster errors; do not delete the cluster while a server may still be using it.
+**Administrator accounts (Windows).** Atomic can start embedded Postgres from an elevated terminal or an administrative account without changing your account or system permissions. The server runs with reduced privileges, as it does under PostgreSQL's own launcher. Regular Windows accounts remain supported.
+
+Managed PostgreSQL writes startup output to `~/.atomic/postgres/v18.log` and, after startup, server logs to `~/.atomic/postgres/v18/log/postgresql-<Day>.log`, rotating daily through seven weekday files. If Postgres exits during startup, Atomic reports recent output from both logs. Check these logs for configuration or cluster errors; do not delete the cluster while a server may still be using it.
 
 Set `ATOMIC_POSTGRES_PORT` before starting Atomic to choose a preferred loopback port, for example `ATOMIC_POSTGRES_PORT=15439 atomic`. The default is `5439`; valid values are integers from 1 through 65535. An occupied port causes Atomic to choose another loopback port without changing or stopping the listener. Concurrent sessions use one elected starter and discover the verified actual port from `v18.shared/cluster.json`. A persisted port takes precedence over a changed preference. Startup bind races have at most three attempts; inspect `v18.log` if they fail.
 
@@ -507,15 +510,21 @@ Each process makes at most three recovery attempts per check, with short
 backoffs. Later health checks retry after a cooldown if the problem persists.
 If the retained PostgreSQL runtime is damaged or missing, reinstall a complete
 healthy Atomic package or repair your `ATOMIC_POSTGRES_RUNTIME_DIR` override,
-then inspect `v18.log`. Automatic recovery can select a verified replacement,
-including after a same-version reinstall, without restarting an updated Atomic
-process. Preserve both the data and ownership records; identity mismatches and
-database corruption require investigation, not a package reinstall.
-New admission keeps its 10-second deadline even if
-shared recovery takes longer. Restoring the connection does not automatically
-resume a paused run or prove that an interrupted write or external side effect
-committed. Inspect the original run before retrying. External database URLs
-receive no managed recovery; restore that exact endpoint yourself.
+then inspect `v18.log`. Atomic can select a verified replacement, including
+after a same-version reinstall, even when the damaged runtime prevents new
+database connections. A running server must pass process-identity verification
+before Atomic stops it; if the server has already exited, Atomic starts from
+the replacement without stopping anything. If a present server's identity
+cannot be verified, automatic restart is refused; preserve the data,
+`v18.shared`, and damaged runtime, and report the diagnostic for help instead
+of deleting files or starting another server. Identity mismatches and database
+corruption require investigation, not a package reinstall.
+New admission keeps its
+10-second deadline even if shared recovery takes longer. Restoring the
+connection does not automatically resume a paused run or prove that an
+interrupted write or external side effect committed. Inspect the original run
+before retrying. External database URLs receive no managed recovery; restore
+that exact endpoint yourself.
 
 Restart Atomic after upgrading to enable health supervision in a session whose database executor was already initialized by an older version.
 

@@ -88,14 +88,19 @@ async function stopDisposablePostgres() {
 	);
 	trusted(join(data, "postmaster.opts"));
 	const launch =
-		/^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
+		/^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"(?: "-c" "logging_collector=on" "-c" "log_directory=log" "-c" "log_filename=postgresql-%a\.log" "-c" "log_truncate_on_rotation=on" "-c" "log_rotation_age=1d" "-c" "log_rotation_size=0")?(?: "-c" "fsync=off" "-c" "synchronous_commit=off" "-c" "full_page_writes=off")?\s*$/.exec(
 			readFileSync(join(data, "postmaster.opts"), "utf8"),
 		);
 	assert.ok(launch, "unrecognized postgres launch options");
 	assert.equal(realpathSync(launch[2]), metadata.dataDir);
 	assert.equal(Number(launch[3]), Number(port));
-	const runtime = realpathSync(join(base, "pg-runtime"));
-	assert.equal(runtime, join(base, "pg-runtime"), "runtime must stay inside the disposable home");
+	const configuredCache = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
+	const runtime = realpathSync(configuredCache ?? join(base, "pg-runtime"));
+	if (configuredCache) {
+		assert.match(basename(runtime), /^atomic-postgres-runtime-cache-/);
+		assert.equal(dirname(runtime), realpathSync(tmpdir()));
+		trusted(runtime, true);
+	} else assert.equal(runtime, join(base, "pg-runtime"), "runtime must stay inside the disposable home");
 	assert.ok(realpathSync(launch[1]).startsWith(`${runtime}${sep}`));
 	const pgCtl = join(dirname(launch[1]), process.platform === "win32" ? "pg_ctl.exe" : "pg_ctl");
 	assert.ok(realpathSync(pgCtl).startsWith(`${runtime}${sep}`));

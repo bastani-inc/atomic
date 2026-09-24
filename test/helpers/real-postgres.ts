@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, lstat, readdir } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
+import { hydrateBinaryLibraryLinks } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
+import {
+	type EmbeddedPostgresBinaryPaths,
+	prepareBinariesForOwner,
+} from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -82,6 +89,7 @@ export class RealPostgresClient {
 				ATOMIC_POSTGRES_PORT: String(port),
 				DBOS_SYSTEM_DATABASE_URL: undefined,
 				ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
+				ATOMIC_POSTGRES_TEST_UNSAFE_DURABILITY: "1",
 				...extra,
 			},
 			stdin: "pipe",
@@ -156,11 +164,81 @@ async function makeRuntimeRemovable(path: string): Promise<void> {
 	}
 }
 
+let sharedRuntimeCache: string | undefined;
+let activeSharedHomes = 0;
+let preserveSharedCache = false;
+export function preserveSharedPostgresRuntimeCache(): void {
+	preserveSharedCache = true;
+}
+export function registerSharedPostgresRuntimeHome(home: string): () => void {
+	const cache = sharedPostgresRuntimeCache();
+	const homes = join(cache, ".active-homes");
+	mkdirSync(homes, { recursive: true, mode: 0o700 });
+	const marker = join(homes, randomUUID());
+	writeFileSync(marker, home, { flag: "wx", mode: 0o600 });
+	return () => unlinkSync(marker);
+}
+export function sharedPostgresRuntimeCache(): string {
+	if (sharedRuntimeCache) return sharedRuntimeCache;
+	const inherited = process.env.ATOMIC_POSTGRES_TEST_RUNTIME_CACHE_DIR;
+	if (inherited) {
+		sharedRuntimeCache = inherited;
+		return inherited;
+	}
+	sharedRuntimeCache = makeTempDirectory("atomic-postgres-runtime-cache-");
+	process.once("exit", () => {
+		if (!sharedRuntimeCache || preserveSharedCache || activeSharedHomes !== 0) return;
+		const homes = join(sharedRuntimeCache, ".active-homes");
+		if (lstatSync(homes, { throwIfNoEntry: false }) && readdirSync(homes).length > 0) return;
+		const unseal = (path: string): void => {
+			const stat = lstatSync(path, { throwIfNoEntry: false });
+			if (!stat || stat.isSymbolicLink()) return;
+			chmodSync(path, stat.isDirectory() ? 0o700 : 0o600);
+			if (stat.isDirectory()) for (const entry of readdirSync(path)) unseal(join(path, entry));
+		};
+		unseal(sharedRuntimeCache);
+		rmSync(sharedRuntimeCache, { recursive: true, force: true });
+	});
+	return sharedRuntimeCache;
+}
+
 export class RealPostgresHome {
 	readonly path = makeTempDirectory("atomic-real-postgres-");
 	readonly clients: RealPostgresClient[] = [];
+	readonly runtimeCache: string;
+	private readonly releaseRuntimeCache: (() => void) | undefined;
+	constructor(privateRuntimeCache = false) {
+		this.runtimeCache = privateRuntimeCache ? join(this.path, "runtime-cache") : sharedPostgresRuntimeCache();
+		this.releaseRuntimeCache = privateRuntimeCache ? undefined : registerSharedPostgresRuntimeHome(this.path);
+		if (!privateRuntimeCache) activeSharedHomes++;
+	}
+	async prewarmRuntime(binaries: EmbeddedPostgresBinaryPaths): Promise<void> {
+		assert.notEqual(this.runtimeCache, sharedRuntimeCache, "private runtime prewarm requires a private cache");
+		const previous = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
+		process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR = this.runtimeCache;
+		try {
+			hydrateBinaryLibraryLinks(binaries.pg_ctl);
+			await prepareBinariesForOwner(binaries, {
+				baseDir: join(this.path, ".atomic", "postgres"),
+				runAsOwner: async () => {
+					throw new Error("Private runtime prewarm must not run database commands");
+				},
+			});
+		} finally {
+			if (previous === undefined) delete process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
+			else process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR = previous;
+		}
+	}
 	client(port: number, extra?: Record<string, string>, fixture?: string) {
-		const client = new RealPostgresClient(this.path, port, extra, fixture);
+		const client = new RealPostgresClient(
+			this.path,
+			port,
+			{
+				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: this.runtimeCache,
+				...extra,
+			},
+			fixture,
+		);
 		this.clients.push(client);
 		return client;
 	}
@@ -187,7 +265,9 @@ export class RealPostgresHome {
 		if (errors.length) {
 			throw new AggregateError(errors, `Postgres fixture cleanup failed; preserved ${this.path}`);
 		}
-		await makeRuntimeRemovable(join(this.path, ".atomic", "postgres", "pg-runtime"));
+		if (this.runtimeCache !== sharedRuntimeCache) await makeRuntimeRemovable(this.runtimeCache);
 		removeTempDirectory(this.path);
+		this.releaseRuntimeCache?.();
+		if (this.runtimeCache === sharedRuntimeCache) activeSharedHomes--;
 	}
 }

@@ -84,6 +84,15 @@ for await (const line of lines) {
 		} else if (command === "metadata") {
 			// Disk-only observation: do not call ensure, doctor, recover or construct a SQL client.
 			result = { metadata: managedPostgresMetadata(base, 18, false) };
+		} else if (command === "attach") {
+			const initialized = await initializeDurableBackend((message) => {
+				throw new Error(message);
+			});
+			assert.ok(initialized instanceof DbosDurableBackend);
+			backend = initialized;
+			result = { metadata: managedPostgresMetadata(base, 18, false) };
+		} else if (command === "check-health") {
+			await embeddedPostgresHealth()?.check();
 		} else if (command === "health-diagnostics") {
 			// Read-only: observing a failure must not trigger recovery.
 			const failure = embeddedPostgresHealth()?.lastFailure;

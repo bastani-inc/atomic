@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { endianness } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -50,11 +51,19 @@ export function managedPostgresLaunchExecutable(
 ): string {
 	const optsPath = join(metadata.dataDir, "postmaster.opts");
 	if (!lstatSync(optsPath).isFile()) throw new Error("Managed Postgres launch options are missing or untrusted.");
-	const launch =
-		/^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
-			readFileSync(optsPath, "utf8"),
-		);
-	if (!launch || !isAbsolute(launch[1]) || !isAbsolute(launch[2])) {
+	const command = readFileSync(optsPath, "utf8").trimEnd();
+	const launch = /^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"/.exec(
+		command,
+	);
+	const collector =
+		' "-c" "logging_collector=on" "-c" "log_directory=log" "-c" "log_filename=postgresql-%a.log" "-c" "log_truncate_on_rotation=on" "-c" "log_rotation_age=1d" "-c" "log_rotation_size=0"';
+	const unsafe = ' "-c" "fsync=off" "-c" "synchronous_commit=off" "-c" "full_page_writes=off"';
+	if (
+		!launch ||
+		!isAbsolute(launch[1]) ||
+		!isAbsolute(launch[2]) ||
+		!["", collector, collector + unsafe].includes(command.slice(launch[0].length))
+	) {
 		throw new Error("Managed Postgres launch options do not identify Atomic's PostgreSQL runtime.");
 	}
 	if (realpathSync(launch[2]) !== metadata.dataDir || (port !== undefined && Number(launch[3]) !== port)) {
@@ -190,6 +199,53 @@ export async function probePostgresIdentity(port: number): Promise<PostgresIdent
 	} finally {
 		await client.end();
 	}
+}
+
+export type ManagedPostmasterProcess =
+	| { status: "live"; server: ManagedPostgresServer; observedCreateTime: number }
+	| { status: "absent" };
+
+export function verifyManagedPostmasterProcess(
+	metadata: ManagedPostgresMetadata,
+	expected: ManagedPostgresServer,
+): ManagedPostmasterProcess {
+	const pidPath = join(metadata.dataDir, "postmaster.pid");
+	const before = managedPostmaster(metadata);
+	if (
+		metadata.server?.pid !== expected.pid ||
+		metadata.server.started !== expected.started ||
+		metadata.server.port !== expected.port ||
+		metadata.server.systemIdentifier !== expected.systemIdentifier
+	)
+		throw new Error("Managed Postgres published process identity mismatch. Preserve the server and data directory.");
+	if (!before) return { status: "absent" };
+	const beforeFile = readFileSync(pidPath, "utf8");
+	if (
+		before.pid !== expected.pid ||
+		before.started !== expected.started ||
+		before.port !== expected.port ||
+		before.systemIdentifier !== expected.systemIdentifier ||
+		before.pid === process.pid ||
+		before.pid === process.ppid ||
+		realpathSync(beforeFile.split(/\r?\n/)[1]) !== metadata.dataDir
+	)
+		throw new Error("Managed Postgres process identity mismatch. Preserve the server and data directory.");
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	const identity = binding.postgresProcessStartTime(before.pid);
+	if (readFileSync(pidPath, "utf8") !== beforeFile)
+		throw new Error("Managed Postgres OS process start identity mismatch. Preserve the server and data directory.");
+	if (!identity.found) return { status: "absent" };
+	if (
+		identity.startTime === undefined ||
+		!Number.isFinite(identity.startTime) ||
+		identity.startTime <= 0 ||
+		identity.startTime > before.started + 1
+	) {
+		throw new Error("Managed Postgres OS process start identity mismatch. Preserve the server and data directory.");
+	}
+	return { status: "live", server: before, observedCreateTime: identity.startTime };
 }
 
 export async function verifyPostgresIdentity(

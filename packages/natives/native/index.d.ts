@@ -631,6 +631,13 @@ export interface OwnerSnapshot {
   cursor: Cursor
 }
 
+export interface PostgresProcessIdentity {
+  found: boolean
+  startTime?: number
+}
+
+export declare function postgresProcessStartTime(pid: number): PostgresProcessIdentity
+
 export interface PromptRoute {
   sessionId: string
   promptId: string
@@ -739,6 +746,8 @@ export interface SettlementReceipt {
   result: TaskResult
   completionId: string
 }
+
+export declare function signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: string): string
 
 export declare function spawnRetainedPostgres(options: RetainedPostgresSpawnOptions): RetainedPostgres
 

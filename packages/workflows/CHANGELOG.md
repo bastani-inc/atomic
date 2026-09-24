@@ -10,11 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Removed the public `workflowDependency()` SDK function and its report/operation types, `/workflow dependency`, and the workflow tool's `dependency` action. Inspect affected runs with workflow status; managed PostgreSQL recovery is automatic.
 
+### Changed
+
+- Managed PostgreSQL startup now verifies retained runtime files from a sealed completion manifest instead of re-reading every binary on each attach. Existing marker-less generations remain usable after one verification.
+- Managed PostgreSQL can reuse one retained runtime across cluster homes with `ATOMIC_POSTGRES_RUNTIME_CACHE_DIR`; a persisted source stat index avoids repeated full-package hashing on unchanged installations.
+- Managed PostgreSQL now rotates server logs daily through seven weekday files under the cluster's `log` directory, retaining startup diagnostics in `v18.log`. Startup failures include recent output from both logs.
+
 ### Fixed
 
 - Fixed workflow durability being disabled after upgrading from 0.9.10–0.9.19: Atomic now registers the embedded Postgres cluster that older Atomic provisioned instead of refusing it. If that first start fails, the cluster is left unregistered and checked again on the next startup ([#3235](https://github.com/bastani-inc/atomic/issues/3235)).
-- Managed PostgreSQL now runs from a retained runtime outside development worktrees. If that runtime is damaged, reinstalling a complete healthy package lets automatic recovery select a verified replacement, including the same version, without deleting the database or requiring an Atomic restart.
+- Managed PostgreSQL now runs from a retained runtime outside development worktrees. If that runtime is damaged, reinstalling a complete healthy package lets automatic recovery select a verified replacement, including the same version, even when new database connections are impossible or the server has already exited. A running server's process identity must verify before shutdown; identity mismatches or corruption still require investigation, and Atomic preserves the database.
 - Transient PostgreSQL monitoring connection failures no longer interrupt workflow shutdown when a fresh health probe confirms the same server is healthy.
+- Fixed managed PostgreSQL recovery refusing to stop its own verified server when PostgreSQL takes more than three seconds after process creation to write its pidfile. A process created after the recorded PostgreSQL start remains ineligible for shutdown.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, copyFile, cp, readdir, realpath, unlink } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import pg from "pg";
 import { test } from "vitest";
 import { loadEmbeddedPostgresBinaries } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
@@ -15,11 +15,11 @@ type WorkflowResult = Pick<ManagedResult, "metadata"> & { runId: string; complet
 test(
 	"shared DBOS consumers replace damaged same-version runtimes and retain checkpoints across repeated repairs",
 	async () => {
-		const home = new RealPostgresHome();
+		const home = new RealPostgresHome(true);
 		const listener = await reserveListener();
 		const base = join(home.path, ".atomic", "postgres");
 		const data = join(base, "v18");
-		const generations = join(base, "pg-runtime");
+		const generations = home.runtimeCache;
 		const first = home.client(
 			listener.port,
 			{ ATOMIC_WORKFLOW_ARTIFACT_DIR: join(home.path, "first-artifacts") },
@@ -66,6 +66,7 @@ test(
 			}
 		};
 		try {
+			await home.prewarmRuntime(await loadEmbeddedPostgresBinaries({ readOnly: true }));
 			const a = await first.request<WorkflowResult>("warm");
 			const b = await second.request<WorkflowResult>("warm");
 			assert.deepEqual(a.metadata, b.metadata);
@@ -132,9 +133,44 @@ test(
 );
 
 test(
+	"a healthy running server keeps its marker-less legacy generation without a restart",
+	async () => {
+		const home = new RealPostgresHome(true);
+		const listener = await reserveListener();
+		const base = join(home.path, ".atomic", "postgres");
+		try {
+			await home.prewarmRuntime(await loadEmbeddedPostgresBinaries({ readOnly: true }));
+			const client = home.client(listener.port);
+			const initial = await client.request<ManagedResult>("ensure");
+			const launch = await readText(join(base, "v18", "postmaster.opts"));
+			const executable = /^(.*[\\/]postgres(?:\.exe)?) "-D" /.exec(launch)?.[1];
+			assert.ok(executable);
+			const runtime = await realpath(dirname(dirname(executable)));
+			const marker = join(runtime, ".atomic-runtime-complete.json");
+			await chmod(marker, 0o600);
+			await unlink(marker);
+			const generations = home.runtimeCache;
+			const entries = (await readdir(generations)).sort();
+			const attached = await home.client(listener.port).request<ManagedResult>("ensure");
+			assert.equal(attached.metadata.server.pid, initial.metadata.server.pid);
+			await sleep(HEALTHY_MONITORING_OBSERVATION_MS);
+			assert.equal((await client.request<ManagedResult>("ensure")).metadata.server.pid, initial.metadata.server.pid);
+			assert.deepEqual((await readdir(generations)).sort(), entries);
+		} finally {
+			try {
+				await home.cleanup();
+			} finally {
+				await listener.close();
+			}
+		}
+	},
+	REAL_SHARED_RUNTIME_REPAIR_TIMEOUT_MS,
+);
+
+test(
 	"a running client recovers after its unavailable replacement installation is repaired",
 	async () => {
-		const home = new RealPostgresHome();
+		const home = new RealPostgresHome(true);
 		const listener = await reserveListener();
 		const base = join(home.path, ".atomic", "postgres");
 		const source = join(home.path, "installation", "native");
@@ -142,6 +178,11 @@ test(
 			const installed = await loadEmbeddedPostgresBinaries({ readOnly: true });
 			const installedRoot = dirname(dirname(installed.postgres));
 			await cp(installedRoot, source, { recursive: true, verbatimSymlinks: true });
+			await home.prewarmRuntime({
+				pg_ctl: join(source, "bin", basename(installed.pg_ctl)),
+				initdb: join(source, "bin", basename(installed.initdb)),
+				postgres: join(source, "bin", basename(installed.postgres)),
+			});
 			const client = home.client(
 				listener.port,
 				{
@@ -155,7 +196,7 @@ test(
 			const executable = /^(.*[\\/]postgres(?:\.exe)?) "-D" /.exec(launch)?.[1];
 			assert.ok(executable);
 			const runtime = await realpath(dirname(dirname(executable)));
-			assert.ok(runtime.startsWith(`${await realpath(join(base, "pg-runtime"))}${sep}`));
+			assert.ok(runtime.startsWith(`${await realpath(home.runtimeCache)}${sep}`));
 			const relativeTimezone = join(
 				"share",
 				...(executable.endsWith(".exe") ? [] : ["postgresql"]),
@@ -166,25 +207,22 @@ test(
 			await chmod(dirname(join(runtime, relativeTimezone)), 0o700);
 			await chmod(join(runtime, relativeTimezone), 0o600);
 			await unlink(join(runtime, relativeTimezone));
-			await sleep(HEALTHY_MONITORING_OBSERVATION_MS);
+			const coldClient = home.client(
+				listener.port,
+				{
+					ATOMIC_POSTGRES_RUNTIME_DIR: source,
+					ATOMIC_WORKFLOW_ARTIFACT_DIR: join(home.path, "artifacts"),
+				},
+				"managed-dbos-fault-client.ts",
+			);
 			assert.equal(
-				(await client.request<Pick<WorkflowResult, "metadata">>("metadata")).metadata.server.pid,
+				(await coldClient.request<Pick<WorkflowResult, "metadata">>("metadata")).metadata.server.pid,
 				original.metadata.server.pid,
 				"an incomplete replacement must not stop the owned server",
 			);
 			await copyFile(join(installedRoot, relativeTimezone), join(source, relativeTimezone));
-			const deadline = Date.now() + SHARED_RUNTIME_REPAIR_WAIT_MS;
-			for (;;) {
-				const observed = await client.request<Pick<WorkflowResult, "metadata">>("metadata");
-				if (observed.metadata.server.pid !== original.metadata.server.pid) break;
-				if (Date.now() >= deadline) {
-					const diagnostics = await client.request("health-diagnostics");
-					assert.fail(
-						`repaired installation must be adopted by the existing client: ${JSON.stringify(diagnostics)}`,
-					);
-				}
-				await sleep(100);
-			}
+			const attached = await coldClient.request<Pick<WorkflowResult, "metadata">>("attach");
+			assert.notEqual(attached.metadata.server.pid, original.metadata.server.pid);
 			const resumed = await client.request<WorkflowResult>("resume");
 			assert.equal(resumed.runId, original.runId);
 			assert.equal(resumed.completedCalls, 1);

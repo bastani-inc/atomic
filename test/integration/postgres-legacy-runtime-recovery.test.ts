@@ -15,7 +15,7 @@ const REAL_LEGACY_RECOVERY_TIMEOUT_MS = 120_000;
 test.skipIf(process.platform === "win32")(
 	"a legacy managed server recovers from a deleted runtime without losing its data",
 	async () => {
-		const home = new RealPostgresHome();
+		const home = new RealPostgresHome(true);
 		const listener = await reserveListener();
 		await listener.close();
 		const base = join(home.path, ".atomic", "postgres");
@@ -25,6 +25,7 @@ test.skipIf(process.platform === "win32")(
 		let lease: ReturnType<typeof spawnRetainedPostgres> | undefined;
 		try {
 			const installed = await loadEmbeddedPostgresBinaries({ readOnly: true });
+			await home.prewarmRuntime(installed);
 			await cp(dirname(dirname(installed.postgres)), source, { recursive: true, verbatimSymlinks: true });
 			await mkdir(base, { recursive: true });
 			await writeFile(password, "atomic\n", { mode: 0o600 });
@@ -78,7 +79,7 @@ test.skipIf(process.platform === "win32")(
 			const recovered = await client.request<ManagedResult>("ensure");
 			assert.equal(recovered.metadata.server.systemIdentifier, originalIdentifier);
 			assert.notEqual(recovered.metadata.server.pid, lease.pid);
-			assert.ok((await readText(join(data, "postmaster.opts"))).includes("pg-runtime"));
+			assert.ok((await readText(join(data, "postmaster.opts"))).includes(home.runtimeCache));
 			const rows = await client.request<{ value: string; system_identifier: string }[]>(
 				"query",
 				"SELECT value, (SELECT system_identifier::text FROM pg_control_system()) AS system_identifier FROM atomic_legacy_recovery",
