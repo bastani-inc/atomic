@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow stage model fallback now runs the next model after a candidate fails. Previously, retiring the failed candidate paused the replacement session's message queue, so every later fallback, including the current chat model, failed immediately with "Model turn ended without an assistant message after the prompt (empty completion)", and messages sent from the attached stage chat stayed queued.
+
 ## [0.9.20-alpha.9] - 2026-09-24
 
 ### Breaking Changes

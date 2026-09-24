@@ -168,6 +168,27 @@ describe("paused queue stage-session transfer", () => {
 		]);
 	});
 
+	test("retiring an unpaused fallback candidate leaves the replacement able to run its prompt", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		target.setResponses([fauxAssistantMessage("fallback candidate answered")]);
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		replacement.adopt(target.session);
+		await replacement.dispose();
+
+		expect(target.session.queuedMessagesPaused).toBe(false);
+		await target.session.prompt("fallback candidate prompt");
+		expect(target.getPendingResponseCount()).toBe(0);
+		expect(target.session.getSteeringMessages()).toEqual([]);
+		expect(target.session.messages.filter((message) => message.role === "assistant").map(getMessageText)).toEqual([
+			"fallback candidate answered",
+		]);
+	});
+
 	test("a rejecting transferred boundary waits for a newer target abort boundary before retry cleanup", async () => {
 		const source = await createHarness();
 		const target = await createHarness();

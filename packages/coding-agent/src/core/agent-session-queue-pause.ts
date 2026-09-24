@@ -92,7 +92,8 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 		// protocol-safe persistence is still pending so they cannot restart it.
 		this._subagentMessageAdmission.seal();
 	}
-	if (this._subagentMessageAdmission || this._workflowStageAdmission) {
+	const ownsStageDeliveries = resolveWorkflowStageDeliveryTarget(this) === this;
+	if ((this._subagentMessageAdmission || this._workflowStageAdmission) && ownsStageDeliveries) {
 		// Unlike a priority interrupt's native abort, an explicit stop must also
 		// block deferred input from starting a turn after preflight or settlement.
 		// A stage's generation remains host-owned; only explicit resume releases it.
