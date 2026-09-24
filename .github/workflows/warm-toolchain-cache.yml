@@ -58,11 +58,15 @@ jobs:
     env:
       XWIN_ARCH: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
     steps:
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        timeout-minutes: 4
+        with:
+          toolchain: 1.97.0
+      # Built with glibc: the upstream musl release binary is allocator-bound and
+      # took 9m56s to populate arm64 on this spec; the glibc build takes 35s.
       - name: Install cargo-xwin
         timeout-minutes: 3
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: cargo-xwin@0.23.0
+        run: cargo install cargo-xwin --version 0.23.0 --locked
       - name: Resolve MSVC CRT cache directory
         shell: bash
         run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"

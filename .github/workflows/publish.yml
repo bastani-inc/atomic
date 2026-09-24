@@ -93,6 +93,7 @@ jobs:
         #   + those steps' bounds + 2 x build_timeout_minutes + 1 upload.
         # Reserved at their bound: both zig attempts (2 + 2, linux) and the MSVC CRT
         # populate step (8, win32) whose measured cost is its cache-miss path.
+        # win32 setup adds the measured 36s glibc cargo-xwin build to the old setup.
         # Upload is measured at <= 4s across legs and reserved at 1 minute.
         # linux-x64-gnu: ceil((46-18)s / 60)=1 + 4 + 2 x 5 + 1 = 16
         # linux-arm64-gnu: ceil((128-8)s / 60)=2 + 4 + 2 x 5 + 1 = 17
@@ -100,8 +101,8 @@ jobs:
         # linux-arm64-musl: ceil((142-5)s / 60)=3 + 4 + 2 x 5 + 1 = 18
         # darwin-x64: ceil(98s / 60)=2 + 2 x 8 + 1 = 19
         # darwin-arm64: ceil(26s / 60)=1 + 2 x 5 + 1 = 12
-        # win32-x64-msvc: ceil((291-249)s / 60)=1 + 8 + 2 x 5 + 1 = 20
-        # win32-arm64-msvc: ceil((384-343)s / 60)=1 + 8 + 2 x 5 + 1 = 20
+        # win32-x64-msvc: ceil((291-249+36)s / 60)=2 + 8 + 2 x 5 + 1 = 21
+        # win32-arm64-msvc: ceil((384-343+36)s / 60)=2 + 8 + 2 x 5 + 1 = 21
         # `slug` is the napi platform id: it names the .node file, the npm leaf, and
         # this leg's artifact, so two legs that share platform+arch (glibc and musl
         # Linux) can never collide on an artifact name.
@@ -144,14 +145,14 @@ jobs:
             arch: x64
             slug: win32-x64-msvc
             target: x86_64-pc-windows-msvc
-            timeout_minutes: 20
+            timeout_minutes: 21
             build_timeout_minutes: 5
           - runner: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
             platform: win32
             arch: arm64
             slug: win32-arm64-msvc
             target: aarch64-pc-windows-msvc
-            timeout_minutes: 20
+            timeout_minutes: 21
             build_timeout_minutes: 5
     steps:
       # Release checkout does not use the Namespace git mirror.
@@ -270,29 +271,30 @@ jobs:
           "$llvm_bin/clang" --version
           "$llvm_bin/lld-link" --version
           echo "$llvm_bin" >> "$GITHUB_PATH"
+      # Built with glibc from crates.io: the upstream musl release binary is
+      # allocator-bound and took 9m56s to populate the arm64 CRT on a 4x16 runner,
+      # past the populate bound; the glibc build (36s) populates it in 35s.
       - name: Install cargo-xwin
         if: matrix.platform == 'win32'
         timeout-minutes: 3
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: cargo-xwin@0.23.0
+        run: cargo install cargo-xwin --version 0.23.0 --locked
       # Pinned so the populate step, the build step, and actions/cache agree
       # regardless of XDG_CACHE_HOME.
       - name: Resolve MSVC CRT cache directory
         if: matrix.platform == 'win32'
         shell: bash
         run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"
-      # Largest standing cost in this job: 3m46s-6m19s per Windows leg, every
-      # release, for a ~25s compile. A hit pins the leg to the SDK first stored
-      # under this key; bump the `xwin-v1` epoch to force a refresh.
+      # Saves a cold CRT fetch per Windows leg on every release. A hit pins the
+      # leg to the SDK first stored under this key; bump the `xwin-v1` epoch to
+      # force a refresh.
       - name: Restore MSVC CRT and Windows SDK
         if: matrix.platform == 'win32'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/cargo-xwin
           key: xwin-v1-${{ matrix.arch }}-17
-      # 1.27x the worst measured full download (6m19s), sized on measurement
-      # rather than on the saving XWIN_ARCH is expected to deliver.
+      # Bounds a cold fetch: the glibc cargo-xwin populated arm64 in 35s on 4x16,
+      # where the musl release binary took 7m41s (x64) and 9m56s (arm64).
       - name: Populate MSVC CRT cache on miss
         if: matrix.platform == 'win32'
         timeout-minutes: 8
