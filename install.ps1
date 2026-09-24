@@ -1237,7 +1237,7 @@ try {
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
-    Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"
+    Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"
 
     $versionsDir = Join-Path $installRoot "versions"
     $versionDirectoryName = [Uri]::EscapeDataString($releaseTag)

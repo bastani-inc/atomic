@@ -160,7 +160,7 @@ test("Windows installer streams the archive with a progress bar and keeps smoke-
 	for (const smokeCheck of ['$null = & $stagedAtomic "--version"', "$null = & $env:ComSpec /d /c $shimCommand"]) {
 		assert.ok(source.includes(smokeCheck), `smoke check output is not discarded: ${smokeCheck}`);
 	}
-	assert.match(source, /Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"/u);
+	assert.match(source, /Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"/u);
 	assert.doesNotMatch(source, /--internal-validate-postgres-runtime|postgres-runtime/u);
 
 	const bannerGate = source.indexOf(

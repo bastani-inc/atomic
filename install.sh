@@ -1105,7 +1105,7 @@ chmod +x "$PAYLOAD_ROOT/atomic"
 if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
-printf '%sVerified SHA256, extracted, and validated the runtime%s\n' "$MUTED" "$RESET"
+printf '%sVerified SHA256, extracted, and checked atomic --version%s\n' "$MUTED" "$RESET"
 
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current

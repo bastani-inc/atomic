@@ -675,7 +675,7 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 			[
 				"Installing atomic version: 2.0.0 (linux-x64)",
 				`Downloading atomic-linux-x64.tar.gz (${expectedMegabytes} MB) ... done`,
-				"Verified SHA256, extracted, and validated the runtime",
+				"Verified SHA256, extracted, and checked atomic --version",
 				`Installed to ${join(fixture.binDir, "atomic")}`,
 				`Add ${fixture.binDir} to PATH for this shell:`,
 				`  export PATH='${fixture.binDir}':"$PATH"`,
@@ -799,7 +799,7 @@ ttyTest("shell installer draws the progress bar, banner, and start block on a UT
 		assert.doesNotMatch(text, /[#-]{50}/u);
 		const rendered = text.replaceAll(/[^\n]*\r/gu, "").replaceAll(/\u001b\[[0-9;?]*[A-Za-z]/gu, "");
 		assert.match(rendered, /^Installing atomic version: 1\.0\.0 \(linux-x64\)\n/u);
-		assert.ok(rendered.includes("\nVerified SHA256, extracted, and validated the runtime\n"), rendered);
+		assert.ok(rendered.includes("\nVerified SHA256, extracted, and checked atomic --version\n"), rendered);
 		assert.ok(rendered.includes("\nInstalled to ~/.local/bin/atomic\n\n"), rendered);
 		assert.ok(rendered.includes(`\n${bannerFirstLine}\n`), rendered);
 		assert.ok(rendered.includes("            ████████████\n"), rendered);
@@ -829,7 +829,7 @@ ttyTest("shell installer honours NO_COLOR on a terminal with plain output", () =
 		assertPlain(text);
 		assert.ok(
 			text.includes(
-				`Installing atomic version: 1.0.0 (linux-x64)\nDownloading atomic-linux-x64.tar.gz (${text.match(/\(([0-9]+\.[0-9]) MB\)/u)?.[1]} MB) ... done\nVerified SHA256, extracted, and validated the runtime\nInstalled to ${join(fixture.binDir, "atomic")}\n`,
+				`Installing atomic version: 1.0.0 (linux-x64)\nDownloading atomic-linux-x64.tar.gz (${text.match(/\(([0-9]+\.[0-9]) MB\)/u)?.[1]} MB) ... done\nVerified SHA256, extracted, and checked atomic --version\nInstalled to ${join(fixture.binDir, "atomic")}\n`,
 			),
 			text,
 		);
