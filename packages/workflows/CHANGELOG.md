@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Managed PostgreSQL runtime repair now rejects incomplete retained generations without scanning their full file trees, and avoids rescanning unchanged damaged generations during the same process.
 - Managed PostgreSQL cold runtime staging now avoids repeated setup-lock disk operations during copying and hashing, reducing startup time while preserving publication fencing.
 - Managed PostgreSQL now rotates server logs daily through seven weekday files under the cluster's `log` directory, retaining startup diagnostics in `v18.log`. Startup failures include recent output from both logs.
+- Durable workflow status changes now verify their transition claim without loading unrelated checkpoint outputs; pause and quit still retain the same ownership and prompt-state checks.
 
 ### Fixed
 

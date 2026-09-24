@@ -85,6 +85,21 @@ export function createRealDbosHandle(
 	) => Promise<WorkflowSerializableValue>,
 ): DbosSdkHandle {
 	const checkpointId = (workflowId: string, stepName: string): string => `${workflowId}:checkpoint:${stepName}`;
+	async function stepRecord(status: DbosStatus, prefix: string): Promise<DbosStepRecord | undefined> {
+		if (status.status !== "SUCCESS") return undefined;
+		const id = status.workflowID ?? status.workflowId ?? "";
+		if (!id.startsWith(prefix)) return undefined;
+		const stepName = id.slice(prefix.length);
+		if (stepName.length === 0) return undefined;
+		// DBOS listings use safeParse: strings may be raw text from a decoding
+		// failure. Keep strict getResult errors for ambiguous/missing outputs;
+		// reuse decoded non-strings (including checkpoint envelopes) in bulk.
+		const output =
+			status.output === undefined || typeof status.output === "string"
+				? await dbos.retrieveWorkflow(id).getResult()
+				: status.output;
+		return { stepName, output, completedAt: status.createdAt };
+	}
 	return {
 		launch: () => dbos.launch(),
 		shutdown: () => dbos.shutdown(),
@@ -119,21 +134,20 @@ export function createRealDbosHandle(
 			const prefix = `${workflowId}:checkpoint:`;
 			const statuses = await dbos.listWorkflows({ workflow_id_prefix: prefix, loadOutput: true, sortDesc: false });
 			const records: DbosStepRecord[] = [];
-			for (const s of statuses) {
-				if (s.status !== "SUCCESS") continue;
-				const wid = s.workflowID ?? s.workflowId ?? "";
-				const stepName = wid.slice(prefix.length);
-				if (stepName.length === 0) continue;
-				// DBOS listings use safeParse: strings may be raw text from a decoding
-				// failure. Keep strict getResult errors for ambiguous/missing outputs;
-				// reuse decoded non-strings (including checkpoint envelopes) in bulk.
-				const output =
-					s.output === undefined || typeof s.output === "string"
-						? await dbos.retrieveWorkflow(wid).getResult()
-						: s.output;
-				records.push({ stepName, output, completedAt: s.createdAt });
+			for (const status of statuses) {
+				const record = await stepRecord(status, prefix);
+				if (record !== undefined) records.push(record);
 			}
 			return records;
+		},
+		async readStepRecord(workflowId, stepName) {
+			const prefix = `${workflowId}:checkpoint:`;
+			const id = checkpointId(workflowId, stepName);
+			const statuses = await dbos.listWorkflows({ workflowIDs: [id], loadOutput: true, limit: 1 });
+			const status = statuses[0];
+			return status !== undefined && (status.workflowID ?? status.workflowId) === id
+				? stepRecord(status, prefix)
+				: undefined;
 		},
 		async recordStepOutput(workflowId, stepName, output) {
 			let handle: DbosWorkflowHandle;

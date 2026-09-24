@@ -103,6 +103,113 @@ test("reuses bulk-loaded non-string checkpoint outputs and strictly reads string
 	assert.equal(resultReads, 1, "only the ambiguous string needs a strict result read");
 });
 
+test("exact step lookup keeps strict string and missing-output reads", async () => {
+	const id = "root:checkpoint:__atomic_metadata:1:claim";
+	for (const listed of [
+		{ workflowID: id, status: "SUCCESS", createdAt: 1, output: "raw" },
+		{ workflowID: id, status: "SUCCESS", createdAt: 1 },
+	]) {
+		let strictReads = 0;
+		const sdk = sdkWithReads({
+			listWorkflows: async (input) => {
+				assert.deepEqual(input, { workflowIDs: [id], loadOutput: true, limit: 1 });
+				return [listed];
+			},
+			retrieveWorkflow: () => ({
+				getStatus: async () => null,
+				getResult: async () => {
+					strictReads++;
+					return { durable: true };
+				},
+			}),
+		});
+		assert.deepEqual(
+			await createRealDbosHandle(sdk, main, checkpoint).readStepRecord!("root", "__atomic_metadata:1:claim"),
+			{
+				stepName: "__atomic_metadata:1:claim",
+				output: { durable: true },
+				completedAt: 1,
+			},
+		);
+		assert.equal(strictReads, 1);
+	}
+});
+
+test("exact step lookup treats unfinished or mismatched records as absent", async () => {
+	for (const statuses of [
+		[],
+		[{ workflowID: "root:checkpoint:other", status: "SUCCESS", output: { wrong: true } }],
+		[{ workflowID: "root:checkpoint:claim", status: "PENDING", output: { early: true } }],
+	]) {
+		const sdk = sdkWithReads({
+			listWorkflows: async () => statuses,
+			retrieveWorkflow: () => {
+				throw new Error("unexpected result read");
+			},
+		});
+		assert.equal(await createRealDbosHandle(sdk, main, checkpoint).readStepRecord!("root", "claim"), undefined);
+	}
+});
+
+test("exact step lookup propagates strict result errors", async () => {
+	const id = "root:checkpoint:__atomic_metadata:1:claim";
+	const failure = new Error("invalid serialized claim");
+	const sdk = sdkWithReads({
+		listWorkflows: async () => [{ workflowID: id, status: "SUCCESS", output: "ambiguous" }],
+		retrieveWorkflow: () => ({
+			getStatus: async () => null,
+			getResult: async () => {
+				throw failure;
+			},
+		}),
+	});
+	await assert.rejects(
+		createRealDbosHandle(sdk, main, checkpoint).readStepRecord!("root", "__atomic_metadata:1:claim"),
+		(error) => error === failure,
+	);
+});
+
+test("reads only the exact claim without transferring unrelated checkpoint outputs", async () => {
+	const workflowId = "root";
+	const claimId = `${workflowId}:checkpoint:__atomic_metadata:42:claim`;
+	const claim = { __atomicDurableMetadata: true, version: 3, metadata: { transitionClaimId: "winner" } };
+	const largeOutput = { payload: "x".repeat(2_000_000) };
+	const statuses = [
+		{ workflowID: claimId, status: "SUCCESS", createdAt: 42, output: claim },
+		{ workflowID: `${workflowId}:checkpoint:tool:large`, status: "SUCCESS", createdAt: 1, output: largeOutput },
+	];
+	const listings: Record<string, WorkflowSerializableValue>[] = [];
+	let serializedResponseBytes = 0;
+	const sdk = sdkWithReads({
+		listWorkflows: async (input) => {
+			listings.push(input);
+			const ids = input.workflowIDs;
+			const selected = Array.isArray(ids)
+				? statuses.filter((status) => ids.includes(status.workflowID))
+				: statuses.filter((status) => status.workflowID.startsWith(String(input.workflow_id_prefix)));
+			serializedResponseBytes += Buffer.byteLength(JSON.stringify(selected));
+			return selected;
+		},
+		retrieveWorkflow: () => ({
+			getStatus: async () => null,
+			getResult: async () => {
+				throw new Error("unexpected fallback");
+			},
+		}),
+	});
+	const handle = createRealDbosHandle(sdk, main, checkpoint);
+	const full = await handle.listStepRecords(workflowId);
+	const fullBytes = serializedResponseBytes;
+	serializedResponseBytes = 0;
+	const exact = await handle.readStepRecord!(workflowId, "__atomic_metadata:42:claim");
+	assert.equal(full.length, 2);
+	assert.deepEqual(exact, { stepName: "__atomic_metadata:42:claim", output: claim, completedAt: 42 });
+	assert.deepEqual(listings[1], { workflowIDs: [claimId], loadOutput: true, limit: 1 });
+	assert.equal(listings.length, 2);
+	assert.ok(fullBytes > 2_000_000);
+	assert.ok(serializedResponseBytes < 300);
+});
+
 test("falls back to one result read when the bulk listing omits an output", async () => {
 	const statuses = [
 		{ workflowID: "root:checkpoint:present", status: "SUCCESS", createdAt: 2, output: { kept: true } },

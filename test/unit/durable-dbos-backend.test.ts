@@ -37,6 +37,78 @@ describe("DbosDurableBackend (mock SDK)", () => {
 		sdk = createMockSdk();
 		backend = new DbosDurableBackend(sdk);
 	});
+	test("status claim reads one record while keeping authoritative and prompt-state reads", async () => {
+		const workflowId = "wf-small-claim";
+		const largeOutput = { payload: "x".repeat(2_000_000) };
+		const run = async (targeted: boolean) => {
+			const mock = createMockSdk();
+			let fullReads = 0;
+			let exactReads = 0;
+			let responseBytes = 0;
+			const readStepRecord = async (id: string, stepName: string) => {
+				exactReads++;
+				const output = mock.state.steps.get(`${id}:checkpoint:${stepName}`);
+				const record = output === undefined ? undefined : { stepName, output };
+				responseBytes += Buffer.byteLength(JSON.stringify(record));
+				return record;
+			};
+			const controlled = new DbosDurableBackend({
+				...mock,
+				...(targeted ? { readStepRecord } : {}),
+				listStepRecords: async (id) => {
+					fullReads++;
+					const records = await mock.listStepRecords(id);
+					responseBytes += Buffer.byteLength(JSON.stringify(records));
+					return records;
+				},
+			});
+			controlled.registerWorkflow({ workflowId, name: "test", inputs: {}, createdAt: 1, status: "running" });
+			await controlled.flush(workflowId);
+			controlled.reservePendingPrompt(workflowId, "prompt");
+			await controlled.flush(workflowId);
+			mock.state.steps.set(`${workflowId}:checkpoint:tool:large`, largeOutput);
+			assert.equal(await controlled.transitionWorkflowStatus(workflowId, ["running"], "paused"), true);
+			assert.equal(controlled.getWorkflow(workflowId)?.status, "paused");
+			assert.equal(controlled.getWorkflow(workflowId)?.pendingPrompts, 1);
+			return { fullReads, exactReads, responseBytes };
+		};
+		const baseline = await run(false);
+		const optimized = await run(true);
+		assert.deepEqual([baseline.fullReads, baseline.exactReads], [3, 0]);
+		assert.deepEqual([optimized.fullReads, optimized.exactReads], [2, 1]);
+		assert.ok(baseline.responseBytes - optimized.responseBytes > 1_900_000);
+	});
+
+	test("exact claim mismatch still rejects a contested status transition", async () => {
+		const mock = createMockSdk();
+		const workflowId = "wf-contested-claim";
+		const controlled = new DbosDurableBackend({
+			...mock,
+			readStepRecord: async (id, stepName) => {
+				const output = mock.state.steps.get(`${id}:checkpoint:${stepName}`);
+				assert.ok(output && typeof output === "object" && !Array.isArray(output));
+				const envelope = output as { metadata: object };
+				return {
+					stepName,
+					output: { ...envelope, metadata: { ...envelope.metadata, transitionClaimId: "other-winner" } },
+				};
+			},
+		});
+		controlled.registerWorkflow({ workflowId, name: "test", inputs: {}, createdAt: 1, status: "running" });
+		await controlled.flush(workflowId);
+		assert.equal(await controlled.transitionWorkflowStatus(workflowId, ["running"], "paused"), false);
+		assert.equal(
+			controlled.getWorkflow(workflowId)?.status,
+			"paused",
+			"the losing caller reconciles persisted claim metadata",
+		);
+		assert.equal(
+			[...mock.state.steps.keys()].filter((name) => name.startsWith(`${workflowId}:checkpoint:__atomic_metadata`))
+				.length,
+			2,
+			"the losing caller must not append another status write",
+		);
+	});
 
 	test("registerWorkflow delegates to DBOS startWorkflow", async () => {
 		backend.registerWorkflow({

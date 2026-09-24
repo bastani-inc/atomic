@@ -66,6 +66,8 @@ export interface DbosSdkHandle {
 	readonly listAllWorkflows: () => Promise<readonly DbosWorkflowInfo[]>;
 	/** List all completed checkpoint step-records for a workflow. */
 	readonly listStepRecords: (workflowId: string) => Promise<readonly DbosStepRecord[]>;
+	/** Read one exact checkpoint record when the SDK supports targeted lookup. */
+	readonly readStepRecord?: (workflowId: string, stepName: string) => Promise<DbosStepRecord | undefined>;
 	/** Record a checkpoint step output (envelope) to DBOS. */
 	readonly recordStepOutput: (
 		workflowId: string,
@@ -584,8 +586,9 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		};
 		await this.sdk.recordStepOutput(workflowId, stepName, encodeMetadata(claim));
 		dbosAdmissionContext.getStore()?.throwIfAborted();
-		const records = await this.sdk.listStepRecords(workflowId);
-		const record = records.find((candidate) => candidate.stepName === stepName);
+		const record = this.sdk.readStepRecord
+			? await this.sdk.readStepRecord(workflowId, stepName)
+			: (await this.sdk.listStepRecords(workflowId)).find((candidate) => candidate.stepName === stepName);
 		if (record === undefined) return false;
 		return parseCurrentMetadataRecord(record, workflowId)?.transitionClaimId === transitionClaimId;
 	}
