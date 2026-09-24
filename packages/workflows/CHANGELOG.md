@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Removed the public `workflowDependency()` SDK function and its report/operation types, `/workflow dependency`, and the workflow tool's `dependency` action. Inspect affected runs with workflow status; managed PostgreSQL recovery is automatic.
 
+### Added
+
+- Workflow definitions can declare `durability: "required"`. Atomic then refuses to start or resume them on the in-memory fallback, whether they're launched with `/workflow`, the workflow tool, or SDK `run()`; the run fails before the workflow body runs ([#3239](https://github.com/bastani-inc/atomic/issues/3239)).
+- SDK `run()` accepts a `durability` option: `{ mode: "memory" }` for a throwaway in-memory run, or `{ mode: "durable", systemDatabaseUrl? }` to require durable state and optionally choose the Postgres database, such as a hosted one, without setting `DBOS_SYSTEM_DATABASE_URL`. Explicit `durable` mode rejects with the new `WorkflowDurabilityRequiredError` instead of falling back to memory. Omitting the option keeps today's behavior.
+
 ### Changed
 
 - Managed PostgreSQL startup now verifies retained runtime files from a sealed completion manifest instead of re-reading every binary on each attach. Existing marker-less generations remain usable after one verification.

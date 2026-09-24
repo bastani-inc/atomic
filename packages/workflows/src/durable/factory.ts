@@ -90,6 +90,24 @@ export async function initializeDurableBackend(warningSink?: DurabilityWarningSi
 	return await owner.initializing;
 }
 
+/**
+ * Like {@link initializeDurableBackend}, but never degrades: a DBOS failure
+ * rejects instead of installing the in-memory fallback.
+ */
+export async function initializeRequiredDurableBackend(): Promise<DurableWorkflowBackend> {
+	const owner = getDurableBackendProcessOwner();
+	if (owner.injectedBackend !== undefined) return owner.injectedBackend;
+	if (owner.initializing !== undefined) {
+		const shared = await owner.initializing.catch(() => undefined);
+		if (shared?.persistent === true && isMemoizedBackendUsable(shared)) return shared;
+	}
+	const backend = await getReadyDbosBackend();
+	if (owner.initializedBackend === undefined || !isMemoizedBackendUsable(owner.initializedBackend)) {
+		owner.initializedBackend = backend;
+	}
+	return backend;
+}
+
 async function degradeToNonDurableBackend(error: unknown): Promise<DurableWorkflowBackend> {
 	const detail = readDbosFailureDetail(error);
 	const kind = await classifyDbosDurabilityFailure(error);

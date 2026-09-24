@@ -101,6 +101,8 @@ export interface AuthoredWorkflowSpec<
 	readonly heartbeatIntervalMinutes?: number;
 	/** Optional run budget for this workflow definition. */
 	readonly budget?: WorkflowBudget;
+	/** `"required"` refuses to start or resume this workflow without a persistent backend. */
+	readonly durability?: "required";
 	readonly description: string;
 	readonly inputs?: TInputs;
 	readonly outputs: TOutputs;

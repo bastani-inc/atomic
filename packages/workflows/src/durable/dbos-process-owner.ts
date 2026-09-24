@@ -46,6 +46,7 @@ export interface DbosProcessOwner {
 	shutdownPromise: Promise<void> | undefined;
 	failure: DbosDurabilityError | undefined;
 	wrappers: DbosRegisteredWrappers | undefined;
+	systemDatabaseUrl?: string;
 	readonly leases: Set<object>;
 }
 
@@ -87,4 +88,5 @@ export function resetDbosProcessOwner(): void {
 	owner.failure = undefined;
 	owner.wrappers = undefined;
 	owner.leases.clear();
+	owner.systemDatabaseUrl = undefined;
 }

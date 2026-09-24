@@ -69,6 +69,7 @@ import type {
 	WorkflowOutputValues,
 	WorkflowRunContext,
 } from "../shared/types.js";
+import { requiresDurableExecution, WorkflowDurabilityRequiredError } from "../shared/workflow-durability.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
@@ -915,6 +916,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				...(runSnapshot.budgetState !== undefined ? { budgetState: runSnapshot.budgetState } : {}),
 				ts: runSnapshot.startedAt,
 			});
+		}
+		if (requiresDurableExecution(def, opts) && !durableBackend.persistent) {
+			throw new WorkflowDurabilityRequiredError(
+				def.name,
+				"only the in-memory backend is available. Fix workflow durability (Postgres) and start it again.",
+			);
 		}
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();

@@ -116,6 +116,14 @@ readonly budget?: {
 
 The optional budget sets duration, token, and cost limits for this workflow. Atomic freezes the declaration into the compiled definition and resolves each field over the extension default when the workflow runs. See [Run budgets](/workflows/operations#run-budgets) for precedence and validation rules.
 
+### `durability`
+
+```typescript
+readonly durability?: "required";
+```
+
+Set `durability: "required"` for a workflow that must never run without durable state. If only the in-memory backend is available, Atomic won't start or resume the workflow. That applies whether it was launched with `/workflow`, the workflow tool, or SDK `run()`, and the run fails before the workflow body runs. Omit the field for the default behavior: durable, with an in-memory fallback and a warning when Postgres is unavailable.
+
 ### `inputs`
 
 ```typescript
@@ -191,6 +199,7 @@ interface WorkflowDefinition<
   readonly autoAttach?: true;
   readonly heartbeatIntervalMinutes: number;
   readonly budget?: WorkflowBudget;
+  readonly durability?: "required";
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
@@ -1292,6 +1301,7 @@ interface RunOpts {
   readonly signal?: AbortSignal;
   readonly deferWorkflowStart?: boolean;
   readonly config?: WorkflowRuntimeConfig;
+  readonly durability?: WorkflowDurability;
   readonly models?: WorkflowModelCatalogPort;
   readonly registry?: WorkflowRegistry;
   readonly depth?: number;
@@ -1315,6 +1325,37 @@ interface RunOpts {
 Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)`. Every field is optional.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.
+
+#### Choosing the durable backend
+
+```typescript
+type WorkflowDurability =
+  | { readonly mode: "memory" }
+  | { readonly mode: "durable"; readonly systemDatabaseUrl?: string };
+```
+
+`run()` sets up workflow durability itself and shuts it down when the run ends, unless another Atomic session in the same process is still using it. `durability` chooses the backend for one call:
+
+- **Omitted:** durable, with Atomic's default database selection (`DBOS_SYSTEM_DATABASE_URL`, then its managed Postgres). If Postgres can't start, the run uses memory and prints a warning.
+- **`{ mode: "memory" }`:** runs with an in-memory backend that lasts only for this call. Postgres is never started, and nothing can be resumed after the process exits.
+- **`{ mode: "durable" }`:** requires durable state. If the backend can't start, `run()` rejects with `WorkflowDurabilityRequiredError` instead of falling back to memory.
+- **`{ mode: "durable", systemDatabaseUrl }`:** also chooses the Postgres database, for example a hosted one. This takes precedence over `DBOS_SYSTEM_DATABASE_URL`, and Atomic doesn't start or manage a local Postgres. The database is fixed for the life of the process: a later run that asks for a different URL rejects.
+
+```ts
+import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";
+
+await run(helloWorld, { name: "Atomic" }, { adapters, durability: { mode: "memory" } });
+
+try {
+  await run(helloWorld, { name: "Atomic" }, {
+    adapters,
+    durability: { mode: "durable", systemDatabaseUrl: process.env.WORKFLOW_DATABASE_URL },
+  });
+} catch (error) {
+  if (error instanceof WorkflowDurabilityRequiredError) console.error(error.message);
+  throw error;
+}
+```
 
 ### `resolveInputs(schema, provided)`
 

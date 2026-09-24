@@ -172,6 +172,9 @@ export function workflow<
 		throw new TypeError("workflow: heartbeatIntervalMinutes must be a non-negative finite number");
 	}
 	assertWorkflowBudget(spec.budget, "workflow: budget");
+	if (spec.durability !== undefined && spec.durability !== "required") {
+		throw new TypeError('workflow: durability must be "required" when set');
+	}
 
 	const name = resolveWorkflowName(spec.name);
 	const normalizedName = normalizeWorkflowName(name);
@@ -194,6 +197,7 @@ export function workflow<
 		outputs: frozenOutputs,
 		...(inputBindings !== undefined ? { inputBindings } : {}),
 		...(budget !== undefined ? { budget } : {}),
+		...(spec.durability !== undefined ? { durability: spec.durability } : {}),
 		run,
 	};
 

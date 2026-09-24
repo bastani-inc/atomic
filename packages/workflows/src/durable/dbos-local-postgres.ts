@@ -20,6 +20,7 @@ import {
 	ensureEmbeddedDbosPostgres,
 	shutdownEmbeddedDbosPostgres,
 } from "./dbos-embedded-postgres.js";
+import { explicitDbosSystemDatabaseUrl } from "./dbos-system-database-url.js";
 import { commandFailureDetail, delay, runLocalCommand } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
@@ -71,7 +72,7 @@ ownerBag[ownerKey] = owner;
 /** Only a resolved managed provider grants automatic recovery authority. */
 export function resolvedPostgresHealth(url?: string): ReturnType<typeof embeddedPostgresHealth> {
 	if (owner.health !== resolvedPostgresHealth) return owner.health?.(url);
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim() || resolvedProvider !== embeddedProvider) return undefined;
+	if (explicitDbosSystemDatabaseUrl() || resolvedProvider !== embeddedProvider) return undefined;
 	if (url !== undefined && url !== embeddedDbosSystemDatabaseUrl()) return undefined;
 	return embeddedPostgresHealth();
 }
@@ -94,7 +95,7 @@ export function resolveDbosSystemDatabaseUrl(): Promise<string | undefined> {
 /** Re-ensure the previously resolved local database (launch-retry safety net). */
 export async function provisionResolvedLocalDbos(): Promise<void> {
 	if (owner.provision !== provisionResolvedLocalDbos) return owner.provision();
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return;
+	if (explicitDbosSystemDatabaseUrl()) return;
 	await (resolvedProvider ?? embeddedProvider)();
 }
 
@@ -117,7 +118,7 @@ export function shutdownResolvedLocalDbos(): Promise<void> {
 }
 
 export function shouldProvisionLocalDbos(error: unknown): boolean {
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return false;
+	if (explicitDbosSystemDatabaseUrl()) return false;
 	if (isTransientStartupError(readStartupFailure(error))) return true;
 	const message = error instanceof Error ? `${error.message}\n${error.cause ?? ""}` : String(error);
 	return /server not reachable|connect failed|connection refused|unable to connect to system database/i.test(message);
@@ -247,7 +248,7 @@ async function dockerPostgresQueryReady(host: string, port: number): Promise<boo
 }
 
 async function resolve(): Promise<string | undefined> {
-	const explicit = process.env.DBOS_SYSTEM_DATABASE_URL?.trim();
+	const explicit = explicitDbosSystemDatabaseUrl();
 	if (explicit) return undefined;
 
 	try {

@@ -60,6 +60,8 @@ export type {
 	WorkflowDetails,
 	WorkflowDetailsMode,
 	WorkflowDetailsStatus,
+	WorkflowDurability,
+	WorkflowDurabilityRequirement,
 	WorkflowExecutionMode,
 	WorkflowExecutionPolicy,
 	WorkflowExitOptions,
@@ -259,6 +261,9 @@ export declare const KEEP_CONTEXT_OPEN_TAG: string;
 export declare const KEEP_CONTEXT_CLOSE_TAG: string;
 export declare const DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES: 15;
 export declare const WORKFLOW_HEARTBEAT_CUSTOM_TYPE: "workflows:workflow-heartbeat";
+export declare class WorkflowDurabilityRequiredError extends Error {
+	constructor(workflowName: string, detail: string, options?: { readonly cause?: unknown });
+}
 export declare function createRegistry<
 	TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[],
 >(initial?: TDefinitions): WorkflowRegistry;
