@@ -136,8 +136,8 @@ describe("workflow resume selector host-picker path", () => {
 			"live rows seed the open",
 		);
 		assert.equal(picker.opens[0]!.showRenameHint, false);
-		assert.equal(picker.opens[0]!.sessions[0]?.firstMessage, "live-a  paused  0/0 stages");
-		assert.equal(picker.opens[0]!.sessions[0]?.summary, "live-workflow");
+		assert.equal(picker.opens[0]!.sessions[0]?.firstMessage, "live-a");
+		assert.equal(picker.opens[0]!.sessions[0]?.summary, "paused  0/0 stages  live-workflow");
 
 		await flush();
 		assert.equal(hydrateCalls, 1, "hydrate invoked exactly once");
@@ -145,8 +145,8 @@ describe("workflow resume selector host-picker path", () => {
 		assert.deepEqual(picker.updates[0]!.map((row) => row.id).sort(), ["durable-a", "live-a"]);
 		const durableRow = picker.updates[0]!.find((row) => row.id === "durable-a");
 		assert.ok(durableRow);
-		assert.equal(durableRow.firstMessage, "durable-a  paused  2 checkpoints");
-		assert.equal(durableRow.summary, "paused-workflow");
+		assert.equal(durableRow.firstMessage, "durable-a");
+		assert.equal(durableRow.summary, "paused  2 checkpoints  paused-workflow");
 		assert.ok(durableRow.allMessagesText);
 		assert.match(durableRow.allMessagesText, /durable-a paused-workflow/);
 
@@ -484,6 +484,49 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 			},
 		};
 	}
+
+	test("renders live, durable and completed workflow IDs with row details at common widths", async () => {
+		const ids = [
+			"11111111-1111-4111-8111-111111111111",
+			"22222222-2222-4222-8222-222222222222",
+			"33333333-3333-4333-8333-333333333333",
+		];
+		const bridge = makeBridge();
+		const promise = openWorkflowResumeSelector(
+			{ hostSessionPicker: (request) => bridge.child.open(request) },
+			[pausedLiveRun(ids[0]!, 100)],
+			async () => ({
+				durable: [entry(ids[1]!, "paused", 200)],
+				completed: [entry(ids[2]!, "completed", 300)],
+			}),
+		);
+		await flush();
+		for (const width of [80, 100, 120]) {
+			const rows = bridge
+				.component()
+				.render(width)
+				.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+			const visible = ids.map((id) => rows.find((line) => line.includes(id.slice(0, 8))));
+			assert.ok(
+				visible.every((row) => row !== undefined),
+				`all three rows visible at ${width} columns`,
+			);
+			if (width >= 100) {
+				assert.match(visible[0]!, /paused {2}0\/0 stages/);
+				assert.match(visible[1]!, /paused {2}2 checkpoints/);
+				assert.match(visible[2]!, /✓ completed {2}2 checkpoints/);
+			}
+			if (width === 120) {
+				for (const [index, id] of ids.entries()) assert.ok(visible[index]!.includes(id));
+				assert.match(visible[0]!, /live-workflow/);
+				assert.match(visible[1]!, /paused-workflow/);
+				assert.match(visible[2]!, /completed-workflow/);
+			}
+		}
+		bridge.component().handleInput("\x1b");
+		await promise;
+		bridge.controller.dispose();
+	});
 
 	test("selection round-trips through the real host mount with zero-IPC navigation", async () => {
 		const bridge = makeBridge();

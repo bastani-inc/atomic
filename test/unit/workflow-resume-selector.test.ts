@@ -130,7 +130,7 @@ describe("workflow resume selector rows", () => {
 			["completed", "durable", "live"],
 		);
 		const completed = items[0]!;
-		assert.match(completed.session.firstMessage, /✓ completed/);
+		assert.match(completed.session.summary!, /✓ completed/);
 		assert.equal(completed.session.messageColor, "success");
 		assert.equal(completed.session.path, "workflow-completed:durable-completed");
 	});
@@ -213,25 +213,27 @@ describe("workflow resume selector rows", () => {
 });
 
 describe("workflow resume selector row presentation", () => {
-	test("shows the full live run ID as the primary label and its name as a description", () => {
-		const [item] = workflowResumeSelectorItems([pausedLiveRun("live-resume-uuid")], []);
-		assert.equal(item?.session.firstMessage, "live-resume-uuid  paused  0/0 stages");
-		assert.equal(item.session.summary, "live-workflow");
-		assert.deepEqual(item.result, { kind: "live", runId: "live-resume-uuid" });
+	test("keeps the full live run ID in the label and search text with status, count and name in the summary", () => {
+		const id = "11111111-1111-4111-8111-111111111111";
+		const [item] = workflowResumeSelectorItems([pausedLiveRun(id)], []);
+		assert.equal(item?.session.firstMessage, id);
+		assert.equal(item.session.summary, "paused  0/0 stages  live-workflow");
+		assert.match(item.session.allMessagesText, new RegExp(id));
+		assert.deepEqual(item.result, { kind: "live", runId: id });
 	});
-	test("shows durable and completed workflow IDs before their name descriptions", () => {
-		const items = workflowResumeSelectorItems(
-			[],
-			[entry("durable-uuid", "paused")],
-			[entry("completed-uuid", "completed")],
-		);
+	test("keeps durable and completed IDs in the label and search text with details in the summary", () => {
+		const durableId = "22222222-2222-4222-8222-222222222222";
+		const completedId = "33333333-3333-4333-8333-333333333333";
+		const items = workflowResumeSelectorItems([], [entry(durableId, "paused")], [entry(completedId, "completed")]);
 		const byId = new Map(items.map((item) => [item.session.id, item]));
-		assert.equal(byId.get("durable-uuid")?.session.firstMessage, "durable-uuid  paused  2 checkpoints");
-		assert.equal(byId.get("durable-uuid")?.session.summary, "paused-workflow");
-		assert.deepEqual(byId.get("durable-uuid")?.result, { kind: "durable", workflowId: "durable-uuid" });
-		assert.equal(byId.get("completed-uuid")?.session.firstMessage, "completed-uuid  ✓ completed  2 checkpoints");
-		assert.equal(byId.get("completed-uuid")?.session.summary, "completed-workflow");
-		assert.deepEqual(byId.get("completed-uuid")?.result, { kind: "completed", workflowId: "completed-uuid" });
+		assert.equal(byId.get(durableId)?.session.firstMessage, durableId);
+		assert.equal(byId.get(durableId)?.session.summary, "paused  2 checkpoints  paused-workflow");
+		assert.match(byId.get(durableId)!.session.allMessagesText, new RegExp(durableId));
+		assert.deepEqual(byId.get(durableId)?.result, { kind: "durable", workflowId: durableId });
+		assert.equal(byId.get(completedId)?.session.firstMessage, completedId);
+		assert.equal(byId.get(completedId)?.session.summary, "✓ completed  2 checkpoints  completed-workflow");
+		assert.match(byId.get(completedId)!.session.allMessagesText, new RegExp(completedId));
+		assert.deepEqual(byId.get(completedId)?.result, { kind: "completed", workflowId: completedId });
 	});
 
 	test("colors paused yellow, failed and blocked red, completed green", () => {
@@ -255,14 +257,14 @@ describe("workflow resume selector row presentation", () => {
 		for (const item of items) {
 			assert.doesNotMatch(item.session.firstMessage, /\b\d+ prompts?\b/);
 			assert.doesNotMatch(item.session.allMessagesText, /\b\d+ prompts?\b/);
-			assert.match(item.session.firstMessage, /2 checkpoints$/);
+			assert.match(item.session.summary!, /2 checkpoints/);
 		}
 	});
 	test("presents a stale-heartbeat running durable row as crashed, never running", () => {
 		const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
-		assert.match(item!.session.firstMessage, /d-crashed {2}crashed/);
-		assert.equal(item!.session.summary, "repro-flow");
-		assert.doesNotMatch(item!.session.firstMessage, /running/);
+		assert.equal(item!.session.firstMessage, "d-crashed");
+		assert.equal(item!.session.summary, "crashed  2 checkpoints  repro-flow");
+		assert.doesNotMatch(item!.session.summary!, /running/);
 		assert.equal(item!.session.messageColor, "error");
 		assert.match(item!.session.allMessagesText, /crashed/);
 	});
