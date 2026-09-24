@@ -355,6 +355,9 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("never record secrets, credentials");
 			expect(prompt).toContain("Treat fewer than five comparable records as anecdotal");
 			expect(prompt).toContain("This history is a guide, not the decision");
+			expect(prompt).toContain(
+				"Missing, sparse, or mostly inline workflow history is not evidence that the user prefers inline work",
+			);
 			expect(prompt).toContain("using the repository's version control system and its hosting CLI");
 			expect(prompt).toContain("`gh pr list --state all --search 'Assistant-workflow in:body'` on GitHub");
 			expect(prompt).toContain("tie it to the requesting user with a `Co-authored-by: <name> <email>` trailer");

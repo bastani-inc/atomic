@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent no longer treats missing, sparse, or mostly inline workflow history as a reason to run every task inline. It judges from the task itself whether a workflow would help, then refines that choice with comparable execution history and your stated or recorded preferences.
+
 ## [0.9.20-alpha.10] - 2026-09-24
 
 ### Fixed
