@@ -17,11 +17,6 @@ if [ "${1:-}" = "--version" ]; then
     printf '%s\n' '1.0.0'
     exit 0
 fi
-# #3073: this transaction fixture models the launcher's runtime validation dispatch.
-if [ "${1:-}" = "--internal-validate-postgres-runtime" ]; then
-    test -f "$2/bin/postgres" && test -f "$2/bin/pg_ctl" && test -f "$2/bin/initdb"
-    exit $?
-fi
 exit 1
 ATOMIC
 chmod +x "$workspace/payload/atomic/atomic"
@@ -29,11 +24,6 @@ printf '%s\n' '{"name":"@bastani/atomic","version":"1.0.0"}' > "$workspace/paylo
 printf '%s\n' 'fixture app' > "$workspace/payload/atomic/app.js"
 printf '%s\n' 'fixture builtin' > "$workspace/payload/atomic/builtin/payload.txt"
 printf '%s\n' 'fixture module' > "$workspace/payload/atomic/node_modules/fixture/payload.txt"
-postgres_bin="$workspace/payload/atomic/node_modules/@bastani/atomic-natives/postgres-runtime/bin"
-mkdir -p "$postgres_bin"
-for command in postgres pg_ctl initdb; do
-    cp "$workspace/payload/atomic/atomic" "$postgres_bin/$command"
-done
 
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$workspace/payload.tar.gz" -C "$workspace/payload" atomic
 if command -v sha256sum >/dev/null 2>&1; then

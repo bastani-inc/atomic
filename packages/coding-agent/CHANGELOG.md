@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The `curl | sh` and `irm | iex` installers can install older releases again. They no longer run `--internal-validate-postgres-runtime` or the bundled PostgreSQL `--version` checks before promotion. Installing a release built before that option existed, or one without a bundled PostgreSQL runtime, could fail before promotion. The installers still verify the SHA256 checksum and run the staged `atomic --version`.
+
 ## [0.9.20-alpha.10] - 2026-09-24
 
 ### Fixed

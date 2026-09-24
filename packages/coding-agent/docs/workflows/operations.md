@@ -733,7 +733,7 @@ Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bi
 
 Keep the complete extracted archive, not only the `atomic` executable. `ATOMIC_POSTGRES_RUNTIME_DIR` accepts complete legacy runtimes without provenance; an incomplete override falls through to installed candidates. Packaging failures do not require deleting or reinitializing the v18 cluster.
 
-If installation reports **incomplete PostgreSQL runtime**, or macOS reports a missing library such as `libzstd.1.dylib`, download a repaired release and reinstall the complete archive. A rejected installation leaves the running server untouched. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
+If starting workflows reports a missing PostgreSQL executable or library, such as `libzstd.1.dylib` on macOS, download a repaired release and reinstall the complete archive. The installers do not check the bundled PostgreSQL runtime, so the problem shows up the first time Atomic starts its database. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
 
 To check an archive runtime, set `runtime` to its `node_modules/@bastani/atomic-natives/postgres-runtime`, then run `"$runtime/bin/postgres" --version` and `"$runtime/bin/pg_ctl" --version`. On Windows use the corresponding `.exe` files in PowerShell. Both must succeed. If a library-link or copy error is reported, repair the complete installation instead of mixing libraries from different releases.
 
