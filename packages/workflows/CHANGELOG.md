@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Durable workflows work again on Ubuntu and Debian with the default umask 002. Atomic had refused its own group-writable `~/.atomic` as an ancestor of the PostgreSQL runtime cache and ran workflows in memory, so runs couldn't be resumed after closing Atomic. A group-writable folder is now accepted when its group is your private group (your primary group, with no other members). World-writable folders and shared groups are still rejected.
+- Durable workflows work again on Ubuntu and Debian with the default umask 002. Atomic had refused its own group-writable `~/.atomic` as an ancestor of the PostgreSQL runtime cache and ran workflows in memory, so runs couldn't be resumed after closing Atomic. A group-writable folder is now accepted when its group is your private group: no other account in `/etc/passwd` uses it as its primary group, and `/etc/group` lists no member other than you. World-writable folders and shared groups are still rejected.
 
 ## [0.9.20-alpha.9] - 2026-09-24
 

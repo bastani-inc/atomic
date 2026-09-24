@@ -1997,25 +1997,59 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 		}
 	});
 
-	test("a user private group has no /etc/group members besides its user", async () => {
+	test("a user private group has no other primary or supplementary members", async () => {
 		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-group-file-"));
 		try {
-			const groupFile = join(scratch, "group");
+			const files = { group: join(scratch, "group"), passwd: join(scratch, "passwd") };
+			const ada = { uid: 1000, username: "ada" };
+			const grace = { uid: 1001, username: "grace" };
 			writeFileSync(
-				groupFile,
-				["root:x:0:", "staff:*:20:root", "ada:x:1000:", "grace:x:1001:grace", "dev:x:1002:ada,grace", ""].join(
-					"\n",
-				),
+				files.group,
+				[
+					"root:x:0:",
+					"staff:*:20:root",
+					"ada:x:1000:",
+					"grace:x:1001:grace",
+					"dev:x:1002:ada,grace",
+					"empty:x:1003:",
+					"",
+				].join("\n"),
 			);
-			assert.equal(await isUserPrivateGroup(1000, "ada", groupFile), true);
-			assert.equal(await isUserPrivateGroup(1001, "grace", groupFile), true);
-			assert.equal(await isUserPrivateGroup(1001, "ada", groupFile), false);
-			assert.equal(await isUserPrivateGroup(1002, "ada", groupFile), false);
-			assert.equal(await isUserPrivateGroup(20, "ada", groupFile), false);
-			assert.equal(await isUserPrivateGroup(9999, "ada", groupFile), false);
-			assert.equal(await isUserPrivateGroup(1000, "ada", join(scratch, "missing")), false);
-			writeFileSync(groupFile, "ada:x:1000:\nada-shadow:x:1000:mallory\n");
-			assert.equal(await isUserPrivateGroup(1000, "ada", groupFile), false);
+			writeFileSync(
+				files.passwd,
+				[
+					"root:x:0:0::/root:/bin/sh",
+					"ada:x:1000:1000::/home/ada:/bin/sh",
+					"grace:x:1001:1001::/home/grace:/bin/sh",
+					"",
+				].join("\n"),
+			);
+			assert.equal(await isUserPrivateGroup(1000, ada, files), true);
+			assert.equal(await isUserPrivateGroup(1001, grace, files), true);
+			assert.equal(await isUserPrivateGroup(1001, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1002, ada, files), false);
+			assert.equal(await isUserPrivateGroup(20, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1003, ada, files), false);
+			assert.equal(await isUserPrivateGroup(9999, ada, files), false);
+			assert.equal(await isUserPrivateGroup(1000, ada, { ...files, group: join(scratch, "missing") }), false);
+			assert.equal(await isUserPrivateGroup(1000, ada, { ...files, passwd: join(scratch, "missing") }), false);
+			writeFileSync(files.group, "ada:x:1000:\nada-shadow:x:1000:mallory\n");
+			assert.equal(await isUserPrivateGroup(1000, ada, files), false);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("an account sharing the primary GID makes the group untrusted", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-primary-gid-"));
+		try {
+			const files = { group: join(scratch, "group"), passwd: join(scratch, "passwd") };
+			writeFileSync(files.group, "ada:x:1000:\n");
+			writeFileSync(
+				files.passwd,
+				"ada:x:1000:1000::/home/ada:/bin/sh\nmallory:x:1666:1000::/home/mallory:/bin/sh\n",
+			);
+			assert.equal(await isUserPrivateGroup(1000, { uid: 1000, username: "ada" }, files), false);
 		} finally {
 			removeSealedScratch(scratch);
 		}

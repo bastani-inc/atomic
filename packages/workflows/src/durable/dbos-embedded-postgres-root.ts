@@ -534,34 +534,56 @@ async function findOrCreateRuntimeGeneration(
 		await rm(stagedRoot, { recursive: true, force: true });
 	}
 }
-export async function isUserPrivateGroup(
-	gid: number,
-	username: string | undefined,
-	groupFile = "/etc/group",
-): Promise<boolean> {
-	let entries: string;
-	try {
-		entries = await readFile(groupFile, "utf8");
-	} catch {
-		return false;
-	}
-	const matches = entries
-		.split(/\r?\n/u)
-		.map((line) => line.split(":"))
-		.filter((fields) => fields.length >= 4 && /^\d+$/u.test(fields[2]) && Number(fields[2]) === gid);
-	return (
-		matches.length > 0 &&
-		matches.every((fields) =>
-			fields[3]
-				.split(",")
-				.map((member) => member.trim())
-				.every((member) => member === "" || member === username),
-		)
-	);
+export interface PrivateGroupAccount {
+	readonly uid: number;
+	readonly username: string | undefined;
 }
 
-function publisherUsername(publisher: PublisherIdentity): string | undefined {
-	return process.getuid?.() === publisher.uid ? userInfo().username : undefined;
+export interface AccountDatabaseFiles {
+	readonly group: string;
+	readonly passwd: string;
+}
+
+const SYSTEM_ACCOUNT_FILES: AccountDatabaseFiles = { group: "/etc/group", passwd: "/etc/passwd" };
+
+async function readAccountRecords(path: string, gidField: number): Promise<string[][] | undefined> {
+	try {
+		return (await readFile(path, "utf8"))
+			.split(/\r?\n/u)
+			.map((line) => line.split(":"))
+			.filter((fields) => fields.length > gidField && /^\d+$/u.test(fields[gidField]));
+	} catch {
+		return undefined;
+	}
+}
+
+export async function isUserPrivateGroup(
+	gid: number,
+	account: PrivateGroupAccount,
+	files: AccountDatabaseFiles = SYSTEM_ACCOUNT_FILES,
+): Promise<boolean> {
+	const groups = await readAccountRecords(files.group, 2);
+	const users = await readAccountRecords(files.passwd, 3);
+	if (groups === undefined || users === undefined) return false;
+	const entries = groups.filter((fields) => Number(fields[2]) === gid);
+	if (entries.length === 0) return false;
+	const primaryMembers = users.filter((fields) => Number(fields[3]) === gid);
+	if (primaryMembers.some((fields) => !/^\d+$/u.test(fields[2]) || Number(fields[2]) !== account.uid)) return false;
+	const supplementaryMembers = entries.flatMap((fields) =>
+		(fields[3] ?? "")
+			.split(",")
+			.map((member) => member.trim())
+			.filter((member) => member !== ""),
+	);
+	if (supplementaryMembers.some((member) => member !== account.username)) return false;
+	return primaryMembers.length + supplementaryMembers.length > 0;
+}
+
+function publisherAccount(publisher: PublisherIdentity): PrivateGroupAccount {
+	return {
+		uid: publisher.uid,
+		username: process.getuid?.() === publisher.uid ? userInfo().username : undefined,
+	};
 }
 
 export async function ensureRuntimeCacheDirectory(
@@ -570,7 +592,7 @@ export async function ensureRuntimeCacheDirectory(
 	needsPrivilegeDrop = false,
 	owner?: EmbeddedPostgresOwner,
 	inspect: (path: string) => Promise<Stats> = lstat,
-	privateGroup: (gid: number) => Promise<boolean> = (gid) => isUserPrivateGroup(gid, publisherUsername(publisher)),
+	privateGroup: (gid: number) => Promise<boolean> = (gid) => isUserPrivateGroup(gid, publisherAccount(publisher)),
 ): Promise<void> {
 	if (!isAbsolute(path)) throw new Error(`Embedded Postgres runtime cache override must be absolute: ${path}`);
 	await mkdir(path, { recursive: true, mode: 0o755 });
