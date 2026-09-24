@@ -105,7 +105,6 @@ The workflow tool action surface is:
 - inspection: `status`, `stages`, `stage`, `transcript`
 - prompt response: `answer`; run control: `pause`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/live `ask` to `workflow:<rootRunId>/<segment>[/<segment>...]` path targets, including `*` and `**` globs
 - rediscovery: `reload`
-- database diagnostics: `dependency` with `operation: "status"`, `"doctor"`, or `"recover"`
 
 Every registered `workflow` tool call has one hard two-minute wall-clock deadline at the shared public tool boundary. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
 
@@ -180,7 +179,6 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow pause [run-id|--all]
 /workflow status [run-id]
 /workflow status --all
-/workflow dependency [status|doctor|recover]
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message]
 /workflows [full-workflow-uuid]
@@ -488,6 +486,13 @@ The first workflow action initializes and starts the database. Concurrent Atomic
 
 Cluster ownership records live beside the data in `~/.atomic/postgres/v18.shared`, outside Atomic installation/version directories. On Linux root installs, use `/var/lib/atomic-postgres/v18.shared`. Preserve these records and the existing data if Atomic reports an identity mismatch or missing `PG_VERSION`; do not delete either to force initialization. Closing or reloading an updated Atomic client does not stop a ready shared server. Older clients without this lifetime behavior can still stop servers they started, so finish and close those sessions before relying on the updated behavior for long-running work. An explicit `DBOS_SYSTEM_DATABASE_URL` remains outside managed-cluster lifecycle operations.
 
+New managed PostgreSQL servers start from a complete, immutable runtime under
+`~/.atomic/postgres/pg-runtime` (or `/var/lib/atomic-postgres/pg-runtime` when
+running as root on Linux), separate from data and project checkouts. Once a
+server starts from that runtime, removing its original worktree or reinstalling
+packages does not remove its binaries, libraries, or support files. Do not
+remove a runtime generation while a managed server is using it.
+
 **Running as root on Linux.** Atomic needs an available unprivileged account, `postgres`, `nobody`, or `daemon`, because PostgreSQL cannot run as root. The cluster is stored under `/var/lib/atomic-postgres`. If privilege or runtime preparation fails, inspect the diagnostic rather than changing data ownership blindly.
 
 **Administrator accounts (Windows).** Atomic can start embedded Postgres from an elevated terminal or an administrative account without changing your account or system permissions. The server runs with reduced privileges, as it does under PostgreSQL's own launcher. Regular Windows accounts remain supported. On either path, server output goes to `~/.atomic/postgres/v18.log`, not your terminal; unrelated commands starting concurrently do not keep the server's log file open. If Postgres exits during startup, Atomic reports the recent log output instead of waiting for a generic readiness timeout. Check that log for configuration or cluster errors; do not delete the cluster while a server may still be using it.
@@ -516,29 +521,21 @@ Fallback starts only after failed DBOS initialization has been cleaned up. If At
 
 Independent root workflows persist independently. Nested workflows share their root's ordering.
 
-### Inspecting and recovering the workflow database
+### Workflow database recovery
 
-Dependency inspection is separate from run status and does not start a workflow or initialize a database:
+Atomic monitors the managed PostgreSQL server and coordinates recovery when it
+loses health. The shared cluster keeps its data and ownership records; database
+recovery neither starts a replacement workflow nor proves an unfinished external
+effect succeeded. Inspect `/workflow status <full-run-uuid>` for the original run
+and explicitly resume it when eligible. Do not start a duplicate run or delete
+`v18` or `v18.shared` to bypass an identity or availability error.
 
-```text
-/workflow dependency                  # defaults to status
-/workflow dependency doctor
-/workflow dependency recover
-```
-
-The tool equivalents are `workflow({ action: "dependency", operation: "doctor" })` and `workflow({ action: "dependency", operation: "recover" })`. SDK integrations can use [`workflowDependency()`](/workflows/api-reference#workflowdependency-operation).
-
-`status` and `doctor` perform read-only checks. For a managed cluster, the report identifies the actual host/port, trusted cluster and data-directory identity, PostgreSQL process identity, current JavaScript runtime, and PostgreSQL server version when available. `identityVerified: true` means SQL, data and process identity agreed during that check. The consumer list conservatively retains leases whose process may still be alive; it is not a count of running workflows. `lastFailure` retains the most recently observed failure, including runtime diagnostics, after successful checks until a newer failure replaces it. It is process-local history, not a shared or permanent incident log. Use `state`, not the presence of `lastFailure`, to determine whether the latest check succeeded.
-
-`doctor` also checks the installed PostgreSQL 18 executables with one-second `--version` probes and reports the executable path and version under `runtime.installation`. Missing libraries or an incompatible runtime produce `unavailable` and a diagnostic. These checks do not repair links or permissions. `status` skips them, so it can inspect an existing healthy server even when local runtime files need repair.
-
-Each request returns within a five-second response budget. `checking` or `recovering` means the existing operation continues in the background, not that it succeeded or was cancelled. Repeated calls join that operation. Use `/workflow dependency status` to check again rather than launching duplicate recovery or a replacement workflow.
-
-`recover` retries only an already registered managed cluster under its shared setup lock. It preserves data and ownership records, never runs `initdb` over existing data, never adopts an unregistered cluster, and never kills a listener to free a port. Identity mismatches require investigation, not deletion of `v18` or `v18.shared`. If runtime files or libraries are missing, repair the complete installation using [Configuring DBOS/Postgres](#configuring-dbos/postgres), then retry recovery.
-
-With `DBOS_SYSTEM_DATABASE_URL`, every operation only checks that configured endpoint with a bounded query. Atomic does not restart it, choose another port, or provision a replacement. Correct its service, credentials or TLS settings yourself. A selected Docker fallback returns guidance for inspecting `dbos-db`; dependency recovery does not manage that container.
-
-Once the dependency is ready, inspect `/workflow status <full-run-uuid>` and explicitly resume the same ID when eligible. Database recovery itself never resumes workflow execution or proves an uncheckpointed external effect succeeded. Keep the original Atomic process open for a retained failed-admission retry. Existing pause and quit acknowledgements remain immediate during admission; inspect run status for later database settlement errors.
+For an explicit `DBOS_SYSTEM_DATABASE_URL`, Atomic does not manage the external
+database. Restore that endpoint or correct its credentials and TLS settings,
+then inspect and resume the original workflow. If the Docker fallback is in use,
+inspect `dbos-db` and correct its service configuration. A database repair does
+not automatically resume a paused workflow or establish whether an interrupted
+write committed.
 
 ### How it works
 

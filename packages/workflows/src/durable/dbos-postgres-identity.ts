@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
 import { endianness } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { Client } from "pg";
 import {
 	assertManagedPostmaster,
@@ -34,6 +34,36 @@ export function availablePostgresPort(preferred: number): Promise<number> {
 			});
 		});
 	});
+}
+
+/** PostgreSQL resolves timezone data relative to its launch executable, not PGDATA. */
+export function managedPostgresRuntimeHealthy(
+	metadata: ManagedPostgresMetadata,
+	port = metadata.server?.port,
+): boolean {
+	const optsPath = join(metadata.dataDir, "postmaster.opts");
+	if (!lstatSync(optsPath).isFile()) throw new Error("Managed Postgres launch options are missing or untrusted.");
+	const launch =
+		/^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"\s*$/.exec(
+			readFileSync(optsPath, "utf8"),
+		);
+	if (!launch || !isAbsolute(launch[1]) || !isAbsolute(launch[2])) {
+		throw new Error("Managed Postgres launch options do not identify Atomic's PostgreSQL runtime.");
+	}
+	if (realpathSync(launch[2]) !== metadata.dataDir || (port !== undefined && Number(launch[3]) !== port)) {
+		throw new Error("Managed Postgres launch options do not match its owned data directory and port.");
+	}
+	return postgresRuntimeFilesExist(launch[1]);
+}
+
+export function postgresRuntimeFilesExist(postgres: string): boolean {
+	const native = dirname(dirname(postgres));
+	const timezoneSets = join(native, "share", "postgresql", "timezonesets");
+	return (
+		lstatSync(postgres, { throwIfNoEntry: false })?.isFile() === true &&
+		lstatSync(timezoneSets, { throwIfNoEntry: false })?.isDirectory() === true &&
+		lstatSync(join(timezoneSets, "Default"), { throwIfNoEntry: false })?.isFile() === true
+	);
 }
 
 /** A pidfile is evidence, never permission to signal a process. */
@@ -95,6 +125,30 @@ export const POSTGRES_IDENTITY_SQL = `SELECT current_setting('data_directory') A
 	inet_server_port() AS port, host(inet_server_addr()) AS host,
 	split_part(pg_read_file('postmaster.pid'), E'\\n', 3) AS started,
 	system_identifier::text, current_setting('server_version') AS server_version FROM pg_control_system()`;
+
+/** Read-only transaction-local setting that reloads PostgreSQL's timezone-abbreviation file. */
+export const POSTGRES_TIMEZONE_SQL = "SELECT set_config('timezone_abbreviations', 'Default', true)";
+
+export async function probePostgresTimezoneData(port: number): Promise<void> {
+	const client = new Client({
+		host: "127.0.0.1",
+		port,
+		user: "postgres",
+		password: "atomic",
+		database: "postgres",
+		ssl: false,
+		connectionTimeoutMillis: 1000,
+		query_timeout: 1000,
+		statement_timeout: 1000,
+	});
+	client.on("error", () => {});
+	try {
+		await client.connect();
+		await client.query(POSTGRES_TIMEZONE_SQL);
+	} finally {
+		await client.end();
+	}
+}
 
 export async function probePostgresIdentity(port: number): Promise<PostgresIdentityRow | undefined> {
 	const client = new Client({

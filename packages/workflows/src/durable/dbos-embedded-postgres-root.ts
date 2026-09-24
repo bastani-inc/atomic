@@ -14,9 +14,9 @@
  * supplementary groups before it can run any owner command. Incomplete
  * candidates fall back to `setpriv`, `runuser`, or `su`.
  *
- * The embedded binaries themselves may also live under an untraversable
- * probe them as the unprivileged owner and fall back to a recoverable staged
- * copy in the cluster base directory.
+ * Every managed cluster launches from a complete immutable runtime generation
+ * under the cluster base directory, never directly from a package/worktree.
+ * Root-owned generations remain executable by a drop-privilege server account.
  */
 
 import { createHash, type Hash } from "node:crypto";
@@ -36,7 +36,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type LocalCommandOptions, type LocalCommandResult, runLocalCommand } from "./local-command.js";
 
 export interface EmbeddedPostgresOwner {
@@ -58,6 +58,9 @@ export interface EmbeddedPostgresBinaryPaths {
 	readonly pg_ctl: string;
 	readonly initdb: string;
 	readonly postgres: string;
+}
+export interface EmbeddedPostgresPreparedBinaries extends EmbeddedPostgresBinaryPaths {
+	readonly sealedIdentity: string;
 }
 
 export type LocalCommandRunner = (
@@ -193,24 +196,16 @@ const TRAVERSAL_OPERATIONS_PER_YIELD = 16;
 const HASH_CHUNK_BYTES = 64 * 1024;
 
 /**
- * Ensure the embedded binaries are executable by the drop-privilege owner.
- * Probes `initdb --version` as the owner; on failure (typically an
- * untraversable ancestor such as `/root`) uses an immutable copied package
- * generation. Each generation is tied to the exact source-tree content and
- * raw symlink text, so a stale or corrupt prior copy is never selected.
+ * Stage a complete, content-addressed PostgreSQL runtime for every managed
+ * cluster. The source package may disappear while a shared server is running;
+ * retained generations keep its binaries, libraries, and support files intact.
  */
 export async function prepareBinariesForOwner(
 	binaries: EmbeddedPostgresBinaryPaths,
 	context: EmbeddedPostgresRunContext,
 	runner: LocalCommandRunner = runLocalCommand,
 	options: RuntimePreparationOptions = {},
-): Promise<EmbeddedPostgresBinaryPaths> {
-	const owner = context.owner;
-	if (owner === undefined) return binaries;
-
-	const probe = await context.runAsOwner(binaries.initdb, ["--version"]).catch(() => undefined);
-	if (probe !== undefined && probe.exitCode === 0) return binaries;
-
+): Promise<EmbeddedPostgresPreparedBinaries> {
 	// `<packageRoot>/native/bin/initdb` → copy the whole `native` tree so the
 	// binaries keep their relative `../lib` runtime library references. Do not
 	// resolve or rewrite the configured caller paths or any relative link text.
@@ -228,12 +223,20 @@ export async function prepareBinariesForOwner(
 		runner,
 		progress,
 		options,
+		context.owner !== undefined,
 	);
 	return {
-		pg_ctl: join(copiedNativeDir, "bin", "pg_ctl"),
-		initdb: join(copiedNativeDir, "bin", "initdb"),
-		postgres: join(copiedNativeDir, "bin", "postgres"),
+		pg_ctl: join(copiedNativeDir, "bin", basename(binaries.pg_ctl)),
+		initdb: join(copiedNativeDir, "bin", basename(binaries.initdb)),
+		postgres: join(copiedNativeDir, "bin", basename(binaries.postgres)),
+		sealedIdentity: sourceSnapshot.sealedIdentity,
 	};
+}
+export async function fingerprintPreparedRuntime(
+	binaries: EmbeddedPostgresBinaryPaths,
+	options: RuntimePreparationOptions = {},
+): Promise<string> {
+	return snapshotSealedRuntime(dirname(dirname(binaries.postgres)), runtimeProgress(options));
 }
 
 /**
@@ -295,13 +298,14 @@ async function findOrCreateRuntimeGeneration(
 	runner: LocalCommandRunner,
 	progress: RuntimeProgress,
 	options: RuntimePreparationOptions,
+	needsPrivilegeDrop: boolean,
 ): Promise<string> {
 	await mkdir(copiedRuntimeDir, { recursive: true, mode: 0o755 });
 	const runtimeStat = await lstat(copiedRuntimeDir);
 	if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) {
 		throw new Error(`Embedded Postgres runtime parent must be a real directory: ${copiedRuntimeDir}`);
 	}
-	await chown(copiedRuntimeDir, publisher.uid, publisher.gid);
+	if (needsPrivilegeDrop) await chown(copiedRuntimeDir, publisher.uid, publisher.gid);
 	await chmod(copiedRuntimeDir, 0o755);
 	const generationNativeDir = join(copiedRuntimeDir, `native-${sourceSnapshot.sourceIdentity}`);
 	const existing = await lstatOrUndefined(generationNativeDir);
@@ -339,7 +343,7 @@ async function findOrCreateRuntimeGeneration(
 		if (copiedSnapshot.sourceIdentity !== sourceSnapshot.sourceIdentity) {
 			throw new Error("Copied embedded Postgres runtime did not match its source package.");
 		}
-		await sealRuntimeForPublisher(stagedNativeDir, publisher, runner, progress);
+		await sealRuntimeForPublisher(stagedNativeDir, publisher, runner, progress, needsPrivilegeDrop);
 		if ((await snapshotSealedRuntime(stagedNativeDir, progress)) !== sourceSnapshot.sealedIdentity) {
 			throw new Error("Sealed embedded Postgres runtime did not match its source package.");
 		}
@@ -574,12 +578,15 @@ async function sealRuntimeForPublisher(
 	publisher: PublisherIdentity,
 	runner: LocalCommandRunner,
 	progress: RuntimeProgress,
+	needsPrivilegeDrop: boolean,
 ): Promise<void> {
-	const result = await runner("chown", ["-R", `${publisher.uid}:${publisher.gid}`, runtimeDir]);
-	if (result.exitCode !== 0) {
-		throw new Error(
-			`Could not seal the copied embedded Postgres runtime: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`}`,
-		);
+	if (needsPrivilegeDrop) {
+		const result = await runner("chown", ["-R", `${publisher.uid}:${publisher.gid}`, runtimeDir]);
+		if (result.exitCode !== 0) {
+			throw new Error(
+				`Could not seal the copied embedded Postgres runtime: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`}`,
+			);
+		}
 	}
 	await sealRuntimeModes(runtimeDir, progress, true);
 }

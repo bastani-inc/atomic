@@ -17,13 +17,9 @@ import {
 	EmbeddedPostgresCleanupPendingError,
 	embeddedDbosSystemDatabaseUrl,
 	embeddedPostgresHealth,
-	embeddedPostgresLastFailure,
 	ensureEmbeddedDbosPostgres,
-	recoverEmbeddedPostgres,
 	shutdownEmbeddedDbosPostgres,
 } from "./dbos-embedded-postgres.js";
-import type { EmbeddedPostgresRunContext } from "./dbos-embedded-postgres-root.js";
-import type { ManagedPostgresMetadata } from "./dbos-postgres-ownership.js";
 import { commandFailureDetail, delay, runLocalCommand } from "./local-command.js";
 
 const DOCKER_CONTAINER = "dbos-db";
@@ -61,9 +57,6 @@ interface LocalDbosOwner {
 // Optional on predecessor owners; never create a second provider after reload.
 type HealthOwner = LocalDbosOwner & {
 	health?: typeof resolvedPostgresHealth;
-	provider?: typeof resolvedPostgresProvider;
-	failure?: typeof postgresLastFailure;
-	recover?: typeof recoverManagedPostgres;
 };
 const ownerKey = Symbol.for("atomic-workflows/local-postgres-owner@1");
 const ownerBag = globalThis as typeof globalThis & Record<symbol, HealthOwner | undefined>;
@@ -72,48 +65,8 @@ const owner = ownerBag[ownerKey] ?? {
 	provision: provisionResolvedLocalDbos,
 	shutdown: shutdownResolvedLocalDbos,
 	health: resolvedPostgresHealth,
-	provider: resolvedPostgresProvider,
-	failure: postgresLastFailure,
-	recover: recoverManagedPostgres,
 };
 ownerBag[ownerKey] = owner;
-
-export function resolvedPostgresProvider(): "embedded" | "docker" | "unresolved" {
-	if (owner.provider !== resolvedPostgresProvider) return owner.provider?.() ?? "unresolved";
-	return resolvedProvider === embeddedProvider
-		? "embedded"
-		: resolvedProvider === dockerProvider
-			? "docker"
-			: "unresolved";
-}
-
-export function postgresLastFailure(): Error | undefined {
-	if (owner.failure !== postgresLastFailure) return owner.failure?.();
-	return embeddedPostgresLastFailure();
-}
-
-export async function recoverManagedPostgres(
-	context: EmbeddedPostgresRunContext,
-	metadata: ManagedPostgresMetadata,
-): Promise<void> {
-	if (owner.recover !== recoverManagedPostgres) {
-		if (!owner.recover)
-			throw new Error(
-				"Reloaded PostgreSQL owner does not support explicit recovery. Restart Atomic without deleting data.",
-			);
-		return owner.recover(context, metadata);
-	}
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim() || resolvedProvider === dockerProvider)
-		throw new Error("Managed recovery is not allowed for the selected provider.");
-	resolvedPostgresHealth()?.invalidate();
-	try {
-		await recoverEmbeddedPostgres(context, metadata);
-		resolvedProvider = embeddedProvider;
-	} catch (error) {
-		if (error instanceof EmbeddedPostgresCleanupPendingError) resolvedProvider = embeddedProvider;
-		throw error;
-	}
-}
 
 /** Only a resolved managed provider grants automatic recovery authority. */
 export function resolvedPostgresHealth(url?: string): ReturnType<typeof embeddedPostgresHealth> {
@@ -376,9 +329,6 @@ export function resetLocalDbosProvisioningForTests(
 		provision: provisionResolvedLocalDbos,
 		shutdown: shutdownResolvedLocalDbos,
 		health: resolvedPostgresHealth,
-		provider: resolvedPostgresProvider,
-		failure: postgresLastFailure,
-		recover: recoverManagedPostgres,
 	});
 	resolution = undefined;
 	resolvedProvider = undefined;

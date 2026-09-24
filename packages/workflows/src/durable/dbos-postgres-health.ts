@@ -105,7 +105,7 @@ export class PostgresHealth {
 			if (!(error instanceof Error && "code" in error && error.code === "53300")) this.invalidate();
 			throw error;
 		}
-		// Retain the most recent outage for doctor even after automatic recovery succeeds.
+		// Preserve the latest outage for diagnostics even after automatic recovery.
 		if (this.attempts === 0)
 			this.failure = new DbosDependencyError("Managed PostgreSQL failed its live health check.");
 		this.invalidate();
@@ -124,6 +124,9 @@ export class PostgresHealth {
 				this.failure = error instanceof Error ? error : new Error(String(error));
 			}
 		}
+		// Each health check has a bounded retry budget; a later check can recover
+		// once an installation is repaired without requiring a manual command.
+		this.attempts = 0;
 		throw new DbosDependencyError(
 			"Managed Postgres is unavailable after bounded recovery. Preserve its data and ownership records.",
 		);

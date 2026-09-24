@@ -83,8 +83,33 @@ let tmpRoot: string | undefined;
 let packedRoot: string | undefined;
 
 afterAll(() => {
-	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
-	if (packedRoot) fs.rmSync(packedRoot, { recursive: true, force: true });
+	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	if (!packedRoot) return;
+	const consumer = join(packedRoot, "consumer");
+	const home = join(consumer, "home");
+	const postgres = join(home, ".atomic", "postgres");
+	if (fs.existsSync(postgres)) {
+		assert.ok(nodeExe);
+		const cleanup = spawnSync(nodeExe, [join(consumer, "consumer-parity.mjs"), "cleanup"], {
+			cwd: consumer,
+			encoding: "utf8",
+			timeout: 30_000,
+			env: { ...process.env, HOME: home, USERPROFILE: home },
+		});
+		assert.equal(
+			cleanup.status,
+			0,
+			`cleanup failed; preserving ${packedRoot}: ${cleanup.error ?? ""}\n${cleanup.stdout}\n${cleanup.stderr}`,
+		);
+		const makeRemovable = (path: string) => {
+			const stat = fs.lstatSync(path, { throwIfNoEntry: false });
+			if (!stat || stat.isSymbolicLink()) return;
+			fs.chmodSync(path, stat.isDirectory() ? 0o700 : 0o600);
+			if (stat.isDirectory()) for (const name of fs.readdirSync(path)) makeRemovable(join(path, name));
+		};
+		makeRemovable(join(postgres, "pg-runtime"));
+	}
+	fs.rmSync(packedRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 /** Symlink (junction on Windows, so no elevation is needed) a real directory. */

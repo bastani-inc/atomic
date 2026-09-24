@@ -205,10 +205,6 @@ export type WorkflowParentRunLink = AuthoringContract.WorkflowParentRunLink;
 export type RunOpts = Omit<AuthoringContract.RunOpts, "registry"> & { readonly registry?: WorkflowRegistry };
 
 export declare const INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
-export type { WorkflowDependencyOperation, WorkflowDependencyReport } from "./durable/dependency-doctor-types.js";
-export declare function workflowDependency(
-	operation?: "status" | "doctor" | "recover",
-): Promise<import("./durable/dependency-doctor-types.js").WorkflowDependencyReport>;
 export declare const NON_INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
 export declare function run<
 	TInputs extends WorkflowInputValues,

@@ -1,6 +1,5 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
-import { workflowDependency } from "../sdk-surface.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -164,10 +163,6 @@ export function makeExecuteWorkflowTool(
 						{ policy, origin: "agent", signal, modelOwner: workflowCaller(ctx), onRunAccepted },
 					),
 				);
-			}
-			case "dependency": {
-				const operation = args.operation ?? "status";
-				return { action, operation, report: await awaitRequest(workflowDependency(operation)) };
 			}
 			case "status": {
 				const target = args.runId?.trim();

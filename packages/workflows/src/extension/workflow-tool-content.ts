@@ -251,7 +251,6 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 			return compactWorkflowToolMessage(result);
 		case "status":
 			return renderStatusToolContent(result);
-		case "dependency":
 		case "list":
 		case "statusDetail":
 		case "inputs":

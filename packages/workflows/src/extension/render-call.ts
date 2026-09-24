@@ -16,7 +16,6 @@ export interface WorkflowToolArgs {
 		| "list"
 		| "get"
 		| "status"
-		| "dependency"
 		| "stages"
 		| "stage"
 		| "transcript"
@@ -26,7 +25,6 @@ export interface WorkflowToolArgs {
 		| "resume"
 		| "reload"
 		| "inputs";
-	operation?: "status" | "doctor" | "recover";
 	runId?: string;
 }
 
@@ -62,9 +60,6 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
 	switch (action) {
 		case "list":
 			line = "workflow: list registered workflows";
-			break;
-		case "dependency":
-			line = `workflow: dependency ${args.operation ?? "status"}`;
 			break;
 		case "status":
 			line = "workflow: list retained runs";

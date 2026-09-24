@@ -6,14 +6,6 @@
  */
 
 export type { Static, TSchema } from "typebox";
-export type { WorkflowDependencyOperation, WorkflowDependencyReport } from "./durable/dependency-doctor-types.js";
-
-/** Inspect or safely recover workflow persistence without starting a workflow. */
-export async function workflowDependency(
-	operation: "status" | "doctor" | "recover" = "status",
-): Promise<import("./durable/dependency-doctor-types.js").WorkflowDependencyReport> {
-	return (await import("./durable/dependency-doctor.js")).workflowDependency(operation);
-}
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
 export { workflow } from "./authoring/workflow.js";
 export type {

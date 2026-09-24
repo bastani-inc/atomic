@@ -1,11 +1,12 @@
+import { resumableEntryFromHandle } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
-import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
-import { isRunIdPrefix } from "../shared/run-id.js";
+import { isFullRunId, isRunIdPrefix } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -394,12 +395,23 @@ async function resolveExplicitDurableTarget(
 	try {
 		await deps.ensureWorkflowResourcesLoaded();
 		deps.signal?.throwIfAborted();
-		const catalog = await runtime.prepareDurableCatalog?.();
-		durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
-		completed =
-			catalog?.completed ??
-			(await runtime.prepareCompletedDurable?.()) ??
-			getDurableBackend().listCompletedWorkflows();
+		if (isFullRunId(target) && runtime.prepareDurableResumableForIds !== undefined) {
+			durable = await runtime.prepareDurableResumableForIds([target]);
+			const handle = getDurableBackend().getLoadableWorkflow(target);
+			const historical =
+				handle !== undefined &&
+				(handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId) &&
+				(handle.completedCheckpoints > 0 || handle.pendingPrompts > 0) &&
+				(handle.status === "completed" || (handle.status === "failed" && !isDurableWorkflowResumable(handle)));
+			completed = historical ? [resumableEntryFromHandle(handle)] : [];
+		} else {
+			const catalog = await runtime.prepareDurableCatalog?.();
+			durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
+			completed =
+				catalog?.completed ??
+				(await runtime.prepareCompletedDurable?.()) ??
+				getDurableBackend().listCompletedWorkflows();
+		}
 	} catch (error) {
 		return controlFailure("resume", target, error);
 	}

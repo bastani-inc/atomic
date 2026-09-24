@@ -30,8 +30,8 @@ test("health loss invalidates before a single shared recovery and reconnects", a
 	await health.stop();
 });
 
-// #3074: one outage has a finite retry budget, including repeated callers and timer polls.
-test("exhausted recovery probes for return without restarting forever", async () => {
+// A repaired installation must be retried automatically on the next bounded health check.
+test("exhausted recovery retries after installation repair without a manual command", async () => {
 	let healthy = false;
 	let recoveries = 0;
 	const waits: number[] = [];
@@ -46,13 +46,13 @@ test("exhausted recovery probes for return without restarting forever", async ()
 		},
 	});
 	await assert.rejects(health.check(), /unavailable after bounded recovery/);
-	await assert.rejects(health.check(), /unavailable after bounded recovery/);
 	assert.equal(health.lastFailure?.message, "owned restart failed");
 	assert.equal(recoveries, 3);
 	assert.deepEqual(waits, [250, 500]);
+	await assert.rejects(health.check(), /unavailable after bounded recovery/);
+	assert.equal(recoveries, 6);
 	healthy = true;
 	assert.equal(await health.check(), "managed");
-	// #3074: doctor retains the last outage diagnostic after successful recovery.
 	assert.equal(health.lastFailure?.message, "owned restart failed");
 	await health.stop();
 });

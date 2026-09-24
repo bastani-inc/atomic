@@ -18,7 +18,10 @@ import {
 	FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
 	isForeignLiveWorkflow,
 } from "../../packages/workflows/src/durable/resume-eligibility.js";
-import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import {
+	prepareTargetedDurableResumable,
+	resumeDurableWorkflow,
+} from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -204,6 +207,77 @@ describe("running workflows are never resume targets", () => {
 
 		assert.deepEqual(owner.listResumableWorkflows(), []);
 		assert.equal(owner.getWorkflow(testRunId("wf-own-running"))?.status, "running");
+		assert.deepEqual(await prepareTargetedDurableResumable(owner, [testRunId("wf-own-running")]), []);
+		const stepsBeforeResume = state.steps.size;
+		const result = await resumeDurableWorkflow(
+			testRunId("wf-own-running"),
+			{
+				registry: { get: () => undefined } as never,
+				baseRunOpts: { store: createStore() },
+				durableBackend: owner,
+				resolveDefinition: async () => assert.fail("a live workflow must not resolve a definition"),
+			},
+			[],
+		);
+		assert.equal(result.ok, false);
+		assert.equal(state.steps.size, stepsBeforeResume, "a live workflow must not write a resume claim");
+	});
+
+	test("exact-ID lookup excludes a fresh ownerless running workflow", async () => {
+		const workflowId = testRunId("wf-ownerless-target");
+		const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+		state.workflows.set(workflowId, {
+			workflowId,
+			name: "multi-session-flow",
+			status: "PENDING",
+			createdAt: 1_000,
+		});
+		state.steps.set(
+			`${workflowId}:checkpoint:__atomic_metadata:9000000000001:seed`,
+			seededMetadata(workflowId, { updatedAt: Date.now() }),
+		);
+		const observer = new DbosDurableBackend(createSharedSdk(state));
+		assert.deepEqual(observer.listResumableWorkflows(), []);
+		assert.deepEqual(await prepareTargetedDurableResumable(observer, [workflowId]), []);
+		const initialStepCount = state.steps.size;
+		const result = await resumeDurableWorkflow(
+			workflowId,
+			{
+				registry: { get: () => undefined } as never,
+				baseRunOpts: { store: createStore() },
+				durableBackend: observer,
+				resolveDefinition: async () => assert.fail("a live workflow must not resolve a definition"),
+			},
+			[],
+		);
+		assert.equal(result.ok, false);
+		assert.equal(state.steps.size, initialStepCount, "a live workflow must not write a resume claim");
+	});
+	test("exact-ID lookup keeps stale running and paused workflows eligible", async () => {
+		const crashedId = testRunId("wf-stale-target");
+		const pausedId = testRunId("wf-paused-target");
+		const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+		for (const workflowId of [crashedId, pausedId]) {
+			state.workflows.set(workflowId, {
+				workflowId,
+				name: "multi-session-flow",
+				status: "PENDING",
+				createdAt: 1_000,
+			});
+		}
+		state.steps.set(
+			`${crashedId}:checkpoint:__atomic_metadata:9000000000001:seed`,
+			seededMetadata(crashedId, { updatedAt: Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1 }),
+		);
+		state.steps.set(
+			`${pausedId}:checkpoint:__atomic_metadata:9000000000001:seed`,
+			seededMetadata(pausedId, { status: "paused", updatedAt: Date.now() }),
+		);
+		const observer = new DbosDurableBackend(createSharedSdk(state));
+		assert.deepEqual(
+			(await prepareTargetedDurableResumable(observer, [crashedId, pausedId])).map((entry) => entry.workflowId),
+			[crashedId, pausedId],
+		);
 	});
 });
 

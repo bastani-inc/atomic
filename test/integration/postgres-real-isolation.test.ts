@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { test } from "vitest";
-import type { WorkflowDependencyReport } from "../../packages/workflows/src/durable/dependency-doctor-types.js";
 import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 
 // Real independent processes, initdb, recovery and owned shutdown are structural work.
@@ -24,10 +23,7 @@ test(
 			const attached = home.client(listener.port);
 			const second = await attached.request<ManagedResult>("ensure");
 			assert.deepEqual(second.metadata, first.metadata);
-			const shared = await attached.request<WorkflowDependencyReport>("doctor");
-			assert.equal(shared.identityVerified, true);
-			assert.equal(shared.consumers.length, 2);
-			assert.equal(shared.endpoint?.port, first.metadata.server.port);
+			assert.equal((await attached.request<object[]>("consumers")).length, 2);
 			await owner.exit();
 			assert.deepEqual(await attached.request("query", "SELECT value FROM fault_sentinel"), [
 				{ value: "preserved" },
@@ -49,10 +45,7 @@ test(
 			assert.equal(recovered.metadata.directoryIdentity, first.metadata.directoryIdentity);
 			assert.equal(recovered.metadata.server.systemIdentifier, first.metadata.server.systemIdentifier);
 			assert.equal(recovered.metadata.server.port, first.metadata.server.port);
-			const diagnostic = await reconnect.request<WorkflowDependencyReport>("doctor");
-			assert.equal(diagnostic.state, "ready");
-			assert.equal(diagnostic.identityVerified, true);
-			assert.equal(diagnostic.consumers.length, 2);
+			assert.equal((await reconnect.request<object[]>("consumers")).length, 2);
 			assert.deepEqual(await reconnect.request("query", "SELECT value FROM fault_sentinel"), [
 				{ value: "preserved" },
 			]);

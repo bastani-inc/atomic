@@ -34,7 +34,7 @@ import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
-import { isDurableWorkflowResumable, isForeignLiveWorkflow } from "./resume-eligibility.js";
+import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
@@ -501,7 +501,8 @@ export async function prepareTargetedDurableResumable(
 		seen.add(workflowId);
 		await backend.hydrateWorkflow(workflowId);
 		const handle = backend.getLoadableWorkflow(workflowId);
-		if (handle === undefined || !isDurableWorkflowResumable(handle)) continue;
+		if (handle === undefined || !isDurableWorkflowResumable(handle) || isLiveRunningWorkflow(handle, Date.now()))
+			continue;
 		entries.push(resumableEntryFromHandle(handle));
 	}
 	return entries;

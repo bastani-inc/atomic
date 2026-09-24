@@ -15,11 +15,8 @@ import { join } from "node:path";
 import type { RetainedPostgres, RetainedPostgresSpawnOptions } from "@bastani/atomic-natives";
 import { afterEach, test } from "vitest";
 import {
-	embeddedPostgresLastFailure,
 	embeddedPostgresTestHooks,
 	loadEmbeddedPostgresBinaries,
-	recoverEmbeddedPostgres,
-	resetEmbeddedDbosPostgresForTests,
 	shutdownEmbeddedDbosPostgres,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import {
@@ -89,72 +86,6 @@ test.skipIf(process.platform === "win32")("read-only runtime inspection preserve
 		for (const binary of Object.values(binaries)) assert.equal(statSync(binary).mode & 0o777, 0o600);
 		await loadEmbeddedPostgresBinaries({ ...options, readOnly: false });
 		for (const binary of Object.values(binaries)) assert.equal(statSync(binary).mode & 0o777, 0o755);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("embedded test reset clears the recorded startup failure", async () => {
-	embeddedPostgresTestHooks.setEnsureOperation(async () => {
-		throw new Error("fixture startup failure");
-	});
-	await assert.rejects(embeddedPostgresTestHooks.ensure(), /fixture startup failure/);
-	assert.equal(embeddedPostgresLastFailure()?.message, "fixture startup failure");
-	resetEmbeddedDbosPostgresForTests();
-	assert.equal(embeddedPostgresLastFailure(), undefined);
-});
-
-test("explicit recovery releases a published native handle without signaling the server", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-doctor-published-"));
-	const lease = new FakeLease();
-	const cluster = embeddedPostgresTestHooks.setActiveCluster(lease);
-	await embeddedPostgresTestHooks.waitForClusterReadiness("/postgres.log", cluster, async () => true);
-	try {
-		await assert.rejects(
-			recoverEmbeddedPostgres(
-				{ ...context(), baseDir: root },
-				{
-					version: 1,
-					clusterId: "registered",
-					dataDir: join(root, "v18"),
-					directoryIdentity: "identity",
-					major: 18,
-				},
-			),
-			/requires existing ownership records/,
-		);
-		assert.equal(lease.releaseCalls, 1);
-		assert.deepEqual(lease.interruptCalls, []);
-		await shutdownEmbeddedDbosPostgres();
-		assert.equal(lease.releaseCalls, 1);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("explicit recovery preserves an unpublished retained lease for cleanup", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-doctor-retained-"));
-	const lease = new FakeLease();
-	embeddedPostgresTestHooks.setActiveCluster(lease);
-	try {
-		await assert.rejects(
-			recoverEmbeddedPostgres(
-				{ ...context(), baseDir: root },
-				{
-					version: 1,
-					clusterId: "registered",
-					dataDir: join(root, "v18"),
-					directoryIdentity: "identity",
-					major: 18,
-				},
-			),
-			/cleanup is still pending/,
-		);
-		assert.equal(lease.releaseCalls, 0);
-		assert.deepEqual(lease.interruptCalls, []);
-		await shutdownEmbeddedDbosPostgres();
-		assert.equal(lease.releaseCalls, 1);
-		assert.deepEqual(lease.interruptCalls, [60_000]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

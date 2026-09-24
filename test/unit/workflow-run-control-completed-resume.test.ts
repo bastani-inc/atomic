@@ -245,6 +245,66 @@ describe("durable prefix resume namespace and stage scope", () => {
 		assert.doesNotMatch("message" in prefix && prefix.message ? prefix.message : "", /ambiguous/);
 	});
 
+	test("workflow tool resumes an exact paused durable id without loading unrelated workflows", async () => {
+		const calls: string[] = [];
+		const runtime = {
+			prepareDurableCatalog: async () => {
+				assert.fail("an exact id must not scan the durable catalog");
+			},
+			prepareDurableResumableForIds: async (ids: readonly string[]) => {
+				assert.deepEqual(ids, [root]);
+				calls.push("targeted");
+				return [pausedDurableEntry(root)];
+			},
+			resumeDurableWorkflow: async (id: string) => {
+				calls.push("resume");
+				return { ok: true, runId: id, message: "dispatched" };
+			},
+		} as unknown as ExtensionRuntime;
+		const result = await workflowResumeAction({ action: "resume", runId: root }, toolResumeDeps(runtime));
+		assert.equal("status" in result ? result.status : undefined, "running");
+		assert.deepEqual(calls, ["targeted", "resume"]);
+	});
+
+	test("workflow tool reports an exact completed durable id without loading the catalog", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerCompletedTool(backend, root);
+		const runtime = {
+			prepareDurableCatalog: async () => {
+				assert.fail("exact completed id must not scan the catalog");
+			},
+			prepareDurableResumableForIds: async (ids: readonly string[]) => {
+				assert.deepEqual(ids, [root]);
+				return [];
+			},
+			resumeDurableWorkflow: async () => {
+				assert.fail("completed id must not dispatch");
+			},
+		} as unknown as ExtensionRuntime;
+		const result = await workflowResumeAction({ action: "resume", runId: root }, toolResumeDeps(runtime));
+		assert.equal("status" in result ? result.status : undefined, "noop");
+		assert.match("message" in result && result.message ? result.message : "", /completed, not resumable/);
+	});
+
+	test("workflow tool reports a missing exact id without loading the catalog", async () => {
+		const runtime = {
+			prepareDurableCatalog: async () => {
+				assert.fail("missing exact id must not scan the catalog");
+			},
+			prepareDurableResumableForIds: async (ids: readonly string[]) => {
+				assert.deepEqual(ids, [root]);
+				return [];
+			},
+			resumeDurableWorkflow: async () => {
+				assert.fail("missing id must not dispatch");
+			},
+		} as unknown as ExtensionRuntime;
+		const result = await workflowResumeAction({ action: "resume", runId: root }, toolResumeDeps(runtime));
+		assert.equal("status" in result ? result.status : undefined, "noop");
+		assert.equal("message" in result ? result.message : undefined, `Run not found: ${root}`);
+	});
+
 	test("workflow tool prefix plus a stage selector refuses durable dispatch", async () => {
 		const calls: unknown[] = [];
 		const runtime = {
@@ -495,6 +555,79 @@ describe("durable prefix resume namespace and stage scope", () => {
 		assert.doesNotMatch(`${exact.errors.join("\n")}\n${prefix.errors.join("\n")}`, /ambiguous/);
 		assert.deepEqual(opened, [root, root]);
 	});
+});
+
+test("durable catalog preparation hydrates workflow metadata only once", async () => {
+	class CountingBackend extends InMemoryDurableBackend {
+		hydrations = 0;
+		override async hydrateResumableWorkflows(): Promise<void> {
+			this.hydrations++;
+		}
+		override async prepareWorkflowCatalog() {
+			await this.hydrateResumableWorkflows();
+			return super.prepareWorkflowCatalog();
+		}
+	}
+	const backend = new CountingBackend();
+	const runtime = createDurableResumeRuntime({
+		registry: createExtensionRuntime({ store }).registry,
+		store,
+		runtimeCwd: tempDir,
+		baseRunOpts: () => ({}),
+		ensureReady: async () => backend,
+	});
+	await runtime.prepareDurableCatalog?.();
+	assert.equal(backend.hydrations, 1);
+});
+
+test("exact-id runtime resume never hydrates the full durable catalog", async () => {
+	class NoCatalogBackend extends InMemoryDurableBackend {
+		override async hydrateResumableWorkflows(): Promise<void> {
+			assert.fail("an exact id must hydrate only its own workflow");
+		}
+	}
+	const backend = new NoCatalogBackend();
+	const id = testRunId("exact-runtime-without-catalog");
+	backend.registerWorkflow({ workflowId: id, name: "completed", inputs: {}, createdAt: 1, status: "completed" });
+	const runtime = createDurableResumeRuntime({
+		registry: createExtensionRuntime({ store }).registry,
+		store,
+		runtimeCwd: tempDir,
+		baseRunOpts: () => ({ store }),
+		ensureReady: async () => backend,
+	});
+	const result = await runtime.resumeDurableWorkflow(id);
+	assert.equal(result.ok, false);
+});
+
+test("targeted exact-id resume rejects another session's live workflow without catalog hydration", async () => {
+	class NoCatalogBackend extends InMemoryDurableBackend {
+		override async hydrateResumableWorkflows(): Promise<void> {
+			assert.fail("foreign live id must not scan the catalog");
+		}
+	}
+	const backend = new NoCatalogBackend();
+	const id = testRunId("foreign-live-without-catalog");
+	backend.registerWorkflow({
+		workflowId: id,
+		name: "foreign-live",
+		inputs: {},
+		createdAt: Date.now(),
+		updatedAt: Date.now(),
+		status: "running",
+		completedCheckpoints: 1,
+		ownerExecutorId: "another-executor",
+	});
+	const runtime = createDurableResumeRuntime({
+		registry: createExtensionRuntime({ store }).registry,
+		store,
+		runtimeCwd: tempDir,
+		baseRunOpts: () => ({ store }),
+		ensureReady: async () => backend,
+	});
+	const result = await runtime.resumeDurableWorkflow(id);
+	assert.equal(result.ok, false);
+	assert.match(result.message, /another Atomic session|already running/i);
 });
 
 describe("/workflow resume completed target", () => {

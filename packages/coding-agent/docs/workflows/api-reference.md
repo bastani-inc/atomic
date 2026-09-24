@@ -1250,37 +1250,6 @@ registry.names();
 registry.get("alpha");
 ```
 
-### `workflowDependency(operation?)`
-
-```typescript
-import {
-  workflowDependency,
-  type WorkflowDependencyOperation,
-  type WorkflowDependencyReport,
-} from "@bastani/atomic/workflows";
-
-const report: WorkflowDependencyReport = await workflowDependency("doctor");
-```
-
-Accepts `"status" | "doctor" | "recover"`, defaulting to `"status"`. Returns `Promise<WorkflowDependencyReport>` without launching workflow execution. `status` and `doctor` inspect read-only; `recover` may restart only the registered managed cluster while preserving its data. For an external database URL, all three operations only query the configured endpoint. Docker fallback receives guidance rather than lifecycle actions.
-
-Managed `doctor` also checks the installed `postgres`, `pg_ctl` and `initdb` binaries with bounded `--version` commands, without repairing links or permissions. `recover` requires this runtime check before attempting repair of a registered cluster. `status` skips installed-binary checks so an existing server can still be inspected when the local installation is broken.
-
-| Report field | Meaning |
-| --- | --- |
-| `provider` | `managed`, `external`, or `docker` |
-| `state` | `ready`, `unavailable`, `uninitialized`, `checking`, or `recovering` |
-| `checkedAt` | Optional ISO timestamp of the reported check |
-| `runtime` | Current JavaScript `executable` and `version`, plus SQL `postgresVersion` when available. Managed `doctor` and `recover` also report `installation.executable` and `installation.version` after version-only runtime checks. |
-| `endpoint` | Optional actual `host` and `port`, without URL credentials |
-| `cluster` | Optional trusted managed cluster metadata, including cluster ID, data directory, directory identity, major version and published server identity |
-| `identityVerified` | Whether managed SQL/data/process identity agreed during this check; external reachability does not grant managed ownership |
-| `consumers` | Conservative live managed-consumer leases with process and runtime identity, not workflow counts |
-| `lastFailure` | Optional most recently observed failure, retained after successful checks until a newer failure replaces it. Process-local, not a persisted incident history; use `state` for current availability. |
-| `guidance` | Safe next steps for the reported condition |
-
-The response budget is five seconds. A `checking` or `recovering` report leaves the existing operation running; concurrent calls join it instead of starting another operation. These states do not confirm availability or recovery success. Inspect again before resuming the original run ID. The workflow tool returns `{ action: "dependency", operation, report }`; `/workflow dependency [status|doctor|recover]` exposes the same capability. See [database inspection and recovery](/workflows/operations#inspecting-and-recovering-the-workflow-database) for troubleshooting and safety limits.
-
 ### `run(definition, inputs, opts?)`
 
 ```typescript

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chmod, lstat, readdir } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import {
@@ -143,6 +144,18 @@ export class RealPostgresClient {
 		}
 	}
 }
+async function makeRuntimeRemovable(path: string): Promise<void> {
+	const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return undefined;
+		throw error;
+	});
+	if (!entry || entry.isSymbolicLink()) return;
+	await chmod(path, entry.isDirectory() ? 0o700 : 0o600);
+	if (entry.isDirectory()) {
+		for (const name of await readdir(path)) await makeRuntimeRemovable(join(path, name));
+	}
+}
+
 export class RealPostgresHome {
 	readonly path = makeTempDirectory("atomic-real-postgres-");
 	readonly clients: RealPostgresClient[] = [];
@@ -174,6 +187,7 @@ export class RealPostgresHome {
 		if (errors.length) {
 			throw new AggregateError(errors, `Postgres fixture cleanup failed; preserved ${this.path}`);
 		}
+		await makeRuntimeRemovable(join(this.path, ".atomic", "postgres", "pg-runtime"));
 		removeTempDirectory(this.path);
 	}
 }

@@ -19,7 +19,7 @@ import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
-import { resolveRunIdTarget } from "../shared/run-id.js";
+import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
@@ -104,7 +104,9 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						const backend = await ensureReady();
 						options?.signal?.throwIfAborted();
 						if (preparedCatalog.length === 0)
-							preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
+							preparedCatalog = isFullRunId(workflowId)
+								? await prepareTargetedDurableResumable(backend, [workflowId])
+								: await prepareRuntimeDurableResumable(() => backend, workflowId);
 						options?.signal?.throwIfAborted();
 						const resolved = resolveCatalogEntry(workflowId, preparedCatalog);
 						if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
@@ -148,7 +150,6 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					await backend.hydrateResumableWorkflows();
 					await hydrateStoredWorkflowCandidates(backend);
 					const catalog = await backend.prepareWorkflowCatalog();
 					preparedCatalog = catalog.resumable;

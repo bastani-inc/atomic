@@ -11,8 +11,7 @@ import {
 	shutdownEmbeddedDbosPostgres,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import { managedPostmaster } from "../../packages/workflows/src/durable/dbos-postgres-identity.js";
-import { managedPostgresMetadata } from "../../packages/workflows/src/durable/dbos-postgres-ownership.js";
-import { workflowDependency } from "../../packages/workflows/src/durable/dependency-doctor.js";
+import { inspectPostgresConsumers, managedPostgresMetadata } from "../../packages/workflows/src/durable/dbos-postgres-ownership.js";
 import { runLocalCommand } from "../../packages/workflows/src/durable/local-command.js";
 import { postmasterIdentityChanged } from "../helpers/postgres-process-identity.js";
 import { readTextSync, sleep } from "../helpers/runtime.js";
@@ -42,12 +41,10 @@ for await (const line of lines) {
 			} finally {
 				await client.end();
 			}
+		} else if (command === "consumers") {
+			result = inspectPostgresConsumers(base, managedPostgresMetadata(base, 18, false));
 		} else if (command === "binaries") {
 			result = await loadEmbeddedPostgresBinaries({ readOnly: true });
-		} else if (command === "recover") {
-			result = await workflowDependency("recover");
-		} else if (command === "doctor") {
-			result = await workflowDependency("doctor");
 		} else if (command === "stop") {
 			// Only this fixture's directory is ever passed to pg_ctl, never a supplied PID/port.
 			if (existsSync(join(data, "postmaster.pid"))) {

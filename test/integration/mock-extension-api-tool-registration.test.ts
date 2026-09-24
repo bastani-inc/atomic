@@ -129,7 +129,6 @@ describe("MockExtensionAPI — tool registration", () => {
 		const literals = actionSchema.anyOf?.flatMap((variant) => variant.const ?? variant.enum ?? []);
 		assert.deepEqual(literals?.sort(), [
 			"answer",
-			"dependency",
 			"get",
 			"inputs",
 			"list",

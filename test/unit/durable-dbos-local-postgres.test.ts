@@ -8,7 +8,6 @@ import { createServer } from "node:net";
 import type { RetainedPostgres } from "@bastani/atomic-natives";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
-import * as embeddedPostgres from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import {
 	EMBEDDED_DBOS_SYSTEM_DATABASE_URL,
 	embeddedPostgresTestHooks,
@@ -17,10 +16,8 @@ import {
 import {
 	dockerFallbackEndpoint,
 	provisionResolvedLocalDbos,
-	recoverManagedPostgres,
 	resetLocalDbosProvisioningForTests,
 	resolveDbosSystemDatabaseUrl,
-	resolvedPostgresProvider,
 	shouldProvisionLocalDbos,
 	shutdownResolvedLocalDbos,
 	waitForPostgresProtocolReadiness,
@@ -32,73 +29,6 @@ afterEach(() => {
 	resetLocalDbosProvisioningForTests();
 	if (originalUrl === undefined) delete process.env.DBOS_SYSTEM_DATABASE_URL;
 	else process.env.DBOS_SYSTEM_DATABASE_URL = originalUrl;
-});
-
-test("explicit recovery before URL resolution retains embedded teardown ownership", async () => {
-	delete process.env.DBOS_SYSTEM_DATABASE_URL;
-	let stops = 0;
-	resetLocalDbosProvisioningForTests(
-		async () => {},
-		async () => {},
-		async () => {
-			stops++;
-		},
-	);
-	const recover = vi.spyOn(embeddedPostgres, "recoverEmbeddedPostgres").mockResolvedValue(undefined);
-	try {
-		await recoverManagedPostgres(
-			{
-				baseDir: "/unused",
-				runAsOwner: async () => {
-					throw new Error("must not execute");
-				},
-			},
-			{ version: 1, clusterId: "cluster", dataDir: "/unused/v18", directoryIdentity: "identity", major: 18 },
-		);
-		assert.equal(resolvedPostgresProvider(), "embedded");
-		await shutdownResolvedLocalDbos();
-		assert.equal(stops, 1);
-	} finally {
-		recover.mockRestore();
-	}
-});
-
-test("explicit recovery keeps a pending cleanup lease reachable through local shutdown", async () => {
-	delete process.env.DBOS_SYSTEM_DATABASE_URL;
-	let stops = 0;
-	let releases = 0;
-	embeddedPostgresTestHooks.setActiveCluster({
-		pid: 4242,
-		wait: async () => ({ exited: false, signaled: false }),
-		interruptAndWait: async () => {
-			stops++;
-			return { exited: true, signaled: false };
-		},
-		release: () => {
-			releases++;
-		},
-	});
-	try {
-		await assert.rejects(
-			recoverManagedPostgres(
-				{
-					baseDir: "/unused",
-					runAsOwner: async () => {
-						throw new Error("must not execute");
-					},
-				},
-				{ version: 1, clusterId: "cluster", dataDir: "/unused/v18", directoryIdentity: "identity", major: 18 },
-			),
-			/cleanup is still pending/,
-		);
-		assert.equal(resolvedPostgresProvider(), "embedded");
-		assert.equal(releases, 0);
-		await shutdownResolvedLocalDbos();
-		assert.equal(stops, 1);
-		assert.equal(releases, 1);
-	} finally {
-		embeddedPostgresTestHooks.setActiveCluster(undefined);
-	}
 });
 
 describe("resolveDbosSystemDatabaseUrl", () => {

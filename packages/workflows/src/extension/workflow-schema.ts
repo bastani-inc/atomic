@@ -55,7 +55,6 @@ export const WorkflowParametersSchema = Type.Object(
 					Type.Literal("get"),
 					Type.Literal("inputs"),
 					Type.Literal("status"),
-					Type.Literal("dependency"),
 					Type.Literal("stages"),
 					Type.Literal("stage"),
 					Type.Literal("transcript"),
@@ -67,15 +66,9 @@ export const WorkflowParametersSchema = Type.Object(
 				],
 				{
 					description:
-						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, inspect the configured model catalog, inspect or recover the database dependency, or reload workflow resources. 'dependency' uses operation status/doctor/recover and does not start or resume workflows. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
 				},
 			),
-		),
-		operation: Type.Optional(
-			Type.Union([Type.Literal("status"), Type.Literal("doctor"), Type.Literal("recover")], {
-				description:
-					"Dependency operation for action 'dependency': status (default), doctor, or safe managed recovery. Does not resume workflows.",
-			}),
 		),
 		runId: Type.Optional(
 			Type.String({

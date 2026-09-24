@@ -23,7 +23,6 @@ function adminCompletions(): PiArgumentCompletion[] {
 		{ value: "attach ", label: "attach", description: "Open the in-place attach pane on a node" },
 		{ value: "list ", label: "list", description: "List registered workflows" },
 		{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
-		{ value: "dependency ", label: "dependency", description: "Inspect or safely recover workflow PostgreSQL" },
 		{ value: "pause ", label: "pause", description: "Pause a run" },
 		{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
 		{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
@@ -53,7 +52,7 @@ export function workflowArgumentCompletionsNeedWorkflowResources(partial: string
 	const subcommand = parts[0] ?? "";
 	if (!partial.includes(" ")) return true;
 	if (!subcommand || subcommand === "inputs") return true;
-	if (["status", "dependency", "connect", "resume", "attach", "pause", "quit", "reload"].includes(subcommand)) {
+	if (["status", "connect", "resume", "attach", "pause", "quit", "reload"].includes(subcommand)) {
 		return false;
 	}
 	return true;
@@ -69,16 +68,6 @@ export function workflowArgumentCompletions(
 	const workflows = () => workflowNameItems(runtime);
 	if (!partial.includes(" ")) {
 		return completeToken(partial, [...adminCompletions(), ...workflows()]);
-	}
-	if (subcommand === "dependency") {
-		if (parts.length > 2 || (parts.length === 2 && /\s$/.test(partial))) return null;
-		return completeToken(
-			partial,
-			["status", "doctor", "recover"].map((operation) => ({
-				value: `${operation} `,
-				label: operation,
-			})),
-		);
 	}
 	if (subcommand === "inputs") return completeToken(partial, workflows());
 	if (["status", "connect", "resume", "attach"].includes(subcommand)) {

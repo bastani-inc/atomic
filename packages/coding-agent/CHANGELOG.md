@@ -8,6 +8,7 @@
 - Removed `getStructuredOutputProviders()`, `JEV_STRUCTURED_OUTPUT_PROVIDER`, and `JevStructuredOutputProvider`. Classifier selection uses only models registered in the current model registry. Previously bundled gateway IDs, including `openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, and `opencode/jev-1.13`, no longer resolve by default. Replace them with a registered classifier such as `typesafe/jev-latest`, a chat model, or explicitly register the classifier and its operation under that ID.
 - `structured_output` now infers a schema-validated result from `instructions` and nonempty named `state` instead of treating its arguments as the result. The tool and `generateStructuredOutput()` accept optional exact `model` and ordered `fallbackModels` IDs resolved through the current model registry. A classifier ID uses the generic classify operation. Omit `model` to use the current stage or chat model, which is also the terminal fallback. A classifier runs only for a compatible finite Choice schema and is otherwise skipped. Runtime failures, including provider refusals, advance the fallback chain; cancellation does not. Ordinary text without a result gets up to three repairs before advancing, without checking for refusal wording. General requests derive choice questions from the schema. An explicit `routerModel` still overrides automatic routing; unset or `auto` uses the current chat model and does not select a classifier from saved credentials.
 - Renamed the public SDK function `inferStructuredOutput()` to `generateStructuredOutput()`; update imports and calls. `createStructuredOutputTool()` still constructs the session tool. Removed the public `inferRouterDecision()`, `resolveRouterModel()`, and routing-only types; `model: "auto"` routes internally with no separate SDK call.
+- Removed `/workflow dependency`, the workflow tool's `dependency` action, and the `workflowDependency()` SDK export and its report/operation types. Use workflow status to inspect an affected run; Atomic handles managed PostgreSQL health and recovery internally.
 
 ### Added
 
@@ -29,6 +30,7 @@
 - Atomic no longer warns at startup that its bundled workflows, subagents, MCP, and intercom extensions list `typebox` under dependencies. They now declare it as a `*` peer dependency, so they use the host's TypeBox.
 - Fixed an assistant reply occasionally disappearing from the live chat when a workflow completion notice arrived just as the reply finished streaming. The reply was still saved to the session, but the conversation shown and sent to the model could omit it until the session was reloaded.
 - Fixed a model switch made with Ctrl+P or `/model` just as Atomic finished loading startup resources sometimes being undone on screen: the footer went back to the previous model even though the new model was already in use.
+- New managed PostgreSQL servers use a retained runtime separate from workflow data and project checkouts; removing the source worktree or reinstalling packages no longer removes files needed by that server.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

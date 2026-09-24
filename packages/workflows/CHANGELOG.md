@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the public `workflowDependency()` SDK function and its report/operation types, `/workflow dependency`, and the workflow tool's `dependency` action. Inspect affected runs with workflow status; managed PostgreSQL recovery is automatic.
+
 ### Fixed
 
 - Fixed workflow durability being disabled after upgrading from 0.9.10–0.9.19: Atomic now registers the embedded Postgres cluster that older Atomic provisioned instead of refusing it. If that first start fails, the cluster is left unregistered and checked again on the next startup ([#3235](https://github.com/bastani-inc/atomic/issues/3235)).
+- Newly started managed PostgreSQL servers now use a retained runtime outside development worktrees, so removing the original checkout or reinstalling packages cannot remove files needed by that server.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 
