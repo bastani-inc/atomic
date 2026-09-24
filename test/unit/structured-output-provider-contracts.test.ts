@@ -11,7 +11,7 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import type { JsonObject } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
@@ -135,7 +135,7 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 				refreshOnCreate: false,
 			});
 			runtime.registerProvider(model.provider, { api, baseUrl: model.baseUrl, apiKey: "mock-key", models: [model] });
-			const pending = inferRouterDecision({
+			const pending = routeModel({
 				...decisionRequest(),
 				settings: SettingsManager.inMemory({ routerModel: `${model.provider}/${model.id}` }),
 				currentModel: model,
@@ -165,7 +165,7 @@ for (const invalid of [null, false, 7, [], {}, " "]) {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const transport = vi.fn<typeof fetch>();
 		vi.stubGlobal("fetch", transport);
-		await assert.rejects(inferRouterDecision({ ...decisionRequest(), settings }), /Invalid routerModel/);
+		await assert.rejects(routeModel({ ...decisionRequest(), settings }), /Invalid routerModel/);
 		assert.equal(transport.mock.calls.length, 0);
 	});
 }
@@ -199,7 +199,7 @@ for (const state of invalidStates) {
 		const request = decisionRequest();
 		const dispatch = vi.fn(() => messageStream(decisionMessage()));
 		await assert.rejects(
-			inferRouterDecision({
+			routeModel({
 				...request,
 				state,
 				modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
@@ -212,7 +212,7 @@ for (const state of invalidStates) {
 
 for (const maxTokens of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
 	test(`invalid output token bound ${maxTokens} is rejected`, async () => {
-		await assert.rejects(inferRouterDecision({ ...decisionRequest(), maxTokens }), /maxTokens/);
+		await assert.rejects(routeModel({ ...decisionRequest(), maxTokens }), /maxTokens/);
 	});
 }
 
@@ -242,7 +242,7 @@ test("routerModel auto uses the current chat model even with classifier credenti
 	vi.stubEnv("TYPESAFE_API_KEY", "unused-key");
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
 	const request = decisionRequest();
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		settings: SettingsManager.inMemory({ routerModel: "auto" }),
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
@@ -253,7 +253,7 @@ test("routerModel auto uses the current chat model even with classifier credenti
 
 test("a registered classifier with no classify operation fails without chat fallback", async () => {
 	await assert.rejects(
-		inferRouterDecision({ ...classifierRequest(), currentModel: undefined }),
+		routeModel({ ...classifierRequest(), currentModel: undefined }),
 		/Classifier returned no valid decision/,
 	);
 });
@@ -262,14 +262,11 @@ test("classifier provider exceptions never expose the provider response", async 
 	const classify: ModelRegistry["classify"] = async () => {
 		throw new Error("private request body and key");
 	};
-	await assert.rejects(
-		inferRouterDecision({ ...classifierRequest(classify), currentModel: undefined }),
-		(error: Error) => {
-			assert.match(error.message, /Classifier returned no valid decision/);
-			assert.doesNotMatch(error.message, /private request body|key/);
-			return true;
-		},
-	);
+	await assert.rejects(routeModel({ ...classifierRequest(classify), currentModel: undefined }), (error: Error) => {
+		assert.match(error.message, /Classifier returned no valid decision/);
+		assert.doesNotMatch(error.message, /private request body|key/);
+		return true;
+	});
 });
 
 test("classifier input is snapshotted across an asynchronous operation", async () => {
@@ -284,7 +281,7 @@ test("classifier input is snapshotted across an asynchronous operation", async (
 	const request = classifierRequest(classify);
 	const questions = structuredClone(request.classifier.questions);
 	const state = { task: "Review the patch" };
-	const pending = inferRouterDecision({ ...request, state, classifier: { ...request.classifier, questions } });
+	const pending = routeModel({ ...request, state, classifier: { ...request.classifier, questions } });
 	await started.promise;
 	state.task = "changed after dispatch";
 	Reflect.deleteProperty(questions.route.criteria, "review");
@@ -308,7 +305,7 @@ test("cancelled classifier inference never accepts a late answer", async () => {
 	const controller = new AbortController();
 	const request = classifierRequest(classify);
 	const decode = vi.fn(request.classifier.decode);
-	const pending = inferRouterDecision({
+	const pending = routeModel({
 		...request,
 		classifier: { ...request.classifier, decode },
 		signal: controller.signal,
@@ -350,7 +347,7 @@ for (const reason of ["cancel", "delayed-cancel"] as const) {
 			},
 		});
 		const controller = new AbortController();
-		const pending = inferRouterDecision({
+		const pending = routeModel({
 			...decisionRequest(),
 			modelRegistry: new ModelRegistry(runtime),
 			signal: controller.signal,

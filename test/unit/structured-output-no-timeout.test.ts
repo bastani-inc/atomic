@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import {
-	inferStructuredOutput,
+	generateStructuredOutput,
 	type StructuredOutputRequest,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
@@ -31,7 +31,7 @@ for (const kind of ["chat", "classifier"] as const) {
 			},
 		);
 		const classify = vi.fn(async () => await lateClassifier.promise);
-		const pending = inferStructuredOutput({
+		const pending = generateStructuredOutput({
 			...structuredOutputRequest(),
 			currentModel: undefined,
 			modelRegistry: {

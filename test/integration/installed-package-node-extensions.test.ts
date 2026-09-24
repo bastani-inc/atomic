@@ -176,9 +176,11 @@ runTest(
 				import * as sdk from "@bastani/atomic";
 				import { getVirtualModules } from "./dist/core/extensions/loader-host-modules.js";
 				const hosted = (await getVirtualModules())["@bastani/atomic"];
-				assert.equal(hosted.inferStructuredOutput, sdk.inferStructuredOutput);
-				assert.equal(hosted.inferRouterDecision, sdk.inferRouterDecision);
-				assert.equal(hosted.resolveRouterModel, sdk.resolveRouterModel);
+				assert.equal(hosted.generateStructuredOutput, sdk.generateStructuredOutput);
+				for (const name of ["inferRouterDecision", "routeModel", "resolveRouterModel"]) {
+					assert.equal(Object.hasOwn(sdk, name), false);
+					assert.equal(Object.hasOwn(hosted, name), false);
+				}
 				assert.equal(sdk.SettingsManager.inMemory().getRouterModel(), "");
 				const classifier = {
 					type: "classifier", provider: "fixture", id: "intent", api: "typesafe-system-one",
@@ -194,29 +196,21 @@ runTest(
 						assert.equal(model.provider, "fixture");
 						assert.equal(model.id, "intent");
 						requests++;
-						const question = "ok" in context.questions ? "ok" : "result";
-						const choice = question === "ok" ? "true" : "yes";
+						assert.ok("ok" in context.questions);
+						const question = "ok";
+						const choice = "true";
 						return {api: classifier.api, provider: classifier.provider, model: classifier.id,
 							answers: {[question]: {type: "choice", choice, probabilities: {[choice]: 1}, confidence: 1}},
 							stopReason: "stop", timestamp: Date.now()};
 					}
 				};
 				const schema = Type.Object({ok: Type.Literal(true)}, {additionalProperties: false});
-				const result = await sdk.inferRouterDecision({
-					settings: sdk.SettingsManager.inMemory({routerModel: "fixture/intent"}),
-					modelRegistry: registry,
-					state: {task: "classify this fixture"}, instructions: "Choose yes.", schema,
-					classifier: {questions: {result: {instructions: "Choose yes.", criteria: {yes: "The fixture matches"}}},
-						decode: () => ({ok: true})}
-				});
-				assert.deepEqual(result.value, {ok: true});
-				assert.equal(result.model, "fixture/intent");
-				const general = await sdk.inferStructuredOutput({
+				const general = await sdk.generateStructuredOutput({
 					model: "fixture/intent", modelRegistry: registry, schema,
 					state: {task: "classify this fixture"}, instructions: "Choose yes."
 				});
 				assert.deepEqual(general.value, {ok: true});
-				assert.equal(requests, 2);
+				assert.equal(requests, 1);
 				console.log("installed structured decision passed");
 			`,
 				],

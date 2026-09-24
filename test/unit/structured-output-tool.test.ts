@@ -37,7 +37,7 @@ vi.mock("../../packages/coding-agent/src/core/structured-output/index.js", async
 	const original = await importOriginal<object>();
 	return {
 		...original,
-		inferStructuredOutput: async (request: InferenceRequest) => {
+		generateStructuredOutput: async (request: InferenceRequest) => {
 			inference.requests.push(request);
 			if (inference.error) throw inference.error;
 			return {

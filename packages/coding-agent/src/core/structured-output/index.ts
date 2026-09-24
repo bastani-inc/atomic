@@ -296,7 +296,7 @@ async function inferClassifier<T extends TSchema>(
 	return { value, model: selected.fullId, responseModel: result.model, usage: { inputTokens: 0, outputTokens: 0 } };
 }
 
-export async function inferStructuredOutput<T extends TSchema>(
+export async function generateStructuredOutput<T extends TSchema>(
 	request: StructuredOutputRequest<T>,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	assertNotCancelled(request.signal);
@@ -533,7 +533,7 @@ async function inferDecision<T extends TSchema>(
 }
 
 /** Resolve only prerequisite routing inference. Does not execute the selected action or alter chat/tools. */
-export async function inferRouterDecision<T extends TSchema>(
+export async function routeModel<T extends TSchema>(
 	request: RouterDecisionRequest<T>,
 	/** Pure correlated-field validation against original candidates, never live admission checks. */
 	validateDecision?: (value: Static<T>) => boolean,

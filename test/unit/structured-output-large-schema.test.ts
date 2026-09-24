@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { decisionMessage, decisionModel, decisionRequest, messageStream } from "../helpers/structured-output.js";
 
 const pairs = Array.from({ length: 1997 }, (_, index) => ({
@@ -43,7 +43,7 @@ function requestFor(value: JsonObject) {
 test("ordinary routing accepts the last exact pair in a 1997-candidate schema", async () => {
 	const value = pairs.at(-1)!;
 	const { request, dispatch } = requestFor(value);
-	const result = await inferRouterDecision(request);
+	const result = await routeModel(request);
 	assert.deepEqual(result.value, value);
 	assert.equal(dispatch.mock.calls.length, 1);
 });
@@ -57,7 +57,7 @@ for (const [name, value] of [
 	test(`ordinary routing rejects ${name} against all 1997 candidates after bounded repairs without normalization`, async () => {
 		const before = structuredClone(value);
 		const { request, dispatch } = requestFor(value);
-		await assert.rejects(inferRouterDecision(request), {
+		await assert.rejects(routeModel(request), {
 			name: "Error",
 			message:
 				"Invalid structured output: response does not match the decision schema. Routing output repair exhausted after 4 attempts.",
@@ -95,8 +95,8 @@ for (const valid of [true, false]) {
 			getClassifierModel: (provider, id) => (provider === "fixture" && id === "pair" ? classifier : undefined),
 			classify,
 		};
-		if (valid) assert.deepEqual((await inferRouterDecision(request)).value, value);
-		else await assert.rejects(inferRouterDecision(request), /Classifier returned no valid decision/);
+		if (valid) assert.deepEqual((await routeModel(request)).value, value);
+		else await assert.rejects(routeModel(request), /Classifier returned no valid decision/);
 		assert.equal(classify.mock.calls.length, 1);
 		assert.equal(dispatch.mock.calls.length, 0);
 	});

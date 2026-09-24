@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { normalizeContext } from "@bastani/pi-ai";
 import type { HttpRequest } from "@smithy/types";
 import { afterEach, test, vi } from "vitest";
-import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { decisionModel, decisionRequest } from "../helpers/structured-output.js";
 
 const { handle, bedrockSdkPath } = await vi.hoisted(async () => {
@@ -62,7 +62,7 @@ test("Bedrock router inference performs only one SDK transport attempt on a retr
 	vi.stubEnv("AWS_MAX_ATTEMPTS", "3");
 	const model = { ...decisionModel, api: "bedrock-converse-stream" as const, compat: undefined };
 	await assert.rejects(
-		inferRouterDecision({
+		routeModel({
 			...decisionRequest(),
 			currentModel: model,
 			// Decision-layer transient retries are covered elsewhere; disable them
@@ -111,7 +111,7 @@ for (const api of ["google-generative-ai", "google-vertex"] as const) {
 			);
 			vi.stubGlobal("fetch", transport);
 			await assert.rejects(
-				inferRouterDecision({
+				routeModel({
 					...decisionRequest(),
 					settings: { getRouterModel: () => `${model.provider}/${model.id}` },
 					currentModel: model,

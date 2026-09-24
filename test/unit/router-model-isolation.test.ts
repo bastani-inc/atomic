@@ -9,10 +9,7 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import {
-	inferRouterDecision,
-	inferStructuredOutput,
-} from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	createStructuredOutputCapture,
 	createStructuredOutputTool,
@@ -70,7 +67,7 @@ for (const routerModel of ["typesafe/jev-latest", "auto", "missing/model"]) {
 			return messageStream(decisionMessage());
 		});
 		const { registry } = await registeredDecisionRuntime(dispatch);
-		const result = await inferStructuredOutput({
+		const result = await generateStructuredOutput({
 			...structuredOutputRequest(),
 			schema: decisionSchema,
 			modelRegistry: registry,
@@ -93,7 +90,7 @@ test("general structured-output can explicitly select a registered classifier wi
 	const settings = SettingsManager.inMemory({ routerModel: "decision-test/chat" });
 	const readSetting = vi.spyOn(settings, "getRouterModel");
 	const { registry } = await registeredDecisionRuntime(() => messageStream(decisionMessage()));
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		...structuredOutputRequest(),
 		modelRegistry: registry,
 		model: "typesafe/jev-latest",
@@ -109,7 +106,7 @@ test("general structured output defaults to the current chat model, not routerMo
 	const transport = vi.fn(async () => Response.json(classifierResult()));
 	vi.stubGlobal("fetch", transport);
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		...structuredOutputRequest(),
 		schema: decisionSchema,
 		modelRegistry: { getAll: () => [decisionModel], streamSimple: dispatch },
@@ -117,7 +114,7 @@ test("general structured output defaults to the current chat model, not routerMo
 	assert.equal(result.model, "decision-test/chat");
 	assert.equal(dispatch.mock.calls.length, 1);
 	await assert.rejects(
-		inferStructuredOutput({ ...structuredOutputRequest(), currentModel: undefined }),
+		generateStructuredOutput({ ...structuredOutputRequest(), currentModel: undefined }),
 		/currentModel/,
 	);
 	assert.equal(dispatch.mock.calls.length, 1);
@@ -136,7 +133,7 @@ test("ordinary routing keeps the complete candidate set beyond one provider's Ch
 		return messageStream(decisionMessage({ route: "review" }));
 	});
 	const { registry } = await registeredDecisionRuntime(dispatch);
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		modelRegistry: registry,
 		state: { ...request.state, candidates },
@@ -154,7 +151,7 @@ test("routing entrypoint alone applies the routerModel setting", async () => {
 	const transport = vi.fn(async () => Response.json(classifierResult()));
 	vi.stubGlobal("fetch", transport);
 	const { registry } = await registeredDecisionRuntime(() => messageStream(decisionMessage()));
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...decisionRequest(),
 		modelRegistry: registry,
 		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),

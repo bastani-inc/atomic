@@ -5,9 +5,9 @@ import { ModelRegistry } from "../../packages/coding-agent/src/core/model-regist
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import {
-	inferRouterDecision,
-	inferStructuredOutput,
+	generateStructuredOutput,
 	resolveRouterModel,
+	routeModel,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	decisionClassifier,
@@ -63,8 +63,8 @@ for (const environmentKey of ["", "mock-env-jev-key"]) {
 			modelRegistry: registry,
 		};
 		assert.equal(resolveRouterModel(request).kind, "classifier");
-		assert.equal((await inferRouterDecision(request)).model, "typesafe/jev-latest");
-		const direct = await inferStructuredOutput({
+		assert.equal((await routeModel(request)).model, "typesafe/jev-latest");
+		const direct = await generateStructuredOutput({
 			...structuredOutputRequest(),
 			modelRegistry: registry,
 			model: "typesafe/jev-latest",
@@ -95,7 +95,7 @@ test("saved and ambient classifier credentials do not auto-select a router", asy
 
 test("classifier runtime failure does not leak private auth diagnostics across fallback", async () => {
 	const chat = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		...structuredOutputRequest(),
 		model: "decision-test/classifier",
 		modelRegistry: {
@@ -116,7 +116,7 @@ test("classifier cancellation prevents fallback", async () => {
 	const controller = new AbortController();
 	const entered = Promise.withResolvers<void>();
 	const chat = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
-	const pending = inferStructuredOutput({
+	const pending = generateStructuredOutput({
 		...structuredOutputRequest(),
 		model: "decision-test/classifier",
 		signal: controller.signal,
@@ -158,7 +158,7 @@ test("only chat and registered classifiers can be selected, never image generati
 		/Invalid routerModel.*chat or classifier catalog/,
 	);
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			...structuredOutputRequest(),
 			currentModel: undefined,
 			model: `${image.provider}/${image.id}`,

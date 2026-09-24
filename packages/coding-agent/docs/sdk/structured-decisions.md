@@ -5,9 +5,9 @@ description: Make a schema-validated structured decision without starting an age
 
 # Structured decisions
 
-Use `inferStructuredOutput()` from `@bastani/atomic`, or the `structured_output` tool, when an integration needs one schema-validated semantic decision. Both use the same model contract. Neither starts a child agent, executes the caller's other tools, or authorizes an action. Neither reads `routerModel` or changes the selected chat model.
+Use `generateStructuredOutput()` from `@bastani/atomic`, or the `structured_output` tool, when an integration needs one schema-validated semantic decision. Both use the same model contract. Neither starts a child agent, executes the caller's other tools, or authorizes an action. Neither reads `routerModel` or changes the selected chat model.
 
-`inferRouterDecision()` remains a separate routing API. Only that entrypoint consults `routerModel`, and only for workflow-stage and subagent `model: "auto"` selection. See [Select the router](#select-the-router).
+Automatic workflow-stage and subagent `model: "auto"` selection uses `routerModel` separately; it does not change calls to `generateStructuredOutput()`. See [Select the router](#select-the-router).
 
 ## Select the inference model
 
@@ -26,7 +26,7 @@ Pass the session `modelRegistry`. Classifier credentials come from that registry
 
 ```typescript
 import { Type } from "typebox";
-import { inferStructuredOutput, ModelRegistry, ModelRuntime } from "@bastani/atomic";
+import { generateStructuredOutput, ModelRegistry, ModelRuntime } from "@bastani/atomic";
 
 const modelRuntime = await ModelRuntime.create();
 const modelRegistry = new ModelRegistry(modelRuntime);
@@ -37,7 +37,7 @@ const schema = Type.Object(
   { category: Type.Union([Type.Literal("question"), Type.Literal("statement")]) },
   { additionalProperties: false },
 );
-const result = await inferStructuredOutput({
+const result = await generateStructuredOutput({
   model: "typesafe/jev-latest",
   fallbackModels: [`${currentModel.provider}/${currentModel.id}`],
   currentModel,
@@ -55,14 +55,9 @@ The `structured_output` tool takes the same decision inputs from the calling mod
 
 ## Select the router
 
-`inferRouterDecision()` takes `settings`, `modelRegistry`, and the invocation-time `currentModel` instead of an explicit inference `model`. Resolution is:
+For workflow stages and subagents with `model: "auto"`, `routerModel` selects the decision provider: an explicit exact registered chat or classifier ID uses that model, while an unset or `auto` value uses the current chat model. Saved classifier credentials do not change this selection. An invalid explicit router selection fails instead of falling back. Set it through [/settings](/settings#routermodel); extensions can read the current value with `ctx.getRouterModel()`.
 
-1. A nonempty explicit, exact `routerModel` value other than `auto`.
-2. Otherwise the chat model supplied as `currentModel` at invocation time, including when `routerModel` is unset or `auto`.
-
-Saved classifier credentials do not change this selection. An invalid explicit router selection fails instead of falling back. Extension tools can read the owning session's current routing setting with `ctx.getRouterModel()`. Pass `settings: { getRouterModel: () => ctx.getRouterModel() }`, `modelRegistry: ctx.modelRegistry`, and `currentModel: ctx.model`. This preserves in-memory settings and project-trust behavior.
-
-Chat routing gets an initial attempt plus up to three corrective retries for malformed or schema-invalid output. A failed explicit classifier routing attempt switches to the current chat model immediately when one exists, including missing credentials, an unsupported classify operation, and a provider size or context rejection. Cancellation and safety refusals never fall back. The result includes `fallback: { from, to, reason }` when that hop is used. Transient provider retries follow the selected provider's operation and the request's retry settings. General `inferStructuredOutput()` advances its own `fallbackModels` chain; it does not read `routerModel`.
+Chat routing gets an initial attempt plus up to three corrective retries for malformed or schema-invalid output. A failed explicit classifier routing attempt switches to the current chat model immediately when one exists, including missing credentials, an unsupported classify operation, and a provider size or context rejection. Cancellation and safety refusals never fall back. The result includes `fallback: { from, to, reason }` when that hop is used. Transient provider retries follow the selected provider's operation and the request's retry settings. General `generateStructuredOutput()` advances its own `fallbackModels` chain; it does not read `routerModel`.
 
 For [workflow-stage](/workflows/operations#automatic-stage-models) and [subagent](/subagents/reference#automatic-model-selection) `model: "auto"`, a complete routing-inference failure runs the stage or child on the current chat model with a recorded warning instead of failing, provided that model is available and satisfies every routing constraint.
 
@@ -72,7 +67,7 @@ Instructions describe the judgment. Named `state` fields contain the actual task
 
 A general structured-output request supplies `instructions`, `state`, and `schema`. Atomic derives choice questions from a compatible schema and skips a classifier for other schemas. Keep fixed numeric limits in code. Include a no-match outcome in the schema when abstention is valid.
 
-`inferRouterDecision()` takes `classifier: { questions, decode }`. `questions` are finite Choice judgments. `decode` maps validated choice keys to the schema value and must stay synchronous and free of inference, file writes, or launches.
+Automatic routing builds its own finite Choice questions from eligible execution models. Call `generateStructuredOutput()` directly for other decisions; it derives questions from your result schema instead of reading `routerModel`.
 
 ## Provider behavior and limits
 
@@ -84,7 +79,7 @@ A registered classifier receives shared state and choice questions through the g
 
 The structured-decision path never trims supplied state. A general structured-output call skips an incompatible classifier candidate and continues with the next fallback. A provider size rejection advances the same way without repeating the rejected request. Supply concise context or select a chat model with enough capacity when needed.
 
-Automatic subagent and workflow-stage model selection prepares a [bounded task excerpt](/subagents/reference#automatic-model-selection) before calling this API. That excerpt preserves protected spans and does not replace the execution prompt. Direct SDK decision calls do not apply this task-excerpt policy.
+Automatic subagent and workflow-stage model selection uses a [bounded task excerpt](/subagents/reference#automatic-model-selection) for its routing decision. That excerpt preserves protected spans and does not replace the execution prompt. Direct SDK calls do not apply this task-excerpt policy.
 
 Classifier response bodies are limited by the provider operation. Atomic validates that every question receives a known Choice option. The classify result does not report token usage. Reported model, probabilities, and confidence are advisory and never reject an otherwise valid decision.
 

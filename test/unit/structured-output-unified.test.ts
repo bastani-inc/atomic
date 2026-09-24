@@ -10,7 +10,7 @@ import type {
 import { type TSchema, Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import {
-	inferStructuredOutput,
+	generateStructuredOutput,
 	type StructuredOutputRequest,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
@@ -126,7 +126,7 @@ afterEach(() => {
 
 test("structured output uses the current chat model when model is omitted", async () => {
 	let calls = 0;
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		currentModel: decisionModel,
 		modelRegistry: {
 			getAll: () => [decisionModel],
@@ -148,7 +148,7 @@ test("a registry classifier answers a finite-choice schema without any chat requ
 	const { calls, contexts, modelRegistry } = classifierRegistry(() =>
 		classifierResult({ verdict: choice("rejected") }),
 	);
-	const result = await inferStructuredOutput(verdictRequest(modelRegistry));
+	const result = await generateStructuredOutput(verdictRequest(modelRegistry));
 	assert.deepEqual(result.value, { verdict: "rejected" });
 	assert.equal(result.model, "acme/intent");
 	assert.equal(result.responseModel, "intent-2026-09");
@@ -182,7 +182,7 @@ test("a built-in registry classifier runs through the model runtime's provider a
 	const { registry } = await registeredDecisionRuntime(() => {
 		throw new Error("Unexpected chat request");
 	});
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		...verdictRequest(registry),
 		model: "typesafe/jev-latest",
 	});
@@ -194,7 +194,7 @@ test("a built-in registry classifier runs through the model runtime's provider a
 test("an ID the registry does not list fails before any request", async () => {
 	const { calls, modelRegistry } = classifierRegistry(() => classifierResult({ verdict: choice("approved") }));
 	await assert.rejects(
-		inferStructuredOutput({ ...verdictRequest(modelRegistry), model: "openrouter/~typesafe/jev-latest" }),
+		generateStructuredOutput({ ...verdictRequest(modelRegistry), model: "openrouter/~typesafe/jev-latest" }),
 		/unavailable or not a chat or classifier model: openrouter\/~typesafe\/jev-latest/,
 	);
 	assert.deepEqual(calls, []);
@@ -207,7 +207,7 @@ for (const [label, schema] of [
 ] as const) {
 	test(`a classifier is skipped for ${label} schemas and the chat model answers`, async () => {
 		const { calls, modelRegistry } = classifierRegistry(() => classifierResult({}));
-		const result = await inferStructuredOutput({ ...verdictRequest(modelRegistry), schema });
+		const result = await generateStructuredOutput({ ...verdictRequest(modelRegistry), schema });
 		assert.deepEqual(result.value, { verdict: "approved" });
 		assert.deepEqual(calls, ["chat"]);
 		assert.equal(result.modelAttempts?.[0]?.model, "acme/intent");
@@ -224,7 +224,7 @@ for (const [label, schema, answer, value] of [
 		const { calls, modelRegistry } = classifierRegistry(() =>
 			classifierResult({ category: { type: "choice", choice: answer, probabilities: {}, confidence: 1 } }),
 		);
-		const result = await inferStructuredOutput({
+		const result = await generateStructuredOutput({
 			...verdictRequest(modelRegistry),
 			schema: Type.Object({ category: schema }),
 		});
@@ -255,7 +255,7 @@ for (const [label, classify] of [
 ] as const) {
 	test(`a classifier runtime failure from ${label} falls back to the current chat model`, async () => {
 		const { calls, modelRegistry } = classifierRegistry(classify);
-		const result = await inferStructuredOutput(verdictRequest(modelRegistry));
+		const result = await generateStructuredOutput(verdictRequest(modelRegistry));
 		assert.deepEqual(result.value, { verdict: "approved" });
 		assert.deepEqual(calls, ["classifier", "chat"]);
 		assert.deepEqual(result.modelAttempts, [
@@ -274,7 +274,7 @@ for (const [label, classify] of [
 test("classifier calls honor disabled retries", async () => {
 	const { modelRegistry } = classifierRegistry(() => classifierResult({ verdict: choice("approved") }));
 	const classify = vi.fn(modelRegistry.classify!);
-	await inferStructuredOutput({
+	await generateStructuredOutput({
 		...verdictRequest({ ...modelRegistry, classify }),
 		retry: { enabled: false, maxRetries: 3, baseDelayMs: 2000 },
 	});
@@ -284,14 +284,14 @@ test("classifier calls honor disabled retries", async () => {
 test("a registry without a classify operation falls back instead of failing", async () => {
 	const { calls, modelRegistry } = classifierRegistry(() => classifierResult({ verdict: choice("approved") }));
 	const { classify: _classify, ...withoutClassify } = modelRegistry;
-	const result = await inferStructuredOutput(verdictRequest(withoutClassify));
+	const result = await generateStructuredOutput(verdictRequest(withoutClassify));
 	assert.deepEqual(calls, ["chat"]);
 	assert.equal(result.modelAttempts?.[0]?.error, "Classifier returned no valid decision.");
 });
 
 test("a classifier abort fails closed without trying the chat model", async () => {
 	const { calls, modelRegistry } = classifierRegistry(() => classifierResult({}, { stopReason: "aborted" }));
-	await assert.rejects(inferStructuredOutput(verdictRequest(modelRegistry)), /aborted; no fallback was attempted/);
+	await assert.rejects(generateStructuredOutput(verdictRequest(modelRegistry)), /aborted; no fallback was attempted/);
 	assert.deepEqual(calls, ["classifier"]);
 });
 
@@ -299,7 +299,7 @@ test("a classifier safety refusal fails closed without exposing the provider mes
 	const { calls, modelRegistry } = classifierRegistry(() =>
 		classifierResult({}, { stopReason: "error", errorMessage: "finish_reason: content_filter private body" }),
 	);
-	await assert.rejects(inferStructuredOutput(verdictRequest(modelRegistry)), (error: Error) => {
+	await assert.rejects(generateStructuredOutput(verdictRequest(modelRegistry)), (error: Error) => {
 		assert.match(error.message, /refused the request; no fallback was attempted/);
 		assert.doesNotMatch(error.message, /private body/);
 		return true;
@@ -312,7 +312,7 @@ test("an incompatible classifier is skipped and chat fallbacks run in order befo
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
 	const { modelRegistry } = classifierRegistry(() => classifierResult({}));
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		model: "acme/intent",
 		fallbackModels: ["decision-test/first", "decision-test/current"],
 		currentModel: current,
@@ -373,7 +373,7 @@ test("structured output preserves state, schema, and instructions across model f
 		instructions: "original instructions",
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 	};
-	const result = await inferStructuredOutput(request);
+	const result = await generateStructuredOutput(request);
 	assert.deepEqual(result.value, { verdict: "approved" });
 	assert.deepEqual(JSON.parse(fallbackPayload ?? ""), { state: { task: "original" } });
 	assert.match(fallbackPrompt ?? "", /original instructions/);
@@ -391,7 +391,7 @@ for (const status of [400, 401, 422, 503] as const) {
 			chatCalls++;
 			return messageStream(decisionMessage({ verdict: "approved" }));
 		});
-		const result = await inferStructuredOutput({
+		const result = await generateStructuredOutput({
 			...verdictRequest(registry),
 			model: "typesafe/jev-latest",
 			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
@@ -409,7 +409,7 @@ test("structured output does not cross providers after a safety refusal", async 
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
@@ -438,7 +438,7 @@ test("structured output does not repair or fall back from a zero-output canned r
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
@@ -468,7 +468,7 @@ test("structured output does not cross providers after a filtered completion", a
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
@@ -497,7 +497,7 @@ test("structured output fails closed on an unclassified provider error", async (
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
@@ -521,7 +521,7 @@ test("structured output advances from a rate-limited response to the current cha
 	const first = { ...decisionModel, id: "first" };
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		model: "decision-test/first",
 		currentModel: current,
 		modelRegistry: {
@@ -548,7 +548,7 @@ test("structured output repairs invalid answers before trying the next model", a
 	const first = { ...decisionModel, id: "first" };
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		model: "decision-test/first",
 		currentModel: current,
 		modelRegistry: {
@@ -575,7 +575,7 @@ test("structured output cancellation does not expose abort reasons or try fallba
 	controller.abort(new Error("private abort reason"));
 	let calls = 0;
 	await assert.rejects(
-		inferStructuredOutput({
+		generateStructuredOutput({
 			model: "decision-test/chat",
 			currentModel: decisionModel,
 			modelRegistry: {
@@ -605,7 +605,7 @@ test("a synthetic non-Jev provider classifier registered on the runtime answers 
 		seen.push({ apiKey: options?.apiKey, context });
 		return classifierResult({ verdict: choice("rejected") });
 	});
-	const result = await inferStructuredOutput(verdictRequest(registry));
+	const result = await generateStructuredOutput(verdictRequest(registry));
 	assert.deepEqual(result.value, { verdict: "rejected" });
 	assert.equal(result.model, "acme/intent");
 	assert.deepEqual(chatCalls, []);
@@ -631,7 +631,7 @@ for (const [label, classify] of [
 ] as const) {
 	test(`a synthetic runtime classifier failure from ${label} falls back to the current chat model`, async () => {
 		const { chatCalls, registry } = await syntheticClassifierRuntime(classify);
-		const result = await inferStructuredOutput(verdictRequest(registry));
+		const result = await generateStructuredOutput(verdictRequest(registry));
 		assert.deepEqual(result.value, { verdict: "approved" });
 		assert.equal(result.model, "decision-test/chat");
 		assert.deepEqual(chatCalls, ["chat"]);
@@ -643,7 +643,7 @@ for (const [label, classify] of [
 test("a registered classifier without configured auth falls back to the current chat model", async () => {
 	const classify = vi.fn(() => classifierResult({ verdict: choice("rejected") }));
 	const { chatCalls, registry } = await syntheticClassifierRuntime(classify, {});
-	const result = await inferStructuredOutput(verdictRequest(registry));
+	const result = await generateStructuredOutput(verdictRequest(registry));
 	assert.equal(classify.mock.calls.length, 0);
 	assert.deepEqual(result.value, { verdict: "approved" });
 	assert.equal(result.model, "decision-test/chat");
@@ -664,7 +664,7 @@ test("a registered model without a classifier operation falls back to the curren
 		baseUrl: classifierModel.baseUrl,
 		models: [{ ...definition, api: "unsupported-classifier" }],
 	});
-	const result = await inferStructuredOutput(verdictRequest(registry));
+	const result = await generateStructuredOutput(verdictRequest(registry));
 	assert.deepEqual(result.value, { verdict: "approved" });
 	assert.equal(result.model, "decision-test/chat");
 	assert.equal(result.modelAttempts?.[0]?.model, "acme/intent");
@@ -680,7 +680,7 @@ test("candidates run once each in primary, explicit fallback, then current-model
 		calls.push("acme/intent");
 		return classifierResult({}, { stopReason: "error", errorMessage: "HTTP 503" });
 	});
-	const result = await inferStructuredOutput({
+	const result = await generateStructuredOutput({
 		...verdictRequest({
 			...modelRegistry,
 			getAll: () => [first, current],

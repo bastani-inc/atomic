@@ -347,13 +347,7 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
-	inferRouterDecision,
-	inferStructuredOutput,
-	type RouterDecisionRequest,
-	type RouterModelSelectionOptions,
-	resolveRouterModel,
-	type StructuredChoiceQuestion,
-	type StructuredOutputModel,
+	generateStructuredOutput,
 	type StructuredOutputRequest,
 	type StructuredOutputResult,
 } from "./core/structured-output/index.js";

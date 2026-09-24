@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	classifierResult,
 	decisionClassifier,
@@ -44,7 +44,7 @@ test("registry classifier receives the complete routing context without a Jev-sp
 		);
 		return classifierResult({ route: candidates.at(-1)!.id });
 	});
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 	});
@@ -66,7 +66,7 @@ for (const task of ["x".repeat(40_000), "🌙".repeat(15_000)]) {
 			assert.equal(parseInferenceUserPayload(context).state?.task, task);
 			return messageStream(decisionMessage());
 		});
-		const result = await inferRouterDecision({
+		const result = await routeModel({
 			...request,
 			state,
 			settings: { getRouterModel: () => "decision-test/classifier" },
@@ -88,7 +88,7 @@ test("an unavailable classifier with no current chat model fails without a hidde
 	const { candidates: _candidates, ...request } = largeDecision();
 	const classify = vi.fn(async () => ({ ...classifierResult(), stopReason: "error" as const }));
 	await assert.rejects(
-		inferRouterDecision({
+		routeModel({
 			...request,
 			currentModel: undefined,
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },

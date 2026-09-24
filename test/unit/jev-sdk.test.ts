@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import type { ClassifierResult } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import {
-	inferRouterDecision,
-	inferStructuredOutput,
-} from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	classifierResult,
 	decisionClassifier,
@@ -43,7 +40,7 @@ function routedClassifier(
 test("explicit registered classifier routes without invoking chat", async () => {
 	const classify = vi.fn(async () => classifierResult());
 	const chat = vi.fn(() => messageStream(decisionMessage()));
-	const result = await inferRouterDecision(routedClassifier(classify, chat));
+	const result = await routeModel(routedClassifier(classify, chat));
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.model, "decision-test/classifier");
 	assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0 });
@@ -54,7 +51,7 @@ test("explicit registered classifier routes without invoking chat", async () => 
 test("classifier runtime failure falls back to current chat once without leaking provider error", async () => {
 	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const chat = vi.fn(() => messageStream(decisionMessage()));
-	const result = await inferRouterDecision(
+	const result = await routeModel(
 		routedClassifier(async () => {
 			throw new Error("private-key-material");
 		}, chat),
@@ -70,7 +67,7 @@ test("classifier runtime failure falls back to current chat once without leaking
 const invalidAnswers: Record<string, string>[] = [{ route: "invented", budget: "exact" }, { route: "review" }];
 for (const answer of invalidAnswers) {
 	test(`classifier invalid answer ${JSON.stringify(answer)} falls back to chat`, async () => {
-		const result = await inferRouterDecision(routedClassifier(async () => classifierResult(answer)));
+		const result = await routeModel(routedClassifier(async () => classifierResult(answer)));
 		assert.equal(result.model, "decision-test/chat");
 		assert.equal(result.fallback?.reason, "Classifier returned no valid decision.");
 	});
@@ -80,7 +77,7 @@ test("classifier failure without current chat model is reported without raw erro
 	const request = routedClassifier(async () => {
 		throw new Error("private-key-material");
 	});
-	await assert.rejects(inferRouterDecision({ ...request, currentModel: undefined }), (error: Error) => {
+	await assert.rejects(routeModel({ ...request, currentModel: undefined }), (error: Error) => {
 		assert.match(error.message, /Classifier returned no valid decision/);
 		assert.doesNotMatch(String(error.stack), /private-key-material/);
 		return true;
@@ -90,7 +87,7 @@ test("classifier failure without current chat model is reported without raw erro
 test("classifier aborted result prevents chat fallback", async () => {
 	const chat = vi.fn(() => messageStream(decisionMessage()));
 	await assert.rejects(
-		inferRouterDecision(routedClassifier(async () => ({ ...classifierResult(), stopReason: "aborted" }), chat)),
+		routeModel(routedClassifier(async () => ({ ...classifierResult(), stopReason: "aborted" }), chat)),
 		/aborted; no fallback/,
 	);
 	assert.equal(chat.mock.calls.length, 0);
@@ -99,7 +96,7 @@ test("classifier aborted result prevents chat fallback", async () => {
 test("classifier refusal prevents chat fallback", async () => {
 	const chat = vi.fn(() => messageStream(decisionMessage()));
 	await assert.rejects(
-		inferRouterDecision(
+		routeModel(
 			routedClassifier(
 				async () => ({ ...classifierResult(), stopReason: "error", errorMessage: "Safety refusal" }),
 				chat,
@@ -116,7 +113,7 @@ for (const succeeds of [true, false]) {
 		const chat = vi.fn(() =>
 			messageStream(decisionMessage({ route: succeeds && chat.mock.calls.length === 4 ? "review" : "invalid" })),
 		);
-		const pending = inferRouterDecision(routedClassifier(async () => ({ ...classifierResult(), answers: {} }), chat));
+		const pending = routeModel(routedClassifier(async () => ({ ...classifierResult(), answers: {} }), chat));
 		if (succeeds) assert.equal((await pending).value.route, "review");
 		else await assert.rejects(pending, /Chat fallback output repair exhausted after 4 attempts/);
 		assert.equal(chat.mock.calls.length, 4);
@@ -155,7 +152,11 @@ test("structured-output SDK rejects obsolete classifier model IDs before dispatc
 	const transport = vi.fn();
 	vi.stubGlobal("fetch", transport);
 	await assert.rejects(
-		inferStructuredOutput({ ...structuredOutputRequest(), currentModel: undefined, model: "typesafe-ai/jev-latest" }),
+		generateStructuredOutput({
+			...structuredOutputRequest(),
+			currentModel: undefined,
+			model: "typesafe-ai/jev-latest",
+		}),
 		/typesafe-ai\/jev-latest/,
 	);
 	assert.equal(transport.mock.calls.length, 0);

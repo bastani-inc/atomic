@@ -13,7 +13,7 @@ import { builtinModels } from "@bastani/pi-ai/providers/all";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { inferRouterDecision } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { resolveRouterModel } from "../../packages/coding-agent/src/core/structured-output/resolver.js";
 import {
 	decisionMessage,
@@ -117,7 +117,7 @@ test("router credentials alone never change automatic model selection", async ()
 	const classify = vi.fn(async () => classifierResult());
 	const request = classifierRequest(classify, chat);
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		settings: SettingsManager.inMemory({ routerModel: "auto" }),
 		currentModel: chat,
@@ -191,7 +191,7 @@ test("ordinary entrypoint uses configured provider/auth, complete state, one sch
 	const { runtime, registry } = await registeredDecisionRuntime(dispatch);
 	const request = { ...decisionRequest(), modelRegistry: registry };
 	const before = JSON.stringify(request.currentModel);
-	const result = await inferRouterDecision(request);
+	const result = await routeModel(request);
 	assert.deepEqual(result.value, { route: "review", limit: 1.23456789 });
 	assert.equal(result.model, "decision-test/chat");
 	assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 10 });
@@ -216,7 +216,7 @@ for (const failure of ["synchronous throw", "result rejection"] as const) {
 			return stream;
 		});
 		await assert.rejects(
-			inferRouterDecision({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
+			routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
 			(error: Error) => {
 				assert.doesNotMatch(String(error.stack), /private upstream payload|mock-secret/);
 				assert.equal(error.cause, undefined);
@@ -241,7 +241,7 @@ for (const args of invalidArguments) {
 		const dispatch = vi.fn(() => messageStream(decisionMessage(args)));
 		const request = decisionRequest();
 		await assert.rejects(
-			inferRouterDecision({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
+			routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
 			/Invalid structured output/,
 		);
 		assert.equal(dispatch.mock.calls.length, 4);
@@ -252,7 +252,7 @@ for (const limit of [undefined, 0, 1.23456789, Number.MAX_SAFE_INTEGER]) {
 	test(`ordinary decision preserves exact zero, omission and large limits: ${limit}`, async () => {
 		const args = { route: "review", ...(limit === undefined ? {} : { limit }) };
 		const request = decisionRequest();
-		const result = await inferRouterDecision({
+		const result = await routeModel({
 			...request,
 			modelRegistry: { ...request.modelRegistry, streamSimple: () => messageStream(decisionMessage(args)) },
 		});
@@ -276,7 +276,7 @@ for (const kind of ["text", "multiple", "wrong-tool", "error", "aborted", "lengt
 		const request = decisionRequest();
 		const dispatch = vi.fn(() => messageStream(message));
 		await assert.rejects(
-			inferRouterDecision({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
+			routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
 			/Structured output/,
 		);
 		assert.equal(dispatch.mock.calls.length, kind === "error" || kind === "aborted" ? 1 : 4);
@@ -303,7 +303,7 @@ test("registered non-Jev classifier receives all Choice questions and returns a 
 		},
 	);
 	const request = classifierRequest(classify);
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		settings: SettingsManager.inMemory({ routerModel: "judge/general-classifier" }),
 		modelRegistry: {
@@ -325,7 +325,7 @@ test("classifier provider failure falls back to current chat without leaking pro
 	);
 	const request = classifierRequest(classify, decisionRequest().currentModel);
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
@@ -342,7 +342,7 @@ test("classifier provider throw is sanitized and fails without a current chat fa
 	const classify = vi.fn(async () => {
 		throw new Error("private upstream mock-key");
 	});
-	await assert.rejects(inferRouterDecision(classifierRequest(classify)), (error: Error) => {
+	await assert.rejects(routeModel(classifierRequest(classify)), (error: Error) => {
 		assert.doesNotMatch(String(error.stack), /private upstream|mock-key/);
 		assert.equal(error.cause, undefined);
 		assert.match(error.message, /Classifier returned no valid decision/);
@@ -361,7 +361,7 @@ for (const [name, answers] of [
 		const request = classifierRequest(classify);
 		const decode = vi.fn(request.classifier.decode);
 		await assert.rejects(
-			inferRouterDecision({ ...request, classifier: { ...request.classifier, decode } }),
+			routeModel({ ...request, classifier: { ...request.classifier, decode } }),
 			/Classifier returned no valid decision/,
 		);
 		assert.equal(decode.mock.calls.length, 0);
@@ -378,7 +378,7 @@ for (const failure of [
 		const request = classifierRequest(classify, decisionRequest().currentModel);
 		const dispatch = vi.fn(() => messageStream(decisionMessage()));
 		await assert.rejects(
-			inferRouterDecision({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
+			routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
 			/aborted|refused/,
 		);
 		assert.equal(dispatch.mock.calls.length, 0);
@@ -389,7 +389,7 @@ test("classifier validates the decoded result against the routing schema", async
 	const classify = vi.fn(async () => classifierResult());
 	const request = classifierRequest(classify);
 	await assert.rejects(
-		inferRouterDecision({
+		routeModel({
 			...request,
 			classifier: { ...request.classifier, decode: () => ({ route: "review" as const, limit: -1 }) },
 		}),
@@ -409,7 +409,7 @@ test("a chat 529-style error retries then succeeds (#3206)", async () => {
 				})
 			: messageStream(decisionMessage()),
 	);
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		retry: FAST_RETRY,
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
@@ -430,7 +430,7 @@ test("router sends every registered classifier choice without truncation", async
 		});
 	});
 	const request = classifierRequest(classify);
-	const result = await inferRouterDecision({
+	const result = await routeModel({
 		...request,
 		classifier: {
 			questions: { route: { instructions: "Select a matching candidate", criteria } },
@@ -458,7 +458,7 @@ for (const kind of ["pre-cancel", "in-flight cancel"] as const) {
 		const decode = vi.fn(request.classifier.decode);
 		const dispatch = vi.fn(() => messageStream(decisionMessage()));
 		if (kind === "pre-cancel") controller.abort();
-		const pending = inferRouterDecision({
+		const pending = routeModel({
 			...request,
 			modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 			classifier: { ...request.classifier, decode },
@@ -488,14 +488,14 @@ test("independent overlapping decisions cannot share state, candidates or cancel
 		return streams[contexts.length - 1];
 	});
 	const registry = { ...request.modelRegistry, streamSimple: dispatch };
-	const first = inferRouterDecision({
+	const first = routeModel({
 		...request,
 		modelRegistry: registry,
 		state: { task: "first task" },
 		signal: controller.signal,
 	});
 	const rejected = assert.rejects(first, /cancelled/);
-	const second = inferRouterDecision({ ...request, modelRegistry: registry, state: { task: "second task" } });
+	const second = routeModel({ ...request, modelRegistry: registry, state: { task: "second task" } });
 	controller.abort();
 	streams[1].push({ type: "done", reason: "toolUse", message: decisionMessage({ route: "none" }) });
 	await rejected;
@@ -534,7 +534,7 @@ test("model/effort pairs use one Choice and one closed union, preserving null ve
 			});
 		});
 		const request = classifierRequest(classify);
-		const result = await inferRouterDecision({
+		const result = await routeModel({
 			...request,
 			schema,
 			state: { task: "Select a low-cost model", pairs: [...pairs] },
@@ -573,7 +573,7 @@ test("classifier abort during a rejected provider request never falls back or de
 	const request = classifierRequest(classify, decisionRequest().currentModel);
 	const decode = vi.fn(request.classifier.decode);
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
-	const pending = inferRouterDecision({
+	const pending = routeModel({
 		...request,
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 		classifier: { ...request.classifier, decode },

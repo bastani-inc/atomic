@@ -105,8 +105,8 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 		maxResultSizeChars: Infinity,
 		structuredOutput: true,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<AgentToolResult<Static<TSchemaDef>>> {
-			const { inferStructuredOutput } = await import("../structured-output/index.js");
-			const result = await inferStructuredOutput({
+			const { generateStructuredOutput } = await import("../structured-output/index.js");
+			const result = await generateStructuredOutput({
 				schema: options.schema,
 				instructions: params.instructions,
 				state: params.state as JsonObject,
