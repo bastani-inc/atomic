@@ -345,6 +345,13 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("`Assistant-workflow: inline` when no workflow was used");
 			expect(prompt).toContain("`Assistant-duration: 42m converged, estimated 30m`");
 			expect(prompt).toContain("`User-preference: <one line, in the user's terms>`");
+			expect(prompt).toContain(
+				"`Assistant-verification: <method> <passed|failed|unavailable>: <what it proved or why>`",
+			);
+			expect(prompt).toContain("never record a skipped, mocked, or planned check as passed");
+			expect(prompt).toContain("choosing how to verify a change");
+			expect(prompt).toContain("key=Assistant-verification");
+			expect(prompt).toContain("past records never replace the project's required checks");
 			expect(prompt).toContain("never record secrets, credentials");
 			expect(prompt).toContain("Treat fewer than five comparable records as anecdotal");
 			expect(prompt).toContain("This history is a guide, not the decision");
