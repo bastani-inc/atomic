@@ -46,7 +46,7 @@ async function dispatch(
 			const { questions } = JSON.parse(context.messages[0]!.content as string);
 			const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
 			const selected = candidates.find((pair) => pair.effort === effort) ?? candidates[0];
-			return messageStream(decisionMessage({ model: selected.model, effort: selected.effort }));
+			return messageStream(decisionMessage({ modelId: selected.model, reasoningEffort: selected.effort }));
 		},
 	};
 	const agent: AgentConfig = {

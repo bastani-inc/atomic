@@ -46,7 +46,7 @@ async function fixture(model?: string) {
 		filePath: join(cwd, "worker.md"),
 	};
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
+		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
 	);
 	const { registry } = await registeredDecisionRuntime(infer);
 	const runSync = vi.fn(
@@ -128,7 +128,7 @@ for (const mode of ["single-explicit", "single-default", "parallel-explicit", "p
 		stream.push({
 			type: "done",
 			reason: "toolUse",
-			message: decisionMessage({ model: "decision-test/chat", effort: null }),
+			message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
 		});
 		const result = await pending;
 		assert.notEqual(result.isError, true);
@@ -177,8 +177,8 @@ test("parallel tasks do not share the first decision", async () => {
 		const preferred = (state?.task ?? "").includes("second") ? "decision-test/other" : "decision-test/chat";
 		return messageStream(
 			decisionMessage({
-				model: candidates.find((pair) => pair.model === preferred)?.model ?? candidates[0].model,
-				effort: null,
+				modelId: candidates.find((pair) => pair.model === preferred)?.model ?? candidates[0].model,
+				reasoningEffort: null,
 			}),
 		);
 	});
@@ -197,7 +197,7 @@ test("parallel tasks do not share the first decision", async () => {
 test("invalid routing degrades to the current chat model; conflicting constraints produce no child runs (#3206)", async () => {
 	const f = await fixture("auto");
 	vi.spyOn(console, "warn").mockImplementation(() => {});
-	f.infer.mockImplementation(() => messageStream(decisionMessage({ model: "auto", effort: null })));
+	f.infer.mockImplementation(() => messageStream(decisionMessage({ modelId: "auto", reasoningEffort: null })));
 	// #3206: the total routing-inference failure runs the child on the current chat model.
 	const degraded = await f.call({ agent: "worker", task: "Inspect" });
 	assert.equal(degraded.isError ?? false, false);
@@ -228,7 +228,7 @@ test("router cancellation cannot admit a child through a late result", async () 
 	stream.push({
 		type: "done",
 		reason: "toolUse",
-		message: decisionMessage({ model: "decision-test/chat", effort: null }),
+		message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
 	});
 	await pending;
 	assert.equal(f.runSync.mock.calls.length, 0);

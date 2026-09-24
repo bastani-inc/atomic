@@ -61,7 +61,7 @@ const agent: AgentConfig = {
 };
 async function fixture() {
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
+		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
 	);
 	const { registry } = await registeredDecisionRuntime(infer);
 	const ctx = {
@@ -298,9 +298,9 @@ test("call allowlist cannot widen an agent restriction", async () => {
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 const invalidPairs: JsonObject[] = [
-	{ model: "auto", effort: null },
-	{ model: "decision-test/chat", effort: "off" },
-	{ model: "decision-test/chat", effort: null, extra: true },
+	{ modelId: "auto", reasoningEffort: null },
+	{ modelId: "decision-test/chat", reasoningEffort: "off" },
+	{ modelId: "decision-test/chat", reasoningEffort: null, extra: true },
 ];
 for (const answer of invalidPairs) {
 	test(`invalid pair degrades to the current chat model: ${JSON.stringify(answer)} (#3206)`, async () => {
@@ -341,7 +341,7 @@ test("explicit legacy effort constrains automatic selection and intersects hard 
 			Object.values(payload.questions.pair.criteria).map((entry) => JSON.parse(entry as string).effort),
 			["high"],
 		);
-		return messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "high" }));
+		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" }));
 	});
 	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
 	const overridden = applyBuiltinOverrides(
@@ -414,7 +414,7 @@ test("builtin primary and fallback checks retain the same hard-constraint snapsh
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([reasoningModel]);
 	f.infer.mockImplementation(() => {
 		allowedEfforts.push("high");
-		return messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "low" }));
+		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "low" }));
 	});
 	const route = await routeSubagentModel({
 		ctx: f.ctx,
@@ -434,7 +434,8 @@ test("full provider catalog preserves supported off, independent task decisions 
 			context.messages.find((message) => message.role === "user")!.content as string,
 		);
 		const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
-		if (candidates.length === 1) return messageStream(decisionMessage({ model: "decision-test/chat", effort: null }));
+		if (candidates.length === 1)
+			return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
 		assert.deepEqual(
 			[...new Set(candidates.map((entry) => entry.model))],
 			["decision-test/chat", "second-provider/reasoner"],
@@ -446,8 +447,8 @@ test("full provider catalog preserves supported off, independent task decisions 
 		return messageStream(
 			decisionMessage(
 				state.task.includes("proof")
-					? { model: "second-provider/reasoner", effort: "high" }
-					: { model: "second-provider/reasoner", effort: "off" },
+					? { modelId: "second-provider/reasoner", reasoningEffort: "high" }
+					: { modelId: "second-provider/reasoner", reasoningEffort: "off" },
 			),
 		);
 	});
@@ -463,7 +464,7 @@ test("cost, context, capability and effort constraints are enforced before infer
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "low" })),
+		messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "low" })),
 	);
 	const route = await routeSubagentModel({
 		ctx: f.ctx,
@@ -543,7 +544,7 @@ test("catalog availability is revalidated after inference and immediately before
 	available.mockReturnValue([decisionModel]);
 	f.infer.mockImplementation(() => {
 		available.mockReturnValue([]);
-		return messageStream(decisionMessage({ model: "decision-test/chat", effort: null }));
+		return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
 	});
 	await assert.rejects(f.route(), /no longer eligible/);
 });
@@ -593,7 +594,7 @@ test("provider failure degrades to the current chat model; cancellation never be
 	stream.push({
 		type: "done",
 		reason: "toolUse",
-		message: decisionMessage({ model: "decision-test/chat", effort: null }),
+		message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
 	});
 	await assert.rejects(pending, /cancelled|abort/i);
 });
@@ -630,7 +631,7 @@ test("a failed optional fallback-ranking pass keeps the selected primary (#3206)
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 	f.infer
 		.mockImplementationOnce(() =>
-			messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "high" })),
+			messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" })),
 		)
 		.mockImplementation(() => {
 			throw new Error("mock provider failure");
@@ -661,7 +662,7 @@ test("routing accepts a valid selection after the former deadline without retry"
 	stream.push({
 		type: "done",
 		reason: "toolUse",
-		message: decisionMessage({ model: "decision-test/chat", effort: null }),
+		message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
 	});
 	assert.deepEqual((await pending).routerSelection, { model: "decision-test/chat", effort: null });
 	assert.equal(f.infer.mock.calls.length, 1);
@@ -709,7 +710,7 @@ test("registered classifiers and chat routers both receive all 1997 eligible mod
 	f.ctx.getRouterModel = () => "decision-test/chat";
 	let rank = 255;
 	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ model: `decision-test/m${rank++}`, effort: null })),
+		messageStream(decisionMessage({ modelId: `decision-test/m${rank++}`, reasoningEffort: null })),
 	);
 	assert.equal((await f.route()).routerSelection.model, "decision-test/m255");
 	assert.equal(f.infer.mock.calls.length, 3);
@@ -724,7 +725,10 @@ test("registered classifiers and chat routers both receive all 1997 eligible mod
 	const tools = getCurrentTools(context.messages);
 	assert.ok(tools[0]);
 	for (let index = 0; index < 1997; index++)
-		assert.equal(Value.Check(tools[0].parameters, { model: `decision-test/m${index}`, effort: null }), true);
+		assert.equal(
+			Value.Check(tools[0].parameters, { modelId: `decision-test/m${index}`, reasoningEffort: null }),
+			true,
+		);
 });
 
 test("configured credential text is rejected before inference", async () => {
@@ -738,7 +742,7 @@ test("default reasoning catalog does not invent extended effort support (#3206)"
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...reasoningModel, thinkingLevelMap: undefined }]);
 	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ model: "second-provider/reasoner", effort: "max" })),
+		messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "max" })),
 	);
 	// The invented effort is never accepted. The current chat model is not in the
 	// available catalog, so the launch cannot degrade to it and fails.
@@ -887,7 +891,9 @@ test("auto ranks three distinct models, excludes their other efforts, and replay
 		const { questions } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
 		const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
 		for (const prior of ranked.slice(0, index)) assert.ok(candidates.every((pair) => pair.model !== prior.model));
-		return messageStream(decisionMessage(ranked[index++]));
+		return messageStream(
+			decisionMessage({ modelId: ranked[index]!.model, reasoningEffort: ranked[index++]!.effort }),
+		);
 	});
 	const route = await f.route();
 	assert.deepEqual(route.routerSelection, { ...ranked[0], fallbacks: ranked.slice(1) });
@@ -910,6 +916,27 @@ test("auto ranks three distinct models, excludes their other efforts, and replay
 	);
 });
 
+test.each([
+	{ catalog: "reasoning-only", nullable: false },
+	{ catalog: "mixed reasoning and non-reasoning", nullable: true },
+])("the effort schema declares a type every enum value matches for a $catalog catalog", async ({ nullable }) => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
+		nullable ? [reasoningModel, decisionModel] : [reasoningModel],
+	);
+	const effortSchemas: JsonObject[] = [];
+	f.infer.mockImplementation((_model, context) => {
+		const [tool] = getCurrentTools(context.messages);
+		const parameters = tool!.parameters as { properties: { reasoningEffort: JsonObject } };
+		effortSchemas.push(parameters.properties.reasoningEffort);
+		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" }));
+	});
+	const route = await f.route();
+	assert.equal(route.modelOverride, "second-provider/reasoner:high");
+	const strings = { type: "string", enum: ["off", "low", "high"] };
+	assert.deepEqual(effortSchemas[0], nullable ? { anyOf: [strings, { type: "null" }] } : strings);
+});
+
 test("auto routing retains the full benchmark snapshot and distinct provider model IDs", async () => {
 	const f = await fixture();
 	const models = ["anthropic", "github-copilot"].map((provider) => ({
@@ -928,7 +955,9 @@ test("auto routing retains the full benchmark snapshot and distinct provider mod
 		assert.match(String(state.evals), /`Agt`: Agentic Index points/);
 		assert.equal(state.evals, evals);
 		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
-		return messageStream(decisionMessage({ model: `${models[rank++]!.provider}/claude-fable-5`, effort: null }));
+		return messageStream(
+			decisionMessage({ modelId: `${models[rank++]!.provider}/claude-fable-5`, reasoningEffort: null }),
+		);
 	});
 	await f.route();
 	assert.equal(rank, 2);

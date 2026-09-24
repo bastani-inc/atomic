@@ -125,7 +125,9 @@ for (const succeeds of [true, false]) {
 test("execution auto routing uses selected current chat even with classifier credentials", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	const selection = { model: "decision-test/chat", effort: null };
-	const dispatch = vi.fn(() => messageStream(decisionMessage(selection)));
+	const dispatch = vi.fn(() =>
+		messageStream(decisionMessage({ modelId: selection.model, reasoningEffort: selection.effort })),
+	);
 	const available = [decisionModel];
 	const result = await routeExecutionModel({
 		ctx: {

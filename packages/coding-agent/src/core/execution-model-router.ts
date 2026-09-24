@@ -36,6 +36,11 @@ export interface ModelRoute {
 	allowsModel(model: Model<Api>, effort?: string): boolean;
 }
 
+interface RouterWireDecision {
+	modelId: string;
+	reasoningEffort: string | null;
+}
+
 /**
  * Total auto-routing inference failure: Jev and the chat structured-output
  * fallback both failed before any model was selected (#3206). Validation,
@@ -68,7 +73,7 @@ const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
 	"off",
 ];
 const instructions =
-	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly model and effort; null means no configurable reasoning.";
+	"Select one eligible model/effort pair for `task` and `agent` from the supplied Choice criteria, using `evals` as evidence and `model_selection_guide` as policy. Match the agent role to the guide's model cost tier and thinking level first, then consider task fit, measured effort, dates, caveats and cost. Evals cannot add candidates or bypass constraints. Return exactly modelId and reasoningEffort; null reasoningEffort means no configurable reasoning.";
 
 /** Static selection policy sent with every auto-routing request alongside the dated `evals` evidence. */
 export const MODEL_SELECTION_GUIDE = `## Benchmarks are evidence, not policy
@@ -216,15 +221,24 @@ export async function routeExecutionModel(input: {
 					return [key, allCriteria[key]];
 				}),
 			);
-			// Strict Responses providers reject object unions. Enumerate scalar values
-			// on the wire, then verify the exact model/effort relation before admission.
-			const schema = Type.Unsafe<ModelRouterOutput>({
+			// Strict Responses providers reject object unions, and Anthropic rejects an
+			// enum under a type array. Enumerate scalar values on the wire with one
+			// declared type per enum, then verify the exact model/effort relation.
+			const efforts = [...new Set(remaining.map((pair) => pair.effort))];
+			const stringEfforts = efforts.filter((effort) => effort !== null);
+			const stringEffortSchema = { type: "string", enum: stringEfforts };
+			const reasoningEffort = !efforts.includes(null)
+				? stringEffortSchema
+				: stringEfforts.length
+					? { anyOf: [stringEffortSchema, { type: "null" }] }
+					: { type: "null" };
+			const schema = Type.Unsafe<RouterWireDecision>({
 				type: "object",
 				properties: {
-					model: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
-					effort: { type: ["string", "null"], enum: [...new Set(remaining.map((pair) => pair.effort))] },
+					modelId: Type.String({ enum: [...new Set(remaining.map((pair) => pair.model))] }),
+					reasoningEffort,
 				},
-				required: ["model", "effort"],
+				required: ["modelId", "reasoningEffort"],
 				additionalProperties: false,
 			});
 			let result: Awaited<ReturnType<typeof routeModel<typeof schema>>>;
@@ -249,12 +263,13 @@ export async function routeExecutionModel(input: {
 								const pair = pairs[Number(choices.pair?.replace(/^pair_/, ""))];
 								if (!pair || choices.pair !== `pair_${pairs.indexOf(pair)}`)
 									throw new Error("Invalid execution model Choice.");
-								return { ...pair };
+								return { modelId: pair.model, reasoningEffort: pair.effort };
 							},
 						},
 						signal,
 					},
-					(value) => remaining.some((pair) => pair.model === value.model && pair.effort === value.effort),
+					(value) =>
+						remaining.some((pair) => pair.model === value.modelId && pair.effort === value.reasoningEffort),
 				);
 			} catch (error) {
 				signal?.throwIfAborted();
@@ -264,7 +279,7 @@ export async function routeExecutionModel(input: {
 					await currentModelRoute().catch(() => undefined),
 				);
 			}
-			ranked.push(result.value);
+			ranked.push({ model: result.value.modelId, effort: result.value.reasoningEffort });
 		}
 		selection = { ...ranked[0]!, ...(ranked.length > 1 ? { fallbacks: ranked.slice(1) } : {}) };
 	}

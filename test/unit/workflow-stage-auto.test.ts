@@ -63,7 +63,7 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 async function fixture() {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
+		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
 	);
 	const { registry, runtime: decisionRuntime } = await registeredDecisionRuntime(infer);
 	const models = workflowModelCatalogFromContext({
@@ -238,7 +238,9 @@ test("malformed stage decision admits no execution session without a current cha
 		modelRegistry: f.modelRegistry,
 		getRouterModel: () => "decision-test/chat",
 	});
-	f.infer.mockImplementation(() => messageStream(decisionMessage({ model: "decision-test/chat", effort: "high" })));
+	f.infer.mockImplementation(() =>
+		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: "high" })),
+	);
 	const def = workflow({
 		name: "invalid-auto",
 		description: "",
@@ -315,7 +317,9 @@ for (const [allowed, status, admissions] of [
 
 test("auto stage malformed routing decisions degrade to the current chat model (#3206)", async () => {
 	const f = await fixture();
-	f.infer.mockImplementation(() => messageStream(decisionMessage({ model: "decision-test/chat", effort: "high" })));
+	f.infer.mockImplementation(() =>
+		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: "high" })),
+	);
 	const def = workflow({
 		name: "degraded-malformed-auto",
 		description: "",
@@ -419,7 +423,7 @@ test("auto stage cancellation during decision admits no child", async () => {
 	f.infer.mockImplementation((_model, _context, options) => {
 		assert.ok(options?.signal);
 		controller.abort();
-		return messageStream(decisionMessage({ model: "decision-test/chat", effort: null }));
+		return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
 	});
 	const def = workflow({
 		name: "cancel-auto",
@@ -441,7 +445,7 @@ test("stale catalog and explicit unsupported effort fail before admission", asyn
 		if (stale)
 			f.infer.mockImplementation(() => {
 				vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([]);
-				return messageStream(decisionMessage({ model: "decision-test/chat", effort: null }));
+				return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
 			});
 		const def = workflow({
 			name: "stale-auto",
@@ -531,11 +535,11 @@ test("stage decisions survive the actual strict Responses schema conversion", as
 	assert.equal(converted.type, "function");
 	if (converted.type !== "function") throw new Error("Expected function");
 	for (const validator of [Compile(tool.parameters), Compile(converted.parameters as typeof tool.parameters)]) {
-		assert.equal(validator.Check({ model: "decision-test/chat", effort: null }), true);
+		assert.equal(validator.Check({ modelId: "decision-test/chat", reasoningEffort: null }), true);
 		for (const invalid of [
-			{ model: "decision-test/chat" },
-			{ model: "decision-test/chat", effort: "off" },
-			{ model: "decision-test/chat", effort: null, extra: 1 },
+			{ modelId: "decision-test/chat" },
+			{ modelId: "decision-test/chat", reasoningEffort: "off" },
+			{ modelId: "decision-test/chat", reasoningEffort: null, extra: 1 },
 		])
 			assert.equal(validator.Check(invalid), false);
 	}
@@ -562,7 +566,7 @@ test("reasoning fallback preserves explicit and inherited efforts and immutable 
 			const model = candidates.some((pair) => pair.model === "decision-test/primary")
 				? "decision-test/primary"
 				: "decision-test/fallback";
-			return messageStream(decisionMessage({ model, effort: "high" }));
+			return messageStream(decisionMessage({ modelId: model, reasoningEffort: "high" }));
 		});
 		const efforts: string[] = [];
 		const ctx = createStageContext(
@@ -675,7 +679,7 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 			baseUrl: decisionModel.baseUrl,
 			apiKey: "mock-chat-secret",
 			models: [decisionModel],
-			streamSimple: () => messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
+			streamSimple: () => messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
 		});
 		const key = "synthetic-stored-proxy-jev-key";
 		await runtime.saveCredential("typesafe", { type: "api_key", key });
@@ -796,7 +800,11 @@ test("parallel failure cancels no-longer-needed sibling routing before any child
 			.task;
 		if (task === "Fail") return failure;
 		siblingSignal = options?.signal;
-		failure.push({ type: "done", reason: "toolUse", message: decisionMessage({ model: "missing", effort: null }) });
+		failure.push({
+			type: "done",
+			reason: "toolUse",
+			message: decisionMessage({ modelId: "missing", reasoningEffort: null }),
+		});
 		return createAssistantMessageEventStream();
 	});
 	const def = workflow({
@@ -1046,7 +1054,7 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 	const order = ["c", "a", "b"];
 	let rank = 0;
 	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ model: `decision-test/${order[rank++]}`, effort: null })),
+		messageStream(decisionMessage({ modelId: `decision-test/${order[rank++]}`, reasoningEffort: null })),
 	);
 	const attempts: string[] = [];
 	const ctx = createStageContext(
