@@ -376,6 +376,7 @@ export function createWriteToolDefinition(
 	const resolveMutationRequester = options?.resolveMutationRequester;
 	return {
 		name: "write",
+		concurrency: "exclusive",
 		label: "write",
 		description:
 			"Create or overwrite a file, writable internal resource, archive entry, SQLite row, or merge-conflict resolution.",

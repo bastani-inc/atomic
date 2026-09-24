@@ -10,6 +10,7 @@ import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
+import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 export function _refreshToolRegistry(
@@ -88,9 +89,9 @@ export function _refreshToolRegistry(
 		runner,
 	);
 
-	const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
-	for (const tool of wrappedExtensionTools as AgentTool[]) {
-		toolRegistry.set(tool.name, tool);
+	const toolRegistry = new Map<string, AgentTool>();
+	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
+		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler));
 	}
 	this._toolRegistry = toolRegistry;
 

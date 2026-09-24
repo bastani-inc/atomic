@@ -65,6 +65,7 @@ import type { BranchSummaryEntry, SessionEntry, SessionManager } from "./session
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { BashOperations } from "./tools/bash.js";
+import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 
 export interface VerbatimCompactionApplyOptions {
 	/** Per-model planner credentials; a borrowed fallback uses its own, never the session model's. */
@@ -573,6 +574,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_modelRuntime: ModelRuntime;
 	_extensionProviderIds: Set<string>;
 	_toolRegistry: Map<string, AgentTool>;
+	_toolExecutionScheduler: ToolExecutionScheduler;
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;
 	_toolPromptGuidelines: Map<string, string[]>;

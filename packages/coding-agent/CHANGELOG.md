@@ -23,6 +23,7 @@
 - Cua Driver setup guidance now distinguishes installing the executable from installing an agent skill. Atomic already bundles the skill, so it directs agents to skip upstream's optional skill-install commands and leave existing user-level copies alone.
 - Decision selection rejects image-generation models; execution `auto` remains restricted to chat language models, including those with multimodal input.
 - `/workflow resume` picker rows now display the full workflow ID first, with the workflow name in the adjacent description.
+- Tool calls in one assistant message are now ordered by each tool's new `concurrency` setting (`"shared"` by default, or `"exclusive"`). Built-in `edit`, `write`, `todo`, and `ask_user_question` run exclusively, and `bash` does when it uses `pty: true`, so a later `read` in the same message sees an earlier `edit` or `write`, rather than possibly reading the file first. Extension tools can declare `concurrency` as a mode or a per-call function of their arguments.
 
 ### Fixed
 

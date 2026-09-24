@@ -78,6 +78,7 @@ export function createAskUserQuestionToolDefinition(options?: {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
 	return {
 		name: "ask_user_question",
+		concurrency: "exclusive",
 		label: "Ask User Question",
 		description: `Ask the user one or more structured questions during execution. When ask_user_question or an equivalent question tool is available, all questions to the user must use that tool instead of plain text, including a short 'Proceed?' confirmation. Prefer ask_user_question when available. Use when you need to:
 1. Gather user preferences or requirements

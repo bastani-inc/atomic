@@ -29,6 +29,7 @@ export function createTodoToolDefinition(
 
 	return {
 		name: "todo",
+		concurrency: "exclusive",
 		label: "Todo",
 		description:
 			`Manage file-based todos in ${todosDirLabel} (list, list-all, get, create, update, append, delete, claim, release). ` +

@@ -532,6 +532,7 @@ export function createEditToolDefinition(
 	};
 	return {
 		name: "edit",
+		concurrency: "exclusive",
 		label: "edit",
 		description:
 			"Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",

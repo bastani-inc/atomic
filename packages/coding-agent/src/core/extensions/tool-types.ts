@@ -4,6 +4,10 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { SourceInfo } from "../source-info.ts";
+import type { ToolConcurrency } from "../tools/tool-concurrency.ts";
+
+export type { ToolConcurrency, ToolConcurrencyMode } from "../tools/tool-concurrency.ts";
+
 import type { ExtensionContext } from "./context-types.ts";
 
 /** Rendering options for tool results */
@@ -91,6 +95,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
+
+	/**
+	 * Ordering against the other calls of the same assistant message.
+	 * - "shared": may overlap other shared calls, but starts after the latest earlier exclusive call (default)
+	 * - "exclusive": starts after every earlier call finishes; later calls start after it finishes
+	 * - function: resolved per call from its arguments; a throwing resolver means "exclusive"
+	 */
+	concurrency?: ToolConcurrency<Static<TParams>>;
 
 	/** Execute the tool. */
 	execute(

@@ -59,6 +59,7 @@ import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
+import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
@@ -202,6 +203,7 @@ class AgentSessionBase {
 	protected _modelRuntime: ModelRuntime;
 	protected _extensionProviderIds = new Set<string>();
 	protected _toolRegistry: Map<string, AgentTool> = new Map();
+	protected readonly _toolExecutionScheduler = new ToolExecutionScheduler();
 	protected _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	protected _toolPromptSnippets: Map<string, string> = new Map();
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();

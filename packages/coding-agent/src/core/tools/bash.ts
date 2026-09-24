@@ -475,6 +475,7 @@ export function createBashToolDefinition(
 		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
 	return {
 		name: "bash",
+		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
 		label: "bash",
 		description:
 			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). Observation never changes execution timeout. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',

@@ -386,6 +386,27 @@ pi.registerTool({
 });
 ```
 
+**Call ordering:** when one assistant message contains several tool calls, Atomic starts them in message order and runs them concurrently unless a tool declares `concurrency`:
+
+- `"shared"` (default): may overlap other shared calls, but starts only after the latest earlier `"exclusive"` call finishes.
+- `"exclusive"`: starts only after every earlier call in the message finishes, and later calls wait for it.
+- A function `(args) => "shared" | "exclusive"` decides per call. If it throws, the call runs exclusively.
+
+Built-in `edit`, `write`, `todo`, and `ask_user_question` are exclusive, and `bash` is exclusive when it runs with `pty: true`. Other `bash` calls are shared, so a later call in the same message can run before a shell command's file changes land. Declare `"exclusive"` for a tool that changes state later calls depend on. `executionMode: "sequential"` still runs the whole message one call at a time.
+
+```typescript
+pi.registerTool({
+  name: "apply_migration",
+  label: "Apply Migration",
+  description: "Apply one database migration",
+  parameters: Type.Object({ name: Type.String(), dryRun: Type.Optional(Type.Boolean()) }),
+  concurrency: (args) => (args.dryRun === true ? "shared" : "exclusive"),
+  async execute(toolCallId, params) {
+    return { content: [{ type: "text", text: `Applied ${params.name}` }], details: {} };
+  },
+});
+```
+
 ### Fireworks deferred tool loading
 
 Extensions making requests directly through `@bastani/pi-ai` can use native deferred tool loading with Fireworks `anthropic-messages` models. Keep the discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` (and `toolsRemoved` if needed) containing the newly loaded tool definitions. The provider serializes deferred definitions with `defer_loading` and inserts `tool_reference` content at the load point.

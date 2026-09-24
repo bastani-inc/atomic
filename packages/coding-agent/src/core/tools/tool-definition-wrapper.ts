@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import type { ToolConcurrency } from "./tool-concurrency.ts";
 
 declare module "@earendil-works/pi-agent-core" {
 	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
@@ -10,6 +11,8 @@ declare module "@earendil-works/pi-agent-core" {
 		/** Optional prompt metadata retained by factory-created tools registered as extensions. */
 		promptSnippet?: string;
 		promptGuidelines?: string[];
+		/** Ordering against the other calls of the same assistant message; see ToolDefinition.concurrency. */
+		concurrency?: ToolConcurrency<Static<TParameters>>;
 	}
 }
 
@@ -47,6 +50,7 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 					)
 			: undefined,
 		executionMode: definition.executionMode,
+		concurrency: definition.concurrency,
 		execute: (toolCallId, params, signal, onUpdate, context?: ExtensionContext) =>
 			runCallback({ kind: "tool.execute", name: definition.name, toolCallId }, () =>
 				definition.execute(
@@ -88,6 +92,7 @@ export function createToolDefinitionFromAgentTool<TParams extends TSchema = TSch
 		maxResultSizeChars: tool.maxResultSizeChars,
 		prepareArguments: tool.prepareArguments ? (args) => tool.prepareArguments?.(args) as Static<TParams> : undefined,
 		executionMode: tool.executionMode,
+		concurrency: tool.concurrency,
 		execute: async (toolCallId, params, signal, onUpdate, context) =>
 			(tool.execute as ContextualAgentExecute<TParams, TDetails>)(
 				toolCallId,
