@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent no longer treats missing, sparse, or mostly inline workflow history as a reason to run every task inline. It judges from the task itself whether a workflow would help, then refines that choice with comparable execution history and your stated or recorded preferences.
+
 ### Fixed
 
 - Durable workflows work again on Ubuntu and Debian with the default umask 002. Atomic had refused its own group-writable `~/.atomic` as an ancestor of the PostgreSQL runtime cache and ran workflows in memory, so runs couldn't be resumed after closing Atomic. A group-writable folder is now accepted when its group is your private group: no other account in `/etc/passwd` uses it as its primary group, and `/etc/group` lists no member other than you. World-writable folders and shared groups are still rejected.
