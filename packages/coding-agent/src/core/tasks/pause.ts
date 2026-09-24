@@ -50,7 +50,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 				else resolve();
 			};
 			watch.drain();
-			watch.onReconcile(watch.snapshot);
+			watch.onReconcile(watch.snapshot, []);
 		});
 	} finally {
 		watch.dispose();

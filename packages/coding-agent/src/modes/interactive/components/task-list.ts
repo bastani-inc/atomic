@@ -33,17 +33,19 @@ function statusRank(task: TaskRecord): number {
 
 /**
  * Sections list running work first, then stopping, queued, failed, cancelled and completed tasks.
- * Within a status, the latest launch comes first; settled tasks use the latest settlement when known.
+ * Within a status, the latest launch comes first; settled tasks use the latest settlement when known,
+ * and fall back to launch order when their settlement sequences tie.
  */
 export function taskListSections(
 	tasks: readonly TaskRecord[],
-	settlementOrder: ReadonlyMap<TaskId, number> = new Map(),
+	settlementOrder: ReadonlyMap<TaskId, bigint> = new Map(),
 ): TaskListSection[] {
 	const launchOrder = new Map(tasks.map((task, index) => [task.ref.taskId, index]));
 	const newerFirst = (a: TaskRecord, b: TaskRecord) => {
 		const settledA = a.execution.kind === "settled" ? settlementOrder.get(a.ref.taskId) : undefined;
 		const settledB = b.execution.kind === "settled" ? settlementOrder.get(b.ref.taskId) : undefined;
-		if (settledA !== undefined && settledB !== undefined && settledA !== settledB) return settledB - settledA;
+		if (settledA !== undefined && settledB !== undefined && settledA !== settledB)
+			return settledB > settledA ? 1 : -1;
 		return (launchOrder.get(b.ref.taskId) ?? 0) - (launchOrder.get(a.ref.taskId) ?? 0);
 	};
 	const ordered = [...tasks].sort((a, b) => statusRank(a) - statusRank(b) || newerFirst(a, b));

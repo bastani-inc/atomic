@@ -433,8 +433,8 @@ export class TaskSubscription {
 	#disposed = false;
 	#snapshot: C.OwnerSnapshot;
 	#cursor: C.Cursor;
-	/** Reconciliation supplements the RFC snapshot/cursor/iterable contract. */
-	onReconcile: (snapshot: C.OwnerSnapshot) => void = () => {};
+	/** Reconciliation supplements the RFC snapshot/cursor/iterable contract with the events it applied. */
+	onReconcile: (snapshot: C.OwnerSnapshot, events: readonly C.NativeEvent[]) => void = () => {};
 	#onDispose: () => void;
 	#failure?: Error;
 	readonly events: AsyncIterable<C.NativeEvent>;
@@ -520,7 +520,7 @@ export class TaskSubscription {
 		}
 		if (drained.value.snapshot || events.length) {
 			try {
-				this.#resource.runInAsyncScope(this.onReconcile, undefined, this.#snapshot);
+				this.#resource.runInAsyncScope(this.onReconcile, undefined, this.#snapshot, events);
 			} catch (error) {
 				this.#failure = new Error(rejectionMessage(error));
 			}
@@ -631,7 +631,7 @@ export class TaskSupervisor {
 					}
 					if (failure) throw failure;
 				};
-				watched.value.onReconcile(watched.value.snapshot);
+				watched.value.onReconcile(watched.value.snapshot, []);
 				return owner;
 			},
 			ownerErrors,

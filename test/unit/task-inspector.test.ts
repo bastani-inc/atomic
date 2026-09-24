@@ -114,3 +114,28 @@ test("inspector lists running tasks first and keeps selection when a task settle
 		setKeybindings(previous);
 	}
 });
+
+test("inspector orders tasks settled within one drain by settlement, not launch (#3252)", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	const order = () =>
+		stripVTControlCharacters(inspector.render(80).join("\n"))
+			.split("\n")
+			.flatMap((line) => line.match(/task-\d/)?.[0] ?? []);
+	try {
+		for (let i = 0; i < 3; i++) await fixture.start(`task-${i}`);
+		for (const index of [2, 0])
+			fixture.runners[index].result.resolve({ kind: "completed", output: fixture.store.tasks[index].output });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		fixture.store.drain();
+		assert.deepEqual(order(), ["task-1", "task-0", "task-2"]);
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});

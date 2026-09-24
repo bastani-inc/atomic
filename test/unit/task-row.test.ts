@@ -126,7 +126,7 @@ test("sections order tasks by status with running work first and newest first wi
 		shellDone,
 		shellRunning,
 	];
-	const ids = (settlementOrder?: ReadonlyMap<TaskId, number>) =>
+	const ids = (settlementOrder?: ReadonlyMap<TaskId, bigint>) =>
 		taskListSections(tasks, settlementOrder).map((section) => [
 			section.title,
 			section.tasks.map((task) => task.ref.taskId),
@@ -149,8 +149,8 @@ test("sections order tasks by status with running work first and newest first wi
 		["Shells", ["shell-running", "shell-done"]],
 	]);
 	const settledLast = new Map([
-		[completedNew.ref.taskId, 0],
-		[completedOld.ref.taskId, 1],
+		[completedNew.ref.taskId, 0n],
+		[completedOld.ref.taskId, 1n],
 	]);
 	assert.deepEqual(ids(settledLast)[0][1].slice(-2), ["completed-old", "completed-new"]);
 });
