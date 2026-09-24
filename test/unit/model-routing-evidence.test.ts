@@ -51,7 +51,6 @@ test("the factual evals document keeps the top Intelligence Index rows that fit 
 		assert.ok(description && /, \S.+/.test(description), `${column} must describe what it measures`);
 	}
 	assert.match(evals, /Openness Index.*not task-solving ability/);
-	assert.match(evals, /Scores retain the snapshot date above/);
 	assert.match(evals, /`∅`=source null\/absent, not zero/);
 	assert.doesNotMatch(evals, /recommend|prefer|should choose|best for/i);
 });

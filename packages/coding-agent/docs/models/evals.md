@@ -7,8 +7,6 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 Last Accessed: 2026-09-22.
 
-Benchmark descriptions checked against the [Artificial Analysis breakdown](https://artificialanalysis.ai/#intelligence-breakdown) and [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) on 2026-09-23. Scores retain the snapshot date above.
-
 Key:
 
 - `∅`=source null/absent, not zero.
