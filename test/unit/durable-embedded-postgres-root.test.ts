@@ -411,12 +411,82 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 			lock("2.0.0");
 			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
 			assert.ok(passes > 0, "new package version requires a fresh source identity mapping");
+			passes = 0;
+			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
+			assert.equal(passes, 0, "the new package version retains its own fast-path mapping");
 			vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", native);
 			passes = 0;
 			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
 			assert.ok(passes > 0, "explicit runtime overrides use the stat index");
 		} finally {
 			vi.unstubAllEnvs();
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("replacement refreshes an incomplete cached package repaired in place", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-package-repair-"));
+		try {
+			const modules = join(scratch, "node_modules");
+			const pkg = join(modules, "@embedded-postgres", "example");
+			const native = join(pkg, "native");
+			const timezone = join(native, "share", "postgresql", "timezonesets", "Default");
+			mkdirSync(dirname(timezone), { recursive: true });
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["initdb", "postgres", "pg_ctl"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			writeFileSync(
+				join(pkg, "package.json"),
+				JSON.stringify({ name: "@embedded-postgres/example", version: "1.0.0" }),
+			);
+			writeFileSync(
+				join(modules, ".package-lock.json"),
+				JSON.stringify({
+					packages: { "node_modules/@embedded-postgres/example": { version: "1.0.0", integrity: "sha512-same" } },
+				}),
+			);
+			const binaries = {
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+				pg_ctl: join(native, "bin", "pg_ctl"),
+			};
+			const context = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			await assert.rejects(
+				prepareBinariesForOwner(binaries, context, noCommands, {
+					afterInitialSourceSnapshot: () => {
+						throw new Error("snapshot cached");
+					},
+				}),
+				/snapshot cached/,
+			);
+			const indexPath = join(context.baseDir, "pg-runtime", ".atomic-source-index.json");
+			const previous = readFileSync(indexPath, "utf8");
+			writeFileSync(timezone, "repaired timezone\n");
+			let passes = 0;
+			const prepared = await prepareBinariesForOwner(binaries, context, noCommands, {
+				repairCorruptGeneration: true,
+				publicationLease: { ownerToken: "repair", refresh: () => true },
+				onSourceStatPass: () => passes++,
+			});
+			assert.ok(passes > 0, "replacement must inspect the repaired source");
+			assert.notEqual(readFileSync(indexPath, "utf8"), previous);
+			assert.equal(
+				readFileSync(
+					join(dirname(dirname(prepared.postgres)), "share", "postgresql", "timezonesets", "Default"),
+					"utf8",
+				),
+				"repaired timezone\n",
+			);
+			assert.equal(await fingerprintPreparedRuntime(prepared), prepared.sealedIdentity);
+			vi.resetModules();
+			const fresh = await import("../../packages/workflows/src/durable/dbos-embedded-postgres-root.js");
+			passes = 0;
+			const reused = await fresh.prepareBinariesForOwner(binaries, context, noCommands, {
+				onSourceStatPass: () => passes++,
+			});
+			assert.equal(passes, 0, "healthy startup retains the persisted package fast path");
+			assert.equal(reused.sealedIdentity, prepared.sealedIdentity);
+		} finally {
 			removeSealedScratch(scratch);
 		}
 	});

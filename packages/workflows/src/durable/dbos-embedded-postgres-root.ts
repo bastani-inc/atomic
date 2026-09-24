@@ -196,6 +196,8 @@ export interface RuntimePreparationOptions {
 	readonly onSourceStatPass?: () => void;
 	readonly onValidation?: () => void;
 	readonly repairCorruptGeneration?: boolean;
+	/** Refresh source metadata when selecting a replacement; ordinary startup may retain the package fast path. */
+	readonly refreshSourceSnapshot?: boolean;
 	readonly fullValidation?: boolean;
 	readonly memoizedValidation?: boolean;
 	readonly quickValidation?: boolean;
@@ -225,6 +227,7 @@ interface RuntimeManifest {
 }
 interface SourceIndexEntry {
 	readonly signature: string;
+	readonly packageSignature?: string;
 	readonly snapshot: SourceRuntimeSnapshot;
 	readonly indexWrittenAt: number;
 }
@@ -708,7 +711,14 @@ async function memoizedSourceSnapshot(
 	const packageSignature = await installedPackageSignature(realRoot);
 	const indexPath = cacheDir ? join(cacheDir, ".atomic-source-index.json") : undefined;
 	const cached = sourceMemo.get(key);
-	if (packageSignature !== undefined && cached?.signature === packageSignature) return cached.snapshot;
+	const refreshSource = options.refreshSourceSnapshot ?? options.repairCorruptGeneration === true;
+	if (
+		!refreshSource &&
+		packageSignature !== undefined &&
+		cached !== undefined &&
+		(cached.packageSignature ?? cached.signature) === packageSignature
+	)
+		return cached.snapshot;
 	let index: Record<string, SourceIndexEntry> = {};
 	if (indexPath) {
 		try {
@@ -724,8 +734,9 @@ async function memoizedSourceSnapshot(
 			if (!index || typeof index !== "object" || Array.isArray(index)) throw new Error("Invalid source index");
 			const entry = index[key];
 			if (
+				!refreshSource &&
 				packageSignature !== undefined &&
-				entry?.signature === packageSignature &&
+				(entry?.packageSignature ?? entry?.signature) === packageSignature &&
 				/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
 				/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
 			) {
@@ -739,24 +750,31 @@ async function memoizedSourceSnapshot(
 	options.onSourceStatPass?.();
 	const entries = await statRuntimeEntries(root, progress, true);
 	const signature = JSON.stringify([realRoot, entries]);
-	if (packageSignature === undefined) {
-		if (cached?.signature === signature && !sourceEntriesRacy(entries, cached.indexWrittenAt)) return cached.snapshot;
-		const entry = index[key];
-		if (
-			entry?.signature === signature &&
-			!sourceEntriesRacy(entries, entry.indexWrittenAt) &&
-			/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
-			/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
-		) {
-			sourceMemo.set(key, entry);
-			return entry.snapshot;
-		}
+	if (
+		!refreshSource &&
+		cached?.signature === signature &&
+		(packageSignature === undefined || cached.packageSignature === packageSignature) &&
+		!sourceEntriesRacy(entries, cached.indexWrittenAt)
+	)
+		return cached.snapshot;
+	const entry = index[key];
+	if (
+		entry?.signature === signature &&
+		(packageSignature === undefined || entry.packageSignature === packageSignature) &&
+		!sourceEntriesRacy(entries, entry.indexWrittenAt) &&
+		/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
+		/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
+	) {
+		sourceMemo.set(key, entry);
+		return entry.snapshot;
 	}
+	// A repaired package can retain its version and integrity; discard its stale fast-path mapping.
+	if (refreshSource) sourceMemo.delete(key);
 	const snapshot = await snapshotSourceRuntime(root, publisher, progress);
 	options.onSourceStatPass?.();
 	if (signature !== JSON.stringify([await realpath(root), await statRuntimeEntries(root, progress, true)]))
 		throw new SourceRuntimeChangedError("Embedded Postgres source package changed during snapshot.");
-	const indexed = { snapshot, signature: packageSignature ?? signature, indexWrittenAt: Date.now() };
+	const indexed = { snapshot, signature, packageSignature, indexWrittenAt: Date.now() };
 	sourceMemo.set(key, indexed);
 	if (indexPath) {
 		await ensureRuntimeCacheDirectory(cacheDir, publisher);

@@ -302,12 +302,14 @@ async function ensureCluster(
 				reservedGeneration: string | undefined,
 				quickValidation = false,
 				fullValidation = false,
+				refreshSourceSnapshot = false,
 			): Promise<EmbeddedPostgresBinaries> => {
 				const cacheDir = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
 				if (cacheDir === undefined)
 					return prepareBinariesForOwner(source, context, undefined, {
 						publicationLease: setup.runtimePublicationLease,
 						repairCorruptGeneration: true,
+						refreshSourceSnapshot,
 						reservedGeneration,
 						quickValidation,
 						memoizedValidation: true,
@@ -318,6 +320,7 @@ async function ensureCluster(
 					return await prepareBinariesForOwner(source, context, undefined, {
 						publicationLease: setup.runtimePublicationLease,
 						repairCorruptGeneration: true,
+						refreshSourceSnapshot,
 						reservedGeneration,
 						quickValidation,
 						fullValidation,
@@ -342,6 +345,7 @@ async function ensureCluster(
 									setup.runtimePublicationLease.isLost?.() === true,
 							},
 							repairCorruptGeneration: true,
+							refreshSourceSnapshot,
 							reservedGeneration,
 							quickValidation,
 							fullValidation,
@@ -378,6 +382,7 @@ async function ensureCluster(
 						reservedGeneration,
 						mode === "attach",
 						mode === "damage",
+						true,
 					);
 					selectedIdentity = prepared.sealedIdentity;
 				} else {
@@ -388,6 +393,7 @@ async function ensureCluster(
 							source,
 							reservedLiveGeneration,
 							mode === "attach",
+							mode === "damage",
 							mode === "damage",
 						);
 					}
