@@ -248,8 +248,6 @@ export interface WorkflowDefinition<
 	readonly heartbeatIntervalMinutes: number;
 	/** Optional budget declaration resolved when this workflow runs. */
 	readonly budget?: WorkflowBudget;
-	/** `"required"` refuses to start or resume this workflow without a persistent backend. */
-	readonly durability?: WorkflowDurabilityRequirement;
 	readonly inputs: WorkflowInputSchemaMap;
 	readonly outputs?: WorkflowOutputSchemaMap;
 	readonly inputBindings?: WorkflowInputBindings;
@@ -286,8 +284,6 @@ export interface WorkflowParentRunLink {
 	readonly rootRunId: string;
 }
 
-export type WorkflowDurabilityRequirement = "required";
-
 /**
  * Backend selection for one programmatic run. Omit it for the default:
  * durable, falling back to an in-memory backend with a warning.
@@ -296,7 +292,7 @@ export type WorkflowDurability =
 	| { readonly mode: "memory" }
 	| {
 			readonly mode: "durable";
-			/** Postgres URL for the DBOS system database; defaults to `DBOS_SYSTEM_DATABASE_URL` or the managed database. */
+			/** Postgres URL for the DBOS system database, used when `DBOS_SYSTEM_DATABASE_URL` is unset; otherwise the managed database. */
 			readonly systemDatabaseUrl?: string;
 	  };
 
@@ -322,7 +318,7 @@ export interface RunOpts {
 	readonly config?: WorkflowRuntimeConfig;
 	/** Per-run budget override. Each field resolves over definition and config values. */
 	readonly budget?: WorkflowBudget;
-	/** Select the durable backend for this run. `"durable"` never falls back to memory. */
+	/** Select the durable backend for this run. `"durable"` fails fast instead of falling back to memory. */
 	readonly durability?: WorkflowDurability;
 	readonly models?: WorkflowModelCatalogPort;
 	readonly registry?: object;

@@ -116,14 +116,6 @@ readonly budget?: {
 
 The optional budget sets duration, token, and cost limits for this workflow. Atomic freezes the declaration into the compiled definition and resolves each field over the extension default when the workflow runs. See [Run budgets](/workflows/operations#run-budgets) for precedence and validation rules.
 
-### `durability`
-
-```typescript
-readonly durability?: "required";
-```
-
-Set `durability: "required"` for a workflow that must never run without durable state. If only the in-memory backend is available, Atomic won't start or resume the workflow. That applies whether it was launched with `/workflow`, the workflow tool, or SDK `run()`, and the run fails before the workflow body runs. Omit the field for the default behavior: durable, with an in-memory fallback and a warning when Postgres is unavailable.
-
 ### `inputs`
 
 ```typescript
@@ -199,7 +191,6 @@ interface WorkflowDefinition<
   readonly autoAttach?: true;
   readonly heartbeatIntervalMinutes: number;
   readonly budget?: WorkflowBudget;
-  readonly durability?: "required";
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };
@@ -1338,8 +1329,10 @@ type WorkflowDurability =
 
 - **Omitted:** durable, with Atomic's default database selection (`DBOS_SYSTEM_DATABASE_URL`, then its managed Postgres). If Postgres can't start, the run uses memory and prints a warning.
 - **`{ mode: "memory" }`:** runs with an in-memory backend that lasts only for this call. Postgres is never started, and nothing can be resumed after the process exits.
-- **`{ mode: "durable" }`:** requires durable state. If the backend can't start, `run()` rejects with `WorkflowDurabilityRequiredError` instead of falling back to memory.
-- **`{ mode: "durable", systemDatabaseUrl }`:** also chooses the Postgres database, for example a hosted one. This takes precedence over `DBOS_SYSTEM_DATABASE_URL`, and Atomic doesn't start or manage a local Postgres. The database is fixed for the life of the process: a later run that asks for a different URL rejects.
+- **`{ mode: "durable" }`:** requires durable state and fails fast. If the backend can't start, or only an in-memory fallback is available, `run()` rejects with `WorkflowDurabilityRequiredError` before the workflow runs.
+- **`{ mode: "durable", systemDatabaseUrl }`:** also chooses the Postgres database, for example a hosted one, and Atomic doesn't start or manage a local Postgres. `DBOS_SYSTEM_DATABASE_URL` overrides this value when set, so an operator can point a deployment at another database without changing code.
+
+One process uses one workflow database: DBOS runs a single executor per process, so a later run in the same process that asks for a different URL rejects. Separate processes are independent. The Atomic CLI and any number of SDK applications can each use their own database, or share one, including Atomic's managed Postgres. Each process only recovers its own interrupted runs, and an SDK process that exits doesn't stop the managed Postgres other processes are using.
 
 ```ts
 import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";

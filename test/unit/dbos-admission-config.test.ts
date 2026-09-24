@@ -179,3 +179,24 @@ test("explicit endpoint configures a custom admission pool without launching", (
 	assert.equal(config.systemDatabasePool.options.connectionTimeoutMillis, 3_000);
 	assert.equal(sdk.launch.mock.calls.length, 0);
 });
+
+test("DBOS launch runs inside the database's launch lock after the database is ensured", async () => {
+	const events: string[] = [];
+	vi.mocked(ensurePGDatabase).mockImplementationOnce(async () => {
+		events.push("ensure");
+		return { status: "already_exists", notes: [], message: "exists" };
+	});
+	sdk.launch.mockImplementationOnce(async () => {
+		events.push("launch");
+	});
+	const url = "postgresql://atomic:secret@db.example.com:5432/atomic_workflows";
+	const database = configureAdmissionDatabase(sdk, { ...config, systemDatabaseUrl: url }, async (lockUrl, launch) => {
+		events.push(`lock:${lockUrl}`);
+		await launch();
+		events.push("unlock");
+	});
+
+	await database.launch();
+
+	assert.deepEqual(events, ["ensure", `lock:${url}`, "launch", "unlock"]);
+});

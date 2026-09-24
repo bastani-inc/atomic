@@ -12,8 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Workflow definitions can declare `durability: "required"`. Atomic then refuses to start or resume them on the in-memory fallback, whether they're launched with `/workflow`, the workflow tool, or SDK `run()`; the run fails before the workflow body runs ([#3239](https://github.com/bastani-inc/atomic/issues/3239)).
-- SDK `run()` accepts a `durability` option: `{ mode: "memory" }` for a throwaway in-memory run, or `{ mode: "durable", systemDatabaseUrl? }` to require durable state and optionally choose the Postgres database, such as a hosted one, without setting `DBOS_SYSTEM_DATABASE_URL`. Explicit `durable` mode rejects with the new `WorkflowDurabilityRequiredError` instead of falling back to memory. Omitting the option keeps today's behavior.
+- SDK `run()` accepts a `durability` option: `{ mode: "memory" }` for a throwaway in-memory run, or `{ mode: "durable", systemDatabaseUrl? }` to require durable state and optionally choose the Postgres database, such as a hosted one. Explicit `durable` mode fails fast with the new `WorkflowDurabilityRequiredError` instead of falling back to memory ([#3239](https://github.com/bastani-inc/atomic/issues/3239)). `DBOS_SYSTEM_DATABASE_URL` still overrides `systemDatabaseUrl` when set. Omitting the option keeps today's behavior.
 
 ### Changed
 
@@ -34,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed managed PostgreSQL recovery refusing to stop its own verified server when PostgreSQL takes more than three seconds after process creation to write its pidfile. A process created after the recorded PostgreSQL start remains ineligible for shutdown.
 - Windows managed PostgreSQL recovery now holds a verified process handle through shutdown, preventing PID reuse from directing a signal to an unrelated process.
 - Fixed `run()` from `@bastani/atomic/workflows` throwing `DbosNotReadyError` when called from a standalone SDK application. It now starts workflow durability itself and shuts it down after the run, unless another Atomic session in the same process is still using it.
+- Fixed workflow durability failing to start when several Atomic sessions or SDK applications first used the same new database at once. The losing processes failed with a duplicate-key or deadlock error during database setup and fell back to memory, or with explicit `durable` mode, failed. Processes now take turns setting up the database.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

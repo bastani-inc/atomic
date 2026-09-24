@@ -25,20 +25,24 @@ function redactDatabaseUrl(url: string): string {
 	}
 }
 
-/** The caller-supplied system database URL, falling back to `DBOS_SYSTEM_DATABASE_URL`. */
+function environmentSystemDatabaseUrl(): string | undefined {
+	return nonEmptyTrimmed(process.env.DBOS_SYSTEM_DATABASE_URL);
+}
+
+/** `DBOS_SYSTEM_DATABASE_URL` overrides the caller-supplied system database URL. */
 export function explicitDbosSystemDatabaseUrl(): string | undefined {
-	return (
-		nonEmptyTrimmed(getDbosProcessOwner().systemDatabaseUrl) ?? nonEmptyTrimmed(process.env.DBOS_SYSTEM_DATABASE_URL)
-	);
+	return environmentSystemDatabaseUrl() ?? nonEmptyTrimmed(getDbosProcessOwner().systemDatabaseUrl);
 }
 
 /**
- * Select the process's DBOS system database. DBOS accepts configuration once
- * per process, so a different URL after configuration is rejected.
+ * Select the process's DBOS system database unless `DBOS_SYSTEM_DATABASE_URL`
+ * overrides it. DBOS accepts configuration once per process, so a different
+ * URL after configuration is rejected.
  */
 export function requestDbosSystemDatabaseUrl(url: string): void {
 	const requested = nonEmptyTrimmed(url);
 	if (requested === undefined) throw new TypeError("durability.systemDatabaseUrl must be a non-empty Postgres URL");
+	if (environmentSystemDatabaseUrl() !== undefined) return;
 	const owner = getDbosProcessOwner();
 	const configured = owner.configured !== undefined || owner.wrappers !== undefined;
 	if (configured && explicitDbosSystemDatabaseUrl() !== requested) {

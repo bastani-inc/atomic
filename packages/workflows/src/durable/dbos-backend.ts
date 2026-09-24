@@ -114,8 +114,8 @@ const SILENT_DBOS_LOGGER: DbosLogger = {
 };
 
 /**
- * Effective system database URL: explicit config wins over the
- * caller-selected URL, then `DBOS_SYSTEM_DATABASE_URL`. Values are trimmed so
+ * Effective system database URL: explicit config wins over
+ * `DBOS_SYSTEM_DATABASE_URL`, then the caller-selected URL. Values are trimmed so
  * env-injected URLs (secrets managers, env files) with trailing
  * whitespace/newlines connect cleanly, and a whitespace-only value means "not set".
  */

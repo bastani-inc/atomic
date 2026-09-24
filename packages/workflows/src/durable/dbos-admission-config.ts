@@ -1,6 +1,7 @@
 import { ensurePGDatabase } from "@dbos-inc/dbos-sdk/datasource";
 import { fenceDbosAdmissionPool } from "./dbos-admission-pool.js";
 import { defaultPostgresUrl } from "./dbos-default-postgres-url.js";
+import { withDbosLaunchLock } from "./dbos-launch-lock.js";
 import { resolvedPostgresHealth } from "./dbos-managed-health.js";
 import { createRecoverablePostgresPool } from "./dbos-recoverable-pool.js";
 import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
@@ -15,6 +16,7 @@ function defaultDatabaseUrl(name: string): string {
 export function configureAdmissionDatabase(
 	sdk: Pick<DbosStatic, "setConfig" | "launch">,
 	config: DbosConfiguration,
+	launchLock: (url: string, launch: () => Promise<void>) => Promise<void> = withDbosLaunchLock,
 ): { launch: () => Promise<void>; checkReady: () => Promise<void> } {
 	const systemDatabaseUrl = config.systemDatabaseUrl ?? defaultDatabaseUrl(config.name);
 	const health = resolvedPostgresHealth(systemDatabaseUrl);
@@ -45,7 +47,7 @@ export function configureAdmissionDatabase(
 		if (result.status === "failed") {
 			config.logger.warn("Workflow database could not be verified or created; attempting DBOS launch.");
 		}
-		await sdk.launch();
+		await launchLock(urlToEnsure, () => sdk.launch());
 	};
 	return {
 		launch,

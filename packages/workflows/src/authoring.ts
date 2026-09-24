@@ -61,7 +61,6 @@ export type {
 	WorkflowDetailsMode,
 	WorkflowDetailsStatus,
 	WorkflowDurability,
-	WorkflowDurabilityRequirement,
 	WorkflowExecutionMode,
 	WorkflowExecutionPolicy,
 	WorkflowExitOptions,

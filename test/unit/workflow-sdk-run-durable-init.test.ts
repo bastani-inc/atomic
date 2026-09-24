@@ -115,6 +115,15 @@ describe("SDK run() outside an Atomic host", () => {
 });
 
 const HOSTED_URL = "postgresql://atomic:secret@db.example.com:5432/atomic_workflows";
+const ENV_URL = "postgresql://operator:secret@env-host:5432/atomic_workflows";
+
+function recordingConfigurator(events: string[], seenUrls: (string | undefined)[]) {
+	const configure = launchingConfigurator(events);
+	return async () => {
+		seenUrls.push(explicitDbosSystemDatabaseUrl());
+		return await configure();
+	};
+}
 
 describe("SDK run() durability option", () => {
 	afterEach(() => {
@@ -139,14 +148,10 @@ describe("SDK run() durability option", () => {
 
 	test.sequential("durable mode configures DBOS against the supplied system database URL", async () => {
 		withoutInjectedBackend();
-		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "postgresql://env-host/ignored");
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
 		const events: string[] = [];
 		const seenUrls: (string | undefined)[] = [];
-		const configure = launchingConfigurator(events);
-		resetDbosLifecycleForTests(async () => {
-			seenUrls.push(explicitDbosSystemDatabaseUrl());
-			return await configure();
-		});
+		resetDbosLifecycleForTests(recordingConfigurator(events, seenUrls));
 
 		const result = await run(greet, {}, { durability: { mode: "durable", systemDatabaseUrl: ` ${HOSTED_URL}\n` } });
 
@@ -157,15 +162,33 @@ describe("SDK run() durability option", () => {
 		assert.deepEqual(events, ["launch", "shutdown"]);
 	});
 
+	test.sequential("DBOS_SYSTEM_DATABASE_URL overrides the supplied system database URL", async () => {
+		withoutInjectedBackend();
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", ENV_URL);
+		const seenUrls: (string | undefined)[] = [];
+		resetDbosLifecycleForTests(recordingConfigurator([], seenUrls));
+		const releaseHost = acquireDbosLease();
+		try {
+			const first = await run(greet, {}, { durability: { mode: "durable", systemDatabaseUrl: HOSTED_URL } });
+			const second = await run(
+				greet,
+				{},
+				{ durability: { mode: "durable", systemDatabaseUrl: "postgresql://x/y" } },
+			);
+
+			assert.equal(first.status, "completed", first.error);
+			assert.equal(second.status, "completed", second.error);
+			assert.deepEqual(seenUrls, [ENV_URL]);
+		} finally {
+			await releaseHost();
+		}
+	});
+
 	test.sequential("durable mode without a URL keeps the default database resolution", async () => {
 		withoutInjectedBackend();
 		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
 		const seenUrls: (string | undefined)[] = [];
-		const configure = launchingConfigurator([]);
-		resetDbosLifecycleForTests(async () => {
-			seenUrls.push(explicitDbosSystemDatabaseUrl());
-			return await configure();
-		});
+		resetDbosLifecycleForTests(recordingConfigurator([], seenUrls));
 
 		const result = await run(greet, {}, { durability: { mode: "durable" } });
 
@@ -175,6 +198,7 @@ describe("SDK run() durability option", () => {
 
 	test.sequential("rejects a different system database URL once DBOS is configured in this process", async () => {
 		withoutInjectedBackend();
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
 		resetDbosLifecycleForTests(launchingConfigurator([]));
 		const releaseHost = acquireDbosLease();
 		try {
@@ -192,16 +216,12 @@ describe("SDK run() durability option", () => {
 	});
 });
 
-const requiredGreet = workflow({
-	name: "sdk-run-required-greet",
-	description: "Workflow that must never execute non-durably (#3239).",
-	durability: "required",
-	outputs: { greeting: Type.String() },
-	run: async (ctx) => ({ greeting: await ctx.tool("greet", {}, async () => "hello durable") }),
-});
+describe("durable mode fails fast (#3239)", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
 
-describe("required durability (#3239)", () => {
-	test.sequential("explicit durable mode rejects instead of falling back to memory", async () => {
+	test.sequential("rejects instead of falling back to memory when DBOS cannot start", async () => {
 		withoutInjectedBackend();
 		resetDbosLifecycleForTests(async () => {
 			throw new Error("postgres unreachable");
@@ -220,16 +240,45 @@ describe("required durability (#3239)", () => {
 		}
 	});
 
-	test.sequential("a required definition rejects when DBOS cannot start, even without a run option", async () => {
+	test.sequential("does not reuse an in-memory fallback installed by an earlier default run", async () => {
 		withoutInjectedBackend();
 		resetDbosLifecycleForTests(async () => {
 			throw new Error("postgres unreachable");
 		});
-		await assert.rejects(run(requiredGreet, {}), WorkflowDurabilityRequiredError);
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const degraded = await run(greet, {});
+			assert.equal(degraded.status, "completed", degraded.error);
+			assert.ok(getDurableBackendProcessOwner().initializedBackend instanceof InMemoryDurableBackend);
+
+			await assert.rejects(run(greet, {}, { durability: { mode: "durable" } }), WorkflowDurabilityRequiredError);
+		} finally {
+			consoleSpy.mockRestore();
+		}
+	});
+
+	test.sequential("rejects before running on a preset in-memory backend", async () => {
+		let executed = false;
+		const guarded = workflow({
+			name: "sdk-run-durable-guarded",
+			description: "Records whether its body ran.",
+			outputs: {},
+			run: async () => {
+				executed = true;
+				return {};
+			},
+		});
+
+		await assert.rejects(
+			run(guarded, {}, { durability: { mode: "durable" }, durableBackend: new InMemoryDurableBackend() }),
+			WorkflowDurabilityRequiredError,
+		);
+		assert.equal(executed, false);
 	});
 
 	test.sequential("a failed caller-selected database is not told to set DBOS_SYSTEM_DATABASE_URL", async () => {
 		withoutInjectedBackend();
+		vi.stubEnv("DBOS_SYSTEM_DATABASE_URL", "");
 		resetDbosLifecycleForTests(async () => {
 			throw new Error("connect ECONNREFUSED 127.0.0.1:55499");
 		});
@@ -240,53 +289,6 @@ describe("required durability (#3239)", () => {
 				error instanceof WorkflowDurabilityRequiredError &&
 				/Check that the selected workflow system database is reachable/.test(error.message) &&
 				!error.message.includes("Set DBOS_SYSTEM_DATABASE_URL"),
-		);
-	});
-
-	test.sequential("a required definition fails before running on an in-memory backend", async () => {
-		let executed = false;
-		const guarded = workflow({
-			name: "sdk-run-required-guarded",
-			description: "Records whether its body ran.",
-			durability: "required",
-			outputs: {},
-			run: async () => {
-				executed = true;
-				return {};
-			},
-		});
-
-		const memory = await run(guarded, {}, { durability: { mode: "memory" } });
-		const hostDegraded = await run(guarded, {}, { durableBackend: new InMemoryDurableBackend() });
-
-		for (const result of [memory, hostDegraded]) {
-			assert.equal(result.status, "failed");
-			assert.match(result.error ?? "", /requires durable execution/);
-		}
-		assert.equal(executed, false);
-	});
-
-	test.sequential("a required definition runs on a persistent backend", async () => {
-		withoutInjectedBackend();
-		resetDbosLifecycleForTests(launchingConfigurator([]));
-
-		const result = await run(requiredGreet, {});
-
-		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(result.result, { greeting: "hello durable" });
-	});
-
-	test("workflow() rejects an unknown durability value", () => {
-		assert.throws(
-			() =>
-				workflow({
-					name: "bad-durability",
-					description: "",
-					durability: "optional" as "required",
-					outputs: {},
-					run: async () => ({}),
-				}),
-			/durability must be "required"/,
 		);
 	});
 });
