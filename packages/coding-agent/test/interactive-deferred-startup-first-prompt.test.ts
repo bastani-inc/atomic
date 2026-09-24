@@ -56,6 +56,10 @@ function writeProbeTheme(path: string, name: string): void {
 	writeFileSync(path, JSON.stringify({ ...theme, name }));
 }
 
+// Two full builtin-package loads (session creation, then a candidate `session.reload()`)
+// are structural; under a loaded full-suite run they exceed the 30 s default.
+const REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS = 120_000;
+
 describe("interactive deferred startup first prompt readiness", () => {
 	let tempDir: string;
 	let agentDir: string;
@@ -290,66 +294,70 @@ describe("interactive deferred startup first prompt readiness", () => {
 		}
 	});
 
-	it("discards candidate events and session controls when resource publication fails", async () => {
-		const themeFile = join(tempDir, "candidate-side-effect-theme.json");
-		writeProbeTheme(themeFile, "candidate-side-effect-theme");
-		let candidate = false;
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: tempDir,
-			agentDir,
-			settingsManager,
-			themesOverride: (base) => {
-				if (base.themes.some((theme) => theme.name === "candidate-side-effect-theme")) {
-					throw new Error("candidate side-effect failure");
-				}
-				return base;
-			},
-			extensionFactories: [
-				(pi) => {
-					if (!candidate) {
-						pi.events.on("candidate-start", () => pi.sendUserMessage("old-event-bus-dispatch"));
-						return;
+	it(
+		"discards candidate events and session controls when resource publication fails",
+		async () => {
+			const themeFile = join(tempDir, "candidate-side-effect-theme.json");
+			writeProbeTheme(themeFile, "candidate-side-effect-theme");
+			let candidate = false;
+			const settingsManager = SettingsManager.create(tempDir, agentDir);
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+				themesOverride: (base) => {
+					if (base.themes.some((theme) => theme.name === "candidate-side-effect-theme")) {
+						throw new Error("candidate side-effect failure");
 					}
-					pi.on("session_start", (_event, ctx) => {
-						pi.events.emit("candidate-start", undefined);
-						pi.sendUserMessage("candidate-direct-dispatch");
-						ctx.compact();
-						ctx.abort();
-						ctx.shutdown();
-					});
-					pi.on("resources_discover", () => ({ themePaths: [themeFile] }));
+					return base;
 				},
-			],
-		});
-		await resourceLoader.reload();
-		const { session } = await createAgentSession({
-			cwd: tempDir,
-			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			settingsManager,
-			sessionManager: SessionManager.inMemory(),
-			resourceLoader,
-		});
-		try {
-			const shutdown = vi.fn();
-			await session.bindExtensions({ commandContextActions: createCommandActions(), shutdownHandler: shutdown });
-			const send = vi.spyOn(session, "sendUserMessage").mockResolvedValue();
-			const compact = vi.spyOn(session, "compact").mockRejectedValue(new Error("must not run"));
-			const abort = vi.spyOn(session, "abort").mockResolvedValue();
-			candidate = true;
+				extensionFactories: [
+					(pi) => {
+						if (!candidate) {
+							pi.events.on("candidate-start", () => pi.sendUserMessage("old-event-bus-dispatch"));
+							return;
+						}
+						pi.on("session_start", (_event, ctx) => {
+							pi.events.emit("candidate-start", undefined);
+							pi.sendUserMessage("candidate-direct-dispatch");
+							ctx.compact();
+							ctx.abort();
+							ctx.shutdown();
+						});
+						pi.on("resources_discover", () => ({ themePaths: [themeFile] }));
+					},
+				],
+			});
+			await resourceLoader.reload();
+			const { session } = await createAgentSession({
+				cwd: tempDir,
+				agentDir,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(),
+				resourceLoader,
+			});
+			try {
+				const shutdown = vi.fn();
+				await session.bindExtensions({ commandContextActions: createCommandActions(), shutdownHandler: shutdown });
+				const send = vi.spyOn(session, "sendUserMessage").mockResolvedValue();
+				const compact = vi.spyOn(session, "compact").mockRejectedValue(new Error("must not run"));
+				const abort = vi.spyOn(session, "abort").mockResolvedValue();
+				candidate = true;
 
-			await expect(session.reload({ reason: "reload", failOnExtensionErrors: true })).rejects.toThrow(
-				"candidate side-effect failure",
-			);
-			expect(send).not.toHaveBeenCalled();
-			expect(compact).not.toHaveBeenCalled();
-			expect(abort).not.toHaveBeenCalled();
-			expect(shutdown).not.toHaveBeenCalled();
-		} finally {
-			session.dispose();
-		}
-	});
+				await expect(session.reload({ reason: "reload", failOnExtensionErrors: true })).rejects.toThrow(
+					"candidate side-effect failure",
+				);
+				expect(send).not.toHaveBeenCalled();
+				expect(compact).not.toHaveBeenCalled();
+				expect(abort).not.toHaveBeenCalled();
+				expect(shutdown).not.toHaveBeenCalled();
+			} finally {
+				session.dispose();
+			}
+		},
+		REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+	);
 
 	it("removes providers owned by extensions that disappear on reload", async () => {
 		const providerId = "removed-extension-provider";

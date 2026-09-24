@@ -62,70 +62,78 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 	}
 });
 
+// Two full builtin-package loads (session creation, then `session.reload()`) are
+// structural; under a loaded full-suite run they exceed the 30 s default.
+const REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS = 120_000;
+
 // #3105: custom discovery remains caller-owned while Atomic supplies its builtins.
-test("custom loaders retain their resources and factories while startup runs once", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-custom-"));
-	let starts = 0;
-	const reasons: string[] = [];
-	const settingsManager = SettingsManager.inMemory();
-	const loader = new DefaultResourceLoader({
-		cwd,
-		agentDir: join(cwd, "agent"),
-		settingsManager,
-		noExtensions: true,
-		noContextFiles: true,
-		systemPrompt: "Caller-owned prompt",
-		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", async (event) => {
-					await Promise.resolve();
-					starts++;
-					reasons.push(event.reason);
-				});
-			},
-		],
-	});
-	await loader.reload();
-	const originalExtensions = [...loader.getExtensions().extensions];
-	const options = Object.freeze({
-		cwd,
-		agentDir: join(cwd, "agent"),
-		resourceLoader: loader,
-		settingsManager,
-		sessionManager: SessionManager.inMemory(cwd),
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
-	});
-	try {
-		const { session } = await createAgentSession(options);
+test(
+	"custom loaders retain their resources and factories while startup runs once",
+	async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-custom-"));
+		let starts = 0;
+		const reasons: string[] = [];
+		const settingsManager = SettingsManager.inMemory();
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			settingsManager,
+			noExtensions: true,
+			noContextFiles: true,
+			systemPrompt: "Caller-owned prompt",
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", async (event) => {
+						await Promise.resolve();
+						starts++;
+						reasons.push(event.reason);
+					});
+				},
+			],
+		});
+		await loader.reload();
+		const originalExtensions = [...loader.getExtensions().extensions];
+		const options = Object.freeze({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			resourceLoader: loader,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+		});
 		try {
-			assert.equal(starts, 1);
-			// #3105: mandatory composition must reuse the genuine overlay registration.
-			const builtins = session.resourceLoader
-				.getExtensions()
-				.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled");
-			assert.equal(builtins.length, 5);
-			assert.equal(new Set(builtins.map((extension) => extension.resolvedPath)).size, 5);
-			assert.ok(session.getAllTools().some((tool) => tool.name === "workflow"));
-			assert.ok(session.systemPrompt.startsWith("Caller-owned prompt"));
-			assert.deepEqual(loader.getExtensions().extensions, originalExtensions);
-			await Promise.all([session.bindExtensions({}), session.bindExtensions({})]);
-			assert.equal(starts, 1);
-			await session.reload();
-			await session.bindExtensions({});
-			assert.equal(
-				session.resourceLoader
+			const { session } = await createAgentSession(options);
+			try {
+				assert.equal(starts, 1);
+				// #3105: mandatory composition must reuse the genuine overlay registration.
+				const builtins = session.resourceLoader
 					.getExtensions()
-					.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled").length,
-				5,
-			);
-			assert.deepEqual(reasons, ["startup", "reload"]);
+					.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled");
+				assert.equal(builtins.length, 5);
+				assert.equal(new Set(builtins.map((extension) => extension.resolvedPath)).size, 5);
+				assert.ok(session.getAllTools().some((tool) => tool.name === "workflow"));
+				assert.ok(session.systemPrompt.startsWith("Caller-owned prompt"));
+				assert.deepEqual(loader.getExtensions().extensions, originalExtensions);
+				await Promise.all([session.bindExtensions({}), session.bindExtensions({})]);
+				assert.equal(starts, 1);
+				await session.reload();
+				await session.bindExtensions({});
+				assert.equal(
+					session.resourceLoader
+						.getExtensions()
+						.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled").length,
+					5,
+				);
+				assert.deepEqual(reasons, ["startup", "reload"]);
+			} finally {
+				await session.dispose();
+			}
 		} finally {
-			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: CLI services and the direct SDK share default composition.
 test("CLI service creation supplies the same default builtin families", async () => {
