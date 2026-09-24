@@ -45,12 +45,15 @@ test("managed start enables the weekday collector ring without unsafe durability
 
 test("unsafe durability requires an opted-in data directory inside the real temporary directory", async () => {
 	const dataDir = mkdtempSync(join(tmpdir(), "atomic-pg-logging-"));
+	const home = mkdtempSync(join(tmpdir(), "atomic-pg-unmanaged-home-"));
 	const args: string[][] = [];
 	embeddedPostgresTestHooks.setRetainedPostgresSpawner((options) => {
 		args.push(options.args);
 		return lease;
 	});
 	try {
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("USERPROFILE", home);
 		await embeddedPostgresTestHooks.startCluster("postgres", dataDir, join(dataDir, "v18.log"), context());
 		await embeddedPostgresTestHooks.startCluster("postgres", dataDir, join(dataDir, "v18.log"), context(), 5439, {
 			unsafeDurability: true,
@@ -62,6 +65,8 @@ test("unsafe durability requires an opted-in data directory inside the real temp
 		assert.deepEqual(args[1].slice(-unsafe.length), unsafe);
 		assert.deepEqual(args[2].slice(-ring.length), ring);
 	} finally {
+		vi.unstubAllEnvs();
+		rmSync(home, { recursive: true, force: true });
 		rmSync(dataDir, { recursive: true, force: true });
 	}
 });
@@ -77,10 +82,19 @@ test("managed home data never receives unsafe durability even when TMPDIR is hom
 	});
 	try {
 		vi.stubEnv("HOME", home);
+		vi.stubEnv("USERPROFILE", home);
 		vi.stubEnv("TMPDIR", home);
-		await embeddedPostgresTestHooks.startCluster("postgres", dataDir, join(home, "v18.log"), context(), 5439, {
-			unsafeDurability: true,
-		});
+		const selectedDataDir = process.platform === "win32" ? join(home, ".ATOMIC", "POSTGRES", "V18") : dataDir;
+		await embeddedPostgresTestHooks.startCluster(
+			"postgres",
+			selectedDataDir,
+			join(home, "v18.log"),
+			context(),
+			5439,
+			{
+				unsafeDurability: true,
+			},
+		);
 		assert.deepEqual(observed?.args.slice(-ring.length), ring);
 	} finally {
 		vi.unstubAllEnvs();

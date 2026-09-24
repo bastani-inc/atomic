@@ -48,12 +48,13 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir, tmpdir, uptime } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { tmpdir, uptime } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { RetainedPostgres, RetainedPostgresSpawnOptions } from "@bastani/atomic-natives";
 import { DbosDependencyError } from "./dbos-admission.js";
 import {
 	cleanupAbandonedRuntimeStages,
+	defaultEmbeddedBaseDir,
 	type EmbeddedPostgresRunContext,
 	ensureRuntimeCacheDirectory,
 	fingerprintPreparedRuntime,
@@ -792,10 +793,25 @@ async function startCluster(
 	try {
 		let unsafeDurability = false;
 		if (options.unsafeDurability) {
-			const realDataDir = realpathSync(dataDir);
-			const realTempDir = realpathSync(tmpdir());
+			const canonical = (path: string) => {
+				const resolved = realpathSync.native(path);
+				return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+			};
+			const canonicalManagedBase = (path: string): string => {
+				try {
+					return canonical(path);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					return join(
+						canonicalManagedBase(dirname(path)),
+						process.platform === "win32" ? basename(path).toLowerCase() : basename(path),
+					);
+				}
+			};
+			const realDataDir = canonical(dataDir);
+			const realTempDir = canonical(tmpdir());
 			const withinTemp = relative(realTempDir, realDataDir);
-			const withinManagedHome = relative(join(realpathSync(homedir()), ".atomic"), realDataDir);
+			const withinManagedHome = relative(canonicalManagedBase(defaultEmbeddedBaseDir()), realDataDir);
 			unsafeDurability =
 				withinTemp !== "" &&
 				withinTemp !== ".." &&

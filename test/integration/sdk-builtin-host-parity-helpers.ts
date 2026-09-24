@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
-import { type SyncSpawnResult, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir, type SyncSpawnResult, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** Spawn budget for one built-Node fixture process. Mirrors, but is not the
  *  source of, each suite file's vitest budget — the duration guard resolves
  *  timeout expressions only from numeric consts declared in the reporting file. */
 const FIXTURE_PROCESS_TIMEOUT_MS = 60_000;
+const BUILT_PACKAGE_DIR = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist");
 
 export function runBuiltNodeFixture(
 	fixture: string,
@@ -14,9 +17,13 @@ export function runBuiltNodeFixture(
 	execArgv: readonly string[] = [],
 	env?: NodeJS.ProcessEnv,
 ): SyncSpawnResult {
+	assert.ok(
+		existsSync(join(BUILT_PACKAGE_DIR, "cli.js")),
+		"packages/coding-agent/dist/cli.js missing — run the build step before the built Node host tests",
+	);
 	return spawnSyncCollect(
 		[process.execPath, ...execArgv, fileURLToPath(new URL(`../fixtures/${fixture}`, import.meta.url)), ...args],
-		{ timeout: FIXTURE_PROCESS_TIMEOUT_MS, env },
+		{ timeout: FIXTURE_PROCESS_TIMEOUT_MS, env: { ...process.env, ...env, ATOMIC_PACKAGE_DIR: BUILT_PACKAGE_DIR } },
 	);
 }
 

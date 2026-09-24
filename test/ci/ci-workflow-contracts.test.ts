@@ -102,7 +102,7 @@ test("npm registry retries declare integer timeouts and ordered backoffs", async
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
 });
 
-test("global setups isolate Herdr and provide artifacts and native bindings to every project", async () => {
+test("global setups isolate Herdr, then prepare artifacts and natives before integration PostgreSQL", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -114,13 +114,16 @@ test("global setups isolate Herdr and provide artifacts and native bindings to e
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
+	const postgresRuntimeSetup = "./test/global-setup-postgres-runtime.ts";
 	for (const name of ["unit", "integration", "ci"]) {
 		const project = projects.find((entry) => entry.test?.name === name);
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
 			project.test?.globalSetup,
-			[herdrSetup, artifactSetup, nativeSetup],
-			`${name} must isolate inherited Herdr credentials before artifact and native setup`,
+			name === "integration"
+				? [herdrSetup, artifactSetup, nativeSetup, postgresRuntimeSetup]
+				: [herdrSetup, artifactSetup, nativeSetup],
+			`${name} must isolate inherited Herdr credentials first and prewarm integration PostgreSQL after natives`,
 		);
 	}
 });

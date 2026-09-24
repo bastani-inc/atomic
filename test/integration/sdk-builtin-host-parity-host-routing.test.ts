@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getCurrentTools } from "@bastani/pi-ai";
 import { test, vi } from "vitest";
 import {
@@ -17,9 +16,9 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
-import { spawnSyncCollect } from "../helpers/runtime.js";
+import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 import { attachedCliPresentation, forwardCliDialogs } from "./fixtures/sdk-host-cli.js";
+import { runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";
 
 // #3105: human input is independent of terminal presentation.
 test("workflow execution policy admits a callback host without a terminal", () => {
@@ -781,46 +780,70 @@ const BUILT_NODE_HOST_PROCESS_TIMEOUT_MS = 60_000;
 // #3105: source-alias tests are not executable package host-routing evidence.
 test(
 	"built non-TTY Node routes the unchanged workflow and exits after public session disposal",
-	() => {
-		const result = spawnSyncCollect(
-			[process.execPath, fileURLToPath(new URL("../fixtures/sdk-host-built-node.mjs", import.meta.url))],
-			{
-				timeout: BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
-			},
-		);
-		assert.equal(result.exitCode, 0, result.stderr.toString());
-		const receipt = JSON.parse(result.stdout.toString().trim());
-		assert.equal(receipt.host, "built-node");
-		assert.equal(
-			receipt.hash,
-			createHash("sha256")
-				.update(readFileSync(new URL("../fixtures/sdk-host-durable-workflow.ts", import.meta.url)))
-				.digest("hex"),
-		);
-		assert.deepEqual(receipt.result, { text: "  durable text  ", approved: true });
-		assert.equal(receipt.effects, 1);
+	async () => {
+		const home = new RealPostgresHome();
+		try {
+			const reserved = await reserveListener();
+			await reserved.close();
+			const managed = await home.client(reserved.port).request<ManagedResult>("ensure");
+			const result = runBuiltNodeFixture("sdk-host-built-node.mjs", [], [], {
+				HOME: home.path,
+				USERPROFILE: home.path,
+				ATOMIC_CODING_AGENT_DIR: `${home.path}/agent`,
+				ATOMIC_MANAGED_TEST_HOME: home.path,
+				ATOMIC_POSTGRES_PORT: String(managed.metadata.server.port),
+				DBOS_SYSTEM_DATABASE_URL: undefined,
+				ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
+				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: home.runtimeCache,
+				PGPORT: "0",
+			});
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			const receipt = JSON.parse(result.stdout.toString().trim());
+			assert.equal(receipt.host, "built-node");
+			assert.equal(
+				receipt.hash,
+				createHash("sha256")
+					.update(readFileSync(new URL("../fixtures/sdk-host-durable-workflow.ts", import.meta.url)))
+					.digest("hex"),
+			);
+			assert.deepEqual(receipt.result, { text: "  durable text  ", approved: true });
+			assert.equal(receipt.effects, 1);
+		} finally {
+			await home.cleanup();
+		}
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
 );
 
 test(
 	"built non-TTY Node finalizes a pending workflow when replacement creation rejects before a new session",
-	() => {
-		const result = spawnSyncCollect(
-			[
-				process.execPath,
-				fileURLToPath(new URL("../fixtures/sdk-host-built-node.mjs", import.meta.url)),
-				"--replacement-failure",
-			],
-			{ timeout: BUILT_NODE_HOST_PROCESS_TIMEOUT_MS },
-		);
-		assert.equal(result.exitCode, 0, result.stderr.toString());
-		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
-			host: "built-node",
-			replacementFailed: true,
-			initiallyPending: true,
-			disposed: true,
-		});
+	async () => {
+		const home = new RealPostgresHome();
+		try {
+			const reserved = await reserveListener();
+			await reserved.close();
+			const managed = await home.client(reserved.port).request<ManagedResult>("ensure");
+			const result = runBuiltNodeFixture("sdk-host-built-node.mjs", ["--replacement-failure"], [], {
+				HOME: home.path,
+				USERPROFILE: home.path,
+				ATOMIC_CODING_AGENT_DIR: `${home.path}/agent`,
+				ATOMIC_MANAGED_TEST_HOME: home.path,
+				ATOMIC_POSTGRES_PORT: String(managed.metadata.server.port),
+				DBOS_SYSTEM_DATABASE_URL: undefined,
+				ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
+				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: home.runtimeCache,
+				PGPORT: "0",
+			});
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
+				host: "built-node",
+				replacementFailed: true,
+				initiallyPending: true,
+				disposed: true,
+			});
+		} finally {
+			await home.cleanup();
+		}
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,
 );

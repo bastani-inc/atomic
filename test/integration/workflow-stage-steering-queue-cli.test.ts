@@ -33,11 +33,12 @@
  */
 
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeAll, describe, test } from "vitest";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { RealPostgresHome } from "../helpers/real-postgres.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -124,7 +125,7 @@ class InteractiveCli {
 	/** The rendered text of the last snapshot, kept for failure reporting. */
 	private lastOutput = "";
 
-	constructor(projectDir: string, agentDir: string, sessionDir: string) {
+	constructor(projectDir: string, agentDir: string, sessionDir: string, postgresHome: RealPostgresHome) {
 		const environment: Record<string, string | undefined> = { ...process.env };
 		// A suite that itself runs inside an Atomic session would otherwise leak
 		// its agent directory and its engine-child markers into the child.
@@ -149,8 +150,13 @@ class InteractiveCli {
 			env: {
 				...environment,
 				NODE_ENV: "production",
+				HOME: postgresHome.path,
+				USERPROFILE: postgresHome.path,
 				ATOMIC_CODING_AGENT_DIR: agentDir,
 				ATOMIC_CODING_AGENT_SESSION_DIR: sessionDir,
+				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: postgresHome.runtimeCache,
+				DBOS_SYSTEM_DATABASE_URL: undefined,
+				PGPORT: "0",
 				ATOMIC_SKIP_VERSION_CHECK: "1",
 				NO_COLOR: "1",
 			},
@@ -352,8 +358,7 @@ interface Evidence {
 	/** Everything drawn strictly after the reattach keystroke. */
 	readonly afterReattach: string;
 }
-
-async function runScenario(): Promise<Evidence> {
+async function runScenario(postgresHome: RealPostgresHome): Promise<Evidence> {
 	const root = mkdtempSync(join(tmpdir(), "atomic-issue-2074-"));
 	const projectDir = join(root, "project");
 	const agentDir = join(root, "agent");
@@ -378,7 +383,7 @@ async function runScenario(): Promise<Evidence> {
 
 	const model = await startModelServer(stateDir);
 	writeAgentConfig(agentDir, model.baseUrl);
-	const cli = new InteractiveCli(projectDir, agentDir, sessionDir);
+	const cli = new InteractiveCli(projectDir, agentDir, sessionDir, postgresHome);
 	try {
 		await cli.waitUntilReady();
 
@@ -465,9 +470,18 @@ async function runScenario(): Promise<Evidence> {
 let evidence: Evidence;
 
 describe("issue #2074 — stage steering and queued-message state through the real CLI", () => {
+	let postgresHome: RealPostgresHome | undefined;
 	beforeAll(async () => {
-		evidence = await runScenario();
+		postgresHome = new RealPostgresHome();
+		evidence = await runScenario(postgresHome);
+		const clusterVersion = join(postgresHome.path, ".atomic", "postgres", "v18", "PG_VERSION");
+		console.log(
+			`issue-2074 managed PostgreSQL home: ${postgresHome.path}; cluster present: ${existsSync(clusterVersion)}`,
+		);
 	}, REAL_CLI_STAGE_CHAT_SCENARIO_TIMEOUT_MS);
+	afterAll(async () => {
+		await postgresHome?.cleanup();
+	});
 
 	test("the stage really is mid-turn, so the typed messages are queued rather than delivered", () => {
 		assert.equal(evidence.whileAttached.includes(STAGE_TEXT), true);

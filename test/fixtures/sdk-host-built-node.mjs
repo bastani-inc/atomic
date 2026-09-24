@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { AgentSessionRuntime, createAgentSession, createAgentSessionServices, SessionManager, SettingsManager } from "@bastani/atomic";
+
+const home = process.env.ATOMIC_MANAGED_TEST_HOME;
+assert.ok(home && resolve(homedir()) === resolve(home) && process.env.USERPROFILE === home, "built host fixture requires a disposable managed HOME");
+assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-real-postgres-"), "requires RealPostgresHome");
+assert.equal(process.env.DBOS_SYSTEM_DATABASE_URL, undefined);
+assert.equal(process.env.PGPORT, "0", "Docker fallback must be disabled");
+const metadata = JSON.parse(readFileSync(join(home, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
+assert.equal(String(metadata.server.port), process.env.ATOMIC_POSTGRES_PORT);
+const { AgentSessionRuntime, createAgentSession, createAgentSessionServices, SessionManager, SettingsManager } = await import("@bastani/atomic");
 
 // #3105: actual package export and built builtin assets under non-TTY Node.
 assert.equal(process.versions.bun, undefined);

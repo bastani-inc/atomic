@@ -35,7 +35,9 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"grep",
 	"hasMatch",
 	"invalidateFsScanCache",
+	"postgresProcessStartTime",
 	"search",
+	"signalVerifiedPostgres",
 	"spawnRetainedPostgres",
 ] as const;
 

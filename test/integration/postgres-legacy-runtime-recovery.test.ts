@@ -7,7 +7,12 @@ import { test } from "vitest";
 import { loadEmbeddedPostgresBinaries } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import { probePostgresIdentity } from "../../packages/workflows/src/durable/dbos-postgres-identity.js";
 import { runLocalCommand } from "../../packages/workflows/src/durable/local-command.js";
-import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
+import {
+	type ManagedResult,
+	postmasterRuntimeWithin,
+	RealPostgresHome,
+	reserveListener,
+} from "../helpers/real-postgres.js";
 import { readText, removeTempDirectory } from "../helpers/runtime.js";
 
 const REAL_LEGACY_RECOVERY_TIMEOUT_MS = 120_000;
@@ -73,13 +78,16 @@ test.skipIf(process.platform === "win32")(
 				await connection.end();
 			}
 			const launch = await readText(join(data, "postmaster.opts"));
-			assert.ok(launch.includes(source), "fixture must start the old server from its disposable installation");
+			assert.ok(
+				postmasterRuntimeWithin(launch, source),
+				"fixture must start the old server from its disposable installation",
+			);
 			removeTempDirectory(join(home.path, "disposable-worktree"));
 			const client = home.client(listener.port);
 			const recovered = await client.request<ManagedResult>("ensure");
 			assert.equal(recovered.metadata.server.systemIdentifier, originalIdentifier);
 			assert.notEqual(recovered.metadata.server.pid, lease.pid);
-			assert.ok((await readText(join(data, "postmaster.opts"))).includes(home.runtimeCache));
+			assert.ok(postmasterRuntimeWithin(await readText(join(data, "postmaster.opts")), home.runtimeCache));
 			const rows = await client.request<{ value: string; system_identifier: string }[]>(
 				"query",
 				"SELECT value, (SELECT system_identifier::text FROM pg_control_system()) AS system_identifier FROM atomic_legacy_recovery",

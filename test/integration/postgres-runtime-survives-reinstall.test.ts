@@ -3,7 +3,12 @@ import { cp } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { test } from "vitest";
 import { loadEmbeddedPostgresBinaries } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
-import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
+import {
+	type ManagedResult,
+	postmasterRuntimeWithin,
+	RealPostgresHome,
+	reserveListener,
+} from "../helpers/real-postgres.js";
 import { readText, removeTempDirectory } from "../helpers/runtime.js";
 
 const REAL_RUNTIME_REINSTALL_TIMEOUT_MS = 120_000;
@@ -32,8 +37,14 @@ test(
 			);
 			const before = await workflowClient.request<ManagedResult & { runId: string }>("warm");
 			const launch = await readText(join(home.path, ".atomic", "postgres", "v18", "postmaster.opts"));
-			assert.ok(!launch.includes(source), "the server must not execute from the disposable installation");
-			assert.ok(launch.includes(home.runtimeCache), "the server uses the persistent runtime generation");
+			assert.ok(
+				!postmasterRuntimeWithin(launch, source),
+				"the server must not execute from the disposable installation",
+			);
+			assert.ok(
+				postmasterRuntimeWithin(launch, home.runtimeCache),
+				"the server uses the persistent runtime generation",
+			);
 			removeTempDirectory(join(home.path, "disposable-worktree"));
 			const reader = home.client(listener.port);
 			const attached = await reader.request<ManagedResult>("ensure");

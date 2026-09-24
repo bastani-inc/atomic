@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, lstat, readdir } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { hydrateBinaryLibraryLinks } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import {
 	type EmbeddedPostgresBinaryPaths,
@@ -202,6 +202,19 @@ export function sharedPostgresRuntimeCache(): string {
 	return sharedRuntimeCache;
 }
 
+/** Compare the launched generation to a runtime root without relying on path spelling. */
+export function postmasterRuntimeWithin(launch: string, runtimeRoot: string): boolean {
+	const match = /^"?(.+?[\\/]postgres(?:\.exe)?)"? "-D" /.exec(launch);
+	assert.ok(match, "postmaster.opts must identify the launched PostgreSQL executable");
+	const canonical = (path: string) => {
+		const resolved = realpathSync.native(path);
+		return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+	};
+	const generationDir = canonical(dirname(dirname(match[1])));
+	const root = canonical(runtimeRoot);
+	const contained = relative(root, generationDir);
+	return contained === "" || (contained !== ".." && !contained.startsWith(`..${sep}`) && !isAbsolute(contained));
+}
 export class RealPostgresHome {
 	readonly path = makeTempDirectory("atomic-real-postgres-");
 	readonly clients: RealPostgresClient[] = [];
