@@ -492,6 +492,10 @@ Warmers install Node and Bun and download locked npm packages. The separate macO
 
 MSVC CRT/SDK downloads remain in GitHub's branch-scoped Actions cache with the existing keys. That path is not simultaneously mounted by Namespace. Verify a matching default-branch cache hit on an authorized release before relying on cross-ref reuse. Zig setup remains uncached; the former no-op Zig warmer was removed rather than claiming a download persisted when its caching switches were off.
 
+The MSVC CRT warmer's 19-minute job cap reserves its bounded toolchain setup
+(4 minutes), cargo-xwin installation (3 minutes), and cold-cache population
+(8 minutes), plus 4 minutes for runner setup and cache restore/save.
+
 Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Inspect successful main population and a subsequent authorized release for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
 
 ### Pinned actions and build tools
@@ -503,9 +507,10 @@ compromised floating tag anywhere in it is a release-integrity event.
 `.github/dependabot.yml` already runs the `github-actions` ecosystem weekly and
 maintains both the pins and the comments.
 
-`taiki-e/install-action` is given exact tool versions (`cargo-zigbuild@0.23.0`),
-and `cargo install` pins `cargo-xwin` with `--version 0.23.0 --locked`. Unversioned, it resolves to `@latest`, which floats the
-build toolchain of a published, provenance-signed native artifact with no diff.
+`taiki-e/install-action` installs `cargo-zigbuild@0.23.0` rather than resolving
+`@latest`. The Windows legs build `cargo-xwin` with
+`cargo install cargo-xwin --version 0.23.0 --locked`. Both pins prevent an
+unreviewed build-tool update in a published, provenance-signed native artifact.
 `test.yml` pins `bun-version: 1.4.2` to match `publish.yml`; `latest` cannot be
 cached by `setup-bun` and left the suite testing a different Bun from the one
 that builds the shipped artifact.

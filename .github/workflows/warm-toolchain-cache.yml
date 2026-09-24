@@ -50,7 +50,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     # Both Windows legs cross-compile on this Linux runner spec.
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 15
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:
