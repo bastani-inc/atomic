@@ -157,15 +157,11 @@ test("Windows installer streams the archive with a progress bar and keeps smoke-
 	// refuse to launch a native command that PATHEXT does not classify as an
 	// application ("Cannot run a document in the middle of a pipeline"), and
 	// the installer tolerates PATHEXT entries PowerShell itself does not parse.
-	for (const smokeCheck of [
-		'$null = & $stagedAtomic "--version"',
-		'$null = & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime',
-		'$null = & $postgresExecutable "--version"',
-		"$null = & $env:ComSpec /d /c $shimCommand",
-	]) {
+	for (const smokeCheck of ['$null = & $stagedAtomic "--version"', "$null = & $env:ComSpec /d /c $shimCommand"]) {
 		assert.ok(source.includes(smokeCheck), `smoke check output is not discarded: ${smokeCheck}`);
 	}
-	assert.match(source, /Write-AtomicMuted "Verified SHA256, extracted, and validated the runtime"/u);
+	assert.match(source, /Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"/u);
+	assert.doesNotMatch(source, /--internal-validate-postgres-runtime|postgres-runtime/u);
 
 	const bannerGate = source.indexOf(
 		"if ($useUnicodeGlyphs) {",

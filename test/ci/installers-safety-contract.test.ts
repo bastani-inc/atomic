@@ -539,8 +539,6 @@ test("Windows smoke checks stay silent without a pipeline and the summary lines 
 	// installer accepts PATHEXT spellings PowerShell itself does not parse.
 	for (const [command, status] of [
 		['$null = & $stagedAtomic "--version"', "$stagedExitCode = $LASTEXITCODE"],
-		['$null = & $stagedAtomic "--internal-validate-postgres-runtime" $postgresRuntime', "if ($LASTEXITCODE -ne 0)"],
-		['$null = & $postgresExecutable "--version"', "if ($LASTEXITCODE -ne 0)"],
 		["$null = & $env:ComSpec /d /c $shimCommand", "$finalExitCode = $LASTEXITCODE"],
 	] as const) {
 		const invocation = powershell.indexOf(command);
@@ -549,9 +547,8 @@ test("Windows smoke checks stay silent without a pipeline and the summary lines 
 		assert.ok(check > invocation && check - invocation < 200, `exit status is not checked after: ${command}`);
 	}
 	assert.doesNotMatch(powershell, /^\s*& \$stagedAtomic "--version"\r?\n/mu);
-	assert.doesNotMatch(powershell, /^\s*& \$postgresExecutable "--version"\r?\n/mu);
 	assert.doesNotMatch(powershell, /^\s*& \$env:ComSpec \/d \/c \$shimCommand\r?\n/mu);
-	assert.doesNotMatch(powershell, /& \$(?:stagedAtomic|postgresExecutable|env:ComSpec)\b[^\r\n]*\| Out-Null/u);
+	assert.doesNotMatch(powershell, /& \$(?:stagedAtomic|env:ComSpec)\b[^\r\n]*\| Out-Null/u);
 	assert.match(powershell, /Write-Output "Installed to \$shimPath"/u);
 	assert.match(powershell, /Write-Output "Added \$binDir to your User PATH; open a new terminal to use atomic\."/u);
 	assert.match(powershell, /Write-Output "Run Atomic directly: `"\$shimPath`""/u);
