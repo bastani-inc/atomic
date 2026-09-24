@@ -28,6 +28,7 @@
 
 ### Fixed
 
+- Prompt cache-miss notices now attribute a miss to TTL expiry only when the idle time exceeds the cache lifetime of the model and retention that served the previous request, instead of a fixed 5 minutes. With 1-hour retention, a miss after 6–59 minutes is no longer mislabeled ([#3259](https://github.com/bastani-inc/atomic/issues/3259)).
 - Fixed workflow stages with `model: "auto"` (and other stage sessions) crashing with `Cannot read properties of undefined (reading 'baseDir')` when Atomic was launched with `--theme <path>` or other CLI-provided resource paths ([#3229](https://github.com/bastani-inc/atomic/issues/3229)).
 - Managed git packages no longer install Atomic's host-provided peer dependencies (`@bastani/atomic`, `@bastani/pi-ai`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`, and TypeBox) when their dependencies are installed with npm, pnpm, or Bun, and package-manager wrappers in the npm command setting, such as `corepack pnpm`, are now recognized. Extension packages that list one of those packages under dependencies instead of peer dependencies now get an extension warning, because an installed copy can load a duplicate runtime ([#9863](https://github.com/earendil-works/pi/issues/9863)).
 - Atomic no longer warns at startup that its bundled workflows, subagents, MCP, and intercom extensions list `typebox` under dependencies. They now declare it as a `*` peer dependency, so they use the host's TypeBox.

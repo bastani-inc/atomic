@@ -1,5 +1,5 @@
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
-import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
+import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
@@ -489,14 +489,11 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	}
 	flushMessages();
 	if (this.settingsManager.getShowCacheMissNotices()) {
-		for (const miss of collectCacheMisses(sessionEntries, {
-			getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
-		}).values()) {
-			const cause = miss.modelChanged
-				? " after model switch"
-				: miss.idleMs >= CACHE_TTL_MS
-					? " after cache TTL expiry"
-					: "";
+		for (const miss of collectCacheMisses(
+			sessionEntries,
+			createCacheMissModelSource(this.session.modelRuntime),
+		).values()) {
+			const cause = describeCacheMissCause(miss);
 			this.chatContainer.addChild(
 				new Text(
 					theme.fg(

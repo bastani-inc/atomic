@@ -1,4 +1,4 @@
-import { computeCacheWaste } from "../../core/cache-stats.ts";
+import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -388,9 +388,7 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 	);
 	if (promptTokens > 0)
 		info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
-	const waste = computeCacheWaste(entries, {
-		getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
-	});
+	const waste = computeCacheWaste(entries, createCacheMissModelSource(this.session.modelRuntime));
 	if (waste.missCount > 0)
 		info += `${theme.fg("dim", "Wasted Cache Cost:")} $${waste.missedCost.toFixed(4)} (${waste.missCount} misses)\n`;
 

@@ -4,9 +4,9 @@ import { afterEach, describe, test } from "vitest";
 import { shouldRunFirstTimeSetup } from "../../packages/coding-agent/src/cli/startup-ui.ts";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import {
-	CACHE_TTL_MS,
 	collectCacheMisses,
 	computeCacheWaste,
+	describeCacheMissCause,
 } from "../../packages/coding-agent/src/core/cache-stats.ts";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.ts";
 import { KEYBINDINGS } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -60,6 +60,8 @@ function assistant(timestamp: number, model: string, value: Usage, responseModel
 function entry(id: string, message: AssistantMessage): SessionEntry {
 	return { type: "message", id, parentId: null, timestamp: new Date(message.timestamp).toISOString(), message };
 }
+const FIVE_MINUTES_MS = 5 * 60_000;
+const ONE_HOUR_MS = 60 * 60_000;
 const prices = { getModel: () => ({ cost: { cacheRead: 0.1 } }) };
 
 describe("Group 5 parity", () => {
@@ -82,14 +84,30 @@ describe("Group 5 parity", () => {
 	test("cache misses honor thresholds and report switch/idle attribution", () => {
 		const entries = [
 			entry("a", assistant(0, "one", usage(40_000, 1))),
-			entry("b", assistant(CACHE_TTL_MS + 1, "two", usage(40_000, 0))),
+			entry("b", assistant(FIVE_MINUTES_MS + 1, "two", usage(40_000, 0))),
 		];
 		const misses = collectCacheMisses(entries, prices);
 		assert.equal(misses.size, 1);
 		const miss = [...misses.values()][0]!;
 		assert.equal(miss.modelChanged, true);
-		assert.ok(miss.idleMs > CACHE_TTL_MS);
+		assert.equal(describeCacheMissCause(miss), " after model switch");
 		assert.equal(computeCacheWaste(entries, prices).missCount, 1);
+	});
+
+	test("cache misses are attributed to TTL expiry only past the previous model's cache lifetime (#3259)", () => {
+		const idleMiss = (idleMs: number, ttlMs: number | undefined) => {
+			const entries = [
+				entry("a", assistant(0, "one", usage(40_000, 1))),
+				entry("b", assistant(idleMs, "one", usage(40_000, 0))),
+			];
+			const [miss] = collectCacheMisses(entries, { ...prices, getPromptCacheTtlMs: () => ttlMs }).values();
+			assert.ok(miss);
+			return describeCacheMissCause(miss);
+		};
+		assert.equal(idleMiss(10 * 60_000, ONE_HOUR_MS), "");
+		assert.equal(idleMiss(ONE_HOUR_MS + 1, ONE_HOUR_MS), " after cache TTL expiry");
+		assert.equal(idleMiss(FIVE_MINUTES_MS + 1, FIVE_MINUTES_MS), " after cache TTL expiry");
+		assert.equal(idleMiss(2 * ONE_HOUR_MS, undefined), "");
 	});
 
 	test("compaction and branch-summary boundaries reset cache comparisons", () => {

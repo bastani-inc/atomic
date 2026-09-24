@@ -1,4 +1,4 @@
-import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
+import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -283,15 +283,13 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.footer.invalidate();
 			}
 			if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
-				const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, {
-					getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
-				});
+				const miss = detectCacheMiss(
+					this.sessionManager.getEntries(),
+					event.message,
+					createCacheMissModelSource(this.session.modelRuntime),
+				);
 				if (miss) {
-					const cause = miss.modelChanged
-						? " after model switch"
-						: miss.idleMs >= CACHE_TTL_MS
-							? " after cache TTL expiry"
-							: "";
+					const cause = describeCacheMissCause(miss);
 					this.chatContainer.addChild(
 						new Text(
 							theme.fg(

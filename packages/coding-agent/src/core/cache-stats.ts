@@ -1,7 +1,8 @@
+import type { Api, Model } from "@bastani/pi-ai";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import { getPromptCacheTtlMs } from "./cache-warmer.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
-export const CACHE_TTL_MS = 5 * 60 * 1000;
 const MISS_TOKEN_THRESHOLD = 20_000;
 const MISS_COST_THRESHOLD = 0.1;
 
@@ -10,6 +11,7 @@ export interface CacheMiss {
 	missedCost: number;
 	idleMs: number;
 	modelChanged: boolean;
+	cacheExpired: boolean;
 }
 export interface CacheWasteTotals {
 	missedTokens: number;
@@ -18,12 +20,30 @@ export interface CacheWasteTotals {
 }
 export interface ModelPriceSource {
 	getModel(provider: string, modelId: string): { cost: { cacheRead: number } } | undefined;
+	getPromptCacheTtlMs?(provider: string, modelId: string): number | undefined;
+}
+export function createCacheMissModelSource(runtime: {
+	getModel(provider: string, modelId: string): Model<Api> | undefined;
+}): ModelPriceSource {
+	return {
+		getModel: (provider, modelId) => runtime.getModel(provider, modelId),
+		getPromptCacheTtlMs: (provider, modelId) => {
+			const model = runtime.getModel(provider, modelId);
+			return model ? getPromptCacheTtlMs(model, undefined) : undefined;
+		},
+	};
 }
 interface PreviousRequest {
 	promptTokens: number;
-	modelKey: string;
+	provider: string;
+	model: string;
 	timestamp: number;
 	reportedCache: boolean;
+}
+
+export function describeCacheMissCause(miss: CacheMiss): string {
+	if (miss.modelChanged) return " after model switch";
+	return miss.cacheExpired ? " after cache TTL expiry" : "";
 }
 
 function detect(
@@ -45,11 +65,14 @@ function detect(
 			: (models.getModel(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000;
 	const missedCost = missedTokens * Math.max(0, paidRate - readRate);
 	if (missedTokens < MISS_TOKEN_THRESHOLD && missedCost < MISS_COST_THRESHOLD) return undefined;
+	const idleMs = Math.max(0, message.timestamp - prev.timestamp);
+	const ttlMs = models.getPromptCacheTtlMs?.(prev.provider, prev.model);
 	return {
 		missedTokens,
 		missedCost,
-		idleMs: Math.max(0, message.timestamp - prev.timestamp),
-		modelChanged: `${message.provider}/${message.model}` !== prev.modelKey,
+		idleMs,
+		modelChanged: message.provider !== prev.provider || message.model !== prev.model,
+		cacheExpired: ttlMs !== undefined && idleMs >= ttlMs,
 	};
 }
 
@@ -59,7 +82,8 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 	return promptTokens > 0
 		? {
 				promptTokens,
-				modelKey: `${message.provider}/${message.model}`,
+				provider: message.provider,
+				model: message.model,
 				timestamp: message.timestamp,
 				reportedCache: reportedCache || usage.cacheRead + usage.cacheWrite > 0,
 			}
@@ -80,7 +104,8 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 			if (promptTokens > 0)
 				prev = {
 					promptTokens,
-					modelKey: `${entry.provider}/${entry.model}`,
+					provider: entry.provider,
+					model: entry.model,
 					timestamp: Date.parse(entry.timestamp),
 					reportedCache: true,
 				};
