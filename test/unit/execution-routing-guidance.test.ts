@@ -98,6 +98,7 @@ describe("agent-decided workflow execution guidance", () => {
 			"call workflow run with the registered workflow name",
 			"input contract",
 			"Ask only for genuinely missing information",
+			"missing, sparse, or mostly inline workflow history is not by itself a reason to work inline",
 		])
 			expect(modelVisibleRouting).toContain(phrase);
 		for (const removed of ["workflow route", "workflowId", "routerDecision", "estimatedDuration", "state.userBudget"])

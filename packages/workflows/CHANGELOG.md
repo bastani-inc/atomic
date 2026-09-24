@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow selection guidance now tells the agent that missing, sparse, or mostly inline workflow history is not by itself a reason to work inline; it judges the task's shape first and refines with execution history and your preferences.
+
 ### Fixed
 
 - DBOS no longer launches without its migration lock. Previously, when another process held the lock for more than 60 seconds, or the lock connection or query failed, Atomic launched anyway. Two processes could then migrate the same fresh workflow database at once and fail with duplicate-key errors. Atomic now retries lock contention for up to 60 seconds and reopens a failed or dropped lock connection with increasing delays, as Flyway does. If it still has no lock, launch fails with a clear error instead of running unlocked.
