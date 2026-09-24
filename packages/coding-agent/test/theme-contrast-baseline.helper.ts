@@ -254,7 +254,11 @@ export function measureTheme(name: string, mode: ColorMode): Row[] {
 		});
 	}
 
-	return rows.sort((a, b) => a.ratio - b.ratio || a.pair.localeCompare(b.pair));
+	// Tie-break equal-ratio rows by code-unit order, not `localeCompare`: the
+	// latter is ICU-locale-sensitive (e.g. Lithuanian collation reorders some
+	// rows), which would make the committed byte-exact baseline drift between
+	// environments and fail the sync test on differently-configured runners.
+	return rows.sort((a, b) => a.ratio - b.ratio || (a.pair < b.pair ? -1 : a.pair > b.pair ? 1 : 0));
 }
 
 /**
