@@ -21,6 +21,7 @@ import {
 	embeddedDbosSystemDatabaseUrl,
 	embeddedPostgresHealth,
 	embeddedPostgresTestHooks as hooks,
+	loadEmbeddedPostgresBinaries,
 	resetEmbeddedDbosPostgresForTests,
 	shutdownEmbeddedDbosPostgres,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
@@ -122,6 +123,34 @@ function fixture() {
 	};
 	return { root, data, metadata, pidfile, row, options };
 }
+
+function incompleteSourceRuntime(root: string, platform: NodeJS.Platform = process.platform) {
+	const runtime = join(root, "incomplete-source");
+	mkdirSync(join(runtime, "bin"), { recursive: true });
+	const suffix = platform === "win32" ? ".exe" : "";
+	const binaries = {
+		postgres: join(runtime, "bin", `postgres${suffix}`),
+		pg_ctl: join(runtime, "bin", `pg_ctl${suffix}`),
+		initdb: join(runtime, "bin", `initdb${suffix}`),
+	};
+	for (const binary of Object.values(binaries)) writeTextSync(binary, "fixture");
+	return { runtime, binaries };
+}
+
+test.each(["linux", "win32"] as const)(
+	"incomplete source fixture resolves without falling back on %s",
+	async (platform) => {
+		const f = fixture();
+		const source = incompleteSourceRuntime(f.root, platform);
+		const binaries = await loadEmbeddedPostgresBinaries({
+			runtimeDirectory: source.runtime,
+			host: { platform, arch: "x64", libc: "glibc" },
+			readOnly: true,
+		});
+		assert.deepEqual(binaries, source.binaries);
+		assert.equal(postgresRuntimeFilesExist(binaries.postgres), false);
+	},
+);
 
 // #3074: a stopped registered cluster must not start displaced data, even at the same directory inode.
 test("changed PostgreSQL system identity fails before any restart", async () => {
@@ -511,10 +540,7 @@ test("corrupt cached replacement runtime preserves the running managed server", 
 	);
 	const runtimeIdentity = await fingerprintPreparedRuntime(f.options.binaries);
 	writeTextSync(join(f.root, "runtime", "native", "bin", "postgres"), "corrupt-but-present");
-	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", join(f.root, "runtime", "native"));
-	writeTextSync(join(f.root, "runtime", "native", "bin", "pg_ctl"), "fixture");
-	writeTextSync(join(f.root, "runtime", "native", "bin", "initdb"), "fixture");
-	rmSync(join(f.root, "runtime", "native", "share", "postgresql", "timezonesets", "Default"));
+	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", incompleteSourceRuntime(f.root).runtime);
 	let stops = 0;
 	await assert.rejects(
 		hooks.ensureCluster({
@@ -616,10 +642,7 @@ test("corrupt cached runtime cannot restart a stopped managed server", async () 
 	const runtimeIdentity = await fingerprintPreparedRuntime(f.options.binaries);
 	rmSync(join(f.data, "postmaster.pid"));
 	writeTextSync(join(f.root, "runtime", "native", "bin", "postgres"), "corrupt-but-present");
-	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", join(f.root, "runtime", "native"));
-	writeTextSync(join(f.root, "runtime", "native", "bin", "pg_ctl"), "fixture");
-	writeTextSync(join(f.root, "runtime", "native", "bin", "initdb"), "fixture");
-	rmSync(join(f.root, "runtime", "native", "share", "postgresql", "timezonesets", "Default"));
+	vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", incompleteSourceRuntime(f.root).runtime);
 	let starts = 0;
 	hooks.setRetainedPostgresSpawner(() => {
 		starts++;

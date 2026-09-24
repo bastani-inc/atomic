@@ -31,6 +31,24 @@ afterEach(() => {
 	else process.env.DBOS_SYSTEM_DATABASE_URL = originalUrl;
 });
 
+test.sequential("invalid fallback port refuses Docker before provisioning (#3246)", async () => {
+	const previous = process.env.PGPORT;
+	delete process.env.DBOS_SYSTEM_DATABASE_URL;
+	process.env.PGPORT = "0";
+	resetLocalDbosProvisioningForTests(async () => {
+		throw new Error("embedded unavailable");
+	});
+	try {
+		await assert.rejects(
+			resolveDbosSystemDatabaseUrl(),
+			/Docker fallback: PostgreSQL readiness port .* must be an integer/,
+		);
+	} finally {
+		if (previous === undefined) delete process.env.PGPORT;
+		else process.env.PGPORT = previous;
+	}
+});
+
 describe("resolveDbosSystemDatabaseUrl", () => {
 	test.sequential("defers to an explicit DBOS_SYSTEM_DATABASE_URL without provisioning", async () => {
 		process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";

@@ -2,6 +2,72 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 
+test("transient monitoring connection timeout preserves live consumers (#3246)", async () => {
+	let probes = 0;
+	let invalidations = 0;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			if (++probes === 2) throw new Error("timeout expired");
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+	});
+	health.subscribe(() => invalidations++);
+	assert.equal(await health.check(), "managed");
+	assert.deepEqual(await Promise.all([health.check(), health.check()]), ["managed", "managed"]);
+	assert.equal(probes, 3);
+	assert.equal(invalidations, 0);
+	assert.equal(recoveries, 0);
+	await health.stop();
+});
+
+test("persistent monitoring connection failure still recovers an outage (#3246)", async () => {
+	let probes = 0;
+	let recoveries = 0;
+	let invalidations = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			probes++;
+			if (recoveries === 0) throw new Error("timeout expired");
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+	});
+	health.subscribe(() => invalidations++);
+	assert.equal(await health.check(), "managed");
+	assert.equal(probes, 3);
+	assert.equal(recoveries, 1);
+	assert.equal(invalidations, 1);
+	await health.stop();
+});
+
+test.each([
+	new Error("identity mismatch"),
+	Object.assign(new Error("authentication failed"), { code: "28P01" }),
+	Object.assign(new Error("statement timeout"), { code: "57014" }),
+	new Error("Query read timeout"),
+])("monitoring does not retry authoritative failure: %s (#3246)", async (failure) => {
+	let probes = 0;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			probes++;
+			throw failure;
+		},
+		recover: async () => {
+			recoveries++;
+		},
+	});
+	await assert.rejects(health.check(), (error) => error === failure);
+	assert.equal(probes, 1);
+	assert.equal(recoveries, 0);
+	await health.stop();
+});
 // #3074: health loss is shared by concurrent consumers, not a fresh startup per caller.
 test("health loss invalidates before a single shared recovery and reconnects", async () => {
 	let healthy = true;

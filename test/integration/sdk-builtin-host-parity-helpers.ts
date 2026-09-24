@@ -12,10 +12,11 @@ export function runBuiltNodeFixture(
 	fixture: string,
 	args: readonly string[] = [],
 	execArgv: readonly string[] = [],
+	env?: NodeJS.ProcessEnv,
 ): SyncSpawnResult {
 	return spawnSyncCollect(
 		[process.execPath, ...execArgv, fileURLToPath(new URL(`../fixtures/${fixture}`, import.meta.url)), ...args],
-		{ timeout: FIXTURE_PROCESS_TIMEOUT_MS },
+		{ timeout: FIXTURE_PROCESS_TIMEOUT_MS, env },
 	);
 }
 
@@ -29,8 +30,8 @@ export function expectVerifiedFixture(
 	assert.match(result.stdout.toString(), /"verified":true/);
 }
 
-export function expectDrainedFixture(fixture: string, args: readonly string[] = []): void {
-	const result = runBuiltNodeFixture(fixture, args);
+export function expectDrainedFixture(fixture: string, args: readonly string[] = [], env?: NodeJS.ProcessEnv): void {
+	const result = runBuiltNodeFixture(fixture, args, [], env);
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	assert.match(result.stdout.toString(), /"active":0/);
 }

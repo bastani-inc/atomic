@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed workflow durability being disabled after upgrading from 0.9.10–0.9.19: Atomic now registers the embedded Postgres cluster that older Atomic provisioned instead of refusing it. If that first start fails, the cluster is left unregistered and checked again on the next startup ([#3235](https://github.com/bastani-inc/atomic/issues/3235)).
 - Managed PostgreSQL now runs from a retained runtime outside development worktrees. If that runtime is damaged, reinstalling a complete healthy package lets automatic recovery select a verified replacement, including the same version, without deleting the database or requiring an Atomic restart.
+- Transient PostgreSQL monitoring connection failures no longer interrupt workflow shutdown when a fresh health probe confirms the same server is healthy.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 
