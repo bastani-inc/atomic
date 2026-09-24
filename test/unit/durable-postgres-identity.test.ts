@@ -361,7 +361,51 @@ test("OS identity changing after verification is rejected before any shutdown si
 	assert.equal(pgCtlCalls, 0);
 });
 
-test("Windows shutdown invokes pg_ctl kill for the exact verified PID and both shutdown modes", async () => {
+test.each(["mismatch", "absent"] as const)("Windows %s guard never invokes pg_ctl kill", async (status) => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "gone", "postgres.exe")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	let closed = false;
+	hooks.setWindowsPostgresGuard(() => ({
+		status,
+		exited: () => {
+			throw new Error("must not wait");
+		},
+		close: () => {
+			closed = true;
+		},
+	}));
+	let kills = 0;
+	await assert.rejects(
+		hooks.stopBrokenManagedPostmaster(
+			f.metadata,
+			server,
+			f.options.binaries.pg_ctl,
+			{
+				baseDir: f.root,
+				runAsOwner: async () => {
+					kills++;
+					throw new Error("unsafe pg_ctl");
+				},
+			},
+			{ ownerToken: "fixture", refresh: () => true },
+			async () => {},
+			"win32",
+		),
+		/OS process start identity mismatch|shutdown did not release/,
+	);
+	assert.equal(kills, 0);
+	assert.equal(closed, true);
+});
+
+test("Windows shutdown keeps a fresh process guard across each pg_ctl kill and wait", async () => {
 	const f = fixture();
 	const port = await availablePostgresPort(0);
 	f.pidfile(port);
@@ -374,14 +418,27 @@ test("Windows shutdown invokes pg_ctl kill for the exact verified PID and both s
 	);
 	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
 		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
-		signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
 	};
 	const original = binding.postgresProcessStartTime;
 	let released = false;
 	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
 		released ? { found: false } : original(pid),
 	);
-	vi.spyOn(binding, "signalVerifiedPostgres").mockReturnValue("signaled");
+	const events: string[] = [];
+	hooks.setWindowsPostgresGuard((pid, started) => {
+		assert.equal(pid, server.pid);
+		assert.equal(started, server.started);
+		const generation = events.filter((event) => event.startsWith("open")).length + 1;
+		events.push(`open${generation}`);
+		return {
+			status: "live",
+			exited: () => {
+				events.push(`wait${generation}`);
+				return released;
+			},
+			close: () => events.push(`close${generation}`),
+		};
+	});
 	const commands: Array<{ command: string; args: readonly string[] }> = [];
 	await hooks.stopBrokenManagedPostmaster(
 		f.metadata,
@@ -391,6 +448,7 @@ test("Windows shutdown invokes pg_ctl kill for the exact verified PID and both s
 			baseDir: f.root,
 			runAsOwner: async (command, args) => {
 				commands.push({ command, args });
+				events.push(`kill${commands.length}`);
 				if (commands.length === 2) {
 					released = true;
 					rmSync(join(f.data, "postmaster.pid"));
@@ -406,6 +464,14 @@ test("Windows shutdown invokes pg_ctl kill for the exact verified PID and both s
 		{ command: f.options.binaries.pg_ctl, args: ["kill", "INT", String(server.pid)] },
 		{ command: f.options.binaries.pg_ctl, args: ["kill", "QUIT", String(server.pid)] },
 	]);
+	assert.equal(events[0], "open1");
+	assert.equal(events[1], "kill1");
+	assert.ok(events.indexOf("wait1") > events.indexOf("kill1"));
+	assert.ok(events.indexOf("close1") > events.indexOf("wait1"));
+	assert.ok(events.indexOf("open2") > events.indexOf("close1"));
+	assert.ok(events.indexOf("kill2") > events.indexOf("open2"));
+	assert.ok(events.indexOf("wait2") > events.indexOf("kill2"));
+	assert.ok(events.indexOf("close2") > events.indexOf("wait2"));
 });
 
 test.each(["fast exit", "timeout with matching identity", "timeout with changed identity", "lease lost after timeout"])(

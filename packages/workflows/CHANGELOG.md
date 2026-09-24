@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Managed PostgreSQL now runs from a retained runtime outside development worktrees. If that runtime is damaged, reinstalling a complete healthy package lets automatic recovery select a verified replacement, including the same version, even when new database connections are impossible or the server has already exited. A running server's process identity must verify before shutdown; identity mismatches or corruption still require investigation, and Atomic preserves the database.
 - Transient PostgreSQL monitoring connection failures no longer interrupt workflow shutdown when a fresh health probe confirms the same server is healthy.
 - Fixed managed PostgreSQL recovery refusing to stop its own verified server when PostgreSQL takes more than three seconds after process creation to write its pidfile. A process created after the recorded PostgreSQL start remains ineligible for shutdown.
+- Windows managed PostgreSQL recovery now holds a verified process handle through shutdown, preventing PID reuse from directing a signal to an unrelated process.
 
 ## [0.9.20-alpha.8] - 2026-09-22
 

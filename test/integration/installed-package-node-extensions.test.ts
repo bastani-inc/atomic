@@ -92,7 +92,7 @@ afterAll(() => {
 	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 	if (!packedRoot) return;
 	const consumer = join(packedRoot, "consumer");
-	const home = join(consumer, "home");
+	const home = join(consumer, "atomic-real-postgres-home");
 	const postgres = join(home, ".atomic", "postgres");
 	if (fs.existsSync(postgres)) {
 		assert.ok(nodeExe);
@@ -296,7 +296,9 @@ runTest(
 	() => {
 		assert.ok(nodeExe);
 		packedRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-packed-consumer-"));
-		releasePackedRuntimeCache = registerSharedPostgresRuntimeHome(join(packedRoot, "consumer", "home"));
+		releasePackedRuntimeCache = registerSharedPostgresRuntimeHome(
+			join(packedRoot, "consumer", "atomic-real-postgres-home"),
+		);
 		const consumer = join(packedRoot, "consumer");
 		fs.mkdirSync(consumer);
 		fs.writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
@@ -310,9 +312,9 @@ runTest(
 				maxBuffer: 64 * 1024 * 1024,
 				env: {
 					...process.env,
-					HOME: join(consumer, "home"),
-					USERPROFILE: join(consumer, "home"),
-					ATOMIC_CODING_AGENT_DIR: join(consumer, "home", ".atomic", "agent"),
+					HOME: join(consumer, "atomic-real-postgres-home"),
+					USERPROFILE: join(consumer, "atomic-real-postgres-home"),
+					ATOMIC_CODING_AGENT_DIR: join(consumer, "atomic-real-postgres-home", ".atomic", "agent"),
 					DBOS_SYSTEM_DATABASE_URL: undefined,
 					ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
 					ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: sharedPostgresRuntimeCache(),

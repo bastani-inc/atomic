@@ -13,5 +13,17 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		if (!declarations.includes(marker)) throw new Error("Review updated napi binding marker declaration");
 		declarations = declarations.replace(marker, `${marker} | undefined`);
 	}
+	// The guard exists only in Windows Rust builds. Keep its shared loader and
+	// declaration exports when generated on a Unix development or release host.
+	if (!loader.includes("module.exports.guardWindowsPostgresProcess")) {
+		loader += `\nif (process.platform === 'win32') {\n  module.exports.WindowsPostgresProcessGuard = nativeBinding.WindowsPostgresProcessGuard\n  module.exports.guardWindowsPostgresProcess = nativeBinding.guardWindowsPostgresProcess\n}\n`;
+	}
+	if (!declarations.includes("export declare class WindowsPostgresProcessGuard")) {
+		declarations = declarations.replace(
+			"export declare class RunnerLease",
+			"/** Available only on Windows. */\nexport declare class WindowsPostgresProcessGuard {\n  get status(): 'live' | 'absent' | 'mismatch'\n  exited(): boolean\n  close(): void\n}\n\nexport declare class RunnerLease",
+		);
+		declarations += "\n/** Available only on Windows. */\nexport declare function guardWindowsPostgresProcess(pid: number, expectedStartTime: number): WindowsPostgresProcessGuard\n";
+	}
 	return { loader, declarations };
 }

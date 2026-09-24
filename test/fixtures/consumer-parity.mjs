@@ -29,7 +29,7 @@ async function stopDisposablePostgres() {
 	const consumer = realpathSync(dirname(fileURLToPath(import.meta.url)));
 	assert.match(basename(dirname(consumer)), /^atomic-packed-consumer-/);
 	assert.equal(dirname(dirname(consumer)), realpathSync(tmpdir()));
-	const home = join(consumer, "home");
+	const home = join(consumer, "atomic-real-postgres-home");
 	assert.equal(realpathSync(home), home, "disposable home must not be a symlink");
 	assert.equal(realpathSync(process.env.HOME), realpathSync(home));
 	const base = join(home, ".atomic", "postgres");
@@ -637,11 +637,11 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			await session.dispose();
 		}
 	} else {
-		const run = (file, args = []) => {
+		const run = (file, args = [], extraEnv = {}) => {
 			const result = spawnSync(process.execPath, [fileURLToPath(new URL(file, import.meta.url)), ...args], {
 				encoding: "utf8",
 				timeout: 60_000,
-				env: { ...process.env },
+				env: { ...process.env, ...extraEnv },
 			});
 			assert.equal(result.status, 0, `${file} ${args}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
 			assert.equal(withoutSqliteExperimentalWarning(result.stderr), "", `${file}: unsolicited diagnostics`);
@@ -656,7 +656,12 @@ export default workflow({ name: "children", description: "children", inputs: {},
 		run("./consumer-parity.mjs", ["persist-start", persisted]);
 		run("./consumer-parity.mjs", ["persist-resume", persisted]);
 		run("./consumer-parity.mjs", ["children"]);
-		const durable = JSON.parse(run("./sdk-host-built-node.mjs").trim());
+		const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
+		const durable = JSON.parse(run("./sdk-host-built-node.mjs", [], {
+			ATOMIC_MANAGED_TEST_HOME: process.env.HOME,
+			ATOMIC_POSTGRES_PORT: String(metadata.server.port),
+			PGPORT: "0",
+		}).trim());
 		assert.equal(durable.effects, 1);
 		assert.equal(
 			durable.hash,

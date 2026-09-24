@@ -811,3 +811,8 @@ module.exports.signalVerifiedPostgres = nativeBinding.signalVerifiedPostgres
 module.exports.spawnRetainedPostgres = nativeBinding.spawnRetainedPostgres
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.YieldReason = nativeBinding.YieldReason
+
+if (process.platform === 'win32') {
+  module.exports.WindowsPostgresProcessGuard = nativeBinding.WindowsPostgresProcessGuard
+  module.exports.guardWindowsPostgresProcess = nativeBinding.guardWindowsPostgresProcess
+}

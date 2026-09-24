@@ -53,6 +53,8 @@ try {
 describe("Atomic native binding export contract", () => {
 	it.skipIf(!requireNativeBinding && !binding)("loads the host binding with exactly the supported exports", () => {
 		if (!binding) throw loadError ?? new Error("Native binding is required but unavailable");
-		assert.deepEqual(Object.keys(binding).sort(), [...EXPECTED_NATIVE_EXPORTS].sort());
+		const platformExports =
+			process.platform === "win32" ? ["WindowsPostgresProcessGuard", "guardWindowsPostgresProcess"] : [];
+		assert.deepEqual(Object.keys(binding).sort(), [...EXPECTED_NATIVE_EXPORTS, ...platformExports].sort());
 	});
 });

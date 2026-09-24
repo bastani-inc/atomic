@@ -1751,10 +1751,15 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 			) as { pg_ctl: string; initdb: string; postgres: string };
 			const context = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
 			const first = await prepareBinariesForOwner(binaries, context, noCommands);
-			const mode = statSync(first.postgres).mode & 0o777;
+			const original = statSync(first.postgres);
+			const mode = original.mode & 0o777;
+			// Windows can publish and mutate within one NTFS timestamp tick; make the
+			// metadata change observable before exercising the stat-index repair path.
+			if (process.platform === "win32") await new Promise((resolve) => setTimeout(resolve, 1_100));
 			chmodSync(first.postgres, 0o600);
 			writeFileSync(first.postgres, "altered!", { mode: 0o600 });
 			chmodSync(first.postgres, mode);
+			assert.notEqual(statSync(first.postgres).ctimeMs, original.ctimeMs, "mutation must change sealed file ctime");
 			await assert.rejects(fingerprintPreparedRuntime(first), /manifest mismatch/);
 			const repaired = await prepareBinariesForOwner(binaries, context, noCommands, {
 				repairCorruptGeneration: true,

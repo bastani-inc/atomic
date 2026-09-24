@@ -36,6 +36,13 @@ export declare class RetainedPostgres {
   release(): void
 }
 
+/** Available only on Windows. */
+export declare class WindowsPostgresProcessGuard {
+  get status(): 'live' | 'absent' | 'mismatch'
+  exited(): boolean
+  close(): void
+}
+
 export declare class RunnerLease {}
 
 export declare class StdinLease {}
@@ -823,3 +830,6 @@ export type WaitOutcome =
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }
 
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'
+
+/** Available only on Windows. */
+export declare function guardWindowsPostgresProcess(pid: number, expectedStartTime: number): WindowsPostgresProcessGuard

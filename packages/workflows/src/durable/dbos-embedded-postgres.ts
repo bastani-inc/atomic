@@ -124,6 +124,14 @@ interface EmbeddedPostgresBinaries {
 
 type RetainedPostgresSpawner = (options: RetainedPostgresSpawnOptions) => RetainedPostgres;
 
+interface WindowsPostgresProcessGuard {
+	readonly status: "live" | "absent" | "mismatch";
+	exited(): boolean;
+	close(): void;
+}
+
+type WindowsPostgresGuardFactory = (pid: number, expectedStartTime: number) => WindowsPostgresProcessGuard;
+
 interface ActiveEmbeddedPostgres {
 	readonly lease: RetainedPostgres;
 	shared?: boolean;
@@ -144,6 +152,7 @@ export class EmbeddedPostgresCleanupPendingError extends AggregateError {
 let activeCluster: ActiveEmbeddedPostgres | undefined;
 let ensureOperation: EnsureOperation = ensure;
 let retainedPostgresSpawnerOverride: RetainedPostgresSpawner | undefined;
+let windowsPostgresGuardOverride: WindowsPostgresGuardFactory | undefined;
 
 let ensured: Promise<void> | undefined;
 let consumer: PostgresConsumerLease | undefined;
@@ -589,6 +598,7 @@ async function stopBrokenManagedPostmaster(
 			mode: "fast" | "immediate",
 		): "signaled" | "absent" | "mismatch";
 		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+		guardWindowsPostgresProcess(pid: number, expectedStartTime: number): WindowsPostgresProcessGuard;
 	};
 	const released = async () => {
 		const identity = binding.postgresProcessStartTime(verified.pid);
@@ -596,14 +606,40 @@ async function stopBrokenManagedPostmaster(
 		if (activeCluster?.lease.pid === verified.pid) await activeCluster.lease.wait(0);
 		return true;
 	};
-	const signal = async (mode: "fast" | "immediate", observedCreateTime: number) => {
+	const signal = (mode: "fast" | "immediate", observedCreateTime: number) => {
 		if (!lease.refresh()) throw new Error("Postgres setup lease lost before stopping the verified managed server.");
 		const result = binding.signalVerifiedPostgres(verified.pid, observedCreateTime, mode);
 		if (result === "mismatch")
 			throw new Error(
 				"Managed Postgres OS process start identity mismatch. Preserve the server and data directory.",
 			);
-		if (result === "signaled" && platform === "win32") {
+	};
+	const waitForExit = async (guard?: WindowsPostgresProcessGuard) => {
+		for (let attempt = 0; attempt < READY_ATTEMPTS; attempt++) {
+			if (guard?.exited() && (await released())) return true;
+			if (guard === undefined && (await released())) return true;
+			await wait(READY_DELAY_MS);
+		}
+		return (guard === undefined || guard.exited()) && released();
+	};
+	const stop = async (mode: "fast" | "immediate", observedCreateTime: number) => {
+		if (platform !== "win32") {
+			signal(mode, observedCreateTime);
+			return waitForExit();
+		}
+		if (!lease.refresh()) throw new Error("Postgres setup lease lost before stopping the verified managed server.");
+		const guard =
+			windowsPostgresGuardOverride?.(verified.pid, observedCreateTime) ??
+			binding.guardWindowsPostgresProcess(verified.pid, observedCreateTime);
+		try {
+			if (guard.status === "mismatch")
+				throw new Error(
+					"Managed Postgres OS process start identity mismatch. Preserve the server and data directory.",
+				);
+			if (guard.status === "absent") {
+				if (await released()) return true;
+				throw new Error("Managed Postgres shutdown did not release its postmaster file.");
+			}
 			const killed = await context.runAsOwner(pgCtl, [
 				"kill",
 				mode === "fast" ? "INT" : "QUIT",
@@ -611,24 +647,18 @@ async function stopBrokenManagedPostmaster(
 			]);
 			if (killed.exitCode !== 0)
 				throw new Error(`Could not signal the verified managed Postgres server: ${commandFailureDetail(killed)}`);
+			return waitForExit(guard);
+		} finally {
+			guard.close();
 		}
 	};
-	const waitForExit = async () => {
-		for (let attempt = 0; attempt < READY_ATTEMPTS; attempt++) {
-			if (await released()) return true;
-			await wait(READY_DELAY_MS);
-		}
-		return released();
-	};
-	await signal("fast", state.observedCreateTime);
-	if (await waitForExit()) return true;
+	if (await stop("fast", state.observedCreateTime)) return true;
 	const fresh = check();
 	if (fresh.process.status === "absent") {
 		if (await released()) return true;
 		throw new Error("Managed Postgres shutdown did not release its postmaster file.");
 	}
-	await signal("immediate", fresh.process.observedCreateTime);
-	if (await waitForExit()) return true;
+	if (await stop("immediate", fresh.process.observedCreateTime)) return true;
 	throw new Error("Could not stop the verified managed Postgres server within the shutdown budget.");
 }
 
@@ -1644,6 +1674,10 @@ function setRetainedPostgresSpawnerForTests(spawner: RetainedPostgresSpawner | u
 	retainedPostgresSpawnerOverride = spawner;
 }
 
+function setWindowsPostgresGuardForTests(factory: WindowsPostgresGuardFactory | undefined): void {
+	windowsPostgresGuardOverride = factory;
+}
+
 function setEnsureOperationForTests(operation: EnsureOperation | undefined): void {
 	ensured = undefined;
 	ensureOperation = operation ?? ensure;
@@ -1657,6 +1691,7 @@ export const embeddedPostgresTestHooks = {
 	setActiveCluster: setActiveClusterForTests,
 	setEnsureOperation: setEnsureOperationForTests,
 	setRetainedPostgresSpawner: setRetainedPostgresSpawnerForTests,
+	setWindowsPostgresGuard: setWindowsPostgresGuardForTests,
 	logTail,
 	startCluster,
 	waitForClusterReadiness,
@@ -1675,4 +1710,5 @@ export function resetEmbeddedDbosPostgresForTests(): void {
 	activeCluster = undefined;
 	ensureOperation = ensure;
 	retainedPostgresSpawnerOverride = undefined;
+	windowsPostgresGuardOverride = undefined;
 }
