@@ -155,7 +155,7 @@ describe("/workflow resume — overlay integration", () => {
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const rendered = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
 			assert.match(rendered, /Resume Session/);
-			assert.match(rendered, /durable-wf/);
+			assert.match(rendered, /durable-picker-run\s+paused\s+1 checkpoints/);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -190,7 +190,9 @@ describe("/workflow resume — overlay integration", () => {
 			void commands.workflow!.options.handler("resume", ctx);
 			await delay(5);
 			assert.equal(customCalls.length, 1);
-			assert.match(visibleText(customCalls[0]!.component.render(80)), /durable-history/);
+			const rendered = visibleText(customCalls[0]!.component.render(80));
+			assert.match(rendered, /durable-after-complet…\s+paused\s+1 checkpoints/);
+			assert.doesNotMatch(rendered, /completed-local-/);
 		} finally {
 			setDurableBackend(undefined);
 		}
@@ -264,8 +266,8 @@ describe("/workflow resume — overlay integration", () => {
 			await delay(5);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-wf/);
-			assert.match(text, /durable-cross-session/);
+			assert.match(text, /live-run-\d+\s+paused\s+0\/0 stages/);
+			assert.match(text, /durable-alongside-live\s+paused\s+1 checkpoints/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
@@ -505,9 +507,9 @@ describe("/workflow attach — top-level command", () => {
 			assert.ok(customCalls.length >= 1);
 			assert.equal(customCalls[0]!.options.overlay, false);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-older-wf/);
-			assert.match(text, /durable-newer-wf/);
-			assert.ok(text.indexOf("durable-newer-wf") < text.indexOf("live-older-wf"));
+			assert.match(text, /live-combined-\d+…\s+paused\s+0\/0 stages/);
+			assert.match(text, /durable-combined-wf\s+paused\s+1 checkpoints/);
+			assert.ok(text.indexOf("durable-combined-wf") < text.indexOf("live-combined-"));
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
@@ -615,8 +617,8 @@ describe("/workflow attach — top-level command", () => {
 			await delay(10);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-			assert.match(text, /live-hydrate-wf/);
-			assert.match(text, /durable-hydrate/);
+			assert.match(text, /live-hydrate-\d+…\s+paused\s+0\/0 stages/);
+			assert.match(text, /durable-hydrate-wf\s+paused\s+1 checkpoints/);
 			customCalls[0]!.component.handleInput?.("\u001b");
 			await handlerPromise;
 		} finally {
