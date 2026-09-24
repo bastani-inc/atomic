@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 // RFC #2884: real identities, not mock PIDs, with cooperative descendant reaping.
 function identity(pid) {
@@ -17,7 +17,11 @@ if (process.argv.includes("--grandchild")) {
  const child = spawn(process.execPath, [import.meta.filename, "--grandchild"], { stdio: "inherit" });
  child.once("spawn", () => {
   const identities = { parent: identity(process.pid), grandchild: identity(child.pid) };
-  if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(identities));
+  if (process.argv[2]) {
+   const staging = `${process.argv[2]}.${process.pid}.tmp`;
+   writeFileSync(staging, JSON.stringify(identities));
+   renameSync(staging, process.argv[2]);
+  }
   console.log(`IDENTITIES ${JSON.stringify(identities)}`);
   if (process.argv.includes("--shell-first")) process.exit(0);
  });
