@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.20-alpha.9] - 2026-09-24
+
 ### Breaking Changes
 
 - Direct TypeSafe decisions now use the canonical `typesafe/jev-latest` classifier model and `typesafe` provider authentication. Replace `typesafe-ai/jev-latest` or `typesafe-ai/jev` in router settings and SDK requests, and re-save keys stored under `typesafe-ai` with `/login typesafe`; old direct IDs, `/login typesafe-ai`, and automatic migration of those saved keys are not supported. `TYPESAFE_API_KEY` and Atomic's `-fast` model behavior are unchanged.

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.20-alpha.9] - 2026-09-24
+
 ### Breaking Changes
 
 - Removed the public `workflowDependency()` SDK function and its report/operation types, `/workflow dependency`, and the workflow tool's `dependency` action. Inspect affected runs with workflow status; managed PostgreSQL recovery is automatic.

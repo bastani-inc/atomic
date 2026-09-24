@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.20-alpha.9] - 2026-09-24
+
 ### Breaking Changes
 
 - Image generation now uses `ImageModel` entries in the regular `Provider` and `Models` collection instead of the separate `ImagesModels`/`ImagesProvider` collection. Replace `createImagesModels()`, `createImagesProvider()`, `builtinImagesModels()`, and `openrouterImagesProvider()` with `createModels()`/`builtinModels()` and `models.getModelOfType("image", ...)`/`models.generateImages()`. The old plural image type names are removed; generated image catalog data now ships alongside chat and classifier entries.
