@@ -36,7 +36,7 @@
   <a href="https://bastani.ai/case-studies/gridd/"><img src="https://img.shields.io/badge/case%20study-GRiDD-7C3AED" alt="GRiDD case study"></a>
   <a href="https://deepwiki.com/bastani-inc/atomic"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-7.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <a href="https://namespace.so/github-actions/?utm_source=oss&utm_campaign=atomic"><img src="https://img.shields.io/badge/CI%20powered%20by-Namespace-1F1F1F" alt="CI powered by Namespace"></a>
+  <a href="https://namespace.so/github-actions/?utm_source=oss&utm_campaign=atomic"><img src="assets/namespace-badge.svg" height="20" alt="CI powered by Namespace"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
