@@ -1068,6 +1068,10 @@ To contribute workflows, see the [atomic-workflows repository](https://github.co
 
 MIT — see [LICENSE](LICENSE).
 
+## Sponsors
+
+Thanks to [Namespace](https://namespace.so) for powering our CI/CD pipelines with fast macOS, Linux, and Windows runners.
+
 ## Credits
 
 - [Pi](https://pi.dev)
