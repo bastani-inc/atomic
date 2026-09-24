@@ -24,6 +24,7 @@
 - Decision selection rejects image-generation models; execution `auto` remains restricted to chat language models, including those with multimodal input.
 - `/workflow resume` picker rows now display the full workflow ID first, with the workflow name in the adjacent description.
 - Tool calls in one assistant message are now ordered by each tool's new `concurrency` setting (`"shared"` by default, or `"exclusive"`). Built-in `edit`, `write`, `todo`, and `ask_user_question` run exclusively, and `bash` does when it uses `pty: true`, so a later `read` in the same message sees an earlier `edit` or `write`, rather than possibly reading the file first. Extension tools can declare `concurrency` as a mode or a per-call function of their arguments.
+- `/tasks` now orders each Agents and Shells section by status, with running tasks first (those needing attention at the top), then stopping, queued, failed, cancelled, and completed tasks, newest first within each status. The selected task stays selected when its status changes and it moves ([#3252](https://github.com/bastani-inc/atomic/issues/3252)).
 
 ### Fixed
 

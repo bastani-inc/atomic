@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { TaskId, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	renderTaskFooter,
 	TaskList,
@@ -85,12 +85,74 @@ test("groups retain all tasks, one expansion hint and separate inspector type or
 			taskListSections(mixed).map((section) => section.title),
 			["Agents", "Shells"],
 		);
-		assert.deepEqual(taskListSections(mixed)[0].tasks, [mixed[0], mixed[2]]);
+		assert.deepEqual(taskListSections(mixed)[0].tasks, [mixed[2], mixed[0]]);
 		assert.equal(plain(renderTaskFooter(tasks, 80)), "Tasks  6 local agents running · /tasks");
 		assert.deepEqual(renderTaskFooter([], 80), []);
 	} finally {
 		await fixture.dispose();
 	}
+});
+
+test("sections order tasks by status with running work first and newest first within a status (#3252)", () => {
+	const output = taskRecord("output").output;
+	const settled = (id: string, result: TaskResult, kind: "agent" | "command" = "agent"): TaskRecord => ({
+		...taskRecord(id, kind),
+		execution: { kind: "settled", result },
+	});
+	const completedOld = settled("completed-old", { kind: "completed", output });
+	const failed = settled("failed", { kind: "failed", code: "x", message: "x" });
+	const runningOld = taskRecord("running-old");
+	const queued: TaskRecord = { ...taskRecord("queued"), execution: { kind: "queued" } };
+	const cancelled = settled("cancelled", { kind: "cancelled", cause: "user" });
+	const stopping: TaskRecord = { ...taskRecord("stopping"), execution: { kind: "cancelling", cause: "user" } };
+	const attention: TaskRecord = {
+		...taskRecord("attention"),
+		attention: { kind: "no-recent-activity" },
+	};
+	const completedNew = settled("completed-new", { kind: "completed", output });
+	const runningNew = taskRecord("running-new");
+	const shellDone = settled("shell-done", { kind: "completed", output }, "command");
+	const shellRunning = taskRecord("shell-running", "command");
+	const tasks = [
+		completedOld,
+		failed,
+		runningOld,
+		queued,
+		cancelled,
+		stopping,
+		attention,
+		completedNew,
+		runningNew,
+		shellDone,
+		shellRunning,
+	];
+	const ids = (settlementOrder?: ReadonlyMap<TaskId, number>) =>
+		taskListSections(tasks, settlementOrder).map((section) => [
+			section.title,
+			section.tasks.map((task) => task.ref.taskId),
+		]);
+	assert.deepEqual(ids(), [
+		[
+			"Agents",
+			[
+				"attention",
+				"running-new",
+				"running-old",
+				"stopping",
+				"queued",
+				"failed",
+				"cancelled",
+				"completed-new",
+				"completed-old",
+			],
+		],
+		["Shells", ["shell-running", "shell-done"]],
+	]);
+	const settledLast = new Map([
+		[completedNew.ref.taskId, 0],
+		[completedOld.ref.taskId, 1],
+	]);
+	assert.deepEqual(ids(settledLast)[0][1].slice(-2), ["completed-old", "completed-new"]);
 });
 
 // RFC #2884: raw and display-colliding descriptions must never identify a task.

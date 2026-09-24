@@ -1,5 +1,5 @@
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { theme } from "../theme/theme.js";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
 
@@ -21,9 +21,34 @@ export class TaskList implements Component {
 		});
 	}
 }
-export function taskListSections(tasks: readonly TaskRecord[]): Array<{ title: string; tasks: TaskRecord[] }> {
+export type TaskListSection = { title: string; tasks: TaskRecord[] };
+
+function statusRank(task: TaskRecord): number {
+	const execution = task.execution;
+	if (execution.kind === "running") return task.attention.kind === "none" ? 1 : 0;
+	if (execution.kind === "cancelling") return 2;
+	if (execution.kind === "queued") return 3;
+	return { failed: 4, cancelled: 5, completed: 6 }[execution.result.kind];
+}
+
+/**
+ * Sections list running work first, then stopping, queued, failed, cancelled and completed tasks.
+ * Within a status, the latest launch comes first; settled tasks use the latest settlement when known.
+ */
+export function taskListSections(
+	tasks: readonly TaskRecord[],
+	settlementOrder: ReadonlyMap<TaskId, number> = new Map(),
+): TaskListSection[] {
+	const launchOrder = new Map(tasks.map((task, index) => [task.ref.taskId, index]));
+	const newerFirst = (a: TaskRecord, b: TaskRecord) => {
+		const settledA = a.execution.kind === "settled" ? settlementOrder.get(a.ref.taskId) : undefined;
+		const settledB = b.execution.kind === "settled" ? settlementOrder.get(b.ref.taskId) : undefined;
+		if (settledA !== undefined && settledB !== undefined && settledA !== settledB) return settledB - settledA;
+		return (launchOrder.get(b.ref.taskId) ?? 0) - (launchOrder.get(a.ref.taskId) ?? 0);
+	};
+	const ordered = [...tasks].sort((a, b) => statusRank(a) - statusRank(b) || newerFirst(a, b));
 	return (["agent", "command"] as const).flatMap((kind) => {
-		const selected = tasks.filter((task) => task.kind === kind);
+		const selected = ordered.filter((task) => task.kind === kind);
 		return selected.length ? [{ title: kind === "agent" ? "Agents" : "Shells", tasks: selected }] : [];
 	});
 }

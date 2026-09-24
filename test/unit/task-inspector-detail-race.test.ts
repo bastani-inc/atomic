@@ -36,7 +36,7 @@ async function withInspector(
 	setKeybindings(new KeybindingsManager());
 	const supervisor = new TaskSupervisor();
 	const store = new OwnerTaskStore(supervisor, {} as OwnerLease);
-	const tasks = [taskRecord("first", "command"), taskRecord("second", "command")];
+	const tasks = [taskRecord("second", "command"), taskRecord("first", "command")];
 	for (const task of tasks)
 		task.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "done" } };
 	vi.spyOn(store, "tasks", "get").mockReturnValue(tasks);

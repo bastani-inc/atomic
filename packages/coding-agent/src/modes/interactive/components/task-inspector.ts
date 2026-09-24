@@ -27,7 +27,7 @@ import {
 	taskDetailLabels,
 	taskDetailSummary,
 } from "./task-detail.js";
-import { taskListSections } from "./task-list.js";
+import { type TaskListSection, taskListSections } from "./task-list.js";
 import { TaskLiveTranscript } from "./task-live-transcript.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
@@ -110,13 +110,13 @@ export class TaskInspector implements Component {
 			},
 		});
 		this.unsubscribe = this.store.subscribe(() => {
-			this.navigation.update(this.store.backgroundTasks);
+			this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
 			if (this.transcriptRequested) {
 				this.refreshTranscript();
 			} else if (this.navigation.focus.kind === "detail") void this.loadDetail();
 			this.requestRender();
 		});
-		this.navigation.update(this.store.backgroundTasks);
+		this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
 		this.navigation.open();
 		this.input.onSubmit = (text) => {
 			void this.sendInput(text);
@@ -127,6 +127,9 @@ export class TaskInspector implements Component {
 	private readonly close: () => void;
 	open(id?: TaskId): void {
 		this.navigation.open(id);
+	}
+	private orderedSections(): TaskListSection[] {
+		return taskListSections(this.store.backgroundTasks, this.store.settlementOrder);
 	}
 	dispose(): void {
 		this.disposed = true;
@@ -578,7 +581,7 @@ export class TaskInspector implements Component {
 				this.status,
 			];
 		}
-		const sections = taskListSections(this.store.backgroundTasks);
+		const sections = this.orderedSections();
 		if (!sections.length)
 			return new Text("No background tasks.\nBackground agents and shells will appear here.", 0, 0).render(width);
 		return sections.flatMap((section) => [

@@ -20,6 +20,7 @@ The indicator counts active agents and shells, including queued, stopping, and a
 Run `/tasks` to inspect work without stopping it:
 
 - The compact picker opens in the editor slot, with the conversation visible above it. It lists only tasks owned by that chat.
+- Within the **Agents** and **Shells** sections, tasks are ordered by status: running (tasks needing attention first), stopping, queued, failed, cancelled, then completed. The newest launch or settlement comes first within each status, and your selection follows its task when it moves.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later foreground wait. Foreground-only commands are excluded.

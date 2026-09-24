@@ -88,7 +88,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 		);
 		tasks.store.drain();
 		assert.match(render(), /provider\/resolved.*thinking low/);
-		stage.handleInput("\x1b[B");
+		stage.handleInput("\x1b[A");
 		assert.match(render(), /Second owner task/);
 		stage.handleInput("\r");
 		await flush();

@@ -36,6 +36,7 @@ export class OwnerTaskStore {
 	private activityCursors = new Map<TaskId, bigint>();
 	private omittedActivity = new Set<TaskId>();
 	private backgroundIds = new Set<TaskId>();
+	private settlements = new Map<TaskId, number>();
 	readonly anchors = new Map<TaskId, TaskAnchor>();
 	private current?: OwnerSnapshot;
 	readonly supervisor: TaskSupervisor;
@@ -59,6 +60,10 @@ export class OwnerTaskStore {
 		return this.tasks.filter(
 			(task) => task.wasBackground || isBackground(task.observation) || this.backgroundIds.has(task.ref.taskId),
 		);
+	}
+	/** Order in which this view first observed each task settle; higher is more recent. */
+	get settlementOrder(): ReadonlyMap<TaskId, number> {
+		return this.settlements;
 	}
 	/** Resolve only within the owner that authorized this store. */
 	resolveTask(id: TaskId): Result<TaskLease, WaitError> {
@@ -112,6 +117,8 @@ export class OwnerTaskStore {
 				task.ref.taskId,
 				previous?.execution.kind === "settled" ? { ...task, execution: previous.execution } : task,
 			);
+			if (task.execution.kind === "settled" && !this.settlements.has(task.ref.taskId))
+				this.settlements.set(task.ref.taskId, this.settlements.size);
 			if (!this.anchors.has(task.ref.taskId))
 				this.anchors.set(task.ref.taskId, {
 					taskId: task.ref.taskId,
