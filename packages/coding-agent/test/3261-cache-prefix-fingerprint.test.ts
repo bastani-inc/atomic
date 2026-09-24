@@ -49,14 +49,22 @@ describe("computeCachePrefixFingerprint / describeCachePrefixDifference (#3261)"
 		assert.equal(describeCachePrefixDifference(previous, current), "tool list changed: -mcp");
 	});
 
-	it("does not report a tool-list change when an existing tool's declaration hash changes", () => {
+	it("reports 'tool list changed' when an existing tool's declaration hash changes (#3261)", () => {
 		const previous = computeCachePrefixFingerprint(basePayload(), MODEL);
 		const redefined = {
 			...basePayload(),
 			tools: [{ name: "read", description: "a very different description", input_schema: { extra: true } }],
 		};
 		const current = computeCachePrefixFingerprint(redefined, MODEL);
-		assert.equal(describeCachePrefixDifference(previous, current), "prefix unchanged");
+		assert.equal(describeCachePrefixDifference(previous, current), "tool list changed");
+	});
+
+	it("reports 'tool list changed' when the same tools are reordered (#3261)", () => {
+		const first = { name: "read", description: "read tool", input_schema: {} };
+		const second = { name: "mcp", description: "mcp tool", input_schema: {} };
+		const previous = computeCachePrefixFingerprint({ ...basePayload(), tools: [first, second] }, MODEL);
+		const current = computeCachePrefixFingerprint({ ...basePayload(), tools: [second, first] }, MODEL);
+		assert.equal(describeCachePrefixDifference(previous, current), "tool list changed");
 	});
 
 	it("reports 'system prompt changed' when the system prompt text changes", () => {

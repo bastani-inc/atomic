@@ -101,10 +101,10 @@ export function computeCachePrefixFingerprint(
 /**
  * Describe the first request segment that differs between two fingerprints, in the
  * order model, tools, system prompt, request params, messages. A tool whose name is
- * new is `+name`; a name present before and now absent is `-name`. A declaration-hash
- * change on a tool name present in both fingerprints is not reported as a tool-list
- * change. Never returns prompt content: tool names are bare identifiers, and rewritten
- * messages are named by their 1-based position only.
+ * new is `+name`; a name present before and now absent is `-name`. Changes to
+ * existing declarations or tool order are reported without a tool name. Never
+ * returns prompt content: tool names are bare identifiers, and rewritten messages
+ * are named by their 1-based position only.
  */
 export function describeCachePrefixDifference(
 	previous: CachePrefixFingerprint | undefined,
@@ -120,6 +120,12 @@ export function describeCachePrefixDifference(
 	for (const tool of previous.tools) {
 		if (!currentNames.has(tool.name)) return `tool list changed: -${tool.name}`;
 	}
+	if (
+		previous.tools.some(
+			(tool, index) => tool.name !== current.tools[index]?.name || tool.hash !== current.tools[index]?.hash,
+		)
+	)
+		return "tool list changed";
 	if (previous.systemHash !== current.systemHash) return "system prompt changed";
 	if (previous.paramsHash !== current.paramsHash) return "request params changed";
 	const commonLength = Math.min(previous.messageHashes.length, current.messageHashes.length);
