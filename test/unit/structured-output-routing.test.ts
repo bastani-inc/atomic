@@ -369,21 +369,34 @@ for (const [name, answers] of [
 	});
 }
 
-for (const failure of [
-	{ stopReason: "aborted" as const },
-	{ stopReason: "error" as const, errorMessage: "content_filter refusal" },
-]) {
-	test(`classifier ${failure.stopReason} ${failure.errorMessage ?? ""} does not cross providers`, async () => {
-		const classify = vi.fn(async () => classifierResult(failure));
-		const request = classifierRequest(classify, decisionRequest().currentModel);
-		const dispatch = vi.fn(() => messageStream(decisionMessage()));
-		await assert.rejects(
-			routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
-			/aborted|refused/,
-		);
-		assert.equal(dispatch.mock.calls.length, 0);
+test("classifier abort never crosses providers", async () => {
+	const classify = vi.fn(async () => classifierResult({ stopReason: "aborted" }));
+	const request = classifierRequest(classify, decisionRequest().currentModel);
+	const dispatch = vi.fn(() => messageStream(decisionMessage()));
+	await assert.rejects(
+		routeModel({ ...request, modelRegistry: { ...request.modelRegistry, streamSimple: dispatch } }),
+		/aborted/,
+	);
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 0);
+});
+
+test("classifier provider refusal advances to current chat", async () => {
+	const classify = vi.fn(async () =>
+		classifierResult({ stopReason: "error", errorMessage: "content_filter private body" }),
+	);
+	const request = classifierRequest(classify, decisionRequest().currentModel);
+	const dispatch = vi.fn(() => messageStream(decisionMessage()));
+	const result = await routeModel({
+		...request,
+		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
-}
+	assert.equal(result.model, "decision-test/chat");
+	assert.equal(result.fallback?.from, "typesafe/jev-latest");
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 1);
+	assert.doesNotMatch(JSON.stringify(result), /private body/);
+});
 
 test("classifier validates the decoded result against the routing schema", async () => {
 	const classify = vi.fn(async () => classifierResult());

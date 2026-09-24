@@ -10,7 +10,6 @@ import {
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
-import { isRetryableModelFailure, isSafetyRefusalFailure } from "../model-fallback-failures.ts";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
@@ -79,23 +78,6 @@ function validateState(state: JsonObject): void {
 	}
 }
 
-function isCannedSafetyRefusal(response: AssistantMessage): boolean {
-	if (
-		response.usage.output !== 0 ||
-		(response.stopReason !== "stop" && response.stopReason !== "length" && response.stopReason !== "toolUse") ||
-		response.content.length !== 1 ||
-		response.content[0]?.type !== "text"
-	)
-		return false;
-	const text = response.content[0].text.trim();
-	return (
-		text.length <= 120 &&
-		/^(?:i['’]?m sorry[,.]?\s+(?:but\s+)?|sorry[,.]?\s+(?:but\s+)?)?i\s+(?:cannot|can['’]?t|can\s+not|am\s+unable\s+to|am\s+not\s+able\s+to)\s+(?:assist|help|comply|continue)(?:\s+with)?(?:\s+(?:that|this))?(?:\s+(?:request|task))?\.?$/i.test(
-			text,
-		)
-	);
-}
-
 async function inferChat<T extends TSchema>(
 	request: InternalStructuredOutputRequest<T>,
 	model: Model<Api>,
@@ -156,22 +138,15 @@ async function inferChat<T extends TSchema>(
 		);
 	} catch (error) {
 		signal.throwIfAborted();
-		if (request.candidateFallback) {
-			if (!isRetryableModelFailure(error) || isSafetyRefusalFailure(error))
-				throw new TerminalDecisionError("Structured output provider request failed; no fallback was attempted.");
-			throw new CandidateProviderError("Structured output provider request failed.");
-		}
+		if (error instanceof Error && error.name === "AbortError")
+			throw new TerminalDecisionError("Structured output inference was aborted; no fallback was attempted.");
+		if (request.candidateFallback) throw new CandidateProviderError("Structured output provider request failed.");
 		// Provider exceptions can echo private state or credentials; do not retain their cause.
 		throw new Error("Structured output provider request failed. Check provider configuration and connectivity.");
 	}
 	signal.throwIfAborted();
-	if (request.candidateFallback && (isSafetyRefusalFailure(response) || isCannedSafetyRefusal(response)))
-		throw new TerminalDecisionError("Structured output provider refused the request; no fallback was attempted.");
-	if (request.candidateFallback && response.stopReason === "error") {
-		if (!isRetryableModelFailure(response) || isSafetyRefusalFailure(response))
-			throw new TerminalDecisionError("Structured output provider request failed; no fallback was attempted.");
+	if (request.candidateFallback && response.stopReason === "error")
 		throw new CandidateProviderError("Structured output provider request failed.");
-	}
 	if (request.candidateFallback && response.stopReason === "aborted")
 		throw new TerminalDecisionError("Structured output inference was aborted; no fallback was attempted.");
 	if (response.stopReason === "error" || response.stopReason === "aborted")
@@ -232,7 +207,6 @@ class ClassifierDecisionError extends Error {
 }
 
 const CLASSIFIER_ABORTED = "Structured output classifier request was aborted; no fallback was attempted.";
-const CLASSIFIER_REFUSED = "Structured output classifier refused the request; no fallback was attempted.";
 
 async function inferClassifier<T extends TSchema>(
 	request: InternalStructuredOutputRequest<T>,
@@ -266,17 +240,12 @@ async function inferClassifier<T extends TSchema>(
 	} catch (error) {
 		signal.throwIfAborted();
 		if (error instanceof Error && error.name === "AbortError") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-		if (isSafetyRefusalFailure(error)) throw new TerminalDecisionError(CLASSIFIER_REFUSED);
 		throw new ClassifierDecisionError();
 	}
 	signal.throwIfAborted();
 	if (!result || typeof result !== "object") throw new ClassifierDecisionError();
 	if (result.stopReason === "aborted") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-	if (result.stopReason !== "stop") {
-		if (result.errorMessage && isSafetyRefusalFailure(new Error(result.errorMessage)))
-			throw new TerminalDecisionError(CLASSIFIER_REFUSED);
-		throw new ClassifierDecisionError();
-	}
+	if (result.stopReason !== "stop") throw new ClassifierDecisionError();
 	if (!result.answers || typeof result.answers !== "object" || typeof result.model !== "string")
 		throw new ClassifierDecisionError();
 	const choices: Record<string, string> = {};
@@ -358,10 +327,6 @@ export async function generateStructuredOutput<T extends TSchema>(
 				continue;
 			}
 			if (error instanceof TerminalDecisionError) throw error;
-			if (isSafetyRefusalFailure(error))
-				throw new TerminalDecisionError(
-					"Structured output provider refused the request; no fallback was attempted.",
-				);
 			if (!(error instanceof CandidateProviderError || error instanceof OutputRepairExhaustedError)) {
 				throw new TerminalDecisionError(
 					error instanceof InvalidDecisionOutputError

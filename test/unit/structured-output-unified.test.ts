@@ -295,16 +295,16 @@ test("a classifier abort fails closed without trying the chat model", async () =
 	assert.deepEqual(calls, ["classifier"]);
 });
 
-test("a classifier safety refusal fails closed without exposing the provider message", async () => {
+test("a classifier content-filter refusal falls back without leaking the provider message", async () => {
 	const { calls, modelRegistry } = classifierRegistry(() =>
 		classifierResult({}, { stopReason: "error", errorMessage: "finish_reason: content_filter private body" }),
 	);
-	await assert.rejects(generateStructuredOutput(verdictRequest(modelRegistry)), (error: Error) => {
-		assert.match(error.message, /refused the request; no fallback was attempted/);
-		assert.doesNotMatch(error.message, /private body/);
-		return true;
-	});
-	assert.deepEqual(calls, ["classifier"]);
+	const result = await generateStructuredOutput(verdictRequest(modelRegistry));
+	assert.deepEqual(result.value, { verdict: "approved" });
+	assert.deepEqual(calls, ["classifier", "chat"]);
+	assert.equal(result.fallback?.from, "acme/intent");
+	assert.equal(result.fallback?.to, "decision-test/chat");
+	assert.doesNotMatch(JSON.stringify(result), /private body/);
 });
 
 test("an incompatible classifier is skipped and chat fallbacks run in order before the current model", async () => {
@@ -404,118 +404,170 @@ for (const status of [400, 401, 422, 503] as const) {
 	});
 }
 
-test("structured output does not cross providers after a safety refusal", async () => {
+test("provider content-filter error advances to current chat without leaking its message", async () => {
 	const first = { ...decisionModel, id: "first" };
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
-	await assert.rejects(
-		generateStructuredOutput({
-			model: "decision-test/first",
-			currentModel: current,
-			modelRegistry: {
-				getAll: () => [first, current],
-				streamSimple: (model) => {
-					calls.push(model.id);
-					return messageStream({
-						...decisionMessage({ verdict: "approved" }),
-						stopReason: "error",
-						content: [],
-						errorMessage: "finish_reason: content_filter private response",
-					});
-				},
+	const result = await generateStructuredOutput({
+		model: "decision-test/first",
+		currentModel: current,
+		modelRegistry: {
+			getAll: () => [first, current],
+			streamSimple: (model) => {
+				calls.push(model.id);
+				return messageStream(
+					model.id === "first"
+						? {
+								...decisionMessage(),
+								stopReason: "error",
+								content: [],
+								errorMessage: "finish_reason: content_filter private response",
+							}
+						: decisionMessage({ verdict: "approved" }),
+				);
 			},
-			schema: Type.Object({ verdict: Type.String() }),
-			state: { task: "Decide the verdict" },
-			instructions: "Decide the verdict.",
-		}),
-		/no fallback was attempted/,
-	);
-	assert.deepEqual(calls, ["first"]);
+		},
+		schema: Type.Object({ verdict: Type.String() }),
+		state: { task: "Decide the verdict" },
+		instructions: "Decide the verdict.",
+	});
+	assert.deepEqual(result.value, { verdict: "approved" });
+	assert.deepEqual(calls, ["first", "current"]);
+	assert.equal(result.fallback?.to, "decision-test/current");
+	assert.doesNotMatch(JSON.stringify(result), /private response/);
 });
 
-test("structured output does not repair or fall back from a zero-output canned refusal", async () => {
+test("provider error advances to an explicit classifier fallback before current chat", async () => {
 	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
-	await assert.rejects(
-		generateStructuredOutput({
+	const result = await generateStructuredOutput({
+		model: "decision-test/first",
+		fallbackModels: ["acme/intent"],
+		currentModel: decisionModel,
+		modelRegistry: {
+			getAll: () => [first, decisionModel],
+			streamSimple: (model) => {
+				calls.push(model.id);
+				return messageStream({
+					...decisionMessage(),
+					stopReason: "error",
+					content: [],
+					errorMessage: "content_filter private response",
+				});
+			},
+			getClassifierModel: (provider, id) =>
+				provider === classifierModel.provider && id === classifierModel.id ? classifierModel : undefined,
+			classify: async () => {
+				calls.push("classifier");
+				return classifierResult({ verdict: choice("rejected") });
+			},
+		},
+		schema: verdictSchema,
+		state: { task: "Decide the verdict" },
+		instructions: "Decide the verdict.",
+	});
+	assert.deepEqual(result.value, { verdict: "rejected" });
+	assert.equal(result.model, "acme/intent");
+	assert.deepEqual(calls, ["first", "classifier"]);
+	assert.equal(result.fallback?.to, "acme/intent");
+	assert.doesNotMatch(JSON.stringify(result), /private response/);
+});
+
+for (const [stopReason, output] of [
+	["stop", 0],
+	["stop", 7],
+	["length", 0],
+	["length", 7],
+] as const) {
+	test(`plain-text refusal (${stopReason}, ${output} output tokens) follows ordinary repair then fallback`, async () => {
+		const first = { ...decisionModel, id: "first" };
+		const current = { ...decisionModel, id: "current" };
+		const calls: string[] = [];
+		const result = await generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
 				getAll: () => [first, current],
 				streamSimple: (model) => {
 					calls.push(model.id);
+					if (model.id === "current") return messageStream(decisionMessage({ verdict: "approved" }));
 					const response = decisionMessage();
 					return messageStream({
 						...response,
-						stopReason: "length",
+						stopReason,
 						content: [{ type: "text", text: "I'm sorry, but I cannot assist with that request." }],
-						usage: { ...response.usage, output: 0 },
+						usage: { ...response.usage, output },
 					});
 				},
 			},
 			schema: Type.Object({ verdict: Type.String() }),
 			state: { task: "Decide the verdict" },
 			instructions: "Decide the verdict.",
-		}),
-		/no fallback was attempted/,
-	);
-	assert.deepEqual(calls, ["first"]);
-});
+		});
+		assert.deepEqual(result.value, { verdict: "approved" });
+		assert.deepEqual(calls, ["first", "first", "first", "first", "current"]);
+		assert.equal(result.fallback?.to, "decision-test/current");
+	});
+}
 
-test("structured output does not cross providers after a filtered completion", async () => {
+test("filtered prose without a provider error follows ordinary repair before fallback", async () => {
 	const first = { ...decisionModel, id: "first" };
 	const current = { ...decisionModel, id: "current" };
 	const calls: string[] = [];
-	await assert.rejects(
-		generateStructuredOutput({
-			model: "decision-test/first",
-			currentModel: current,
-			modelRegistry: {
-				getAll: () => [first, current],
-				streamSimple: (model) => {
-					calls.push(model.id);
-					return messageStream({
-						...decisionMessage(),
-						stopReason: "length",
-						content: [{ type: "text", text: "Filtered." }],
-						errorMessage: "finish_reason: content_filter private response",
-					});
-				},
+	const result = await generateStructuredOutput({
+		model: "decision-test/first",
+		currentModel: current,
+		modelRegistry: {
+			getAll: () => [first, current],
+			streamSimple: (model) => {
+				calls.push(model.id);
+				return messageStream(
+					model.id === "first"
+						? {
+								...decisionMessage(),
+								stopReason: "length",
+								content: [{ type: "text", text: "Filtered." }],
+								errorMessage: "finish_reason: content_filter private response",
+							}
+						: decisionMessage({ verdict: "approved" }),
+				);
 			},
-			schema: Type.Object({ verdict: Type.String() }),
-			state: { task: "Decide the verdict" },
-			instructions: "Decide the verdict.",
-		}),
-		/no fallback was attempted/,
-	);
-	assert.deepEqual(calls, ["first"]);
+		},
+		schema: Type.Object({ verdict: Type.String() }),
+		state: { task: "Decide the verdict" },
+		instructions: "Decide the verdict.",
+	});
+	assert.deepEqual(result.value, { verdict: "approved" });
+	assert.deepEqual(calls, ["first", "first", "first", "first", "current"]);
+	assert.doesNotMatch(JSON.stringify(result), /private response/);
 });
 
-test("structured output fails closed on an unclassified provider error", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
-	const calls: string[] = [];
-	await assert.rejects(
-		generateStructuredOutput({
+for (const errorMessage of ["opaque private provider response", "content_filter private provider response"]) {
+	test(`thrown provider error ${errorMessage.split(" ")[0]} advances without inspecting wording`, async () => {
+		const first = { ...decisionModel, id: "first" };
+		const current = { ...decisionModel, id: "current" };
+		const calls: string[] = [];
+		const result = await generateStructuredOutput({
 			model: "decision-test/first",
 			currentModel: current,
 			modelRegistry: {
 				getAll: () => [first, current],
 				streamSimple: (model) => {
 					calls.push(model.id);
-					throw new Error("opaque private provider response");
+					if (model.id === "first") throw new Error(errorMessage);
+					return messageStream(decisionMessage({ verdict: "approved" }));
 				},
 			},
 			schema: Type.Object({ verdict: Type.String() }),
 			state: { task: "Decide the verdict" },
 			instructions: "Decide the verdict.",
 			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
-		}),
-		/no fallback was attempted/,
-	);
-	assert.deepEqual(calls, ["first"]);
-});
+		});
+		assert.deepEqual(result.value, { verdict: "approved" });
+		assert.deepEqual(calls, ["first", "current"]);
+		assert.doesNotMatch(JSON.stringify(result), /private provider response/);
+	});
+}
 
 test("structured output advances from a rate-limited response to the current chat model", async () => {
 	const first = { ...decisionModel, id: "first" };

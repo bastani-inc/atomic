@@ -93,18 +93,20 @@ test("classifier aborted result prevents chat fallback", async () => {
 	assert.equal(chat.mock.calls.length, 0);
 });
 
-test("classifier refusal prevents chat fallback", async () => {
+test("classifier provider refusal falls back to current chat once", async () => {
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const chat = vi.fn(() => messageStream(decisionMessage()));
-	await assert.rejects(
-		routeModel(
-			routedClassifier(
-				async () => ({ ...classifierResult(), stopReason: "error", errorMessage: "Safety refusal" }),
-				chat,
-			),
+	const result = await routeModel(
+		routedClassifier(
+			async () => ({ ...classifierResult(), stopReason: "error", errorMessage: "Safety refusal private body" }),
+			chat,
 		),
-		/refused the request; no fallback/,
 	);
-	assert.equal(chat.mock.calls.length, 0);
+	assert.equal(result.model, "decision-test/chat");
+	assert.equal(result.fallback?.from, "decision-test/classifier");
+	assert.equal(chat.mock.calls.length, 1);
+	assert.equal(warning.mock.calls.length, 1);
+	assert.doesNotMatch(JSON.stringify(result) + String(warning.mock.calls[0]?.[0]), /private body/);
 });
 
 for (const succeeds of [true, false]) {
