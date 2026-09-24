@@ -68,6 +68,7 @@ const postmasters: ChildProcess[] = [];
 afterEach(async () => {
 	resetEmbeddedDbosPostgresForTests();
 	vi.restoreAllMocks();
+	assert.equal(windowsShutdownSignal, undefined, "shutdown guard closed");
 	vi.unstubAllEnvs();
 	for (const child of postmasters.splice(0)) {
 		child.kill();
@@ -143,6 +144,27 @@ function externalPostmaster(f: ReturnType<typeof fixture>, port: number): void {
 	assert.ok(started);
 	writeTextSync(join(f.data, "postmaster.pid"), `${child.pid}\n${f.data}\n${started}\n${port}\n`);
 }
+let windowsShutdownSignal: ((mode: "fast" | "immediate") => void) | undefined;
+function emulateWindowsShutdown(signal: (mode: "fast" | "immediate") => void, exited: () => boolean): void {
+	if (process.platform !== "win32") return;
+	hooks.setWindowsPostgresGuard(() => {
+		assert.equal(windowsShutdownSignal, undefined, "previous guard closed before acquisition");
+		let signaled = false;
+		windowsShutdownSignal = (mode) => {
+			assert.equal(signaled, false);
+			signaled = true;
+			signal(mode);
+		};
+		return {
+			status: "live",
+			exited,
+			close: () => {
+				assert.ok(signaled, "pg_ctl kill ran while guard was held");
+				windowsShutdownSignal = undefined;
+			},
+		};
+	});
+}
 function emulateVerifiedShutdown(f: ReturnType<typeof fixture>, onSignal: () => void): void {
 	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
 		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
@@ -153,12 +175,14 @@ function emulateVerifiedShutdown(f: ReturnType<typeof fixture>, onSignal: () => 
 	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
 		exited ? { found: false } : original(pid),
 	);
-	vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation(() => {
+	const signal = () => {
 		onSignal();
 		exited = true;
 		rmSync(join(f.data, "postmaster.pid"));
 		return "signaled";
-	});
+	};
+	vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation(signal);
+	emulateWindowsShutdown(signal, () => exited);
 }
 function assertWindowsShutdown(
 	command: string,
@@ -169,6 +193,8 @@ function assertWindowsShutdown(
 ): void {
 	assert.equal(command, pgCtl);
 	assert.deepEqual(args, ["kill", mode, String(pid)]);
+	assert.ok(windowsShutdownSignal, "guard acquired before pg_ctl kill");
+	windowsShutdownSignal(mode === "INT" ? "fast" : "immediate");
 }
 test("OS process identity accepts a live non-self postmaster and rejects PID reuse", async () => {
 	const f = fixture();
@@ -319,47 +345,58 @@ test.each([
 	);
 	assert.equal(stops, 0);
 });
-test("OS identity changing after verification is rejected before any shutdown signal", async () => {
-	const f = fixture();
-	const port = await availablePostgresPort(0);
-	f.pidfile(port);
-	externalPostmaster(f, port);
-	const server = managedPostmaster(f.metadata)!;
-	publishPostgresServer(f.root, f.metadata, server);
-	writeTextSync(
-		join(f.data, "postmaster.opts"),
-		`${join(f.root, "gone", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
-	);
-	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
-		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
-		signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
-	};
-	const observed = server.started - 10;
-	vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true, startTime: observed });
-	const signal = vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, expected) => {
-		assert.equal(expected, observed);
-		return "mismatch";
-	});
-	let pgCtlCalls = 0;
-	await assert.rejects(
-		hooks.stopBrokenManagedPostmaster(
-			f.metadata,
-			server,
-			f.options.binaries.pg_ctl,
-			{
-				baseDir: f.root,
-				runAsOwner: async () => {
-					pgCtlCalls++;
-					throw new Error("unsafe pg_ctl");
+test.each(["darwin", "win32"] as const)(
+	"%s OS identity changing after verification is rejected before any shutdown signal",
+	async (platform) => {
+		const f = fixture();
+		const port = await availablePostgresPort(0);
+		f.pidfile(port);
+		externalPostmaster(f, port);
+		const server = managedPostmaster(f.metadata)!;
+		publishPostgresServer(f.root, f.metadata, server);
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${join(f.root, "gone", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+			postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+			signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: "fast" | "immediate"): string;
+		};
+		const observed = server.started - 10;
+		vi.spyOn(binding, "postgresProcessStartTime").mockReturnValue({ found: true, startTime: observed });
+		const signal = vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, expected) => {
+			assert.equal(expected, observed);
+			return "mismatch";
+		});
+		const guard = vi.fn((_pid: number, expected: number) => {
+			assert.equal(expected, observed);
+			return { status: "mismatch" as const, exited: () => false, close: vi.fn() };
+		});
+		hooks.setWindowsPostgresGuard(guard);
+		let pgCtlCalls = 0;
+		await assert.rejects(
+			hooks.stopBrokenManagedPostmaster(
+				f.metadata,
+				server,
+				f.options.binaries.pg_ctl,
+				{
+					baseDir: f.root,
+					runAsOwner: async () => {
+						pgCtlCalls++;
+						throw new Error("unsafe pg_ctl");
+					},
 				},
-			},
-			{ ownerToken: "fixture", refresh: () => true },
-		),
-		/OS process start identity mismatch/,
-	);
-	assert.equal(signal.mock.calls.length, 1);
-	assert.equal(pgCtlCalls, 0);
-});
+				{ ownerToken: "fixture", refresh: () => true },
+				undefined,
+				platform,
+			),
+			/OS process start identity mismatch/,
+		);
+		assert.equal(signal.mock.calls.length, platform === "win32" ? 0 : 1);
+		assert.equal(guard.mock.calls.length, platform === "win32" ? 1 : 0);
+		assert.equal(pgCtlCalls, 0);
+	},
+);
 
 test.each(["mismatch", "absent"] as const)("Windows %s guard never invokes pg_ctl kill", async (status) => {
 	const f = fixture();
@@ -498,7 +535,7 @@ test.each(["fast exit", "timeout with matching identity", "timeout with changed 
 			released ? { found: false } : originalStartTime(pid),
 		);
 		const modes: string[] = [];
-		vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, _started, mode) => {
+		const signal = (mode: "fast" | "immediate") => {
 			modes.push(mode);
 			signals++;
 			if (mode === "immediate" || scenario === "fast exit") {
@@ -506,7 +543,9 @@ test.each(["fast exit", "timeout with matching identity", "timeout with changed 
 				rmSync(join(f.data, "postmaster.pid"));
 			}
 			return "signaled";
-		});
+		};
+		vi.spyOn(binding, "signalVerifiedPostgres").mockImplementation((_pid, _started, mode) => signal(mode));
+		emulateWindowsShutdown(signal, () => released);
 		hooks.setRetainedPostgresSpawner((options) => {
 			f.pidfile(port);
 			writeTextSync(
@@ -548,7 +587,7 @@ test.each(["fast exit", "timeout with matching identity", "timeout with changed 
 						args,
 						f.options.binaries.pg_ctl,
 						server.pid,
-						modes.at(-1) === "fast" ? "INT" : "QUIT",
+						signals === 0 ? "INT" : "QUIT",
 					);
 					return { exitCode: 0, stdout: "", stderr: "" };
 				},
@@ -1026,6 +1065,12 @@ test.each(["regular file", "cyclic support-file link"])(
 		const f = fixture();
 		const source = join(f.root, "runtime", "native");
 		for (const binary of ["pg_ctl", "initdb"]) writeTextSync(join(source, "bin", binary), "fixture");
+		if (process.platform === "win32") {
+			for (const binary of ["postgres", "pg_ctl", "initdb"])
+				writeTextSync(join(source, "bin", `${binary}.exe`), "fixture");
+			mkdirSync(join(source, "share", "timezonesets"), { recursive: true });
+			writeTextSync(join(source, "share", "timezonesets", "Default"), "timezone");
+		}
 		const pinned = join(f.root, "pinned", "native");
 		cpSync(source, pinned, { recursive: true });
 		const pinnedBinaries = {
@@ -1043,6 +1088,10 @@ test.each(["regular file", "cyclic support-file link"])(
 			symlinkSync("Default", timezoneFile);
 		}
 		vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", source);
+		assert.equal(
+			(await loadEmbeddedPostgresBinaries()).postgres,
+			join(source, "bin", process.platform === "win32" ? "postgres.exe" : "postgres"),
+		);
 		const port = await availablePostgresPort(0);
 		f.pidfile(port);
 		externalPostmaster(f, port);

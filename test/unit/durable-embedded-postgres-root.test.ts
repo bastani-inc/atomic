@@ -371,6 +371,104 @@ describe("embedded Postgres binaries under a drop-privilege owner", () => {
 		}
 	});
 
+	test("package identity reuses the source index without source stat passes", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-package-identity-"));
+		try {
+			const modules = join(scratch, "node_modules");
+			const pkg = join(modules, "@embedded-postgres", "example");
+			const native = join(pkg, "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["initdb", "postgres", "pg_ctl"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const manifest = (version: string) =>
+				writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@embedded-postgres/example", version }));
+			const lock = (version: string) =>
+				writeFileSync(
+					join(modules, ".package-lock.json"),
+					JSON.stringify({
+						packages: {
+							"node_modules/@embedded-postgres/example": { version, integrity: `sha512-${version}` },
+						},
+					}),
+				);
+			manifest("1.0.0");
+			lock("1.0.0");
+			const binaries = Object.fromEntries(
+				["initdb", "postgres", "pg_ctl"].map((name) => [name, join(native, "bin", name)]),
+			) as {
+				initdb: string;
+				postgres: string;
+				pg_ctl: string;
+			};
+			const context = { baseDir: join(scratch, "cluster"), runAsOwner: noCommands };
+			await prepareBinariesForOwner(binaries, context, noCommands);
+			vi.resetModules();
+			const fresh = await import("../../packages/workflows/src/durable/dbos-embedded-postgres-root.js");
+			let passes = 0;
+			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
+			assert.equal(passes, 0);
+			manifest("2.0.0");
+			lock("2.0.0");
+			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
+			assert.ok(passes > 0, "new package version requires a fresh source identity mapping");
+			vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", native);
+			passes = 0;
+			await fresh.prepareBinariesForOwner(binaries, context, noCommands, { onSourceStatPass: () => passes++ });
+			assert.ok(passes > 0, "explicit runtime overrides use the stat index");
+		} finally {
+			vi.unstubAllEnvs();
+			removeSealedScratch(scratch);
+		}
+	});
+
+	test("attach uses required files while start and damage check the full manifest", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-validation-memo-"));
+		try {
+			const native = join(scratch, "pkg", "native");
+			mkdirSync(join(native, "bin"), { recursive: true });
+			for (const name of ["initdb", "postgres", "pg_ctl"])
+				writeFileSync(join(native, "bin", name), name, { mode: 0o755 });
+			const binaries = {
+				initdb: join(native, "bin", "initdb"),
+				postgres: join(native, "bin", "postgres"),
+				pg_ctl: join(native, "bin", "pg_ctl"),
+			};
+			const prepared = await prepareBinariesForOwner(
+				binaries,
+				{ baseDir: join(scratch, "cluster"), runAsOwner: noCommands },
+				noCommands,
+			);
+			vi.resetModules();
+			const fresh = await import("../../packages/workflows/src/durable/dbos-embedded-postgres-root.js");
+			let validations = 0;
+			const onValidation = () => validations++;
+			assert.equal(
+				await fresh.fingerprintPreparedRuntime(prepared, { quickValidation: true, onValidation }),
+				prepared.sealedIdentity,
+			);
+			assert.equal(validations, 0);
+			for (let repeat = 0; repeat < 3; repeat++)
+				assert.equal(
+					await fresh.fingerprintPreparedRuntime(prepared, { memoizedValidation: true, onValidation }),
+					prepared.sealedIdentity,
+				);
+			assert.equal(validations, 1);
+			assert.equal(
+				await fresh.fingerprintPreparedRuntime(prepared, { fullValidation: true, onValidation }),
+				prepared.sealedIdentity,
+			);
+			assert.equal(validations, 2);
+			chmodSync(prepared.postgres, 0o755);
+			writeFileSync(prepared.postgres, "damaged runtime");
+			await assert.rejects(
+				fresh.fingerprintPreparedRuntime(prepared, { fullValidation: true, onValidation }),
+				/manifest mismatch/,
+			);
+			assert.equal(validations, 3);
+		} finally {
+			removeSealedScratch(scratch);
+		}
+	});
 	test("publishes a complete read-only marker once before rename and permits concurrent reuse", async () => {
 		const scratch = mkdtempSync(join(tmpdir(), "atomic-pg-atomic-marker-"));
 		try {

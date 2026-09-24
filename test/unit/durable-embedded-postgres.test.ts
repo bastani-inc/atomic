@@ -5,6 +5,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -13,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RetainedPostgres, RetainedPostgresSpawnOptions } from "@bastani/atomic-natives";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	embeddedPostgresTestHooks,
 	loadEmbeddedPostgresBinaries,
@@ -24,6 +25,11 @@ import {
 	type EmbeddedPostgresRunContext,
 	prepareBinariesForOwner,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:fs")>();
+	return { ...original, renameSync: vi.fn(original.renameSync) };
+});
 
 class FakeLease implements RetainedPostgres {
 	readonly pid = 4242;
@@ -66,6 +72,7 @@ const TEST_SETUP_LOCK_STALE_MS = 40;
 const TEST_SETUP_LOCK_HEARTBEAT_MS = 10;
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	embeddedPostgresTestHooks.setEnsureOperation(undefined);
 	embeddedPostgresTestHooks.setRetainedPostgresSpawner(undefined);
 	embeddedPostgresTestHooks.setActiveCluster(undefined);
@@ -536,6 +543,48 @@ test("heartbeats keep live slow setup work beyond the stale threshold exclusivel
 	}
 });
 
+test("a heartbeat renewed after a contender samples time is not mistaken for a reboot", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-clock-race-"));
+	const lockDir = join(root, "setup-lock");
+	let now = 1_000;
+	let heartbeat!: () => boolean;
+	try {
+		await embeddedPostgresTestHooks.withSetupLock(
+			lockDir,
+			async ({ runtimePublicationLease }) => {
+				await assert.rejects(
+					embeddedPostgresTestHooks.withSetupLock(
+						lockDir,
+						async () => {
+							throw new Error("live owner was displaced");
+						},
+						{
+							now: () => {
+								const sampled = now;
+								now += 1;
+								assert.equal(heartbeat(), true);
+								return sampled;
+							},
+							attempts: 1,
+						},
+					),
+					/Timed out waiting for another Atomic process/,
+				);
+				assert.equal(runtimePublicationLease.refresh(), true);
+			},
+			{
+				now: () => now,
+				scheduleHeartbeat: (callback) => {
+					heartbeat = callback;
+					return () => {};
+				},
+			},
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("setup heartbeats atomically replace the owner marker in the same directory", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-atomic-heartbeat-"));
 	const lockDir = join(root, "setup-lock");
@@ -568,6 +617,58 @@ test("setup heartbeats atomically replace the owner marker in the same directory
 		await owner;
 	} finally {
 		release();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a transient sharing violation during heartbeat replacement retains the setup lease", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-sharing-"));
+	const lockDir = join(root, "setup-lock");
+	try {
+		await embeddedPostgresTestHooks.withSetupLock(
+			lockDir,
+			async ({ runtimePublicationLease }) => {
+				const rename = vi
+					.mocked(renameSync)
+					.mockClear()
+					.mockImplementationOnce(() => {
+						throw Object.assign(new Error("Windows sharing violation"), { code: "EPERM" });
+					});
+				assert.equal(runtimePublicationLease.refresh(), true);
+				assert.equal(rename.mock.calls.length, 2);
+			},
+			{ staleMs: 1_000 },
+		);
+		assert.equal(existsSync(lockDir), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a sharing violation cannot hide displacement by a different setup owner", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-postgres-lock-displaced-sharing-"));
+	const lockDir = join(root, "setup-lock");
+	try {
+		await embeddedPostgresTestHooks.withSetupLock(
+			lockDir,
+			async ({ runtimePublicationLease }) => {
+				const markerPath = join(lockDir, readdirSync(lockDir)[0]!);
+				const replacement = JSON.stringify({ token: "replacement", pid: process.pid, heartbeatMonotonicMs: 1 });
+				const rename = vi
+					.mocked(renameSync)
+					.mockClear()
+					.mockImplementationOnce(() => {
+						writeFileSync(markerPath, replacement);
+						throw Object.assign(new Error("Windows sharing violation"), { code: "EPERM" });
+					});
+				assert.equal(runtimePublicationLease.refresh(), false);
+				assert.equal(rename.mock.calls.length, 1, "must not retry the commit after ownership changes");
+				assert.equal(readFileSync(markerPath, "utf8"), replacement);
+			},
+			{ staleMs: 1_000 },
+		);
+		assert.equal(existsSync(lockDir), true, "must not release the replacement owner");
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

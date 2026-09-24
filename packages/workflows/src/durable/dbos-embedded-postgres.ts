@@ -300,6 +300,8 @@ async function ensureCluster(
 			const prepareRetainedRuntime = async (
 				source: EmbeddedPostgresBinaries,
 				reservedGeneration: string | undefined,
+				quickValidation = false,
+				fullValidation = false,
 			): Promise<EmbeddedPostgresBinaries> => {
 				const cacheDir = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
 				if (cacheDir === undefined)
@@ -307,6 +309,9 @@ async function ensureCluster(
 						publicationLease: setup.runtimePublicationLease,
 						repairCorruptGeneration: true,
 						reservedGeneration,
+						quickValidation,
+						memoizedValidation: true,
+						fullValidation,
 					});
 				await ensureRuntimeCacheDirectory(cacheDir, undefined, context.owner !== undefined);
 				try {
@@ -314,6 +319,9 @@ async function ensureCluster(
 						publicationLease: setup.runtimePublicationLease,
 						repairCorruptGeneration: true,
 						reservedGeneration,
+						quickValidation,
+						fullValidation,
+						memoizedValidation: true,
 						reuseOnly: true,
 					});
 				} catch (error) {
@@ -332,6 +340,9 @@ async function ensureCluster(
 							},
 							repairCorruptGeneration: true,
 							reservedGeneration,
+							quickValidation,
+							fullValidation,
+							memoizedValidation: true,
 						});
 					},
 					{ attempts: READY_ATTEMPTS * 4 },
@@ -339,13 +350,18 @@ async function ensureCluster(
 				if (result === undefined) throw new Error("Embedded Postgres runtime publication did not complete.");
 				return result;
 			};
-			const chooseRuntime = async (): Promise<EmbeddedPostgresBinaries> => {
+			const chooseRuntime = async (
+				mode: "attach" | "start" | "damage" = "start",
+			): Promise<EmbeddedPostgresBinaries> => {
 				if (prepared !== undefined && selectedIdentity !== undefined) {
 					let retainedValid = false;
 					try {
 						retainedValid =
 							(await fingerprintPreparedRuntime(prepared, {
 								publicationLease: setup.runtimePublicationLease,
+								quickValidation: mode === "attach",
+								memoizedValidation: mode !== "damage",
+								fullValidation: mode === "damage",
 							})) === selectedIdentity;
 					} catch (error) {
 						if (!isCorruptRuntimeGeneration(error, dirname(dirname(prepared.postgres)))) throw error;
@@ -354,13 +370,23 @@ async function ensureCluster(
 					const source = await loadEmbeddedPostgresBinaries();
 					await verifyReplacementSource(source);
 					const reservedGeneration = reservedLiveGeneration ?? dirname(dirname(prepared.postgres));
-					prepared = await prepareRetainedRuntime(source, reservedGeneration);
+					prepared = await prepareRetainedRuntime(
+						source,
+						reservedGeneration,
+						mode === "attach",
+						mode === "damage",
+					);
 					selectedIdentity = prepared.sealedIdentity;
 				} else {
 					if (prepared === undefined) {
 						const source = options.binaries ?? (await loadEmbeddedPostgresBinaries());
 						await verifyReplacementSource(source);
-						prepared = await prepareRetainedRuntime(source, reservedLiveGeneration);
+						prepared = await prepareRetainedRuntime(
+							source,
+							reservedLiveGeneration,
+							mode === "attach",
+							mode === "damage",
+						);
 					}
 				}
 				if (
@@ -369,8 +395,11 @@ async function ensureCluster(
 						lstatSync(binary, { throwIfNoEntry: false })?.isFile(),
 					) ||
 					(prepared.sealedIdentity !== undefined &&
-						(await fingerprintPreparedRuntime(prepared, { publicationLease: setup.runtimePublicationLease })) !==
-							prepared.sealedIdentity)
+						(await fingerprintPreparedRuntime(prepared, {
+							publicationLease: setup.runtimePublicationLease,
+							quickValidation: mode === "attach",
+							memoizedValidation: true,
+						})) !== prepared.sealedIdentity)
 				) {
 					throw new Error(
 						"Replacement managed Postgres runtime is incomplete or changed; preserving the running server.",
@@ -380,7 +409,7 @@ async function ensureCluster(
 			};
 			if (existing && !managedPostgresRuntimeHealthy(metadata!, port)) {
 				reservedLiveGeneration = dirname(dirname(managedPostgresLaunchExecutable(metadata!, existing.port)));
-				prepared = await chooseRuntime();
+				prepared = await chooseRuntime("damage");
 				if (adoptedRegistry !== undefined) {
 					if (verifyManagedPostmasterProcess({ ...metadata!, server: existing }, existing).status === "live") {
 						if (!setup.runtimePublicationLease.refresh())
@@ -475,7 +504,7 @@ async function ensureCluster(
 			if (options.probeIdentity === undefined) await probePostgresTimezoneData(verified.port);
 			let runtimeIdentity: string | undefined;
 			if (health === undefined) {
-				prepared = await chooseRuntime();
+				prepared = await chooseRuntime(verified && startedCluster === undefined ? "attach" : "start");
 				runtimeIdentity =
 					prepared.sealedIdentity ??
 					(await fingerprintPreparedRuntime(prepared, { publicationLease: setup.runtimePublicationLease }));
@@ -1273,7 +1302,7 @@ async function withSetupLock(
 	const isProcessAlive = options.isProcessAlive ?? processIsAlive;
 	let lease: SetupLockLease | undefined;
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
-		lease = acquireSetupLock(lockDir, clock(), staleMs, isProcessAlive, options.beforeOwnerMarkerWrite);
+		lease = acquireSetupLock(lockDir, clock, staleMs, isProcessAlive, options.beforeOwnerMarkerWrite);
 		if (lease !== undefined) break;
 		if (attempt === attempts - 1) {
 			throw new Error(`Timed out waiting for another Atomic process to finish Postgres setup (${lockDir}).`);
@@ -1282,7 +1311,7 @@ async function withSetupLock(
 	}
 	if (lease === undefined) throw new Error(`Could not acquire the embedded Postgres setup lock (${lockDir}).`);
 
-	const refresh = () => refreshSetupLockLease(lease, clock(), options.beforeHeartbeatReplace);
+	const refresh = () => refreshSetupLockLease(lease, clock(), staleMs, options.beforeHeartbeatReplace);
 	const stopHeartbeat = scheduleHeartbeat(refresh, heartbeatMs);
 	try {
 		await fn({
@@ -1297,7 +1326,7 @@ async function withSetupLock(
 
 function acquireSetupLock(
 	lockDir: string,
-	now: HostLeaseTime,
+	clock: () => HostLeaseTime,
 	staleMs: number,
 	isProcessAlive: (pid: number) => boolean,
 	beforeOwnerMarkerWrite?: (lockDir: string) => void,
@@ -1307,13 +1336,16 @@ function acquireSetupLock(
 		const token = `${process.pid}-${crypto.randomUUID()}`;
 		if (createSetupLockDirectory(lockDir)) {
 			beforeOwnerMarkerWrite?.(lockDir);
-			const lease = claimCreatedSetupLock(lockDir, token, now, abandonedOwnerTokens);
+			const lease = claimCreatedSetupLock(lockDir, token, clock(), abandonedOwnerTokens);
 			if (lease !== undefined) return lease;
 		}
 
 		const observation = observeSetupLock(lockDir);
-		if (observation === undefined || !setupLockIsStale(observation, now, staleMs, isProcessAlive)) return undefined;
-		const abandoned = breakStaleSetupLock(lockDir, observation, now, staleMs, token, isProcessAlive);
+		// Sample time after reading the marker: a concurrent renewal can be newer
+		// than a timestamp captured before observation, without any reboot.
+		if (observation === undefined || !setupLockIsStale(observation, clock(), staleMs, isProcessAlive))
+			return undefined;
+		const abandoned = breakStaleSetupLock(lockDir, observation, clock, staleMs, token, isProcessAlive);
 		if (abandoned === undefined) return undefined;
 		for (const abandonedToken of abandoned) abandonedOwnerTokens.add(abandonedToken);
 	}
@@ -1397,9 +1429,11 @@ function errorCode(error: unknown): string | undefined {
 function refreshSetupLockLease(
 	lease: SetupLockLease,
 	now: HostLeaseTime,
+	staleMs: number,
 	beforeReplace?: (temporaryMarkerPath: string) => void,
 ): boolean {
-	if (!ownsSetupLock(lease)) return false;
+	const deadline = performance.now() + Math.min(100, staleMs / 4);
+	if (!ownsSetupLock(lease, deadline)) return false;
 	const record = { token: lease.token, pid: lease.ownerPid, heartbeatMonotonicMs: now.monotonicMs };
 	const temporaryMarkerPath = join(lease.lockDir, `.owner-${lease.token}.tmp-${crypto.randomUUID()}`);
 	try {
@@ -1409,16 +1443,22 @@ function refreshSetupLockLease(
 			flush: true,
 		});
 		beforeReplace?.(temporaryMarkerPath);
-		if (!ownsSetupLock(lease)) {
+		if (!ownsSetupLock(lease, deadline)) {
 			removeMarkerIfOwned(temporaryMarkerPath, record);
 			return false;
 		}
-		// Same-directory rename is the record's atomic commit on every supported
-		// platform. Node's Windows implementation requests replace-existing; if a
-		// platform or scanner still rejects it, retain the intact old marker and
-		// fail ownership rather than falling back to an in-place write.
-		renameSync(temporaryMarkerPath, lease.markerPath);
-		return ownsSetupLock(lease);
+		// Windows readers/scanners can briefly deny replace-existing rename.
+		// Retry only sharing errors, within a fraction of the lease budget, and
+		// recheck the unique owner before every commit attempt. Never overwrite
+		// in place or interpret a displaced owner as a transient I/O failure.
+		return retrySetupLockSharingViolation(() => {
+			if (!ownsSetupLock(lease, deadline)) {
+				removeMarkerIfOwned(temporaryMarkerPath, record);
+				return false;
+			}
+			renameSync(temporaryMarkerPath, lease.markerPath);
+			return ownsSetupLock(lease, deadline);
+		}, deadline);
 	} catch {
 		removeMarkerIfOwned(temporaryMarkerPath, record);
 		return false;
@@ -1441,10 +1481,28 @@ function removeMarkerIfOwned(path: string, expected: LockOwnerRecord): void {
 	}
 }
 
-function ownsSetupLock(lease: SetupLockLease): boolean {
+function retrySetupLockSharingViolation<T>(operation: () => T, deadline: number): T {
+	let backoffMs = 1;
+	for (;;) {
+		try {
+			return operation();
+		} catch (error) {
+			const remainingMs = deadline - performance.now();
+			if (!["EPERM", "EACCES", "EBUSY"].includes(errorCode(error) ?? "") || remainingMs <= 0) throw error;
+			// refresh() is synchronous because callers fence publication with its
+			// result. This bounded sleep yields the CPU to the competing reader.
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(backoffMs, remainingMs));
+			backoffMs = Math.min(10, backoffMs * 2);
+		}
+	}
+}
+
+function ownsSetupLock(lease: SetupLockLease, deadline = performance.now()): boolean {
 	try {
-		const record = parseLockOwner(readFileSync(lease.markerPath, "utf8"));
-		return record?.token === lease.token && record.pid === lease.ownerPid && lstatSync(lease.markerPath).isFile();
+		return retrySetupLockSharingViolation(() => {
+			const record = parseLockOwner(readFileSync(lease.markerPath, "utf8"));
+			return record?.token === lease.token && record.pid === lease.ownerPid && lstatSync(lease.markerPath).isFile();
+		}, deadline);
 	} catch {
 		return false;
 	}
@@ -1466,7 +1524,7 @@ function releaseSetupLock(lease: SetupLockLease): void {
 function breakStaleSetupLock(
 	lockDir: string,
 	observed: LockObservation,
-	now: HostLeaseTime,
+	clock: () => HostLeaseTime,
 	staleMs: number,
 	token: string,
 	isProcessAlive: (pid: number) => boolean,
@@ -1481,7 +1539,7 @@ function breakStaleSetupLock(
 	if (
 		displaced === undefined ||
 		displaced.fingerprint !== observed.fingerprint ||
-		!setupLockIsStale(displaced, now, staleMs, isProcessAlive)
+		!setupLockIsStale(displaced, clock(), staleMs, isProcessAlive)
 	) {
 		try {
 			renameSync(breakPath, lockDir);

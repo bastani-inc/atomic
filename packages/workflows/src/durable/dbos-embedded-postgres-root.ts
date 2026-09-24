@@ -191,7 +191,12 @@ export interface RuntimePreparationOptions {
 	/** Test seam for deterministic event-loop cooperation without real delays. */
 	readonly yieldToEventLoop?: () => Promise<void>;
 	readonly onContentRead?: (path: string) => void;
+	readonly onSourceStatPass?: () => void;
+	readonly onValidation?: () => void;
 	readonly repairCorruptGeneration?: boolean;
+	readonly fullValidation?: boolean;
+	readonly memoizedValidation?: boolean;
+	readonly quickValidation?: boolean;
 	readonly reservedGeneration?: string;
 	readonly reuseOnly?: boolean;
 }
@@ -223,6 +228,7 @@ interface SourceIndexEntry {
 }
 const sourceMemo = new Map<string, SourceIndexEntry>();
 const legacyMemo = new Map<string, RuntimeManifest>();
+const validatedMemo = new Map<string, { marker: string; identity: string }>();
 
 export async function prepareBinariesForOwner(
 	binaries: EmbeddedPostgresBinaryPaths,
@@ -241,7 +247,7 @@ export async function prepareBinariesForOwner(
 	const publisher = publisherIdentity();
 	const progress = runtimeProgress(options);
 	await ensureRuntimeCacheDirectory(copiedRuntimeDir, publisher, context.owner !== undefined, context.owner);
-	const sourceSnapshot = await memoizedSourceSnapshot(sourceNativeDir, copiedRuntimeDir, publisher, progress);
+	const sourceSnapshot = await memoizedSourceSnapshot(sourceNativeDir, copiedRuntimeDir, publisher, progress, options);
 	await options.afterInitialSourceSnapshot?.();
 	const copiedNativeDir = await findOrCreateRuntimeGeneration(
 		binaries,
@@ -265,7 +271,13 @@ export async function fingerprintPreparedRuntime(
 	binaries: EmbeddedPostgresBinaryPaths,
 	options: RuntimePreparationOptions = {},
 ): Promise<string> {
-	return validatePreparedRuntime(dirname(dirname(binaries.postgres)), binaries, runtimeProgress(options));
+	return validatePreparedRuntime(
+		dirname(dirname(binaries.postgres)),
+		binaries,
+		runtimeProgress(options),
+		undefined,
+		options,
+	);
 }
 
 /**
@@ -355,6 +367,7 @@ async function findOrCreateRuntimeGeneration(
 				},
 				progress,
 				sourceSnapshot.sealedIdentity,
+				options,
 			);
 			if (identity !== sourceSnapshot.sealedIdentity)
 				throw new CorruptRuntimeGenerationError("sealed identity mismatch");
@@ -664,14 +677,14 @@ async function memoizedSourceSnapshot(
 	cacheDir: string,
 	publisher: PublisherIdentity,
 	progress: RuntimeProgress,
+	options: RuntimePreparationOptions = {},
 ): Promise<SourceRuntimeSnapshot> {
 	const realRoot = await realpath(root);
 	const key = `${publisher.uid}:${publisher.gid}:${realRoot}`;
-	const entries = await statRuntimeEntries(root, progress, true);
-	const signature = JSON.stringify([realRoot, entries]);
-	const cached = sourceMemo.get(key);
-	if (cached?.signature === signature && !sourceEntriesRacy(entries, cached.indexWrittenAt)) return cached.snapshot;
+	const packageSignature = await installedPackageSignature(realRoot);
 	const indexPath = cacheDir ? join(cacheDir, ".atomic-source-index.json") : undefined;
+	const cached = sourceMemo.get(key);
+	if (packageSignature !== undefined && cached?.signature === packageSignature) return cached.snapshot;
 	let index: Record<string, SourceIndexEntry> = {};
 	if (indexPath) {
 		try {
@@ -687,8 +700,8 @@ async function memoizedSourceSnapshot(
 			if (!index || typeof index !== "object" || Array.isArray(index)) throw new Error("Invalid source index");
 			const entry = index[key];
 			if (
-				entry?.signature === signature &&
-				!sourceEntriesRacy(entries, entry.indexWrittenAt) &&
+				packageSignature !== undefined &&
+				entry?.signature === packageSignature &&
 				/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
 				/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
 			) {
@@ -699,19 +712,33 @@ async function memoizedSourceSnapshot(
 			index = {};
 		}
 	}
+	options.onSourceStatPass?.();
+	const entries = await statRuntimeEntries(root, progress, true);
+	const signature = JSON.stringify([realRoot, entries]);
+	if (packageSignature === undefined) {
+		if (cached?.signature === signature && !sourceEntriesRacy(entries, cached.indexWrittenAt)) return cached.snapshot;
+		const entry = index[key];
+		if (
+			entry?.signature === signature &&
+			!sourceEntriesRacy(entries, entry.indexWrittenAt) &&
+			/^[a-f0-9]{64}$/.test(entry.snapshot?.sourceIdentity) &&
+			/^[a-f0-9]{64}$/.test(entry.snapshot?.sealedIdentity)
+		) {
+			sourceMemo.set(key, entry);
+			return entry.snapshot;
+		}
+	}
 	const snapshot = await snapshotSourceRuntime(root, publisher, progress);
+	options.onSourceStatPass?.();
 	if (signature !== JSON.stringify([await realpath(root), await statRuntimeEntries(root, progress, true)]))
 		throw new SourceRuntimeChangedError("Embedded Postgres source package changed during snapshot.");
-	const indexed = { snapshot, signature, indexWrittenAt: Date.now() };
+	const indexed = { snapshot, signature: packageSignature ?? signature, indexWrittenAt: Date.now() };
 	sourceMemo.set(key, indexed);
 	if (indexPath) {
 		await ensureRuntimeCacheDirectory(cacheDir, publisher);
 		const temporary = `${indexPath}.${process.pid}-${crypto.randomUUID()}`;
 		try {
-			await writeFile(temporary, JSON.stringify({ ...index, [key]: indexed }), {
-				mode: 0o600,
-				flag: "wx",
-			});
+			await writeFile(temporary, JSON.stringify({ ...index, [key]: indexed }), { mode: 0o600, flag: "wx" });
 			await rename(temporary, indexPath);
 		} catch {
 			return snapshot;
@@ -722,6 +749,44 @@ async function memoizedSourceSnapshot(
 	return snapshot;
 }
 
+async function installedPackageSignature(realRoot: string): Promise<string | undefined> {
+	if (
+		process.env.ATOMIC_POSTGRES_RUNTIME_DIR !== undefined ||
+		!["native", "postgres-runtime"].includes(basename(realRoot))
+	)
+		return undefined;
+	const packageRoot = dirname(realRoot);
+	const nodeModules = packageRoot.lastIndexOf(`${sep}node_modules${sep}`);
+	if (nodeModules < 0) return undefined;
+	try {
+		const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
+			name?: string;
+			version?: string;
+		};
+		if (!manifest.name || !manifest.version) return undefined;
+		const lockRoot = packageRoot.slice(0, nodeModules + `${sep}node_modules`.length);
+		let installed: { version?: string; integrity?: string; resolved?: string } | undefined;
+		try {
+			const lock = JSON.parse(await readFile(join(lockRoot, ".package-lock.json"), "utf8")) as {
+				packages?: Record<string, { version?: string; integrity?: string; resolved?: string }>;
+			};
+			const lockKey = `node_modules/${relative(lockRoot, packageRoot).split(sep).join("/")}`;
+			installed = lock.packages?.[lockKey];
+		} catch {
+			installed = undefined;
+		}
+		if (installed?.version !== undefined && installed.version !== manifest.version) return undefined;
+		return JSON.stringify([
+			await realpath(packageRoot),
+			manifest.name,
+			manifest.version,
+			installed?.integrity,
+			installed?.resolved,
+		]);
+	} catch {
+		return undefined;
+	}
+}
 function sourceEntriesRacy(entries: readonly RuntimeEntry[], indexWrittenAt: number): boolean {
 	if (!Number.isFinite(indexWrittenAt)) return true;
 	return entries.some((entry) => {
@@ -736,8 +801,38 @@ async function validatePreparedRuntime(
 	binaries: EmbeddedPostgresBinaryPaths,
 	progress: RuntimeProgress,
 	expected?: string,
+	options: RuntimePreparationOptions = {},
 ): Promise<string> {
 	const marker = join(root, RUNTIME_MARKER);
+	const markerStat = await lstatOrUndefined(marker);
+	const markerIdentity =
+		markerStat &&
+		`${markerStat.dev}:${markerStat.ino}:${markerStat.size}:${markerStat.mtimeMs}:${markerStat.ctimeMs}`;
+	if (options.fullValidation) validatedMemo.delete(root);
+	const cached = validatedMemo.get(root);
+	if (options.quickValidation && markerStat?.isFile() && (markerStat.mode & 0o222) === 0) {
+		let manifest: RuntimeManifest;
+		try {
+			manifest = JSON.parse(await readFile(marker, "utf8")) as RuntimeManifest;
+		} catch {
+			throw new CorruptRuntimeGenerationError("invalid runtime completion marker");
+		}
+		if (manifest.version !== 1 || !Array.isArray(manifest.entries) || !/^[a-f0-9]{64}$/.test(manifest.sealedIdentity))
+			throw new CorruptRuntimeGenerationError("invalid runtime completion marker");
+		await requiredRuntimeFiles(root, binaries);
+		return manifest.sealedIdentity;
+	}
+	if (
+		options.memoizedValidation &&
+		!options.fullValidation &&
+		markerIdentity &&
+		cached?.marker === markerIdentity &&
+		(expected === undefined || expected === cached.identity)
+	) {
+		await requiredRuntimeFiles(root, binaries);
+		return cached.identity;
+	}
+	options.onValidation?.();
 	let manifest: RuntimeManifest;
 	try {
 		const markerStat = await lstat(marker);
@@ -789,9 +884,27 @@ async function validatePreparedRuntime(
 		!entries.some(([name, kind]) => name === timezone && kind === "file")
 	)
 		throw new CorruptRuntimeGenerationError("required Postgres timezone data missing");
+	if (markerIdentity) validatedMemo.set(root, { marker: markerIdentity, identity: manifest.sealedIdentity });
 	return manifest.sealedIdentity;
 }
 
+async function requiredRuntimeFiles(root: string, binaries: EmbeddedPostgresBinaryPaths): Promise<void> {
+	for (const binary of [binaries.postgres, binaries.pg_ctl, binaries.initdb]) {
+		if (!(await lstatOrUndefined(binary))?.isFile())
+			throw new CorruptRuntimeGenerationError("required Postgres executable missing");
+	}
+	const share = join(root, "share");
+	if (await lstatOrUndefined(share)) {
+		const timezone = join(
+			share,
+			...(binaries.postgres.endsWith(".exe") ? [] : ["postgresql"]),
+			"timezonesets",
+			"Default",
+		);
+		if (!(await lstatOrUndefined(timezone))?.isFile())
+			throw new CorruptRuntimeGenerationError("required Postgres timezone data missing");
+	}
+}
 async function statRuntimeEntries(root: string, progress: RuntimeProgress, source: boolean): Promise<RuntimeEntry[]> {
 	const entries: RuntimeEntry[] = [];
 	const rootStat = await lstat(root);
