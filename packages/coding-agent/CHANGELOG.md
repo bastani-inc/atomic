@@ -6,6 +6,10 @@
 
 - Agents and workflow stages now try agent-browser first wherever it can reach the target, because its text snapshots use far fewer tokens than screenshot-driven computer use. That now includes Mobile Safari in the iOS Simulator (`agent-browser -p ios`) and apps that expose a Chrome DevTools Protocol port. Cua Driver handles everything else: native desktop apps, native iOS apps in the Simulator, Android emulators, OS dialogs, and desktop Safari or other non-Chromium browsers. The [Computer use](docs/computer-use.md#what-agent-browser-covers) guide has a new table showing what agent-browser covers.
 
+### Fixed
+
+- Sessions no longer break when a model reuses a tool call id in a later turn or returns an empty one, as Kimi models do through NVIDIA NIM and other providers that pass Kimi's per-response ids (`bash:0`) through unchanged. Every request after the repeated call used to fail with "tool call id bash:0 appears in more than one assistant message". Sessions already in that state continue on the next message ([#3243](https://github.com/bastani-inc/atomic/issues/3243))
+
 ## [0.9.20-alpha.11] - 2026-09-24
 
 ### Changed
