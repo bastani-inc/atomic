@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import {
 	chmodSync,
+	cpSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -10,6 +11,7 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { dirname, join, sep } from "node:path";
@@ -532,6 +534,78 @@ test("corrupt cached replacement runtime preserves the running managed server", 
 	assert.equal(stops, 0);
 	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.pid, old.pid);
 });
+test.each(["regular file", "cyclic support-file link"])(
+	"repairs a pinned generation damaged by %s without changing the owned cluster",
+	async (damage) => {
+		const f = fixture();
+		const source = join(f.root, "runtime", "native");
+		for (const binary of ["pg_ctl", "initdb"]) writeTextSync(join(source, "bin", binary), "fixture");
+		const pinned = join(f.root, "pinned", "native");
+		cpSync(source, pinned, { recursive: true });
+		const pinnedBinaries = {
+			postgres: join(pinned, "bin", "postgres"),
+			pg_ctl: join(pinned, "bin", "pg_ctl"),
+			initdb: join(pinned, "bin", "initdb"),
+		};
+		const runtimeIdentity = await fingerprintPreparedRuntime(pinnedBinaries);
+		if (damage === "regular file") {
+			rmSync(pinned, { recursive: true });
+			writeTextSync(pinned, "damaged generation");
+		} else {
+			const timezoneFile = join(pinned, "share", "postgresql", "timezonesets", "Default");
+			rmSync(timezoneFile);
+			symlinkSync("Default", timezoneFile);
+		}
+		vi.stubEnv("ATOMIC_POSTGRES_RUNTIME_DIR", source);
+		const port = await availablePostgresPort(0);
+		f.pidfile(port);
+		const old = managedPostmaster(f.metadata)!;
+		publishPostgresServer(f.root, f.metadata, old);
+		writeTextSync(
+			join(f.data, "postmaster.opts"),
+			`${join(f.root, "removed-runtime", "bin", "postgres")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+		);
+		let stops = 0;
+		let starts = 0;
+		hooks.setRetainedPostgresSpawner((options) => {
+			starts++;
+			assert.ok(options.executable.startsWith(join(f.root, "pg-runtime")));
+			f.pidfile(port);
+			return {
+				pid: process.pid,
+				wait: async () => {
+					throw new Error("Timed out waiting for the retained Postgres process to exit");
+				},
+				interruptAndWait: async () => {
+					throw new Error("published lease must not be signaled");
+				},
+				release() {},
+			};
+		});
+		await hooks.ensureCluster({
+			...f.options,
+			binaries: pinnedBinaries,
+			runtimeIdentity,
+			recovery: { ...f.metadata, server: old },
+			context: {
+				baseDir: f.root,
+				runAsOwner: async (command) => {
+					assert.ok(command.startsWith(join(f.root, "pg-runtime")));
+					stops++;
+					rmSync(join(f.data, "postmaster.pid"));
+					return { exitCode: 0, stdout: "", stderr: "" };
+				},
+			},
+		});
+		assert.equal(stops, 1);
+		assert.equal(starts, 1);
+		if (damage === "regular file") assert.equal(readTextSync(pinned, "utf8"), "damaged generation");
+		else
+			assert.equal(lstatSync(join(pinned, "share", "postgresql", "timezonesets", "Default")).isSymbolicLink(), true);
+		assert.equal(managedPostgresMetadata(f.root, 18, false).server?.systemIdentifier, old.systemIdentifier);
+		assert.equal(readTextSync(join(f.data, "PG_VERSION"), "utf8"), "18\n");
+	},
+);
 
 test("corrupt cached runtime cannot restart a stopped managed server", async () => {
 	const f = fixture();

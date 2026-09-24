@@ -317,29 +317,20 @@ async function findOrCreateRuntimeGeneration(
 	let generationNativeDir: string | undefined;
 	for (let repair = 0; repair <= MAX_RUNTIME_REPAIR_GENERATIONS; repair++) {
 		const candidate = repair === 0 ? canonical : `${canonical}-repair-${repair}`;
-		const existing = await lstatOrUndefined(candidate);
-		if (existing === undefined) {
-			if (candidate === options.reservedGeneration) continue;
-			generationNativeDir ??= candidate;
-			if (!options.repairCorruptGeneration) break;
-			continue;
-		}
 		try {
+			const existing = await lstatOrUndefined(candidate);
+			if (existing === undefined) {
+				if (candidate === options.reservedGeneration) continue;
+				generationNativeDir ??= candidate;
+				if (!options.repairCorruptGeneration) break;
+				continue;
+			}
 			if ((await snapshotSealedRuntime(candidate, progress)) !== sourceSnapshot.sealedIdentity) {
 				throw new CorruptRuntimeGenerationError("sealed identity mismatch");
 			}
-			await assertSourceSnapshotUnchanged(
-				sourceNativeDir,
-				sourceSnapshot,
-				publisher,
-				progress,
-				"Embedded Postgres source package changed while selecting an existing generation.",
-			);
-			return candidate;
 		} catch (error) {
-			if (error instanceof SourceRuntimeChangedError || error instanceof RuntimePublicationLeaseLostError)
-				throw error;
-			if (!isCorruptRuntimeGeneration(error)) throw error;
+			if (error instanceof RuntimePublicationLeaseLostError) throw error;
+			if (!isCorruptRuntimeGeneration(error, candidate)) throw error;
 			if (!options.repairCorruptGeneration) {
 				const detail = error instanceof Error ? error.message : String(error);
 				throw new Error(
@@ -348,7 +339,16 @@ async function findOrCreateRuntimeGeneration(
 			}
 			if (!options.publicationLease?.refresh())
 				throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime repair lost its setup lease.");
+			continue;
 		}
+		await assertSourceSnapshotUnchanged(
+			sourceNativeDir,
+			sourceSnapshot,
+			publisher,
+			progress,
+			"Embedded Postgres source package changed while selecting an existing generation.",
+		);
+		return candidate;
 	}
 	if (generationNativeDir === undefined)
 		throw new Error("Embedded Postgres runtime repair slots are exhausted; preserve the existing generations.");
@@ -411,12 +411,16 @@ class SourceRuntimeChangedError extends Error {}
 class RuntimePublicationLeaseLostError extends Error {}
 class CorruptRuntimeGenerationError extends Error {}
 
-function isCorruptRuntimeGeneration(error: unknown): boolean {
+export function isCorruptRuntimeGeneration(error: unknown, candidate: string): boolean {
 	if (error instanceof CorruptRuntimeGenerationError) return true;
 	if (!(error instanceof Error)) return false;
-	if (/^Embedded Postgres runtime (?:root|contains)/.test(error.message)) return true;
 	const code = "code" in error ? error.code : undefined;
-	return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EACCES";
+	const path = "path" in error ? error.path : undefined;
+	return (
+		(code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EACCES") &&
+		typeof path === "string" &&
+		(path === candidate || path.startsWith(`${candidate}${sep}`))
+	);
 }
 
 async function assertSourceSnapshotUnchanged(
@@ -526,7 +530,7 @@ async function hashSourceEntry(
 		await hashFileInto([sourceHash, sealedHash], path, progress);
 		return;
 	}
-	throw new Error(`Embedded Postgres runtime contains an unsupported entry: ${relativePath}`);
+	throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime contains an unsupported entry: ${relativePath}`);
 }
 
 async function snapshotSealedRuntime(root: string, progress: RuntimeProgress): Promise<string> {
@@ -578,16 +582,17 @@ async function hashSealedEntry(
 		await hashFileInto([hash], path, progress);
 		return;
 	}
-	throw new Error(`Embedded Postgres runtime contains an unsupported entry: ${relativePath}`);
+	throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime contains an unsupported entry: ${relativePath}`);
 }
 
 async function validatedLinkTarget(path: string, relativePath: string, rootRealPath: string): Promise<string> {
 	const target = await readlink(path);
-	if (isAbsolute(target)) throw new Error(`Embedded Postgres runtime contains an absolute link: ${relativePath}`);
+	if (isAbsolute(target))
+		throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime contains an absolute link: ${relativePath}`);
 	const resolvedTarget = await realpath(path);
 	const targetFromRoot = relative(rootRealPath, resolvedTarget);
 	if (targetFromRoot === ".." || targetFromRoot.startsWith(`..${sep}`) || isAbsolute(targetFromRoot)) {
-		throw new Error(`Embedded Postgres runtime link escapes its tree: ${relativePath}`);
+		throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime link escapes its tree: ${relativePath}`);
 	}
 	return target;
 }
@@ -672,7 +677,7 @@ function publisherIdentity(): PublisherIdentity {
 
 function assertRuntimeRoot(root: string, stat: Stats): void {
 	if (!stat.isDirectory() || stat.isSymbolicLink()) {
-		throw new Error(`Embedded Postgres runtime must be a real directory: ${root}`);
+		throw new CorruptRuntimeGenerationError(`Embedded Postgres runtime must be a real directory: ${root}`);
 	}
 }
 

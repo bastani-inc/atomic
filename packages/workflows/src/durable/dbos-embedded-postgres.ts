@@ -52,6 +52,7 @@ import {
 	cleanupAbandonedRuntimeStages,
 	type EmbeddedPostgresRunContext,
 	fingerprintPreparedRuntime,
+	isCorruptRuntimeGeneration,
 	prepareBinariesForOwner,
 	type RuntimePublicationLease,
 	resolveEmbeddedRunContext,
@@ -285,7 +286,7 @@ async function ensureCluster(
 								publicationLease: setup.runtimePublicationLease,
 							})) === selectedIdentity;
 					} catch (error) {
-						if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+						if (!isCorruptRuntimeGeneration(error, dirname(dirname(prepared.postgres)))) throw error;
 					}
 					if (retainedValid) return prepared;
 					const source = await loadEmbeddedPostgresBinaries();
