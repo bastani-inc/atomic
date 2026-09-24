@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent no longer treats missing, sparse, or mostly inline workflow history as a reason to run every task inline. It judges from the task itself whether a workflow would help, then refines that choice with comparable execution history and your stated or recorded preferences.
+
 ### Fixed
 
 - The `curl | sh` and `irm | iex` installers can install older releases again. They no longer run `--internal-validate-postgres-runtime` or the bundled PostgreSQL `--version` checks before promotion. Installing a release built before that option existed, or one without a bundled PostgreSQL runtime, could fail before promotion. The installers still verify the SHA256 checksum and run the staged `atomic --version`.
