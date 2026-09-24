@@ -175,6 +175,8 @@ export interface RuntimePublicationLease {
 	readonly ownerToken: string;
 	/** Refresh ownership now; false means stale takeover displaced this publisher. */
 	readonly refresh: () => boolean;
+	/** In-memory loss detected by the independent lease heartbeat. */
+	readonly isLost?: () => boolean;
 }
 
 export interface RuntimePreparationOptions {
@@ -229,6 +231,19 @@ interface SourceIndexEntry {
 const sourceMemo = new Map<string, SourceIndexEntry>();
 const legacyMemo = new Map<string, RuntimeManifest>();
 const validatedMemo = new Map<string, { marker: string; identity: string }>();
+const corruptGenerationMemo = new Map<string, { identity: string; reason: string }>();
+
+function runtimeGenerationIdentity(rootStat: Stats, markerStat: Stats | undefined): string {
+	const identity = (stat: Stats | undefined) =>
+		stat === undefined
+			? null
+			: [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs, stat.birthtimeMs];
+	return JSON.stringify([identity(rootStat), identity(markerStat)]);
+}
+
+async function candidateIdentity(candidate: string, rootStat: Stats): Promise<string> {
+	return runtimeGenerationIdentity(rootStat, await lstatOrUndefined(join(candidate, RUNTIME_MARKER)));
+}
 
 export async function prepareBinariesForOwner(
 	binaries: EmbeddedPostgresBinaryPaths,
@@ -350,6 +365,7 @@ async function findOrCreateRuntimeGeneration(
 	let generationNativeDir: string | undefined;
 	for (let repair = 0; repair <= MAX_RUNTIME_REPAIR_GENERATIONS; repair++) {
 		const candidate = repair === 0 ? canonical : `${canonical}-repair-${repair}`;
+		let candidateFingerprint: string | undefined;
 		try {
 			const existing = await lstatOrUndefined(candidate);
 			if (existing === undefined) {
@@ -358,6 +374,10 @@ async function findOrCreateRuntimeGeneration(
 				if (!options.repairCorruptGeneration) break;
 				continue;
 			}
+			candidateFingerprint = await candidateIdentity(candidate, existing);
+			const knownCorrupt = corruptGenerationMemo.get(candidate);
+			if (knownCorrupt?.identity === candidateFingerprint)
+				throw new CorruptRuntimeGenerationError(knownCorrupt.reason);
 			const identity = await validatePreparedRuntime(
 				candidate,
 				{
@@ -374,6 +394,14 @@ async function findOrCreateRuntimeGeneration(
 		} catch (error) {
 			if (error instanceof RuntimePublicationLeaseLostError) throw error;
 			if (!isCorruptRuntimeGeneration(error, candidate)) throw error;
+			if (candidateFingerprint !== undefined) {
+				const current = await lstatOrUndefined(candidate);
+				if (current && (await candidateIdentity(candidate, current)) === candidateFingerprint)
+					corruptGenerationMemo.set(candidate, {
+						identity: candidateFingerprint,
+						reason: error instanceof Error ? error.message : String(error),
+					});
+			}
 			if (!options.repairCorruptGeneration) {
 				const detail = error instanceof Error ? error.message : String(error);
 				throw new Error(
@@ -433,14 +461,16 @@ async function findOrCreateRuntimeGeneration(
 			progress,
 			"Embedded Postgres source package changed while preparing a generation.",
 		);
-		assertPublicationLease(options, "Embedded Postgres runtime publication lost its setup lease.");
 		await progress();
+		assertPublicationLease(options, "Embedded Postgres runtime publication lost its setup lease.");
 		// The stage is publisher-owned and has no write bit for any uid before
 		// this single same-parent rename. The Postgres uid therefore has no
 		// validation-to-publication mutation window.
 		try {
 			await (options.renameStage ?? rename)(stagedNativeDir, generationNativeDir);
+			assertPublicationLease(options, "Embedded Postgres runtime lost its setup lease after publication.");
 			legacyMemo.delete(generationNativeDir);
+			corruptGenerationMemo.delete(generationNativeDir);
 		} catch (error) {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
 			if (
@@ -579,20 +609,14 @@ function runtimeProgress(options: RuntimePreparationOptions): RuntimeProgress {
 	const yieldToEventLoop = options.yieldToEventLoop ?? (() => new Promise<void>((resolve) => setImmediate(resolve)));
 	return Object.assign(
 		async () => {
-			if (operations % TRAVERSAL_OPERATIONS_PER_YIELD === 0) {
-				if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
+			if (options.publicationLease?.isLost?.())
+				throw new RuntimePublicationLeaseLostError("Embedded Postgres runtime publication lost its setup lease.");
+			if (operations > 0 && operations % TRAVERSAL_OPERATIONS_PER_YIELD === 0) {
+				await yieldToEventLoop();
+				if (options.publicationLease?.isLost?.())
 					throw new RuntimePublicationLeaseLostError(
 						"Embedded Postgres runtime publication lost its setup lease.",
 					);
-				}
-				if (operations > 0) {
-					await yieldToEventLoop();
-					if (options.publicationLease !== undefined && !options.publicationLease.refresh()) {
-						throw new RuntimePublicationLeaseLostError(
-							"Embedded Postgres runtime publication lost its setup lease.",
-						);
-					}
-				}
 			}
 			operations += 1;
 		},
@@ -804,6 +828,7 @@ async function validatePreparedRuntime(
 	options: RuntimePreparationOptions = {},
 ): Promise<string> {
 	const marker = join(root, RUNTIME_MARKER);
+	await requiredRuntimeFiles(root, binaries);
 	const markerStat = await lstatOrUndefined(marker);
 	const markerIdentity =
 		markerStat &&
@@ -819,7 +844,6 @@ async function validatePreparedRuntime(
 		}
 		if (manifest.version !== 1 || !Array.isArray(manifest.entries) || !/^[a-f0-9]{64}$/.test(manifest.sealedIdentity))
 			throw new CorruptRuntimeGenerationError("invalid runtime completion marker");
-		await requiredRuntimeFiles(root, binaries);
 		return manifest.sealedIdentity;
 	}
 	if (
@@ -829,10 +853,8 @@ async function validatePreparedRuntime(
 		cached?.marker === markerIdentity &&
 		(expected === undefined || expected === cached.identity)
 	) {
-		await requiredRuntimeFiles(root, binaries);
 		return cached.identity;
 	}
-	options.onValidation?.();
 	let manifest: RuntimeManifest;
 	try {
 		const markerStat = await lstat(marker);
@@ -856,6 +878,7 @@ async function validatePreparedRuntime(
 			legacyMemo.set(root, manifest);
 		}
 	}
+	options.onValidation?.();
 	const entries = await statRuntimeEntries(root, progress, false);
 	const metadataChanged =
 		JSON.stringify(entries.map((entry) => (entry[0] === "." ? entry.slice(0, 6) : entry))) !==

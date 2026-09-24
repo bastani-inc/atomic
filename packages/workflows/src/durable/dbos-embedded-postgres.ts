@@ -337,6 +337,9 @@ async function ensureCluster(
 								ownerToken: cache.runtimePublicationLease.ownerToken,
 								refresh: () =>
 									cache.runtimePublicationLease.refresh() && setup.runtimePublicationLease.refresh(),
+								isLost: () =>
+									cache.runtimePublicationLease.isLost?.() === true ||
+									setup.runtimePublicationLease.isLost?.() === true,
 							},
 							repairCorruptGeneration: true,
 							reservedGeneration,
@@ -676,7 +679,7 @@ async function stopBrokenManagedPostmaster(
 			]);
 			if (killed.exitCode !== 0)
 				throw new Error(`Could not signal the verified managed Postgres server: ${commandFailureDetail(killed)}`);
-			return waitForExit(guard);
+			return await waitForExit(guard);
 		} finally {
 			guard.close();
 		}
@@ -1311,11 +1314,16 @@ async function withSetupLock(
 	}
 	if (lease === undefined) throw new Error(`Could not acquire the embedded Postgres setup lock (${lockDir}).`);
 
-	const refresh = () => refreshSetupLockLease(lease, clock(), staleMs, options.beforeHeartbeatReplace);
+	let lost = false;
+	const refresh = () => {
+		if (lost) return false;
+		if (!refreshSetupLockLease(lease, clock(), staleMs, options.beforeHeartbeatReplace)) lost = true;
+		return !lost;
+	};
 	const stopHeartbeat = scheduleHeartbeat(refresh, heartbeatMs);
 	try {
 		await fn({
-			runtimePublicationLease: { ownerToken: lease.token, refresh },
+			runtimePublicationLease: { ownerToken: lease.token, refresh, isLost: () => lost },
 			abandonedRuntimeStageOwnerTokens: lease.abandonedOwnerTokens,
 		});
 	} finally {

@@ -918,6 +918,8 @@ test("a stale takeover never deletes a scheduler-delayed live publisher stage", 
 	let takeoverRan = false;
 	let stageSurvivedTakeover = false;
 	try {
+		let heartbeat!: () => boolean;
+		let stagedReads = 0;
 		mkdirSync(join(root, "cluster"), { recursive: true });
 		mkdirSync(join(packageNative, "bin"), { recursive: true });
 		for (const binary of ["initdb", "pg_ctl", "postgres"]) {
@@ -944,6 +946,9 @@ test("a stale takeover never deletes a scheduler-delayed live publisher stage", 
 					rootRunner,
 					{
 						publicationLease: setup.runtimePublicationLease,
+						onContentRead: (path) => {
+							if (path.includes(".native-staged-")) stagedReads++;
+						},
 						yieldToEventLoop: async () => {
 							const stage = existsSync(runtimeDir)
 								? readdirSync(runtimeDir).find((entry) => entry.startsWith(".native-staged-"))
@@ -968,6 +973,7 @@ test("a stale takeover never deletes a scheduler-delayed live publisher stage", 
 									scheduleHeartbeat: () => () => {},
 								},
 							);
+							assert.equal(heartbeat(), false, "heartbeat observes the displaced setup owner");
 						},
 					},
 				);
@@ -975,13 +981,17 @@ test("a stale takeover never deletes a scheduler-delayed live publisher stage", 
 			{
 				clock: () => clock,
 				staleMs: TEST_SETUP_LOCK_STALE_MS,
-				scheduleHeartbeat: () => () => {},
+				scheduleHeartbeat: (callback) => {
+					heartbeat = callback;
+					return () => {};
+				},
 			},
 		);
 
 		await assert.rejects(publisher, /lost its setup lease/);
 		assert.equal(takeoverRan, true);
 		assert.equal(stageSurvivedTakeover, true, "stale heartbeat does not prove that a live stage is abandoned");
+		assert.equal(stagedReads, 0, "the next progress check aborts before sealed stage traversal");
 		assert.equal(
 			readdirSync(runtimeDir).some((entry) => entry.startsWith(".native-staged-")),
 			false,

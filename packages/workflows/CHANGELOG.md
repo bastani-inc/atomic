@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Managed PostgreSQL startup now verifies retained runtime files from a sealed completion manifest instead of re-reading every binary on each attach. Existing marker-less generations remain usable after one verification.
 - Managed PostgreSQL can reuse one retained runtime across cluster homes with `ATOMIC_POSTGRES_RUNTIME_CACHE_DIR`; a persisted source stat index avoids repeated full-package hashing on unchanged installations.
 - Managed PostgreSQL now avoids repeated runtime-tree scans for npm-installed binaries and running-server attaches; starting or repairing a server still checks the complete retained runtime.
+- Managed PostgreSQL runtime repair now rejects incomplete retained generations without scanning their full file trees, and avoids rescanning unchanged damaged generations during the same process.
+- Managed PostgreSQL cold runtime staging now avoids repeated setup-lock disk operations during copying and hashing, reducing startup time while preserving publication fencing.
 - Managed PostgreSQL now rotates server logs daily through seven weekday files under the cluster's `log` directory, retaining startup diagnostics in `v18.log`. Startup failures include recent output from both logs.
 
 ### Fixed

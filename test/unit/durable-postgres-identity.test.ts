@@ -442,6 +442,65 @@ test.each(["mismatch", "absent"] as const)("Windows %s guard never invokes pg_ct
 	assert.equal(closed, true);
 });
 
+test("Windows shutdown waits for exit before closing its guard on the first attempt", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	writeTextSync(
+		join(f.data, "postmaster.opts"),
+		`${join(f.root, "gone", "bin", "postgres.exe")} "-D" "${f.data}" "-p" "${port}" "-c" "listen_addresses=127.0.0.1"\n`,
+	);
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
+	};
+	const original = binding.postgresProcessStartTime;
+	let released = false;
+	vi.spyOn(binding, "postgresProcessStartTime").mockImplementation((pid) =>
+		released ? { found: false } : original(pid),
+	);
+	let closed = false;
+	let waitFinished = false;
+	let kills = 0;
+	hooks.setWindowsPostgresGuard(() => ({
+		status: "live",
+		exited: () => {
+			if (closed) throw new Error("Postgres process guard is closed");
+			return released;
+		},
+		close: () => {
+			assert.equal(waitFinished, true, "guard must remain open until exit wait completes");
+			closed = true;
+		},
+	}));
+	const stopped = await hooks.stopBrokenManagedPostmaster(
+		f.metadata,
+		server,
+		f.options.binaries.pg_ctl,
+		{
+			baseDir: f.root,
+			runAsOwner: async (_command, args) => {
+				kills++;
+				assert.deepEqual(args, ["kill", "INT", String(server.pid)]);
+				return { exitCode: 0, stdout: "", stderr: "" };
+			},
+		},
+		{ ownerToken: "fixture", refresh: () => true },
+		async () => {
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+			released = true;
+			waitFinished = true;
+			rmSync(join(f.data, "postmaster.pid"));
+		},
+		"win32",
+	);
+	assert.equal(stopped, true);
+	assert.equal(kills, 1);
+	assert.equal(closed, true);
+});
+
 test("Windows shutdown keeps a fresh process guard across each pg_ctl kill and wait", async () => {
 	const f = fixture();
 	const port = await availablePostgresPort(0);
