@@ -86,7 +86,7 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
 	const presentation = workflowStatusPresentation(run.status, "live");
-	const firstMessage = `${run.name}  ${presentation.label}  ${completed}/${total} stages`;
+	const firstMessage = `${run.id}  ${presentation.label}  ${completed}/${total} stages`;
 	return {
 		result: { kind: "live", runId: run.id },
 		session: {
@@ -97,6 +97,7 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
 			modified,
 			messageCount: total,
 			firstMessage,
+			summary: run.name,
 			allMessagesText: `${run.id} ${run.name} ${presentation.label} ${completed}/${total} stages`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
@@ -118,7 +119,8 @@ function durableWorkflowSession(
 			created: new Date(entry.createdAt),
 			modified: new Date(entry.updatedAt),
 			messageCount: entry.completedCheckpoints,
-			firstMessage: `${entry.name}  ${presentation.label}  ${checkpointText}`,
+			firstMessage: `${entry.workflowId}  ${presentation.label}  ${checkpointText}`,
+			summary: entry.name,
 			allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},

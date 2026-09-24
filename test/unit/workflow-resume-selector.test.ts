@@ -213,6 +213,27 @@ describe("workflow resume selector rows", () => {
 });
 
 describe("workflow resume selector row presentation", () => {
+	test("shows the full live run ID as the primary label and its name as a description", () => {
+		const [item] = workflowResumeSelectorItems([pausedLiveRun("live-resume-uuid")], []);
+		assert.equal(item?.session.firstMessage, "live-resume-uuid  paused  0/0 stages");
+		assert.equal(item.session.summary, "live-workflow");
+		assert.deepEqual(item.result, { kind: "live", runId: "live-resume-uuid" });
+	});
+	test("shows durable and completed workflow IDs before their name descriptions", () => {
+		const items = workflowResumeSelectorItems(
+			[],
+			[entry("durable-uuid", "paused")],
+			[entry("completed-uuid", "completed")],
+		);
+		const byId = new Map(items.map((item) => [item.session.id, item]));
+		assert.equal(byId.get("durable-uuid")?.session.firstMessage, "durable-uuid  paused  2 checkpoints");
+		assert.equal(byId.get("durable-uuid")?.session.summary, "paused-workflow");
+		assert.deepEqual(byId.get("durable-uuid")?.result, { kind: "durable", workflowId: "durable-uuid" });
+		assert.equal(byId.get("completed-uuid")?.session.firstMessage, "completed-uuid  ✓ completed  2 checkpoints");
+		assert.equal(byId.get("completed-uuid")?.session.summary, "completed-workflow");
+		assert.deepEqual(byId.get("completed-uuid")?.result, { kind: "completed", workflowId: "completed-uuid" });
+	});
+
 	test("colors paused yellow, failed and blocked red, completed green", () => {
 		const items = workflowResumeSelectorItems(
 			[pausedLiveRun("live-paused-run")],
@@ -239,7 +260,8 @@ describe("workflow resume selector row presentation", () => {
 	});
 	test("presents a stale-heartbeat running durable row as crashed, never running", () => {
 		const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
-		assert.match(item!.session.firstMessage, /repro-flow {2}crashed/);
+		assert.match(item!.session.firstMessage, /d-crashed {2}crashed/);
+		assert.equal(item!.session.summary, "repro-flow");
 		assert.doesNotMatch(item!.session.firstMessage, /running/);
 		assert.equal(item!.session.messageColor, "error");
 		assert.match(item!.session.allMessagesText, /crashed/);

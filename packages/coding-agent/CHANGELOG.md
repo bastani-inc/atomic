@@ -22,6 +22,7 @@
 - `FILE_MUTATION_CONFLICT` errors from `edit` and `write` now use one labeled line each for the problem, the next step, the first divergence, the live file, and the requester identity, instead of a single wrapped paragraph. The next step names the file to read. A rejected snapshot tag now explains that shell output and tags quoted in errors do not count as reads, and the current tag is marked as for comparison only, so agents stop retrying with it.
 - Cua Driver setup guidance now distinguishes installing the executable from installing an agent skill. Atomic already bundles the skill, so it directs agents to skip upstream's optional skill-install commands and leave existing user-level copies alone.
 - Decision selection rejects image-generation models; execution `auto` remains restricted to chat language models, including those with multimodal input.
+- `/workflow resume` picker rows now display the full workflow ID first, with the workflow name in the adjacent description.
 
 ### Fixed
 

@@ -655,6 +655,8 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no id, it builds one newest-first picker from live runs that satisfy the shared resumability predicate and current DBOS resumable/completed records. DBOS is the authoritative catalog; selected records are hydrated and revalidated before resume or inspection. Running workflows never appear: fresh-heartbeat rows are excluded in every session to prevent double dispatch, and stale ones surface as `crashed`. A row whose durable checkpoint or referenced artifact is missing is not resumable and is omitted rather than offered and rejected later. Naming such an id explicitly still produces the existing clear no-checkpoint/not-resumable error.
 
+Picker rows lead with the full workflow ID used for search and direct resume. The workflow name appears beside the ID for context.
+
 If resume reports a checkpoint decoding error or an unavailable serializer, retain the full run ID and original diagnostic when reporting the problem. Do not delete saved progress or launch a fresh copy just to bypass the error: that can repeat completed side effects.
 
 Only runs with usable durable checkpoints or pending prompts can resume. Deleted durable entries and missing artifacts are not offered. Status and connect/attach still expose eligible terminal runs for inspection.

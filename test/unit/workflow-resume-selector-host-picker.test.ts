@@ -136,11 +136,19 @@ describe("workflow resume selector host-picker path", () => {
 			"live rows seed the open",
 		);
 		assert.equal(picker.opens[0]!.showRenameHint, false);
+		assert.equal(picker.opens[0]!.sessions[0]?.firstMessage, "live-a  paused  0/0 stages");
+		assert.equal(picker.opens[0]!.sessions[0]?.summary, "live-workflow");
 
 		await flush();
 		assert.equal(hydrateCalls, 1, "hydrate invoked exactly once");
 		assert.equal(picker.updates.length, 1, "hydrate merged via a single update");
 		assert.deepEqual(picker.updates[0]!.map((row) => row.id).sort(), ["durable-a", "live-a"]);
+		const durableRow = picker.updates[0]!.find((row) => row.id === "durable-a");
+		assert.ok(durableRow);
+		assert.equal(durableRow.firstMessage, "durable-a  paused  2 checkpoints");
+		assert.equal(durableRow.summary, "paused-workflow");
+		assert.ok(durableRow.allMessagesText);
+		assert.match(durableRow.allMessagesText, /durable-a paused-workflow/);
 
 		picker.select("workflow-durable:durable-a");
 		const outcome = await promise;
