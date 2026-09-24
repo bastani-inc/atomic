@@ -33,8 +33,6 @@ The shared [`routerModel`](/settings#routermodel) setting chooses the model maki
 2. Jev (`typesafe/jev-latest`), when credentials are saved through `/login typesafe` or supplied by `TYPESAFE_API_KEY`.
 3. The current chat model.
 
-Replace old direct `typesafe-ai/jev-latest` or `typesafe-ai/jev` router settings with `typesafe/jev-latest`. `/login typesafe-ai` and keys stored under `typesafe-ai` are no longer supported for direct Jev routing; re-save your key with `/login typesafe`. `TYPESAFE_API_KEY` is unchanged.
-
 Neither routing nor child fallback changes the parent chat model or the `structured_output` tool.
 
 Routing has no built-in wall-clock deadline. Slow decisions can finish; cancel the request to stop waiting. Independent provider and credential-preparation limits still apply. By default, Jev and any current-chat fallback each get an initial attempt plus three corrective retries for malformed or schema-invalid answers. A valid answer stops repairs.
