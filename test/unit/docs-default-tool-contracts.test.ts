@@ -127,6 +127,10 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	assert.match(computer, /\/bin\/bash -c "\$\(curl -fsSL https:\/\/cua\.ai\/driver\/install\.sh\)"/);
 	assert.match(computer, /irm https:\/\/cua\.ai\/driver\/install\.ps1 \| iex/);
 	assert.match(computer, /Do not run `cua-driver skills install`/);
+	assert.match(computer, /`cua-driver skills update`/);
+	assert.match(computer, /`clawhub install @cua\/driver`/);
+	assert.match(computer, /`~\/\.agents\/skills\/cua-driver`/);
+	assert.match(computer, /leave any existing user-level skill alone/);
 	assert.match(computer, /telemetry[^.]*\*\*by default, from every face\*\*/);
 	assert.match(computer, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
 	assert.match(computer, /`cua-driver telemetry disable`/);

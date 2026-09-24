@@ -58,11 +58,16 @@ function verificationContract(prompt: string): void {
 		prompt,
 		/when workflow TypeScript code owns the sequence and the postcondition, the @trycua\/cua-driver TypeScript SDK inside `ctx\.tool` is the face instead/,
 	);
-	assert.match(prompt, /load the cua-driver skill and drive the exact window/);
+	assert.match(prompt, /load Atomic's bundled cua-driver skill and drive the exact window/);
 	assert.match(prompt, /one-shot `cua-driver call <tool>` commands/);
 	assert.match(prompt, /snapshot -> act -> fresh snapshot -> verify loop/);
-	assert.match(prompt, /one bounded attempt with upstream's one-line installer/);
-	assert.match(prompt, /never `cua-driver skills install`/);
+	assert.match(prompt, /one bounded attempt with upstream's one-line executable installer/);
+	assert.match(prompt, /that installer does not install an agent skill/);
+	assert.match(prompt, /never `cua-driver skills install` or `clawhub install @cua\/driver`/);
+	assert.match(prompt, /do not link or copy a skill into `~\/\.agents\/skills\/cua-driver`/);
+	assert.match(prompt, /leave any existing user-level skill alone/);
+	assert.match(prompt, /skip `cua-driver skills update`/);
+	assert.match(prompt, /other agent directories such as `~\/\.claude\/skills`/);
 	assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
 	assert.match(prompt, /`cua-driver telemetry disable` once after an executable install/);
 	assert.match(prompt, /`cua-driver status`, `cua-driver doctor`, `cua-driver call list_apps`/);
@@ -253,6 +258,10 @@ test("authoring guidance states the Cua Driver face rule for custom workflows (#
 	assert.match(
 		prompt,
 		/in-process fallback attributes Accessibility\/Screen Recording grants to the node host rather than CuaDriver\.app/,
+	);
+	assert.match(
+		prompt,
+		/do not run `cua-driver skills install`, `cua-driver skills update`, or `clawhub install @cua\/driver`/,
 	);
 	assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
 	assert.match(

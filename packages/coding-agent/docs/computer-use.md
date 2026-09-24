@@ -192,11 +192,11 @@ Atomic uses Cua Driver through two faces of one typed surface. Choose by who dec
 
 The rule of thumb: **when a model chooses the next action, use the CLI; when TypeScript code owns the sequence and the postcondition, use the SDK.** Prefer [agent-browser](#browser-automation-with-agent-browser) for what its skill covers: websites and web apps in Chrome/Chromium, Electron desktop apps, Slack, and cloud browsers. Use Cua Driver for everything else, including iOS simulators, Android emulators, OS dialogs, and non-Chromium browsers, and whenever agent-browser hits a limitation. Terminals stay with [Herdr](#terminal-automation-with-herdr), falling back to tmux or psmux. Both faces share tool names (`list_apps`, `list_windows`, `get_window_state`, `click`, `type_text`, and the rest), so a scenario worked out interactively translates directly into code.
 
-The bundled `cua-driver` skill is the upstream skill, vendored verbatim, and is the only place the driving loop is described. Do not run `cua-driver skills install`: it links the skill into `~/.agents/skills`, `~/.claude/skills`, and similar directories that Atomic does not own. The bundled copy is the skill.
+The bundled `cua-driver` skill is the upstream skill, vendored verbatim, and is the only place the driving loop is described. The executable installer below does not install an agent skill. Do not run `cua-driver skills install`, `cua-driver skills update`, or `clawhub install @cua/driver`: upstream's README describes those optional skill commands for other agents. Do not link or copy another skill into `~/.agents/skills/cua-driver`, `~/.claude/skills`, or other agent directories. Atomic already supplies its bundled copy; leave any existing user-level skill alone.
 
 ### Install if missing
 
-Check `cua-driver --version`. If the executable is missing, make **one bounded attempt** with upstream's one-line installer for the host. It needs no administrator access:
+Check `cua-driver --version`. If the executable is missing, make **one bounded attempt** with upstream's one-line executable installer for the host. It needs no administrator access and does not install an agent skill:
 
 ```sh
 # macOS (14 Sonoma or later) and Linux

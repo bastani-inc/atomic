@@ -523,6 +523,8 @@ Prerequisites and setup, each as one bounded attempt:
 - The `cua-driver` executable (`cua-driver --version`), installed with upstream's one-line installer if missing, followed by `cua-driver telemetry disable` once.
 - The SDK installed at the exact driver version into a scratch directory outside the user's repository, for example `npm install @trycua/cua-driver@0.28.2 --prefix ~/.cache/atomic-cua`. The package ships per-platform native optional dependencies. Daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch, so the pin must match `cua-driver --version`.
 
+The executable installer does not install an agent skill. Atomic bundles the skill, so skip upstream's optional `cua-driver skills install`, `cua-driver skills update`, and `clawhub install @cua/driver` steps; leave existing user-level skills alone.
+
 The scenario itself is a small script in that scratch directory. It acquires the driver with `CuaDriver.connect()` when a daemon is running, so it reuses the daemon's permission identity (on macOS, `CuaDriver.app`'s Accessibility and Screen Recording grants) and the persisted telemetry-off preference; upstream describes `connect()` as a compatibility and app-hosting path, which is exactly the role it plays here. Only when no daemon is reachable does it fall back to `CuaDriver.create()`, which loads the runtime into the node process. On macOS that in-process fallback attributes permissions to the node host, normally the terminal app, as a **separate grant** from the app's; `checkPermissions` is then read-only, and the host must fully quit and relaunch after granting. Save it as `~/.cache/atomic-cua/verify-counter.mjs`:
 
 ```js

@@ -255,7 +255,7 @@ describe("buildSystemPrompt", () => {
 		assert.match(prompt, /If live evidence is unavailable, label the dated docs snapshot/);
 		assert.match(
 			prompt,
-			/CUA\) on desktop apps, simulators and emulators, use Cua Driver through the cua-driver skill/,
+			/CUA\) on desktop apps, simulators and emulators, use Cua Driver through the bundled cua-driver skill/,
 		);
 		assert.match(prompt, /one-shot `cua-driver call <tool>` commands/);
 		assert.match(
@@ -264,9 +264,14 @@ describe("buildSystemPrompt", () => {
 		);
 		assert.match(
 			prompt,
-			/If `cua-driver --version` fails, make one bounded attempt with upstream's one-line installer/,
+			/If `cua-driver --version` fails, make one bounded attempt with upstream's one-line executable installer/,
 		);
-		assert.match(prompt, /never run `cua-driver skills install`/);
+		assert.match(prompt, /The executable installer does not install an agent skill/);
+		assert.match(prompt, /never run `cua-driver skills install` or `clawhub install @cua\/driver`/);
+		assert.match(prompt, /do not link or copy a skill into `~\/\.agents\/skills\/cua-driver`/);
+		assert.match(prompt, /leave any existing user-level skill alone/);
+		assert.match(prompt, /skip `cua-driver skills update`/);
+		assert.match(prompt, /other agent directories such as `~\/\.claude\/skills`/);
 		assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
 		assert.match(prompt, /computer-use\.md/);
 		assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
