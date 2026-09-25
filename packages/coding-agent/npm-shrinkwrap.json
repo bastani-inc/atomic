@@ -1,16 +1,16 @@
 {
 	"name": "@bastani/atomic",
-	"version": "0.0.0",
+	"version": "0.9.21-alpha.1",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@bastani/atomic",
-			"version": "0.0.0",
+			"version": "0.9.21-alpha.1",
 			"license": "MIT",
 			"dependencies": {
-				"@bastani/atomic-natives": "0.0.0",
-				"@bastani/pi-ai": "0.0.0",
+				"@bastani/atomic-natives": "0.9.21-alpha.1",
+				"@bastani/pi-ai": "0.9.21-alpha.1",
 				"@dbos-inc/dbos-sdk": "4.25.14",
 				"@earendil-works/pi-agent-core": "0.87.1",
 				"@earendil-works/pi-client": "0.87.1",
@@ -429,18 +429,18 @@
 			}
 		},
 		"node_modules/@bastani/atomic-natives": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"optionalDependencies": {
-				"@bastani/atomic-natives-darwin-arm64": "0.0.0",
-				"@bastani/atomic-natives-darwin-x64": "0.0.0",
-				"@bastani/atomic-natives-linux-arm64-gnu": "0.0.0",
-				"@bastani/atomic-natives-linux-arm64-musl": "0.0.0",
-				"@bastani/atomic-natives-linux-x64-gnu": "0.0.0",
-				"@bastani/atomic-natives-linux-x64-musl": "0.0.0",
-				"@bastani/atomic-natives-win32-arm64-msvc": "0.0.0",
-				"@bastani/atomic-natives-win32-x64-msvc": "0.0.0"
+				"@bastani/atomic-natives-darwin-arm64": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-darwin-x64": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-linux-arm64-gnu": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-linux-arm64-musl": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-linux-x64-gnu": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-linux-x64-musl": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-win32-arm64-msvc": "0.9.21-alpha.1",
+				"@bastani/atomic-natives-win32-x64-msvc": "0.9.21-alpha.1"
 			},
 			"engines": {
 				"bun": ">=1.4.2",
@@ -448,8 +448,8 @@
 			}
 		},
 		"node_modules/@bastani/atomic-natives-darwin-arm64": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-arm64/-/atomic-natives-darwin-arm64-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-arm64/-/atomic-natives-darwin-arm64-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"darwin"
@@ -460,8 +460,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-darwin-x64": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-x64/-/atomic-natives-darwin-x64-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-x64/-/atomic-natives-darwin-x64-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"darwin"
@@ -472,8 +472,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-arm64-gnu": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-gnu/-/atomic-natives-linux-arm64-gnu-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-gnu/-/atomic-natives-linux-arm64-gnu-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -487,8 +487,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-arm64-musl": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-musl/-/atomic-natives-linux-arm64-musl-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-musl/-/atomic-natives-linux-arm64-musl-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -502,8 +502,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-x64-gnu": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-gnu/-/atomic-natives-linux-x64-gnu-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-gnu/-/atomic-natives-linux-x64-gnu-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -517,8 +517,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-x64-musl": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-musl/-/atomic-natives-linux-x64-musl-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-musl/-/atomic-natives-linux-x64-musl-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -532,8 +532,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-win32-arm64-msvc": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-arm64-msvc/-/atomic-natives-win32-arm64-msvc-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-arm64-msvc/-/atomic-natives-win32-arm64-msvc-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"win32"
@@ -544,8 +544,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-win32-x64-msvc": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-x64-msvc/-/atomic-natives-win32-x64-msvc-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-x64-msvc/-/atomic-natives-win32-x64-msvc-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"win32"
@@ -556,8 +556,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/pi-ai": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/pi-ai/-/pi-ai-0.0.0.tgz",
+			"version": "0.9.21-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/pi-ai/-/pi-ai-0.9.21-alpha.1.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.124.0",
