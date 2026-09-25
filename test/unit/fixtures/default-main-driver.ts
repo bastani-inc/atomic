@@ -120,17 +120,14 @@ export class DefaultMainDriver {
 
 
 	async stop(): Promise<void> {
+		const currentEnginePid = this.currentEnginePid();
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
-		await Promise.all(this.reportedEnginePids().map((pid) => killAndReap(pid)));
+		if (currentEnginePid !== undefined) await killAndReap(currentEnginePid);
 	}
 
-	private reportedEnginePids(): number[] {
-		const pids = new Set<number>();
-		for (const report of this.reports) {
-			if (typeof report.enginePid === "number") pids.add(report.enginePid);
-		}
-		return [...pids];
+	private currentEnginePid(): number | undefined {
+		return this.reports.findLast((report) => typeof report.enginePid === "number")?.enginePid;
 	}
 
 	private async readReports(): Promise<void> {

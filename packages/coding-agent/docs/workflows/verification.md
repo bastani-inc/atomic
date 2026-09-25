@@ -74,12 +74,16 @@ For a mobile web change where Safari behavior matters, run the same flow in real
 ```sh
 agent-browser device list
 agent-browser -p ios --device "iPhone 16 Pro" open http://localhost:3000
+xcrun simctl io booted recordVideo ios-flow.mp4 &
+recorder=$!
 agent-browser -p ios snapshot -i
+# Exercise the scenario here.
 agent-browser -p ios screenshot ios-after.png
+kill -INT "$recorder"; wait "$recorder"
 agent-browser -p ios close
 ```
 
-The iOS provider does not support `record`; capture video with `xcrun simctl io booted recordVideo ios-flow.mp4` and stop it with Ctrl+C. Name the simulator device and iOS version in the evidence. `set device` emulation in Chrome shows a mobile viewport, not WebKit behavior.
+The iOS provider does not support `record`, so the example records the booted simulator with `simctl`, which finalizes the file when it receives SIGINT. Stop the recording before `close`, which shuts the simulator down. Name the simulator device and iOS version in the evidence. `set device` emulation in Chrome shows a mobile viewport, not WebKit behavior.
 
 <a id="terminal-contracts" />
 
