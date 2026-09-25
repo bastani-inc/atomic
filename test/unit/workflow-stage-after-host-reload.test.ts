@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { AssistantMessage } from "@bastani/pi-ai";
 import { test, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -79,6 +80,10 @@ export default workflow({
 `;
 }
 
+function finalReply(): AssistantMessage {
+	return { ...decisionMessage(), content: [{ type: "text", text: "OK" }], stopReason: "stop" };
+}
+
 type HostExtensionAPI = Parameters<ExtensionFactory>[0];
 
 async function gatedWorkflowHost(prefix: string) {
@@ -98,8 +103,8 @@ async function gatedWorkflowHost(prefix: string) {
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	setDurableBackend(new InMemoryDurableBackend());
-	const { runtime: modelRuntime } = await registeredDecisionRuntime(() =>
-		messageStream(decisionMessage({ ok: true })),
+	const { runtime: modelRuntime } = await registeredDecisionRuntime((_model, context) =>
+		messageStream(context.messages.at(-1)?.role === "toolResult" ? finalReply() : decisionMessage({ ok: true })),
 	);
 	const settingsManager = SettingsManager.inMemory({
 		routerModel: "decision-test/chat",
