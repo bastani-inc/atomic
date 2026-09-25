@@ -301,6 +301,8 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload.
 
+Atomic itself writes `customType: "cache_prefix"` entries, one before each provider request, whatever `showCacheMissNotices` is set to. Their `data` holds only hashes, counts, tool names, and the cache-miss cause label; they never contain prompt text.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
