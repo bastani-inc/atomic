@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - `model: "auto"` routing has a chat model answer fixed questions about the complete task, then the router chooses between a short, evidence-backed list of models without seeing the task, in at most two small requests. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.
-- `model: "auto"` accepts `taskNeeds` so the caller can state the task's kind of work, difficulty, mistake cost, need for images, need for a very large context and whether speed matters, and `modelConstraints.allowedModels` sets the shortlist the router chooses between. Falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
+- `model: "auto"` accepts `taskNeeds` so the caller can state the task's kind of work, difficulty, mistake cost, need for images, need for a very large context and whether speed matters, and `modelConstraints.allowedModels` sets the shortlist the router chooses between. `modelConstraints.allowedProviders` and `excludedProviders` skip whole providers and replace the `modelRouting` provider settings for that call. Falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
 
 ## [0.9.21-alpha.1] - 2026-09-25
 

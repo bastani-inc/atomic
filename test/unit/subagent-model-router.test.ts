@@ -917,13 +917,31 @@ test("a task that needs images falls back to the current chat model when no elig
 	});
 });
 
-test("a caller list longer than one choice fails instead of dropping models", async () => {
+test("a caller list is offered whole while it fits one choice request, and falls back beyond that", async () => {
 	const f = await fixture();
-	const ids = Array.from({ length: 16 }, (_, index) => `model-${index}`);
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(ids.map((id) => catalogModel("a", id)));
-	mockClassifier(f, defaultClassifierChoice);
+	const listed = (count: number) => Array.from({ length: count }, (_, index) => `model-${index}`);
+	const available = vi.spyOn(f.ctx.modelRegistry, "getAvailable");
+	const offered: number[] = [];
+	mockClassifier(f, (keys, id, context) => {
+		if (id === "model") offered.push(keys.length);
+		return defaultClassifierChoice(keys, id, context);
+	});
+	const forty = listed(40);
+	available.mockReturnValue(forty.map((id) => catalogModel("a", id)));
+	await routeTask(f, {
+		taskNeeds: STATED_CODING_NEEDS,
+		constraints: [{ allowedModels: forty.map((id) => `a/${id}`) }],
+	});
+	assert.deepEqual(offered, [40], "no fixed cap below what one request holds");
+
+	const tooMany = listed(300);
+	available.mockReturnValue(tooMany.map((id) => catalogModel("a", id)));
 	await assert.rejects(
-		routeTask(f, { constraints: [{ allowedModels: ids.map((id) => `a/${id}`) }] }),
-		/at most 15 different models.*16 are eligible/u,
+		routeTask(f, {
+			taskNeeds: STATED_CODING_NEEDS,
+			constraints: [{ allowedModels: tooMany.map((id) => `a/${id}`) }],
+		}),
+		(error: unknown) =>
+			error instanceof AutoRoutingInferenceError && /cannot compare 300 different models/u.test(error.message),
 	);
 });

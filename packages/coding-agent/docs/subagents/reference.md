@@ -55,7 +55,7 @@ Routing has no built-in wall-clock deadline. Slow decisions can finish; cancel t
 
 The result records a primary `{ model, effort }` and up to two ordered `fallbacks`, each with its own model and effort. Atomic ranks three distinct eligible provider/model IDs, or all available IDs when fewer than three qualify. It selects each rank from the remaining models, excluding all efforts of earlier choices. A supported `"off"` is distinct from `null`, which means no configurable reasoning. The catalog reflects configured authentication, not proof of valid credentials, quota, or entitlement.
 
-The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer switches to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, or Atomic cannot pick a model itself (the task needs images and no eligible model reads them, `allowedModels` lists more than 15 different models, or `evals.md` is missing), the child runs on the current chat model instead of failing, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child. These switches are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1` is set.
+The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer switches to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, or Atomic cannot pick a model itself (the task needs images and no eligible model reads them, `allowedModels` lists more models than one routing request holds (roughly 100), or `evals.md` is missing), the child runs on the current chat model instead of failing, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child. These switches are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1` is set.
 
 Router classification is one classify request for the prepared choices. If the provider rejects the request size, routing uses the current chat model. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
@@ -70,12 +70,13 @@ For automatic routing, optional `modelConstraints` on a call, parallel task, or 
 | Field | Meaning |
 | --- | --- |
 | `allowedModels` | Exact provider/model IDs permitted to receive the task |
+| `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. Setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call; set them only when the user asks |
 | `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap |
 | `minContextWindow` | Minimum advertised context window in tokens |
 | `requiredInputs` | Required input types, `"text"` or `"image"` |
 | `allowedEfforts` | Permitted supported effort values, including `null` for non-reasoning models |
 
-Unknown keys and invalid limits fail validation. An empty eligible set stops the launch. These constraints do not turn a concrete model call into an automatic one. The catalog does not establish a latency SLA or a provider's privacy guarantees. Express hard provider restrictions through `allowedModels`; describe softer preferences in the task.
+Unknown keys and invalid limits fail validation. An empty eligible set stops the launch. These constraints do not turn a concrete model call into an automatic one. The catalog does not establish a latency SLA or a provider's privacy guarantees. Express hard provider restrictions through `allowedProviders`, `excludedProviders` or `allowedModels`; describe softer preferences in the task.
 
 For a persistent builtin override, put this in your user or project settings:
 

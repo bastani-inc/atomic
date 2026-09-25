@@ -10,7 +10,14 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
-import { type CandidateModel, describeOption, distinctTop, rankCandidates } from "./model-routing-candidates.js";
+import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
+import {
+	type CandidateModel,
+	describeOption,
+	distinctTop,
+	type RankedCandidate,
+	rankCandidates,
+} from "./model-routing-candidates.js";
 import {
 	eligiblePair,
 	type ModelConstraints,
@@ -82,8 +89,8 @@ const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
 ];
 /** Most options the router compares when it builds the shortlist itself. */
 const SHORTLIST_SIZE = 6;
-/** Most caller-listed models (`allowedModels`) compared in one choice. */
-const CALLER_SHORTLIST_LIMIT = 15;
+/** Jev accepts at most this many options in one Choice question. */
+const MAX_CHOICE_OPTIONS = 255;
 
 /** A task that must hold this much in context prefers models whose window is at least this large. */
 const LONG_CONTEXT_TOKENS = 400_000;
@@ -123,7 +130,13 @@ export async function routeExecutionModel(input: {
 	signal?.throwIfAborted();
 	const constraints = structuredClone((input.constraints ?? []).map((c) => parseModelConstraints(c)!));
 	const statedNeeds = parseTaskNeeds(input.taskNeeds);
-	const { allowedProviders = [], excludedProviders = [] } = ctx.getModelRouting?.() ?? {};
+	// settings.json provider lists are defaults. A call that sets either provider list
+	// (because the user asked) takes over provider selection, and the settings lists
+	// are ignored for it; its own lists are enforced by eligiblePair with the rest.
+	const callSetsProviders = constraints.some(
+		(constraint) => constraint.allowedProviders !== undefined || constraint.excludedProviders !== undefined,
+	);
+	const { allowedProviders = [], excludedProviders = [] } = callSetsProviders ? {} : (ctx.getModelRouting?.() ?? {});
 	const providerPermitted = (provider: string) =>
 		(allowedProviders.length === 0 || allowedProviders.includes(provider)) && !excludedProviders.includes(provider);
 	const catalog = () =>
@@ -316,13 +329,32 @@ export async function routeExecutionModel(input: {
 			: usable.map((entry) => entry.model);
 		const standings = rankCandidates(catalogEvals, reference.map(toCandidate), needs);
 		const ranked = standings.filter((candidate) => pairsFor.has(candidate.model));
-		// A caller's list is offered whole; duplicate routes of one model share a slot
-		// only when the list is too long for one choice, and a longer list fails
-		// rather than silently dropping a contender.
-		const callerChoices = ranked.length > CALLER_SHORTLIST_LIMIT ? distinctTop(ranked, ranked.length) : ranked;
-		if (callerListed && callerChoices.length > CALLER_SHORTLIST_LIMIT)
+		const choiceState = {
+			agent,
+			needs: {
+				work: needs.work,
+				difficulty: needs.difficulty,
+				mistake_cost: needs.mistakeCost,
+				needs_images: needs.needsImages,
+				long_context: needs.longContext,
+				latency_sensitive: needs.latencySensitive,
+			},
+		};
+		const describeAll = (options: readonly RankedCandidate[]) =>
+			Object.fromEntries(options.map((option, index) => [`m${index}`, describeOption(option, needs, standings)]));
+		const fitsOneChoice = (options: readonly RankedCandidate[]) =>
+			options.length <= MAX_CHOICE_OPTIONS &&
+			Buffer.byteLength(
+				JSON.stringify({ state: choiceState, instructions: CHOICE_INSTRUCTIONS, criteria: describeAll(options) }),
+				"utf8",
+			) <= ROUTING_REQUEST_BYTES;
+		// A caller's list is offered whole when it fits one choice request; otherwise
+		// duplicate routes of one model share a slot, and a list that still does not
+		// fit falls back rather than silently dropping a contender.
+		const callerChoices = !callerListed || fitsOneChoice(ranked) ? ranked : distinctTop(ranked, ranked.length);
+		if (callerListed && !fitsOneChoice(callerChoices))
 			await fallBackToCurrentModel(
-				`Auto routing compares at most ${CALLER_SHORTLIST_LIMIT} different models from modelConstraints.allowedModels; ${callerChoices.length} are eligible. List fewer models.`,
+				`Auto routing cannot compare ${callerChoices.length} different models from modelConstraints.allowedModels in one routing request. List fewer models.`,
 			);
 		const shortlist = callerListed ? callerChoices : distinctTop(ranked, SHORTLIST_SIZE);
 
@@ -341,15 +373,7 @@ export async function routeExecutionModel(input: {
 						modelRegistry: ctx.modelRegistry,
 						currentModel: ctx.model,
 						state: {
-							agent,
-							needs: {
-								work: needs.work,
-								difficulty: needs.difficulty,
-								mistake_cost: needs.mistakeCost,
-								needs_images: needs.needsImages,
-								long_context: needs.longContext,
-								latency_sensitive: needs.latencySensitive,
-							},
+							...choiceState,
 						},
 						instructions: CHOICE_INSTRUCTIONS,
 						schema,
@@ -357,12 +381,7 @@ export async function routeExecutionModel(input: {
 							questions: {
 								model: {
 									instructions: "Which model should do this task?",
-									criteria: Object.fromEntries(
-										shortlist.map((option, index) => [
-											keys[index]!,
-											describeOption(option, needs, standings),
-										]),
-									),
+									criteria: describeAll(shortlist),
 								},
 							},
 							decode: (choices) => {

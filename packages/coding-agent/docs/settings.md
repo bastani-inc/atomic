@@ -112,7 +112,7 @@ Limits which providers' models workflow stages and subagents with `model: "auto"
 
 Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so this setting cannot separate them.
 
-A project list replaces the global list of the same name; the other list is kept. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
+A project list replaces the global list of the same name; the other list is kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of these for that call. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
 
 #### thinkingBudgets
 
