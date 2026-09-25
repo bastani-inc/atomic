@@ -39,6 +39,8 @@ const needs = (
 	difficulty,
 	mistakeCost,
 	needsImages: false,
+	longContext: false,
+	latencySensitive: false,
 });
 
 test("a demanding task ranks the best-proven model first; an easy one the adequate cheap one", () => {
@@ -144,7 +146,14 @@ test("quoted results name the effort, harness and reporter they were measured un
 			"| fable | Fable | OSW2 | 77.9 | Anthropic grading; Fable values are Mythos | Anthropic |",
 		].join("\n"),
 	);
-	const use: ResolvedTaskNeeds = { work: "computer_use", difficulty: "hard", mistakeCost: "high", needsImages: true };
+	const use: ResolvedTaskNeeds = {
+		work: "computer_use",
+		difficulty: "hard",
+		mistakeCost: "high",
+		needsImages: true,
+		longContext: false,
+		latencySensitive: false,
+	};
 	const ranked = rankCandidates(measured, [model("astra", 10), model("fable", 10)], use);
 	const describe = (id: string) => JSON.parse(describeOption(ranked.find((c) => c.model === `p/${id}`)!, use, ranked));
 	assert.equal(describe("astra").overall, "measured (AA Intelligence Index 52 measured with max effort)");
@@ -192,6 +201,8 @@ test("published results are ranked only against results from the same source", (
 		difficulty: "hard",
 		mistakeCost: "high",
 		needsImages: false,
+		longContext: false,
+		latencySensitive: false,
 	};
 	const ranked = rankCandidates(
 		published,

@@ -10,6 +10,7 @@ import {
 	type ClassifierResult,
 	createAssistantMessageEventStream,
 	createProvider,
+	getCurrentTools,
 	type JsonObject,
 	type Model,
 } from "@bastani/pi-ai";
@@ -18,8 +19,7 @@ import {
 	AutoRoutingInferenceError,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import { ROUTING_REQUEST_BYTES, TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
-import { MODEL_ROUTING_TASK_BYTES } from "../../packages/coding-agent/src/core/model-routing-task.js";
+import { ROUTING_REQUEST_BYTES } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
@@ -631,7 +631,7 @@ test("a stale model catalog fails before a classifier selection can launch a sub
 	});
 	await assert.rejects(f.route(), /no longer eligible/);
 	assert.ok(classify.mock.calls.length >= 1);
-	assert.equal(f.infer.mock.calls.length, 0);
+	assert.equal(f.infer.mock.calls.length, 1, "only the chat model reads the task");
 });
 
 test("classifier provider failure cannot return a route without a current chat model", async () => {
@@ -642,28 +642,27 @@ test("classifier provider failure cannot return a route without a current chat m
 	const classify = mockClassifier(f);
 	f.ctx.model = undefined;
 	classify.mockRejectedValue(new Error("HTTP 422 private provider detail"));
-	await assert.rejects(f.route(), /Classifier returned no valid decision/);
-	assert.ok(classify.mock.calls.length >= 1, "each batch asks the classifier once and none retries on chat");
+	await assert.rejects(routeTask(f, { taskNeeds: STATED_CODING_NEEDS }), /Classifier returned no valid decision/);
+	assert.ok(classify.mock.calls.length >= 1, "the classifier is asked once and nothing retries on chat");
 	assert.equal(f.infer.mock.calls.length, 0);
+	await assert.rejects(
+		routeTask(f),
+		/needs a chat model to read the task/,
+		"no chat model means nothing can read the task",
+	);
 });
 
-test("long auto-routing tasks reach the classifier as an excerpt that keeps both ends and protected spans", async () => {
+test("long tasks reach the chat reader complete and never reach the classifier", async () => {
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
-	const protectedText = "<keepContext>Review only. Never edit files.</keepContext>";
-	const task = `Review this change.\n${"reference data ".repeat(10000)}${protectedText}${"more data ".repeat(10000)}\nReport defects.`;
-	const classify = mockClassifier(f, (keys, id, context) => {
-		const routed = String(context.state.task);
-		assert.ok(routed.includes(protectedText));
-		assert.match(routed, /^\[Model-routing excerpt\.[^\n]*\nReview this change/u);
-		assert.match(routed, /Report defects\.$/u);
-		assert.ok(routed.includes(TRUNCATED_MARKER));
-		assert.ok(Buffer.byteLength(JSON.stringify(routed), "utf8") <= MODEL_ROUTING_TASK_BYTES);
-		return defaultClassifierChoice(keys, id, context);
-	});
+	const task = `Review this change.\n${"reference data ".repeat(10000)}<keepContext>Review only.</keepContext>${"more data ".repeat(10000)}\nReport defects.`;
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	const classify = mockClassifier(f);
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
+	assert.equal(f.infer.mock.calls.length, 1);
+	assert.equal(chatPayload(f.infer.mock.calls[0]![1]).state.task, task);
 	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 0);
+	assert.equal(classify.mock.calls[0]![1].state.task, undefined, "the classifier never receives the task");
 	assert.deepEqual(notice.mock.calls, []);
 });
 
@@ -673,25 +672,26 @@ test("auto routing screens credentials anywhere in a long task", async () => {
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("a classifier that rejects the request falls back to chat with the same task, quietly unless debugging", async () => {
+test("a classifier that rejects the choice falls back to chat without the task, quietly unless debugging", async () => {
 	const f = await fixture();
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	classify.mockRejectedValue(new Error("request too large"));
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
 	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "");
 	await f.route(task);
 	assert.deepEqual(warn.mock.calls, [], "routing fallbacks stay out of the console by default");
-	f.ctx.getRouterModel = () => "";
-	await f.route(task);
 	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 2);
-	const routed = String(
-		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state
-			.task,
-	);
-	assert.equal(classify.mock.calls[0]![1].state.task, task);
-	assert.equal(routed, task);
+	assert.equal(classify.mock.calls[0]![1].state.task, undefined);
+	const requests = f.infer.mock.calls.map(([, context]) => ({
+		task: chatPayload(context).state.task,
+		choice: offeredModels(context) !== undefined,
+	}));
+	assert.deepEqual(requests, [
+		{ task, choice: false },
+		{ task: undefined, choice: true },
+	]);
 
 	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 	f.ctx.getRouterModel = () => "typesafe/jev-latest";
@@ -703,6 +703,15 @@ test("a classifier that rejects the request falls back to chat with the same tas
 	);
 	vi.unstubAllEnvs();
 });
+
+const STATED_CODING_NEEDS = {
+	work: "coding",
+	difficulty: "hard",
+	mistakeCost: "high",
+	needsImages: false,
+	longContext: false,
+	latencySensitive: false,
+} as const;
 
 const routeTask = (
 	f: Awaited<ReturnType<typeof fixture>>,
@@ -723,20 +732,23 @@ const catalogModel = (provider: string, id: string, overrides: Partial<Model<Api
 	...overrides,
 });
 
-test("the router is asked only for the task needs the caller did not state", async () => {
+test("the chat reader is asked only for the task needs the caller did not state", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	const requests: ClassifierContext[] = [];
-	mockClassifier(f, (keys, id, context) => {
-		if (!requests.includes(context)) requests.push(context);
-		return id === "model"
-			? keys.find((key) => classifierOptions(context)[key] === "second-provider/reasoner")!
-			: defaultClassifierChoice(keys, id, context);
-	});
+	const classify = mockClassifier(f);
 	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
-	assert.equal(requests.length, 1, "a single model able to read images leaves nothing to choose between");
-	assert.deepEqual(Object.keys(requests[0]!.questions), ["difficulty", "mistake_cost"]);
-	assert.deepEqual(requests[0]!.state.caller_says, { work: "computer_use", needs_images: "yes" });
+	assert.equal(classify.mock.calls.length, 0, "a single model able to read images leaves nothing to choose between");
+	assert.equal(f.infer.mock.calls.length, 1);
+	const request = f.infer.mock.calls[0]![1];
+	const tool = getCurrentTools(request.messages)[0];
+	assert.ok(tool);
+	assert.deepEqual(Object.keys((tool.parameters as { properties: object }).properties), [
+		"difficulty",
+		"mistake_cost",
+		"long_context",
+		"latency_sensitive",
+	]);
+	assert.deepEqual(chatPayload(request).state.caller_says, { work: "computer_use", needs_images: "yes" });
 	assert.equal(route.routerSelection.model, "second-provider/reasoner");
 });
 
@@ -751,16 +763,18 @@ test("a caller that states every need gets one choice request whose options carr
 		requests.push(context);
 		return keys.find((key) => classifierOptions(context)[key] === "anthropic/claude-opus-5-5")!;
 	});
-	const route = await routeTask(f, {
-		taskNeeds: { work: "coding", difficulty: "hard", mistakeCost: "high", needsImages: false },
-	});
+	const route = await routeTask(f, { taskNeeds: STATED_CODING_NEEDS });
+	assert.equal(f.infer.mock.calls.length, 0, "a caller that states every need skips the task reader");
 	assert.equal(requests.length, 1);
 	assert.deepEqual(Object.keys(requests[0]!.questions), ["model"]);
+	assert.deepEqual(Object.keys(requests[0]!.state), ["agent", "needs"], "the choice request carries no task");
 	assert.deepEqual(requests[0]!.state.needs, {
 		work: "coding",
 		difficulty: "hard",
 		mistake_cost: "high",
 		needs_images: false,
+		long_context: false,
+		latency_sensitive: false,
 	});
 	const question = requests[0]!.questions.model;
 	assert.ok(question?.type === "choice");

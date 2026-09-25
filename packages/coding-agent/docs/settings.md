@@ -86,7 +86,7 @@ An explicit ID other than `auto` is resolved through the current model registry:
 
 A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Routing has no built-in wall-clock deadline; cancel the request to stop waiting. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
-The router's copy of a very long task is shortened to about 50 KB, keeping its beginning, its end and every `<keepContext>...</keepContext>` span, with cuts marked `[... truncated ...]`; the subagent or stage still receives the full task. If the selected classifier still rejects the request, routing switches to the current chat model.
+A classifier `routerModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`routerModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
 
 Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection.
 

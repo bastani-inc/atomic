@@ -27,7 +27,6 @@ import {
 	resolveTaskNeeds,
 	type TaskNeeds,
 } from "./model-routing-needs.js";
-import { modelRoutingTask } from "./model-routing-task.js";
 import type { ModelRoutingSettings } from "./settings-types.ts";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
 
@@ -86,10 +85,13 @@ const SHORTLIST_SIZE = 6;
 /** Most caller-listed models (`allowedModels`) compared in one choice. */
 const CALLER_SHORTLIST_LIMIT = 15;
 
+/** A task that must hold this much in context prefers models whose window is at least this large. */
+const LONG_CONTEXT_TOKENS = 400_000;
+
 const NEEDS_INSTRUCTIONS =
-	"Answer each question about `task`, which `agent` will perform: what kind of work it is, how hard it is, how costly a mistake would be, and whether it needs screenshots or images. Judge the task as written; `caller_says` lists answers the caller already gave.";
+	"Read `task`, which `agent` will perform, and answer each field: what kind of work it is, how hard it is, how costly a mistake would be, whether it needs screenshots or images, whether it must hold a very large amount of material in context, and whether speed matters more than extra reasoning. Each field's description lists its options. Judge the task as written; `caller_says` lists answers the caller already gave.";
 const CHOICE_INSTRUCTIONS =
-	"Pick the model that should do `task`, whose needs are in `needs`. Each option lists the model's release date, price tier and prices, whether it reads images, and its results for this kind of work and overall; standings compare it with every eligible model. For demanding or high-stakes tasks prefer the best-proven model; for easy, low-stakes tasks prefer an adequate cheaper one. Prefer newer models over older ones with similar results. Missing results are unknown, not weak.";
+	"Pick the model that should do the task `agent` will perform. The task's needs are in `needs`; the task itself is not shown. Each option lists the model's release date, price tier and prices, whether it reads images, and its results for this kind of work and overall; standings compare it with every eligible model. For demanding or high-stakes tasks prefer the best-proven model; for easy, low-stakes tasks prefer an adequate cheaper one. Prefer newer models over older ones with similar results. Missing results are unknown, not weak.";
 
 const EVALS_BUDGET_ERROR =
 	"Auto routing requires a nonempty evals.md document. Repair the Atomic installation or select a concrete execution model.";
@@ -146,11 +148,11 @@ export async function routeExecutionModel(input: {
 	let selection = input.selection;
 	if (selection === undefined) {
 		const settings = { getRouterModel: () => ctx.getRouterModel() };
-		resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
+		const router = resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
 		if (!input.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const stated = statedNeeds;
 		const agent = { name: input.agent.name, description: input.agent.description };
-		// Screen the full task, even text the router's excerpt will omit.
+		// Screen the task before any model reads it.
 		const serialized = JSON.stringify({ task: input.task, agent, stated, constraints });
 		let configuredCredential: boolean;
 		try {
@@ -166,7 +168,7 @@ export async function routeExecutionModel(input: {
 			)
 		)
 			throw new Error("Auto routing context contains credential material. Remove secrets before retrying.");
-		const task = modelRoutingTask(input.task);
+		const task = input.task;
 		// Degrade only to a current chat model that is available and eligible under
 		// the same constraints, restored through the normal selection path (#3206).
 		const currentModelRoute = async (): Promise<ModelRoute | undefined> => {
@@ -205,16 +207,33 @@ export async function routeExecutionModel(input: {
 				return fallBackToCurrentModel(error instanceof Error ? error.message : String(error));
 			});
 
-		// Step 1: ask only for the needs the caller did not state.
+		// Step 1: a chat model reads the task and answers only what the caller did
+		// not state. A classifier router such as Jev never receives the task.
 		const questions = missingNeedsQuestions(stated);
 		let answers: Record<string, string> = {};
 		if (questions.length) {
-			const ids = questions.map((question) => question.id);
-			// One declared string type per enum keeps strict provider schemas valid;
-			// the exact values are checked against the questions afterwards.
+			const current = ctx.model;
+			const reader =
+				router.kind === "chat"
+					? router.fullId
+					: current && current.id !== "auto" && isModelType(current, "chat")
+						? `${current.provider}/${current.id}`
+						: undefined;
+			if (reader === undefined)
+				await fallBackToCurrentModel(
+					"Auto routing needs a chat model to read the task. Select a chat model or state every taskNeeds field.",
+				);
 			const schema = Type.Object(
 				Object.fromEntries(
-					questions.map((question) => [question.id, Type.String({ enum: Object.keys(question.criteria) })]),
+					questions.map((question) => [
+						question.id,
+						Type.String({
+							enum: Object.keys(question.criteria),
+							description: `${question.instructions} ${Object.entries(question.criteria)
+								.map(([key, meaning]) => `${key}: ${meaning}`)
+								.join("; ")}.`,
+						}),
+					]),
 				),
 				{ additionalProperties: false },
 			);
@@ -224,12 +243,16 @@ export async function routeExecutionModel(input: {
 						...(stated.difficulty ? { difficulty: stated.difficulty } : {}),
 						...(stated.mistakeCost ? { mistake_cost: stated.mistakeCost } : {}),
 						...(stated.needsImages !== undefined ? { needs_images: stated.needsImages ? "yes" : "no" } : {}),
+						...(stated.longContext !== undefined ? { long_context: stated.longContext ? "yes" : "no" } : {}),
+						...(stated.latencySensitive !== undefined
+							? { latency_sensitive: stated.latencySensitive ? "yes" : "no" }
+							: {}),
 					}
 				: undefined;
 			const result = await infer(() =>
 				routeModel(
 					{
-						settings,
+						settings: { getRouterModel: () => reader! },
 						modelRegistry: ctx.modelRegistry,
 						currentModel: ctx.model,
 						state: {
@@ -239,6 +262,7 @@ export async function routeExecutionModel(input: {
 						},
 						instructions: NEEDS_INSTRUCTIONS,
 						schema,
+						// Unused: the reader always resolves to a chat model.
 						classifier: {
 							questions: Object.fromEntries(
 								questions.map((question) => [
@@ -246,7 +270,8 @@ export async function routeExecutionModel(input: {
 									{ instructions: question.instructions, criteria: question.criteria },
 								]),
 							),
-							decode: (choices) => Object.fromEntries(ids.map((id) => [id, choices[id]!])),
+							decode: (choices) =>
+								Object.fromEntries(questions.map((question) => [question.id, choices[question.id]!])),
 						},
 						signal,
 					},
@@ -258,11 +283,16 @@ export async function routeExecutionModel(input: {
 		const needs: ResolvedTaskNeeds = resolveTaskNeeds(stated, answers);
 
 		// Step 2: narrow in code. A task that needs images only goes to models that read them.
-		const usable = needs.needsImages ? available.filter((entry) => entry.model.input.includes("image")) : available;
-		if (usable.length === 0)
+		const seeing = needs.needsImages ? available.filter((entry) => entry.model.input.includes("image")) : available;
+		if (seeing.length === 0)
 			await fallBackToCurrentModel(
 				"Auto routing: this task needs a model that can read images, and no eligible model can. Allow an image-capable model or select a concrete execution model.",
 			);
+		// A large context window is preferred, not required: context size is a matter of degree.
+		const roomy = needs.longContext
+			? seeing.filter((entry) => entry.model.contextWindow >= LONG_CONTEXT_TOKENS)
+			: seeing;
+		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
 		const toCandidate = (model: Model<Api>): CandidateModel => ({
 			model: `${model.provider}/${model.id}`,
@@ -311,12 +341,14 @@ export async function routeExecutionModel(input: {
 						modelRegistry: ctx.modelRegistry,
 						currentModel: ctx.model,
 						state: {
-							task,
+							agent,
 							needs: {
 								work: needs.work,
 								difficulty: needs.difficulty,
 								mistake_cost: needs.mistakeCost,
 								needs_images: needs.needsImages,
+								long_context: needs.longContext,
+								latency_sensitive: needs.latencySensitive,
 							},
 						},
 						instructions: CHOICE_INSTRUCTIONS,
@@ -352,13 +384,14 @@ export async function routeExecutionModel(input: {
 			effortForDifficulty(
 				(pairsFor.get(model) ?? []).map((pair) => pair.effort),
 				needs.difficulty,
+				needs.latencySensitive,
 			);
 		const fallbackModels = distinctTop(
 			ranked.filter((candidate) => candidate.baseKey !== chosen.baseKey),
 			2,
 		);
 		reportModelRoutingDebug(
-			`Auto routing: ${needs.work}, ${needs.difficulty}, mistake cost ${needs.mistakeCost}, images ${needs.needsImages ? "yes" : "no"}; chose ${chosen.model} from ${shortlist.map((option) => option.model).join(", ")}.`,
+			`Auto routing: ${needs.work}, ${needs.difficulty}, mistake cost ${needs.mistakeCost}, images ${needs.needsImages ? "yes" : "no"}, long context ${needs.longContext ? "yes" : "no"}, latency ${needs.latencySensitive ? "sensitive" : "tolerant"}; chose ${chosen.model} from ${shortlist.map((option) => option.model).join(", ")}.`,
 		);
 		selection = {
 			model: chosen.model,

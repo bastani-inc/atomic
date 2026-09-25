@@ -21,25 +21,28 @@ The same value works on individual parallel tasks and in an agent definition's `
 
 Workflow stages also support [prompt-based `model: "auto"`](/workflows/authoring#automatic-stage-model-selection), using the same decision provider and evaluation guidance. Stage model selection is separate from choosing which workflow to launch.
 
-Routing takes at most two short requests, described in [Model Selection](/models/model-selection#automatic-subagent-and-workflow-stage-routing): the router answers questions about the task, then chooses between a shortlist of models that each carry their own [Evals](/models/evals) results. Effort follows the task's difficulty.
+Routing takes at most two short requests, described in [Model Selection](/models/model-selection#automatic-subagent-and-workflow-stage-routing): a chat model answers questions about the task, then the router chooses between a shortlist of models that each carry their own [Evals](/models/evals) results, seeing only those answers and never the task. Effort follows the task's difficulty.
 
-When you already know what the task needs, say so with `taskNeeds`; stated fields are not asked of the router, and stating all four skips that request. To choose the contenders yourself, list them in `modelConstraints.allowedModels`; the eligible ones become the shortlist:
+When you launch a subagent, fill in `taskNeeds` with everything you can judge; stated fields are not asked, and stating all six skips the task-reading request. To choose the contenders yourself, list them in `modelConstraints.allowedModels`; the eligible ones become the shortlist:
 
 ```typescript
 subagent({
   agent: "worker",
   task: "Open Xcode, build the app and verify the settings screen by screenshot",
   model: "auto",
-  taskNeeds: { work: "computer_use", difficulty: "hard", mistakeCost: "moderate", needsImages: true },
+  taskNeeds: {
+    work: "computer_use", difficulty: "hard", mistakeCost: "moderate",
+    needsImages: true, longContext: false, latencySensitive: false,
+  },
   modelConstraints: { allowedModels: ["anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"] },
 })
 ```
 
-`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
+`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`; `needsImages`, `longContext` (must hold a very large codebase or document set) and `latencySensitive` (a fast answer matters more than extra reasoning) are true or false. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
 
 The agent's system prompt is not routing metadata. For a self-contained agent with no task, it remains the task fallback. The router weighs task-relevant evidence, cost, and latency rather than always choosing a benchmark winner or maximum effort. Benchmark measurement effort does not prescribe execution effort.
 
-The router's copy of a very long task is shortened to about 50 KB, keeping its beginning, its end and every `<keepContext>...</keepContext>` span, with cuts marked `[... truncated ...]`; the subagent or stage still receives the full task. If a classifier still rejects the request, routing falls back to the current chat model. Fallbacks are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`, which prints them with the HTTP status and error type. Hard `modelConstraints` are never truncated.
+The chat model reads the complete task. If a classifier rejects the choice request, routing falls back to the current chat model. Fallbacks are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`, which prints them with the HTTP status and error type. Hard `modelConstraints` are never truncated.
 
 The shared [`routerModel`](/settings#routermodel) setting chooses the model making the decision, not the child model. Selection follows this order:
 

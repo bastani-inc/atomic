@@ -74,6 +74,9 @@ const WORK_METRICS: Record<WorkKind, readonly Metric[]> = {
 	],
 };
 
+/** When speed matters, a fast route edges out its standard route for the model's single slot. */
+const FAST_ROUTE_BONUS = 0.02;
+
 /** A standing is stated only when enough eligible models share the measurement. */
 const MIN_RANKED_MODELS = 4;
 
@@ -249,7 +252,11 @@ export function rankCandidates(
 			return {
 				...candidate,
 				baseKey: base,
-				score: qualityWeight * quality + priceWeight * cheapness + 0.1 * recency,
+				score:
+					qualityWeight * quality +
+					priceWeight * cheapness +
+					0.1 * recency +
+					(needs.latencySensitive && candidate.fastRouteOf ? FAST_ROUTE_BONUS : 0),
 				values,
 				conditions,
 				...(released ? { released } : {}),

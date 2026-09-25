@@ -8,7 +8,6 @@ import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
-import { TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -20,7 +19,7 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
+import { chatPayload, chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
 import {
 	decisionMessage,
 	decisionModel,
@@ -62,6 +61,8 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 		),
 	};
 }
+
+const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
 
 async function fixture() {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
@@ -179,17 +180,16 @@ test("public stage auto asks the router about the actual prompt before admission
 	assert.ok(Buffer.byteLength(JSON.stringify(state)) < 2_000);
 });
 
-test("long stage prompts are excerpted only for routing, never for execution", async () => {
+test("long stage prompts reach the chat reader and execution complete, never the classifier", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
+	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
 	const task = `Review this implementation.\n${"reference ".repeat(20_000)}\n<keepContext>Read-only review.</keepContext>\nReport defects.`;
 	const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		assert.match(String(url), /\/systemone$/);
 		const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
 		assert.equal(body.model, "jev-latest");
-		assert.ok(String(body.state.task).includes(TRUNCATED_MARKER));
-		assert.match(String(body.state.task), /<keepContext>Read-only review\.<\/keepContext>/u);
-		assert.match(String(body.state.task), /Report defects\.$/u);
+		assert.equal(body.state.task, undefined, "the classifier never receives the task");
 		return Response.json(classifierWireResponse(body));
 	});
 	vi.stubGlobal("fetch", transport);
@@ -223,7 +223,8 @@ test("long stage prompts are excerpted only for routing, never for execution", a
 		await ctx.prompt(task);
 		assert.deepEqual(executed, [task]);
 		assert.equal(transport.mock.calls.length, 1);
-		assert.equal(f.infer.mock.calls.length, 0);
+		assert.equal(f.infer.mock.calls.length, 1);
+		assert.equal(chatPayload(f.infer.mock.calls[0]![1]).state.task, task);
 	} finally {
 		await ctx.__dispose();
 	}
@@ -566,7 +567,14 @@ test("stage decisions survive the actual strict Responses schema conversion", as
 	assert.equal(converted.type, "function");
 	if (converted.type !== "function") throw new Error("Expected function");
 	for (const validator of [Compile(tool.parameters), Compile(converted.parameters as typeof tool.parameters)]) {
-		const answers = { work: "coding", difficulty: "moderate", mistake_cost: "low", needs_images: "no" };
+		const answers = {
+			work: "coding",
+			difficulty: "moderate",
+			mistake_cost: "low",
+			needs_images: "no",
+			long_context: "no",
+			latency_sensitive: "no",
+		};
 		assert.equal(validator.Check(answers), true);
 		for (const invalid of [{ work: "coding" }, { ...answers, extra: 1 }])
 			assert.equal(validator.Check(invalid), false);
@@ -641,6 +649,7 @@ for (const auth of ["stored", "env"] as const) {
 		const key = "synthetic-stage-jev-key";
 		if (auth === "env") vi.stubEnv("TYPESAFE_API_KEY", key);
 		else await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key });
+		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
 		const classify = vi.spyOn(f.modelRegistry, "classify");
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 			assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
@@ -659,7 +668,8 @@ for (const auth of ["stored", "env"] as const) {
 		assert.deepEqual(f.admissions, ["decision-test/chat"]);
 		assert.equal(classify.mock.calls.length, 1);
 		assert.equal(classify.mock.calls[0]?.[0].id, "jev-latest");
-		assert.equal(f.infer.mock.calls.length, 0);
+		assert.equal(classify.mock.calls[0]?.[1].state.task, undefined);
+		assert.equal(f.infer.mock.calls.length, 1, "the chat model reads the task; Jev only chooses");
 		assert.equal(fetch.mock.calls.length, 1);
 		await ctx.__dispose();
 	});
@@ -703,8 +713,8 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 			api: decisionModel.api,
 			baseUrl: decisionModel.baseUrl,
 			apiKey: "mock-chat-secret",
-			models: [decisionModel],
-			streamSimple: () => messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
+			models: [decisionModel, OTHER_MODEL],
+			streamSimple: (model, context) => chatRouter()(model, context),
 		});
 		const key = "synthetic-stored-proxy-jev-key";
 		await runtime.saveCredential("typesafe", { type: "api_key", key });

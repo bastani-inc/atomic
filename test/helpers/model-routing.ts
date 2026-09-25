@@ -7,6 +7,8 @@ export const DEFAULT_NEEDS: Readonly<Record<string, string>> = {
 	difficulty: "moderate",
 	mistake_cost: "low",
 	needs_images: "no",
+	long_context: "no",
+	latency_sensitive: "no",
 };
 
 type ChatRequest = Context;
