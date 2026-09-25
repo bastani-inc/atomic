@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, it } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import {
@@ -18,7 +18,7 @@ import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "../../utilities.ts";
 
-async function buildSession(options: { forceSystemPrompt?: boolean }) {
+async function buildSession(options: { forceSystemPrompt?: boolean; responses?: AssistantMessage[] }) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-3261-cache-prefix-"));
 	const faux = registerFauxProvider();
 	const authStorage = AuthStorage.inMemory();
@@ -45,11 +45,14 @@ async function buildSession(options: { forceSystemPrompt?: boolean }) {
 		...(options.forceSystemPrompt ? { systemPromptTransform: () => "Forced system prompt." } : {}),
 	});
 	session.setActiveToolsByName(["read"]);
-	faux.setResponses([
-		{ role: "assistant", content: [{ type: "text", text: "one" }] } as never,
-		{ role: "assistant", content: [{ type: "text", text: "two" }] } as never,
-		{ role: "assistant", content: [{ type: "text", text: "three" }] } as never,
-	]);
+	faux.setResponses(
+		options.responses ?? [
+			{ role: "assistant", content: [{ type: "text", text: "one" }] } as never,
+			{ role: "assistant", content: [{ type: "text", text: "two" }] } as never,
+			{ role: "assistant", content: [{ type: "text", text: "three" }] } as never,
+		],
+	);
+	writeFileSync(join(cwd, "notes.txt"), "notes\n");
 	return {
 		session,
 		sessionManager,
@@ -129,6 +132,50 @@ describe("issue #3261: request prefix stability across turns", () => {
 			"tool list changed: +bash",
 			"forced-prompt tool changes must not rewrite the request prefix as a system-prompt change",
 		);
+	});
+
+	it("keeps the prefix stable when the model reuses a tool call id that conversion renames (#3261, #3274)", async () => {
+		const reusedIdCall = () =>
+			fauxAssistantMessage([fauxToolCall("read", { path: "notes.txt" }, { id: "read:0" })], {
+				stopReason: "toolUse",
+			});
+		const { session, sessionManager, cleanup } = await buildSession({
+			responses: [
+				reusedIdCall(),
+				fauxAssistantMessage("first done"),
+				reusedIdCall(),
+				fauxAssistantMessage("second done"),
+				fauxAssistantMessage("third done"),
+			],
+		});
+		cleanups.push(cleanup);
+		const sentToolCallIds: string[][] = [];
+		const convert = session.agent.convertToLlm;
+		session.agent.convertToLlm = async (messages) => {
+			const converted = await convert(messages);
+			sentToolCallIds.push(
+				converted.flatMap((message) =>
+					message.role === "assistant"
+						? message.content.flatMap((block) => (block.type === "toolCall" ? [block.id] : []))
+						: [],
+				),
+			);
+			return converted;
+		};
+
+		await session.prompt("read the notes");
+		await session.prompt("read them again");
+		await session.prompt("thanks");
+
+		const fingerprints = cachePrefixFingerprints(sessionManager);
+		assert.equal(fingerprints.length, 5, "expected one cache_prefix entry per provider request");
+		const attributions = fingerprints.slice(1).map((_, offset) => attributionAt(fingerprints, offset + 1));
+		assert.deepEqual(attributions, ["prefix unchanged", "prefix unchanged", "prefix unchanged", "prefix unchanged"]);
+		const requestsWithBothCalls = sentToolCallIds.filter((ids) => ids.length === 2);
+		assert.equal(requestsWithBothCalls.length, 2, "both requests after the second call must carry both tool calls");
+		for (const ids of requestsWithBothCalls) {
+			assert.deepEqual(ids, ["read:0", "read:0_3"], "the reused id must be renamed identically in every request");
+		}
 	});
 
 	it("keeps the head's initial tool declaration and preserves a later tool-delta system message in a forced-system-prompt session (#3261 cause 2, structural)", async () => {
