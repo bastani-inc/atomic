@@ -288,6 +288,29 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-tool-cache: false
           use-cache: false
+      # setup-zig trusts Actions-cache tarball hits without verifying their signature.
+      - name: Verify setup-zig tarball against pinned SHA-256
+        if: matrix.platform == 'linux' && steps.zig-cache.outputs.hit != 'true'
+        shell: bash
+        timeout-minutes: 1
+        env:
+          ZIG_ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ZIG_ARCH" in
+            x64) arch=x86_64; sha="$ZIG_SHA256_X86_64" ;;
+            arm64) arch=aarch64; sha="$ZIG_SHA256_AARCH64" ;;
+            *) echo "Unsupported Zig architecture: $ZIG_ARCH" >&2; exit 1 ;;
+          esac
+          tarball="$RUNNER_TEMP/zig-${arch}-linux-${ZIG_VERSION}.tar.xz"
+          if [[ ! -f "$tarball" ]]; then
+            echo "setup-zig tarball missing: $tarball" >&2
+            exit 1
+          fi
+          if ! echo "$sha  $tarball" | sha256sum -c --status; then
+            echo "setup-zig tarball SHA-256 mismatch: $tarball" >&2
+            exit 1
+          fi
+          echo "setup-zig tarball SHA-256 verified: $tarball"
       # Unversioned taiki-e tools resolve to @latest, floating the build toolchain
       # of a provenance-signed artifact with no diff.
       - name: Install cargo-zigbuild for portable Linux builds

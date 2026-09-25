@@ -429,6 +429,7 @@ chain. Each native compile has one bounded retry, with a second failure fatal.
 | --- | --- |
 | Verify cached Zig tarball, extraction and version (Linux) | 1 min |
 | `mlugg/setup-zig`, plus one retry | 2 min each |
+| Verify setup-zig tarball after fallback (Linux) | 1 min |
 | `dtolnay/rust-toolchain` | 4 min |
 | `taiki-e/install-action` | 3 min |
 | `cargo install cargo-xwin` (win32) | 3 min |
@@ -491,7 +492,7 @@ trailing `17` is `XWIN_VERSION`, the Visual Studio major version.
 
 Warmers install Node and Bun and download locked npm packages. The Linux warmer also downloads Zig 0.16.0 from bounded community mirrors or the official endpoint, verifies its pinned SHA-256, and atomically persists the tarball on the matching Namespace release volume. Its download step is bounded at 4 minutes within the existing 15-minute job cap. The separate macOS warmer covers both Node architectures. No warmer publishes packages, builds native bindings, or caches Cargo sources or compiled release output.
 
-The four Linux native release legs read the volume without committing changes. Before extracting Zig, they verify the pinned SHA-256 and check the extracted binary version. A missing or corrupt tarball falls back to the existing setup-zig mirror download, bounded at 2 minutes plus one 2-minute retry. setup-zig does not verify its own tool-cache or Actions-cache tarball hits, so its tool cache remains disabled and Namespace hits are verified explicitly. Keep the Zig version and SHA-256 pins in `publish.yml` and `warm-toolchain-cache.yml` together when updating Zig.
+The four Linux native release legs read the volume without committing changes. Before extracting Zig, they verify the pinned SHA-256 and check the extracted binary version. A missing or corrupt tarball falls back to the existing setup-zig mirror download, bounded at 2 minutes plus one 2-minute retry. setup-zig's tool cache remains disabled; after the fallback, the tarball setup-zig used (fresh or restored from its Actions cache) is checked against the same pinned SHA-256. Keep the Zig version and SHA-256 pins in `publish.yml` and `warm-toolchain-cache.yml` together when updating Zig.
 
 MSVC CRT/SDK downloads remain in GitHub's branch-scoped Actions cache with the existing keys. That path is not simultaneously mounted by Namespace. Verify a matching default-branch cache hit on an authorized release before relying on cross-ref reuse.
 
