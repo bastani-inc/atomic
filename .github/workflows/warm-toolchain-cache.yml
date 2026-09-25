@@ -19,6 +19,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    env:
+      # Keep Zig version and SHA-256 pins in sync with publish.yml.
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256_X86_64: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      ZIG_SHA256_AARCH64: ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +36,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Mount Namespace Zig tarball cache
+        id: zig-volume
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          path: ~/.cache/atomic-zig
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -44,6 +55,45 @@ jobs:
           spacectl-version: 0.12.3
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Warm verified Zig tarball
+        # Warm Zig even when npm warming failed; either failure still fails the job.
+        if: ${{ !cancelled() && steps.zig-volume.outcome == 'success' }}
+        shell: bash
+        timeout-minutes: 4
+        env:
+          ZIG_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$ZIG_ARCH" in
+            x64) arch=x86_64; sha="$ZIG_SHA256_X86_64" ;;
+            arm64) arch=aarch64; sha="$ZIG_SHA256_AARCH64" ;;
+            *) echo "Unsupported Zig architecture: $ZIG_ARCH"; exit 1 ;;
+          esac
+          file="zig-${arch}-linux-${ZIG_VERSION}.tar.xz"
+          cache="$HOME/.cache/atomic-zig"
+          mkdir -p "$cache"
+          if [[ -f "$cache/$file" ]] && echo "$sha  $cache/$file" | sha256sum -c --status; then
+            echo "Zig $ZIG_VERSION already verified on the Namespace release volume"
+            exit 0
+          fi
+          tmp="$(mktemp "$cache/.${file}.XXXXXX")"
+          trap 'rm -f "$tmp"' EXIT
+          # Try shuffled community mirrors before the official download endpoint.
+          mirrors="$(curl -fsSL --connect-timeout 5 --max-time 10 https://ziglang.org/download/community-mirrors.txt || true)"
+          mapfile -t urls < <(printf '%s\n' "$mirrors" | sed '/^$/d' | shuf | head -n 3)
+          urls+=("https://ziglang.org/download/$ZIG_VERSION")
+          for base in "${urls[@]}"; do
+            echo "Downloading $file from $base"
+            if curl -fsSL --connect-timeout 10 --max-time 45 -o "$tmp" "${base%/}/$file?source=atomic-release-cache" &&
+              echo "$sha  $tmp" | sha256sum -c --status; then
+              mv -f "$tmp" "$cache/$file"
+              echo "Zig $ZIG_VERSION verified and persisted on the Namespace release volume"
+              exit 0
+            fi
+            echo "Zig download failed or SHA-256 mismatch from $base"
+          done
+          echo "Could not download a verified Zig $ZIG_VERSION tarball" >&2
+          exit 1
 
   msvc-crt:
     name: Warm MSVC CRT

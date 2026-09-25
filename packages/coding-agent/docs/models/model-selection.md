@@ -25,7 +25,7 @@ Only chat language models are eligible for execution `auto`, including models th
 
 In authored workflows, a classifier can make a structured triage decision without executing the stage; an image model can generate an asset inside a durable tool step. See [classifier and image models in `ctx.tool`](/workflows/authoring#classifier-and-image-models-in-ctx-tool).
 
-Long tasks may be excerpted for routing so the decision fits the decision provider's input budget. Execution still receives the full task. Put essential selection requirements in `<keepContext>...</keepContext>` spans because the excerpt preserves those spans, plus the beginning and end of the task.
+Long tasks may be excerpted for routing so the decision fits the decision provider's input budget. Execution still receives the full task. The excerpt keeps the beginning and end of the task plus `<keepContext>...</keepContext>` spans, and marks cuts `[... truncated ...]`. Put the role and objective at the start or end, or in a short protected span, and keep bulky reference text in the middle.
 
 ## Benchmarks are evidence, not policy
 

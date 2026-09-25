@@ -1,10 +1,18 @@
-// Jev's per-question budget is 30 KB. The task excerpt shares it with the evals
-// document (<= 16 KB), the static model-selection guide (~3 KB), agent metadata and
-// a candidate batch. Count JSON-encoded UTF-8 bytes, including escapes, not JS characters.
+// Jev is the smallest routing classifier: 32k tokens for state plus the longest
+// question. Measured against Jev 1.13, dense markdown runs about 1.9 JSON bytes per
+// token and escaped candidate JSON about 2.4, so 60_000 JSON bytes stays under the
+// limit for every input. Larger classifiers and chat fallbacks accept the same copy.
+export const ROUTING_REQUEST_BYTES = 60_000;
+// The task excerpt's share of the request when everything else leaves room for it.
+// Count JSON-encoded UTF-8 bytes, including escapes, not JS characters.
 export const MODEL_ROUTING_TASK_BYTES = 9_000;
-const omitted = "\n[... text omitted for model selection only ...]\n";
-const notice = "[Model-routing excerpt. Omitted text remains in the execution task.]\n";
+export const TRUNCATED_MARKER = "\n[... truncated ...]\n";
+const notice = "[Model-routing excerpt. Truncated text remains in the execution task.]\n";
 type Range = { start: number; end: number };
+
+export function jsonBytes(value: string): number {
+	return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
 
 function protectedRanges(task: string): Range[] {
 	const ranges: Range[] = [];
@@ -29,9 +37,39 @@ function boundary(task: string, index: number, direction: -1 | 1): number {
 	return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff ? index + direction : index;
 }
 
+/** Keep the longest prefix that fits, marking the cut. Returns "" when not even the marker fits. */
+export function truncateToBytes(text: string, maxBytes: number): string {
+	if (jsonBytes(text) <= maxBytes) return text;
+	if (jsonBytes(TRUNCATED_MARKER) > maxBytes) return "";
+	let low = 0;
+	let high = text.length;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (jsonBytes(`${text.slice(0, boundary(text, middle, -1))}${TRUNCATED_MARKER}`) <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	return `${text.slice(0, boundary(text, low, -1))}${TRUNCATED_MARKER}`;
+}
+
+/** Keep equal-length head and tail that fit, marking the cut between them. */
+function truncateMiddleToBytes(text: string, maxBytes: number): string {
+	if (jsonBytes(text) <= maxBytes) return text;
+	if (jsonBytes(TRUNCATED_MARKER) > maxBytes) return "";
+	const cut = (edge: number) =>
+		`${text.slice(0, boundary(text, edge, -1))}${TRUNCATED_MARKER}${text.slice(boundary(text, text.length - edge, 1))}`;
+	let low = 0;
+	let high = Math.floor(text.length / 2);
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (jsonBytes(cut(middle)) <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	return cut(low);
+}
+
 /** Bound only the model selector's copy. Execution and hard constraints stay intact. */
-export function modelRoutingTask(task: string): string {
-	const fits = (text: string) => Buffer.byteLength(JSON.stringify(text), "utf8") <= MODEL_ROUTING_TASK_BYTES;
+export function modelRoutingTask(task: string, maxBytes = MODEL_ROUTING_TASK_BYTES): string {
+	const fits = (text: string) => jsonBytes(text) <= maxBytes;
 	if (fits(task)) return task;
 	const protectedSpans = protectedRanges(task);
 	const excerpt = (edgeChars: number): string => {
@@ -44,19 +82,20 @@ export function modelRoutingTask(task: string): string {
 		let end = 0;
 		for (const range of ranges) {
 			if (range.end <= end) continue;
-			if (range.start > end) parts.push(omitted);
+			if (range.start > end) parts.push(TRUNCATED_MARKER);
 			parts.push(task.slice(Math.max(end, range.start), range.end));
 			end = range.end;
 		}
-		if (end < task.length) parts.push(omitted);
+		if (end < task.length) parts.push(TRUNCATED_MARKER);
 		return parts.join("");
 	};
 	let result = excerpt(0);
-	// Keep the original context when protection cannot fit. The existing transport
-	// budget guard still prevents oversized Jev requests and handles chat fallback.
-	if (!fits(result)) return task;
+	// Protected spans that alone exceed the budget are cut too, from the middle of
+	// the task so its opening and closing objective both reach the router. The
+	// execution task keeps every span.
+	if (!fits(result)) return `${notice}${truncateMiddleToBytes(task, maxBytes - (jsonBytes(notice) - 2))}`;
 	let low = 0;
-	let high = Math.min(Math.floor(task.length / 2), MODEL_ROUTING_TASK_BYTES);
+	let high = Math.min(Math.floor(task.length / 2), maxBytes);
 	while (low < high) {
 		const middle = Math.ceil((low + high) / 2);
 		const candidate = excerpt(middle);

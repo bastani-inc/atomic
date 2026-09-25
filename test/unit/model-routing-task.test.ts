@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { MODEL_ROUTING_TASK_BYTES, modelRoutingTask } from "../../packages/coding-agent/src/core/model-routing-task.js";
+import {
+	MODEL_ROUTING_TASK_BYTES,
+	modelRoutingTask,
+	TRUNCATED_MARKER,
+	truncateToBytes,
+} from "../../packages/coding-agent/src/core/model-routing-task.js";
 
 const size = (text: string) => Buffer.byteLength(JSON.stringify(text), "utf8");
 
@@ -17,7 +22,7 @@ for (const unit of ["a", "界", "😀", '"\\\n\t\u0000']) {
 		assert.ok(size(excerpt) <= MODEL_ROUTING_TASK_BYTES);
 		assert.match(excerpt, /START/);
 		assert.match(excerpt, /END/);
-		assert.match(excerpt, /omitted/);
+		assert.ok(excerpt.includes(TRUNCATED_MARKER));
 		assert.equal(excerpt.isWellFormed(), true);
 		assert.equal(modelRoutingTask(task), excerpt);
 	});
@@ -37,9 +42,30 @@ test("multiple, nested, mixed-case and unclosed protected spans survive in sourc
 	assert.ok(excerpt.indexOf(second) < excerpt.indexOf(unclosed));
 });
 
-test("oversized protected content retains original task for the transport budget guard", () => {
+test("oversized protected content is truncated with a marker instead of sent whole", () => {
 	for (const close of ["", "</keepContext>"]) {
 		const task = `start<keepContext>${"x".repeat(30_000)}${close}end`;
-		assert.equal(modelRoutingTask(task), task);
+		const excerpt = modelRoutingTask(task);
+		assert.ok(size(excerpt) <= MODEL_ROUTING_TASK_BYTES);
+		assert.match(excerpt, /start<keepContext>x+/);
+		assert.ok(excerpt.includes(TRUNCATED_MARKER));
+		assert.ok(excerpt.endsWith(`x${close}end`));
 	}
+});
+
+test("an oversized protected span before the objective keeps the objective in the routing excerpt", () => {
+	const task = `<keepContext>${"constraint ".repeat(3_000)}</keepContext>\nImplement issue #3270.`;
+	const excerpt = modelRoutingTask(task);
+	assert.ok(size(excerpt) <= MODEL_ROUTING_TASK_BYTES);
+	assert.match(excerpt, /<keepContext>constraint/);
+	assert.ok(excerpt.endsWith("Implement issue #3270."));
+});
+
+test("a smaller budget bounds the excerpt; a budget below the marker yields empty text", () => {
+	const task = `START ${"界".repeat(5_000)} END`;
+	assert.ok(size(modelRoutingTask(task, 500)) <= 500);
+	assert.equal(truncateToBytes(task, 4), "");
+	const cut = truncateToBytes("😀".repeat(1_000), 101);
+	assert.equal(cut.isWellFormed(), true);
+	assert.ok(size(cut) <= 101);
 });

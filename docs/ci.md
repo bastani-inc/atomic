@@ -33,7 +33,8 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 
 Push or manual dispatch on `main`
 └─ warm-toolchain-cache.yml
-   ├─ release-linux-cache (x64, arm64): populate the Linux release npm download caches
+   ├─ release-linux-cache (x64, arm64): persist verified Zig tarballs and populate the
+   │  Linux release npm download caches
    ├─ msvc-crt (after release-linux-cache): fetch the MSVC CRT and Windows SDK
    │  for both Windows arches in one call onto the linux-x64 release volume
    └─ release-windows-cache: populate the Windows release npm download cache
@@ -72,7 +73,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
 | `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `warm-toolchain-cache.yml` release-linux-cache x64, msvc-crt / release-linux-cache arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
+| `warm-toolchain-cache.yml` release-linux-cache x64 (Zig/npm), msvc-crt / release-linux-cache arm64 (Zig/npm) | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
 
@@ -184,8 +185,8 @@ This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` 
 - **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` uses a repository-specific Restricted profile. The cache identity suffix changes storage selection, not API permissions. A fork can edit its workflow to request a different runner or cache, so maintainer approval remains the security boundary for workflow edits. Configuration tests cannot enforce it against a malicious PR.
 - **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
 - **Main-only cache updates.** The four `atomic-ci-*` profiles have 50 GB cache volumes. Namespace's [protected cache updates](https://namespace.so/docs/solutions/github-actions/caching#protect-caches-from-updates) allow jobs from `main` to persist changes; PR jobs read the cache and discard their local changes. `test.yml` uses `namespacelabs/nscloud-cache-action` pinned to `1124a6f3ce44e5cf84cc22111530961f4d2a15f9` for npm downloads and, in jobs that build native bindings, Cargo dependencies and build output. `setup-node` has `package-manager-cache: false` to avoid duplicate archive transfers. `npm ci --ignore-scripts` still installs from the lockfile on every run. Cold caches remain valid; no cache miss skips installation or tests. The profile also enables automatic action and toolchain caching. Git checkout still uses `actions/checkout`, not the Namespace mirror action.
-- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads and, for the win32 legs, the MSVC CRT/Windows SDK cache (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)). Releases do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
-- **Cache restrictions are job configuration.** Main-only labels and profile settings are not proven immutable volume ACLs. Approved workflow edits can request the same cache under different settings. Do not treat a repo-prefixed tag as an authorization boundary. Release npm downloads are checked against lockfile integrity; Cargo source caching is withheld because restored sources do not provide the same protection. The macOS profile's automatic action/tool caching also needs hosted isolation verification before release readiness.
+- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads, SHA-256-verified Zig tarballs on the Linux release volumes and, for the win32 legs, the MSVC CRT/Windows SDK cache (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)). Releases verify Zig again before extracting it; they do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
+- **Cache restrictions are job configuration.** Main-only labels and profile settings are not proven immutable volume ACLs. Approved workflow edits can request the same cache under different settings. Do not treat a repo-prefixed tag as an authorization boundary. Release npm downloads are checked against lockfile integrity and Linux Zig tarballs against pinned SHA-256; Cargo source caching is withheld because restored sources do not provide the same protection. The macOS profile's automatic action/tool caching also needs hosted isolation verification before release readiness.
 - **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. Against a pull request that changes anything under `.github/workflows`, approval is the only barrier: the Restricted profiles protect only runs that use the committed workflows. Follow [Approving fork workflow runs](#approving-fork-workflow-runs).
 
 ### Cache setup and validation
@@ -429,7 +430,9 @@ chain. Each native compile has one bounded retry, with a second failure fatal.
 
 | Acquisition or check | Step limit |
 | --- | --- |
+| Verify cached Zig tarball, extraction and version (Linux) | 1 min |
 | `mlugg/setup-zig`, plus one retry | 2 min each |
+| Verify setup-zig tarball after fallback (Linux) | 1 min |
 | `dtolnay/rust-toolchain` | 4 min |
 | `taiki-e/install-action` | 3 min |
 | `cargo install cargo-xwin` (win32) | 3 min |
@@ -438,17 +441,18 @@ chain. Each native compile has one bounded retry, with a second failure fatal.
 
 | Native leg | Compile limit per attempt | Whole-job cap |
 | --- | ---: | ---: |
-| linux-x64-gnu | 5 min | 16 min |
-| linux-arm64-gnu | 5 min | 17 min |
-| linux-x64-musl | 5 min | 17 min |
-| linux-arm64-musl | 5 min | 18 min |
+| linux-x64-gnu | 5 min | 17 min |
+| linux-arm64-gnu | 5 min | 18 min |
+| linux-x64-musl | 5 min | 18 min |
+| linux-arm64-musl | 5 min | 19 min |
 | darwin-x64 | 8 min | 19 min |
 | darwin-arm64 | 5 min | 12 min |
 | win32-x64-msvc | 5 min | 21 min |
 | win32-arm64-msvc | 5 min | 21 min |
 
 These caps reserve measured setup, both compile attempts, bounded Zig or xwin
-acquisition and one minute for artifact upload. Re-measure before tightening
+acquisition (on Linux, both setup-zig attempts plus the fallback SHA-256 check)
+and one minute for artifact upload. Re-measure before tightening
 them, using at least five samples and including recovery paths. Keep the
 explicit job names so matrix budget changes do not rename check contexts.
 
@@ -545,7 +549,9 @@ measured.
 
 `warm-toolchain-cache.yml` runs on main pushes and manual dispatch on main. It populates Namespace npm download volumes for Linux x64, Linux arm64 and Windows x64. Tags are `bastani-inc.atomic.release.linux-x64`, `bastani-inc.atomic.release.linux-arm64` and `bastani-inc.atomic.release.windows-x64`; the publisher selects the same tags. Warmers request main-only writes. Every release consumer explicitly disables cache commits, regardless of its trigger ref.
 
-Warmers install Node and Bun and download locked npm packages. The separate macOS warmer covers both Node architectures. No warmer publishes packages, builds native bindings, or caches Cargo sources or compiled release output.
+Warmers install Node and Bun and download locked npm packages. The Linux warmer also downloads Zig 0.16.0 from bounded community mirrors or the official endpoint, verifies its pinned SHA-256, and atomically persists the tarball on the matching Namespace release volume. Its download step is bounded at 4 minutes within the existing 15-minute job cap. The separate macOS warmer covers both Node architectures. No warmer publishes packages, builds native bindings, or caches Cargo sources or compiled release output.
+
+The four Linux native release legs read the volume without committing changes. Before extracting Zig, they verify the pinned SHA-256 and check the extracted binary version. A missing or corrupt tarball falls back to the existing setup-zig mirror download, bounded at 2 minutes plus one 2-minute retry. setup-zig's tool cache remains disabled; after the fallback, the tarball setup-zig used (fresh or restored from its Actions cache) is checked against the same pinned SHA-256. Keep the Zig version and SHA-256 pins in `publish.yml` and `warm-toolchain-cache.yml` together when updating Zig.
 
 The MSVC CRT/Windows SDK cache moved onto the same Namespace release cache
 volume as the win32 legs' npm downloads (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)).
@@ -558,21 +564,19 @@ then runs one `Populate MSVC CRT cache on miss` step for both architectures.
 `msvc-crt` and the x64 leg of `release-linux-cache` both write
 `bastani-inc.atomic.release.linux-x64` with
 `nscloud-cache-allow-commit-from-main`. If they ran in parallel, whichever
-committed last would drop the other's writes: either the npm download
-updates or the xwin tree. `msvc-crt` therefore declares
-`needs: release-linux-cache`, so it forks from the npm warmer's commit and
+committed last would drop the other's writes: either the npm download and Zig
+tarball updates or the xwin tree. `msvc-crt` therefore declares
+`needs: release-linux-cache`, so it forks from that warmer's commit and
 commits last. It runs under `!cancelled()`, so a failed npm warm leg (which
 commits nothing) does not block the xwin warm. The workflow's
 `cancel-in-progress` concurrency group cancels an earlier run when a later
 main push starts one. Release consumers keep the do-not-commit label and never
 write back. Namespace does not promise that a fork sees the latest commit, so
-`msvc-crt` can still start from an older version and drop newer npm writes.
-Ordering removes this workflow's own race, not that one. Both outcomes stay
-safe for releases: `npm ci` checks lockfile integrity, and the partial-cache
+`msvc-crt` can still start from an older version and drop newer npm or Zig
+writes. Ordering removes this workflow's own race, not that one. Both outcomes
+stay safe for releases: `npm ci` checks lockfile integrity, a missing Zig
+tarball falls back to the verified setup-zig download, and the partial-cache
 probe and populate-on-miss cover the xwin tree.
-
-Zig setup remains uncached; the former no-op Zig warmer was removed rather
-than claiming a download persisted when its caching switches were off.
 
 The MSVC CRT warmer's 19-minute job cap reserves its bounded toolchain setup
 (4 minutes), cargo-xwin installation (3 minutes), and one 8-minute cold-cache
@@ -580,7 +584,7 @@ population bound for both architectures, plus 4 minutes for runner setup,
 checkout and cache mount. Its wait for `release-linux-cache` is not part of
 this cap; that job has its own 15-minute cap.
 
-Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Inspect successful main population and a subsequent authorized release for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
+Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Zig release-path behavior remains unverified until a successful main warm run and a subsequent authorized release exercise it. Inspect those runs for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
 
 ### Pinned actions and build tools
 
@@ -672,7 +676,7 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | --- | --- | --- |
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version, clean failed drafts |
-| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
+| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
 
 ## Repository-local release workflow gates
 

@@ -201,8 +201,13 @@ function resolveCandidate(
 }
 
 class ClassifierDecisionError extends Error {
-	constructor() {
+	/** Status and error type only; provider bodies can echo private state. */
+	readonly detail?: string;
+	constructor(providerMessage?: string) {
 		super("Classifier returned no valid decision.");
+		const status = providerMessage && /\((\d{3})\)/.exec(providerMessage)?.[1];
+		const type = providerMessage && /"error_type"\s*:\s*"([\w.-]{1,64})"/.exec(providerMessage)?.[1];
+		this.detail = [status && `HTTP ${status}`, type].filter(Boolean).join(" ") || undefined;
 	}
 }
 
@@ -240,12 +245,12 @@ async function inferClassifier<T extends TSchema>(
 	} catch (error) {
 		signal.throwIfAborted();
 		if (error instanceof Error && error.name === "AbortError") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-		throw new ClassifierDecisionError();
+		throw new ClassifierDecisionError(error instanceof Error ? error.message : undefined);
 	}
 	signal.throwIfAborted();
 	if (!result || typeof result !== "object") throw new ClassifierDecisionError();
 	if (result.stopReason === "aborted") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-	if (result.stopReason !== "stop") throw new ClassifierDecisionError();
+	if (result.stopReason !== "stop") throw new ClassifierDecisionError(result.errorMessage);
 	if (!result.answers || typeof result.answers !== "object" || typeof result.model !== "string")
 		throw new ClassifierDecisionError();
 	const choices: Record<string, string> = {};
@@ -472,7 +477,7 @@ async function inferDecision<T extends TSchema>(
 						reason: new ClassifierDecisionError().message,
 					};
 					console.warn(
-						`Classifier routing failed; falling back to current chat model ${fallback.to} for this routing decision.`,
+						`Classifier routing failed${error instanceof ClassifierDecisionError && error.detail ? ` (${error.detail})` : ""}; falling back to current chat model ${fallback.to} for this routing decision.`,
 					);
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
 					attempt = 0;

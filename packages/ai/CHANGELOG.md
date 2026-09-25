@@ -4,6 +4,54 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-09-24
+
+### Breaking Changes
+
+- Image generation now uses `ImageModel` entries in the regular `Provider` and `Models` collection instead of the separate `ImagesModels`/`ImagesProvider` collection. Replace `createImagesModels()`, `createImagesProvider()`, `builtinImagesModels()`, and `openrouterImagesProvider()` with `createModels()`/`builtinModels()` and `models.getModelOfType("image", ...)`/`models.generateImages()`. The old plural image type names are removed; generated image catalog data now ships alongside chat and classifier entries.
+- Provider implementations and direct API modules now consume `TranscriptContext`; use `normalizeContext()` at direct-call boundaries and replay helpers to read prompt/tool state. Durable tool arguments and results use JSON-value types.
+
+### Added
+
+- Added `onProviderStreamEvent` to observe parsed provider stream events before normalization, including provider-specific fields not retained in assistant messages ([#9784](https://github.com/earendil-works/pi/issues/9784)).
+- Added operation-specific model accessors (`getModelsOfType()`, `getModelOfType()`, `getAvailableOfType()`, `getAllModels()`, `getAllAvailable()`), image and classifier dispatch on providers, and `classify()` for structured choice, score, and bool questions. The built-in TypeSafe `jev-latest` classifier uses `TYPESAFE_API_KEY`; OpenRouter image models share OpenRouter authentication. Chat-only reads and models with no `type` continue to mean chat.
+- Added typed JSON catalog variants (`models.all.json` and `providers/{id}.all.json`) alongside the existing chat-only variants for clients that request all operation types.
+- Added Jev classifier models on OpenRouter (`typesafe/jev-1.13`, `~typesafe/jev-latest`) through its TypeSafe-compatible System One endpoint, and on Cloudflare Workers AI (`typesafe/jev`) through the new `cloudflare-workers-ai-system-one` classifier API.
+- Added Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna to the GitHub Copilot catalog.
+- Added GPT-6 Sol and GPT-6 Luna for OpenAI API keys and OpenAI Codex subscriptions, with full reasoning-effort, prompt-caching, tool-search, long-context pricing, and official cost metadata.
+- Added `getDecisionModels()` and a generated models.dev decision-model catalog (`type: "decision"`, fetched from `https://models.dev/api.json?type=all` by `npm run generate-decision-models`) listing TypeSafe Jev on the gateways that resell it, with context limits and prices.
+- Added Claude Opus 5.5 to the built-in Anthropic model catalog with adaptive thinking, 1M context, and official pricing metadata.
+- Added Anthropic fast mode for models whose `fastRoute` declares `speed: "fast"`: the Anthropic Messages adapter sends the route's upstream model with `speed: "fast"` and the `fast-mode-2026-02-01` beta, prices responses reporting fast speed at the 2x fast-mode rates, and rejects payload hooks that change the route-owned model or speed.
+- Added Meta provider (Model API key and Muse subscription OAuth) with Muse Spark models.
+- Added model image-input limit and cache-safe resize metadata (`inputLimits`) to the `Model` type and the generated catalog ([#9631](https://github.com/earendil-works/pi/issues/9631)).
+- Added Grok 4.7 to the built-in xAI model catalog with long-context pricing metadata.
+- Chronological system messages with named prompt patches and tool additions/removals, including native provider transitions where supported and replay checkpoints elsewhere.
+- A static Radius catalog with authenticated dynamic refresh, refreshed image models, and prompt-cache lifetime metadata for direct Anthropic models.
+
+### Fixed
+
+- Fixed Claude Opus 5.5 on GitHub Copilot offering thinking levels other than low, medium, high, xhigh, and max when models.dev lists the model before its effort metadata is complete.
+- Fixed 1-hour Anthropic cache writes reported by Vercel AI Gateway in streaming deltas being priced at the 5-minute rate ([#9210](https://github.com/earendil-works/pi/issues/9210)).
+- Rejected malformed TypeSafe classifier answers when the returned choice, score, confidence, or probability falls outside the submitted question's bounds.
+- Fixed Anthropic and Bedrock Claude requests failing with HTTP 400 when a tool opted into `strict: "prefer"` JSON-schema constrained sampling with numeric, string-length, or `maxItems`/`minItems` constraints that Claude's strict mode rejects. These tools now fall back to non-strict tool use, and `strict: "require"` reports the unsupported keyword.
+- Fixed Anthropic OAuth requests for Claude Opus 5.5 rejected with `claude_code_version_too_old` by advertising Claude Code version `2.1.280`, the minimum the API requires.
+- Fixed Fast-mode usage costs for GPT-6 models being recorded at standard rates when OpenAI reports the tier as `service_tier: "fast"` instead of `priority`.
+- Fixed Claude Opus 5.5 offering thinking levels other than low, medium, high, xhigh, and max when models.dev lists the model before its effort metadata is complete.
+- Fixed unknown OpenAI-compatible Chat Completions endpoints receiving strict tool schemas unless they explicitly advertise support (`compat.supportsStrictMode` now defaults to `false`), while preserving strict tools for capable built-in models ([#9816](https://github.com/earendil-works/pi/issues/9816)).
+- Fixed image-only user messages being rejected by some OpenAI-compatible providers because they included an empty text part ([#9797](https://github.com/earendil-works/pi/issues/9797)).
+- Derive Gemini thinking levels from model metadata, preserve renamed Anthropic/Vercel unsigned thinking replay and DeepSeek V4 effort, retry Cloudflare 520 and Azure peak-load errors, and scope bodyless overflow detection to Cerebras.
+- Documented Fireworks deferred tool loading against chronological system-message `toolsAdded`/`toolsRemoved` instead of the removed tool-result `addedToolNames` field.
+- Request-auth preparation now times out after 15 seconds when OAuth refresh, credential-store reads, or auth derivation ignore cancellation, and late refresh results cannot overwrite stored credentials. The timeout diagnostic is source-neutral and does not instruct you to log in ([#3085](https://github.com/bastani-inc/atomic/issues/3085), [#3087](https://github.com/bastani-inc/atomic/pull/3087)).
+- Bedrock requests now honor explicit `maxRetries`, including zero for a single transport attempt, instead of silently using the AWS SDK retry default. Omitting the option preserves SDK/environment configuration ([#3089](https://github.com/bastani-inc/atomic/issues/3089), [#3090](https://github.com/bastani-inc/atomic/issues/3090)).
+- Kept Kimi Coding models available after the upstream catalog split into regional coding plans, preserving Atomic's existing kimi.com endpoint.
+- Model catalog declarations preserve JSON import attributes for strict NodeNext consumers without requiring `skipLibCheck` ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Credential screening now recognizes `TYPESAFE_API_KEY` instead of `TYPESAFE_AI_API_KEY`, matching the renamed TypeSafe Jev environment variable.
+- Fixed z.ai `Prompt too long` errors not being recognized as context overflow ([earendil-works/pi#9805](https://github.com/earendil-works/pi/issues/9805)).
+- Fixed Cerebras models advertising unsupported strict tool schemas, which caused HTTP 400 errors when strict and non-strict tools were mixed ([earendil-works/pi#9804](https://github.com/earendil-works/pi/pull/9804) by [@EdenGottlieb](https://github.com/EdenGottlieb)).
+- Fixed OpenAI-compatible Responses errors to identify the actual provider instead of always labeling them as OpenAI errors ([#9298](https://github.com/earendil-works/pi/issues/9298)).
+- Fixed Amazon Bedrock one-hour cache writes being priced at the five-minute rate ([#9457](https://github.com/earendil-works/pi/issues/9457)).
+- Fixed Baseten requests to send session-affinity headers from `sessionId` for automatic prompt-cache routing ([#9629](https://github.com/earendil-works/pi/issues/9629)).
+
 ## [0.9.20-alpha.9] - 2026-09-24
 
 ### Breaking Changes

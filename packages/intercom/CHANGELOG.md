@@ -4,6 +4,31 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-09-24
+
+### Added
+
+- Intercom session targets now accept a unique 8-character hexadecimal UUID prefix within the sender's authorized group scope; collisions report every matching full UUID instead of selecting a session by ordering ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+
+### Changed
+
+- The `intercom` skill adds a peer-coordination pattern for subagents and workflow stages that share a group, covering connect, coordinate, learn, and debate exchanges alongside the existing supervisor-escalation patterns.
+
+### Fixed
+
+- Admitted subagent children now connect to Intercom when their session starts instead of on their own first Intercom call, so a working child launched from a workflow stage or main chat appears in `intercom list` and can be steered with `send`/`ask` from its supervisor and peers even if it never uses Intercom itself. A recoverable broker disconnect during that warm-up no longer aborts the child's launch; the child falls back to connecting lazily.
+- Workflow-stage live route refusals now name the condition that failed — no registered workflow owner, capability mismatch, registrant outside the invocation group, non-agent stage key, or a genuine duplicate live owner — instead of reporting every case as `Live workflow-stage route is owned by another active session`. Each refusal carries a machine-readable `code` ([#3163](https://github.com/bastani-inc/atomic/issues/3163)).
+- A stage that starts while its workflow owner is re-registering after a reconnect, or while the previous attempt's session is still being torn down, now recovers through the bounded warm-up retry instead of failing extension startup. Genuine duplicate live owners are still refused on every attempt; authority and configuration mismatches remain terminal ([#3163](https://github.com/bastani-inc/atomic/issues/3163)).
+- A stage name reused by a later occurrence in the same run (for example `reviewer-a` in a second review round while the first round's completed session is still connected) no longer collides as a duplicate owner. The later stage registers under its stage id, and the ambiguous name keeps no live alias for either occurrence, so it routes through the workflow owner instead of reaching the earlier round ([#3163](https://github.com/bastani-inc/atomic/issues/3163)).
+- The bundled `intercom` skill's optional cmux/tmux peer-launch examples now start `atomic` instead of `pi`, and the troubleshooting step refers to Atomic's bundled Intercom extension ([#3180](https://github.com/bastani-inc/atomic/issues/3180)).
+- UUID-prefix targeting now keeps reply discovery within authorized relationships, resolves pending ask UUID prefixes before reply fallback, and accepts an isolated child's authorized supervisor prefix ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+- Explicit reply names and full session IDs keep their original identity through broker collision checks, unique UUID prefixes still canonicalize to the stored session ID, and hidden same-name collisions refuse regardless of letter case ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+- Canonicalized Intercom UUID-prefix sends revalidate the original selector against the broker's current authorized sessions, so a newly visible same-prefix UUID, exact name, or custom ID refuses instead of delivering to the previously unique identity ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+- Prefix ambiguity refusals no longer include unauthorized or hidden session names when a canonicalized UUID-prefix send is rejected ([#2603](https://github.com/bastani-inc/atomic/issues/2603)).
+- Workflow children keep separate pending-ask lists from their parent stage and siblings. Stage replacement still preserves the stage's own pending asks ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Configuration, relay and disconnect diagnostics within SDK-owned work now use redacted session diagnostics instead of console output ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Supervisor progress updates show their original send timestamp and are labelled historical snapshots, so delayed hypotheses cannot be mistaken for current activity after a correction or final result ([#3039](https://github.com/bastani-inc/atomic/issues/3039)).
+
 ## [0.9.20-alpha.6] - 2026-09-22
 
 ### Fixed

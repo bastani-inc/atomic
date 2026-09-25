@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-09-24
+
+### Fixed
+
+- Video and YouTube subprocess extraction now runs in Node-hosted SDK sessions as well as the compiled binary, with bounded output, cancellation and awaited child cleanup ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- SDK sessions sharing a resource loader now retain separate web result stores and pending-fetch/curator state, so closing or restoring one session does not erase another's results or cancel its pending content notification ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- SDK sessions now keep separate provider configuration caches and GitHub clones, so one session's cache cleanup does not delete another session's cloned files ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Operational web diagnostics within SDK-owned work now use the session's diagnostic sink with redacted messages instead of printing credentials, paths or remote errors to console ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Timeout, cancellation and output-limit failures no longer hang when subprocess descendants keep output pipes open; cleanup preserves the original error.
+- Local video extraction recognizes Windows drive and UNC paths and converts file URLs using the host's native path rules.
+- `code_search` now shows the repository name and query while the call is pending, before an answer arrives.
+- `loadConfig` now resolves the readable web-search config path on every call instead of once at module load, so `/curator on` and other `saveConfig` writes to `~/.atomic/web-search.json` take effect immediately when Atomic started with only the legacy `~/.pi/web-search.json` ([#3058](https://github.com/bastani-inc/atomic/issues/3058)).
+
 ## [0.9.20-alpha.4] - 2026-09-20
 
 ### Fixed

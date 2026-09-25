@@ -20,7 +20,11 @@ import {
 	MODEL_SELECTION_GUIDE,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import { MODEL_ROUTING_TASK_BYTES } from "../../packages/coding-agent/src/core/model-routing-task.js";
+import {
+	MODEL_ROUTING_TASK_BYTES,
+	ROUTING_REQUEST_BYTES,
+	TRUNCATED_MARKER,
+} from "../../packages/coding-agent/src/core/model-routing-task.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
@@ -222,6 +226,37 @@ function taskNearRoutingLimit(): string {
 		task = `${task} tail`;
 	return task;
 }
+
+test("a ~240-pair catalog truncates the routing copy of evals and task to fit Jev's input limit", async () => {
+	const f = await fixture();
+	const candidates = Array.from({ length: 240 }, (_, index) => ({
+		...decisionModel,
+		id: `candidate-${index + 1}`,
+		contextWindow: 400_000,
+		cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+	}));
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(candidates);
+	const requests: ClassifierContext[] = [];
+	mockClassifier(f, (keys, _id, context) => {
+		requests.push(context);
+		return keys[0]!;
+	});
+	const task = `<keepContext>${"Protected requirement. ".repeat(2_000)}</keepContext>`;
+	const result = await f.route(task);
+	assert.equal(result.routerSelection.model, "decision-test/candidate-1");
+	assert.equal(requests.length, 3);
+	const [first] = requests;
+	assert.ok(first);
+	const question = first.questions.pair;
+	assert.equal(question?.type, "choice");
+	if (question?.type !== "choice") return;
+	assert.equal(Object.keys(question.criteria).length, candidates.length);
+	assert.ok(String(first.state.evals).endsWith(TRUNCATED_MARKER));
+	assert.ok(String(first.state.task).includes(TRUNCATED_MARKER));
+	for (const request of requests) {
+		assert.ok(Buffer.byteLength(JSON.stringify(request), "utf8") <= ROUTING_REQUEST_BYTES);
+	}
+});
 test("auto routing receives the shipped evals document verbatim", async () => {
 	const f = await fixture();
 	const selected = await f.route();
@@ -841,7 +876,7 @@ test("long auto-routing tasks preserve protected requirements and both ends for 
 		assert.ok(String(context.state.task).includes(protectedText));
 		assert.match(String(context.state.task), /Review this change/);
 		assert.match(String(context.state.task), /Report defects/);
-		assert.match(String(context.state.task), /omitted/);
+		assert.ok(String(context.state.task).includes(TRUNCATED_MARKER));
 		return keys[0]!;
 	});
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
@@ -856,7 +891,7 @@ test("auto routing screens credentials even in omitted middle text", async () =>
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("classifier size rejection falls back to chat with the intact protected task", async () => {
+test("classifier size rejection falls back to chat with the same truncated protected excerpt", async () => {
 	const f = await fixture();
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	const classify = mockClassifier(f);
@@ -867,11 +902,15 @@ test("classifier size rejection falls back to chat with the intact protected tas
 	await f.route(task);
 	assert.equal(classify.mock.calls.length, 1);
 	assert.equal(f.infer.mock.calls.length, 2);
-	assert.equal(
+	const routed = String(
 		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state
 			.task,
-		task,
 	);
+	assert.equal(classify.mock.calls[0]![1].state.task, routed);
+	assert.match(routed, /<keepContext>required detail/);
+	assert.ok(routed.includes(TRUNCATED_MARKER));
+	assert.ok(routed.endsWith("required detail </keepContext>"));
+	assert.ok(Buffer.byteLength(JSON.stringify(routed), "utf8") <= MODEL_ROUTING_TASK_BYTES);
 });
 
 test("auto ranks three distinct models, excludes their other efforts, and replays without inference", async () => {

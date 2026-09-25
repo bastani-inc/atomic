@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-09-24
+
+### Added
+
+- Added the bundled `cua-driver` skill, vendored verbatim from [trycua/cua](https://github.com/trycua/cua) `libs/cua-driver/rust/Skills/cua-driver` at tag `cua-driver-rs-v0.28.2` (MIT, © 2025 Cua AI, Inc.), with all eight upstream files including the macOS, Windows, and Linux platform guides. Only the `SKILL.md` frontmatter is Atomic-owned. It teaches the `cua-driver` CLI's snapshot → act → fresh snapshot → verify loop for desktop, simulator, and emulator computer use, replacing the previous PyAutoGUI guidance ([#3181](https://github.com/bastani-inc/atomic/issues/3181)).
+- Added opt-in `model: "auto"` for single tasks, parallel tasks and agent defaults. One bounded routing decision uses the current available model/effort pairs and shipped evaluation guidance, with the shared `routerModel` setting selecting routing inference. Invalid or stale decisions stop before child execution, and routing selection remains distinct from execution fallback metadata ([#3090](https://github.com/bastani-inc/atomic/issues/3090)).
+- Added `/feedback` to draft privacy-scrubbed bug reports and enhancements, investigate bugs with one debugger run, and post reviewed drafts through your `gh` login ([#2799](https://github.com/bastani-inc/atomic/issues/2799)).
+
+### Changed
+
+- Subagent orchestration guidance again makes workflows the default for non-trivial structured work with verifiable objectives, such as implementation, review, or retry pipelines, unless you ask for inline execution.
+- The builtin `tdd` skill now checks every new test before it's written: it must name the behavior it protects, the regression that would break it, and why existing tests don't already catch that, and it can't need a production seam that exists only for the test. Bug regression tests must fail on the unfixed code first. The skill also covers reviewing and pruning existing tests: a list of low-value test patterns, a bar for which tests to keep, and a read-only, evidence-first audit workflow. It is adapted from OpenClaw's `test-audit` skill.
+- Subagent orchestration guidance no longer lets an absence of workflow history, or history of only inline runs, push every task inline; the agent judges the task first and refines with execution history and your preferences.
+- Replaced the bundled `playwright-cli` skill with the `agent-browser` skill ([vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) v0.38.1) for browser automation, end-to-end UI checks, screenshots, and reviewable video recording. The `worker`, `debugger`, `code-simplifier`, `codebase-analyzer`, and `codebase-online-researcher` subagents now load `agent-browser` and drive the `agent-browser` command instead of `playwright-cli`.
+- Subagent guidance now states that children can coordinate with each other, not only with the supervisor. The runtime Intercom bridge instruction, the orchestrator prompt guidance, the `subagent` skill, and the `worker` and `debugger` agent definitions describe when same-group siblings should use ordinary `intercom` `list`/`send`/`ask` to debate findings with evidence, hand off paths and reproductions, claim shared files or expensive steps, and learn what a sibling already verified, while `contact_supervisor` stays reserved for supervisor decisions and each child still returns its own result.
+- All builtin agents now default to `model: "auto"` instead of pinned models and fallback chains. Explicit model overrides and builtin effort settings remain effective, including empty legacy `thinking` values that clear an inherited effort and fallback suffixes that override legacy defaults. Hard model constraints still apply to every candidate; main-chat and custom-agent defaults are unchanged.
+- Automatic model selection ranks up to three distinct eligible models and tries them in order before remaining configured fallbacks and the current chat model, retaining each selected effort and skipping duplicate model IDs.
+- Automatic model routing now receives `evals.md` as markdown tables of dated benchmark records rather than packed one-line rows.
+- Orchestrator model-pinning guidance now treats `evals.md` as factual per-evaluation records and leaves unmatching catalogs unpinned instead of describing benchmark rows as recommendations.
+
+### Fixed
+
+- A background subagent's intercom `ask` to its parent now reaches the parent as a normal intercom question, and the child waits for the reply. Previously it became a fresh-start handoff, which only a `subagent` call still waiting in the foreground can return, so the child stopped with `parent-handoff` and the question was lost. The handoff still applies while the parent waits in the foreground ([#3251](https://github.com/bastani-inc/atomic/issues/3251)).
+- A subagent with `model: "auto"` no longer fails to launch when routing inference fails completely (Jev and the chat structured-output fallback both). The child now runs on the current chat model with a reported warning when that model is available and satisfies every routing constraint; validation and conflicting-constraint failures and cancellation still stop the launch ([#3206](https://github.com/bastani-inc/atomic/issues/3206)).
+- Automatic model routing with Jev no longer rejects catalogs above 255 eligible model/effort pairs. Every pair participates in a bounded tournament before final selection; context remains unchanged and any routing failure still prevents child launch ([#3090](https://github.com/bastani-inc/atomic/issues/3090)).
+- Automatic routing keeps eligible unsuffixed fallback models using the routed thinking level, while preserving explicit fallback efforts. Failed parallel routing cancels sibling routing requests before child admission ([#3103](https://github.com/bastani-inc/atomic/pull/3103)).
+- Automatic model selection now works with strict Responses-schema providers while retaining exact model/effort pair validation.
+- Automatic model routing allows up to three repairs after a malformed or schema-invalid answer, sharing the original decision deadline and never starting a child before a valid decision. Authentication/provider failures, cancellation and stale catalogs are not retried.
+- In-process children inherit SDK model/auth configuration, settings, resource discovery and human-input callbacks without restoring parent-disabled packages or tools. Fallback keeps the same restrictions, startup runs once, and suppressed Intercom cannot mint supervisor grants ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- All builtin specialists now include Intercom for live coordination, while preserving explicit parent tool and package restrictions.
+- Automatic model routing uses dated benchmark records instead of full human guides. Jev bounds every comparison, including verbose catalogs below 255 options, without truncating tasks or weakening model constraints.
+
+### Removed
+
+- Removed the bundled `playwright-cli` skill and its reference guides in favor of the `agent-browser` skill.
+- Removed the redundant `/feedback` prompt template. Use `/skill:feedback` to draft and submit feedback instead.
+
 ## [0.9.20-alpha.12] - 2026-09-24
 
 ### Changed

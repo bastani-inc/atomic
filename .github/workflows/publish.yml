@@ -82,6 +82,10 @@ jobs:
     env:
       # cargo-xwin fetches both CRTs by default; each Windows leg links one.
       XWIN_ARCH: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+      # Keep Zig version and SHA-256 pins in sync with warm-toolchain-cache.yml.
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256_X86_64: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      ZIG_SHA256_AARCH64: ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17
     strategy:
       fail-fast: false
       matrix:
@@ -91,14 +95,15 @@ jobs:
         # failure this retry exists to survive. Each cap is therefore
         #   ceil(measured p100 setup, excluding steps reserved at their bound)
         #   + those steps' bounds + 2 x build_timeout_minutes + 1 upload.
-        # Reserved at their bound: both zig attempts (2 + 2, linux) and the MSVC CRT
-        # populate step (8, win32) whose measured cost is its cache-miss path.
+        # Reserved at their bound: both zig attempts plus the fallback SHA-256 check
+        # (2 + 2 + 1, linux) and the MSVC CRT populate step (8, win32) whose measured
+        # cost is its cache-miss path.
         # win32 setup adds the measured 36s glibc cargo-xwin build to the old setup.
         # Upload is measured at <= 4s across legs and reserved at 1 minute.
-        # linux-x64-gnu: ceil((46-18)s / 60)=1 + 4 + 2 x 5 + 1 = 16
-        # linux-arm64-gnu: ceil((128-8)s / 60)=2 + 4 + 2 x 5 + 1 = 17
-        # linux-x64-musl: ceil((107-3)s / 60)=2 + 4 + 2 x 5 + 1 = 17
-        # linux-arm64-musl: ceil((142-5)s / 60)=3 + 4 + 2 x 5 + 1 = 18
+        # linux-x64-gnu: ceil((46-18)s / 60)=1 + 5 + 2 x 5 + 1 = 17
+        # linux-arm64-gnu: ceil((128-8)s / 60)=2 + 5 + 2 x 5 + 1 = 18
+        # linux-x64-musl: ceil((107-3)s / 60)=2 + 5 + 2 x 5 + 1 = 18
+        # linux-arm64-musl: ceil((142-5)s / 60)=3 + 5 + 2 x 5 + 1 = 19
         # darwin-x64: ceil(98s / 60)=2 + 2 x 8 + 1 = 19
         # darwin-arm64: ceil(26s / 60)=1 + 2 x 5 + 1 = 12
         # win32-x64-msvc: ceil((291-249+36)s / 60)=2 + 8 + 2 x 5 + 1 = 21
@@ -112,14 +117,14 @@ jobs:
             arch: x64
             slug: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
-            timeout_minutes: 16
+            timeout_minutes: 17
             build_timeout_minutes: 5
           - runner: [nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-arm64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
             platform: linux
             arch: arm64
             slug: linux-arm64-gnu
             target: aarch64-unknown-linux-gnu
-            timeout_minutes: 17
+            timeout_minutes: 18
             build_timeout_minutes: 5
           # musl legs reuse the same zig toolchain; @napi-rs/cli adds
           # `-C target-feature=-crt-static` for a musl ABI, which is what keeps the
@@ -129,14 +134,14 @@ jobs:
             arch: x64
             slug: linux-x64-musl
             target: x86_64-unknown-linux-musl
-            timeout_minutes: 17
+            timeout_minutes: 18
             build_timeout_minutes: 5
           - runner: [nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-arm64, nscloud-cache-allow-commit-from-main, nscloud-cache-exp-do-not-commit, nscloud-no-remote-builders]
             platform: linux
             arch: arm64
             slug: linux-arm64-musl
             target: aarch64-unknown-linux-musl
-            timeout_minutes: 18
+            timeout_minutes: 19
             build_timeout_minutes: 5
           - { runner: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit], platform: darwin, arch: x64, slug: darwin-x64, target: x86_64-apple-darwin, timeout_minutes: 19, build_timeout_minutes: 8 }
           - { runner: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit], platform: darwin, arch: arm64, slug: darwin-arm64, target: aarch64-apple-darwin, timeout_minutes: 12, build_timeout_minutes: 5 }
@@ -224,18 +229,54 @@ jobs:
         if: matrix.arch == 'x64'
         shell: bash
         run: echo 'RUSTFLAGS=-C target-cpu=x86-64-v2' >> "$GITHUB_ENV"
+      - name: Mount Namespace Zig tarball cache
+        if: matrix.platform == 'linux'
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          path: ~/.cache/atomic-zig
+      - name: Verify cached Zig for portable Linux builds
+        id: zig-cache
+        if: matrix.platform == 'linux'
+        shell: bash
+        timeout-minutes: 1
+        continue-on-error: true
+        env:
+          ZIG_ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ZIG_ARCH" in
+            x64) arch=x86_64; sha="$ZIG_SHA256_X86_64" ;;
+            arm64) arch=aarch64; sha="$ZIG_SHA256_AARCH64" ;;
+            *) echo "Unsupported Zig architecture: $ZIG_ARCH"; exit 1 ;;
+          esac
+          file="zig-${arch}-linux-${ZIG_VERSION}.tar.xz"
+          tarball="$HOME/.cache/atomic-zig/$file"
+          dest="$RUNNER_TEMP/zig-${arch}-linux-${ZIG_VERSION}"
+          echo 'hit=false' >> "$GITHUB_OUTPUT"
+          if [[ ! -f "$tarball" ]]; then
+            echo "Zig $ZIG_VERSION Namespace release cache miss"
+          elif ! echo "$sha  $tarball" | sha256sum -c --status; then
+            echo "Zig $ZIG_VERSION Namespace release cache corrupt (SHA-256 mismatch)"
+          elif ! tar -xJf "$tarball" -C "$RUNNER_TEMP" || [[ ! -x "$dest/zig" ]] || [[ "$("$dest/zig" version)" != "$ZIG_VERSION" ]]; then
+            echo "Zig $ZIG_VERSION Namespace release cache corrupt (extract/version check failed)"
+          else
+            echo "$dest" >> "$GITHUB_PATH"
+            echo "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" >> "$GITHUB_ENV"
+            echo "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" >> "$GITHUB_ENV"
+            echo 'hit=true' >> "$GITHUB_OUTPUT"
+            echo "Zig $ZIG_VERSION served from the Namespace release cache (sha256 verified)"
+          fi
       # Community Zig mirrors have stalled two releases (795.9s and 437.6s).
-      # setup-zig applies no per-mirror deadline, so bound it and retry once on a
-      # re-shuffled mirror list: a stall now costs at most 4 minutes and fails loudly.
+      # On a cache miss, bound setup-zig and retry once on a re-shuffled mirror list.
       - name: Setup zig for portable Linux builds
         id: zig
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.zig-cache.outputs.hit != 'true'
         continue-on-error: true
         timeout-minutes: 2
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
-          # Namespace runners are ephemeral, so the tool cache dies with the VM.
+          version: ${{ env.ZIG_VERSION }}
+          # Tool-cache hits bypass setup-zig's signature verification.
           use-tool-cache: false
           # Global .zig-cache, not the tarball cache. Its save key embeds the run id,
           # so it can never be reused, and disabling it keeps the retry's post step inert.
@@ -245,9 +286,32 @@ jobs:
         timeout-minutes: 2
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
           use-tool-cache: false
           use-cache: false
+      # setup-zig trusts Actions-cache tarball hits without verifying their signature.
+      - name: Verify setup-zig tarball against pinned SHA-256
+        if: matrix.platform == 'linux' && steps.zig-cache.outputs.hit != 'true'
+        shell: bash
+        timeout-minutes: 1
+        env:
+          ZIG_ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ZIG_ARCH" in
+            x64) arch=x86_64; sha="$ZIG_SHA256_X86_64" ;;
+            arm64) arch=aarch64; sha="$ZIG_SHA256_AARCH64" ;;
+            *) echo "Unsupported Zig architecture: $ZIG_ARCH" >&2; exit 1 ;;
+          esac
+          tarball="$RUNNER_TEMP/zig-${arch}-linux-${ZIG_VERSION}.tar.xz"
+          if [[ ! -f "$tarball" ]]; then
+            echo "setup-zig tarball missing: $tarball" >&2
+            exit 1
+          fi
+          if ! echo "$sha  $tarball" | sha256sum -c --status; then
+            echo "setup-zig tarball SHA-256 mismatch: $tarball" >&2
+            exit 1
+          fi
+          echo "setup-zig tarball SHA-256 verified: $tarball"
       # Unversioned taiki-e tools resolve to @latest, floating the build toolchain
       # of a provenance-signed artifact with no diff.
       - name: Install cargo-zigbuild for portable Linux builds

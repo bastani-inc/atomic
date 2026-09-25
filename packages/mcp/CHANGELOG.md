@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-09-24
+
+### Fixed
+
+- Final session shutdown now reports MCP cleanup failures and timeouts after attempting all cleanup, instead of silently treating them as success ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Retain unpublished initialization cleanup failures through awaited session shutdown instead of logging them and reporting success ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Headless SDK startup no longer connects lazy MCP servers just to discover uncached direct tools. Use the MCP gateway to discover them, or configure an eager lifecycle for startup connections ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- SDK-owned MCP logger output and startup connection failures now use the session's diagnostic sink with redacted messages instead of printing to console, including when no sink is configured ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Concurrent SDK sessions now retain separate pending OAuth state, PKCE verifiers and callback ownership, including after host callback rebinding; durable server credentials keep their existing storage ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Opening or closing an MCP native UI no longer closes another session's window; windows that finish opening after their UI closes are retired immediately ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- SDK-owned configuration, authentication and cleanup diagnostics now use redacted session diagnostics rather than console output ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+- Preserve lazy MCP connections during headless SDK startup even when an eager or keep-alive server is configured alongside uncached direct tools; terminal first-run discovery is unchanged ([#3105](https://github.com/bastani-inc/atomic/issues/3105)).
+
 ## [0.9.20-alpha.4] - 2026-09-20
 
 ### Fixed

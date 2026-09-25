@@ -60,7 +60,21 @@ const result = await ctx.task("analyze", {
 
 `ctx.stage("analyze", { model: "auto" }).prompt(text)` works too. Set `model: "auto"` in chain or parallel shared options to route each stage separately. The decision uses the actual supplied prompt after input interpolation and chain context expansion, eligible models and efforts, and compact dated evaluation evidence rather than full guides. It ranks up to three distinct models with an effort for each, trying them in order before remaining configured fallbacks and the current chat model. File references remain references, not guessed file contents. See [automatic model selection](/subagents/reference#automatic-model-selection) for ranking and limits.
 
-Long prompts are excerpted for model selection only; the stage still receives the full execution prompt. The excerpt preserves the beginning, end, and `<keepContext>...</keepContext>` spans. Protect essential selection requirements with those tags, since unprotected middle text may be omitted. If protected text cannot fit, the normal router context-limit and fallback behavior applies. Hard `modelConstraints` remain enforced independently.
+Long prompts are excerpted for model selection only; the stage still receives the full execution prompt. The router sees the beginning of the prompt, its end, and every `<keepContext>...</keepContext>` span, with each cut marked `[... truncated ...]`. The excerpt is at most about 9 KB (roughly 1,200 words) and can be smaller when many models are eligible. Hard `modelConstraints` remain enforced independently.
+
+Structure `model: "auto"` prompts so the router sees what decides the model:
+
+- Put the stage's role and objective in the first or last lines, or in a short `<keepContext>` span. Text in the unprotected middle may be cut.
+- Put bulky material (issue bodies, artifact reads, prior-stage output) in the middle, or pass it through files and `reads`.
+- Keep `<keepContext>` spans to a few lines of constraints. If the spans alone exceed the excerpt, the router receives only the start and end of the prompt, cutting through the middle of the protected text.
+
+```ts
+const prompt = [
+  keepContext("Review only. Do not edit files. Report findings as JSON."),
+  `Reference material:\n${ctx.inputs.issueBody}`,
+  `Task: review the change for issue #${ctx.inputs.issue} and report defects.`,
+].join("\n\n");
+```
 
 An explicit `routerModel` chooses the routing decision provider. An unset or `auto` value uses the current chat model; saved classifier credentials do not change that choice. The setting does not choose which workflow to launch. A classifier can make the routing decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
 

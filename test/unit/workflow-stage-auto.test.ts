@@ -8,6 +8,7 @@ import { Compile } from "typebox/compile";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ROUTING_REQUEST_BYTES, TRUNCATED_MARKER } from "../../packages/coding-agent/src/core/model-routing-task.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -188,9 +189,9 @@ test("long stage prompts are excerpted only for routing, never for execution", a
 	const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		assert.match(String(url), /\/systemone$/);
 		const body = JSON.parse(String(init?.body)) as ClassifierWireRequest;
-		assert.ok(Buffer.byteLength(String(init?.body)) < 30_000);
+		assert.ok(Buffer.byteLength(String(init?.body)) <= ROUTING_REQUEST_BYTES);
 		assert.equal(body.model, "jev-latest");
-		assert.match(String(body.state.task), /omitted/);
+		assert.ok(String(body.state.task).includes(TRUNCATED_MARKER));
 		assert.match(String(body.state.task), /<keepContext>Read-only review.<\/keepContext>/);
 		return Response.json(classifierWireResponse(body));
 	});
