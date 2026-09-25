@@ -57,3 +57,7 @@ The SDK approach means:
 - No conditional logic in test setup
 - Easier to see which endpoints a test exercises
 - Type safety per endpoint
+
+## Mocks Must Not Prove Themselves
+
+A mock stands in for a boundary; it must not implement the behavior the test asserts. If the mock decides the outcome, the test proves the mock. Likewise, do not reuse one identical mock for different APIs, and do not let a fixture supply the ordering, callback, or acknowledgement the code under test is supposed to produce. See the [junk patterns](test-audit.md#junk-patterns).

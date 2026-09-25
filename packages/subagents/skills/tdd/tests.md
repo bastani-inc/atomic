@@ -39,10 +39,12 @@ Red flags:
 
 - Mocking internal collaborators
 - Testing private methods
-- Asserting on call counts/order
+- Asserting on call counts/order when the order is not observable behavior
 - Test breaks when refactoring without behavior change
 - Test name describes HOW not WHAT
 - Verifying through external means instead of interface
+- Expected values computed by the code under test
+- Setup that hands the code the result it should produce
 
 ```typescript
 // BAD: Bypasses interface to verify

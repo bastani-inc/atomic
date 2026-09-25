@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, or asks for test-first development.
+description: Test-driven development with red-green-refactor loop, plus a value gate and audit workflow for tests. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, asks for test-first development, or asks to review, audit, prune, or clean up low-value, duplicated, or implementation-coupled tests.
 ---
 
 # Test-Driven Development
@@ -13,7 +13,7 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 **Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
 
-See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
+See [tests.md](tests.md) for examples, [mocking.md](mocking.md) for mocking guidelines, and [test-audit.md](test-audit.md) for the value gate every new test must pass and the workflow for auditing existing tests.
 
 ## Anti-Pattern: Horizontal Slices
 
@@ -70,6 +70,8 @@ GREEN: Write minimal code to pass → test passes
 
 This is your tracer bullet - proves the path works end-to-end.
 
+Before writing each test, pass it through the [authoring gate](test-audit.md#authoring-gate): name the behavior it protects, the regression that would break it, why existing coverage doesn't already catch that, and whether it needs a production seam nothing else uses. For a bug fix, the first RED test must fail on the unfixed code for the reason the bug describes.
+
 ### 3. Incremental Loop
 
 For each remaining behavior:
@@ -98,12 +100,18 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 
 **Never refactor while RED.** Get to GREEN first.
 
+## Auditing Existing Tests
+
+When asked to review or prune tests rather than write them, follow the [audit workflow](test-audit.md#audit-workflow): read the test, its production owner, and its history first; discover read-only and record evidence per candidate; edit one coherent batch; and keep any test that meets the [retention bar](test-audit.md#retention-bar).
+
 ## Checklist Per Cycle
 
 ```
+[ ] Test passes the authoring gate (behavior, regression, not already covered, no test-only seam)
 [ ] Test describes behavior, not implementation
 [ ] Test uses public interface only
 [ ] Test would survive internal refactor
+[ ] Regression test failed on the pre-fix code for the intended reason
 [ ] Code is minimal for this test
 [ ] No speculative features added
 ```
