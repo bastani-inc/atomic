@@ -205,7 +205,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		`  1. Set perplexityApiKey in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
 		`  2. Set EXA_API_KEY (or exaApiKey) in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
 		`  3. Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-		`  4. Set youcomApiKey (or YDC_API_KEY) in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
+		`  4. Set youcomApiKey in ~/${CONFIG_DIR_NAME}/web-search.json (or the YDC_API_KEY environment variable)\n` +
 		"  5. Sign into gemini.google.com in a supported Chromium-based browser"
 	);
 }

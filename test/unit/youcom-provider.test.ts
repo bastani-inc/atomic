@@ -76,7 +76,16 @@ describe("youcom provider availability", () => {
 
 	test("searchWithYoucom throws a setup message when no key is configured", async () => {
 		vi.stubEnv("YDC_API_KEY", "");
-		await assert.rejects(() => searchWithYoucom("rust async runtime"), /You.com API key not found/);
+		await assert.rejects(
+			() => searchWithYoucom("rust async runtime"),
+			(err: unknown) => {
+				assert.ok(err instanceof Error);
+				assert.match(err.message, /You.com API key not found/);
+				assert.match(err.message, /"youcomApiKey"/, "the setup message must name the config option");
+				assert.match(err.message, /YDC_API_KEY environment variable/, "the setup message must name the env option");
+				return true;
+			},
+		);
 		assert.equal(fetchCalls.length, 0, "no request should be made without a key");
 	});
 });

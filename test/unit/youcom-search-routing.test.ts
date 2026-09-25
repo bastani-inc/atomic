@@ -227,8 +227,8 @@ describe("search() routing with the youcom provider", () => {
 	});
 
 	test("a non-array domain filter under auto selection is rejected by the real You.com validation and stops the chain", async () => {
-		// Tool arguments are not schema-validated by the host, so a model can
-		// send a bare object. Run the real searchWithYoucom so the regression
+		// Direct callers of search() are not type-checked at runtime, so a
+		// bare object can arrive. Run the real searchWithYoucom so the regression
 		// covers its input validation, and arm Gemini behind it so any
 		// continuation past You.com is observable as a Gemini fetch.
 		youcomAvailableFlag = true;
