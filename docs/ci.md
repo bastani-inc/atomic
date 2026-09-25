@@ -438,17 +438,18 @@ chain. Each native compile has one bounded retry, with a second failure fatal.
 
 | Native leg | Compile limit per attempt | Whole-job cap |
 | --- | ---: | ---: |
-| linux-x64-gnu | 5 min | 16 min |
-| linux-arm64-gnu | 5 min | 17 min |
-| linux-x64-musl | 5 min | 17 min |
-| linux-arm64-musl | 5 min | 18 min |
+| linux-x64-gnu | 5 min | 17 min |
+| linux-arm64-gnu | 5 min | 18 min |
+| linux-x64-musl | 5 min | 18 min |
+| linux-arm64-musl | 5 min | 19 min |
 | darwin-x64 | 8 min | 19 min |
 | darwin-arm64 | 5 min | 12 min |
 | win32-x64-msvc | 5 min | 21 min |
 | win32-arm64-msvc | 5 min | 21 min |
 
 These caps reserve measured setup, both compile attempts, bounded Zig or xwin
-acquisition and one minute for artifact upload. Re-measure before tightening
+acquisition (on Linux, both setup-zig attempts plus the fallback SHA-256 check)
+and one minute for artifact upload. Re-measure before tightening
 them, using at least five samples and including recovery paths. Keep the
 explicit job names so matrix budget changes do not rename check contexts.
 
