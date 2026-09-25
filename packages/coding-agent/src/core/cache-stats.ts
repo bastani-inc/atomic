@@ -174,11 +174,30 @@ export function collectCacheMisses(
 ): Map<AssistantMessage, CacheMiss> {
 	return scan(entries, models).misses;
 }
+function isPersistedCopy(entry: SessionEntry, message: AssistantMessage): boolean {
+	return (
+		entry.type === "message" &&
+		entry.message.role === "assistant" &&
+		entry.message.timestamp === message.timestamp &&
+		entry.message.provider === message.provider &&
+		entry.message.model === message.model &&
+		entry.message.responseId === message.responseId
+	);
+}
+
 export function detectCacheMiss(
 	entries: SessionEntry[],
 	message: AssistantMessage,
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
-	const scanned = scan(entries, models);
+	// An isolated engine persists the message before the TUI host handles its relayed message_end.
+	let end = entries.length;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		if (isPersistedCopy(entries[index], message)) {
+			end = index;
+			break;
+		}
+	}
+	const scanned = scan(entries.slice(0, end), models);
 	return detect(scanned.prev, message, models, scanned.sawCachePrefixEntry ? scanned.pendingAttribution : undefined);
 }
