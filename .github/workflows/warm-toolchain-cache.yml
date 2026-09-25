@@ -37,6 +37,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Mount Namespace Zig tarball cache
+        id: zig-volume
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
@@ -55,6 +56,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Warm verified Zig tarball
+        # Warm Zig even when npm warming failed; either failure still fails the job.
+        if: ${{ !cancelled() && steps.zig-volume.outcome == 'success' }}
         shell: bash
         timeout-minutes: 4
         env:
