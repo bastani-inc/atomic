@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
+import {
+	buildSettingsItems,
+	formatKeybindingsPath,
+} from "../src/modes/interactive/components/settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -18,6 +21,7 @@ beforeAll(() => {
 
 function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig {
 	return {
+		keybindingsPath: "/tmp/custom-agent/keybindings.json",
 		autoCompact: true,
 		showImages: false,
 		imageWidthCells: 60,
@@ -94,6 +98,39 @@ test("keeps the configured fixed theme marked while browsing", () => {
 	output = render(submenu);
 	expect(output).toContain("  ✓ dark");
 	expect(output).toContain("→   light");
+});
+
+test("keeps existing rows in place below the Keybindings row (#2629)", () => {
+	try {
+		for (const images of ["kitty", null] as const) {
+			setCapabilities({ images, trueColor: true, hyperlinks: false });
+			const ids = buildSettingsItems(settingsConfig(), {} as SettingsCallbacks).map(({ id }) => id);
+			const expected = images
+				? ["keybindings", "autocompact", "show-images", "image-width-cells", "auto-resize-images", "block-images"]
+				: ["keybindings", "autocompact", "auto-resize-images", "block-images"];
+			expect(ids.slice(0, expected.length)).toEqual(expected);
+		}
+	} finally {
+		resetCapabilitiesCache();
+	}
+});
+
+test("formats the keybindings path ~-relative only inside the home directory (#2629)", () => {
+	const home = join("/home", "jon");
+	expect(formatKeybindingsPath(home, home)).toBe(join("~", "keybindings.json"));
+	expect(formatKeybindingsPath(join(home, ".atomic", "agent"), home)).toBe(
+		join("~", ".atomic", "agent", "keybindings.json"),
+	);
+	// A home-prefix sibling (`/home/jon-other`) is not inside `/home/jon`.
+	expect(formatKeybindingsPath(join(`${home}-other`, "agent"), home)).toBe(
+		join(`${home}-other`, "agent", "keybindings.json"),
+	);
+	expect(formatKeybindingsPath(join("/tmp", "atomic-2814", "custom-agent"), home)).toBe(
+		join("/tmp", "atomic-2814", "custom-agent", "keybindings.json"),
+	);
+	expect(formatKeybindingsPath("C:\\Users\\dev\\custom-atomic-agent", home)).toBe(
+		join("C:\\Users\\dev\\custom-atomic-agent", "keybindings.json"),
+	);
 });
 
 test("keeps a configured automatic theme marked while browsing", () => {

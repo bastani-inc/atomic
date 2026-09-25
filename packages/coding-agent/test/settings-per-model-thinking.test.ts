@@ -11,6 +11,7 @@ beforeAll(() => {
 
 function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig {
 	return {
+		keybindingsPath: "/tmp/custom-agent/keybindings.json",
 		autoCompact: true,
 		showImages: false,
 		imageWidthCells: 60,

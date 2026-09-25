@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import {
 	getKeybindings,
@@ -15,6 +16,7 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getHomeDir } from "../src/utils/paths.ts";
 
 const previousKeybindings = getKeybindings();
 
@@ -37,7 +39,7 @@ class SelectorTerminal implements Terminal {
 	setProgress(_active: boolean): void {}
 }
 
-function openSettingsSelector() {
+function openSettingsSelector(agentDir = "C:\\atomic-2814-fixture\\agent") {
 	const settingsManager = SettingsManager.inMemory({});
 	let selector: SettingsSelectorComponent | undefined;
 	const renderer = createInteractiveTui({
@@ -47,7 +49,7 @@ function openSettingsSelector() {
 	});
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		runtimeHost: {
-			services: { agentDir: "/tmp" },
+			services: { agentDir },
 			session: {
 				settingsManager,
 				autoCompactionEnabled: true,
@@ -78,7 +80,7 @@ function openSettingsSelector() {
 
 	mode.showSettingsSelector();
 	if (!selector) throw new Error("settings selector was not created");
-	return { mode, selector };
+	return { agentDir, mode, selector };
 }
 
 beforeEach(() => {
@@ -104,5 +106,27 @@ test("settings selector keeps fullscreen scrollbar available", () => {
 	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
 	expect(rendered).toMatch(/Fullscreen scrollbar\s+auto/);
+	mode.ui.stop();
+});
+
+test("/settings renders keybinding guidance for the active agent directory", () => {
+	const { agentDir, mode, selector } = openSettingsSelector();
+	const rendered = stripTerminalSequences(selector.getSettingsList().render(160).join("\n"));
+
+	expect(rendered).toContain("Keybindings");
+	expect(rendered).toContain(path.join(agentDir, "keybindings.json"));
+	expect(rendered).toContain("/reload");
+	expect(rendered).toContain("/hotkeys shows common active and extension shortcuts");
+	expect(rendered).toContain("Keybindings documentation is the complete reference");
+	mode.ui.stop();
+});
+
+test("/settings renders a home-relative keybindings path that survives 80 columns (#2629)", () => {
+	const agentDir = path.join(getHomeDir(), ".atomic", "agent");
+	const { mode, selector } = openSettingsSelector(agentDir);
+	const rendered = stripTerminalSequences(selector.getSettingsList().render(80).join("\n"));
+
+	expect(rendered).toContain(path.join("~", ".atomic", "agent", "keybindings.json"));
+	expect(rendered).not.toContain(path.join(getHomeDir(), ".atomic"));
 	mode.ui.stop();
 });

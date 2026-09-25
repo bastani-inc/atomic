@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.js";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
@@ -14,6 +16,90 @@ import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { arg, fakeHerdr } from "./helpers/herdr.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+
+type HerdrFixture = Awaited<ReturnType<typeof fakeHerdr>>;
+
+async function closeSessionThenFixture(session: AgentSession, fake: HerdrFixture): Promise<void> {
+	try {
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		await session.dispose();
+	} finally {
+		await fake.dispose();
+	}
+}
+
+test("herdr SDK cleanup removes the fixture only after disposal persists the session", async () => {
+	const fake = await fakeHerdr();
+	try {
+		const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(fake.dir, "auth.json") });
+		const faux = createFauxStreamFn([{ text: "Persisted before cleanup" }]);
+		modelRuntime.registerProvider(fauxModel.provider, {
+			baseUrl: fauxModel.baseUrl,
+			apiKey: "faux-key",
+			api: fauxModel.api,
+			models: [fauxModel],
+			streamSimple: faux.streamFn,
+		});
+		const sessionManager = SessionManager.create(fake.dir, fake.dir);
+		const { session } = await createAgentSession({
+			cwd: fake.dir,
+			agentDir: fake.dir,
+			resourceLoader: createTestResourceLoader(),
+			modelRuntime,
+			sessionManager,
+			settingsManager: SettingsManager.inMemory({
+				compaction: { enabled: false },
+				sessionSummary: { enabled: false },
+			}),
+			model: fauxModel,
+			noTools: "all",
+		});
+		await session.prompt("Write the session file");
+		const sessionFile = sessionManager.getSessionFile()!;
+		assert.ok(existsSync(sessionFile), "the prompt persisted a session file inside the fixture");
+		const lifecycle: string[] = [];
+		let persistenceReached!: () => void;
+		let releasePersistence!: () => void;
+		const reached = new Promise<void>((resolve) => {
+			persistenceReached = resolve;
+		});
+		const released = new Promise<void>((resolve) => {
+			releasePersistence = resolve;
+		});
+		const flushSettings = session.settingsManager.flush.bind(session.settingsManager);
+		vi.spyOn(session.settingsManager, "flush").mockImplementation(async () => {
+			lifecycle.push("settings persistence");
+			persistenceReached();
+			await released;
+			await flushSettings();
+		});
+		const flushSession = sessionManager.flush.bind(sessionManager);
+		vi.spyOn(sessionManager, "flush").mockImplementation(() => {
+			lifecycle.push("session persistence");
+			flushSession();
+		});
+		const removeFixture = fake.dispose.bind(fake);
+		vi.spyOn(fake, "dispose").mockImplementation(async () => {
+			lifecycle.push("fixture removal");
+			await removeFixture();
+		});
+
+		const closing = closeSessionThenFixture(session, fake);
+		await reached;
+		assert.deepEqual(
+			lifecycle,
+			["settings persistence"],
+			"fixture removal must wait for disposal that is still persisting the session",
+		);
+		releasePersistence();
+		await closing;
+
+		assert.deepEqual(lifecycle, ["settings persistence", "session persistence", "fixture removal"]);
+		assert.equal(existsSync(fake.dir), false, "cleanup removed the fixture after disposal settled");
+	} finally {
+		await fake.dispose();
+	}
+});
 
 test.each([
 	{ availability: "recovering" as const, shutdownFirst: false },
@@ -196,8 +282,7 @@ test("SDK transactional reload retains the new reporter through retiring shutdow
 				assert.equal(call.socket, fake.environment.socketPath);
 			}
 		} finally {
-			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-			session.dispose();
+			await closeSessionThenFixture(session, fake);
 		}
 	} finally {
 		await fake.dispose();
@@ -490,9 +575,11 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 					assert.equal(call.socket, fake.environment.socketPath);
 				}
 			} finally {
-				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-				session.dispose();
-				providerFailure?.mockRestore();
+				try {
+					await closeSessionThenFixture(session, fake);
+				} finally {
+					providerFailure?.mockRestore();
+				}
 			}
 		} finally {
 			await fake.dispose();

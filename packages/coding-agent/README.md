@@ -151,7 +151,7 @@ Atomic's Pi 0.84.1 model/runtime surface includes Claude Opus 5 on Anthropic and
 
 The interface from top to bottom:
 
-- **Startup header** - Shows shortcuts (`/hotkeys` for all), loaded AGENTS.md files, prompt templates, skills, and extensions
+- **Startup header** - Shows shortcuts (`/hotkeys` for more), loaded AGENTS.md files, prompt templates, skills, and extensions
 - **Messages** - Your messages, assistant responses, tool calls and results, notifications, errors, and extension UI
 - **Editor** - Where you type; border color indicates thinking level, with streaming activity shown in a separate status row
 - **Footer** - Working directory, session name, total token/cache usage, cost, context usage, current model
@@ -180,7 +180,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/model` | Switch models and automatically save the startup default |
 | `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/settings` | Theme, message delivery, transport, and other preferences |
+| `/settings` | Keybindings file location, theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
@@ -193,14 +193,14 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/export [file]` | Export session to HTML file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files (themes hot-reload automatically) |
-| `/hotkeys` | Show all keyboard shortcuts |
+| `/hotkeys` | Show common active and extension shortcuts; see [Keybindings](docs/keybindings.md) for the complete reference |
 | `/changelog` | Display version history |
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
 
 ### Keyboard Shortcuts
 
-See `/hotkeys` for the full list. Customize via the active agent directory's `keybindings.json` (normally `~/.atomic/agent/keybindings.json`). See [docs/keybindings.md](docs/keybindings.md).
+`/hotkeys` shows common active and extension shortcuts. Customize via the active agent directory's `keybindings.json` (normally `~/.atomic/agent/keybindings.json`). See [docs/keybindings.md](docs/keybindings.md).
 
 **Commonly used:**
 

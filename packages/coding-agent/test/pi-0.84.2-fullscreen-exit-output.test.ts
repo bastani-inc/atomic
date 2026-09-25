@@ -20,6 +20,7 @@ const EXIT_ALT_SCREEN = "\x1b[?1049l";
 
 function createSettingsConfig(): SettingsConfig {
 	return {
+		keybindingsPath: "/tmp/custom-agent/keybindings.json",
 		autoCompact: true,
 		showImages: true,
 		imageWidthCells: 60,

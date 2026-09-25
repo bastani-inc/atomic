@@ -6,6 +6,7 @@ import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive
 
 function createSettingsConfig(): SettingsConfig {
 	return {
+		keybindingsPath: "/tmp/custom-agent/keybindings.json",
 		autoCompact: true,
 		showImages: true,
 		imageWidthCells: 60,

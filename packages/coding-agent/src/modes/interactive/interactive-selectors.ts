@@ -1,3 +1,4 @@
+import { formatKeybindingsPath } from "./components/settings-selector-items.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -49,6 +50,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 			this.settingsManager.getProjectSettings().routerModel !== undefined ? "project" : "global";
 		const component = new SettingsSelectorComponent(
 			{
+				keybindingsPath: formatKeybindingsPath(this.runtimeHost.services.agentDir),
 				autoCompact: this.session.autoCompactionEnabled,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),

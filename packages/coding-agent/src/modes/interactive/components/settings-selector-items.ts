@@ -1,7 +1,9 @@
+import { isAbsolute, join, relative, sep } from "node:path";
 import { isModelType } from "@bastani/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { getHomeDir } from "../../../utils/paths.ts";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
@@ -15,17 +17,36 @@ import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-type
  */
 const NO_DEFAULT_MODELS_VALUE = "__no-models__";
 
+/**
+ * Display path for the informational Keybindings row. Paths inside the home
+ * directory render `~`-relative (native separators preserved) so the value
+ * survives SettingsList's 80-column value clipping; everything else — custom
+ * agent dirs outside home, home-prefix siblings, non-absolute paths — stays
+ * as-is. Home comparison happens at a separator boundary via `relative()`,
+ * so `/home/jon` is never treated as a prefix of `/home/jonathan/...`.
+ */
+export function formatKeybindingsPath(agentDir: string, homeDir: string = getHomeDir()): string {
+	if (isAbsolute(agentDir)) {
+		const rest = relative(homeDir, agentDir);
+		if (rest === "") return join("~", "keybindings.json");
+		if (rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest)) {
+			return join("~", rest, "keybindings.json");
+		}
+	}
+	return join(agentDir, "keybindings.json");
+}
+
 function insertImageItems(items: SettingItem[], config: SettingsConfig): void {
 	if (!getCapabilities().images) return;
 
-	items.splice(1, 0, {
+	insertAfter(items, "autocompact", {
 		id: "show-images",
 		label: "Show images",
 		description: "Render images inline in terminal",
 		currentValue: config.showImages ? "true" : "false",
 		values: ["true", "false"],
 	});
-	items.splice(2, 0, {
+	insertAfter(items, "show-images", {
 		id: "image-width-cells",
 		label: "Image width",
 		description: "Preferred inline image width in terminal cells",
@@ -41,7 +62,7 @@ function insertAfter(items: SettingItem[], afterId: string, item: SettingItem): 
 
 function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	const supportsImages = getCapabilities().images;
-	items.splice(supportsImages ? 3 : 1, 0, {
+	insertAfter(items, supportsImages ? "image-width-cells" : "autocompact", {
 		id: "auto-resize-images",
 		label: "Auto-resize images",
 		description: "Resize large images to 2000x2000 max for better model compatibility",
@@ -146,6 +167,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 	let currentWarnings = { ...config.warnings };
 
 	const items: SettingItem[] = [
+		{
+			id: "keybindings",
+			label: "Keybindings",
+			description:
+				"Edit this file, then run /reload. /hotkeys shows common active and extension shortcuts; the Keybindings documentation is the complete reference.",
+			currentValue: config.keybindingsPath,
+		},
 		{
 			id: "autocompact",
 			label: "Auto-compact",

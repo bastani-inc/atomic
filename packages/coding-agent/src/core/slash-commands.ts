@@ -320,7 +320,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "session", description: "Show session info and stats" },
 	{ name: "tasks", description: "Inspect agents and shells, view output, and manage running tasks" },
 	{ name: "changelog", description: "Show changelog entries" },
-	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
+	{ name: "hotkeys", description: "Show common active and extension shortcuts" },
 	{ name: "fork", description: "Create a new fork from a previous user message" },
 	{ name: "clone", description: "Duplicate the current session at the current position" },
 	{ name: "trust", description: "Save project trust decision for future sessions" },
