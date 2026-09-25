@@ -17,7 +17,7 @@ function safeInlineJSON(data: unknown): string {
 }
 
 function buildProviderButtons(
-	available: { perplexity: boolean; exa: boolean; gemini: boolean },
+	available: { perplexity: boolean; exa: boolean; gemini: boolean; youcom: boolean },
 	selected: string,
 	hasInitialQueries: boolean,
 ): string {
@@ -25,6 +25,7 @@ function buildProviderButtons(
 		{ value: "perplexity", label: "Perplexity", available: available.perplexity },
 		{ value: "exa", label: "Exa", available: available.exa },
 		{ value: "gemini", label: "Gemini", available: available.gemini },
+		{ value: "youcom", label: "You.com", available: available.youcom },
 	];
 
 	return providers
@@ -43,7 +44,7 @@ export function generateCuratorPage(
 	queries: string[],
 	sessionToken: string,
 	timeout: number,
-	availableProviders: { perplexity: boolean; exa: boolean; gemini: boolean },
+	availableProviders: { perplexity: boolean; exa: boolean; gemini: boolean; youcom: boolean },
 	defaultProvider: string,
 	summaryModels: Array<{ value: string; label: string }>,
 	defaultSummaryModel: string | null,
