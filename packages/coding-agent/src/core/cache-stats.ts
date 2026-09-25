@@ -5,13 +5,13 @@ import {
 	type CachePrefixFingerprint,
 	describeCachePrefixDifference,
 	isCachePrefixFingerprint,
+	reconstructMessageHashes,
 } from "./cache-prefix-fingerprint.ts";
 import { getPromptCacheTtlMs } from "./cache-warmer.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
 const MISS_TOKEN_THRESHOLD = 20_000;
 const MISS_COST_THRESHOLD = 0.1;
-const UNKNOWN_ATTRIBUTION = "prefix unchanged";
 
 export interface CacheMiss {
 	missedTokens: number;
@@ -19,8 +19,13 @@ export interface CacheMiss {
 	idleMs: number;
 	modelChanged: boolean;
 	cacheExpired: boolean;
-	/** First differing request segment since the previous request, e.g. "tool list changed: +mcp". */
-	attribution: string;
+	/**
+	 * First differing request segment since the previous request, e.g. "tool list
+	 * changed: +mcp". Undefined when no cache-prefix fingerprint is available for
+	 * this request (legacy sessions, or a stale/partial view) — callers must not
+	 * treat a missing attribution as "prefix unchanged".
+	 */
+	attribution: string | undefined;
 }
 export interface CacheWasteTotals {
 	missedTokens: number;
@@ -52,14 +57,14 @@ interface PreviousRequest {
 
 export function describeCacheMissCause(miss: CacheMiss): string {
 	const known = miss.modelChanged ? " after model switch" : miss.cacheExpired ? " after cache TTL expiry" : "";
-	return `${known} (${miss.attribution})`;
+	return miss.attribution === undefined ? known : `${known} (${miss.attribution})`;
 }
 
 function detect(
 	prev: PreviousRequest | undefined,
 	message: AssistantMessage,
 	models: ModelPriceSource,
-	attribution: string,
+	attribution: string | undefined,
 ): CacheMiss | undefined {
 	const usage = message.usage;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -104,7 +109,10 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 function scan(entries: SessionEntry[], models: ModelPriceSource) {
 	let prev: PreviousRequest | undefined;
 	let lastCachePrefix: CachePrefixFingerprint | undefined;
+	let lastMessageHashes: readonly string[] = [];
 	let pendingAttribution: string | undefined;
+	let sawCachePrefixEntry = false;
+	let compactedSinceLastCachePrefix = false;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0 };
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
@@ -113,12 +121,20 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 			entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
 			isCachePrefixFingerprint(entry.data)
 		) {
-			pendingAttribution = describeCachePrefixDifference(lastCachePrefix, entry.data);
+			const label = describeCachePrefixDifference(lastCachePrefix, lastMessageHashes, entry.data);
+			pendingAttribution = compactedSinceLastCachePrefix ? `history compacted (${label})` : label;
+			// entry.data's own delta was computed against an empty baseline right after
+			// the boundary (see sdk.ts), so this naturally drops lastMessageHashes'
+			// pre-boundary content instead of carrying it forward.
+			lastMessageHashes = reconstructMessageHashes(entry.data, lastMessageHashes);
 			lastCachePrefix = entry.data;
+			compactedSinceLastCachePrefix = false;
+			sawCachePrefixEntry = true;
 			continue;
 		}
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			prev = undefined;
+			compactedSinceLastCachePrefix = true;
 			continue;
 		}
 		if (entry.type === "usage" && entry.kind === "cache_warm") {
@@ -134,8 +150,9 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 			continue;
 		}
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const attribution = pendingAttribution ?? UNKNOWN_ATTRIBUTION;
+		const attribution = sawCachePrefixEntry ? pendingAttribution : undefined;
 		pendingAttribution = undefined;
+		sawCachePrefixEntry = false;
 		const miss = detect(prev, entry.message, models, attribution);
 		if (miss) {
 			totals.missedTokens += miss.missedTokens;
@@ -145,7 +162,7 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 		}
 		prev = previous(entry.message, prev?.reportedCache ?? false) ?? prev;
 	}
-	return { prev, totals, misses, pendingAttribution };
+	return { prev, totals, misses, pendingAttribution, sawCachePrefixEntry };
 }
 
 export function computeCacheWaste(entries: SessionEntry[], models: ModelPriceSource): CacheWasteTotals {
@@ -163,5 +180,5 @@ export function detectCacheMiss(
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
 	const scanned = scan(entries, models);
-	return detect(scanned.prev, message, models, scanned.pendingAttribution ?? UNKNOWN_ATTRIBUTION);
+	return detect(scanned.prev, message, models, scanned.sawCachePrefixEntry ? scanned.pendingAttribution : undefined);
 }

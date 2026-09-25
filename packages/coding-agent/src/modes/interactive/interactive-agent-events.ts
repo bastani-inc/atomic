@@ -284,7 +284,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
 				const miss = detectCacheMiss(
-					this.sessionManager.getEntries(),
+					this.sessionManager.getFreshEntries(),
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
 				);

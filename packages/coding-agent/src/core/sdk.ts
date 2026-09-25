@@ -1,5 +1,12 @@
 import { basename, join, relative, sep } from "node:path";
-import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	type ProviderHeaders,
+	streamSimple,
+} from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
@@ -10,7 +17,13 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
-import { CACHE_PREFIX_CUSTOM_TYPE, computeCachePrefixFingerprint } from "./cache-prefix-fingerprint.ts";
+import {
+	CACHE_PREFIX_CUSTOM_TYPE,
+	type CachePrefixFingerprint,
+	computeCachePrefixFingerprint,
+	isCachePrefixFingerprint,
+	reconstructMessageHashes,
+} from "./cache-prefix-fingerprint.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
@@ -361,14 +374,105 @@ async function constructAgentSession(
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	/**
+	 * The full reconstructed message-hash list for the most recently persisted
+	 * `cache_prefix` entry, alongside that entry itself. Each fingerprint only stores
+	 * its own delta (see cache-prefix-fingerprint.ts), so this is rebuilt lazily by
+	 * walking back only to the most recent `compaction`/`branch_summary` boundary —
+	 * content before that boundary is replaced or dropped by definition, so no
+	 * reconstruction ever needs it — then `onPayload` keeps the result current
+	 * directly (no re-walking) each time it persists a new fingerprint. A boundary
+	 * appended after the cache was last updated invalidates it on the next read.
+	 */
+	let cachePrefixState:
+		| { fingerprint: CachePrefixFingerprint | undefined; messageHashes: readonly string[] }
+		| undefined;
+	const currentCachePrefixState = (): {
+		fingerprint: CachePrefixFingerprint | undefined;
+		messageHashes: readonly string[];
+	} => {
+		const branch = sessionManager.getBranch();
+		let lastBoundaryIndex = -1;
+		let lastCachePrefixIndex = -1;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "compaction" || entry.type === "branch_summary") {
+				lastBoundaryIndex = index;
+				break;
+			}
+			if (
+				lastCachePrefixIndex === -1 &&
+				entry.type === "custom" &&
+				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+				isCachePrefixFingerprint(entry.data)
+			) {
+				lastCachePrefixIndex = index;
+			}
+		}
+		if (lastCachePrefixIndex === -1) {
+			cachePrefixState = { fingerprint: undefined, messageHashes: [] };
+			return cachePrefixState;
+		}
+		const lastEntry = branch[lastCachePrefixIndex];
+		const lastFingerprint =
+			lastEntry.type === "custom" && isCachePrefixFingerprint(lastEntry.data) ? lastEntry.data : undefined;
+		if (cachePrefixState !== undefined && cachePrefixState.fingerprint === lastFingerprint) return cachePrefixState;
+		let messageHashes: string[] = [];
+		let fingerprint: CachePrefixFingerprint | undefined;
+		for (let index = lastBoundaryIndex + 1; index <= lastCachePrefixIndex; index++) {
+			const entry = branch[index];
+			if (
+				entry.type === "custom" &&
+				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+				isCachePrefixFingerprint(entry.data)
+			) {
+				messageHashes = reconstructMessageHashes(entry.data, messageHashes);
+				fingerprint = entry.data;
+			}
+		}
+		cachePrefixState = { fingerprint, messageHashes };
+		return cachePrefixState;
+	};
+	/**
+	 * Replay-guard, extension `before_provider_request`, and sanitize one payload
+	 * before it is sent. Shared by the real per-turn `onPayload` (which also persists
+	 * the cache-prefix fingerprint) and CacheWarmer's own `models.streamSimple`
+	 * wrapper below, which builds its own `onPayload` from this helper so a warm
+	 * replay's synthetic `maxTokens: 1` payload never becomes the remembered request
+	 * prefix for the next real turn's attribution.
+	 */
+	const prepareProviderPayload = async (payload: unknown, payloadModel: Model<Api>): Promise<unknown> => {
+		const sourceMessages = lastConvertedLlmMessages;
+		const replayGuardedPayload = sourceMessages
+			? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, payloadModel)
+			: payload;
+		const runner = extensionRunnerRef.current;
+		let finalPayload: unknown;
+		if (!runner?.hasHandlers("before_provider_request")) {
+			finalPayload = replayGuardedPayload;
+		} else {
+			const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
+			finalPayload = sourceMessages
+				? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, payloadModel)
+				: extensionPayload;
+		}
+		return sanitizeOpenAIResponsesPayload(finalPayload, payloadModel);
+	};
 	const cacheWarmer = new CacheWarmer(
 		{
 			streamSimple: (model, context, requestOptions) => {
 				const extension = modelRuntime.getRegisteredProviderConfig(model.provider);
+				const warmOnPayload = (
+					payload: unknown,
+					payloadModel: Model<Api>,
+				): ReturnType<typeof prepareProviderPayload> => prepareProviderPayload(payload, payloadModel);
+				const warmOptions = requestOptions?.onPayload
+					? { ...requestOptions, onPayload: warmOnPayload }
+					: requestOptions;
 				return getModelFastRoute(model)?.serviceTier !== undefined &&
 					!(extension?.streamSimple && extension.api === model.api)
-					? streamWithFastRoute(model, context, requestOptions)
-					: modelRuntime.streamSimple(model, context, requestOptions);
+					? streamWithFastRoute(model, context, warmOptions)
+					: modelRuntime.streamSimple(model, context, warmOptions);
 			},
 		},
 		sessionManager,
@@ -382,7 +486,6 @@ async function constructAgentSession(
 		},
 		(refresh) => trackSessionWork(session, refresh),
 	);
-
 	const handleProviderStreamEvent: NonNullable<ModelRuntimeSimpleStreamOptions["onProviderStreamEvent"]> = async (
 		data,
 		model,
@@ -511,25 +614,18 @@ async function constructAgentSession(
 			return modelRuntime.streamSimple(requestModel, context, { ...preparedStreamOptions, onProviderStreamEvent });
 		},
 		onPayload: async (payload, model) => {
-			const sourceMessages = lastConvertedLlmMessages;
-			const replayGuardedPayload = sourceMessages
-				? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
-				: payload;
-			const runner = extensionRunnerRef.current;
-			let finalPayload: unknown;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				finalPayload = replayGuardedPayload;
-			} else {
-				const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
-				finalPayload = sourceMessages
-					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
-					: extensionPayload;
-			}
-			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
-			sessionManager.appendCustomEntry(
-				CACHE_PREFIX_CUSTOM_TYPE,
-				computeCachePrefixFingerprint(sanitizedPayload, { provider: model.provider, modelId: model.id }),
+			const sanitizedPayload = await prepareProviderPayload(payload, model);
+			const { messageHashes: previousMessageHashes } = currentCachePrefixState();
+			const newFingerprint = computeCachePrefixFingerprint(
+				sanitizedPayload,
+				{ provider: model.provider, modelId: model.id },
+				previousMessageHashes,
 			);
+			sessionManager.appendCustomEntry(CACHE_PREFIX_CUSTOM_TYPE, newFingerprint);
+			cachePrefixState = {
+				fingerprint: newFingerprint,
+				messageHashes: reconstructMessageHashes(newFingerprint, previousMessageHashes),
+			};
 			markLifecycleTiming("before-provider-request");
 			return sanitizedPayload;
 		},

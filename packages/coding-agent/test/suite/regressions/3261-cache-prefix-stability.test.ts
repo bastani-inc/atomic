@@ -10,6 +10,7 @@ import {
 	type CachePrefixFingerprint,
 	describeCachePrefixDifference,
 	isCachePrefixFingerprint,
+	reconstructMessageHashes,
 } from "../../../src/core/cache-prefix-fingerprint.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
@@ -68,6 +69,17 @@ function cachePrefixFingerprints(sessionManager: SessionManager): CachePrefixFin
 		.filter(isCachePrefixFingerprint);
 }
 
+/** Attribute the request at `index` against the full chain reconstructed from every earlier one. */
+function attributionAt(fingerprints: CachePrefixFingerprint[], index: number): string {
+	let messageHashes: string[] = [];
+	let previous: CachePrefixFingerprint | undefined;
+	for (let i = 0; i < index; i++) {
+		messageHashes = reconstructMessageHashes(fingerprints[i], messageHashes);
+		previous = fingerprints[i];
+	}
+	return describeCachePrefixDifference(previous, messageHashes, fingerprints[index]);
+}
+
 describe("issue #3261: request prefix stability across turns", () => {
 	const cleanups: Array<() => Promise<void>> = [];
 
@@ -84,7 +96,7 @@ describe("issue #3261: request prefix stability across turns", () => {
 
 		const fingerprints = cachePrefixFingerprints(sessionManager);
 		assert.ok(fingerprints.length >= 2, "expected a persisted cache_prefix entry for each request");
-		assert.equal(describeCachePrefixDifference(fingerprints[0], fingerprints[1]), "prefix unchanged");
+		assert.equal(attributionAt(fingerprints, 1), "prefix unchanged");
 	});
 
 	it("attributes a mid-run tool addition to the tool list, not the system prompt, in a normal session", async () => {
@@ -97,7 +109,7 @@ describe("issue #3261: request prefix stability across turns", () => {
 
 		const fingerprints = cachePrefixFingerprints(sessionManager);
 		assert.ok(fingerprints.length >= 2);
-		const attribution = describeCachePrefixDifference(fingerprints[0], fingerprints[fingerprints.length - 1]);
+		const attribution = attributionAt(fingerprints, fingerprints.length - 1);
 		assert.equal(attribution, "tool list changed: +bash");
 	});
 
@@ -111,11 +123,49 @@ describe("issue #3261: request prefix stability across turns", () => {
 
 		const fingerprints = cachePrefixFingerprints(sessionManager);
 		assert.ok(fingerprints.length >= 2);
-		const attribution = describeCachePrefixDifference(fingerprints[0], fingerprints[fingerprints.length - 1]);
+		const attribution = attributionAt(fingerprints, fingerprints.length - 1);
 		assert.equal(
 			attribution,
 			"tool list changed: +bash",
 			"forced-prompt tool changes must not rewrite the request prefix as a system-prompt change",
 		);
+	});
+
+	it("keeps the head's initial tool declaration and preserves a later tool-delta system message in a forced-system-prompt session (#3261 cause 2, structural)", async () => {
+		// The fingerprint-attribution test above cannot distinguish the fix from a
+		// reverted one: the faux provider's onPayload always replays context.messages
+		// through getCurrentSystemMessage/getCurrentTools, which collapses to the
+		// current merged tool set either way. This test inspects transformContext's
+		// own output directly, before any provider-specific wire flattening.
+		const { session, cleanup } = await buildSession({ forceSystemPrompt: true });
+		cleanups.push(cleanup);
+
+		await session.prompt("first turn");
+		const initialTranscript = await session.agent.transformContext(session.agent.state.messages);
+		const initialSystemMessages = initialTranscript.filter((message) => message.role === "system");
+		assert.equal(initialSystemMessages.length, 1, "expected a single head system message after the first turn");
+		const initialToolNames = (initialSystemMessages[0].toolsAdded ?? []).map((tool) => tool.name).sort();
+
+		session.setActiveToolsByName([...session.getActiveToolNames(), "bash"]);
+		await session.prompt("second turn");
+		const laterTranscript = await session.agent.transformContext(session.agent.state.messages);
+		const laterSystemMessages = laterTranscript.filter((message) => message.role === "system");
+
+		assert.deepEqual(
+			(laterSystemMessages[0]?.toolsAdded ?? []).map((tool) => tool.name).sort(),
+			initialToolNames,
+			"the head must keep declaring only the initial tool set, not the current merged one",
+		);
+		assert.ok(
+			laterSystemMessages.length >= 2,
+			"expected a preserved tool-delta system message after the mid-run tool addition",
+		);
+		const delta = laterSystemMessages[laterSystemMessages.length - 1];
+		assert.deepEqual(
+			(delta.toolsAdded ?? []).map((tool) => tool.name),
+			["bash"],
+			"the delta message must carry only the newly added tool",
+		);
+		assert.equal(delta.content, "", "the delta message's prompt text must be stripped in a forced-prompt session");
 	});
 });
