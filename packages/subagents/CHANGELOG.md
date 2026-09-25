@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Subagent orchestration guidance again makes workflows the default for non-trivial structured work with verifiable objectives, such as implementation, review, or retry pipelines, unless you ask for inline execution.
 - The builtin `tdd` skill now checks every new test before it's written: it must name the behavior it protects, the regression that would break it, and why existing tests don't already catch that, and it can't need a production seam that exists only for the test. Bug regression tests must fail on the unfixed code first. The skill also covers reviewing and pruning existing tests: a list of low-value test patterns, a bar for which tests to keep, and a read-only, evidence-first audit workflow. It is adapted from OpenClaw's `test-audit` skill.
 
 ## [0.9.20-alpha.11] - 2026-09-24

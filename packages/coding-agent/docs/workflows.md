@@ -46,7 +46,7 @@ For checking changes and sharing results in PRs, see [Verification and evidence]
 
 ## When to Use Workflows
 
-The agent decides whether a workflow fits. Well-defined, authorized work that benefits from durable stages, checkpoints, dependencies, recovery, review loops or approval gates runs as a workflow; brainstorming, discussion, unclear goals, simple bounded work, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
+The agent decides whether a workflow fits. Non-trivial work with structure and a verifiable objective runs as a workflow unless you ask for inline execution: implementation, bug fixes, debugging, migrations, multi-file changes with validation, and requests phrased as "repeat until" or "fix until green". Brainstorming, discussion, unclear goals, tiny low-risk answers or edits, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
 Safety, authorization, testing and evidence requirements remain in force. For an active user-requested switch to inline, safely hold/stop the affected run and reconcile completed work and in-flight effects before continuing without duplicates. User `/workflow` commands launch directly; authored `ctx.workflow(...)` remains internal composition.
 

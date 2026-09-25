@@ -108,10 +108,23 @@ describe("agent-decided workflow execution guidance", () => {
 			"roughly ten exploratory tool calls",
 			"workflow-architecture pass",
 			"Run every slice through a child workflow",
-			"broad repository uncertainty →",
 			"Every model-tool run",
 		])
 			expect(workflowGuidance.join("\n")).not.toContain(obsolete);
+	});
+	test("defaults non-trivial structured work to a workflow and names the fit signals", () => {
+		for (const phrase of [
+			"treat workflows as the default execution path for non-trivial tasks",
+			"tiny deterministic low-risk answers or edits",
+			"Workflow fit check: prefer a workflow for implementation, build, debug/diagnosis, bug-fix, migration",
+			"Treat loop or stop-condition wording as a strong workflow signal",
+			"run checks and fix until green",
+			"Do not force-fit an installed workflow",
+			"broad repository uncertainty → Fan-out-and-synthesize",
+			"an explicit repeat-until condition → Loop until done",
+		])
+			expect(modelVisibleRouting).toContain(phrase);
+		expect(modelVisibleRouting).not.toContain("simple bounded work");
 	});
 	test("retains workflow authoring and internal composition without caller preselection", () => {
 		for (const phrase of [
@@ -474,10 +487,6 @@ describe("agent-decided workflow execution guidance", () => {
 		}
 	});
 
-	test("keeps selection guidance free of caller trigger lists", () => {
-		expect(modelVisibleRouting).not.toContain("independent slices → Fan-out-and-synthesize");
-	});
-
 	test("mirrors risk/evidence routing and verifier-loop guidance in workflow docs", async () => {
 		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/reliable-design.md");
 
@@ -626,8 +635,8 @@ describe("agent-decided workflow execution guidance", () => {
 			expect(modelVisibleRouting).toContain(phrase);
 		}
 
+		expect(modelVisibleRouting).toContain("workflows are the default for non-trivial structured work");
 		for (const obsoletePolicy of [
-			"workflows are the default for non-trivial structured work",
 			"all non-trivial operations should be delegated",
 			"spawn a debugger subagent first",
 			"Prefer async mode for every subagent launch",

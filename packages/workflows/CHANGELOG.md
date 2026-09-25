@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The agent again treats workflows as the default for non-trivial work with structure and a verifiable objective. Its guidance names the tasks that fit a workflow (implementation, bug fixes, debugging, migrations, multi-file changes with validation), treats "until" wording such as "fix until green" as a strong workflow signal, and maps task shapes to the pattern workflows. Only tiny, low-risk answers or edits, conversation, unclear goals, or an explicit request to work inline or quickly stay inline.
+
 ## [0.9.20-alpha.11] - 2026-09-24
 
 ### Changed

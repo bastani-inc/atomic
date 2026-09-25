@@ -31,7 +31,7 @@ In practice, that means:
 
 A good workflow prompt does not just say what to try. It says what success looks like.
 
-The agent decides whether a workflow fits. Well-defined, authorized work that benefits from durable stages, checkpoints, dependencies, recovery, review loops or approval gates runs as a workflow; brainstorming, discussion, unclear goals, simple bounded work, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
+The agent decides whether a workflow fits. Non-trivial work with structure and a verifiable objective runs as a workflow unless you ask for inline execution: implementation, bug fixes, debugging, migrations, multi-file changes with validation, and requests phrased as "repeat until" or "fix until green". Brainstorming, discussion, unclear goals, tiny low-risk answers or edits, or an explicit request to work inline, quickly or without a workflow stays inline. To launch, inspect the input contract with `workflow inputs`, then call `workflow run` with the registered workflow name and inputs. Ask only for genuinely missing information.
 
 For workflow authoring, Atomic supports custom TypeScript definitions and composition of reusable patterns; see [Reliable Workflow Design](../packages/coding-agent/docs/workflows/reliable-design.md).
 
