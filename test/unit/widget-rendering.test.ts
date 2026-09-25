@@ -1083,6 +1083,18 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(!after[0]!.includes("？"), "question mark gone after stage resumes");
 		assert.ok(after[0]!.includes("1 ●"), "back to ordinary running indicator");
 	});
+
+	test("mixed ordinary and awaiting-input runs keep the full running count behind one question mark (#3030)", () => {
+		const ordinary = makeRun("r5xxxxxx", "wf-ordinary", "running", [makeStage("s1", "build", "running")]);
+		const awaiting = makeRun("r6xxxxxx", "wf-await-mixed", "running", [makeStage("s1", "ask", "awaiting_input")]);
+		const snap = makeSnap([ordinary, awaiting]);
+		assert.deepEqual(renderWidgetLines(snap, 60).map(stripAnsi), [" ▾  2 background · ？ 2 ●"]);
+		const themed = buildThemedWidgetLines(snap, NULL_PI_THEME, 60);
+		const graphTheme = deriveGraphTheme({});
+		assert.ok(themed[0]!.includes(`${hexToAnsi(graphTheme.info)}？`));
+		assert.ok(themed[0]!.includes(`${hexToAnsi(graphTheme.warning)}2 ●`));
+		assert.deepEqual(renderWidgetLines(makeSnap([ordinary]), 60).map(stripAnsi), [" ▾  1 background · 1 ●"]);
+	});
 });
 
 // ---------------------------------------------------------------------------

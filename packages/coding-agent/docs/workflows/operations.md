@@ -85,7 +85,7 @@ The rendered card shape at the 80-column breakpoint is:
 │     Answer: /workflow connect 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44           │
 ```
 
-Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · ？ 2 ● · 1 quit`. The `？` appears before the running count whenever a listed run is waiting for your reply; answer it with `/workflow connect <id>` and the line returns to ` ▾  4 background · 2 ● · 1 quit`. A tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
+Below the breakpoint the same run set is represented by the collapsed count line, ` ▾  3 background · ？ 3 ●`. The `？` appears before the running count whenever a listed run is waiting for your reply; answer it with `/workflow connect <id>` and the line returns to ` ▾  3 background · 3 ●`. Other states add their own counts, for example ` ▾  4 background · 2 ● · 1 quit`, and a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
 
 ## Running Workflows
 
