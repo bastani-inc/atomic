@@ -9,7 +9,8 @@
  *      row 1: `<name> · <dim mode · progress · live tool nodes · duration>`
  *      awaiting-input cards add one quoted prompt row and one connect hint.
  *  - Collapsed single-line form below 80 cells:
- *      `▾  N background · X ●` in dim+warning.
+ *      `▾  N background · X ●` in dim+warning, with an info `？` before
+ *      `X ●` while any listed run (or its nested child) awaits input.
  *
  * Theme handling:
  *  - The widget always renders against the canonical Catppuccin Mocha

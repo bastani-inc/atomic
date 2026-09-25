@@ -1095,6 +1095,16 @@ describe("renderWidgetLines — collapsed form", () => {
 		assert.ok(themed[0]!.includes(`${hexToAnsi(graphTheme.warning)}2 ●`));
 		assert.deepEqual(renderWidgetLines(makeSnap([ordinary]), 60).map(stripAnsi), [" ▾  1 background · 1 ●"]);
 	});
+
+	test("nested child prompt raises the compact question mark on its visible root (#3030)", () => {
+		const root = makeRun("root1111", "compact-nested-root", "running");
+		const child: RunSnapshot = {
+			...makeRun("child333", "compact-nested-child", "running", [makeStage("s1", "ask", "awaiting_input")]),
+			parentRunId: "root1111",
+			rootRunId: "root1111",
+		};
+		assert.deepEqual(renderWidgetLines(makeSnap([child, root]), 60).map(stripAnsi), [" ▾  1 background · ？ 1 ●"]);
+	});
 });
 
 // ---------------------------------------------------------------------------
