@@ -636,26 +636,23 @@ test("a stale model catalog fails before a classifier selection can launch a sub
 
 test("classifier provider failure cannot return a route without a current chat model", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
-		Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })),
-	);
+	const catalog = Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` }));
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(catalog);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue(catalog);
 	const classify = mockClassifier(f);
 	f.ctx.model = undefined;
 	classify.mockRejectedValue(new Error("HTTP 422 private provider detail"));
 	await assert.rejects(routeTask(f, { taskNeeds: STATED_CODING_NEEDS }), /Classifier returned no valid decision/);
 	assert.ok(classify.mock.calls.length >= 1, "the classifier is asked once and nothing retries on chat");
 	assert.equal(f.infer.mock.calls.length, 0);
-	await assert.rejects(
-		routeTask(f),
-		/needs a chat model to read the task/,
-		"no chat model means nothing can read the task",
-	);
+	await assert.rejects(routeTask(f), /Classifier returned no valid decision/);
+	assert.equal(f.infer.mock.calls.length, 1, "with no current chat model, an eligible chat model reads the task");
 });
 
 test("long tasks reach the chat reader complete and never reach the classifier", async () => {
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
-	const task = `Review this change.\n${"reference data ".repeat(10000)}<keepContext>Review only.</keepContext>${"more data ".repeat(10000)}\nReport defects.`;
+	const task = `Review this change.\n${"reference data ".repeat(2000)}<keepContext>Review only.</keepContext>${"more data ".repeat(2000)}\nReport defects.`;
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
@@ -944,4 +941,19 @@ test("a caller list is offered whole while it fits one choice request, and falls
 		(error: unknown) =>
 			error instanceof AutoRoutingInferenceError && /cannot compare 300 different models/u.test(error.message),
 	);
+});
+
+test("a task larger than the preferred reader's window is read by an eligible model that holds it", async () => {
+	const f = await fixture();
+	const wide: Model<Api> = { ...decisionModel, id: "wide", contextWindow: 200_000 };
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, wide]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, wide]);
+	const classify = mockClassifier(f);
+	const task = `Review the attached logs.\n${"log line ".repeat(16_000)}`;
+	await routeTask(f, { task });
+	assert.equal(f.infer.mock.calls.length, 1);
+	const [reader, request] = f.infer.mock.calls[0]!;
+	assert.equal(`${reader.provider}/${reader.id}`, "decision-test/wide", "the 32k current model cannot hold it");
+	assert.equal(chatPayload(request).state.task, task, "the reader still gets the complete task");
+	assert.ok(classify.mock.calls.every(([, context]) => context.state.task === undefined));
 });

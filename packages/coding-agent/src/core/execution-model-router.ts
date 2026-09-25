@@ -89,6 +89,10 @@ const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
 ];
 /** Most options the router compares when it builds the shortlist itself. */
 const SHORTLIST_SIZE = 6;
+/** Conservative bytes per token when checking that a task fits a reader's context window. */
+const BYTES_PER_TOKEN = 3;
+/** Room in the reader's window for the questions, instructions and its answer. */
+const READER_OVERHEAD_TOKENS = 4_000;
 /** Jev accepts at most this many options in one Choice question. */
 const MAX_CHOICE_OPTIONS = 255;
 
@@ -226,12 +230,29 @@ export async function routeExecutionModel(input: {
 		let answers: Record<string, string> = {};
 		if (questions.length) {
 			const current = ctx.model;
-			const reader =
+			const preferred =
 				router.kind === "chat"
-					? router.fullId
+					? router.model
 					: current && current.id !== "auto" && isModelType(current, "chat")
-						? `${current.provider}/${current.id}`
+						? current
 						: undefined;
+			// The reader gets the complete task. When the task is larger than the
+			// preferred reader's window, the cheapest eligible model that holds it
+			// reads instead; eligible models are the ones allowed to receive the task.
+			const taskTokens = Math.ceil(Buffer.byteLength(task, "utf8") / BYTES_PER_TOKEN) + READER_OVERHEAD_TOKENS;
+			const holdsTask = (model: Model<Api>) => model.contextWindow >= taskTokens;
+			const readerModel =
+				preferred && holdsTask(preferred)
+					? preferred
+					: (available
+							.map((entry) => entry.model)
+							.filter(holdsTask)
+							.sort(
+								(a, b) =>
+									a.cost.input - b.cost.input ||
+									`${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`),
+							)[0] ?? preferred);
+			const reader = readerModel ? `${readerModel.provider}/${readerModel.id}` : undefined;
 			if (reader === undefined)
 				await fallBackToCurrentModel(
 					"Auto routing needs a chat model to read the task. Select a chat model or state every taskNeeds field.",
