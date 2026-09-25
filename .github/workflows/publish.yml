@@ -82,6 +82,10 @@ jobs:
     env:
       # cargo-xwin fetches both CRTs by default; each Windows leg links one.
       XWIN_ARCH: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+      # Keep Zig version and SHA-256 pins in sync with warm-toolchain-cache.yml.
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256_X86_64: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      ZIG_SHA256_AARCH64: ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17
     strategy:
       fail-fast: false
       matrix:
@@ -224,18 +228,54 @@ jobs:
         if: matrix.arch == 'x64'
         shell: bash
         run: echo 'RUSTFLAGS=-C target-cpu=x86-64-v2' >> "$GITHUB_ENV"
+      - name: Mount Namespace Zig tarball cache
+        if: matrix.platform == 'linux'
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          path: ~/.cache/atomic-zig
+      - name: Verify cached Zig for portable Linux builds
+        id: zig-cache
+        if: matrix.platform == 'linux'
+        shell: bash
+        timeout-minutes: 1
+        continue-on-error: true
+        env:
+          ZIG_ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ZIG_ARCH" in
+            x64) arch=x86_64; sha="$ZIG_SHA256_X86_64" ;;
+            arm64) arch=aarch64; sha="$ZIG_SHA256_AARCH64" ;;
+            *) echo "Unsupported Zig architecture: $ZIG_ARCH"; exit 1 ;;
+          esac
+          file="zig-${arch}-linux-${ZIG_VERSION}.tar.xz"
+          tarball="$HOME/.cache/atomic-zig/$file"
+          dest="$RUNNER_TEMP/zig-${arch}-linux-${ZIG_VERSION}"
+          echo 'hit=false' >> "$GITHUB_OUTPUT"
+          if [[ ! -f "$tarball" ]]; then
+            echo "Zig $ZIG_VERSION Namespace release cache miss"
+          elif ! echo "$sha  $tarball" | sha256sum -c --status; then
+            echo "Zig $ZIG_VERSION Namespace release cache corrupt (SHA-256 mismatch)"
+          elif ! tar -xJf "$tarball" -C "$RUNNER_TEMP" || [[ ! -x "$dest/zig" ]] || [[ "$("$dest/zig" version)" != "$ZIG_VERSION" ]]; then
+            echo "Zig $ZIG_VERSION Namespace release cache corrupt (extract/version check failed)"
+          else
+            echo "$dest" >> "$GITHUB_PATH"
+            echo "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" >> "$GITHUB_ENV"
+            echo "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" >> "$GITHUB_ENV"
+            echo 'hit=true' >> "$GITHUB_OUTPUT"
+            echo "Zig $ZIG_VERSION served from the Namespace release cache (sha256 verified)"
+          fi
       # Community Zig mirrors have stalled two releases (795.9s and 437.6s).
-      # setup-zig applies no per-mirror deadline, so bound it and retry once on a
-      # re-shuffled mirror list: a stall now costs at most 4 minutes and fails loudly.
+      # On a cache miss, bound setup-zig and retry once on a re-shuffled mirror list.
       - name: Setup zig for portable Linux builds
         id: zig
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.zig-cache.outputs.hit != 'true'
         continue-on-error: true
         timeout-minutes: 2
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
-          # Namespace runners are ephemeral, so the tool cache dies with the VM.
+          version: ${{ env.ZIG_VERSION }}
+          # Tool-cache hits bypass setup-zig's signature verification.
           use-tool-cache: false
           # Global .zig-cache, not the tarball cache. Its save key embeds the run id,
           # so it can never be reused, and disabling it keeps the retry's post step inert.
@@ -245,7 +285,7 @@ jobs:
         timeout-minutes: 2
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
           use-tool-cache: false
           use-cache: false
       # Unversioned taiki-e tools resolve to @latest, floating the build toolchain
