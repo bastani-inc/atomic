@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow authoring guidance now tells agents to put a `model: "auto"` stage's role and objective at the start or end of its prompt or in a short `<keepContext>` span, since model routing sees only those parts of long prompts.
+
 ## [0.9.20] - 2026-09-24
 
 ### Breaking Changes
