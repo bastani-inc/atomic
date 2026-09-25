@@ -15,10 +15,16 @@ import {
 	isCachePrefixFingerprint,
 	reconstructMessageHashes,
 } from "../../../src/core/cache-prefix-fingerprint.ts";
-import { collectCacheMisses, describeCacheMissCause, detectCacheMiss } from "../../../src/core/cache-stats.ts";
+import {
+	collectCacheMisses,
+	createCacheMissModelSource,
+	describeCacheMissCause,
+	detectCacheMiss,
+} from "../../../src/core/cache-stats.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
+import { buildContextEntries } from "../../../src/core/session-manager-history.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -283,5 +289,110 @@ describe("issue #3261: a stale host-side session snapshot must not hide cache-pr
 		assert.deepEqual(await liveNotices(relayed[1]), [
 			"Prompt cache miss (tool list changed: +bash): 30,100 tokens re-billed ($0.000)",
 		]);
+	});
+
+	it("the isolated TUI host's live notice labels the first post-compaction miss like resume (#3261)", async () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-3261-live-compaction-"));
+		cleanups.push(async () => rmSync(cwd, { recursive: true, force: true }));
+		const faux = registerFauxProvider();
+		cleanups.push(async () => faux.unregister());
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		modelRuntime.registerProvider(faux.getModel().provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models,
+		});
+		// Three warm turns, then the first post-compaction request re-writes the whole prefix.
+		const usages: Usage[] = [
+			reportedUsage(30_000),
+			{ ...reportedUsage(100), cacheRead: 30_000, totalTokens: 30_202 },
+			{ ...reportedUsage(100), cacheRead: 30_000, totalTokens: 30_202 },
+			reportedUsage(30_000),
+		];
+		const providerReportsUsage: ExtensionFactory = (pi) => {
+			pi.on("message_end", (event) => {
+				if (event.message.role !== "assistant") return;
+				return { message: { ...event.message, usage: usages.shift() ?? reportedUsage(0) } };
+			});
+		};
+		const sessionDir = join(cwd, "sessions");
+		const engineSessionManager = SessionManager.create(cwd, sessionDir);
+		const { session: engine } = await createAgentSession({
+			cwd,
+			agentDir: cwd,
+			resourceLoader: createTestResourceLoader({
+				systemPrompt: "You are a test assistant.",
+				extensionsResult: await createTestExtensionsResult([providerReportsUsage], cwd),
+			}),
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: engineSessionManager,
+			model: faux.getModel(),
+		});
+		cleanups.push(() => engine.dispose());
+		const relayed: AgentSessionEvent[] = [];
+		engine.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant")
+				relayed.push(JSON.parse(JSON.stringify(event)) as AgentSessionEvent);
+		});
+		engine.setActiveToolsByName(["read"]);
+		faux.setResponses(
+			Array.from(
+				{ length: 4 },
+				(_, i) => ({ role: "assistant", content: [{ type: "text", text: `answer ${i}` }] }) as never,
+			),
+		);
+		for (let i = 0; i < 3; i++) await engine.prompt(`turn ${i}`);
+
+		// Compact with a kept tail (the last user turn and its reply), as default preserve_recent does.
+		const users = engineSessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "message" && entry.message.role === "user");
+		const keptFrom = users[users.length - 1];
+		assert.ok(keptFrom);
+		engineSessionManager.appendCompaction("[User]: compacted", keptFrom.id, 30_000, {
+			strategy: "verbatim-lines",
+		} as never);
+		engine.agent.state.messages = engineSessionManager.buildSessionContext().messages;
+
+		const chatContainer = new Container();
+		const host = Object.assign(Object.create(InteractiveMode.prototype), {
+			isInitialized: true,
+			footer: { invalidate: () => {} },
+			chatContainer,
+			ui: { requestRender: () => {} },
+			runtimeHost: {
+				session: {
+					// The host snapshot from the last agent_end resync, before the compaction.
+					sessionManager: SessionManager.open(engineSessionManager.getSessionFile()!, sessionDir, cwd),
+					settingsManager: { getShowCacheMissNotices: () => true },
+					modelRuntime,
+				},
+			},
+		}) as { handleEvent(event: AgentSessionEvent): Promise<void> };
+
+		await engine.prompt("turn 3 after compaction");
+		assert.equal(relayed.length, 4);
+		chatContainer.clear();
+		await host.handleEvent(relayed[3]);
+		const live = chatContainer.children.map((child) => stripAnsi(child.render(200).join("")).trim());
+
+		const resumed = SessionManager.open(engineSessionManager.getSessionFile()!, sessionDir, cwd);
+		const rerendered = [
+			...collectCacheMisses(
+				buildContextEntries(resumed.getEntries(), resumed.getLeafId()),
+				createCacheMissModelSource(modelRuntime),
+			).values(),
+		].map(
+			(miss) =>
+				`Prompt cache miss${describeCacheMissCause(miss)}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`,
+		);
+		assert.equal(rerendered.length, 1, "resume reports exactly the post-compaction miss");
+		assert.match(rerendered[0], /^Prompt cache miss \(history compacted \(message \d+ rewritten\)\): 30,100 tokens/);
+		assert.deepEqual(live, rerendered, "the live notice must match what resume renders for the same request");
 	});
 });
