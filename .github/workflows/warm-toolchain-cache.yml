@@ -46,18 +46,20 @@ jobs:
       - run: npm ci --ignore-scripts
 
   msvc-crt:
-    name: Warm MSVC CRT ${{ matrix.arch }}
+    name: Warm MSVC CRT
     if: github.ref == 'refs/heads/main'
-    # Both Windows legs cross-compile on this Linux runner spec.
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 19
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
-    env:
-      XWIN_ARCH: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+    # Cross-compiles both Windows arches on this Linux runner spec. One job,
+    # not a per-arch matrix: Namespace cache volumes are last-write-wins forks
+    # (docs/ci.md, "Cache Volumes"), so two parallel matrix jobs writing the
+    # same tag could each commit a fork missing the other arch's files.
+    runs-on: [nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders, nscloud-cache-tag-bastani-inc.atomic.release.linux-x64, nscloud-cache-allow-commit-from-main, nscloud-no-remote-builders]
+    # rust (4) + cargo-xwin install (3) + two 8-minute populate bounds (x64,
+    # arm64) + 4 minutes runner setup/checkout/cache mount = 27.
+    timeout-minutes: 27
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         timeout-minutes: 4
         with:
@@ -67,18 +69,57 @@ jobs:
       - name: Install cargo-xwin
         timeout-minutes: 3
         run: cargo install cargo-xwin --version 0.23.0 --locked
+      # Pinned to a versioned subdirectory; the same literal path must appear
+      # in publish.yml. Bump `v1-17` in both files together to force a refresh.
       - name: Resolve MSVC CRT cache directory
         shell: bash
-        run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"
-      # The key epoch must match `publish.yml`.
-      - name: Restore MSVC CRT and Windows SDK
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin/v1-17" >> "$GITHUB_ENV"
+      # This job carries nscloud-cache-allow-commit-from-main and no
+      # do-not-commit label, so a clean exit persists both arches' files.
+      - name: Configure MSVC CRT cache volume
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
+          spacectl-version: 0.12.3
           path: ~/.cache/cargo-xwin
-          key: xwin-v1-${{ matrix.arch }}-17
+      # Probe both arches before writing anything. cargo-xwin 0.23.0 trusts a
+      # DONE marker without re-checking the files it lists, so a partial tree
+      # from an earlier interrupted run must be detected here, not per-arch,
+      # or the second populate could layer onto a half-written first arch.
+      - name: Detect partial MSVC CRT cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          xwin_dir="$XWIN_CACHE_DIR/xwin"
+          done_file="$xwin_dir/DONE"
+          if [[ -d "$xwin_dir" ]] && [[ -f "$done_file" ]]; then
+            for arch in x86_64 aarch64; do
+              if ! head -n1 "$done_file" | grep -qw "$arch"; then
+                continue
+              fi
+              ok=1
+              for required in "crt/include" "crt/lib/$arch" "sdk/include" "sdk/include/ucrt" "sdk/lib/um/$arch" "sdk/lib/ucrt/$arch"; do
+                if [[ ! -d "$xwin_dir/$required" ]] || [[ -z "$(ls -A "$xwin_dir/$required" 2>/dev/null)" ]]; then
+                  ok=0
+                  break
+                fi
+              done
+              if [[ "$ok" -eq 0 ]]; then
+                echo "Partial or stale MSVC CRT cache detected for $arch; wiping $xwin_dir" >&2
+                rm -rf "$xwin_dir"
+                break
+              fi
+            done
+          fi
       - name: Populate MSVC CRT cache on miss
         timeout-minutes: 8
         env:
+          XWIN_ARCH: x86_64
+          XWIN_ACCEPT_LICENSE: "1"
+        run: cargo-xwin xwin cache xwin
+      - name: Populate MSVC CRT cache on miss
+        timeout-minutes: 8
+        env:
+          XWIN_ARCH: aarch64
           XWIN_ACCEPT_LICENSE: "1"
         run: cargo-xwin xwin cache xwin
 
