@@ -8,8 +8,8 @@
 
 ### Fixed
 
-- Fixed a prompt sent immediately after RPC startup (including the interactive TUI's engine child) reaching the provider before extension `session_start` handlers and their tool registrations finished applying, which could change the request prefix on the very next turn and force a full prompt-cache rewrite. `prompt`, `steer`, and `follow_up` now wait for the initial extension bind; other RPC commands are unaffected ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
-- Fixed sessions with a forced system prompt (an extension `before_agent_start` override, or an in-process subagent's system prompt transform) rewriting the entire `tools` request field on every mid-run tool change instead of sending a native tool addition/removal, which forced a full prompt-cache rewrite on the next turn ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- Fixed a prompt sent immediately after RPC startup (including the interactive TUI's engine child) reaching the provider before extension `session_start` handlers and their tool registrations finished applying, which could change the request prefix on the very next turn and force a full prompt-cache rewrite. `prompt`, `steer`, and `follow_up` now wait for the initial extension bind; commands such as `get_state` still answer while a `prompt` waits ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- Fixed sessions with a forced system prompt (an extension `before_agent_start` override, or an in-process subagent's system prompt transform) rewriting the entire `tools` request field on every mid-run tool change instead of sending the change as a tool addition or removal where the provider supports it, which forced a full prompt-cache rewrite on the next turn ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
 
 ## [0.9.21-alpha.1] - 2026-09-25
 
