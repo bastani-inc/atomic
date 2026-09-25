@@ -111,7 +111,7 @@ When asked to review or prune tests rather than write them, follow the [audit wo
 [ ] Test describes behavior, not implementation
 [ ] Test uses public interface only
 [ ] Test would survive internal refactor
-[ ] Regression test failed on the pre-fix code for the intended reason
+[ ] Bug fixes only: the regression test failed on the pre-fix code for the intended reason
 [ ] Code is minimal for this test
 [ ] No speculative features added
 ```
