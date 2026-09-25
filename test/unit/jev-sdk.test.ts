@@ -109,6 +109,20 @@ test("classifier provider refusal falls back to current chat once", async () => 
 	assert.doesNotMatch(JSON.stringify(result) + String(warning.mock.calls[0]?.[0]), /private body/);
 });
 
+test("classifier overflow warning names the status and error type but not the body", async () => {
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	await routeModel(
+		routedClassifier(async () => ({
+			...classifierResult(),
+			stopReason: "error",
+			errorMessage: 'System One API error (400): {"detail":{"error_type":"max_tokens_exceeded","echo":"private"}}',
+		})),
+	);
+	const message = String(warning.mock.calls[0]?.[0]);
+	assert.match(message, /Classifier routing failed \(HTTP 400 max_tokens_exceeded\); falling back/);
+	assert.doesNotMatch(message, /private/);
+});
+
 for (const succeeds of [true, false]) {
 	test(`classifier failure gives chat three corrective retries: final success=${succeeds}`, async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});

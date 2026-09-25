@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Auto model routing no longer fails over to the chat model when the routing request is too large for Jev. Large catalogs and long workflow or subagent prompts, including large `<keepContext>` spans, are now cut to fit in the router's copy only, marked `[... truncated ...]`, while the stage or subagent still receives the full prompt. When a classifier does fail, the warning now names the HTTP status and error type, for example `HTTP 400 max_tokens_exceeded`.
+
 ## [0.9.20] - 2026-09-24
 
 ### Breaking Changes

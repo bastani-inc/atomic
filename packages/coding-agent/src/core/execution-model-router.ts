@@ -16,7 +16,14 @@ import {
 	type ModelRouterOutput,
 	parseModelConstraints,
 } from "./model-routing-constraints.js";
-import { modelRoutingTask } from "./model-routing-task.js";
+import {
+	jsonBytes,
+	MODEL_ROUTING_TASK_BYTES,
+	modelRoutingTask,
+	ROUTING_REQUEST_BYTES,
+	TRUNCATED_MARKER,
+	truncateToBytes,
+} from "./model-routing-task.js";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
 
 export interface ModelRoutingContext {
@@ -101,14 +108,38 @@ Price is per task. Candidate cost is USD per million tokens, and roles differ in
 An explicit user request wins over these defaults, but the requested level must exist for the selected catalog entry. Do not invent unsupported suffixes. If \`xhigh\` is unavailable, use \`high\` rather than automatically promoting to \`max\`; choose another catalog model or leave the stage unpinned if neither fits.
 `;
 
-// Jev 1.13 allows 32k tokens for state plus the longest question. Routing charges
-// one byte per token and stays under 30_000. This is what remains for the full
-// evals snapshot after the model-selection guide, a 9_000-byte task, and a
-// nine-candidate question.
+// Keeps the shipped evals snapshot small enough to reach Jev intact alongside the
+// guide, a full task excerpt, and a small candidate question. Larger candidate
+// questions truncate the routing copy instead; see fitRoutingState.
 export const MODEL_SELECTION_EVALS_JSON_BYTES = 14_200;
 const EVALS_BUDGET_ERROR = `Auto routing requires a nonempty evals.md document within ${MODEL_SELECTION_EVALS_JSON_BYTES.toLocaleString("en-US")} JSON-encoded bytes. Repair the Atomic installation or select a concrete execution model.`;
-function jsonBytes(value: string): number {
-	return Buffer.byteLength(JSON.stringify(value), "utf8");
+// Decision policy, key names and JSON framing the classifier transport adds.
+const ROUTING_WIRE_OVERHEAD_BYTES = 1_000;
+const PAIR_QUESTION =
+	"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers, evals, and candidate capabilities and prices? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification. Candidate cost is USD per million tokens, not benchmark task cost.";
+
+type RoutingState = {
+	task: string;
+	agent: { name: string; description: string };
+	evals: string;
+	model_selection_guide: string;
+};
+
+/**
+ * Truncate the routing copy of the task, then evals, so state plus the candidate
+ * question fits ROUTING_REQUEST_BYTES. Candidates, agent and guide stay intact.
+ */
+function fitRoutingState(state: RoutingState, criteria: Record<string, string>): RoutingState {
+	const fixed =
+		Buffer.byteLength(
+			JSON.stringify({ ...state, task: "", evals: "", instructions, question: PAIR_QUESTION, criteria }),
+			"utf8",
+		) + ROUTING_WIRE_OVERHEAD_BYTES;
+	const room = Math.max(0, ROUTING_REQUEST_BYTES - fixed);
+	const evalsMarkerBytes = jsonBytes(TRUNCATED_MARKER);
+	const task = modelRoutingTask(state.task, Math.max(0, Math.min(MODEL_ROUTING_TASK_BYTES, room - evalsMarkerBytes)));
+	const evals = truncateToBytes(state.evals, Math.max(evalsMarkerBytes, room - jsonBytes(task)));
+	return { ...state, task, evals };
 }
 
 async function readModelSelectionEvals(signal?: AbortSignal): Promise<string> {
@@ -190,9 +221,8 @@ export async function routeExecutionModel(input: {
 		)
 			throw new Error("Auto routing context contains credential material. Remove secrets before retrying.");
 		// Screen the full task first, even credentials in text the router will omit.
-		// Shortening only affects the routing request, never the execution prompt,
+		// Truncation only affects the routing request, never the execution prompt,
 		// so it is not surfaced to the user.
-		state.task = modelRoutingTask(state.task);
 		const ranked: ModelRouterOutput[] = [];
 		// Degrade only to a current chat model that is available and eligible under
 		// the same constraints, restored through the normal selection path (#3206).
@@ -248,14 +278,13 @@ export async function routeExecutionModel(input: {
 						settings,
 						modelRegistry: ctx.modelRegistry,
 						currentModel: ctx.model,
-						state,
+						state: fitRoutingState(state, criteria),
 						instructions,
 						schema,
 						classifier: {
 							questions: {
 								pair: {
-									instructions:
-										"Which eligible model and reasoning effort best suit this task and agent role, considering the model_selection_guide role tiers, evals, and candidate capabilities and prices? Prefer cheaper candidates for exploration and routine implementation and stronger ones for review and verification. Candidate cost is USD per million tokens, not benchmark task cost.",
+									instructions: PAIR_QUESTION,
 									criteria,
 								},
 							},
