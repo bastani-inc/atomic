@@ -122,6 +122,15 @@ export class DefaultMainDriver {
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
+		await Promise.all(this.reportedEnginePids().map((pid) => killAndReap(pid)));
+	}
+
+	private reportedEnginePids(): number[] {
+		const pids = new Set<number>();
+		for (const report of this.reports) {
+			if (typeof report.enginePid === "number") pids.add(report.enginePid);
+		}
+		return [...pids];
 	}
 
 	private async readReports(): Promise<void> {
@@ -178,4 +187,13 @@ export async function waitForExit(pid: number, timeoutMs = 4_000): Promise<void>
 		await sleep(20);
 	}
 	throw new Error(`PID ${pid} remained alive`);
+}
+
+async function killAndReap(pid: number): Promise<void> {
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		return;
+	}
+	await waitForExit(pid);
 }
