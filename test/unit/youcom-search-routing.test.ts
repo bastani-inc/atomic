@@ -35,17 +35,18 @@ const youcomCalls: string[] = [];
 const perplexityCalls: string[] = [];
 const exaCalls: string[] = [];
 
-vi.mock("../../packages/web-access/youcom.js", () => ({
-	isYoucomAvailable: () => youcomAvailableFlag,
-	// Mirror the real predicate's name-based check so the routing layer under
-	// test recognizes validation errors thrown across this module boundary.
-	isDomainFilterValidationError: (err: unknown) =>
-		typeof err === "object" && err !== null && (err as { name?: unknown }).name === "DomainFilterValidationError",
-	searchWithYoucom: async (query: string) => {
-		youcomCalls.push(query);
-		return youcomResultFactory();
-	},
-}));
+vi.mock("../../packages/web-access/youcom.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../packages/web-access/youcom.js")>();
+	return {
+		isYoucomAvailable: () => youcomAvailableFlag,
+		isDomainFilterValidationError: original.isDomainFilterValidationError,
+		searchWithYoucom: async (query: string, options?: Parameters<typeof original.searchWithYoucom>[1]) => {
+			youcomCalls.push(query);
+			if (useRealYoucomSearch) return original.searchWithYoucom(query, options);
+			return youcomResultFactory();
+		},
+	};
+});
 
 vi.mock("../../packages/web-access/perplexity.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("../../packages/web-access/perplexity.js")>();
@@ -90,6 +91,7 @@ vi.mock("../../packages/web-access/gemini-web.js", () => ({
 const { search } = await import("../../packages/web-access/gemini-search.js");
 
 let youcomAvailableFlag = false;
+let useRealYoucomSearch = false;
 let perplexityAvailableFlag = false;
 let geminiApiKey = "";
 let perplexityErrorFactory: (() => Promise<never>) | null = null;
@@ -100,6 +102,7 @@ beforeEach(() => {
 	perplexityCalls.length = 0;
 	exaCalls.length = 0;
 	youcomAvailableFlag = false;
+	useRealYoucomSearch = false;
 	perplexityAvailableFlag = false;
 	geminiApiKey = "";
 	perplexityErrorFactory = null;
@@ -221,6 +224,45 @@ describe("search() routing with the youcom provider", () => {
 		);
 		assert.deepEqual(youcomCalls, ["rejected domain filter"]);
 		assert.deepEqual(fetchCalls, [], "no Gemini API request may follow the rejected domain filter");
+	});
+
+	test("a non-array domain filter under auto selection is rejected by the real You.com validation and stops the chain", async () => {
+		// Tool arguments are not schema-validated by the host, so a model can
+		// send a bare object. Run the real searchWithYoucom so the regression
+		// covers its input validation, and arm Gemini behind it so any
+		// continuation past You.com is observable as a Gemini fetch.
+		youcomAvailableFlag = true;
+		useRealYoucomSearch = true;
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		geminiApiKey = "fake-gemini-key";
+		const fetchCalls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL) => {
+				fetchCalls.push(String(url));
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+
+		let caught: unknown;
+		try {
+			await search("non-array domain filter", {
+				provider: "auto",
+				domainFilter: { include: "docs.rs" } as unknown as string[],
+			});
+		} catch (err) {
+			caught = err;
+		}
+
+		assert.ok(caught instanceof Error, "the search must reject");
+		assert.equal(caught.name, "DomainFilterValidationError");
+		assert.match(caught.message, /domainFilter must be an array of hostnames/);
+		assert.ok(
+			!caught.message.includes("Auto provider search failed"),
+			"the validation error must not be aggregated into the auto-provider failure summary",
+		);
+		assert.deepEqual(youcomCalls, ["non-array domain filter"]);
+		assert.deepEqual(fetchCalls, [], "neither You.com nor Gemini may be requested for a non-array domain filter");
 	});
 
 	test("explicit youcom selection surfaces the provider error instead of falling through", async () => {

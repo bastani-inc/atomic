@@ -371,6 +371,30 @@ describe("youcom search requests", () => {
 		const entry = activityMonitor.getEntries().find((e) => e.query === "bare-exclusion-prefix");
 		assert.equal(entry, undefined, "no activity entry should be created for an invalid filter");
 	});
+
+	test.each([
+		["a bare string", "docs.rs"],
+		["a plain object", { include: "docs.rs" }],
+		["a number", 42],
+	])("rejects %s passed as the whole domainFilter before any request or activity entry", async (label, malformed) => {
+		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
+		fetchResult = okResponse(webResults([{ url: "https://example.com/a", title: "Would be fail-open" }]));
+		const query = `non-array-domain-filter ${label}`;
+
+		let caught: unknown;
+		try {
+			await searchWithYoucom(query, { domainFilter: malformed as unknown as string[] });
+		} catch (err) {
+			caught = err;
+		}
+
+		assert.ok(caught instanceof Error, "a non-array domainFilter must reject");
+		assert.equal(isDomainFilterValidationError(caught), true, "the rejection must be a DomainFilterValidationError");
+		assert.match(caught.message, /domainFilter must be an array of hostnames/);
+		assert.equal(fetchCalls.length, 0, "no request should be made for a non-array domainFilter");
+		const entry = activityMonitor.getEntries().find((e) => e.query === query);
+		assert.equal(entry, undefined, "no activity entry should be created for a non-array domainFilter");
+	});
 });
 
 describe("youcom domainFilter enforcement", () => {

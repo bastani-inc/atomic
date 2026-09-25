@@ -98,17 +98,24 @@ interface DomainFilter {
 }
 
 /**
- * Split a domainFilter into normalized include and exclude hostnames. Every
- * entry must be a string that normalizes to a hostname (optionally prefixed
- * with `-`); a blank, non-string, or otherwise malformed entry (including a
- * bare `-`) throws, because skipping it would silently broaden the results the
- * caller asked to restrict. The parameter is typed as `unknown[]` because tool
- * arguments are not validated by the host, so non-string entries are reachable.
+ * Split a domainFilter into normalized include and exclude hostnames. The
+ * filter must be an array (or absent), and every entry must be a string that
+ * normalizes to a hostname (optionally prefixed with `-`); a non-array filter
+ * or a blank, non-string, or otherwise malformed entry (including a bare `-`)
+ * throws, because skipping it would silently broaden the results the caller
+ * asked to restrict. The parameter is typed as `unknown` because tool
+ * arguments are not validated by the host, so any shape is reachable.
  */
-function splitDomainFilter(domainFilter: readonly unknown[] | undefined): DomainFilter {
+function splitDomainFilter(domainFilter: unknown): DomainFilter {
 	const includes: string[] = [];
 	const excludes: string[] = [];
-	for (const entry of domainFilter ?? []) {
+	if (domainFilter === undefined || domainFilter === null) return { includes, excludes };
+	if (!Array.isArray(domainFilter)) {
+		throw new DomainFilterValidationError(
+			`Invalid domainFilter: domainFilter must be an array of hostnames like ["example.com", "-reddit.com"], got ${typeof domainFilter}`
+		);
+	}
+	for (const entry of domainFilter) {
 		const trimmed = typeof entry === "string" ? entry.trim() : "";
 		const isExclude = trimmed.startsWith("-");
 		const domain = trimmed ? normalizeDomainEntry(isExclude ? trimmed.slice(1) : trimmed) : null;

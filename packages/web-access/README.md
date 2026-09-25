@@ -322,6 +322,7 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content f
 - PDFs are text-extracted only (no OCR for scanned documents).
 - GitHub branch names with slashes may misresolve file paths; the clone still works and the agent can navigate manually.
 - Non-code GitHub URLs (issues, PRs, wiki) fall through to normal web extraction.
+- You.com re-checks every result against `domainFilter` locally and does not request more to make up the difference, so a filtered search can return fewer results than `numResults`. A filter that mixes included and excluded domains is the most likely to come up short, because You.com narrows only by the included domains and the exclusions are applied locally. `domainFilter` must be an array of hostnames; a malformed filter is rejected with an error instead of falling back to another provider.
 
 <details>
 <summary>Files</summary>
