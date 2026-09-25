@@ -310,7 +310,7 @@ jobs:
           done_file="$xwin_dir/DONE"
           if [[ -d "$xwin_dir" ]] && [[ -f "$done_file" ]] && head -n1 "$done_file" | grep -qw "$XWIN_ARCH"; then
             ok=1
-            for required in "crt/include" "crt/lib/$XWIN_ARCH" "sdk/include" "sdk/include/ucrt" "sdk/lib/um/$XWIN_ARCH" "sdk/lib/ucrt/$XWIN_ARCH"; do
+            for required in "crt/include" "crt/lib/$XWIN_ARCH" "sdk/include/um" "sdk/include/shared" "sdk/include/ucrt" "sdk/lib/um/$XWIN_ARCH" "sdk/lib/ucrt/$XWIN_ARCH"; do
               if [[ ! -d "$xwin_dir/$required" ]] || [[ -z "$(ls -A "$xwin_dir/$required" 2>/dev/null)" ]]; then
                 ok=0
                 break

@@ -500,8 +500,8 @@ re-checking the splat files it lists, so a volume fork that was interrupted
 mid-populate would otherwise look complete. A `Detect partial MSVC CRT cache`
 step runs before the populate step in both workflows: when `DONE`'s first
 line claims an architecture but any of its required splat directories
-(`crt/include`, `crt/lib/<arch>`, `sdk/include`, `sdk/include/ucrt`,
-`sdk/lib/um/<arch>`, `sdk/lib/ucrt/<arch>`) is missing or empty, it deletes
+(`crt/include`, `crt/lib/<arch>`, `sdk/include/um`, `sdk/include/shared`,
+`sdk/include/ucrt`, `sdk/lib/um/<arch>`, `sdk/lib/ucrt/<arch>`) is missing or empty, it deletes
 the whole `xwin` tree so the populate step starts clean. An architecture that
 `DONE` does not yet claim is left alone; that is an ordinary cache miss, and
 cargo-xwin's own logic already handles it without help. `publish.yml`'s win32
