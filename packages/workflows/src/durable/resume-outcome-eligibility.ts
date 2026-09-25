@@ -56,7 +56,14 @@ export function isResumableRunOutcome(
 	try {
 		return resolveResumeStage(run, backend).ok;
 	} catch (error) {
-		if (error instanceof DbosNotReadyError) return true;
-		throw error;
+		// A backend that has not started yet cannot prove a missing restart point,
+		// so a not-ready backend keeps the benefit of the doubt, the way
+		// `workflowRunResumeCandidate` already treats an unreachable checkpoint
+		// lookup. Any other fault is different: it is not a state that clears on
+		// the next repaint, and this runs inside `inspectRun`, which feeds
+		// read-only surfaces (/workflow status, the workflow tool, durable
+		// inspection) that must not fail because the durable backend did. Those
+		// callers get the terminal reading instead of an exception (#2565 review).
+		return error instanceof DbosNotReadyError;
 	}
 }

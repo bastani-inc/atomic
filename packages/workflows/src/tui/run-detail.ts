@@ -454,12 +454,33 @@ function stageActivityString(stage: StageSnapshot, now: number): string | undefi
 // State badges + plain-text equivalents
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this detail's outcome reads as resumable.
+ *
+ * A detail written before `resumeEligible` existed carries only the engine's
+ * claim, and it is re-rendered from the session file long after the store that
+ * could answer the question is gone. Such a detail falls back to the rule this
+ * surface used then: the claim, *and* a status that could carry the cue. The
+ * status guard is not optional. Without it a completed or killed run whose
+ * claim happens to be true would start offering `/workflow resume` in every
+ * restored session, which the old rule never did (#2565 review).
+ */
+function detailResumeEligible(detail: RunDetail): boolean {
+	return detail.resumeEligible ?? (detail.resumable === true && CUE_CAPABLE_DETAIL_STATUSES.has(detail.status));
+}
+
+const CUE_CAPABLE_DETAIL_STATUSES: ReadonlySet<RunDetail["status"]> = new Set(["crashed", "failed", "blocked"]);
+
 /** The three outcomes that can carry the cue, through the shared table; glyphs stay this surface's own. */
 function outcomeBadge(
 	detail: RunDetail,
 	glyph: string,
 ): { text: string; tone: ReturnType<typeof runOutcomePresentation>["tone"] } {
-	const presentation = runOutcomePresentation({ status: detail.status, resumable: detail.resumeEligible === true });
+	const presentation = runOutcomePresentation({
+		status: detail.status,
+		resumable: detailResumeEligible(detail),
+		budgetExceeded: detail.budgetExceeded === true,
+	});
 	return { text: `${glyph} ${presentation.label}`, tone: presentation.tone };
 }
 
@@ -541,7 +562,7 @@ function renderDetailHintRows(detail: RunDetail, width: number, theme?: GraphThe
 	// crashed run offers resume only when the stored eligibility says so, so the
 	// hint and the badge above can never disagree, and a run with no restart
 	// point gets "inspect retained state" rather than a resume that would refuse.
-	const resumable = (detail.status === "paused" && detail.resumable !== false) || detail.resumeEligible === true;
+	const resumable = (detail.status === "paused" && detail.resumable !== false) || detailResumeEligible(detail);
 	const inspectOnly =
 		detail.ownerActiveElsewhere === true ||
 		(detail.status === "crashed" && !resumable) ||

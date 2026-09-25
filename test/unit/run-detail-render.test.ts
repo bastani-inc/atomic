@@ -546,3 +546,87 @@ describe("resumable failures (#2565)", () => {
 		assert.equal(withoutStage?.ok && withoutStage.detail.resumeEligible, false, "no stage, no restart point");
 	});
 });
+
+// Review round on #3153: three things commit 3 got wrong, each pinned here.
+describe("run detail corrections (#2565)", () => {
+	const theme = deriveGraphTheme({});
+	const budgetStop = (): RunSnapshot => ({
+		...makeRun({
+			id: "cccccccc-3333-4333-8333-333333333333",
+			status: "running",
+			startedAt: 1_000,
+			endedAt: 5_000,
+			stages: [],
+		}),
+		result: { status: "budget_exceeded" },
+		budgetState: { systemOwnedStop: true } as RunSnapshot["budgetState"],
+		resumable: true,
+		// Without the disposition this is not an active block: effectiveRunStatus
+		// returns the raw "running" and the card never reaches the budget rail.
+		failureDisposition: "active_blocked",
+		failureRecoverability: "recoverable",
+		blockedAt: 3_000,
+	});
+
+	test("a budget stop reads budget_exceeded on the detail, as it does on every other surface", () => {
+		const store = createStore();
+		store.recordRunStart(budgetStop());
+		const inspected = inspectRun("cccccccc-3333-4333-8333-333333333333", { store });
+		assert.ok(inspected.ok);
+		assert.equal(inspected.detail.budgetExceeded, true, "the flag is carried, since RunDetail has no budgetState");
+		assert.equal(inspected.detail.status, "blocked", "an active budget block presents as blocked");
+		const plain = stripAnsi(renderRunDetail(inspected.detail, { theme }));
+		// Assert on the badge rows only: the raw `result` row further down the card
+		// also contains the words, so a whole-output match proves nothing.
+		const badgeRows = plain.split("\n").filter((line) => line.includes("state") || line.includes("RUN "));
+		assert.ok(
+			badgeRows.some((line) => line.includes("budget_exceeded · resumable")),
+			`badge should carry the budget word and the cue: ${badgeRows.join(" // ")}`,
+		);
+		assert.ok(!badgeRows.some((line) => line.includes("↑ blocked")), "never the bare blocked word for a budget stop");
+	});
+
+	test("a backend fault leaves status readable instead of throwing out of inspectRun", () => {
+		const exploding = () => {
+			throw new Error("durable backend unavailable");
+		};
+		const run = {
+			...makeRun({ id: "dddddddd-4444-4444-8444-444444444444", status: "failed", startedAt: 1, endedAt: 2 }),
+			resumable: true,
+			failedToolNodeId: "tool:abc",
+			toolNodes: [] as RunSnapshot["toolNodes"],
+		};
+		// The tool-frontier branch is the one that reaches the backend at all.
+		assert.equal(
+			isResumableRunOutcome(run, (candidate) => ({ ...candidate }), exploding),
+			false,
+			"an unprovable restart point reads terminal, not an exception",
+		);
+		const store = createStore();
+		store.recordRunStart(run);
+		const inspected = inspectRun("dddddddd-4444-4444-8444-444444444444", { store });
+		assert.ok(inspected.ok);
+	});
+
+	test("a detail saved before resumeEligible existed keeps the behaviour it was rendered with", () => {
+		// Persisted payloads are re-rendered with no store to probe, so the field
+		// is absent and the old rule has to answer: the claim AND a cue-capable
+		// status. A bare claim fallback would offer resume on completed and killed.
+		const legacy = (status: RunDetail["status"], resumable: boolean): RunDetail => ({
+			...detailFromRun(makeRun({ id: "eeeeeeee-5555-4555-8555-555555555555", status: "failed", endedAt: 9 })),
+			status,
+			resumable,
+			resumeEligible: undefined,
+		});
+		for (const status of ["failed", "crashed", "blocked"] as const) {
+			assert.match(stripAnsi(renderRunDetail(legacy(status, true), { theme })), /workflow resume\s+id=/, status);
+		}
+		for (const status of ["completed", "killed"] as const) {
+			const plain = stripAnsi(renderRunDetail(legacy(status, true), { theme }));
+			assert.doesNotMatch(plain, /workflow resume\s+id=/, `${status} never offered resume before this change`);
+		}
+		// A new payload still wins over the claim in both directions.
+		const fresh = { ...legacy("failed", true), resumeEligible: false };
+		assert.doesNotMatch(stripAnsi(renderRunDetail(fresh, { theme })), /workflow resume\s+id=/);
+	});
+});
