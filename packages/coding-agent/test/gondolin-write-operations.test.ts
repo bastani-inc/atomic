@@ -114,7 +114,8 @@ function gondolinFixture() {
 					});
 					// A script may exit without reading stdin (noclobber fails before cat runs); a VM
 					// exec reports the exit status, so only a missing status is a transport failure.
-					const unreadStdin = (result.error as NodeJS.ErrnoException | undefined)?.code === "EPIPE";
+					const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+					const unreadStdin = errorCode === "EPIPE" || errorCode === "EOF";
 					if (result.error && !(unreadStdin && result.status !== null)) throw result.error;
 					if (result.status === 44 && guest.race) {
 						guest.race = false;
