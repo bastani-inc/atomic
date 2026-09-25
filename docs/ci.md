@@ -31,10 +31,12 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    ├─ register-published-version: register the published version with a GitHub OIDC JWT
    └─ cleanup-draft-github-release: delete a draft when later work fails
 
-Manual dispatch on `main`
+Push or manual dispatch on `main`
 └─ warm-toolchain-cache.yml
-   ├─ zig-tarball: fetch Zig on Linux x64 and arm64
-   └─ msvc-crt: fetch the MSVC CRT and Windows SDK for each Windows arch
+   ├─ release-linux-cache (x64, arm64): populate the Linux release npm download caches
+   ├─ msvc-crt (after release-linux-cache): fetch the MSVC CRT and Windows SDK
+   │  for both Windows arches in one call onto the linux-x64 release volume
+   └─ release-windows-cache: populate the Windows release npm download cache
 
 Push or manual dispatch on `main`
 └─ warm-macos-release-cache.yml
@@ -70,7 +72,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
 | `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `warm-toolchain-cache.yml` zig x64, msvc-crt / zig arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16` / `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
+| `warm-toolchain-cache.yml` release-linux-cache x64, msvc-crt / release-linux-cache arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
 
@@ -470,8 +472,13 @@ mount (`nscloud-cache-tag-bastani-inc.atomic.release.linux-x64`), bind-mounted
 onto `~/.cache/cargo-xwin` by `namespacelabs/nscloud-cache-action` (the same
 pinned SHA used elsewhere in this file). `XWIN_CACHE_DIR` is pinned to the
 versioned subdirectory `$HOME/.cache/cargo-xwin/v1-17` inside that mount, and
-the same literal path is used in `publish.yml` and in the warmer. Each leg
-sets `XWIN_ARCH` to avoid downloading an architecture it does not link.
+the same literal path is used in `publish.yml` and in the warmer. Each release
+leg sets `XWIN_ARCH` to the one architecture it links, and it hits when the
+first line of `DONE` names that architecture. The warmer populates both
+architectures in one call (`XWIN_ARCH=x86_64,aarch64`). cargo-xwin 0.23.0
+rewrites `DONE` with only the current call's architectures, and xwin 0.9.0
+deletes `crt/` and `sdk/` before each splat, so one call per architecture
+into the same directory would keep only the last one.
 
 cargo-xwin is built from crates.io (`cargo install cargo-xwin --version 0.23.0
 --locked`), which links it against glibc, rather than installed as the upstream
@@ -482,9 +489,12 @@ Keep the glibc build when bumping cargo-xwin; a cold warmer run is the check.
 
 `XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the path
 cannot express the content version: a hit pins the leg to whichever SDK was
-first stored under that path. That is more reproducible than resolving
+first stored under that path. A warmer run on a complete tree is also a hit
+and does not resolve `latest` again. That is more reproducible than resolving
 `latest` on every release, but it means **the `v1` subdirectory epoch is the
-only lever for a deliberate SDK refresh**. To force one, bump the epoch
+only lever for a deliberate SDK refresh**. An empty volume or a
+partial-cache wipe (below) also fetches `latest` again, but not on purpose.
+To force a refresh, bump the epoch
 (`v2-…`) in both `.github/workflows/publish.yml` and
 `.github/workflows/warm-toolchain-cache.yml` in the same change and review
 that their paths match. The trailing `17` is `XWIN_VERSION`, the Visual
@@ -507,9 +517,9 @@ the whole `xwin` tree so the populate step starts clean. An architecture that
 cargo-xwin's own logic already handles it without help. `publish.yml`'s win32
 legs carry `nscloud-cache-exp-do-not-commit`, so this wipe (and any populate
 that follows it) only ever touches that job's private, discarded fork of the
-volume. The warmer probes both architectures before writing anything, so a
-partial tree left by an earlier interrupted warm run cannot cause the second
-arch's populate step to layer onto a half-written first arch.
+volume. The warmer probes both architectures before its single populate, so
+a partial tree left by an earlier interrupted warm run is wiped and fetched
+again instead of being accepted as a hit.
 
 **Integrity.** Restored CRT/SDK bytes are not validated against Microsoft's
 manifest checksums; cargo-xwin applies those checksums only during a fresh
@@ -522,10 +532,14 @@ tag is job configuration, not an authorization boundary.
 **Volume sizing.** The win32 legs' `-with-cache` runner label carries no
 `nscloud-cache-size-*` suffix, so the attached
 `bastani-inc.atomic.release.linux-x64` volume uses Namespace's 20 GB inline
-default; it is not sized specifically for the xwin splat tree, and exceeding
-it resets the whole volume, npm downloads included, back to empty. The xwin
-splat's on-disk size for both architectures is unmeasured; do not treat the
-20 GB figure as a measured fit, only as the current cap.
+default, shared with the npm downloads on the same tag; exceeding it resets
+the whole volume, npm downloads included, back to empty. A local replay of
+the warmer's single populate (cargo-xwin 0.23.0, `XWIN_ARCH=x86_64,aarch64`,
+Ubuntu 24.04 container, 2026-09-25) left a `v1-17` tree of 1,144,008 KiB
+(`du -sk`, about 1.1 GB: `crt` 321 MB, `sdk` 797 MB). cargo-xwin deletes the
+downloaded payloads after the splat. That is under 6 % of the 20 GB cap,
+so no size label is added. The hosted volume's actual usage is not yet
+measured.
 
 ### Warming the release toolchain caches
 
@@ -539,19 +553,32 @@ volume as the win32 legs' npm downloads (see [MSVC CRT cache epoch](#msvc-crt-ca
 are last-write-wins forks: two parallel matrix jobs writing the same tag could
 each commit a fork missing the other architecture's files. It checks out the
 repository, mounts the volume, probes both architectures for a partial cache,
-then runs the `Populate MSVC CRT cache on miss` step twice — once per
-architecture — so a clean exit persists both. This job carries
-`nscloud-cache-allow-commit-from-main` and no `nscloud-cache-exp-do-not-commit`
-label, so it is the only writer; release consumers keep the do-not-commit
-label and never write back.
+then runs one `Populate MSVC CRT cache on miss` step for both architectures.
+
+`msvc-crt` and the x64 leg of `release-linux-cache` both write
+`bastani-inc.atomic.release.linux-x64` with
+`nscloud-cache-allow-commit-from-main`. If they ran in parallel, whichever
+committed last would drop the other's writes: either the npm download
+updates or the xwin tree. `msvc-crt` therefore declares
+`needs: release-linux-cache`, so it forks from the npm warmer's commit and
+commits last. It runs under `!cancelled()`, so a failed npm warm leg (which
+commits nothing) does not block the xwin warm. The workflow's
+`cancel-in-progress` concurrency group cancels an earlier run when a later
+main push starts one. Release consumers keep the do-not-commit label and never
+write back. Namespace does not promise that a fork sees the latest commit, so
+`msvc-crt` can still start from an older version and drop newer npm writes.
+Ordering removes this workflow's own race, not that one. Both outcomes stay
+safe for releases: `npm ci` checks lockfile integrity, and the partial-cache
+probe and populate-on-miss cover the xwin tree.
 
 Zig setup remains uncached; the former no-op Zig warmer was removed rather
 than claiming a download persisted when its caching switches were off.
 
-The MSVC CRT warmer's 27-minute job cap reserves its bounded toolchain setup
-(4 minutes), cargo-xwin installation (3 minutes), and two 8-minute cold-cache
-population bounds (one per architecture), plus 4 minutes for runner setup,
-checkout and cache mount.
+The MSVC CRT warmer's 19-minute job cap reserves its bounded toolchain setup
+(4 minutes), cargo-xwin installation (3 minutes), and one 8-minute cold-cache
+population bound for both architectures, plus 4 minutes for runner setup,
+checkout and cache mount. Its wait for `release-linux-cache` is not part of
+this cap; that job has its own 15-minute cap.
 
 Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Inspect successful main population and a subsequent authorized release for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
 
@@ -645,7 +672,7 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | --- | --- | --- |
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version, clean failed drafts |
-| `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Linux/Windows npm download cache and the MSVC CRT/Windows SDK cache into the default-branch scope |
+| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
 
 ## Repository-local release workflow gates
 
