@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Prompt-cache miss notices now name the first request segment that changed since the previous request — a tool addition or removal by name, the system prompt, a request parameter, a specific rewritten message by position, or a model switch (prefixed with `history compacted` after a compaction) — instead of only the token count and cost. Per-request output-token limits are not treated as a prompt change, and an Anthropic message sent as a plain string or as the same single text block counts as unchanged. When there is no earlier request to compare with, such as the first miss in a session started on an older version, the notice leaves out the cause instead of guessing. The attribution is computed from hashes only and never logs prompt content. Atomic records it in the session file for every provider request, even with `showCacheMissNotices` off, so it survives resume ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+
+### Fixed
+
+- Fixed a prompt sent immediately after RPC startup (including the interactive TUI's engine child) reaching the provider before extension `session_start` handlers and their tool registrations finished applying, which could change the request prefix on the very next turn and force a full prompt-cache rewrite. `prompt`, `steer`, and `follow_up` now wait for the initial extension bind; commands such as `get_state` still answer while a `prompt` waits ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- Fixed sessions with a forced system prompt (an extension `before_agent_start` override, or an in-process subagent's system prompt transform) rewriting the entire `tools` request field on every mid-run tool change instead of sending the change as a tool addition or removal where the provider supports it, which forced a full prompt-cache rewrite on the next turn ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+
 ## [0.9.21-alpha.1] - 2026-09-25
 
 ### Fixed

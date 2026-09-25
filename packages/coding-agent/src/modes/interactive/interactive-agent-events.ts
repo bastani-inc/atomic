@@ -1,5 +1,6 @@
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
+import { buildContextEntries } from "../../core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -284,7 +285,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
 				const miss = detectCacheMiss(
-					this.sessionManager.getEntries(),
+					buildContextEntries(this.sessionManager.getFreshEntries()),
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
 				);

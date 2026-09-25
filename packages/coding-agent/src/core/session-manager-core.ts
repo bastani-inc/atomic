@@ -498,6 +498,22 @@ export class SessionManager {
 		return getEntriesWithoutHeader(this.fileEntries);
 	}
 
+	/**
+	 * Read the current entries directly from disk when this session is persisted,
+	 * bypassing this instance's in-memory snapshot. A separate `SessionManager`
+	 * instance over the same session file (for example the interactive TUI host's
+	 * view of an isolated engine-child session) only re-syncs at coarse points such
+	 * as `agent_end`, so between those points it can lag entries the owning process
+	 * already flushed — including a `cache_prefix` custom entry appended just before
+	 * the request whose response this call is inspecting. In-memory sessions have no
+	 * file to re-read and return the same view as `getEntries()`. Does not mutate
+	 * this instance's cached state.
+	 */
+	getFreshEntries(): SessionEntry[] {
+		if (!this.persist || !this.sessionFile) return this.getEntries();
+		return getEntriesWithoutHeader(loadEntriesFromFile(this.sessionFile));
+	}
+
 	/** Get the session as a tree structure. Returns a shallow defensive copy of all entries. */
 	getTree(): SessionTreeNode[] {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);

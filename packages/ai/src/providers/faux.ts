@@ -21,6 +21,7 @@ import type {
 } from "../types.ts";
 import { createAssistantMessageEventStream } from "../utils/event-stream.ts";
 import { getSystemMessageText } from "../utils/text.ts";
+import { getCurrentSystemMessage, getCurrentTools } from "../utils/transcript.ts";
 
 const DEFAULT_API = "faux";
 const DEFAULT_PROVIDER = "faux";
@@ -527,6 +528,14 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 
 		queueMicrotask(async () => {
 			try {
+				const currentSystem = getCurrentSystemMessage(context.messages);
+				const payload = {
+					model: requestModel.id,
+					...(currentSystem ? { system: getSystemMessageText(currentSystem) } : {}),
+					tools: getCurrentTools(context.messages),
+					messages: context.messages.filter((message) => message.role !== "system"),
+				};
+				await streamOptions?.onPayload?.(payload, requestModel);
 				await streamOptions?.onResponse?.({ status: 200, headers: {} }, requestModel);
 				if (!step) {
 					let message = createErrorMessage(

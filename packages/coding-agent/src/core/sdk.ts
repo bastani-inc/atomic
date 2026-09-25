@@ -1,5 +1,12 @@
 import { basename, join, relative, sep } from "node:path";
-import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	type ProviderHeaders,
+	streamSimple,
+} from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
@@ -10,6 +17,14 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
+import {
+	CACHE_PREFIX_CUSTOM_TYPE,
+	type CachePrefixFingerprint,
+	computeCachePrefixFingerprint,
+	describeCachePrefixDifference,
+	isCachePrefixFingerprint,
+	reconstructMessageHashes,
+} from "./cache-prefix-fingerprint.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
@@ -360,14 +375,90 @@ async function constructAgentSession(
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	/**
+	 * The previous request's fingerprint, its full reconstructed message-hash list, and
+	 * whether a compaction/branch-summary boundary follows it on the current branch.
+	 * Rebuilt from raw branch entries (not the context projection) when the branch's
+	 * latest `cache_prefix` entry is not the one cached here, e.g. after resume.
+	 */
+	interface CachePrefixState {
+		fingerprint: CachePrefixFingerprint | undefined;
+		messageHashes: readonly string[];
+		boundaryAfter: boolean;
+	}
+	let cachePrefixState: CachePrefixState | undefined;
+	const currentCachePrefixState = (): CachePrefixState => {
+		const branch = sessionManager.getBranch();
+		let latest: CachePrefixFingerprint | undefined;
+		let boundaryAfter = false;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "compaction" || entry.type === "branch_summary") boundaryAfter = true;
+			else if (
+				entry.type === "custom" &&
+				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+				isCachePrefixFingerprint(entry.data)
+			) {
+				latest = entry.data;
+				break;
+			}
+		}
+		if (!cachePrefixState || cachePrefixState.fingerprint !== latest) {
+			let messageHashes: string[] = [];
+			for (const entry of branch) {
+				if (
+					entry.type === "custom" &&
+					entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+					isCachePrefixFingerprint(entry.data)
+				)
+					messageHashes = reconstructMessageHashes(entry.data, messageHashes);
+			}
+			cachePrefixState = { fingerprint: latest, messageHashes, boundaryAfter };
+		}
+		const state: CachePrefixState = { ...cachePrefixState, boundaryAfter };
+		cachePrefixState = state;
+		return state;
+	};
+	/**
+	 * Replay-guard, extension `before_provider_request`, and sanitize one payload
+	 * before it is sent. Shared by the real per-turn `onPayload` (which also persists
+	 * the cache-prefix fingerprint) and CacheWarmer's own `models.streamSimple`
+	 * wrapper below, which builds its own `onPayload` from this helper so a warm
+	 * replay's synthetic `maxTokens: 1` payload never becomes the remembered request
+	 * prefix for the next real turn's attribution.
+	 */
+	const prepareProviderPayload = async (payload: unknown, payloadModel: Model<Api>): Promise<unknown> => {
+		const sourceMessages = lastConvertedLlmMessages;
+		const replayGuardedPayload = sourceMessages
+			? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, payloadModel)
+			: payload;
+		const runner = extensionRunnerRef.current;
+		let finalPayload: unknown;
+		if (!runner?.hasHandlers("before_provider_request")) {
+			finalPayload = replayGuardedPayload;
+		} else {
+			const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
+			finalPayload = sourceMessages
+				? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, payloadModel)
+				: extensionPayload;
+		}
+		return sanitizeOpenAIResponsesPayload(finalPayload, payloadModel);
+	};
 	const cacheWarmer = new CacheWarmer(
 		{
 			streamSimple: (model, context, requestOptions) => {
 				const extension = modelRuntime.getRegisteredProviderConfig(model.provider);
+				const warmOnPayload = (
+					payload: unknown,
+					payloadModel: Model<Api>,
+				): ReturnType<typeof prepareProviderPayload> => prepareProviderPayload(payload, payloadModel);
+				const warmOptions = requestOptions?.onPayload
+					? { ...requestOptions, onPayload: warmOnPayload }
+					: requestOptions;
 				return getModelFastRoute(model)?.serviceTier !== undefined &&
 					!(extension?.streamSimple && extension.api === model.api)
-					? streamWithFastRoute(model, context, requestOptions)
-					: modelRuntime.streamSimple(model, context, requestOptions);
+					? streamWithFastRoute(model, context, warmOptions)
+					: modelRuntime.streamSimple(model, context, warmOptions);
 			},
 		},
 		sessionManager,
@@ -381,7 +472,6 @@ async function constructAgentSession(
 		},
 		(refresh) => trackSessionWork(session, refresh),
 	);
-
 	const handleProviderStreamEvent: NonNullable<ModelRuntimeSimpleStreamOptions["onProviderStreamEvent"]> = async (
 		data,
 		model,
@@ -510,21 +600,22 @@ async function constructAgentSession(
 			return modelRuntime.streamSimple(requestModel, context, { ...preparedStreamOptions, onProviderStreamEvent });
 		},
 		onPayload: async (payload, model) => {
-			const sourceMessages = lastConvertedLlmMessages;
-			const replayGuardedPayload = sourceMessages
-				? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
-				: payload;
-			const runner = extensionRunnerRef.current;
-			let finalPayload: unknown;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				finalPayload = replayGuardedPayload;
-			} else {
-				const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
-				finalPayload = sourceMessages
-					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
-					: extensionPayload;
-			}
-			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
+			const sanitizedPayload = await prepareProviderPayload(payload, model);
+			const previous = currentCachePrefixState();
+			const fingerprint = computeCachePrefixFingerprint(
+				sanitizedPayload,
+				{ provider: model.provider, modelId: model.id },
+				previous.fingerprint && !previous.boundaryAfter ? previous.messageHashes : undefined,
+			);
+			const label = describeCachePrefixDifference(previous.fingerprint, previous.messageHashes, fingerprint);
+			const attribution = label && previous.boundaryAfter ? `history compacted (${label})` : label;
+			const persisted = { ...fingerprint, ...(attribution === undefined ? {} : { attribution }) };
+			sessionManager.appendCustomEntry(CACHE_PREFIX_CUSTOM_TYPE, persisted);
+			cachePrefixState = {
+				fingerprint: persisted,
+				messageHashes: reconstructMessageHashes(fingerprint, previous.messageHashes),
+				boundaryAfter: false,
+			};
 			markLifecycleTiming("before-provider-request");
 			return sanitizedPayload;
 		},

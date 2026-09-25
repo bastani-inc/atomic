@@ -92,6 +92,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	let shuttingDown = false;
 	let detachInput = () => {};
 
+	let initialBindReady = false;
+	let resolveInitialBind!: () => void;
+	let rejectInitialBind!: (error: Error) => void;
+	const initialBindPromise = new Promise<void>((resolve, reject) => {
+		resolveInitialBind = resolve;
+		rejectInitialBind = reject;
+	});
+	initialBindPromise.catch(() => {});
+	const waitForInitialBind = (): Promise<void> | undefined => (initialBindReady ? undefined : initialBindPromise);
+
 	const requestShutdown = () => {
 		shutdownRequested = true;
 	};
@@ -139,6 +149,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		waitForResources: deferInteractiveEngineResources ? () => resourceReadiness.wait() : undefined,
 		reloadResources: deferInteractiveEngineResources ? loadDeferredResources : undefined,
 		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,
+		waitForInitialBind,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
@@ -228,7 +239,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	})();
 	registerSignalHandlers();
 	engineLiveness.ready();
-	await sessionBinding.rebindSession();
+	try {
+		await sessionBinding.rebindSession();
+		initialBindReady = true;
+		resolveInitialBind();
+	} catch (error) {
+		const bindError = error instanceof Error ? error : new Error(String(error));
+		rejectInitialBind(bindError);
+		throw bindError;
+	}
 	if (interactiveEngineChild) engineLiveness.bound();
 	if (deferInteractiveEngineResources) {
 		// RPC control and the mandatory minimal session are usable now. Prompt

@@ -35,6 +35,7 @@ interface RpcCommandHandlerOptions {
 	waitForResources?: () => Promise<void> | undefined;
 	reloadResources?: () => Promise<void>;
 	shouldRetryResources?: () => boolean;
+	waitForInitialBind?: () => Promise<void> | undefined;
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -74,6 +75,7 @@ export function createRpcCommandHandler({
 	waitForResources,
 	reloadResources,
 	shouldRetryResources,
+	waitForInitialBind,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -107,6 +109,8 @@ export function createRpcCommandHandler({
 			case "prompt": {
 				let preflightSucceeded = false;
 				void (async () => {
+					const pendingInitialBind = waitForInitialBind?.();
+					if (pendingInitialBind) await pendingInitialBind;
 					const pendingResources = waitForResources?.();
 					if (pendingResources) await pendingResources;
 					if (rejectUnsupportedProviderPrompt(runtimeHost, output, id)) return;
@@ -131,12 +135,16 @@ export function createRpcCommandHandler({
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images, { source: "rpc" });
+				const pendingInitialBind = waitForInitialBind?.();
+				if (pendingInitialBind) await pendingInitialBind;
+				await getSession().steer(command.message, command.images, { source: "rpc" });
 				return createRpcSuccessResponse(id, "steer");
 			}
 
 			case "follow_up": {
-				await session.followUp(command.message, command.images, { source: "rpc" });
+				const pendingInitialBind = waitForInitialBind?.();
+				if (pendingInitialBind) await pendingInitialBind;
+				await getSession().followUp(command.message, command.images, { source: "rpc" });
 				return createRpcSuccessResponse(id, "follow_up");
 			}
 
