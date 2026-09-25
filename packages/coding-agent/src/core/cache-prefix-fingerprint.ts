@@ -10,29 +10,28 @@ export interface CachePrefixToolFingerprint {
  * Hash-only fingerprint of a provider request prefix, computed from the final payload
  * returned by `onPayload` (after extension `before_provider_request` and payload
  * sanitization). Never carries prompt text, tool schemas, or message content: every
- * field is either a hash or a bare tool name. Anthropic `cache_control` and Bedrock
- * `cachePoint` breakpoint markers are stripped before hashing, at any depth.
+ * field is a hash, a bare tool name, a count, or a short attribution label. Anthropic
+ * `cache_control` and Bedrock `cachePoint` breakpoint markers are stripped before hashing.
  *
- * The message segment is stored as a delta against the immediately preceding request's
- * fingerprint, not as a full per-request array: `unchangedPrefixCount` is how many
- * leading messages are confirmed identical to that previous fingerprint's own full
- * message list, and `tailMessageHashes` holds hashes for every message from that point
- * on (ordinary new messages for an append-only turn, or a changed message and
- * everything after it when history was rewritten). Reconstructing the full message-hash
- * list for any fingerprint costs one hash-array concatenation per step back to a known
- * baseline (see `reconstructMessageHashes`); an ordinary session only ever pays that
- * proportional to how much actually changed, so persisted bytes per request are bounded
- * by the delta, and the running total across a session grows with total message count,
- * not with (turns × messages).
+ * The message segment is a sparse delta: `messageChanges` holds `[index, hash]` pairs
+ * only for positions that differ from the baseline list (rewritten or appended
+ * messages), and `messageCount` truncates the baseline. With `baselineReset` the
+ * baseline is empty (first request, or first request after a compaction/branch-summary
+ * boundary); otherwise it is the previous request's reconstructed list.
+ *
+ * `attribution` is the first-differing-segment label computed when the request was
+ * sent, so live, resumed, and re-rendered notices all read the same label.
  */
 export interface CachePrefixFingerprint {
 	modelHash: string;
 	tools: CachePrefixToolFingerprint[];
 	systemHash: string;
 	paramsHash: string;
+	shapeUnknown?: true;
 	messageCount: number;
-	unchangedPrefixCount: number;
-	tailMessageHashes: string[];
+	baselineReset: boolean;
+	messageChanges: Array<[number, string]>;
+	attribution?: string;
 }
 
 export interface CachePrefixModelIdentity {
@@ -90,74 +89,132 @@ function extractToolName(tool: unknown): string | undefined {
 	return undefined;
 }
 
-/** The provider-specific field carrying the message list: Anthropic/Bedrock/Chat Completions
- * use `messages`, OpenAI Responses/Codex uses `input`, Google uses `contents`. */
-function extractMessageList(payload: Record<string, unknown>): unknown[] {
-	if (Array.isArray(payload.messages)) return payload.messages;
-	if (Array.isArray(payload.input)) return payload.input;
-	if (Array.isArray(payload.contents)) return payload.contents;
-	return [];
+interface PayloadSegments {
+	systemText: string;
+	tools: unknown[];
+	messages: unknown[];
+	params: Record<string, unknown>;
+	shapeKnown: boolean;
 }
 
-/** The provider-specific field carrying tool declarations: top-level `tools`
- * (Anthropic/OpenAI/Chat Completions), Bedrock's `toolConfig.tools`, or Google's
- * `config.tools[].functionDeclarations[]`. */
-function extractToolsSegment(payload: Record<string, unknown>): unknown[] {
-	if (Array.isArray(payload.tools)) return payload.tools;
-	const toolConfig = asRecord(payload.toolConfig);
-	if (toolConfig && Array.isArray(toolConfig.tools)) return toolConfig.tools;
-	const config = asRecord(payload.config);
-	if (config && Array.isArray(config.tools)) {
-		const flattened: unknown[] = [];
-		for (const entry of config.tools) {
-			const record = asRecord(entry);
-			const declarations = record?.functionDeclarations;
-			if (Array.isArray(declarations)) flattened.push(...declarations);
-			else flattened.push(entry);
-		}
-		return flattened;
+const OUTPUT_LIMIT_KEYS = new Set([
+	"max_tokens",
+	"max_output_tokens",
+	"max_completion_tokens",
+	"maxTokens",
+	"maxOutputTokens",
+]);
+
+function withoutOutputLimits(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(withoutOutputLimits);
+	const record = asRecord(value);
+	if (!record) return value;
+	const cleaned: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(record)) {
+		if (OUTPUT_LIMIT_KEYS.has(key)) continue;
+		cleaned[key] = withoutOutputLimits(entry);
 	}
-	return [];
+	return cleaned;
 }
 
-function extractSystemSegment(payload: Record<string, unknown>): { text: string; consumedFirstMessage: boolean } {
-	if (typeof payload.system === "string") return { text: payload.system, consumedFirstMessage: false };
-	if (payload.system !== undefined) return { text: JSON.stringify(payload.system), consumedFirstMessage: false };
-	if (typeof payload.instructions === "string") return { text: payload.instructions, consumedFirstMessage: false };
-	const config = asRecord(payload.config);
-	if (config?.systemInstruction !== undefined) {
-		const instruction = config.systemInstruction;
-		return {
-			text: typeof instruction === "string" ? instruction : JSON.stringify(instruction),
-			consumedFirstMessage: false,
-		};
-	}
-	const first = asRecord(extractMessageList(payload)[0]);
-	if (first?.role === "system" || first?.role === "developer")
-		return { text: JSON.stringify(first.content ?? ""), consumedFirstMessage: true };
-	return { text: "", consumedFirstMessage: false };
-}
-
-/** Fields outside `toolConfig.tools`/`config.{systemInstruction,tools}` still count as
- * prompt-affecting request params (for example Bedrock `toolConfig.toolChoice` or a
- * Google generation-config field) rather than being silently dropped. */
-function residualNestedParams(nested: Record<string, unknown> | undefined, ...omit: string[]): Record<string, unknown> {
-	if (!nested) return {};
-	const rest: Record<string, unknown> = { ...nested };
-	for (const key of omit) delete rest[key];
+function omit(record: Record<string, unknown> | undefined, ...keys: string[]): Record<string, unknown> {
+	if (!record) return {};
+	const rest: Record<string, unknown> = { ...record };
+	for (const key of keys) delete rest[key];
 	return rest;
+}
+
+function stringify(value: unknown): string {
+	return typeof value === "string" ? value : JSON.stringify(value ?? "");
+}
+
+/** Radius `pi-messages`: `{ model, context: { messages }, options }`, whose leading system message declares the base prompt and tools. */
+function transcriptSegments(payload: Record<string, unknown>, context: Record<string, unknown>): PayloadSegments {
+	const messages = Array.isArray(context.messages) ? context.messages : [];
+	const head = asRecord(messages[0]);
+	const headIsSystem = head?.role === "system";
+	return {
+		systemText: headIsSystem ? stringify({ content: head.content, sections: head.sections }) : "",
+		tools: headIsSystem && Array.isArray(head.toolsAdded) ? head.toolsAdded : [],
+		messages: headIsSystem ? messages.slice(1) : messages,
+		params: { ...omit(payload, "model", "context"), ...omit(context, "messages") },
+		shapeKnown: true,
+	};
+}
+
+/**
+ * Split a final provider payload into segments. Message lists: Anthropic/Bedrock/Chat
+ * Completions/Mistral `messages`, OpenAI Responses/Codex `input`, Google `contents`,
+ * Radius `context.messages`. Tools: top-level `tools`, Bedrock `toolConfig.tools`, Google
+ * `config.tools[].functionDeclarations`. A payload with none of these is `shapeKnown: false`.
+ */
+function extractSegments(payload: Record<string, unknown>): PayloadSegments {
+	const context = asRecord(payload.context);
+	if (context && Array.isArray(context.messages)) return transcriptSegments(payload, context);
+	const rawMessages = Array.isArray(payload.messages)
+		? payload.messages
+		: Array.isArray(payload.input)
+			? payload.input
+			: Array.isArray(payload.contents)
+				? payload.contents
+				: undefined;
+	const toolConfig = asRecord(payload.toolConfig);
+	const config = asRecord(payload.config);
+	let tools: unknown[] = [];
+	if (Array.isArray(payload.tools)) tools = payload.tools;
+	else if (toolConfig && Array.isArray(toolConfig.tools)) tools = toolConfig.tools;
+	else if (config && Array.isArray(config.tools)) {
+		for (const entry of config.tools) {
+			const declarations = asRecord(entry)?.functionDeclarations;
+			if (Array.isArray(declarations)) tools.push(...declarations);
+			else tools.push(entry);
+		}
+	}
+	let systemText = "";
+	let messages = rawMessages ?? [];
+	if (payload.system !== undefined) systemText = stringify(payload.system);
+	else if (typeof payload.instructions === "string") systemText = payload.instructions;
+	else if (config?.systemInstruction !== undefined) systemText = stringify(config.systemInstruction);
+	else {
+		const first = asRecord(messages[0]);
+		if (first?.role === "system" || first?.role === "developer") {
+			systemText = stringify(first.content ?? "");
+			messages = messages.slice(1);
+		}
+	}
+	return {
+		systemText,
+		tools,
+		messages,
+		params: {
+			...omit(
+				payload,
+				"model",
+				"system",
+				"instructions",
+				"tools",
+				"toolConfig",
+				"config",
+				"messages",
+				"input",
+				"contents",
+			),
+			...omit(toolConfig, "tools"),
+			...omit(config, "systemInstruction", "tools"),
+		},
+		shapeKnown: rawMessages !== undefined,
+	};
 }
 
 /**
  * Compute the hash-only fingerprint of a provider request from its final payload
  * (the value returned by `onPayload`, after extension hooks and sanitization).
- * `cache_control`/`cachePoint` breakpoint markers are stripped before any hashing.
+ * Breakpoint markers and output-token limits are excluded before hashing.
  *
- * `previousMessageHashes`, when given, is the full reconstructed message-hash list
- * (see `reconstructMessageHashes`) for the immediately preceding request's fingerprint
- * in the same session: it lets this call store only the delta (`tailMessageHashes`)
- * instead of every message hash again. Omit it for a standalone/first-request
- * fingerprint, which then stores its complete message list as the initial delta.
+ * `previousMessageHashes` is the previous request's full reconstructed message-hash
+ * list (see `reconstructMessageHashes`); only differing and appended positions are
+ * stored. Omit it for a first request or after a compaction boundary, which stores a
+ * snapshot against an empty baseline.
  */
 export function computeCachePrefixFingerprint(
 	payload: unknown,
@@ -165,69 +222,48 @@ export function computeCachePrefixFingerprint(
 	previousMessageHashes?: readonly string[],
 ): CachePrefixFingerprint {
 	const cleaned = asRecord(stripCacheBreakpoints(payload)) ?? {};
-	const { text: systemText, consumedFirstMessage } = extractSystemSegment(cleaned);
-	const tools = extractToolsSegment(cleaned)
+	const segments = extractSegments(cleaned);
+	const tools = segments.tools
 		.map((tool) => ({ name: extractToolName(tool), hash: hash(JSON.stringify(tool)) }))
 		.filter((tool): tool is CachePrefixToolFingerprint => tool.name !== undefined);
-	const rawMessages = extractMessageList(cleaned);
-	const messages = consumedFirstMessage ? rawMessages.slice(1) : rawMessages;
-	const {
-		model: _model,
-		system: _system,
-		instructions: _instructions,
-		tools: _tools,
-		toolConfig,
-		config,
-		messages: _messages,
-		input: _input,
-		contents: _contents,
-		...requestParams
-	} = cleaned;
-	const params = {
-		...requestParams,
-		...residualNestedParams(asRecord(toolConfig), "tools"),
-		...residualNestedParams(asRecord(config), "systemInstruction", "tools"),
-	};
-	const messageHashes = messages.map((message) => hash(JSON.stringify(message)));
-	const previous = previousMessageHashes ?? [];
-	const commonLength = Math.min(previous.length, messageHashes.length);
-	let unchangedPrefixCount = 0;
-	while (unchangedPrefixCount < commonLength && previous[unchangedPrefixCount] === messageHashes[unchangedPrefixCount])
-		unchangedPrefixCount++;
+	const messageHashes = segments.messages.map((message) => hash(JSON.stringify(message)));
+	const baseline = previousMessageHashes ?? [];
+	const messageChanges: Array<[number, string]> = [];
+	messageHashes.forEach((messageHash, index) => {
+		if (baseline[index] !== messageHash) messageChanges.push([index, messageHash]);
+	});
 	return {
 		modelHash: hash(`${model.provider}/${model.modelId}`),
 		tools,
-		systemHash: hash(systemText),
-		paramsHash: hash(JSON.stringify(params)),
+		systemHash: hash(segments.systemText),
+		paramsHash: hash(JSON.stringify(withoutOutputLimits(segments.params))),
+		...(segments.shapeKnown ? {} : { shapeUnknown: true as const }),
 		messageCount: messageHashes.length,
-		unchangedPrefixCount,
-		tailMessageHashes: messageHashes.slice(unchangedPrefixCount),
+		baselineReset: previousMessageHashes === undefined,
+		messageChanges,
 	};
 }
 
 /**
- * Reconstruct a fingerprint's full message-hash list from its stored delta and the
- * full list for the fingerprint immediately before it (`[]` for the first request in a
- * session). Each call does only as much work as that one fingerprint's own delta, so
- * walking a whole session's chain costs proportional to its total message count, not
- * to (turns × messages).
+ * Reconstruct a fingerprint's full message-hash list from its sparse delta and the
+ * previous request's full list (ignored when the fingerprint reset its baseline).
  */
 export function reconstructMessageHashes(
 	fingerprint: CachePrefixFingerprint,
 	previousMessageHashes: readonly string[],
 ): string[] {
-	return [...previousMessageHashes.slice(0, fingerprint.unchangedPrefixCount), ...fingerprint.tailMessageHashes];
+	const hashes = fingerprint.baselineReset ? [] : previousMessageHashes.slice(0, fingerprint.messageCount);
+	for (const [index, messageHash] of fingerprint.messageChanges) hashes[index] = messageHash;
+	hashes.length = fingerprint.messageCount;
+	return hashes;
 }
 
 /**
- * Describe the first request segment that differs between the request immediately
- * before `current` and `current` itself, in the order model, tools, system prompt,
- * request params, messages. `previousMessageHashes` is the full reconstructed message
- * list for that previous request (`[]` when there is none). A tool whose name is new
- * is `+name`; a name present before and now absent is `-name`. Changes to existing
- * declarations or tool order are reported without a tool name. Never returns prompt
- * content: tool names are bare identifiers, and a rewritten message is named by its
- * exact 1-based position, regardless of how far back in history it is.
+ * Describe the first request segment that differs between the previous request and
+ * `current`, in the order model, tools, system prompt, request params, messages.
+ * `previousMessageHashes` is the previous request's full reconstructed message list.
+ * Never returns prompt content: tool names are bare identifiers and a rewritten message
+ * is named by its exact 1-based position.
  */
 export function describeCachePrefixDifference(
 	previous: CachePrefixFingerprint | undefined,
@@ -236,6 +272,7 @@ export function describeCachePrefixDifference(
 ): string {
 	if (!previous) return "prefix unchanged";
 	if (previous.modelHash !== current.modelHash) return "model switched";
+	if (previous.shapeUnknown || current.shapeUnknown) return "request shape unknown";
 	const previousNames = new Set(previous.tools.map((tool) => tool.name));
 	const currentNames = new Set(current.tools.map((tool) => tool.name));
 	for (const tool of current.tools) {
@@ -273,9 +310,16 @@ export function isCachePrefixFingerprint(data: unknown): data is CachePrefixFing
 		typeof candidate.systemHash === "string" &&
 		typeof candidate.paramsHash === "string" &&
 		typeof candidate.messageCount === "number" &&
-		typeof candidate.unchangedPrefixCount === "number" &&
-		Array.isArray(candidate.tailMessageHashes) &&
-		candidate.tailMessageHashes.every((entry) => typeof entry === "string")
+		typeof candidate.baselineReset === "boolean" &&
+		Array.isArray(candidate.messageChanges) &&
+		candidate.messageChanges.every(
+			(change) =>
+				Array.isArray(change) &&
+				change.length === 2 &&
+				typeof change[0] === "number" &&
+				typeof change[1] === "string",
+		) &&
+		(candidate.attribution === undefined || typeof candidate.attribution === "string")
 	);
 }
 

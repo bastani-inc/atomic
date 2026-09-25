@@ -21,6 +21,7 @@ import {
 	CACHE_PREFIX_CUSTOM_TYPE,
 	type CachePrefixFingerprint,
 	computeCachePrefixFingerprint,
+	describeCachePrefixDifference,
 	isCachePrefixFingerprint,
 	reconstructMessageHashes,
 } from "./cache-prefix-fingerprint.ts";
@@ -375,63 +376,48 @@ async function constructAgentSession(
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 	/**
-	 * The full reconstructed message-hash list for the most recently persisted
-	 * `cache_prefix` entry, alongside that entry itself. Each fingerprint only stores
-	 * its own delta (see cache-prefix-fingerprint.ts), so this is rebuilt lazily by
-	 * walking back only to the most recent `compaction`/`branch_summary` boundary —
-	 * content before that boundary is replaced or dropped by definition, so no
-	 * reconstruction ever needs it — then `onPayload` keeps the result current
-	 * directly (no re-walking) each time it persists a new fingerprint. A boundary
-	 * appended after the cache was last updated invalidates it on the next read.
+	 * The previous request's fingerprint, its full reconstructed message-hash list, and
+	 * whether a compaction/branch-summary boundary follows it on the current branch.
+	 * Rebuilt from raw branch entries (not the context projection) when the branch's
+	 * latest `cache_prefix` entry is not the one cached here, e.g. after resume.
 	 */
-	let cachePrefixState:
-		| { fingerprint: CachePrefixFingerprint | undefined; messageHashes: readonly string[] }
-		| undefined;
-	const currentCachePrefixState = (): {
+	interface CachePrefixState {
 		fingerprint: CachePrefixFingerprint | undefined;
 		messageHashes: readonly string[];
-	} => {
+		boundaryAfter: boolean;
+	}
+	let cachePrefixState: CachePrefixState | undefined;
+	const currentCachePrefixState = (): CachePrefixState => {
 		const branch = sessionManager.getBranch();
-		let lastBoundaryIndex = -1;
-		let lastCachePrefixIndex = -1;
+		let latest: CachePrefixFingerprint | undefined;
+		let boundaryAfter = false;
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const entry = branch[index];
-			if (entry.type === "compaction" || entry.type === "branch_summary") {
-				lastBoundaryIndex = index;
+			if (entry.type === "compaction" || entry.type === "branch_summary") boundaryAfter = true;
+			else if (
+				entry.type === "custom" &&
+				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+				isCachePrefixFingerprint(entry.data)
+			) {
+				latest = entry.data;
 				break;
 			}
-			if (
-				lastCachePrefixIndex === -1 &&
-				entry.type === "custom" &&
-				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
-				isCachePrefixFingerprint(entry.data)
-			) {
-				lastCachePrefixIndex = index;
+		}
+		if (!cachePrefixState || cachePrefixState.fingerprint !== latest) {
+			let messageHashes: string[] = [];
+			for (const entry of branch) {
+				if (
+					entry.type === "custom" &&
+					entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
+					isCachePrefixFingerprint(entry.data)
+				)
+					messageHashes = reconstructMessageHashes(entry.data, messageHashes);
 			}
+			cachePrefixState = { fingerprint: latest, messageHashes, boundaryAfter };
 		}
-		if (lastCachePrefixIndex === -1) {
-			cachePrefixState = { fingerprint: undefined, messageHashes: [] };
-			return cachePrefixState;
-		}
-		const lastEntry = branch[lastCachePrefixIndex];
-		const lastFingerprint =
-			lastEntry.type === "custom" && isCachePrefixFingerprint(lastEntry.data) ? lastEntry.data : undefined;
-		if (cachePrefixState !== undefined && cachePrefixState.fingerprint === lastFingerprint) return cachePrefixState;
-		let messageHashes: string[] = [];
-		let fingerprint: CachePrefixFingerprint | undefined;
-		for (let index = lastBoundaryIndex + 1; index <= lastCachePrefixIndex; index++) {
-			const entry = branch[index];
-			if (
-				entry.type === "custom" &&
-				entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
-				isCachePrefixFingerprint(entry.data)
-			) {
-				messageHashes = reconstructMessageHashes(entry.data, messageHashes);
-				fingerprint = entry.data;
-			}
-		}
-		cachePrefixState = { fingerprint, messageHashes };
-		return cachePrefixState;
+		const state: CachePrefixState = { ...cachePrefixState, boundaryAfter };
+		cachePrefixState = state;
+		return state;
 	};
 	/**
 	 * Replay-guard, extension `before_provider_request`, and sanitize one payload
@@ -615,16 +601,20 @@ async function constructAgentSession(
 		},
 		onPayload: async (payload, model) => {
 			const sanitizedPayload = await prepareProviderPayload(payload, model);
-			const { messageHashes: previousMessageHashes } = currentCachePrefixState();
-			const newFingerprint = computeCachePrefixFingerprint(
+			const previous = currentCachePrefixState();
+			const fingerprint = computeCachePrefixFingerprint(
 				sanitizedPayload,
 				{ provider: model.provider, modelId: model.id },
-				previousMessageHashes,
+				previous.fingerprint && !previous.boundaryAfter ? previous.messageHashes : undefined,
 			);
-			sessionManager.appendCustomEntry(CACHE_PREFIX_CUSTOM_TYPE, newFingerprint);
+			const label = describeCachePrefixDifference(previous.fingerprint, previous.messageHashes, fingerprint);
+			const attribution = previous.fingerprint && previous.boundaryAfter ? `history compacted (${label})` : label;
+			const persisted = { ...fingerprint, attribution };
+			sessionManager.appendCustomEntry(CACHE_PREFIX_CUSTOM_TYPE, persisted);
 			cachePrefixState = {
-				fingerprint: newFingerprint,
-				messageHashes: reconstructMessageHashes(newFingerprint, previousMessageHashes),
+				fingerprint: persisted,
+				messageHashes: reconstructMessageHashes(fingerprint, previous.messageHashes),
+				boundaryAfter: false,
 			};
 			markLifecycleTiming("before-provider-request");
 			return sanitizedPayload;

@@ -1,12 +1,6 @@
 import type { Api, Model } from "@bastani/pi-ai";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import {
-	CACHE_PREFIX_CUSTOM_TYPE,
-	type CachePrefixFingerprint,
-	describeCachePrefixDifference,
-	isCachePrefixFingerprint,
-	reconstructMessageHashes,
-} from "./cache-prefix-fingerprint.ts";
+import { CACHE_PREFIX_CUSTOM_TYPE, isCachePrefixFingerprint } from "./cache-prefix-fingerprint.ts";
 import { getPromptCacheTtlMs } from "./cache-warmer.ts";
 import type { SessionEntry } from "./session-manager.ts";
 
@@ -108,11 +102,8 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 
 function scan(entries: SessionEntry[], models: ModelPriceSource) {
 	let prev: PreviousRequest | undefined;
-	let lastCachePrefix: CachePrefixFingerprint | undefined;
-	let lastMessageHashes: readonly string[] = [];
 	let pendingAttribution: string | undefined;
 	let sawCachePrefixEntry = false;
-	let compactedSinceLastCachePrefix = false;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0 };
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
@@ -121,20 +112,12 @@ function scan(entries: SessionEntry[], models: ModelPriceSource) {
 			entry.customType === CACHE_PREFIX_CUSTOM_TYPE &&
 			isCachePrefixFingerprint(entry.data)
 		) {
-			const label = describeCachePrefixDifference(lastCachePrefix, lastMessageHashes, entry.data);
-			pendingAttribution = compactedSinceLastCachePrefix ? `history compacted (${label})` : label;
-			// entry.data's own delta was computed against an empty baseline right after
-			// the boundary (see sdk.ts), so this naturally drops lastMessageHashes'
-			// pre-boundary content instead of carrying it forward.
-			lastMessageHashes = reconstructMessageHashes(entry.data, lastMessageHashes);
-			lastCachePrefix = entry.data;
-			compactedSinceLastCachePrefix = false;
+			pendingAttribution = entry.data.attribution;
 			sawCachePrefixEntry = true;
 			continue;
 		}
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			prev = undefined;
-			compactedSinceLastCachePrefix = true;
 			continue;
 		}
 		if (entry.type === "usage" && entry.kind === "cache_warm") {

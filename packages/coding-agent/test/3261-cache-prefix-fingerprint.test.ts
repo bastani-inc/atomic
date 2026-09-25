@@ -142,7 +142,7 @@ describe("computeCachePrefixFingerprint / describeCachePrefixDifference (#3261)"
 		};
 		const current = computeCachePrefixFingerprint(withBreakpoints, MODEL);
 		assert.equal(current.systemHash, previous.systemHash);
-		assert.deepEqual(current.tailMessageHashes, previous.tailMessageHashes);
+		assert.deepEqual(current.messageChanges, previous.messageChanges);
 		assert.equal(current.tools[0]?.hash, previous.tools[0]?.hash);
 	});
 
@@ -313,5 +313,105 @@ describe("computeCachePrefixFingerprint / describeCachePrefixDifference (#3261)"
 		];
 		const appended = nextStep({ ...basePayload(), messages: appendedMessages }, step);
 		assert.equal(diff(step, appended), "prefix unchanged");
+	});
+
+	it("maps the Radius pi-messages payload instead of reading it as a request params change (#3261)", () => {
+		const head = { role: "system", content: "You are a test assistant.", toolsAdded: [{ name: "read" }] };
+		const radius = (messages: unknown[], tools = head.toolsAdded) => ({
+			model: "m",
+			context: { messages: [{ ...head, toolsAdded: tools }, ...messages] },
+			options: { maxTokens: 100, cacheRetention: "short", sessionId: "s" },
+		});
+		const first = firstStep(radius([{ role: "user", content: "1" }]));
+		const appended = nextStep(
+			radius([
+				{ role: "user", content: "1" },
+				{ role: "user", content: "2" },
+			]),
+			first,
+		);
+		assert.equal(diff(first, appended), "prefix unchanged");
+		const rewritten = nextStep(
+			radius([
+				{ role: "user", content: "X" },
+				{ role: "user", content: "2" },
+			]),
+			first,
+		);
+		assert.equal(diff(first, rewritten), "message 1 rewritten");
+		const withMcp = nextStep(radius([{ role: "user", content: "1" }], [{ name: "read" }, { name: "mcp" }]), first);
+		assert.equal(diff(first, withMcp), "tool list changed: +mcp");
+	});
+
+	it("reports 'request shape unknown' for a payload without a recognized message list (#3261)", () => {
+		const first = firstStep({ model: "m", prompt: { turns: ["1"] }, temperature: 0 });
+		const next = nextStep({ model: "m", prompt: { turns: ["1", "2"] }, temperature: 0 }, first);
+		assert.equal(diff(first, next), "request shape unknown");
+	});
+
+	it("ignores per-request output-token limits when attributing a miss (#3261)", () => {
+		const messages = [
+			{ role: "user", content: "1" },
+			{ role: "user", content: "2" },
+		];
+		const first = firstStep({ ...basePayload(), messages, max_tokens: 4096 });
+		const appended = nextStep(
+			{ ...basePayload(), messages: [...messages, { role: "user", content: "3" }], max_tokens: 1200 },
+			first,
+		);
+		assert.equal(diff(first, appended), "prefix unchanged");
+		const rewritten = nextStep(
+			{ ...basePayload(), messages: [{ role: "user", content: "X" }, messages[1]], max_tokens: 800 },
+			first,
+		);
+		assert.equal(diff(first, rewritten), "message 1 rewritten");
+		const bedrock = (maxTokens: number) => ({
+			modelId: "m",
+			messages,
+			inferenceConfig: { maxTokens, temperature: 0 },
+		});
+		assert.equal(
+			diff(firstStep(bedrock(4096)), nextStep(bedrock(900), firstStep(bedrock(4096)))),
+			"prefix unchanged",
+		);
+	});
+
+	it("keeps entry size independent of history length when message 1 is rewritten on every request (#3261)", () => {
+		const sizes = new Map<number, number>();
+		let step: ChainStep | undefined;
+		for (let turnCount = 1; turnCount <= 2000; turnCount++) {
+			const messages = Array.from({ length: turnCount }, (_, i) => ({
+				role: "user",
+				content: i === 0 ? `rewrite ${turnCount}` : `turn ${i}`,
+			}));
+			step = step ? nextStep({ ...basePayload(), messages }, step) : firstStep({ ...basePayload(), messages });
+			sizes.set(turnCount, JSON.stringify(step.fingerprint).length);
+			if (turnCount > 1) assert.equal(step.fingerprint.messageChanges.length, 2);
+		}
+		const at100 = sizes.get(100) ?? 0;
+		const at2000 = sizes.get(2000) ?? 0;
+		assert.ok(at2000 - at100 <= 8, `entry grew from ${at100} to ${at2000} bytes`);
+	});
+
+	it("recovers the exact rewritten index from persisted sparse entries alone, as on resume (#3261)", () => {
+		const persisted: CachePrefixFingerprint[] = [];
+		let step: ChainStep | undefined;
+		for (let turnCount = 1; turnCount <= 300; turnCount++) {
+			const messages = Array.from({ length: turnCount }, (_, i) => ({
+				role: "user",
+				content: i === 0 ? `rewrite ${turnCount}` : `turn ${i}`,
+			}));
+			step = step ? nextStep({ ...basePayload(), messages }, step) : firstStep({ ...basePayload(), messages });
+			persisted.push(JSON.parse(JSON.stringify(step.fingerprint)) as CachePrefixFingerprint);
+		}
+		let hashes: string[] = [];
+		for (const fingerprint of persisted) hashes = reconstructMessageHashes(fingerprint, hashes);
+		assert.deepEqual(hashes, step?.messageHashes);
+		const rewritten = Array.from({ length: 300 }, (_, i) => ({
+			role: "user",
+			content: i === 0 ? "rewrite 300" : i === 13 ? "CHANGED" : `turn ${i}`,
+		}));
+		const current = computeCachePrefixFingerprint({ ...basePayload(), messages: rewritten }, MODEL, hashes);
+		assert.equal(describeCachePrefixDifference(persisted.at(-1), hashes, current), "message 14 rewritten");
 	});
 });

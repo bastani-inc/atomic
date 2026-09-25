@@ -4,7 +4,7 @@
 
 ### Added
 
-- Prompt-cache miss notices now name the first request segment that changed since the previous request — a tool addition or removal by name, the system prompt, a request parameter, a specific rewritten message by position, or a model switch — instead of only the token count and cost. The attribution is computed from hashes only and never logs prompt content; it is recorded in the session log so it survives resume ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
+- Prompt-cache miss notices now name the first request segment that changed since the previous request — a tool addition or removal by name, the system prompt, a request parameter, a specific rewritten message by position, or a model switch (prefixed with `history compacted` after a compaction) — instead of only the token count and cost. Per-request output-token limits are not treated as a prompt change. The attribution is computed from hashes only and never logs prompt content; it is recorded in the session log so it survives resume ([#3261](https://github.com/bastani-inc/atomic/issues/3261)).
 
 ### Fixed
 
