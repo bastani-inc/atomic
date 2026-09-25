@@ -49,7 +49,7 @@ jobs:
     name: Warm MSVC CRT
     # Cross-compiles both Windows arches on this Linux runner spec. One job,
     # not a per-arch matrix: Namespace cache volumes are last-write-wins forks
-    # (docs/ci.md, "Cache Volumes"), so two parallel matrix jobs writing the
+    # (docs/ci.md, "Warming the release toolchain caches"), so two parallel matrix jobs writing the
     # same tag could each commit a fork missing the other arch's files.
     # release-linux-cache (x64) also commits this tag, so this job waits for it
     # and forks from its commit instead of racing it. !cancelled() keeps the

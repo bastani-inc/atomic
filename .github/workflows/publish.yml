@@ -299,7 +299,7 @@ jobs:
           path: ~/.cache/cargo-xwin
       # cargo-xwin 0.23.0 trusts a DONE marker that names this arch without
       # re-checking the splat files it lists, and a cache volume can serve a
-      # stale or partial fork (docs/ci.md, "Cache Volumes"). Treat a DONE hit
+      # stale or partial fork (docs/ci.md, "MSVC CRT cache epoch"). Treat a DONE hit
       # over a directory missing its splat output as a miss and start clean.
       - name: Detect partial MSVC CRT cache
         if: matrix.platform == 'win32'
