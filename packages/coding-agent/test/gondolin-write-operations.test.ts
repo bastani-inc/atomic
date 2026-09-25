@@ -112,7 +112,10 @@ function gondolinFixture() {
 						input: options?.stdin,
 						encoding: "utf8",
 					});
-					if (result.error) throw result.error;
+					// A script may exit without reading stdin (noclobber fails before cat runs); a VM
+					// exec reports the exit status, so only a missing status is a transport failure.
+					const unreadStdin = (result.error as NodeJS.ErrnoException | undefined)?.code === "EPIPE";
+					if (result.error && !(unreadStdin && result.status !== null)) throw result.error;
 					if (result.status === 44 && guest.race) {
 						guest.race = false;
 						if (guest.dangling) await symlink("missing-referent", local(args[4]));
@@ -344,5 +347,11 @@ describe("Gondolin write target observations", () => {
 			await readFile(join(guest.dir, "shell output.txt"), "utf8"),
 			join(guest.dir, "native").replaceAll("\\", "/"),
 		);
+	});
+
+	it("reports the exit status of a script that exits without reading its stdin", async () => {
+		const vm = await gondolinFixture().VM.create();
+		const result = await vm.exec(["/bin/sh", "-c", "exit 17", "sh"], { stdin: "x".repeat(1 << 20) });
+		assert.equal(result.exitCode, 17);
 	});
 });
