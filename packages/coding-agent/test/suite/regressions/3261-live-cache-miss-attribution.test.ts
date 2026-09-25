@@ -15,6 +15,7 @@ import {
 	isCachePrefixFingerprint,
 	reconstructMessageHashes,
 } from "../../../src/core/cache-prefix-fingerprint.ts";
+import { collectCacheMisses, describeCacheMissCause, detectCacheMiss } from "../../../src/core/cache-stats.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
@@ -54,6 +55,84 @@ describe("issue #3261: a stale host-side session snapshot must not hide cache-pr
 
 	afterEach(async () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
+	});
+
+	it("persists no attribution and renders no cause for a pre-upgrade cache miss live and after resume (#3261)", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-3261-no-baseline-"));
+		cleanups.push(async () => rmSync(cwd, { recursive: true, force: true }));
+		const faux = registerFauxProvider();
+		cleanups.push(async () => faux.unregister());
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		modelRuntime.registerProvider(faux.getModel().provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models,
+		});
+		const sessionDir = join(cwd, "sessions");
+		const sessionManager = SessionManager.create(cwd, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "old turn", timestamp: Date.now() - 1000 });
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "old response" }],
+			api: faux.getModel().api,
+			provider: faux.getModel().provider,
+			model: faux.getModel().id,
+			usage: { ...reportedUsage(30_000), cost: { input: 0.2, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.2 } },
+			stopReason: "stop",
+			timestamp: Date.now() - 500,
+		});
+		assert.equal(cachePrefixEntryCount(sessionManager), 0);
+		const reportUsage: ExtensionFactory = (pi) => {
+			pi.on("message_end", (event) => {
+				if (event.message.role !== "assistant") return;
+				return {
+					message: {
+						...event.message,
+						usage: {
+							...reportedUsage(31_000),
+							cost: { input: 0.2, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+						},
+					},
+				};
+			});
+		};
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: cwd,
+			resourceLoader: createTestResourceLoader({
+				systemPrompt: "You are a test assistant.",
+				extensionsResult: await createTestExtensionsResult([reportUsage], cwd),
+			}),
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager,
+			model: faux.getModel(),
+		});
+		cleanups.push(() => session.dispose());
+		faux.setResponses([{ role: "assistant", content: [{ type: "text", text: "new response" }] } as never]);
+		let response: Parameters<typeof detectCacheMiss>[1] | undefined;
+		session.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") response = event.message;
+		});
+		await session.prompt("new turn");
+		const persisted = sessionManager
+			.getEntries()
+			.find((entry) => entry.type === "custom" && entry.customType === CACHE_PREFIX_CUSTOM_TYPE);
+		assert.ok(persisted && isCachePrefixFingerprint(persisted.data));
+		assert.equal(Object.hasOwn(persisted.data, "attribution"), false);
+		assert.ok(response);
+		const prices = { getModel: () => ({ cost: { cacheRead: 0.3 } }) };
+		const live = detectCacheMiss(sessionManager.getFreshEntries(), response, prices);
+		assert.ok(live);
+		assert.equal(live.attribution, undefined);
+		assert.equal(describeCacheMissCause(live), "");
+		const resumed = SessionManager.open(sessionManager.getSessionFile()!, sessionDir, cwd);
+		const misses = collectCacheMisses(resumed.getEntries(), prices);
+		assert.equal(misses.size, 1);
+		assert.equal(describeCacheMissCause([...misses.values()][0]), "");
 	});
 
 	it("getFreshEntries sees the cache_prefix entry a stale snapshot was opened before", async () => {

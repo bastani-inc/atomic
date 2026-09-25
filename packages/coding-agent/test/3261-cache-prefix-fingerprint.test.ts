@@ -35,14 +35,14 @@ function nextStep(payload: unknown, previous: ChainStep, model = MODEL): ChainSt
 	return { fingerprint, messageHashes: reconstructMessageHashes(fingerprint, previous.messageHashes) };
 }
 
-function diff(previous: ChainStep | undefined, current: ChainStep): string {
+function diff(previous: ChainStep | undefined, current: ChainStep): string | undefined {
 	return describeCachePrefixDifference(previous?.fingerprint, previous?.messageHashes ?? [], current.fingerprint);
 }
 
 describe("computeCachePrefixFingerprint / describeCachePrefixDifference (#3261)", () => {
-	it("reports 'prefix unchanged' with no previous fingerprint", () => {
+	it("does not invent a prefix-unchanged cause without a previous fingerprint (#3261)", () => {
 		const current = firstStep(basePayload());
-		assert.equal(diff(undefined, current), "prefix unchanged");
+		assert.equal(diff(undefined, current), undefined);
 	});
 
 	it("reports 'model switched' when the model changes", () => {
@@ -119,6 +119,62 @@ describe("computeCachePrefixFingerprint / describeCachePrefixDifference (#3261)"
 		};
 		const current = nextStep(appended, previous);
 		assert.equal(diff(previous, current), "prefix unchanged");
+	});
+
+	it("treats Anthropic's breakpoint-wrapped single text block and plain string as one append-only prefix (#3261)", () => {
+		const text = "An existing user message";
+		const first = {
+			model: "claude-opus-5-5",
+			system: [{ type: "text", text: "System prompt", cache_control: { type: "ephemeral" } }],
+			messages: [{ role: "user", content: [{ type: "text", text, cache_control: { type: "ephemeral" } }] }],
+		};
+		const previous = firstStep(first);
+		const second = {
+			...first,
+			messages: [
+				{ role: "user", content: text },
+				{ role: "assistant", content: [{ type: "text", text: "Response" }] },
+				{ role: "user", content: "Next turn" },
+			],
+		};
+		const appended = nextStep(second, previous);
+		assert.equal(diff(previous, appended), "prefix unchanged");
+		assert.deepEqual(
+			appended.fingerprint.messageChanges.map(([index]) => index),
+			[1, 2],
+		);
+		const extraKey = nextStep(
+			{
+				...second,
+				messages: [{ role: "user", content: [{ type: "text", text, citations: [] }] }, ...second.messages.slice(1)],
+			},
+			previous,
+		);
+		assert.equal(diff(previous, extraKey), "message 1 rewritten");
+		const multipleBlocks = nextStep(
+			{
+				...second,
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text },
+							{ type: "text", text: "more" },
+						],
+					},
+					...second.messages.slice(1),
+				],
+			},
+			previous,
+		);
+		assert.equal(diff(previous, multipleBlocks), "message 1 rewritten");
+		for (const content of [[{ type: "image", text }], [{ type: "text", text: 42 }], [], "Different text"]) {
+			const distinct = nextStep(
+				{ ...second, messages: [{ role: "user", content }, ...second.messages.slice(1)] },
+				previous,
+			);
+			assert.equal(diff(previous, distinct), "message 1 rewritten");
+		}
 	});
 
 	it("ignores Anthropic cache_control breakpoint markers at any depth", () => {

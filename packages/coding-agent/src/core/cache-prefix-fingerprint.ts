@@ -20,7 +20,7 @@ export interface CachePrefixToolFingerprint {
  * boundary); otherwise it is the previous request's reconstructed list.
  *
  * `attribution` is the first-differing-segment label computed when the request was
- * sent, so live, resumed, and re-rendered notices all read the same label.
+ * sent, or absent without a previous fingerprint; live and resumed notices agree.
  */
 export interface CachePrefixFingerprint {
 	modelHash: string;
@@ -206,6 +206,16 @@ function extractSegments(payload: Record<string, unknown>): PayloadSegments {
 	};
 }
 
+/** Equate only the Anthropic single-text-block wire form with its plain-string form. */
+function messageForHash(message: unknown): unknown {
+	const record = asRecord(message);
+	const content = record?.content;
+	if (!Array.isArray(content) || content.length !== 1) return message;
+	const block = asRecord(content[0]);
+	if (block?.type !== "text" || typeof block.text !== "string" || Object.keys(block).length !== 2) return message;
+	return { ...record, content: block.text };
+}
+
 /**
  * Compute the hash-only fingerprint of a provider request from its final payload
  * (the value returned by `onPayload`, after extension hooks and sanitization).
@@ -226,7 +236,7 @@ export function computeCachePrefixFingerprint(
 	const tools = segments.tools
 		.map((tool) => ({ name: extractToolName(tool), hash: hash(JSON.stringify(tool)) }))
 		.filter((tool): tool is CachePrefixToolFingerprint => tool.name !== undefined);
-	const messageHashes = segments.messages.map((message) => hash(JSON.stringify(message)));
+	const messageHashes = segments.messages.map((message) => hash(JSON.stringify(messageForHash(message))));
 	const baseline = previousMessageHashes ?? [];
 	const messageChanges: Array<[number, string]> = [];
 	messageHashes.forEach((messageHash, index) => {
@@ -269,8 +279,8 @@ export function describeCachePrefixDifference(
 	previous: CachePrefixFingerprint | undefined,
 	previousMessageHashes: readonly string[],
 	current: CachePrefixFingerprint,
-): string {
-	if (!previous) return "prefix unchanged";
+): string | undefined {
+	if (!previous) return undefined;
 	if (previous.modelHash !== current.modelHash) return "model switched";
 	if (previous.shapeUnknown || current.shapeUnknown) return "request shape unknown";
 	const previousNames = new Set(previous.tools.map((tool) => tool.name));

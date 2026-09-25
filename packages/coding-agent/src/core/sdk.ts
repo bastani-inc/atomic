@@ -608,8 +608,8 @@ async function constructAgentSession(
 				previous.fingerprint && !previous.boundaryAfter ? previous.messageHashes : undefined,
 			);
 			const label = describeCachePrefixDifference(previous.fingerprint, previous.messageHashes, fingerprint);
-			const attribution = previous.fingerprint && previous.boundaryAfter ? `history compacted (${label})` : label;
-			const persisted = { ...fingerprint, attribution };
+			const attribution = label && previous.boundaryAfter ? `history compacted (${label})` : label;
+			const persisted = { ...fingerprint, ...(attribution === undefined ? {} : { attribution }) };
 			sessionManager.appendCustomEntry(CACHE_PREFIX_CUSTOM_TYPE, persisted);
 			cachePrefixState = {
 				fingerprint: persisted,
