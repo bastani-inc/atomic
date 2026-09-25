@@ -908,7 +908,8 @@ test("classifier size rejection falls back to chat with the same truncated prote
 	);
 	assert.equal(classify.mock.calls[0]![1].state.task, routed);
 	assert.match(routed, /<keepContext>required detail/);
-	assert.ok(routed.endsWith(TRUNCATED_MARKER));
+	assert.ok(routed.includes(TRUNCATED_MARKER));
+	assert.ok(routed.endsWith("required detail </keepContext>"));
 	assert.ok(Buffer.byteLength(JSON.stringify(routed), "utf8") <= MODEL_ROUTING_TASK_BYTES);
 });
 

@@ -51,6 +51,22 @@ export function truncateToBytes(text: string, maxBytes: number): string {
 	return `${text.slice(0, boundary(text, low, -1))}${TRUNCATED_MARKER}`;
 }
 
+/** Keep equal-length head and tail that fit, marking the cut between them. */
+function truncateMiddleToBytes(text: string, maxBytes: number): string {
+	if (jsonBytes(text) <= maxBytes) return text;
+	if (jsonBytes(TRUNCATED_MARKER) > maxBytes) return "";
+	const cut = (edge: number) =>
+		`${text.slice(0, boundary(text, edge, -1))}${TRUNCATED_MARKER}${text.slice(boundary(text, text.length - edge, 1))}`;
+	let low = 0;
+	let high = Math.floor(text.length / 2);
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (jsonBytes(cut(middle)) <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	return cut(low);
+}
+
 /** Bound only the model selector's copy. Execution and hard constraints stay intact. */
 export function modelRoutingTask(task: string, maxBytes = MODEL_ROUTING_TASK_BYTES): string {
 	const fits = (text: string) => jsonBytes(text) <= maxBytes;
@@ -74,9 +90,10 @@ export function modelRoutingTask(task: string, maxBytes = MODEL_ROUTING_TASK_BYT
 		return parts.join("");
 	};
 	let result = excerpt(0);
-	// Protected spans that alone exceed the budget are cut too: an oversized
-	// routing request fails outright, and the execution task keeps every span.
-	if (!fits(result)) return truncateToBytes(result, maxBytes);
+	// Protected spans that alone exceed the budget are cut too, from the middle of
+	// the task so its opening and closing objective both reach the router. The
+	// execution task keeps every span.
+	if (!fits(result)) return `${notice}${truncateMiddleToBytes(task, maxBytes - (jsonBytes(notice) - 2))}`;
 	let low = 0;
 	let high = Math.min(Math.floor(task.length / 2), maxBytes);
 	while (low < high) {

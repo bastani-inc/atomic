@@ -47,9 +47,18 @@ test("oversized protected content is truncated with a marker instead of sent who
 		const task = `start<keepContext>${"x".repeat(30_000)}${close}end`;
 		const excerpt = modelRoutingTask(task);
 		assert.ok(size(excerpt) <= MODEL_ROUTING_TASK_BYTES);
-		assert.match(excerpt, /<keepContext>x+/);
-		assert.ok(excerpt.endsWith(TRUNCATED_MARKER));
+		assert.match(excerpt, /start<keepContext>x+/);
+		assert.ok(excerpt.includes(TRUNCATED_MARKER));
+		assert.ok(excerpt.endsWith(`x${close}end`));
 	}
+});
+
+test("an oversized protected span before the objective keeps the objective in the routing excerpt", () => {
+	const task = `<keepContext>${"constraint ".repeat(3_000)}</keepContext>\nImplement issue #3270.`;
+	const excerpt = modelRoutingTask(task);
+	assert.ok(size(excerpt) <= MODEL_ROUTING_TASK_BYTES);
+	assert.match(excerpt, /<keepContext>constraint/);
+	assert.ok(excerpt.endsWith("Implement issue #3270."));
 });
 
 test("a smaller budget bounds the excerpt; a budget below the marker yields empty text", () => {
