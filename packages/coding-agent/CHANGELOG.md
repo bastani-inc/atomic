@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Agents and workflow stages now try agent-browser first wherever it can reach the target, because its text snapshots use far fewer tokens than screenshot-driven computer use. That now includes Mobile Safari in the iOS Simulator (`agent-browser -p ios`) and apps that expose a Chrome DevTools Protocol port. Cua Driver handles everything else: native desktop apps, native iOS apps in the Simulator, Android emulators, OS dialogs, and desktop Safari or other non-Chromium browsers. The [Computer use](docs/computer-use.md#what-agent-browser-covers) guide has a new table showing what agent-browser covers.
+
 ## [0.9.20-alpha.11] - 2026-09-24
 
 ### Changed

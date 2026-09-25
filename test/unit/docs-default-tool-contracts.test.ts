@@ -105,7 +105,7 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 			/agent-browser hits a limitation/,
 			`${name} does not route agent-browser limitations to Cua Driver`,
 		);
-		assert.match(text, /iOS simulator/, `${name} does not route iOS simulators to Cua Driver`);
+		assert.match(text, /native iOS app in the iOS Simulator/, `${name} does not route native iOS apps to Cua Driver`);
 	}
 	assert.match(
 		verification,
@@ -141,7 +141,14 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	assert.match(computer, /`cua-driver update --apply` once/);
 	assert.match(computer, /`CuaDriver\.connect\(\)`[\s\S]*`CuaDriver\.create\(\)`/);
 	assert.match(computer, /\/workflows\/authoring#desktop-verification-with-cua-driver-in-ctx-tool/);
-	assert.match(verification, /\| Native desktop app, iOS simulator, or Android emulator \| \*\*Cua Driver\*\*/);
+	assert.match(
+		verification,
+		/\| Native desktop app, native iOS app in the iOS Simulator, Android emulator, desktop Safari or another non-Chromium browser, or OS dialogs \| \*\*Cua Driver\*\*/,
+	);
+	assert.match(verification, /Mobile Safari in the iOS Simulator[^|]*\| \*\*agent-browser\*\*/);
+	assert.match(computer, /### What agent-browser covers/);
+	assert.match(computer, /agent-browser -p ios --device "iPhone 16 Pro" open <url>/);
+	assert.match(computer, /agent-browser's iOS mode drives Mobile Safari only/);
 	assert.match(verification, /`blocked`\/`needs_human`/);
 	assert.match(verification, /ctx\.exit\(\{ status: "blocked", reason \}\)/);
 	assert.match(verification, /structured window state plus screenshots, not a screenshot alone/);

@@ -279,11 +279,11 @@ describe("buildSystemPrompt", () => {
 		assert.doesNotMatch(prompt, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
 		assert.match(
 			prompt,
-			/Prefer the agent-browser skill for what it covers: websites and web apps in Chrome\/Chromium, Electron desktop apps/,
+			/Prefer the agent-browser skill for what it covers, because its text snapshots cost far fewer tokens than screenshot-driven CUA: websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator[\s\S]*Electron desktop apps/,
 		);
 		assert.match(
 			prompt,
-			/Use cua-driver for everything else \(native desktop apps, iOS simulators, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
+			/Use cua-driver for everything else \(native desktop apps, native iOS apps in the iOS Simulator, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
 		);
 		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
 		assert.match(prompt, /install it if missing/);

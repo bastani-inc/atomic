@@ -47,7 +47,7 @@ function verificationContract(prompt: string): void {
 	assert.match(prompt, /For web or frontend flows[\s\S]*agent-browser/);
 	assert.match(
 		prompt,
-		/Prefer agent-browser for what its skill covers \(websites and web apps in Chrome\/Chromium, Electron desktop apps, Slack, cloud browsers\); use Cua Driver for anything else, including iOS simulators, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
+		/Prefer agent-browser for what its skill covers[\s\S]*\(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\); use Cua Driver for anything else, including native iOS apps in the iOS Simulator, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
 	);
 	assert.match(prompt, /For TUI\/terminal automation\/testing, prefer the herdr skill on macOS, Linux and Windows/);
 	assert.match(prompt, /Install Herdr if missing[\s\S]*fall back to the tmux skill or native Windows psmux/);
@@ -83,7 +83,8 @@ function verificationContract(prompt: string): void {
 	);
 	assert.match(prompt, /`cua-driver permissions grant`, then toggle CuaDriver on/);
 	assert.match(prompt, /re-run the readiness check on resume/);
-	assert.match(prompt, /not.*label browser recordings as terminal\/iOS proof/);
+	assert.match(prompt, /not.*label a Chrome recording as terminal or native iOS proof/);
+	assert.match(prompt, /`-p ios` session proves Mobile Safari behavior, not a native iOS app/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
 	assert.doesNotMatch(prompt, /openai-cua-sample-app/);
@@ -274,7 +275,7 @@ test("authoring guidance states the Cua Driver face rule for custom workflows (#
 	);
 	assert.match(
 		prompt,
-		/agent-browser for what its skill covers \(websites and web apps in Chrome\/Chromium, Electron desktop apps, Slack, cloud browsers\) and Cua Driver for anything else or whenever agent-browser hits a limitation/,
+		/agent-browser for what its skill covers \(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\) and Cua Driver for anything else \(native desktop apps, native iOS apps in the Simulator, Android emulators[\s\S]*\) or whenever agent-browser hits a limitation/,
 	);
 	assert.match(prompt, /prefer herdr for terminal automation\/testing[\s\S]*fall back to tmux\/native Windows psmux/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);

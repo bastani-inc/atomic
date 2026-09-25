@@ -19,8 +19,8 @@ Start with the result you need, not the application you could click through. If 
 | --- | --- | --- |
 | Create or edit files, such as presentations, documents, spreadsheets, or media | **A file library or CLI** | Use an app API or UI when the library cannot preserve required features, or when you need rendering or visual adjustments. |
 | Interactive terminal or TUI | **Herdr** | Use tmux on macOS/Linux or native Windows psmux when Herdr cannot be used. Ordinary shell commands need no multiplexer. |
-| Website or web app in Chrome/Chromium, Electron desktop app (VS Code, Slack, Discord, Figma, Notion, Spotify), Slack workspace, or cloud browser | **agent-browser** | This is the scope the `agent-browser` skill covers. Use Cua Driver for browser chrome, OS dialogs and permission prompts, non-Chromium browsers, or anything else agent-browser cannot reach. Keep existing browser test suites for repeatable tests. |
-| Native desktop application, iOS simulator, Android emulator, work across apps, or any agent-browser limitation | **Cua Driver**: the `cua-driver` CLI through the bundled `cua-driver` skill when a model chooses each action; the `@trycua/cua-driver` TypeScript SDK inside `ctx.tool` when workflow code owns the scenario | Use application scripting or a CLI when they make the task easier, safer, or more reliable. |
+| Website or web app in Chrome/Chromium, Mobile Safari in the iOS Simulator or on a connected iPhone/iPad, Electron desktop app (VS Code, Slack, Discord, Figma, Notion, Spotify) or another app that exposes a Chrome DevTools Protocol (CDP) port, Slack workspace, or cloud browser | **agent-browser** | Prefer it whenever the target is web content it can reach: its text snapshots and element refs cost far fewer tokens than screenshot-driven CUA. See [what agent-browser covers](#what-agent-browser-covers). Use Cua Driver for anything outside that list or whenever agent-browser hits a limitation. Keep existing browser test suites for repeatable tests. |
+| Native desktop application, native iOS app in the iOS Simulator, Android emulator, desktop Safari, Firefox or another non-Chromium browser, browser chrome, OS dialogs and permission prompts, work across apps, or any agent-browser limitation | **Cua Driver**: the `cua-driver` CLI through the bundled `cua-driver` skill when a model chooses each action; the `@trycua/cua-driver` TypeScript SDK inside `ctx.tool` when workflow code owns the scenario | Use application scripting or a CLI when they make the task easier, safer, or more reliable. |
 
 You can combine tools without driving the whole task through a desktop. Generate a presentation with `python-pptx`, then inspect rendered slides for layout problems. Use Blender's Python API to generate repeated objects, then Cua Driver for adjustments in the visible editor. Use browser DOM controls rather than desktop clicks for a web form. For a supported web-service operation that does not require browser interaction, an authorized API request may be enough.
 
@@ -190,7 +190,7 @@ Atomic uses Cua Driver through two faces of one typed surface. Choose by who dec
 | A language model chooses each action: an interactive session driving, inspecting, or automating a desktop app, simulator, or emulator window, or any workflow stage acting outside `ctx.tool` | `cua-driver` CLI through the bundled `cua-driver` skill | The model decides turn by turn; the skill's loop is written for one-shot `cua-driver call <tool>` commands, and the evidence is the JSON results and `screenshot_out_file` images it saves. |
 | A custom workflow's TypeScript owns the scenario and its postcondition, run inside `ctx.tool(name, args, fn, { timeoutMs })` | `@trycua/cua-driver` TypeScript SDK | Code owns the sequence; the result is durably checkpointed and replayed on resume. |
 
-The rule of thumb: **when a model chooses the next action, use the CLI; when TypeScript code owns the sequence and the postcondition, use the SDK.** Prefer [agent-browser](#browser-automation-with-agent-browser) for what its skill covers: websites and web apps in Chrome/Chromium, Electron desktop apps, Slack, and cloud browsers. Use Cua Driver for everything else, including iOS simulators, Android emulators, OS dialogs, and non-Chromium browsers, and whenever agent-browser hits a limitation. Terminals stay with [Herdr](#terminal-automation-with-herdr), falling back to tmux or psmux. Both faces share tool names (`list_apps`, `list_windows`, `get_window_state`, `click`, `type_text`, and the rest), so a scenario worked out interactively translates directly into code.
+The rule of thumb: **when a model chooses the next action, use the CLI; when TypeScript code owns the sequence and the postcondition, use the SDK.** Before reaching for either, check whether [agent-browser covers the target](#what-agent-browser-covers): websites and web apps in Chrome/Chromium, Mobile Safari in the iOS Simulator, Electron and other CDP-exposing apps, Slack, and cloud browsers. It is much cheaper than CUA there. Use Cua Driver for everything else, including native desktop apps, native iOS apps in the Simulator, Android emulators, OS dialogs, desktop Safari and other non-Chromium browsers, and whenever agent-browser hits a limitation. Terminals stay with [Herdr](#terminal-automation-with-herdr), falling back to tmux or psmux. Both faces share tool names (`list_apps`, `list_windows`, `get_window_state`, `click`, `type_text`, and the rest), so a scenario worked out interactively translates directly into code.
 
 The bundled `cua-driver` skill is the upstream skill, vendored verbatim, and is the only place the driving loop is described. The executable installer below does not install an agent skill. Do not run `cua-driver skills install`, `cua-driver skills update`, or `clawhub install @cua/driver`: upstream's README describes those optional skill commands for other agents. Do not link or copy another skill into `~/.agents/skills/cua-driver`, `~/.claude/skills`, or other agent directories. Atomic already supplies its bundled copy; leave any existing user-level skill alone.
 
@@ -275,7 +275,31 @@ One controller owns a desktop at a time. Use a dedicated session or account wher
 
 ## Browser automation with agent-browser
 
-Prefer [agent-browser](https://github.com/vercel-labs/agent-browser) for what its skill covers: websites and web apps in Chrome/Chromium on all three desktop platforms, Electron desktop apps (`agent-browser skills get electron`), Slack workspaces, and cloud browsers. Anything outside that scope, or a limitation you hit inside it, goes to [Cua Driver](#desktop-automation-with-cua-driver). Its accessibility-tree snapshots expose page structure and element references, so automation can use actual controls rather than screen coordinates. For data retrieval or batch operations, consider a supported API first when it meets the request and you have permission to use it.
+Prefer [agent-browser](https://agent-browser.dev/) for any target it can reach. Its `snapshot` returns a compact text accessibility tree with `@eN` element refs, usually a few hundred tokens, so each step costs far less context than a screenshot-driven CUA step, and actions land on real controls rather than screen coordinates. Anything outside the scope below, or a limitation you hit inside it, goes to [Cua Driver](#desktop-automation-with-cua-driver). For data retrieval or batch operations, consider a supported API first when it meets the request and you have permission to use it.
+
+### What agent-browser covers
+
+| Target | How | Notes |
+| --- | --- | --- |
+| Websites and web apps in Chrome/Chromium on macOS, Linux, and Windows | Default engine, headless or `--headed`; `--executable-path` for another Chromium-based browser such as Brave; `--engine lightpanda` for the Lightpanda engine | The full command set: forms, uploads and downloads, JavaScript `alert`/`confirm`/`prompt` dialogs (`dialog accept`/`dismiss`), clipboard, tabs, iframes, network routing and HAR, console and errors, `a11y` audits, Web Vitals and React inspection, `record` videos. |
+| Mobile Safari in the iOS Simulator, or on a USB-connected iPhone/iPad | `agent-browser -p ios --device "iPhone 16 Pro" open <url>`, then the usual `snapshot`, `tap`, `fill`, `swipe`, `screenshot`; `agent-browser device list` shows simulators | macOS with Xcode simulator runtimes, plus `npm install -g appium` and `appium driver install xcuitest`. A real device also needs a signed WebDriverAgent. One tab only; no `record` video, PDF export, streaming, `screenshot --annotate`, `a11y` audits, or `--allowed-domains`. For a video, record the simulator with `xcrun simctl io booted recordVideo <file>.mp4`. First launch takes 30–60 seconds; `agent-browser -p ios close` shuts the simulator down. |
+| Mobile web layout in Chrome | `agent-browser set device "iPhone 14"` or `set viewport <w> <h> <scale>` | Emulates a viewport and user agent in Chromium. It is not WebKit; use `-p ios` when Safari behavior matters. |
+| Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify, and others) | Relaunch the app with `--remote-debugging-port=<port>`, then `agent-browser connect <port>`; load `agent-browser skills get electron` | Windows and `<webview>` targets appear in `agent-browser tab`. |
+| Other apps and browsers that expose CDP | `agent-browser connect <port\|ws-url>` or `--auto-connect` for a running Chrome | WebView2 apps on Windows and Chrome started with remote debugging. Attach to a personal browser only when authorized. |
+| Slack workspaces | `agent-browser skills get slack` | Browser-based Slack automation. |
+| Cloud and sandboxed browsers | `-p browserbase`, `browserless`, `browseruse`, `kernel`, or `agentcore`; `agent-browser skills get vercel-sandbox` | Provider credentials come from the provider's environment variables. |
+| Local HTML or PDF files | `agent-browser --allow-file-access open file:///path/to/file` | Chromium only. |
+
+Hand the task to Cua Driver when it needs any of these:
+
+- A native desktop app that exposes no CDP port (AppKit, SwiftUI, Win32/WPF, GTK, Qt), or an Electron app that cannot be relaunched with remote debugging.
+- A native iOS app in the Simulator. agent-browser's iOS mode drives Mobile Safari only. Android emulators are not supported by agent-browser at all.
+- Desktop Safari, Firefox, or another browser that is neither Chromium-based nor iOS Safari.
+- Browser chrome outside the page: the toolbar, extension popups, native print or save dialogs, or permission prompts.
+- OS dialogs and pickers the page cannot bypass. Try `agent-browser upload` for file inputs first.
+- Work across several applications, or a capability the installed agent-browser version rejects.
+
+Check the installed CLI (`agent-browser --help`, `agent-browser skills get core`) before relying on a version-dependent command.
 
 ### Setup and first session
 
@@ -306,10 +330,10 @@ For a real task, act between the snapshot and final capture. Read element refere
 - Prefer a fresh profile. Attach to an existing personal browser only when authorized; stored sessions can expose private tabs and credentials.
 - Use headed mode for visual work. Headless mode can verify DOM behavior, but does not establish that desktop integration or native dialogs work.
 - Inspect visible results and relevant console/network output (`agent-browser console`, `agent-browser errors`, `agent-browser network requests`). Keep semantic locators and assertions in a maintained browser test suite for repeatable regression coverage.
-- Use the CLI's file-upload support for supported file inputs rather than driving an OS file picker. Switch to CUA or native tooling only for UI outside the page, and then recheck focus before returning to browser control.
+- Use the CLI's file-upload support for supported file inputs rather than driving an OS file picker. Switch to Cua Driver or native tooling only for UI outside the page, and then recheck focus before returning to browser control.
 - Treat cookies, saved authentication state, and network logs as sensitive. Do not commit or attach a browser profile as evidence.
 - Keep `screenshot` PNGs and `record` recordings from the verified flow; when the work ends in a PR, attach them to the PR body with `gh pr create --attach` on supported GitHub, each next to the scenario it proves. See [Verification and evidence](/workflows/verification#native-github-media).
-- Browser mobile emulation tests a web viewport, not a native Android or iOS application.
+- `set device` emulates a mobile viewport in Chromium; `-p ios` runs real Mobile Safari. Neither exercises a native Android or iOS app, which needs Cua Driver.
 
 For verification captures and recordings, see [browser evidence](/workflows/verification#browser-changes).
 
@@ -383,7 +407,7 @@ Use `osascript` for AppleScript or JavaScript for Automation when an app's scrip
 
 ### Browser and terminal
 
-agent-browser uses its own Chrome/Chromium session. Chromium coverage is not proof of every Safari-specific desktop behavior. Use an actual target browser when that distinction matters.
+agent-browser's default session is Chrome/Chromium, which is not proof of Safari-specific behavior. For Mobile Safari, use `agent-browser -p ios` against an iOS Simulator (requires Xcode, Appium, and the XCUITest driver). For desktop Safari, use Cua Driver.
 
 Herdr is the first choice for interactive terminals when eligible. Homebrew provides Herdr and tmux. Preserve the shell, terminal dimensions, and keyboard behavior relevant to the task rather than silently changing them to make a scenario pass.
 
