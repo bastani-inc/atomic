@@ -101,7 +101,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		initTheme("dark");
 	});
 
-	test("shows installed resource names by default", () => {
+	test("shows installed resource names by default without a themes section", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
 			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
@@ -127,8 +127,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("/explain, /review");
 		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts");
-		expect(output).toContain("[Themes]");
-		expect(output).toContain("solarized");
+		expect(output).not.toContain("[Themes]");
+		expect(output).not.toContain("solarized");
 		expect(output).not.toContain("/tmp/skill/SKILL.md");
 	});
 
