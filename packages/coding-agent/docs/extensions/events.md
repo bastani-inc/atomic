@@ -347,7 +347,7 @@ Each provider request is built from the persisted session after every queued han
 These notification-only events wrap blocking user-facing prompts. Each event has `reason: "ui_prompt" | "project_trust"`, the prompt `kind`, and the prompt `title` when available. Host and status integrations can use the pair to distinguish waiting for the user from active work.
 
 - `ui_prompt`: extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`.
-  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. Nested approval calls still emit events; mounting or hiding the workflow graph is not itself an approval.
+  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. A custom prompt carries a `title` only when its caller passes `{ title }`; the built-in `ask_user_question` dialog passes its first question. Nested approval calls still emit events; mounting or hiding the workflow graph is not itself an approval.
 - `project_trust`: interactive startup/resume trust dialogs, trust-hook dialogs, borrowed extension-source authorization, and the built-in `/trust` selector. Silent saved/default/CLI decisions and noninteractive startup do not emit artificial waits.
 
 Trust-safe extensions receive a live context before the trust prompt. Newly authorized project extensions load afterward and do not receive historical prompt events. Resume trust dialogs use the outgoing session context; failed preparation leaves that session active.

@@ -52,4 +52,54 @@ describe("fetchWithRetry", () => {
 		await expect(fetchWithRetry("https://example.test", { signal: controller.signal })).rejects.toThrow();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
+
+	it("waits retryDelayMs before each retry and hands the callback what failed", async () => {
+		const transportError = new Error("fetch failed");
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response("busy", { status: 503, headers: { "retry-after": "0" } }))
+			.mockRejectedValueOnce(transportError)
+			.mockResolvedValueOnce(Response.json({ ok: true }));
+		const calls: { attempt: number; status?: number; error?: unknown }[] = [];
+		const started = Date.now();
+
+		const response = await fetchWithRetry("https://example.test", undefined, {
+			retryDelayMs: (attempt, retryResponse, error) => {
+				calls.push({ attempt, status: retryResponse?.status, error });
+				return 25;
+			},
+		});
+
+		expect(response.ok).toBe(true);
+		expect(calls).toEqual([
+			{ attempt: 0, status: 503, error: undefined },
+			{ attempt: 1, status: undefined, error: transportError },
+		]);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(45);
+	});
+
+	it("ends the loop with the callback's own error when it throws", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("busy", { status: 503 }));
+		const stop = new Error("stop here");
+
+		await expect(
+			fetchWithRetry("https://example.test", undefined, {
+				retryDelayMs: () => {
+					throw stop;
+				},
+			}),
+		).rejects.toBe(stop);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("abandons a retry wait when the caller aborts, surfacing the caller's reason", async () => {
+		const controller = new AbortController();
+		const reason = new Error("caller gave up");
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("busy", { status: 503 }));
+		setTimeout(() => controller.abort(reason), 10);
+
+		await expect(
+			fetchWithRetry("https://example.test", { signal: controller.signal }, { retryDelayMs: () => 10_000 }),
+		).rejects.toBe(reason);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 });

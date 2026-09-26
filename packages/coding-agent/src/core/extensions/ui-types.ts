@@ -306,6 +306,13 @@ export interface ExtensionUIContext {
 		options?: {
 			/** Navigation does not emit approval-prompt events. Defaults to "prompt". */
 			purpose?: "prompt" | "navigation";
+			/**
+			 * What this prompt asks, carried on the `ui_prompt_start` / `ui_prompt_end`
+			 * events as `title`, the way `select()`, `confirm()`, `input()` and
+			 * `editor()` carry theirs. Without it observers see a `custom` prompt and
+			 * nothing else. Keep it short; it is a label, not the prompt body.
+			 */
+			title?: string;
 			overlay?: boolean;
 			/** Keep host inline custom UI pending in the background while this overlay is visible. */
 			deferInlineCustomUiFocus?: boolean;

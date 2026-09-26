@@ -24,6 +24,26 @@ const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
 const STAGE_QUESTIONNAIRE = Symbol.for("atomic-coding-agent/stage-questionnaire@1");
 
 /**
+ * Longest prompt title carried on `ui_prompt_start` for a questionnaire. The
+ * title is a label for observers (status reporters, notifications), not the
+ * question body, so it is cut with an ellipsis rather than wrapped.
+ */
+export const QUESTIONNAIRE_PROMPT_TITLE_LIMIT = 120;
+
+/**
+ * The first question, bounded, as the questionnaire's prompt title. A
+ * questionnaire with several questions still gets one title: observers see a
+ * single blocking prompt, and the first question is what the user sees first.
+ */
+export function questionnairePromptTitle(questions: readonly Pick<QuestionData, "question">[]): string | undefined {
+	const first = questions[0]?.question.trim();
+	if (first === undefined || first.length === 0) return undefined;
+	return first.length <= QUESTIONNAIRE_PROMPT_TITLE_LIMIT
+		? first
+		: `${first.slice(0, QUESTIONNAIRE_PROMPT_TITLE_LIMIT - 1)}…`;
+}
+
+/**
  * Mount options for the blocking questionnaire (#2378).
  *
  * The dialog used to mount inline, inside the fullscreen dock, where it is a
@@ -163,7 +183,15 @@ export async function presentQuestionnaire(
 					done,
 					...(chatAsOption === true ? { chatAsOption: true } : {}),
 				}).component,
-			{ signal, overlay: true, reserveTranscriptRows: true, overlayOptions: QUESTIONNAIRE_OVERLAY_OPTIONS },
+			{
+				signal,
+				overlay: true,
+				reserveTranscriptRows: true,
+				overlayOptions: QUESTIONNAIRE_OVERLAY_OPTIONS,
+				// Lets ui_prompt_start observers say what is being asked; without it
+				// they only see that some custom prompt opened.
+				title: questionnairePromptTitle(params.questions),
+			},
 		);
 	} finally {
 		ui.setWorkingVisible?.(true);
