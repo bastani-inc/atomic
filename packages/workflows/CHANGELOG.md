@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-09-26
+
+### Changed
+
+- `model: "auto"` routing has a chat model answer fixed questions about the complete task, then the router chooses between a short, evidence-backed list of models without seeing the task, in at most two small requests. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.
+- `model: "auto"` accepts `taskNeeds` so the caller can state the task's kind of work, difficulty, mistake cost, need for images, need for a very large context and whether speed matters, and `modelConstraints.allowedModels` sets the shortlist the router chooses between. `modelConstraints.allowedProviders` and `excludedProviders` skip whole providers and replace the `modelRouting` provider settings for that call. Falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
+- Workflow authoring guidance now tells agents to put a `model: "auto"` stage's role and objective at the start or end of its prompt or in a short `<keepContext>` span, since model routing sees only those parts of long prompts.
+
+### Fixed
+
+- The builtin `goal` and `ralph` workflows no longer count a reviewer's `stop_review_loop=true` as approval when the same review calls the patch incorrect, reports `goal_oracle_satisfied: false`, or lists a blocking finding. A run whose reviewers all flag an empty implementation no longer ends `complete` or starts the pull-request stage ([#3295](https://github.com/bastani-inc/atomic/issues/3295)).
+
 ## [0.9.21-alpha.2] - 2026-09-26
 
 ### Changed
