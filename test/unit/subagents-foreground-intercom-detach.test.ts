@@ -112,6 +112,39 @@ describe("foreground intercom detach routing", () => {
 		});
 	});
 
+	test("a detached child that later succeeds still writes its requested output file (#3294)", async () => {
+		await withTempDir(async (dir) => {
+			const gate = deferred();
+			const emitter = new EventEmitter();
+			const outputPath = join(dir, "findings.md");
+			let recoveredResult: (result: SingleResult) => void = () => undefined;
+			const recovery = new Promise<SingleResult>((resolve) => {
+				recoveredResult = resolve;
+			});
+			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				cwd: dir,
+				runId: "recover-output",
+				index: 0,
+				intercomSessionName: "child-a",
+				allowIntercomDetach: true,
+				intercomEvents: eventBus(emitter),
+				outputPath,
+				outputMode: "file-only",
+				testSession: { output: "detached findings", promptGate: gate.promise },
+				onDetachedExit: (result) => recoveredResult(result),
+			});
+			await sleep(25);
+			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
+			assert.equal((await pending).detached, true);
+			gate.release();
+			const recovered = await recovery;
+			assert.equal(recovered.status, "ok");
+			assert.equal(fs.readFileSync(outputPath, "utf8"), "detached findings");
+			assert.equal(recovered.savedOutputPath, outputPath);
+			assert.match(recovered.finalOutput ?? "", /Output saved to: .*findings\.md/);
+		});
+	});
+
 	test("a broker-routed handoff detaches the exact child even before tool-start observation", async () => {
 		await withTempDir(async (dir) => {
 			const firstGate = deferred();

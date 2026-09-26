@@ -525,7 +525,9 @@ test("owner foreground parallel kill preserves sibling execution and raw host re
 		gate.resolve();
 		const terminal = await launch;
 		assert.match(text(terminal), /1 killed.*cannot be resumed/);
-		assert.deepEqual(JSON.parse(text(terminal).split("\n").at(-1)!), terminal.details.taskResponse);
+		const [, rawResponse] = text(terminal).split("\n");
+		assert.deepEqual(JSON.parse(rawResponse!), terminal.details.taskResponse);
+		assert.match(text(terminal), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
 		const response = terminal.details.taskResponse;
 		assert.ok(response?.kind === "parallel");
 		assert.deepEqual(
