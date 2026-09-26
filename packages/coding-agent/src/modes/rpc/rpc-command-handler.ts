@@ -115,10 +115,10 @@ export function createRpcCommandHandler({
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
 						source: "rpc",
-						preflightResult: (didSucceed) => {
+						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
 								preflightSucceeded = true;
-								output(createRpcSuccessResponse(id, "prompt"));
+								output(createRpcSuccessResponse(id, "prompt", { disposition }));
 							}
 						},
 					});
@@ -131,13 +131,13 @@ export function createRpcCommandHandler({
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images, { source: "rpc" });
-				return createRpcSuccessResponse(id, "steer");
+				const disposition = await session.steer(command.message, command.images, { source: "rpc" });
+				return createRpcSuccessResponse(id, "steer", { disposition });
 			}
 
 			case "follow_up": {
-				await session.followUp(command.message, command.images, { source: "rpc" });
-				return createRpcSuccessResponse(id, "follow_up");
+				const disposition = await session.followUp(command.message, command.images, { source: "rpc" });
+				return createRpcSuccessResponse(id, "follow_up", { disposition });
 			}
 
 			case "abort": {

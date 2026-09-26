@@ -2,6 +2,7 @@
  * Tests for AgentSession concurrent prompt guard.
  */
 
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -224,7 +225,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
 		// steer should work while streaming
-		await session.steer("Steering message");
+		assert.equal(await session.steer("Steering message"), "queued");
 		expect(session.pendingMessageCount).toBe(1);
 
 		// Cleanup
@@ -238,7 +239,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
 		// followUp should work while streaming
-		await session.followUp("Follow-up message");
+		assert.equal(await session.followUp("Follow-up message"), "queued");
 		expect(session.pendingMessageCount).toBe(1);
 
 		// Cleanup

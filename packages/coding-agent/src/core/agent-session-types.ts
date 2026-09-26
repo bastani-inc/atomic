@@ -196,13 +196,17 @@ export interface AgentSessionReloadOptions {
 	failOnExtensionErrors?: boolean;
 }
 
+export type QueuedInputDisposition = "handled" | "queued";
+export type PromptDisposition = QueuedInputDisposition | "started";
+
 export interface PromptOptions {
 	/** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
 	expandPromptTemplates?: boolean;
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
 	source?: InputSource;
-	preflightResult?: (success: boolean) => void;
+	/** Called once when preflight accepts (`true`, with how the prompt was dispatched) or rejects (`false`) the prompt. */
+	preflightResult?: (success: boolean, disposition?: PromptDisposition) => void;
 }
 
 export interface ModelMutationOptions {

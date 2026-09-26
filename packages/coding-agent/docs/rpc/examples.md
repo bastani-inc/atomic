@@ -9,7 +9,7 @@ description: Additional RPC client implementations.
 
 See [`test/rpc-example.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/test/rpc-example.ts) for a complete interactive example, or [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts) for a typed client implementation.
 
-[`examples/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/rpc-client.ts) uses the exported `RpcClient` to run Atomic in a child process, stream events, and wait for the run to settle. Build the coding-agent package first, then run `npx tsx examples/rpc-client.ts "Explain this repository"` from a repository checkout. `RpcClient` launches the CLI under Bun by default; pass `runtimeExecutable: process.execPath` to run it under Node.
+[`examples/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/rpc-client.ts) uses the exported `RpcClient` to run Atomic in a child process, stream events, and wait for the run to settle. Build the coding-agent package first, then run `node examples/rpc-client.ts "Explain this repository"` from a repository checkout. `RpcClient` launches the CLI under Bun by default; pass `runtimeExecutable: process.execPath` to run it under Node.
 
 For a complete example of handling the extension UI protocol, see [`examples/rpc-extension-ui.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/rpc-extension-ui.ts) which pairs with the [`examples/extensions/rpc-demo.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/rpc-demo.ts) extension.
 

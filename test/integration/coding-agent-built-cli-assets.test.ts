@@ -24,7 +24,7 @@ function compileFixture(): void {
 			"x",
 			"--bun",
 			"--no-install",
-			"tsgo",
+			"tsc",
 			"-p",
 			join(packageDir, "tsconfig.build.json"),
 			"--outDir",

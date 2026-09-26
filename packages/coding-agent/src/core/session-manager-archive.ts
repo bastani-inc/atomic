@@ -5,7 +5,7 @@ import { getDefaultSessionDir } from "./session-manager-paths.ts";
 import {
 	appendSessionEntry,
 	ensureDirectory,
-	hasAssistantMessage,
+	hasConversationMessage,
 	loadEntriesFromFile,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
@@ -165,7 +165,9 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 		return { sessionId: newSessionId, sessionFile: undefined, fileEntries, shouldRewriteFile: false };
 	}
 
-	const shouldRewriteFile = hasAssistantMessage(fileEntries);
+	// Use the same rule as appended entries: write now if the branched path already has a
+	// conversation, otherwise let the first user or assistant message create the file.
+	const shouldRewriteFile = hasConversationMessage(fileEntries);
 	return {
 		sessionId: newSessionId,
 		sessionFile: newSessionFile,

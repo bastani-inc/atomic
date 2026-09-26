@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -283,6 +284,21 @@ describe("ToolExecutionComponent parity", () => {
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered.match(/\bread\b/g)?.length ?? 0).toBe(1);
+	});
+
+	test("renders read calls with null offset and limit as full-file reads (#9996)", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			"tool-read-null-range",
+			{ path: "src/example.ts", offset: null, limit: null },
+			{},
+			createReadToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		assert.ok(rendered.includes("read src/example.ts"));
+		assert.ok(!rendered.includes("src/example.ts:"));
 	});
 
 	test("inherits missing built-in result renderer slot from the built-in tool", () => {

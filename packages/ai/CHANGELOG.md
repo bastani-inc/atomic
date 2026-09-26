@@ -1,8 +1,18 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`d1230ea2000d876b479a69b8b061f9d670f262f5`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/d1230ea2000d876b479a69b8b061f9d670f262f5/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`d6af72e1857cfb10b41d8ff8e69f0d72b4cf6d31`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/d6af72e1857cfb10b41d8ff8e69f0d72b4cf6d31/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Changed
+
+- Upgraded the bundled OpenAI SDK to 7.19.0, so the OpenAI Responses and Codex `serviceTier` option types accept `"fast"` ([#10044](https://github.com/earendil-works/pi/pull/10044)).
+
+### Fixed
+
+- Fixed model-level `samplingParams` being dropped by direct `stream()`/`complete()` calls on OpenAI-compatible APIs ([#9506](https://github.com/earendil-works/pi/issues/9506)).
+- Fixed Mistral GLM models producing empty text blocks and split thinking blocks from empty content deltas, which could make later requests fail with "Expected at most one leading ThinkChunk" ([#9674](https://github.com/earendil-works/pi/issues/9674)).
+- Fixed OpenAI Responses requests that set `serviceTier: "fast"` being priced at the standard rate when the response does not report a service tier ([#10034](https://github.com/earendil-works/pi/issues/10034)).
 
 ## [0.9.20] - 2026-09-24
 
