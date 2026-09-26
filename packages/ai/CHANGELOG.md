@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.21-alpha.2] - 2026-09-26
+
 ### Changed
 
 - Upgraded the bundled OpenAI SDK to 7.19.0, so the OpenAI Responses and Codex `serviceTier` option types accept `"fast"` ([#10044](https://github.com/earendil-works/pi/pull/10044)).
