@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fireworks now defaults to Kimi K3 (`accounts/fireworks/models/kimi-k3`). Fireworks removed Kimi K2.6 from its catalog, so the previous default no longer resolved.
+
 ## [0.9.21-alpha.2] - 2026-09-26
 
 ### Added
