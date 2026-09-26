@@ -17,7 +17,7 @@ This page covers interactive use: the interactive loop, slash commands, the mess
 
 The interface has four main areas:
 
-- **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, extensions, and themes; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
+- **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
 - **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model
@@ -28,7 +28,7 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 The startup animation shows Atomic's identity. Press any key, including Ctrl+C, to finish it immediately and continue normal input. Quiet startup suppresses it; non-TTY sessions and `ATOMIC_REDUCED_MOTION=1` show the settled identity without animation. `NO_COLOR` removes foreground colors while retaining weight emphasis.
 
-Startup lists loaded context files, skills, prompts, extensions, and themes by name. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
+Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
 
 While the agent works, `∀` pulses beside a working message. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
 

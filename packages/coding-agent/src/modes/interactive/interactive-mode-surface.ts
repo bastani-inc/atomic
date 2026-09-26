@@ -131,13 +131,11 @@ declare module "./interactive-mode-base.ts" {
 			skills: ReadonlyArray<{ filePath: string; name: string }>;
 			prompts: ReadonlyArray<{ filePath: string; name: string }>;
 			extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-			themes: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
 			expandedSections: {
 				context?: string;
 				skills?: string;
 				prompts?: string;
 				extensions?: string;
-				themes?: string;
 			};
 			targetContainer?: Container;
 		}): void;
