@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Settled subagent tasks no longer return only an opaque `output:<taskId>` reference. `action: "wait"`, `action: "status"`, and settled launch results now show up to 16 KB of the result, led by the absolute path of a file with the full output. A child's `contact_supervisor` question is now readable from a workflow stage or a background launch. `output: "<path>"` is written again for every run, including background runs ([#3294](https://github.com/bastani-inc/atomic/issues/3294)).
+- Settled subagent tasks no longer return only an opaque `output:<taskId>` reference. `action: "wait"`, `action: "status"`, and settled launch results now show up to 16 KB of the result and the path of a private copy of the full output. A child's `contact_supervisor` question is now readable from a workflow stage or a background launch. `output: "<path>"` is written again for every run, including background runs ([#3294](https://github.com/bastani-inc/atomic/issues/3294)).
 
 ## [0.9.20] - 2026-09-24
 

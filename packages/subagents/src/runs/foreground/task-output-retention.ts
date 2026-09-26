@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SingleResult } from "../../shared/types.js";
@@ -6,12 +6,14 @@ import type { SingleResult } from "../../shared/types.js";
 /** Bytes of settled agent output inlined into a wait, status, or launch result. */
 export const INLINE_TASK_OUTPUT_MAX_BYTES = 16 * 1024;
 
-/** Settled agent outputs kept per process; older entries still have their file. */
+/** Settled agent outputs kept per process; evicting an entry deletes its private copy. */
 const MAX_RETAINED_TASK_OUTPUTS = 256;
 
 export type RetainedTaskOutput = {
-	/** Absolute file holding the full output, when one could be written. */
+	/** Private file holding the full output, when it could be written. */
 	readonly path?: string;
+	/** The caller's requested `output` file, when it was written. */
+	readonly requestedPath?: string;
 	/** Why the requested `output` file could not be written. */
 	readonly saveError?: string;
 	/** Leading bytes of the output, bounded by INLINE_TASK_OUTPUT_MAX_BYTES. */
@@ -20,6 +22,7 @@ export type RetainedTaskOutput = {
 };
 
 const retained = new Map<string, RetainedTaskOutput>();
+let copyRoot: string | undefined;
 
 function retentionKey(ownerId: string, taskId: string): string {
 	return `${ownerId}\u0000${taskId}`;
@@ -29,49 +32,67 @@ function fileSafe(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
-function writeFallbackOutput(ownerId: string, taskId: string, text: string): string | undefined {
+function privateCopyRoot(): string {
+	if (copyRoot) return copyRoot;
+	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-output-"));
+	copyRoot = root;
+	process.once("exit", () => rmSync(root, { recursive: true, force: true }));
+	return root;
+}
+
+function removeCopy(entry: RetainedTaskOutput | undefined): void {
+	if (entry?.path) rmSync(entry.path, { force: true });
+}
+
+/**
+ * The full text a parent should be able to read. With `outputMode: "file-only"`
+ * the child's reported text is only a pointer, so copy the saved file instead.
+ */
+function fullOutputText(child: SingleResult, text: string): string {
+	if (child.outputMode !== "file-only" || !child.outputReference) return text;
 	try {
-		const dir = join(tmpdir(), "atomic-subagent-output", fileSafe(ownerId));
-		mkdirSync(dir, { recursive: true });
-		const path = join(dir, `${fileSafe(taskId)}.md`);
-		writeFileSync(path, text, "utf-8");
+		return readFileSync(child.outputReference.path, "utf-8");
+	} catch {
+		return text;
+	}
+}
+
+function writePrivateCopy(ownerId: string, taskId: string, text: string): string | undefined {
+	try {
+		const path = join(privateCopyRoot(), `${fileSafe(ownerId)}-${fileSafe(taskId)}.md`);
+		writeFileSync(path, text, { encoding: "utf-8", mode: 0o600 });
 		return path;
 	} catch {
 		return undefined;
 	}
 }
 
-export type TaskOutputLocation = { readonly path?: string; readonly saveError?: string };
-
 /**
- * Find or create a file holding a settled child's full output, so a parent
- * observing only the task can reach the whole result (#3294). Prefers the
- * caller's `output` path, then the run artifact, then a temp file.
+ * Keep a bounded head of a settled child's output and a private copy of the
+ * full text, so a parent observing only the task can reach the whole result
+ * even after a worktree holding the requested `output` file is removed (#3294).
  */
-export function locateTaskOutput(
+export function retainTaskOutput(
 	child: SingleResult,
 	text: string,
-	ref: { ownerId: string; taskId: string },
-): TaskOutputLocation {
-	const saveError = child.outputSaveError ? { saveError: child.outputSaveError } : {};
-	if (child.outputReference) return { path: child.outputReference.path };
-	const artifact = child.artifactPaths?.outputPath;
-	const path = artifact && existsSync(artifact) ? artifact : writeFallbackOutput(ref.ownerId, ref.taskId, text);
-	return path ? { path, ...saveError } : saveError;
-}
-
-export function retainTaskOutput(ownerId: string, taskId: string, text: string, location: TaskOutputLocation): void {
+	ref: { readonly ownerId: string; readonly taskId: string },
+): void {
 	const bytes = Buffer.from(text);
-	const key = retentionKey(ownerId, taskId);
+	const path = writePrivateCopy(ref.ownerId, ref.taskId, fullOutputText(child, text));
+	const key = retentionKey(ref.ownerId, ref.taskId);
+	removeCopy(retained.get(key));
 	retained.delete(key);
 	retained.set(key, {
-		...location,
+		...(path ? { path } : {}),
+		...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
+		...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
 		head: new TextDecoder().decode(bytes.subarray(0, INLINE_TASK_OUTPUT_MAX_BYTES)),
 		totalBytes: bytes.byteLength,
 	});
 	while (retained.size > MAX_RETAINED_TASK_OUTPUTS) {
 		const oldest = retained.keys().next().value;
 		if (oldest === undefined) break;
+		removeCopy(retained.get(oldest));
 		retained.delete(oldest);
 	}
 }

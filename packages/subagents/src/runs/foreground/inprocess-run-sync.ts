@@ -421,6 +421,7 @@ export async function runSingleInProcess(
 				recovered.envelope = delivered.envelope;
 				recovered.finalOutput = delivered.envelope;
 			}
+			persistRequestedOutput(recovered, options, outputSnapshot);
 			options.onDetachedExit?.(recovered);
 		});
 		const continuedModel = running.currentModel ?? candidate;

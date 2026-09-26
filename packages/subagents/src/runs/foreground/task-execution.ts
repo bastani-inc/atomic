@@ -15,12 +15,7 @@ import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
-import {
-	INLINE_TASK_OUTPUT_MAX_BYTES,
-	locateTaskOutput,
-	retainedTaskOutput,
-	retainTaskOutput,
-} from "./task-output-retention.js";
+import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
 
 export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
@@ -60,13 +55,21 @@ export function settledOutputsFromRecords(records: readonly TaskRecord[]): Settl
 function settledOutputSection(
 	taskId: TaskId,
 	label: string,
-	output: { head: string; shown: number; total: number; path?: string; saveError?: string },
+	output: {
+		head: string;
+		shown: number;
+		total: number;
+		path?: string;
+		requestedPath?: string;
+		saveError?: string;
+	},
 ): string {
 	const truncated =
 		output.shown < output.total
 			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
 			: "";
 	const lines = [`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):`];
+	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
 	if (output.saveError) lines.push(`Output file error: ${output.saveError}`);
 	if (output.path) lines.push(`Full output: ${output.path}`);
 	lines.push(output.head);
@@ -242,12 +245,7 @@ export async function runAgentTask(input: {
 						});
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-					retainTaskOutput(
-						context.ref.ownerId,
-						context.ref.taskId,
-						text,
-						locateTaskOutput(child, text, context.ref),
-					);
+					retainTaskOutput(child, text, context.ref);
 					const bytes = Buffer.from(text);
 					context.reportActivity({
 						reportId: "terminal-output",
