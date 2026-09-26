@@ -6,12 +6,12 @@ import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";
 import { getBuiltinThemes, loadTheme, loadThemeFromPath, setRegisteredTheme } from "./theme-loading.ts";
 
-// Use globalThis to share theme across module loaders (tsx + jiti in dev mode)
+// Use globalThis to share theme across module loaders (node + jiti in dev mode)
 const THEME_KEY = Symbol.for("@bastani/atomic:theme");
 const THEME_KEY_OLD = Symbol.for("@bastani/atomic:theme");
 
 // Export theme as a getter that reads from globalThis
-// This ensures all module instances (tsx, jiti) see the same theme
+// This ensures all module instances (node, jiti) see the same theme
 export const theme: Theme = new Proxy({} as Theme, {
 	get(_target, prop) {
 		const t = (globalThis as Record<symbol, Theme>)[THEME_KEY];
