@@ -129,18 +129,23 @@ export async function routeExecutionModel(input: {
 	selection?: ModelRouterOutput;
 	/** What the caller already knows about the task; routing asks the router only for the rest. */
 	taskNeeds?: TaskNeeds;
+	/**
+	 * True when this call's own constraints set a provider list because the user
+	 * asked. Only then are the settings.json provider lists replaced; provider
+	 * lists from agent definitions or inherited workflow constraints restrict
+	 * candidates on top of the settings and never lift a user's exclusion.
+	 */
+	overrideProviderSettings?: boolean;
 }): Promise<ModelRoute> {
 	const { ctx, signal } = input;
 	signal?.throwIfAborted();
 	const constraints = structuredClone((input.constraints ?? []).map((c) => parseModelConstraints(c)!));
 	const statedNeeds = parseTaskNeeds(input.taskNeeds);
-	// settings.json provider lists are defaults. A call that sets either provider list
-	// (because the user asked) takes over provider selection, and the settings lists
-	// are ignored for it; its own lists are enforced by eligiblePair with the rest.
-	const callSetsProviders = constraints.some(
-		(constraint) => constraint.allowedProviders !== undefined || constraint.excludedProviders !== undefined,
-	);
-	const { allowedProviders = [], excludedProviders = [] } = callSetsProviders ? {} : (ctx.getModelRouting?.() ?? {});
+	// settings.json provider lists are defaults that only the call itself may
+	// replace; every constraint's own provider lists are enforced by eligiblePair.
+	const { allowedProviders = [], excludedProviders = [] } = input.overrideProviderSettings
+		? {}
+		: (ctx.getModelRouting?.() ?? {});
 	const providerPermitted = (provider: string) =>
 		(allowedProviders.length === 0 || allowedProviders.includes(provider)) && !excludedProviders.includes(provider);
 	const catalog = () =>

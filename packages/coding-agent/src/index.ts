@@ -209,6 +209,7 @@ export {
 	ModelConstraintsSchema,
 	type ModelRouterOutput,
 	parseModelConstraints,
+	setsProviders,
 } from "./core/model-routing-constraints.js";
 export {
 	isModelRoutingDebugEnabled,

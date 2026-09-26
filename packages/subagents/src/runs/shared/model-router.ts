@@ -5,6 +5,7 @@ import {
 	parseModelConstraints,
 	reportModelRoutingDebug,
 	routeExecutionModel,
+	setsProviders,
 } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
 import { type ModelConstraints, parseTaskNeeds, type TaskNeeds } from "../../shared/model-constraints.js";
@@ -42,6 +43,7 @@ export async function routeSubagentModel(input: {
 				effortOverride === undefined ? constraints : [...constraints, { allowedEfforts: [effortOverride] }],
 			signal: input.signal,
 			...(taskNeeds ? { taskNeeds } : {}),
+			...(setsProviders(parseModelConstraints(input.modelConstraints)) ? { overrideProviderSettings: true } : {}),
 		});
 	} catch (error) {
 		input.signal?.throwIfAborted();

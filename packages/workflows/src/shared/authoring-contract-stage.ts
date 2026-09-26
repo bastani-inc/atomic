@@ -115,6 +115,8 @@ export interface WorkflowModelCatalogPort {
 		signal?: AbortSignal;
 		selection?: ModelRouterOutput;
 		taskNeeds?: TaskNeeds;
+		/** The stage's own constraints set a provider list, replacing the user's provider settings. */
+		overrideProviderSettings?: boolean;
 	}): Promise<ModelRoute>;
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;

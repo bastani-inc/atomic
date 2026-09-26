@@ -70,7 +70,7 @@ For automatic routing, optional `modelConstraints` on a call, parallel task, or 
 | Field | Meaning |
 | --- | --- |
 | `allowedModels` | Exact provider/model IDs permitted to receive the task |
-| `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. Setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call; set them only when the user asks |
+| `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. On a call, setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call, so set them only when the user asks; in an agent definition they only narrow those settings |
 | `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap |
 | `minContextWindow` | Minimum advertised context window in tokens |
 | `requiredInputs` | Required input types, `"text"` or `"image"` |

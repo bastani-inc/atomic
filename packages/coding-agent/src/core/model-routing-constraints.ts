@@ -77,6 +77,11 @@ export type ModelRouterOutput = {
 	/** Ranked alternatives, excluding the primary. Absent on legacy recorded selections. */
 	readonly fallbacks?: readonly { readonly model: string; readonly effort: string | null }[];
 };
+/** Whether a constraint sets its own provider list. */
+export function setsProviders(constraints: ModelConstraints | undefined): boolean {
+	return constraints?.allowedProviders !== undefined || constraints?.excludedProviders !== undefined;
+}
+
 /** Every applicable declaration must hold; a caller never widens a definition restriction. */
 export function eligiblePair(
 	model: Model<Api>,

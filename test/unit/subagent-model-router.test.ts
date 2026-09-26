@@ -957,3 +957,20 @@ test("a task larger than the preferred reader's window is read by an eligible mo
 	assert.equal(chatPayload(request).state.task, task, "the reader still gets the complete task");
 	assert.ok(classify.mock.calls.every(([, context]) => context.state.task === undefined));
 });
+
+test("only the call's own provider lists replace the user's modelRouting settings, never the agent definition's", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, reasoningModel]);
+	f.ctx.getModelRouting = () => ({ excludedProviders: ["second-provider"] });
+	const permissive = { ...agent, modelConstraints: { allowedProviders: ["decision-test", "second-provider"] } };
+	const fromDefinition = await routeSubagentModel({ ctx: f.ctx, agent: permissive, task: "Fix the approved defect" });
+	assert.equal(fromDefinition.modelOverride.startsWith("decision-test/chat"), true);
+	const fromCall = await routeSubagentModel({
+		ctx: f.ctx,
+		agent: permissive,
+		task: "Fix the approved defect",
+		modelConstraints: { allowedProviders: ["second-provider"] },
+	});
+	assert.equal(fromCall.modelOverride.startsWith("second-provider/reasoner"), true);
+});

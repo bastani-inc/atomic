@@ -9,6 +9,7 @@ import {
 	type PromptOptions,
 	parseModelConstraints,
 	type StructuredOutputCapture,
+	setsProviders,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
 import type { StageStartupPhase, StageStartupSnapshot } from "../../shared/stage-startup.js";
@@ -455,6 +456,9 @@ export class StageSessionController {
 						signal: this.startupWait.signal,
 						selection: options?.routerSelection,
 						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
+						...(setsProviders(parseModelConstraints(options?.modelConstraints))
+							? { overrideProviderSettings: true }
+							: {}),
 					});
 				} catch (error) {
 					this.startupWait.signal.throwIfAborted();

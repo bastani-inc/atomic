@@ -74,12 +74,13 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 	return { ctx, offered };
 }
 
-const route = (ctx: ModelRoutingContext, constraints: ModelConstraints[] = []) =>
+const route = (ctx: ModelRoutingContext, constraints: ModelConstraints[] = [], overrideProviderSettings = false) =>
 	routeExecutionModel({
 		ctx,
 		task: "Review the change",
 		agent: { name: "reviewer", description: "Reviews code" },
 		constraints,
+		overrideProviderSettings,
 	});
 
 test("settings expose validated, de-duplicated modelRouting provider lists", () => {
@@ -166,17 +167,17 @@ test("workflow stage routing applies the host's modelRouting providers", async (
 test("a call that sets provider lists replaces the settings lists for that call", async () => {
 	const settings = { allowedProviders: ["anthropic"], excludedProviders: ["openrouter"] };
 	const allowOverride = routingContext(settings);
-	assert.deepEqual(routed(await route(allowOverride.ctx, [{ allowedProviders: ["openrouter", "github-copilot"] }])), [
-		"github-copilot/claude-opus-5.5",
-		"openrouter/openai/gpt-6-astra",
-	]);
+	assert.deepEqual(
+		routed(await route(allowOverride.ctx, [{ allowedProviders: ["openrouter", "github-copilot"] }], true)),
+		["github-copilot/claude-opus-5.5", "openrouter/openai/gpt-6-astra"],
+	);
 
 	const excludeOverride = routingContext({
 		allowedProviders: ["anthropic", "openrouter"],
 		excludedProviders: ["openrouter"],
 	});
 	assert.deepEqual(
-		routed(await route(excludeOverride.ctx, [{ excludedProviders: ["anthropic"] }])),
+		routed(await route(excludeOverride.ctx, [{ excludedProviders: ["anthropic"] }], true)),
 		["github-copilot/claude-opus-5.5", "openrouter/openai/gpt-6-astra"],
 		"a call that sets any provider list replaces both settings lists",
 	);
@@ -190,4 +191,13 @@ test("provider lists in modelConstraints work without any modelRouting setting",
 	assert.deepEqual(routed(await route(ctx, [{ allowedProviders: ["github-copilot"] }])), [
 		"github-copilot/claude-opus-5.5",
 	]);
+});
+
+test("provider lists from an agent definition or workflow never lift the user's settings", async () => {
+	const { ctx } = routingContext({ excludedProviders: ["openrouter"] });
+	assert.deepEqual(
+		routed(await route(ctx, [{ allowedProviders: ["openrouter", "anthropic"] }])),
+		["anthropic/claude-fable-5-1"],
+		"a definition-level allow list only narrows; the user's exclusion still applies",
+	);
 });
