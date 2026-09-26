@@ -77,6 +77,8 @@ export interface StatusPayload {
 	 * run snapshots out of the serialized message.
 	 */
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
+	/** Emit-time resume eligibility per run id (#2565); absent on payloads written before it existed. */
+	resumeEligibility?: Readonly<Record<string, boolean>>;
 }
 
 /** Workflow catalogue after `/workflow list`. */
@@ -181,6 +183,7 @@ export function renderChatSurfacePlainText(
 				now,
 				...themed,
 				indicatorStatuses: payload.indicatorStatuses,
+				...(payload.resumeEligibility === undefined ? {} : { resumeEligibility: payload.resumeEligibility }),
 			});
 			if (payload.runs.length === 0) return rendered;
 			return [
@@ -317,6 +320,7 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				width,
 				now,
 				indicatorStatuses: payload.indicatorStatuses,
+				...(payload.resumeEligibility === undefined ? {} : { resumeEligibility: payload.resumeEligibility }),
 			});
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });

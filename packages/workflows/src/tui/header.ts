@@ -19,14 +19,19 @@
  *
  * Returns exactly 3 styled lines, each `width` cells wide.
  */
+import { isBudgetExceededStop } from "../durable/resume-outcome-eligibility.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { runOutcomePresentation, runOutcomeToneColor } from "./run-outcome-presentation.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export interface HeaderOpts {
 	width: number;
 	theme: GraphTheme;
+	/** Whether this run's outcome is resume-eligible (#2565). Absent means not eligible. */
+	resumable?: boolean;
 }
 
 export interface BandBadge {
@@ -56,11 +61,28 @@ interface PillStyle {
 	label: string;
 }
 
-function pillFor(run: RunSnapshot, theme: GraphTheme): PillStyle {
-	if (run.status === "failed") return { border: theme.error, label: "ORCHESTRATOR" };
-	if (run.status === "completed") return { border: theme.success, label: "ORCHESTRATOR" };
-	if (run.status === "killed") return { border: theme.dim, label: "ORCHESTRATOR" };
-	return { border: theme.accent, label: "ORCHESTRATOR" };
+/**
+ * The pill reads the *effective* status, not the raw stored one (#2565). A run
+ * blocked on a recoverable failure keeps `status: "running"` in the store, so
+ * the raw read painted a blocked graph with the neutral accent; the effective
+ * status calls it blocked and the shared tone colours it. A resume-eligible
+ * stop is the warning tone, matching the label the other surfaces show. The
+ * word stays `ORCHESTRATOR`; only the border colour carries the outcome.
+ */
+function pillFor(run: RunSnapshot, theme: GraphTheme, resumable: boolean): PillStyle {
+	const label = "ORCHESTRATOR";
+	const status = effectiveRunStatus(run);
+	if (status === "failed" || status === "blocked")
+		return {
+			border: runOutcomeToneColor(
+				runOutcomePresentation({ status, resumable, budgetExceeded: isBudgetExceededStop(run) }).tone,
+				theme,
+			),
+			label,
+		};
+	if (status === "completed") return { border: theme.success, label };
+	if (status === "killed") return { border: theme.dim, label };
+	return { border: theme.accent, label };
 }
 
 /**
@@ -176,7 +198,7 @@ export function renderBandHeader(opts: BandHeaderOpts): string[] {
  */
 export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	const { width, theme } = opts;
-	const pill = pillFor(run, theme);
+	const pill = pillFor(run, theme, opts.resumable === true);
 
 	const counts = {
 		pending: 0,

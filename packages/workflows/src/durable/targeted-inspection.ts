@@ -5,7 +5,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
-import { isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
+import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
 
 export type TargetedDurableInspection =
 	| {
@@ -66,15 +66,19 @@ export async function inspectTargetedDurableWorkflow(
 	const foreignLive = isForeignLiveWorkflow(handle, getAtomicExecutorId(), now);
 	const live = isLiveRunningWorkflow(handle, now);
 	const crashed = handle.status === "running" && !live;
+	// A retained row is resumed through the durable path, whose first gate is
+	// isDurableWorkflowResumable on the handle; the live store's probe does not
+	// apply to it, so the eligibility the detail carries comes from that gate.
+	const resumeEligible = live ? false : isDurableWorkflowResumable(handle);
 	const resumeGuidance = crashed
-		? inspected.detail.resumable === true
+		? resumeEligible
 			? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${resolvedWorkflowId}.`
 			: "This workflow appears to have crashed, but its retained state is not resumable."
 		: foreignLive
 			? "This workflow is actively running in another Atomic session. Inspect it here, but control it from its owner session."
 			: live
 				? "This workflow still has a fresh durable heartbeat. Inspect it here without starting another executor."
-				: terminalGuidance(handle.status, resolvedWorkflowId, inspected.detail.resumable === true);
+				: terminalGuidance(handle.status, resolvedWorkflowId, resumeEligible);
 	return {
 		kind: "found",
 		runs,
@@ -83,6 +87,7 @@ export async function inspectTargetedDurableWorkflow(
 			...inspected.detail,
 			...(crashed ? { status: "crashed" as const } : {}),
 			...(live ? { resumable: false } : {}),
+			resumeEligible,
 			...(foreignLive ? { ownerActiveElsewhere: true } : {}),
 			resumeGuidance,
 		},
