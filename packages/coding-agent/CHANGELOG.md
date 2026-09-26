@@ -2,9 +2,34 @@
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-09-26
+
+### Added
+
+- Subagent calls and workflow stages with `model: "auto"` accept `taskNeeds` (`work`, `difficulty`, `mistakeCost`, `needsImages`, `longContext`, `latencySensitive`) so the caller can say what it already knows about the task, and `modelConstraints.allowedModels` now sets the shortlist of models the router chooses between, as many as fit one routing request. `modelConstraints` also accepts `allowedProviders` and `excludedProviders`; setting either on a call replaces the `modelRouting` provider settings for that call, while lists in agent definitions or inherited workflow constraints only narrow them.
+- Added the `modelRouting` setting with `allowedProviders` and `excludedProviders` lists, so you can keep `model: "auto"` from routing workflow stages and subagents to providers you don't want to use, for example to prefer your subscriptions over API-billed providers.
+- Added a show/hide toggle (`H`) in HTML exports for custom messages marked `display: false`. They stay hidden by default and can also be revealed by selecting them in the sidebar ([#8896](https://github.com/earendil-works/pi/issues/8896)).
+- Successful RPC `prompt`, `steer`, and `follow_up` responses now include `data.disposition`: `"handled"` when an extension command or input handler consumed the input, `"queued"` when it was queued, or, for `prompt`, `"started"` when it started a run, so clients know whether to wait for `agent_settled`. `AgentSession.steer()`/`followUp()` and `RpcClient.prompt()`/`steer()`/`followUp()` return the same value, and SDK `preflightResult` callbacks receive it as a second argument ([#9098](https://github.com/earendil-works/pi/issues/9098), [#9803](https://github.com/earendil-works/pi/issues/9803)).
+
+### Changed
+
+- Automatic model routing now has a chat model (`routerModel` when it is one, otherwise your current chat model) answer a few fixed questions about the task: kind of work, difficulty, how costly a mistake is, whether it needs images, whether it must hold a very large context, and whether speed matters. The router then chooses between a shortlist of models ranked in code from the evaluations page, each described with its own results, price tier and release date, and sees only those answers: a classifier router such as Jev never receives the task. A decision takes at most two small requests however many models you have, effort follows the task's difficulty (one level lower when speed matters), and computer-use tasks only go to models that can read images. When code cannot pick a model (a task needs images and no eligible model reads them, `allowedModels` lists more models than one routing request holds, or `evals.md` is missing), the subagent or stage runs on the current chat model, as it does when the router fails.
+- Model routing no longer shortens long tasks: the chat model answering the routing questions reads the complete task, and a task too large for that model's context window is read by the cheapest eligible model whose window holds it.
+- The model evaluations page and automatic model routing now include [DeepSWE](https://deepswe.datacurve.ai/) and [FrontierCode](https://cognition.com/frontiercode) leaderboards and a table of vendor- and leaderboard-published results for recent frontier models, covering computer use (OSWorld 2.0, ScreenSpot-Pro, Agents' Last Exam), browsing, CAD, science, math, cybersecurity and ARC-AGI. Each routing request carries these rows for its own candidates.
+- Automatic model routing fallbacks (a classifier failing over to the chat model, or a subagent or workflow stage running on the current chat model) are no longer printed or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to show them.
+- Automatic model routing (`model: "auto"`) now has benchmark evidence for every model on the Artificial Analysis leaderboard instead of the top 27. Each routing request includes only the rows for your eligible models and their effort variants, matched across providers (for example `claude-opus-4.6` on Copilot and `us.anthropic.claude-opus-4-6-v1` on Bedrock).
+- Automatic model routing now prefers the most recently released model among candidates in the same role tier and price range, so an older model no longer wins just because it has no benchmark row.
+- Switched the build from the TypeScript native preview to TypeScript 7.0 with an ES2024 target ([#9965](https://github.com/earendil-works/pi/issues/9965)).
+- Removed the `[Themes]` section from the startup banner. Custom themes remain available in `/settings`, and theme conflicts are still reported.
+
 ### Fixed
 
 - Fireworks now defaults to Kimi K3 (`accounts/fireworks/models/kimi-k3`). Fireworks removed Kimi K2.6 from its catalog, so the previous default no longer resolved.
+- Fixed pinned git extensions loaded with `-e` continuing to use the first downloaded commit after the ref changes ([#9982](https://github.com/earendil-works/pi/issues/9982)).
+- Fixed `RpcClient` skipping the next event listener when a listener unsubscribes while handling an event, which could make `waitForIdle()` time out after `collectEvents()` ([#9990](https://github.com/earendil-works/pi/issues/9990)).
+- Fixed new sessions being lost when Atomic exits before the first assistant response. The session file is now created when the first user message is sent, and cloning or forking a session that has not been saved yet asks you to send a message first ([#10000](https://github.com/earendil-works/pi/issues/10000)).
+- Fixed custom themes ignoring the `terminal.trueColor` setting and `PI_TRUE_COLOR`; themes loaded from theme directories, packages, and theme paths now use the configured truecolor or 256-color mode, and keep it when the active theme file is edited and reloaded ([#9973](https://github.com/earendil-works/pi/issues/9973)).
+- Auto model routing no longer fails over to the chat model when the routing request is too large for Jev. Large catalogs and long workflow or subagent prompts, including large `<keepContext>` spans, are now cut to fit in the router's copy only, marked `[... truncated ...]`, while the stage or subagent still receives the full prompt. When a classifier does fail, the warning now names the HTTP status and error type, for example `HTTP 400 max_tokens_exceeded`.
 
 ## [0.9.21-alpha.2] - 2026-09-26
 
