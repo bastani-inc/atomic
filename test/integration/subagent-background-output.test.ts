@@ -77,7 +77,7 @@ test("a background run honours output and a settled wait names its path and text
 		assert.equal(await fileExists(outputPath), true);
 		assert.equal(await readText(outputPath), "background findings");
 		const text = await settledTaskOutputText(host, [{ taskId: settled.value.taskId, result: settled.value.result }]);
-		assert.match(text, new RegExp(`Output saved to: ${outputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.match(text, new RegExp(`Full output: ${outputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 		assert.match(text, /background findings/);
 		assert.doesNotMatch(text, /first \d+ shown/);
 	} finally {
@@ -135,7 +135,7 @@ test("large settled output is bounded but still leads with the saved path (#3294
 		const text = await settledTaskOutputText(host, [
 			{ taskId: response.observation.taskId, result: response.observation.result },
 		]);
-		assert.match(text, /Output saved to: .*large\.md/);
+		assert.match(text, /Full output: .*large\.md/);
 		assert.match(text, new RegExp(`first ${INLINE_TASK_OUTPUT_MAX_BYTES} shown`));
 		assert.ok(text.length < INLINE_TASK_OUTPUT_MAX_BYTES + 1024);
 		assert.equal((await readText(outputPath)).length, large.length);

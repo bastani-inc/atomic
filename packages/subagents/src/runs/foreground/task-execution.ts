@@ -57,9 +57,20 @@ export function settledOutputsFromRecords(records: readonly TaskRecord[]): Settl
 	);
 }
 
-function settledOutputSection(taskId: TaskId, label: string, head: string, shown: number, total: number): string {
-	const truncated = shown < total ? `, first ${shown} shown; read the output file named above for the rest` : "";
-	return `Output of ${taskId} (${label}, ${total} bytes${truncated}):\n${head}`;
+function settledOutputSection(
+	taskId: TaskId,
+	label: string,
+	output: { head: string; shown: number; total: number; path?: string; saveError?: string },
+): string {
+	const truncated =
+		output.shown < output.total
+			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
+			: "";
+	const lines = [`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):`];
+	if (output.saveError) lines.push(`Output file error: ${output.saveError}`);
+	if (output.path) lines.push(`Full output: ${output.path}`);
+	lines.push(output.head);
+	return lines.join("\n");
 }
 
 async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput): Promise<string | undefined> {
@@ -68,13 +79,11 @@ async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput
 	const label = subagentTaskResultLabel(settled.result);
 	const kept = retainedTaskOutput(output.ownerId, output.taskId);
 	if (kept) {
-		return settledOutputSection(
-			settled.taskId,
-			label,
-			kept.head,
-			Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
-			kept.totalBytes,
-		);
+		return settledOutputSection(settled.taskId, label, {
+			...kept,
+			shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
+			total: kept.totalBytes,
+		});
 	}
 	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
 	const lease = host.resolveTask(settled.taskId);
@@ -89,7 +98,7 @@ async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(settled.taskId, label, head, shown, Number(output.byteCount));
+		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) });
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -232,13 +241,14 @@ export async function runAgentTask(input: {
 							change: { kind: "model", model: child.model, thinking: child.thinking },
 						});
 					input.onTerminal?.(child);
-					const located = locateTaskOutput(
-						child,
-						input.outputText?.(child) ?? getSingleResultOutput(child),
-						context.ref,
+					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
+					retainTaskOutput(
+						context.ref.ownerId,
+						context.ref.taskId,
+						text,
+						locateTaskOutput(child, text, context.ref),
 					);
-					retainTaskOutput(context.ref.ownerId, context.ref.taskId, located.text, located.path);
-					const bytes = Buffer.from(located.text);
+					const bytes = Buffer.from(text);
 					context.reportActivity({
 						reportId: "terminal-output",
 						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },

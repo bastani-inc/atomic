@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SingleResult } from "../../shared/types.js";
-import { formatSavedOutputReference } from "../shared/single-output.js";
 
 /** Bytes of settled agent output inlined into a wait, status, or launch result. */
 export const INLINE_TASK_OUTPUT_MAX_BYTES = 16 * 1024;
@@ -13,6 +12,8 @@ const MAX_RETAINED_TASK_OUTPUTS = 256;
 export type RetainedTaskOutput = {
 	/** Absolute file holding the full output, when one could be written. */
 	readonly path?: string;
+	/** Why the requested `output` file could not be written. */
+	readonly saveError?: string;
 	/** Leading bytes of the output, bounded by INLINE_TASK_OUTPUT_MAX_BYTES. */
 	readonly head: string;
 	readonly totalBytes: number;
@@ -40,39 +41,31 @@ function writeFallbackOutput(ownerId: string, taskId: string, text: string): str
 	}
 }
 
+export type TaskOutputLocation = { readonly path?: string; readonly saveError?: string };
+
 /**
- * Give a settled child's output a readable file and lead the text with where it
- * lives, so a parent observing only the task can reach the full result (#3294).
- * Prefers the caller's `output` path, then the run artifact, then a temp file.
+ * Find or create a file holding a settled child's full output, so a parent
+ * observing only the task can reach the whole result (#3294). Prefers the
+ * caller's `output` path, then the run artifact, then a temp file.
  */
 export function locateTaskOutput(
 	child: SingleResult,
 	text: string,
 	ref: { ownerId: string; taskId: string },
-): { text: string; path?: string } {
-	if (child.outputReference) {
-		return {
-			text:
-				child.outputMode === "file-only"
-					? child.outputReference.message
-					: `${child.outputReference.message}\n\n${text}`,
-			path: child.outputReference.path,
-		};
-	}
-	const saveError = child.outputSaveError ? `Output file error: ${child.outputSaveError}\n` : "";
+): TaskOutputLocation {
+	const saveError = child.outputSaveError ? { saveError: child.outputSaveError } : {};
+	if (child.outputReference) return { path: child.outputReference.path };
 	const artifact = child.artifactPaths?.outputPath;
 	const path = artifact && existsSync(artifact) ? artifact : writeFallbackOutput(ref.ownerId, ref.taskId, text);
-	if (!path) return { text: `${saveError}${saveError ? "\n" : ""}${text}` };
-	const reference = formatSavedOutputReference(path, text);
-	return { text: `${saveError}${reference.message}\n\n${text}`, path: reference.path };
+	return path ? { path, ...saveError } : saveError;
 }
 
-export function retainTaskOutput(ownerId: string, taskId: string, text: string, path: string | undefined): void {
+export function retainTaskOutput(ownerId: string, taskId: string, text: string, location: TaskOutputLocation): void {
 	const bytes = Buffer.from(text);
 	const key = retentionKey(ownerId, taskId);
 	retained.delete(key);
 	retained.set(key, {
-		...(path ? { path } : {}),
+		...location,
 		head: new TextDecoder().decode(bytes.subarray(0, INLINE_TASK_OUTPUT_MAX_BYTES)),
 		totalBytes: bytes.byteLength,
 	});
