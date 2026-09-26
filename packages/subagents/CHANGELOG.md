@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.21-alpha.2] - 2026-09-26
+
 ### Changed
 
 - `model: "auto"` routing has a chat model answer fixed questions about the complete task, then the router chooses between a short, evidence-backed list of models without seeing the task, in at most two small requests. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.

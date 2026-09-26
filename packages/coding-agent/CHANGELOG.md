@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.21-alpha.2] - 2026-09-26
+
 ### Added
 
 - Subagent calls and workflow stages with `model: "auto"` accept `taskNeeds` (`work`, `difficulty`, `mistakeCost`, `needsImages`, `longContext`, `latencySensitive`) so the caller can say what it already knows about the task, and `modelConstraints.allowedModels` now sets the shortlist of models the router chooses between, as many as fit one routing request. `modelConstraints` also accepts `allowedProviders` and `excludedProviders`; setting either on a call replaces the `modelRouting` provider settings for that call, while lists in agent definitions or inherited workflow constraints only narrow them.
