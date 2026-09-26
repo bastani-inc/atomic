@@ -4,7 +4,7 @@ import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
-import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
+import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu, WebhooksSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
 /**
@@ -394,6 +394,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					true,
 				);
 			},
+		},
+		{
+			id: "webhooks",
+			label: "Webhooks",
+			description: "Notify Slack, Teams or a custom service when the agent or a workflow needs you",
+			currentValue: "configure",
+			submenu: (_currentValue, done) => new WebhooksSubmenu(() => done()),
 		},
 		{
 			id: "theme",

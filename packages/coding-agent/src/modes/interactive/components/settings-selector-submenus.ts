@@ -11,6 +11,15 @@ import {
 } from "@earendil-works/pi-tui";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
 import {
+	createEmptyWebhooksDocument,
+	readWebhooksFile,
+	webhooksConfigPath,
+	writeWebhooksFile,
+} from "../../../extensions/webhooks/config.ts";
+import type { WebhookDestinationType } from "../../../extensions/webhooks/constants.ts";
+import { presetDestinationTemplate } from "../../../extensions/webhooks/presets.ts";
+import type { WebhooksFileReadResult } from "../../../extensions/webhooks/types.ts";
+import {
 	getSelectListTheme,
 	getSettingsListTheme,
 	parseAutoThemeSetting,
@@ -423,5 +432,191 @@ export class ThemeSubmenu extends Container {
 	private cancel(): void {
 		this.callbacks.onThemePreview?.(this.originalThemeSetting);
 		this.onDone();
+	}
+}
+
+/**
+ * The `Webhooks` screen: inspect what is configured, turn each destination on or
+ * off, and append a preset template.
+ *
+ * It edits `~/.atomic/agent/webhooks.json` through the extension's own reader and
+ * writer rather than keeping any state of its own, because the issue requires
+ * that the file stay authoritative and that settings toggles and preset setup
+ * edit that same file instead of a second registry. Reaching into a built-in's
+ * module for one helper follows `core/extensions/herdr-file-integration.ts`,
+ * which imports Herdr's environment reader the same way.
+ *
+ * Three things it deliberately does not do, per the issue's out-of-scope list:
+ * no URL prompt (a webhook URL is a bearer credential and templates leave a
+ * placeholder for direct file entry), no per-field editor, and no delete.
+ */
+export class WebhooksSubmenu extends Container {
+	private settingsList: SettingsList;
+	private readonly path: string;
+	/**
+	 * The name each row was built from. A row identifies a destination by its
+	 * position in the file, and the file can be edited by hand while this screen
+	 * is open, so the name is what proves the entry at that position is still the
+	 * one whose label the user is looking at.
+	 */
+	private readonly rowNames = new Map<string, string>();
+
+	constructor(onCancel: () => void) {
+		super();
+		this.path = webhooksConfigPath();
+		const read = readWebhooksFile(this.path);
+
+		this.addChild(new Text(theme.bold(theme.fg("accent", "Webhooks")), 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					"Notifications for agent completion, errors and input requests, and for top-level workflows.",
+				),
+				0,
+				0,
+			),
+		);
+		this.addChild(new Spacer(1));
+		// The resolved path, never an assumed home directory: the file is where
+		// URLs and headers are entered, so the user has to be able to find it.
+		this.addChild(new Text(theme.fg("muted", this.path), 0, 0));
+		this.addChild(new Spacer(1));
+
+		const items: SettingItem[] = read.kind === "current" || read.kind === "absent" ? this.editableItems(read) : [];
+
+		if (items.length === 0 && read.kind !== "current" && read.kind !== "absent") {
+			// A file that could not be parsed is shown, not silently replaced:
+			// writing over it would discard whatever the user meant to write.
+			this.addChild(
+				new Text(theme.fg("error", `This file could not be used: ${describeUnusableWebhooksFile(read)}`), 0, 0),
+			);
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(theme.fg("muted", "Fix it in the file, then reopen this screen."), 0, 0));
+		}
+
+		this.settingsList = new SettingsList(
+			items,
+			Math.min(Math.max(items.length, 1), 10),
+			getSettingsListTheme(),
+			(id, newValue) => this.apply(id, newValue, onCancel),
+			onCancel,
+		);
+		this.addChild(this.settingsList);
+	}
+
+	/** One row per configured destination, plus one row that appends a preset. */
+	private editableItems(read: WebhooksFileReadResult): SettingItem[] {
+		const destinations = read.kind === "current" ? read.destinations : [];
+		const items: SettingItem[] = destinations.map((destination) => {
+			this.rowNames.set(`destination:${destination.index}`, destination.name);
+			return {
+				id: `destination:${destination.index}`,
+				label: destination.name,
+				description: `${destination.type} · ${destination.events.length} event${destination.events.length === 1 ? "" : "s"}`,
+				currentValue: destination.enabled ? "enabled" : "disabled",
+				values: ["enabled", "disabled"],
+			};
+		});
+		items.push({
+			id: "add",
+			label: "Add a destination",
+			description: "Appends a template with a placeholder URL, disabled until you fill it in",
+			currentValue: destinations.length === 0 ? "none configured" : `${destinations.length} configured`,
+			submenu: (_currentValue, done) =>
+				new SelectSubmenu(
+					"Add a destination",
+					"The template is written to the file with a placeholder URL. Paste your own URL there, then enable it here.",
+					[
+						{ label: "Slack", value: "slack", description: "Incoming webhook" },
+						{ label: "Microsoft Teams", value: "teams", description: "Workflows incoming webhook" },
+						{ label: "Custom", value: "custom", description: "One JSON key per placeholder" },
+					],
+					"slack",
+					(value) => {
+						this.appendPreset(value as WebhookDestinationType);
+						done(undefined, { navigateTo: "add" });
+					},
+					() => done(),
+				),
+		});
+		return items;
+	}
+
+	/** Toggle one destination's `enabled`, leaving every other key in the file alone. */
+	private apply(id: string, newValue: string, onCancel: () => void): void {
+		if (!id.startsWith("destination:")) return;
+		const index = Number.parseInt(id.slice("destination:".length), 10);
+		const read = readWebhooksFile(this.path);
+		if (read.kind !== "current") {
+			// The file changed under us between opening this screen and this
+			// keystroke. Closing is honest; writing would clobber the new contents.
+			onCancel();
+			return;
+		}
+		const entries = read.document.destinations;
+		if (!Array.isArray(entries) || index < 0 || index >= entries.length) {
+			onCancel();
+			return;
+		}
+		const entry = entries[index];
+		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+			onCancel();
+			return;
+		}
+		// Position alone is not identity. If the file was reordered or an entry was
+		// removed while this screen was open, the row's label no longer describes
+		// what sits at that position, and toggling it would change a destination
+		// the user is not looking at.
+		if (entry.name !== this.rowNames.get(id)) {
+			onCancel();
+			return;
+		}
+		// Keys are readonly, so an edit is a spread: everything this module does
+		// not know about survives the round trip.
+		const next = entries.map((value, position) =>
+			position === index ? { ...entry, enabled: newValue === "enabled" } : value,
+		);
+		writeWebhooksFile({ ...read.document, destinations: next }, this.path);
+		this.settingsList.updateValue(id, newValue);
+	}
+
+	/** Append a preset template to the file's `destinations`, keeping the rest intact. */
+	private appendPreset(type: WebhookDestinationType): void {
+		const read = readWebhooksFile(this.path);
+		const document = read.kind === "current" ? read.document : createEmptyWebhooksDocument();
+		if (read.kind !== "current" && read.kind !== "absent") return;
+		const entries = Array.isArray(document.destinations) ? document.destinations : [];
+		const label = type === "slack" ? "Slack" : type === "teams" ? "Microsoft Teams" : "Custom";
+		const taken = new Set(
+			entries.map((entry) =>
+				entry !== null && typeof entry === "object" && !Array.isArray(entry) && typeof entry.name === "string"
+					? entry.name
+					: "",
+			),
+		);
+		let name = label;
+		for (let suffix = 2; taken.has(name); suffix += 1) name = `${label} ${suffix}`;
+		writeWebhooksFile({ ...document, destinations: [...entries, presetDestinationTemplate(type, name)] }, this.path);
+	}
+
+	handleInput(data: string): boolean {
+		this.settingsList.handleInput(data);
+		return true;
+	}
+}
+
+/** Why a webhooks file cannot be edited from here, in words that never quote the file. */
+function describeUnusableWebhooksFile(read: WebhooksFileReadResult): string {
+	switch (read.kind) {
+		case "unreadable":
+			return `it could not be read (${read.code})`;
+		case "malformed":
+			return read.message;
+		case "unsupported":
+			return read.message;
+		default:
+			return "unknown reason";
 	}
 }

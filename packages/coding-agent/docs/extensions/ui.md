@@ -286,6 +286,8 @@ The callback receives:
 
 Pass `{ signal }` to dismiss the custom UI if an operation is aborted; the returned promise rejects with the signal reason.
 
+Pass `{ title }` to say what the prompt asks. It is carried on the `ui_prompt_start` and `ui_prompt_end` events as `title`, the same way `select()`, `confirm()`, `input()`, and `editor()` carry theirs, so status reporters and notifications can name the question instead of only reporting that a custom prompt is open. The built-in `ask_user_question` dialog passes its first question, cut to 120 characters. Without it, observers see `kind: "custom"` and no title.
+
 Custom component `handleInput` methods must return `true` when they consume an input and `false` or `undefined` when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply. Return `true` for a handled key so it is not applied twice.
 
 A handler that returns a promise is judged when it settles: only a resolved `true` consumes the key, while `false`, `undefined`, and a rejection fall through to the viewport. A component with no `handleInput` declines everything, so viewport keys still scroll the transcript behind it.
