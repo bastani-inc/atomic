@@ -236,7 +236,10 @@ describe("workflow resume selector row presentation", () => {
 		assert.deepEqual(byId.get(completedId)?.result, { kind: "completed", workflowId: completedId });
 	});
 
-	test("colors paused yellow, failed and blocked red, completed green", () => {
+	// #2565: a durable row is in this picker because it passed the durable resume
+	// gate, so its stop is eligible and carries the cue in the warning tone.
+	// Paused and completed rows keep the colours they always had.
+	test("colors an eligible durable stop yellow with the cue, paused yellow, completed green", () => {
 		const items = workflowResumeSelectorItems(
 			[pausedLiveRun("live-paused-run")],
 			[entry("d-paused", "paused"), entry("d-failed", "failed"), entry("d-blocked", "blocked")],
@@ -244,10 +247,30 @@ describe("workflow resume selector row presentation", () => {
 		);
 		const byId = new Map(items.map((item) => [item.session.id, item.session]));
 		assert.equal(byId.get("d-paused")?.messageColor, "warning");
-		assert.equal(byId.get("d-failed")?.messageColor, "error");
-		assert.equal(byId.get("d-blocked")?.messageColor, "error");
+		assert.equal(byId.get("d-failed")?.messageColor, "warning");
+		assert.match(byId.get("d-failed")!.summary!, /failed · resumable/);
+		assert.equal(byId.get("d-blocked")?.messageColor, "warning");
+		assert.match(byId.get("d-blocked")!.summary!, /blocked · resumable/);
 		assert.equal(byId.get("d-completed")?.messageColor, "success");
 		assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
+	});
+
+	// A live row that the filter listed but that has no restart point stays
+	// listed and stays red: the maintainer asked that its retained work remain
+	// visible rather than disappear from the picker.
+	test("a listed live run with no restart point keeps its row and reads plain red", () => {
+		const failed = {
+			...pausedLiveRun("live-terminal-run"),
+			status: "failed" as const,
+			pausedAt: undefined,
+			endedAt: 5_000,
+			resumable: true,
+		};
+		const [item] = workflowResumeSelectorItems([failed], [], [], () => false);
+		assert.equal(item!.session.id, "live-terminal-run");
+		assert.equal(item!.session.messageColor, "error");
+		assert.match(item!.session.summary!, /failed/);
+		assert.doesNotMatch(item!.session.summary!, /resumable/);
 	});
 
 	test("omits pending prompt counts from durable and completed rows", () => {
@@ -263,9 +286,10 @@ describe("workflow resume selector row presentation", () => {
 	test("presents a stale-heartbeat running durable row as crashed, never running", () => {
 		const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
 		assert.equal(item!.session.firstMessage, "d-crashed");
-		assert.equal(item!.session.summary, "crashed  2 checkpoints  repro-flow");
-		assert.doesNotMatch(item!.session.summary!, /running/);
-		assert.equal(item!.session.messageColor, "error");
+		// Eligible by the same durable gate that listed it, so it carries the cue.
+		assert.equal(item!.session.summary, "crashed · resumable  2 checkpoints  repro-flow");
+		assert.doesNotMatch(item!.session.summary!, /running/);
+		assert.equal(item!.session.messageColor, "warning");
 		assert.match(item!.session.allMessagesText, /crashed/);
 	});
 });

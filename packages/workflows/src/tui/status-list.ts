@@ -20,6 +20,7 @@
  *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
  */
 
+import { isBudgetExceededStop, type ResumableRunOutcomeLookup } from "../durable/resume-outcome-eligibility.js";
 import type {
 	PendingWorkflowRunStatusResolver,
 	WorkflowBoundarySegmentsResolver,
@@ -35,6 +36,7 @@ import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-sur
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
+import { runOutcomePresentation, runOutcomeToneColor } from "./run-outcome-presentation.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -62,6 +64,16 @@ export interface RenderStatusListOpts {
 	 * restore, when the full run collection is no longer available.
 	 */
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
+	/**
+	 * Emit-time resume eligibility per run id (#2565). The same reasoning as
+	 * `indicatorStatuses`: this list is persisted into the session as a chat
+	 * entry and re-rendered with no store to probe, so the answer travels with
+	 * the payload. Takes precedence over `resumeEligible`; a payload written
+	 * before this existed carries neither and renders as it always did.
+	 */
+	resumeEligibility?: Readonly<Record<string, boolean>>;
+	/** Live lookup for callers that hold a store. Pass a cached one; the probe touches disk and the durable backend. */
+	resumeEligible?: ResumableRunOutcomeLookup;
 }
 
 function isQuitRun(run: RunSnapshot): boolean {
@@ -82,6 +94,10 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	const sorted = sortRuns(runs);
 	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver =
 		opts.resolveBoundarySegments ?? ((runId) => workflowBoundarySegments(runs, runId));
+	// Neither source present means "not eligible", which is exactly how every
+	// row rendered before the cue existed.
+	const resumable = (run: RunSnapshot): boolean =>
+		opts.resumeEligibility?.[run.id] ?? opts.resumeEligible?.(run) ?? false;
 
 	// Header counts span the whole snapshot, not just the display window.
 	const counts = countBuckets(runs);
@@ -105,6 +121,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 					opts.indicatorStatuses,
 					opts.owningRunStatus,
 					resolveBoundarySegments,
+					resumable,
 				),
 			);
 		}
@@ -135,12 +152,13 @@ function renderRunEntry(
 	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
+	resumable: (run: RunSnapshot) => boolean = () => false,
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
 	const indicatorStatus = indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns);
 	const glyph = statusIconForRun(run, indicatorStatus);
-	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus)) : "";
+	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus, resumable(run))) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
 	const text = theme ? hexToAnsi(theme.text) : "";
 	const muted = theme ? hexToAnsi(theme.textMuted) : "";
@@ -157,7 +175,7 @@ function renderRunEntry(
 		return `   ${accent}${chunk}${RESET}`;
 	});
 
-	const trailing = runTrailing(run, theme);
+	const trailing = runTrailing(run, resumable(run), theme);
 	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
 	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
 	const name = truncateToWidth(run.name, nameBudget, ELLIPSIS);
@@ -256,14 +274,42 @@ function pendingStageLine(line: string, width: number, theme: GraphTheme | undef
 	return theme === undefined ? visible : `${hexToAnsi(theme.textMuted)}${visible}${RESET}`;
 }
 
-function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorStatus: RunIndicatorStatus): string {
+function runAccent(
+	run: RunSnapshot,
+	theme: GraphTheme | undefined,
+	indicatorStatus: RunIndicatorStatus,
+	resumable: boolean,
+): string {
 	if (!theme) return "#000000";
 	if (isQuitRun(run)) return theme.warning;
+	// An eligible stop takes the shared tone; every other status keeps the
+	// colour map that stage and tool nodes share (status-helpers.ts), which this
+	// change deliberately leaves alone.
+	const outcome = runOutcomeFor(run, resumable);
+	if (outcome !== undefined) return runOutcomeToneColor(outcome.tone, theme);
 	return statusColor(indicatorStatus, theme);
 }
 
-function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
+/** The shared presentation for the three statuses that can carry the cue, or undefined for the rest. */
+function runOutcomeFor(run: RunSnapshot, resumable: boolean) {
+	const status = effectiveRunStatus(run);
+	if (status !== "failed" && status !== "blocked") return undefined;
+	return runOutcomePresentation({ status, resumable, budgetExceeded: isBudgetExceededStop(run) });
+}
+
+function runTrailing(
+	run: RunSnapshot,
+	resumable: boolean,
+	theme?: GraphTheme,
+): { text: string; fg?: string } | undefined {
 	if (isQuitRun(run)) return { text: "○ quit", fg: theme?.warning };
+	const outcome = runOutcomeFor(run, resumable);
+	if (outcome !== undefined) {
+		return {
+			text: `${effectiveRunStatus(run) === "blocked" ? "↑" : "✗"} ${outcome.label}`,
+			...(theme ? { fg: runOutcomeToneColor(outcome.tone, theme) } : {}),
+		};
+	}
 	switch (effectiveRunStatus(run)) {
 		case "completed":
 			return { text: "✓ completed", fg: theme?.success };
@@ -275,10 +321,6 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 			return { text: "⊘ skipped", fg: theme?.dim };
 		case "cancelled":
 			return { text: "⊘ cancelled", fg: theme?.dim };
-		case "blocked":
-			return { text: "↑ blocked", fg: theme?.dim };
-		case "failed":
-			return { text: "✗ failed", fg: theme?.error };
 		case "killed":
 			return { text: "⊘ killed", fg: theme?.error };
 		default:

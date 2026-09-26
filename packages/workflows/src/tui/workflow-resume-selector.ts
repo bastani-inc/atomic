@@ -1,10 +1,13 @@
 import type { SessionInfo } from "@bastani/atomic";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { isResumableRunOutcome, type ResumableRunOutcomeLookup } from "../durable/resume-outcome-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import type { RunSnapshot, RunStatus, StageSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { runOutcomePresentation } from "./run-outcome-presentation.js";
 
 export type WorkflowResumeSelectorResult =
 	| { kind: "live"; runId: string }
@@ -69,23 +72,41 @@ interface WorkflowStatusPresentation {
  * Semantic row presentation: green completed, yellow paused, red failed and
  * blocked. Durable `running` rows only reach the picker once their heartbeat
  * is stale (nothing is executing them), so they present as crashed.
+ *
+ * A resume-eligible stop takes the warning tone and the cue, through the shared
+ * table every run-level surface uses (#2565). The rows this picker offers are
+ * unchanged: a listed run that passes the existing filter but has no restart
+ * point stays listed and reads plain red, which is what the maintainer asked
+ * for so that its retained work stays visible. This picker's colour vocabulary
+ * has no dim, so a dim tone renders uncoloured, as its other statuses already do.
  */
 function workflowStatusPresentation(
 	status: string,
 	kind: "live" | "durable" | "completed",
+	resumable: boolean,
 ): WorkflowStatusPresentation {
 	if (kind === "completed") return { label: "✓ completed", color: "success" };
 	if (status === "paused") return { label: "paused", color: "warning" };
-	if (status === "failed" || status === "blocked") return { label: status, color: "error" };
-	if (kind === "durable" && status === "running") return { label: "crashed", color: "error" };
+	const outcome = kind === "durable" && status === "running" ? "crashed" : status;
+	if (outcome === "failed" || outcome === "blocked" || outcome === "crashed") {
+		const presentation = runOutcomePresentation({ status: outcome as RunStatus | "crashed", resumable });
+		return {
+			label: presentation.label,
+			...(presentation.tone === "warning"
+				? { color: "warning" as const }
+				: presentation.tone === "error"
+					? { color: "error" as const }
+					: {}),
+		};
+	}
 	return { label: status };
 }
 
-function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
+function liveRunSession(run: RunSnapshot, resumable: boolean): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
-	const presentation = workflowStatusPresentation(run.status, "live");
+	const presentation = workflowStatusPresentation(effectiveRunStatus(run), "live", resumable);
 	const stageText = `${completed}/${total} stages`;
 	return {
 		result: { kind: "live", runId: run.id },
@@ -109,7 +130,10 @@ function durableWorkflowSession(
 	kind: "durable" | "completed",
 ): WorkflowResumeSelectorItem {
 	const checkpointText = `${entry.completedCheckpoints} checkpoints`;
-	const presentation = workflowStatusPresentation(entry.status, kind);
+	// A durable row reached this picker by passing isDurableWorkflowResumable on
+	// its handle (durable/backend.ts), which is the durable resume path's own
+	// gate, so a listed failed or crashed row is eligible by construction.
+	const presentation = workflowStatusPresentation(entry.status, kind, kind === "durable");
 	return {
 		result: { kind, workflowId: entry.workflowId },
 		session: {
@@ -138,6 +162,7 @@ export function workflowResumeSelectorItems(
 	liveRuns: readonly RunSnapshot[],
 	durableEntries: readonly ResumableWorkflowEntry[],
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
+	resumable: ResumableRunOutcomeLookup = (run) => isResumableRunOutcome(run),
 ): WorkflowResumeSelectorItem[] {
 	const classifiedLiveRuns = liveRuns.map((run) => ({ run, resumable: isResumePickerLiveRun(run) }));
 	const eligibleLiveRuns = classifiedLiveRuns.filter(({ resumable }) => resumable).map(({ run }) => run);
@@ -153,7 +178,7 @@ export function workflowResumeSelectorItems(
 	const visibleDurableEntries = durableEntries.filter((entry) => !suppressedLiveIds.has(entry.workflowId));
 	const durableIds = new Set(visibleDurableEntries.map((entry) => entry.workflowId));
 	return [
-		...eligibleLiveRuns.map(liveRunSession),
+		...eligibleLiveRuns.map((run) => liveRunSession(run, resumable(run))),
 		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable")),
 		...completedEntries
 			.filter((entry) => !visibleLiveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
