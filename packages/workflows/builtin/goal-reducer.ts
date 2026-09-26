@@ -98,10 +98,10 @@ export function reduceGoalDecision(
   const quorumMet = completeVotes >= options.reviewQuorum;
 
   // Deterministic boolean convergence: each review's `decision` is derived
-  // solely from the reviewer's self-reported `stop_review_loop` flag (plus the
-  // reviewer_error/parse-failure guards). The reducer completes on quorum of
-  // those booleans and does not re-litigate findings arrays or traceability
-  // statuses — reviewer prompts own deriving the flag from that evidence.
+  // from the reviewer's self-reported `stop_review_loop` flag, the
+  // reviewer_error/parse-failure guards, and the check that the same review's
+  // verdict and findings do not contradict the flag. The reducer completes on
+  // quorum of those votes and does not re-litigate traceability statuses.
   if (quorumMet) {
     const summary = reducerSummary(turnReviews, true, options.nextActionOnComplete);
     return {
@@ -110,7 +110,7 @@ export function reduceGoalDecision(
         ...summary,
         turn: options.turn,
         decision: "complete",
-        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers independently reported stop_review_loop=true with no reviewer execution errors.`,
+        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers independently reported stop_review_loop=true with a correct patch, a satisfied goal oracle, no blocking findings, and no reviewer execution errors.`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
       },

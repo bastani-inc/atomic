@@ -220,7 +220,7 @@ export const SCOPE_DISCIPLINE_CONTRACT = keepContext([
 
 export const EVIDENCE_CLOSURE_POLICY = [
   "Convergence flag (stop_review_loop):",
-  "- stop_review_loop is the single authoritative convergence signal; the harness trusts it without recomputing approval from findings, priorities, or requirements_traceability.",
+  "- stop_review_loop is the convergence signal. The harness does not recompute approval from requirements_traceability, but it does not count stop_review_loop=true as approval when the same review says the patch is incorrect, reports goal_oracle_satisfied=false, or lists a blocking finding.",
   "- Derive stop_review_loop=false while any objective-relevant blocking work remains: a P0/P1/P2 finding, a required_by_objective finding at any priority including P3, or an unproven implementation/validation requirement.",
   "- Derive stop_review_loop=true when independent verification proves implementation and validation and only non-blocking items remain: consistent_with_objective P3 items, beyond_objective/contradicts_objective observations, an authorized post-approval PR/MR/review action, or reviewer quorum. Never hold it false for those items.",
   "- If the bounded loop ends first, preserve unresolved findings and remaining work for a human rather than relabeling them.",

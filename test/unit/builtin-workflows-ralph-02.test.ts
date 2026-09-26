@@ -271,11 +271,11 @@ describe("ralph", () => {
 		const approvedFindingReview = JSON.stringify({
 			findings: [
 				{
-					title: "[P2] Low-confidence finding",
-					body: "A low-confidence blocking finding is present for the approved-round fixture.",
+					title: "[P3] Low-confidence finding",
+					body: "A low-confidence non-blocking finding is present for the approved-round fixture.",
 					confidence_score: 0.4,
 					objective_alignment: "consistent_with_objective",
-					priority: 2,
+					priority: 3,
 					code_location: {
 						absolute_file_path: join(cwd, "src/example.ts"),
 						line_range: { start: 1, end: 1 },
@@ -318,7 +318,7 @@ describe("ralph", () => {
 			readonly consolidated_findings: readonly { readonly blocking: boolean }[];
 			readonly reverification: readonly { readonly verdict: string }[];
 		};
-		assert.equal(round.consolidated_findings[0]?.blocking, true);
+		assert.equal(round.consolidated_findings[0]?.blocking, false);
 		assert.deepEqual(round.reverification, []);
 	});
 

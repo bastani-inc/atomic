@@ -100,6 +100,42 @@ export function findingBlocksClosure(finding: ObjectiveAlignedFindingLike): bool
   return priority <= MAX_BLOCKING_PRIORITY;
 }
 
+export type ReviewVerdictLike = {
+  readonly overall_correctness: string;
+  readonly goal_oracle_satisfied?: boolean;
+  readonly findings: readonly (ObjectiveAlignedFindingLike & { readonly title: string })[];
+};
+
+/**
+ * Reasons a reviewer's own verdict contradicts `stop_review_loop=true`.
+ *
+ * The boolean stays the convergence signal, but a review that in the same
+ * breath calls the patch incorrect, reports the goal oracle unsatisfied, or
+ * lists a finding that blocks closure cannot count as an approval (#3295).
+ * Traceability statuses are deliberately not consulted: process-only clauses
+ * such as reviewer quorum or PR creation can never be proven by a single
+ * reviewer, and gating on them deadlocked runs (#1774).
+ */
+export function stopReviewLoopContradictions(verdict: ReviewVerdictLike): string[] {
+  const contradictions: string[] = [];
+  if (verdict.overall_correctness !== "patch is correct") {
+    contradictions.push(`overall_correctness is "${verdict.overall_correctness}"`);
+  }
+  if (verdict.goal_oracle_satisfied === false) {
+    contradictions.push("goal_oracle_satisfied is false");
+  }
+  for (const finding of verdict.findings) {
+    if (findingBlocksClosure(finding)) {
+      contradictions.push(`blocking finding "${finding.title}"`);
+    }
+  }
+  return contradictions;
+}
+
+export function contradictedStopReviewLoopGap(contradictions: readonly string[]): string {
+  return `stop_review_loop=true was not counted as approval because the same review reports ${contradictions.join("; ")}`;
+}
+
 export type ConsolidatableFinding = ObjectiveAlignedFindingLike & {
   readonly title: string;
   readonly code_location?: {
