@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -424,11 +425,11 @@ describe("RPC prompt response semantics", () => {
 		try {
 			lineHandler(JSON.stringify({ id: "paused", type: "prompt", message: "Hold this" }));
 			await vi.waitFor(() => {
-				expect(getPromptResponses(rpcIo.outputLines, "paused")).toEqual([
+				assert.deepEqual(getPromptResponses(rpcIo.outputLines, "paused"), [
 					{ id: "paused", type: "response", command: "prompt", success: true, data: { disposition: "queued" } },
 				]);
 			});
-			expect(parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "agent_start")).toHaveLength(0);
+			assert.equal(parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "agent_start").length, 0);
 		} finally {
 			await cleanup();
 		}
