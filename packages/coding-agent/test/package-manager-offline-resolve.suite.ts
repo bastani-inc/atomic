@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,9 +139,15 @@ describe("DefaultPackageManager", () => {
 					});
 
 				const result = await packageManager.resolveExtensionSources([newSource], { temporary: true });
-				expect(installParsedSourceSpy).toHaveBeenCalledTimes(1);
-				expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/new.ts") && r.enabled)).toBe(true);
-				expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/old.ts"))).toBe(false);
+				assert.equal(installParsedSourceSpy.mock.calls.length, 1);
+				assert.equal(
+					result.extensions.some((r) => pathEndsWith(r.path, "extensions/new.ts") && r.enabled),
+					true,
+				);
+				assert.equal(
+					result.extensions.some((r) => pathEndsWith(r.path, "extensions/old.ts")),
+					false,
+				);
 			} finally {
 				rmSync(join(oldPath, "..", ".."), { recursive: true, force: true });
 				rmSync(join(newPath, "..", ".."), { recursive: true, force: true });

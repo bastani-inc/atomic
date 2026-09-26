@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { constants as bufferConstants } from "buffer";
 import {
 	appendFileSync,
@@ -16,7 +17,7 @@ import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { APP_TITLE } from "../../src/config.ts";
 import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.ts";
-import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.ts";
+import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.js";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -486,7 +487,7 @@ describe("SessionManager session file creation", () => {
 		session.appendModelChange("anthropic", "claude-sonnet-4-5");
 		session.appendThinkingLevelChange("off");
 
-		expect(existsSync(session.getSessionFile()!)).toBe(false);
+		assert.equal(existsSync(session.getSessionFile()!), false);
 	});
 
 	it("creates the file when the first user message is appended (#10000)", () => {
@@ -495,8 +496,8 @@ describe("SessionManager session file creation", () => {
 		session.appendMessage(userMsg("first question"));
 
 		const file = session.getSessionFile()!;
-		expect(readSessionFileRoles(file)).toEqual(["session", "model_change", "user"]);
-		expect(SessionManager.open(file, tempDir).buildSessionContext().messages).toHaveLength(1);
+		assert.deepEqual(readSessionFileRoles(file), ["session", "model_change", "user"]);
+		assert.equal(SessionManager.open(file, tempDir).buildSessionContext().messages.length, 1);
 	});
 
 	it("appends later entries to the file without rewriting earlier ones", () => {
@@ -505,6 +506,6 @@ describe("SessionManager session file creation", () => {
 		session.appendCustomEntry("preset-state", { name: "plan" });
 		session.appendMessage(assistantMsg("first answer"));
 
-		expect(readSessionFileRoles(session.getSessionFile()!)).toEqual(["session", "user", "custom", "assistant"]);
+		assert.deepEqual(readSessionFileRoles(session.getSessionFile()!), ["session", "user", "custom", "assistant"]);
 	});
 });

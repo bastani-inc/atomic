@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -296,8 +297,8 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("read src/example.ts");
-		expect(rendered).not.toContain("src/example.ts:");
+		assert.ok(rendered.includes("read src/example.ts"));
+		assert.ok(!rendered.includes("src/example.ts:"));
 	});
 
 	test("inherits missing built-in result renderer slot from the built-in tool", () => {

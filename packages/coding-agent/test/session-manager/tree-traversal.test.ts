@@ -1,9 +1,10 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 import { type CustomEntry, SessionManager } from "../../src/core/session-manager.ts";
-import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.ts";
+import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.js";
 
 describe("SessionManager append and tree traversal", () => {
 	describe("append operations", () => {
@@ -452,16 +453,16 @@ describe("createBranchedSession", () => {
 			session.appendMessage(assistantMsg("first answer"));
 			// Fork from a setup entry (no user or assistant message in the branched path)
 			const newFile = session.createBranchedSession(modelChangeId);
-			expect(newFile).toBeDefined();
+			assert.ok(newFile);
 			// Nothing to save yet, so the file is created later by the first user message
-			expect(existsSync(newFile!)).toBe(false);
+			assert.equal(existsSync(newFile), false);
 			session.appendMessage(userMsg("new question"));
-			expect(existsSync(newFile!)).toBe(true);
+			assert.equal(existsSync(newFile), true);
 			// Simulate extension adding entry before assistant (like preset on turn_start)
 			session.appendCustomEntry("preset-state", { name: "plan" });
 			session.appendMessage(assistantMsg("new answer"));
 			// Exactly one header and each entry written once
-			expect(readSessionFileRoles(newFile!)).toEqual(["session", "model_change", "user", "custom", "assistant"]);
+			assert.deepEqual(readSessionFileRoles(newFile), ["session", "model_change", "user", "custom", "assistant"]);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -474,9 +475,10 @@ describe("createBranchedSession", () => {
 			const id1 = session.appendMessage(userMsg("first question"));
 			session.appendMessage(assistantMsg("first answer"));
 			const newFile = session.createBranchedSession(id1);
-			expect(existsSync(newFile!)).toBe(true);
+			assert.ok(newFile);
+			assert.equal(existsSync(newFile), true);
 			session.appendMessage(assistantMsg("new answer"));
-			expect(readSessionFileRoles(newFile!)).toEqual(["session", "user", "assistant"]);
+			assert.deepEqual(readSessionFileRoles(newFile), ["session", "user", "assistant"]);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
