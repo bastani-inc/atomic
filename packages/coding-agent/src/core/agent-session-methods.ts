@@ -27,6 +27,7 @@ import type {
 	InterruptQueueHold,
 	ModelCycleResult,
 	ModelMutationOptions,
+	PromptDisposition,
 	PromptOptions,
 	QueuedInputDisposition,
 	SessionStats,
@@ -216,7 +217,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_refreshBaseSystemPromptFromActiveTools(): void;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
-	_runAgentPrompt(messages: AgentMessage | AgentMessage[], promptStarted?: () => void): Promise<void>;
+	_runAgentPrompt(
+		messages: AgentMessage | AgentMessage[],
+		promptStarted?: () => void,
+		reportDispatch?: (disposition: PromptDisposition) => void,
+	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;

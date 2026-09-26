@@ -406,6 +406,34 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
+	it("reports a prompt as queued when a pause wins before its turn starts", async () => {
+		let pauseSession: (() => void) | undefined;
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.on("before_agent_start", () => {
+						pauseSession?.();
+					});
+				},
+			]),
+		});
+		pauseSession = () => runtimeHost.session.pauseQueuedMessages();
+
+		try {
+			lineHandler(JSON.stringify({ id: "paused", type: "prompt", message: "Hold this" }));
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "paused")).toEqual([
+					{ id: "paused", type: "response", command: "prompt", success: true, data: { disposition: "queued" } },
+				]);
+			});
+			expect(parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "agent_start")).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("reports extension commands and intercepted input as handled without starting a run", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({
 			withAuth: false,

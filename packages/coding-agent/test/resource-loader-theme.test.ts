@@ -1,16 +1,29 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetCapabilitiesCache, setCapabilityOverrides } from "@earendil-works/pi-tui";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import {
+	onThemeChange,
+	setRegisteredThemes,
+	setTheme,
+	stopThemeWatcher,
+	theme,
+} from "../src/modes/interactive/theme/theme.js";
+
+const THEME_RELOAD_TIMEOUT_MS = 5_000;
+
+type ThemeFile = { name: string; colors: Record<string, string | number> };
 
 describe("DefaultResourceLoader theme color mode", () => {
 	let tempDir: string;
 	let agentDir: string;
 	let cwd: string;
 	let themePath: string;
+	let themeJson: ThemeFile;
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "resource-loader-theme-"));
@@ -19,9 +32,9 @@ describe("DefaultResourceLoader theme color mode", () => {
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(cwd, { recursive: true });
 
-		const themeJson = JSON.parse(
+		themeJson = JSON.parse(
 			readFileSync(new URL("../src/modes/interactive/theme/dark.json", import.meta.url), "utf-8"),
-		) as { name: string; colors: Record<string, string | number> };
+		) as ThemeFile;
 		themeJson.name = "capability-test";
 		themeJson.colors.userMessageBg = "#3c3544";
 		themePath = join(tempDir, "capability-test.json");
@@ -29,6 +42,9 @@ describe("DefaultResourceLoader theme color mode", () => {
 	});
 
 	afterEach(() => {
+		stopThemeWatcher();
+		onThemeChange(() => {});
+		setRegisteredThemes([]);
 		vi.unstubAllEnvs();
 		setCapabilityOverrides({});
 		resetCapabilitiesCache();
@@ -67,8 +83,8 @@ describe("DefaultResourceLoader theme color mode", () => {
 			});
 			await loader.reload();
 
-			const loadedTheme = loader.getThemes().themes.find((theme) => theme.name === "capability-test");
-			expect(loadedTheme?.bg("userMessageBg", "x")).toBe(expected);
+			const loadedTheme = loader.getThemes().themes.find((candidate) => candidate.name === "capability-test");
+			assert.equal(loadedTheme?.bg("userMessageBg", "x"), expected);
 		},
 	);
 
@@ -91,18 +107,59 @@ describe("DefaultResourceLoader theme color mode", () => {
 			noContextFiles: true,
 		});
 		await loader.reload();
-		expect(
+		assert.equal(
 			loader
 				.getThemes()
-				.themes.find((theme) => theme.name === "capability-test")
+				.themes.find((candidate) => candidate.name === "capability-test")
 				?.bg("userMessageBg", "x"),
-		).toBe("\x1b[48;5;59mx\x1b[49m");
+			"\x1b[48;5;59mx\x1b[49m",
+		);
 		setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 
 		writeFileSync(settingsPath, "{}");
 		await loader.reload();
 
-		const loadedTheme = loader.getThemes().themes.find((theme) => theme.name === "capability-test");
-		expect(loadedTheme?.bg("userMessageBg", "x")).toBe("\x1b[48;2;60;53;68mx\x1b[49m");
+		const loadedTheme = loader.getThemes().themes.find((candidate) => candidate.name === "capability-test");
+		assert.equal(loadedTheme?.bg("userMessageBg", "x"), "\x1b[48;2;60;53;68mx\x1b[49m");
+	});
+
+	it("keeps the configured color mode when the active custom theme file is edited", async () => {
+		vi.stubEnv("PI_TRUE_COLOR", "0");
+		vi.stubEnv("COLORTERM", undefined);
+		vi.stubEnv("WT_SESSION", undefined);
+		vi.stubEnv("TERM", "dumb");
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+		setCapabilityOverrides({});
+		resetCapabilitiesCache();
+
+		const themesDir = join(agentDir, "themes");
+		mkdirSync(themesDir, { recursive: true });
+		const watchedThemePath = join(themesDir, "capability-test.json");
+		writeFileSync(watchedThemePath, JSON.stringify(themeJson));
+
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory({ terminal: { trueColor: true } }),
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+		});
+		await loader.reload();
+		setRegisteredThemes(loader.getThemes().themes);
+
+		assert.deepEqual(setTheme("capability-test", true), { success: true });
+		assert.equal(theme.bg("userMessageBg", "x"), "\x1b[48;2;60;53;68mx\x1b[49m");
+
+		const reloaded = new Promise<void>((resolve) => onThemeChange(resolve));
+		writeFileSync(
+			watchedThemePath,
+			JSON.stringify({ ...themeJson, colors: { ...themeJson.colors, userMessageBg: "#443c50" } }),
+		);
+		await vi.waitFor(() => reloaded, { timeout: THEME_RELOAD_TIMEOUT_MS });
+
+		assert.equal(theme.bg("userMessageBg", "x"), "\x1b[48;2;68;60;80mx\x1b[49m");
 	});
 });

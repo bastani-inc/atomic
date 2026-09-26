@@ -125,7 +125,8 @@ function startThemeWatcher(): void {
 
 			try {
 				// Reload the theme from disk and refresh the registry cache
-				const reloadedTheme = loadThemeFromPath(themeFile);
+				const activeColorMode = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY]?.getColorMode();
+				const reloadedTheme = loadThemeFromPath(themeFile, activeColorMode);
 				setRegisteredTheme(watchedThemeName, reloadedTheme);
 				setGlobalTheme(reloadedTheme);
 				// Notify callback (to invalidate UI)

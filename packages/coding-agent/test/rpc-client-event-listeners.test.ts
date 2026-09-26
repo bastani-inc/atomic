@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { afterEach, describe, test } from "vitest";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const tempDirs: string[] = [];
 const clients: RpcClient[] = [];
@@ -39,7 +40,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 		const idle = client.waitForIdle(5000);
 		await client.abort();
 
-		await expect(collected).resolves.toEqual([{ type: "agent_end", messages: [] }]);
-		await expect(idle).resolves.toBeUndefined();
+		assert.deepEqual(await collected, [{ type: "agent_end", messages: [] }]);
+		assert.equal(await idle, undefined);
 	});
 });
