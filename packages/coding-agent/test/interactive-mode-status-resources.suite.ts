@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { Container } from "@earendil-works/pi-tui";
@@ -127,8 +128,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("/explain, /review");
 		expect(output).toContain("[Extensions]");
 		expect(output).toContain("answer.ts");
-		expect(output).not.toContain("[Themes]");
-		expect(output).not.toContain("solarized");
+		assert.ok(!output.includes("[Themes]"), "startup listing must not include a [Themes] section");
+		assert.ok(!output.includes("solarized"), "startup listing must not name custom themes");
 		expect(output).not.toContain("/tmp/skill/SKILL.md");
 	});
 
