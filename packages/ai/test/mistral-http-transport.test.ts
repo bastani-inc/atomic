@@ -322,6 +322,48 @@ describe("Mistral HTTP transport", () => {
 		expect(message.usage).toMatchObject({ input: 7, output: 4, cacheRead: 3, cacheWrite: 0, totalTokens: 14 });
 	});
 
+	// #9674: GLM models on Mistral send empty content deltas at the start, around tool calls,
+	// and sometimes mid-thinking. They must not open blocks or split thinking.
+	it("ignores empty content deltas", async () => {
+		const model = getModel("mistral", "zai-glm-5-3");
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		});
+		const thinking = (text: string) => ({ type: "thinking", thinking: [{ type: "text", text }] });
+		const toolCall = (args: string, first: boolean) => ({
+			index: 0,
+			...(first ? { id: "abc123456" } : {}),
+			function: { name: first ? "read" : "", arguments: args },
+		});
+		const deltas = [
+			{ content: "" },
+			{ content: [thinking("first part,")] },
+			{ content: "" },
+			{ content: [{ type: "text", text: "" }] },
+			{ content: [thinking(" second part."), { type: "text", text: "Reading." }] },
+			{ content: "", tool_calls: [toolCall("", true)] },
+			{ content: "", tool_calls: [toolCall('{"path":', false)] },
+			{ content: "", tool_calls: [toolCall('"a.txt"}', false)] },
+			{ content: "" },
+		];
+		const events = deltas.map((delta, i) => ({
+			id: "response-1",
+			model: model.id,
+			choices: [{ index: 0, finish_reason: i === deltas.length - 1 ? "tool_calls" : null, delta }],
+		}));
+
+		const message = await streamMistral(model, context, {
+			apiKey: "test",
+			fetch: async () => createSseResponse(events),
+		}).result();
+
+		expect(message.content).toEqual([
+			{ type: "thinking", thinking: "first part, second part." },
+			{ type: "text", text: "Reading." },
+			{ type: "toolCall", id: "abc123456", name: "read", arguments: { path: "a.txt" } },
+		]);
+	});
+
 	it("forwards each parsed SSE payload before normalizing it", async () => {
 		const model = getModel("mistral", "mistral-large-latest");
 		const context = normalizeContext({

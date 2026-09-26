@@ -177,7 +177,7 @@ Tasks done without a workflow record `Assistant-workflow: inline`. Each `Assista
 
 ## Exporting and Sharing Sessions
 
-Use `/export [file]` to write a session to HTML.
+Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 

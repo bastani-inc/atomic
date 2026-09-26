@@ -1,6 +1,7 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
+import { type ColorMode, resolveColorMode } from "../modes/interactive/theme/color-utils.ts";
 import { loadThemeFromContent, type Theme } from "../modes/interactive/theme/theme.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
@@ -164,6 +165,7 @@ async function loadThemesAsync(
 	includeDefaults = true,
 ): Promise<{ themes: Theme[]; diagnostics: ResourceDiagnostic[] }> {
 	const state = resourceInternals(loader);
+	const colorMode = resolveColorMode(state.settingsManager.getTerminalCapabilityOverrides().trueColor);
 	const themes: Theme[] = [];
 	const diagnostics: ResourceDiagnostic[] = [];
 	if (includeDefaults) {
@@ -171,7 +173,7 @@ async function loadThemesAsync(
 			...getLoaderAgentDirs(state.agentDir).map((agentDir) => join(agentDir, "themes")),
 			...getProjectThemeDirs(state.cwd),
 		]) {
-			await loadThemesFromDirAsync(dir, themes, diagnostics);
+			await loadThemesFromDirAsync(dir, themes, diagnostics, colorMode);
 		}
 	}
 	const startedAt = Date.now();
@@ -184,9 +186,9 @@ async function loadThemesAsync(
 		}
 		try {
 			const stats = await stat(resolved);
-			if (stats.isDirectory()) await loadThemesFromDirAsync(resolved, themes, diagnostics);
+			if (stats.isDirectory()) await loadThemesFromDirAsync(resolved, themes, diagnostics, colorMode);
 			else if (stats.isFile() && resolved.endsWith(".json"))
-				await loadThemeFromFileAsync(resolved, themes, diagnostics);
+				await loadThemeFromFileAsync(resolved, themes, diagnostics, colorMode);
 			else diagnostics.push({ type: "warning", message: "theme path is not a json file", path: resolved });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to read theme path";
@@ -200,7 +202,12 @@ function getProjectThemeDirs(cwd: string): string[] {
 	return getProjectConfigDirs(cwd).map((configDir) => join(configDir, "themes"));
 }
 
-async function loadThemesFromDirAsync(dir: string, themes: Theme[], diagnostics: ResourceDiagnostic[]): Promise<void> {
+async function loadThemesFromDirAsync(
+	dir: string,
+	themes: Theme[],
+	diagnostics: ResourceDiagnostic[],
+	colorMode: ColorMode,
+): Promise<void> {
 	if (!(await existsAsync(dir))) return;
 	const startedAt = Date.now();
 	try {
@@ -216,7 +223,7 @@ async function loadThemesFromDirAsync(dir: string, themes: Theme[], diagnostics:
 				}
 			}
 			if (isFile && entry.name.endsWith(".json"))
-				await loadThemeFromFileAsync(join(dir, entry.name), themes, diagnostics);
+				await loadThemeFromFileAsync(join(dir, entry.name), themes, diagnostics, colorMode);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "failed to read theme directory";
@@ -228,9 +235,10 @@ async function loadThemeFromFileAsync(
 	filePath: string,
 	themes: Theme[],
 	diagnostics: ResourceDiagnostic[],
+	colorMode: ColorMode,
 ): Promise<void> {
 	try {
-		themes.push(loadThemeFromContent(filePath, await readFile(filePath, "utf-8")));
+		themes.push(loadThemeFromContent(filePath, await readFile(filePath, "utf-8"), colorMode));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "failed to load theme";
 		diagnostics.push({ type: "warning", message, path: filePath });

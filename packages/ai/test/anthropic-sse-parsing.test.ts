@@ -247,7 +247,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("omits the interleaved-thinking beta when thinking is disabled", async () => {
-		const betaHeader = await captureBetaHeader(getModel("openrouter", "anthropic/claude-3-haiku"), false);
+		const betaHeader = await captureBetaHeader(getModel("openrouter", "anthropic/claude-haiku-4.5"), false);
 
 		expect(betaHeader).not.toContain("interleaved-thinking-2025-05-14");
 	});

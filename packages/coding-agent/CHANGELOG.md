@@ -6,6 +6,8 @@
 
 - Subagent calls and workflow stages with `model: "auto"` accept `taskNeeds` (`work`, `difficulty`, `mistakeCost`, `needsImages`, `longContext`, `latencySensitive`) so the caller can say what it already knows about the task, and `modelConstraints.allowedModels` now sets the shortlist of models the router chooses between, as many as fit one routing request. `modelConstraints` also accepts `allowedProviders` and `excludedProviders`; setting either on a call replaces the `modelRouting` provider settings for that call, while lists in agent definitions or inherited workflow constraints only narrow them.
 - Added the `modelRouting` setting with `allowedProviders` and `excludedProviders` lists, so you can keep `model: "auto"` from routing workflow stages and subagents to providers you don't want to use, for example to prefer your subscriptions over API-billed providers.
+- Added a show/hide toggle (`H`) in HTML exports for custom messages marked `display: false`. They stay hidden by default and can also be revealed by selecting them in the sidebar ([#8896](https://github.com/earendil-works/pi/issues/8896)).
+- Successful RPC `prompt`, `steer`, and `follow_up` responses now include `data.disposition`: `"handled"` when an extension command or input handler consumed the input, `"queued"` when it was queued, or, for `prompt`, `"started"` when it started a run, so clients know whether to wait for `agent_settled`. `AgentSession.steer()`/`followUp()` and `RpcClient.prompt()`/`steer()`/`followUp()` return the same value, and SDK `preflightResult` callbacks receive it as a second argument ([#9098](https://github.com/earendil-works/pi/issues/9098), [#9803](https://github.com/earendil-works/pi/issues/9803)).
 
 ### Changed
 
@@ -15,6 +17,14 @@
 - Automatic model routing fallbacks (a classifier failing over to the chat model, or a subagent or workflow stage running on the current chat model) are no longer printed or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to show them.
 - Automatic model routing (`model: "auto"`) now has benchmark evidence for every model on the Artificial Analysis leaderboard instead of the top 27. Each routing request includes only the rows for your eligible models and their effort variants, matched across providers (for example `claude-opus-4.6` on Copilot and `us.anthropic.claude-opus-4-6-v1` on Bedrock).
 - Automatic model routing now prefers the most recently released model among candidates in the same role tier and price range, so an older model no longer wins just because it has no benchmark row.
+- Switched the build from the TypeScript native preview to TypeScript 7.0 with an ES2024 target ([#9965](https://github.com/earendil-works/pi/issues/9965)).
+
+### Fixed
+
+- Fixed pinned git extensions loaded with `-e` continuing to use the first downloaded commit after the ref changes ([#9982](https://github.com/earendil-works/pi/issues/9982)).
+- Fixed `RpcClient` skipping the next event listener when a listener unsubscribes while handling an event, which could make `waitForIdle()` time out after `collectEvents()` ([#9990](https://github.com/earendil-works/pi/issues/9990)).
+- Fixed new sessions being lost when Atomic exits before the first assistant response. The session file is now created when the first user message is sent, and cloning or forking a session that has not been saved yet asks you to send a message first ([#10000](https://github.com/earendil-works/pi/issues/10000)).
+- Fixed custom themes ignoring the `terminal.trueColor` setting and `PI_TRUE_COLOR`; themes loaded from theme directories, packages, and theme paths now use the configured truecolor or 256-color mode ([#9973](https://github.com/earendil-works/pi/issues/9973)).
 
 ## [0.9.21-alpha.1] - 2026-09-25
 

@@ -420,7 +420,8 @@ export class RpcClient extends RpcClientApi {
 		}
 	}
 	private emitEvent(event: RpcEvent): void {
-		for (const listener of this.eventListeners) listener(event);
+		// Iterate a snapshot so listeners that unsubscribe during dispatch do not make later listeners miss this event.
+		for (const listener of [...this.eventListeners]) listener(event);
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
 		if (

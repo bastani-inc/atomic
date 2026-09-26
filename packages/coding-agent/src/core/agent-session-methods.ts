@@ -28,6 +28,7 @@ import type {
 	ModelCycleResult,
 	ModelMutationOptions,
 	PromptOptions,
+	QueuedInputDisposition,
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.js";
@@ -220,8 +221,16 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;
-	steer(text: string, images?: ImageContent[], options?: Pick<PromptOptions, "source">): Promise<void>;
-	followUp(text: string, images?: ImageContent[], options?: Pick<PromptOptions, "source">): Promise<void>;
+	steer(
+		text: string,
+		images?: ImageContent[],
+		options?: Pick<PromptOptions, "source">,
+	): Promise<QueuedInputDisposition>;
+	followUp(
+		text: string,
+		images?: ImageContent[],
+		options?: Pick<PromptOptions, "source">,
+	): Promise<QueuedInputDisposition>;
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },

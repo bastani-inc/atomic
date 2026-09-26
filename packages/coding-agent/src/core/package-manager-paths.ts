@@ -9,9 +9,9 @@ export function getHomeDir(): string {
 	return process.env.HOME || homedir();
 }
 
-export function getTemporaryDir(prefix: string, suffix?: string): string {
+export function getTemporaryDir(prefix: string, suffix?: string, ref?: string): string {
 	const hash = createHash("sha256")
-		.update(`${prefix}-${suffix ?? ""}`)
+		.update(`${prefix}-${suffix ?? ""}${ref ? `@${ref}` : ""}`)
 		.digest("hex")
 		.slice(0, 8);
 	return join(tmpdir(), `${APP_NAME}-extensions`, prefix, hash, suffix ?? "");
@@ -51,11 +51,12 @@ export function getNpmInstallRoot(context: PackageManagerContext, scope: SourceS
 
 export function getGitInstallPath(
 	context: PackageManagerContext,
-	source: { host: string; path: string },
+	source: { host: string; path: string; ref?: string },
 	scope: SourceScope,
 ): string {
 	if (scope === "temporary") {
-		return getTemporaryDir(`git-${source.host}`, source.path);
+		// Include the ref in the hash so each pinned ref gets its own checkout.
+		return getTemporaryDir(`git-${source.host}`, source.path, source.ref);
 	}
 	if (scope === "project") {
 		return join(context.cwd, CONFIG_DIR_NAME, "git", source.host, source.path);

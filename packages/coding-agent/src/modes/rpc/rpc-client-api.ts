@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Credential } from "@bastani/pi-ai";
 import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { SessionStats } from "../../core/agent-session.js";
+import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
@@ -36,14 +36,25 @@ export abstract class RpcClientApi {
 	protected abstract request(command: RpcCommandBody): Promise<RpcResponse>;
 	protected abstract data<T>(response: RpcResponse): T;
 
-	async prompt(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): Promise<void> {
-		await this.request({ type: "prompt", message, images, streamingBehavior });
+	/**
+	 * Send a prompt and return its disposition once accepted.
+	 * If the disposition is "handled", no run started for this prompt, so don't wait for agent_settled.
+	 */
+	async prompt(
+		message: string,
+		images?: ImageContent[],
+		streamingBehavior?: "steer" | "followUp",
+	): Promise<PromptDisposition> {
+		const response = await this.request({ type: "prompt", message, images, streamingBehavior });
+		return this.data<{ disposition: PromptDisposition }>(response).disposition;
 	}
-	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.request({ type: "steer", message, images });
+	async steer(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
+		const response = await this.request({ type: "steer", message, images });
+		return this.data<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
-	async followUp(message: string, images?: ImageContent[]): Promise<void> {
-		await this.request({ type: "follow_up", message, images });
+	async followUp(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
+		const response = await this.request({ type: "follow_up", message, images });
+		return this.data<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
 	async abort(): Promise<void> {
 		await this.request({ type: "abort" });

@@ -1,10 +1,22 @@
 import { constants as bufferConstants } from "buffer";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "fs";
+import {
+	appendFileSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { APP_TITLE } from "../../src/config.ts";
 import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.ts";
+import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.ts";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -455,5 +467,44 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		const sm2 = SessionManager.open(corruptedFile, tempDir);
 		expect(sm2.getSessionId()).toBe(sessionId);
 		expect(sm2.getHeader()?.type).toBe("session");
+	});
+});
+
+describe("SessionManager session file creation", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "atomic-session-persist-"));
+	});
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("does not create a file for a session with only setup entries", () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		session.appendModelChange("anthropic", "claude-sonnet-4-5");
+		session.appendThinkingLevelChange("off");
+
+		expect(existsSync(session.getSessionFile()!)).toBe(false);
+	});
+
+	it("creates the file when the first user message is appended (#10000)", () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		session.appendModelChange("anthropic", "claude-sonnet-4-5");
+		session.appendMessage(userMsg("first question"));
+
+		const file = session.getSessionFile()!;
+		expect(readSessionFileRoles(file)).toEqual(["session", "model_change", "user"]);
+		expect(SessionManager.open(file, tempDir).buildSessionContext().messages).toHaveLength(1);
+	});
+
+	it("appends later entries to the file without rewriting earlier ones", () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		session.appendMessage(userMsg("first question"));
+		session.appendCustomEntry("preset-state", { name: "plan" });
+		session.appendMessage(assistantMsg("first answer"));
+
+		expect(readSessionFileRoles(session.getSessionFile()!)).toEqual(["session", "user", "custom", "assistant"]);
 	});
 });

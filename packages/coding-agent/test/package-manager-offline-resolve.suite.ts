@@ -34,6 +34,7 @@ interface PackageManagerInternals {
 		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 	): Promise<string>;
 	parseSource(source: string): ParsedSourceForTest;
+	getGitInstallPath(source: ParsedSourceForTest, scope: "temporary"): string;
 	getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string; fetchArgs: string[] }>;
 }
 
@@ -116,6 +117,34 @@ describe("DefaultPackageManager", () => {
 			const result = await packageManager.resolveExtensionSources([gitSource], { temporary: true });
 			expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/index.ts") && r.enabled)).toBe(true);
 			expect(refreshTemporaryGitSourceSpy).not.toHaveBeenCalled();
+		});
+
+		it("should load a new checkout when a pinned temporary git source changes ref (#9982)", async () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const repo = `github.com/example/pinned-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+			const oldSource = `git:${repo}@aaaaaaa`;
+			const newSource = `git:${repo}@bbbbbbb`;
+			const oldPath = internals.getGitInstallPath(internals.parseSource(oldSource), "temporary");
+			const newPath = internals.getGitInstallPath(internals.parseSource(newSource), "temporary");
+			try {
+				mkdirSync(join(oldPath, "extensions"), { recursive: true });
+				writeFileSync(join(oldPath, "extensions", "old.ts"), "export default function() {};");
+
+				const installParsedSourceSpy = vi
+					.spyOn(packageManager as object as { installParsedSource(): Promise<void> }, "installParsedSource")
+					.mockImplementation(async () => {
+						mkdirSync(join(newPath, "extensions"), { recursive: true });
+						writeFileSync(join(newPath, "extensions", "new.ts"), "export default function() {};");
+					});
+
+				const result = await packageManager.resolveExtensionSources([newSource], { temporary: true });
+				expect(installParsedSourceSpy).toHaveBeenCalledTimes(1);
+				expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/new.ts") && r.enabled)).toBe(true);
+				expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/old.ts"))).toBe(false);
+			} finally {
+				rmSync(join(oldPath, "..", ".."), { recursive: true, force: true });
+				rmSync(join(newPath, "..", ".."), { recursive: true, force: true });
+			}
 		});
 
 		it("should not run npm view during resolve for installed unpinned packages", async () => {

@@ -67,27 +67,27 @@ try {
 
   const batchDir = join(root, "batch");
   const batch = SessionManager.create(root, batchDir);
-  const userId = batch.appendMessage({ role: "user", content: "buffered user", timestamp: 10 });
+  const setupId = batch.appendModelChange("anthropic", "test");
   const batchFile = batch.getSessionFile();
   assert.ok(batchFile);
   assert.equal(existsSync(batchFile), false);
   assert.throws(
-    () => batch.appendMessage(assistant("partial-fault-batch", 11)),
+    () => batch.appendMessage({ role: "user", content: "partial-fault-batch", timestamp: 11 }),
     /fault after partial physical append/,
   );
   assert.equal(existsSync(batchFile), false, "failed initial batch must restore the absent-file state");
-  assert.equal(batch.getLeafId(), userId);
-  assert.equal(batch.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "assistant").length, 0);
+  assert.equal(batch.getLeafId(), setupId);
+  assert.equal(batch.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user").length, 0);
 
-  const assistantId = batch.appendMessage(assistant("retry batch reply", 12));
+  const userId = batch.appendMessage({ role: "user", content: "retry batch user", timestamp: 12 });
   const batchEntries = parsePhysicalEntries(batchFile);
   assertUniqueIds(batchEntries);
   assert.equal(batchEntries.length, 3);
   const reopenedBatch = SessionManager.open(batchFile, batchDir, root);
+  assert.ok(reopenedBatch.getEntry(setupId));
   assert.ok(reopenedBatch.getEntry(userId));
-  assert.ok(reopenedBatch.getEntry(assistantId));
+  assert.equal(reopenedBatch.getEntries().filter((entry) => entry.type === "model_change").length, 1);
   assert.equal(reopenedBatch.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user").length, 1);
-  assert.equal(reopenedBatch.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "assistant").length, 1);
 
   console.log(JSON.stringify({ later: "ok", batch: "ok" }));
 } finally {
