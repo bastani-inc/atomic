@@ -433,7 +433,7 @@ Do not tag bulk context. Protected lines count against the keep target rather th
 
 Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
 
-The same tags guide automatic model selection: a `model: "auto"` stage prompt over about 50 KB is excerpted for routing to its beginning, its end and every protected span, so short spans that name the role and objective keep that decision grounded. See [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection).
+For automatic model selection, a chat model reads the whole `model: "auto"` stage prompt; stating `taskNeeds` in the stage options saves that read. See [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection).
 
 #### Tagging is not only for workflow authors
 

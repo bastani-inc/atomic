@@ -6,11 +6,12 @@ import {
 	type ModelRoutingContext,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
+import type { ModelConstraints } from "../../packages/coding-agent/src/core/model-routing-constraints.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { deepMergeSettings } from "../../packages/coding-agent/src/core/settings-merge.js";
 import type { ModelRoutingSettings } from "../../packages/coding-agent/src/core/settings-types.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
-import { classifierOptions, defaultClassifierChoice } from "../helpers/model-routing.js";
+import { chatRouter, classifierOptions, defaultClassifierChoice } from "../helpers/model-routing.js";
 
 const jev = getBuiltinClassifierModel("typesafe", "jev-latest") as ClassifierModel<Api>;
 
@@ -49,11 +50,10 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 		modelRegistry: {
 			getAvailable: () => models,
 			getAll: () => models,
-			streamSimple: () => {
-				throw new Error("classifier routing only");
-			},
+			streamSimple: (model, context) => chatRouter()(model, context),
 			containsConfiguredCredential: async () => false,
-			getClassifierModel: () => jev,
+			getClassifierModel: (provider: string, id: string) =>
+				`${provider}/${id}` === `${jev.provider}/${jev.id}` ? jev : undefined,
 			classify: async (_model: ClassifierModel<Api>, context: ClassifierContext) => {
 				const answers: ClassifierResult["answers"] = {};
 				for (const [id, question] of Object.entries(context.questions)) {
@@ -74,8 +74,14 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 	return { ctx, offered };
 }
 
-const route = (ctx: ModelRoutingContext) =>
-	routeExecutionModel({ ctx, task: "Review the change", agent: { name: "reviewer", description: "Reviews code" } });
+const route = (ctx: ModelRoutingContext, constraints: ModelConstraints[] = [], overrideProviderSettings = false) =>
+	routeExecutionModel({
+		ctx,
+		task: "Review the change",
+		agent: { name: "reviewer", description: "Reviews code" },
+		constraints,
+		overrideProviderSettings,
+	});
 
 test("settings expose validated, de-duplicated modelRouting provider lists", () => {
 	assert.deepEqual(SettingsManager.inMemory().getModelRouting(), {});
@@ -156,4 +162,42 @@ test("workflow stage routing applies the host's modelRouting providers", async (
 	assert.ok(catalog?.routeModel);
 	const result = await catalog.routeModel({ task: "Review the change", stageName: "review" } as never);
 	assert.deepEqual(routed(result), ["github-copilot/claude-opus-5.5"]);
+});
+
+test("a call that sets provider lists replaces the settings lists for that call", async () => {
+	const settings = { allowedProviders: ["anthropic"], excludedProviders: ["openrouter"] };
+	const allowOverride = routingContext(settings);
+	assert.deepEqual(
+		routed(await route(allowOverride.ctx, [{ allowedProviders: ["openrouter", "github-copilot"] }], true)),
+		["github-copilot/claude-opus-5.5", "openrouter/openai/gpt-6-astra"],
+	);
+
+	const excludeOverride = routingContext({
+		allowedProviders: ["anthropic", "openrouter"],
+		excludedProviders: ["openrouter"],
+	});
+	assert.deepEqual(
+		routed(await route(excludeOverride.ctx, [{ excludedProviders: ["anthropic"] }], true)),
+		["github-copilot/claude-opus-5.5", "openrouter/openai/gpt-6-astra"],
+		"a call that sets any provider list replaces both settings lists",
+	);
+});
+
+test("provider lists in modelConstraints work without any modelRouting setting", async () => {
+	const { ctx } = routingContext();
+	assert.deepEqual(routed(await route(ctx, [{ excludedProviders: ["openrouter", "github-copilot"] }])), [
+		"anthropic/claude-fable-5-1",
+	]);
+	assert.deepEqual(routed(await route(ctx, [{ allowedProviders: ["github-copilot"] }])), [
+		"github-copilot/claude-opus-5.5",
+	]);
+});
+
+test("provider lists from an agent definition or workflow never lift the user's settings", async () => {
+	const { ctx } = routingContext({ excludedProviders: ["openrouter"] });
+	assert.deepEqual(
+		routed(await route(ctx, [{ allowedProviders: ["openrouter", "anthropic"] }])),
+		["anthropic/claude-fable-5-1"],
+		"a definition-level allow list only narrows; the user's exclusion still applies",
+	);
 });

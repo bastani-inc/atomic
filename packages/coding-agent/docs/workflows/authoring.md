@@ -60,7 +60,7 @@ const result = await ctx.task("analyze", {
 
 `ctx.stage("analyze", { model: "auto" }).prompt(text)` works too. Set `model: "auto"` in chain or parallel shared options to route each stage separately. The decision uses the actual supplied prompt after input interpolation and chain context expansion, eligible models and efforts, and compact dated evaluation evidence rather than full guides. It ranks up to three distinct models with an effort for each, trying them in order before remaining configured fallbacks and the current chat model. File references remain references, not guessed file contents. See [automatic model selection](/subagents/reference#automatic-model-selection) for ranking and limits.
 
-The router's copy of a very long task is shortened to about 50 KB, keeping its beginning, its end and every `<keepContext>...</keepContext>` span, with cuts marked `[... truncated ...]`; the stage still receives the full task. Hard `modelConstraints` remain enforced independently. Set `taskNeeds` in the stage options when you already know the task's kind of work, difficulty, mistake cost or need for images, and list the contenders in `modelConstraints.allowedModels` to choose them yourself.
+A chat model reads the complete stage prompt to answer the routing questions; a classifier router such as Jev never sees it. Hard `modelConstraints` remain enforced independently. Set `taskNeeds` in the stage options when you already know the task's kind of work, difficulty, mistake cost, or need for images, a very large context or a fast answer; stating all six skips the chat model's read, and list the contenders in `modelConstraints.allowedModels` to choose them yourself.
 
 ```ts
 const prompt = [

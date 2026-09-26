@@ -170,11 +170,15 @@ test("parallel tasks do not share the first decision", async () => {
 	const f = await fixture("auto");
 	const second = { ...decisionModel, id: "other" };
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, second]);
-	f.infer.mockImplementation(
-		chatRouter((offered, context) =>
-			String(chatPayload(context).state.task).includes("second") && offered.includes("decision-test/other")
-				? "decision-test/other"
-				: "decision-test/chat",
+	const pick = (offered: string[], context: Parameters<typeof chatPayload>[0]) =>
+		(chatPayload(context).state.needs as { difficulty?: string }).difficulty === "hard" &&
+		offered.includes("decision-test/other")
+			? "decision-test/other"
+			: "decision-test/chat";
+	f.infer.mockImplementation((model, context) =>
+		chatRouter(pick, String(chatPayload(context).state.task ?? "").includes("second") ? { difficulty: "hard" } : {})(
+			model,
+			context,
 		),
 	);
 	await f.call({

@@ -86,7 +86,7 @@ An explicit ID other than `auto` is resolved through the current model registry:
 
 A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Routing has no built-in wall-clock deadline; cancel the request to stop waiting. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
-The router's copy of a very long task is shortened to about 50 KB, keeping its beginning, its end and every `<keepContext>...</keepContext>` span, with cuts marked `[... truncated ...]`; the subagent or stage still receives the full task. If the selected classifier still rejects the request, routing switches to the current chat model.
+A classifier `routerModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`routerModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
 
 Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection.
 
@@ -112,7 +112,7 @@ Limits which providers' models workflow stages and subagents with `model: "auto"
 
 Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so this setting cannot separate them.
 
-A project list replaces the global list of the same name; the other list is kept. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
+A project list replaces the global list of the same name; the other list is kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of these for that call. Provider lists in an agent definition or inherited from a parent workflow only narrow these settings; they never lift an exclusion. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
 
 #### thinkingBudgets
 
