@@ -4,6 +4,7 @@ import type {
 	ModelParallelResponse,
 	ModelSingleResponse,
 	Result,
+	TaskId,
 	TaskRecord,
 	TaskResult,
 	WaitOutcome,
@@ -14,6 +15,14 @@ import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
+import {
+	INLINE_TASK_OUTPUT_MAX_BYTES,
+	locateTaskOutput,
+	retainedTaskOutput,
+	retainTaskOutput,
+} from "./task-output-retention.js";
+
+export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
 /** Project explicit user stops without changing the shared host cancellation record. */
 export function subagentTaskResultLabel(result: TaskResult): string {
@@ -31,6 +40,72 @@ export function subagentTaskResponseText(response: ModelSingleResponse | ModelPa
 	return `${killed.length ? `${killed.length} killed. These children cannot be resumed. Underlying host response:\n` : ""}${JSON.stringify(response)}`;
 }
 
+export type SettledTaskOutput = { taskId: TaskId; result: TaskResult };
+
+export function settledOutputsFromResponse(response: ModelSingleResponse | ModelParallelResponse): SettledTaskOutput[] {
+	const outcomes = response.kind === "parallel" ? response.slots.map((slot) => slot.outcome) : [response];
+	return outcomes.flatMap((outcome) =>
+		outcome.kind === "admitted" && outcome.observation.kind === "settled"
+			? [{ taskId: outcome.observation.taskId, result: outcome.observation.result }]
+			: [],
+	);
+}
+
+export function settledOutputsFromRecords(records: readonly TaskRecord[]): SettledTaskOutput[] {
+	return records.flatMap((record) =>
+		record.execution.kind === "settled" ? [{ taskId: record.ref.taskId, result: record.execution.result }] : [],
+	);
+}
+
+function settledOutputSection(taskId: TaskId, label: string, head: string, shown: number, total: number): string {
+	const truncated = shown < total ? `, first ${shown} shown; read the output file named above for the rest` : "";
+	return `Output of ${taskId} (${label}, ${total} bytes${truncated}):\n${head}`;
+}
+
+async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput): Promise<string | undefined> {
+	const output = settled.result.output;
+	if (!output) return undefined;
+	const label = subagentTaskResultLabel(settled.result);
+	const kept = retainedTaskOutput(output.ownerId, output.taskId);
+	if (kept) {
+		return settledOutputSection(
+			settled.taskId,
+			label,
+			kept.head,
+			Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
+			kept.totalBytes,
+		);
+	}
+	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
+	const lease = host.resolveTask(settled.taskId);
+	if (!lease.ok) return unavailable(lease.error.message);
+	try {
+		const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
+			start: "0",
+			maximumBytes: INLINE_TASK_OUTPUT_MAX_BYTES,
+		});
+		if (!page.ok) return unavailable(page.error.message);
+		const decoder = new TextDecoder();
+		const head =
+			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
+		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
+		return settledOutputSection(settled.taskId, label, head, shown, Number(output.byteCount));
+	} catch (error) {
+		return unavailable(error instanceof Error ? error.message : String(error));
+	}
+}
+
+/** Resolve settled `output:<taskId>` references into readable text for the model (#3294). */
+export async function settledTaskOutputText(
+	host: AgentTaskHost | undefined,
+	settled: readonly SettledTaskOutput[],
+): Promise<string> {
+	if (!host || settled.length === 0) return "";
+	const sections = await Promise.all(settled.map((entry) => readSettledOutput(host, entry)));
+	const present = sections.filter((section): section is string => section !== undefined);
+	return present.length ? `\n\n${present.join("\n\n")}` : "";
+}
+
 export function taskToolResult(response: ModelSingleResponse, host?: AgentTaskHost): SubagentToolResult {
 	return {
 		content: [{ type: "text", text: subagentTaskResponseText(response) }],
@@ -41,6 +116,20 @@ export function taskToolResult(response: ModelSingleResponse, host?: AgentTaskHo
 			taskRecords: taskResponseRecords(response, host),
 		},
 		...(response.kind === "unstarted" ? { isError: true } : {}),
+	};
+}
+
+/** A launch result whose settled `output:<taskId>` references are resolved into readable text. */
+export async function taskToolResultWithOutput(
+	response: ModelSingleResponse,
+	host?: AgentTaskHost,
+): Promise<SubagentToolResult> {
+	const result = taskToolResult(response, host);
+	const outputText = await settledTaskOutputText(host, settledOutputsFromResponse(response));
+	if (!outputText) return result;
+	return {
+		...result,
+		content: [{ type: "text", text: `${subagentTaskResponseText(response)}${outputText}` }],
 	};
 }
 
@@ -143,8 +232,13 @@ export async function runAgentTask(input: {
 							change: { kind: "model", model: child.model, thinking: child.thinking },
 						});
 					input.onTerminal?.(child);
-					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-					const bytes = Buffer.from(text);
+					const located = locateTaskOutput(
+						child,
+						input.outputText?.(child) ?? getSingleResultOutput(child),
+						context.ref,
+					);
+					retainTaskOutput(context.ref.ownerId, context.ref.taskId, located.text, located.path);
+					const bytes = Buffer.from(located.text);
 					context.reportActivity({
 						reportId: "terminal-output",
 						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },

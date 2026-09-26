@@ -18,6 +18,12 @@ import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runn
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates } from "../shared/model-fallback.js";
+import {
+	captureSingleOutputSnapshot,
+	formatSavedOutputReference,
+	resolveSingleOutput,
+	type SingleOutputSnapshot,
+} from "../shared/single-output.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
 import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 
@@ -236,6 +242,7 @@ export async function runSingleInProcess(
 			"Subagent auto-selected model could not be resolved before execution. Retry explicitly with the current catalog.",
 		);
 	const orchestrationContext = workflowOrchestrationContext(options);
+	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 
 	const parent: ParentContext = {
 		path: options.runId,
@@ -480,6 +487,7 @@ export async function runSingleInProcess(
 		result.envelope = delivered.envelope;
 		result.finalOutput = delivered.envelope;
 	}
+	persistRequestedOutput(result, options, outputSnapshot);
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],
 		details: {
@@ -491,6 +499,21 @@ export async function runSingleInProcess(
 	};
 	options.onUpdate?.(update);
 	return result;
+}
+
+function persistRequestedOutput(
+	result: SingleResult,
+	options: RunSyncOptions,
+	outputSnapshot: SingleOutputSnapshot | undefined,
+): void {
+	result.outputMode = options.outputMode ?? "inline";
+	if (!options.outputPath || result.status !== "ok") return;
+	const resolved = resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
+	result.savedOutputPath = resolved.savedPath;
+	result.outputSaveError = resolved.saveError;
+	if (!resolved.savedPath) return;
+	result.outputReference = formatSavedOutputReference(resolved.savedPath, resolved.fullOutput);
+	result.finalOutput = result.outputMode === "file-only" ? result.outputReference.message : resolved.fullOutput;
 }
 
 export async function runSync(
