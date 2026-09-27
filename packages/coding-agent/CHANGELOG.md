@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-09-27
+
+### Fixed
+
+- Long sessions no longer leak one open file per bash command. A finished command now releases its output file, an output file with no output is deleted, and output files left behind by Atomic processes that have exited are removed. On macOS, where a child process cannot receive a file descriptor numbered 10240 or higher, the leak eventually made every bash call and spawn fail with `Bad file descriptor`; if a spawn still fails that way, the error now names the cause ([#3313](https://github.com/bastani-inc/atomic/issues/3313)).
+- Resuming a run that failed in a `ctx.tool` call now works when the call ran in parallel with other tools. Siblings that were cancelled or also threw when the run failed are run again on resume, in any order, instead of failing with `replay topology mismatch` or `unfinished or missing completed tool checkpoint`. A resume rejected by changed code no longer runs the failed tool or makes the run unresumable, including after Atomic restarts ([#3314](https://github.com/bastani-inc/atomic/issues/3314)).
+- `model: "auto"` routing no longer ignores benchmark results when fewer than four models are available. Each model's results are now ranked against every model in the evals catalog rather than only the models you can route to, so with just two or three models (for example Opus and Haiku) the stronger model is no longer outranked on price alone, and a model scores the same however many models are enabled.
+
 ## [0.9.23-alpha.1] - 2026-09-27
 
 ### Fixed

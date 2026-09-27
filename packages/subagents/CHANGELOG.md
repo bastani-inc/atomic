@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-09-27
+
+### Fixed
+
+- `model: "auto"` routing no longer ignores benchmark results when fewer than four models are available. Each model's results are now ranked against every model in the evals catalog rather than only the models you can route to, so with just two or three models (for example Opus and Haiku) the stronger model is no longer outranked on price alone, and a model scores the same however many models are enabled.
+
 ## [0.9.23-alpha.1] - 2026-09-27
 
 ### Fixed
