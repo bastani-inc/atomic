@@ -16,13 +16,25 @@ pub(super) fn sweep_orphaned_spools_once() {
 	});
 }
 
+fn is_digits(text: &str) -> bool {
+	!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Owner PID of a complete spool name,
+/// `atomic-command-<pid>-task-<environment>-<owner>-<task>.<nanos>-<32 hex>`.
+/// Any other name, even one sharing the prefix, is not a spool this sweep owns.
 fn spool_owner_pid(name: &str) -> Option<u32> {
-	let rest = name.strip_prefix(SPOOL_PREFIX)?;
-	let digits = rest.split_once('-')?.0;
-	if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-		return None;
-	}
-	digits.parse().ok()
+	let (pid, rest) = name.strip_prefix(SPOOL_PREFIX)?.split_once('-')?;
+	let (task, suffix) = rest.strip_prefix("task-")?.split_once('.')?;
+	let (timestamp, random) = suffix.split_once('-')?;
+	let task_parts: Vec<&str> = task.split('-').collect();
+	let is_spool = is_digits(pid)
+		&& task_parts.len() == 3
+		&& task_parts.iter().all(|part| is_digits(part))
+		&& is_digits(timestamp)
+		&& random.len() == 32
+		&& random.bytes().all(|byte| byte.is_ascii_hexdigit());
+	if is_spool { pid.parse().ok() } else { None }
 }
 
 /// Seconds since the epoch at which `pid` started, or `None` when no live process has that PID.
@@ -85,12 +97,28 @@ mod tests {
 	use super::*;
 	use std::time::SystemTime;
 
+	fn spool_name(pid: u32) -> String {
+		let base = std::path::PathBuf::from(format!("{SPOOL_PREFIX}{pid}-task-7-0-3"));
+		let spool = super::super::spool_candidate_at(&base, 123_456_789).unwrap();
+		spool.file_name().unwrap().to_str().unwrap().to_owned()
+	}
+
 	#[test]
 	fn owner_pid_is_parsed_only_from_spool_names() {
-		assert_eq!(spool_owner_pid("atomic-command-4242-task-1.123-abc"), Some(4242));
+		let random = "0123456789abcdef0123456789abcdef";
+		assert_eq!(spool_owner_pid(&spool_name(4242)), Some(4242));
+		assert_eq!(
+			spool_owner_pid(&format!("atomic-command-4242-task-1-2-3.9-{random}")),
+			Some(4242)
+		);
 		assert_eq!(spool_owner_pid("atomic-command-frozen.123-abc"), None);
 		assert_eq!(spool_owner_pid("atomic-command--task"), None);
 		assert_eq!(spool_owner_pid("other-4242-task"), None);
+		assert_eq!(spool_owner_pid("atomic-command-4242-notes.txt"), None);
+		assert_eq!(spool_owner_pid("atomic-command-4242-task-1-2-3"), None);
+		assert_eq!(spool_owner_pid("atomic-command-4242-task-1-2-3.9-abc"), None);
+		assert_eq!(spool_owner_pid(&format!("atomic-command-4242-task-1-2.9-{random}")), None);
+		assert_eq!(spool_owner_pid(&format!("atomic-command-4242-task-1-2-3.9-{random}.bak")), None);
 	}
 
 	#[test]
@@ -115,20 +143,23 @@ mod tests {
 			.unwrap();
 		let dead_pid = child.id();
 		child.wait().unwrap();
-		let dead = directory.join(format!("{SPOOL_PREFIX}{dead_pid}-task-0.1-ff"));
-		let own = directory.join(format!("{SPOOL_PREFIX}{}-task-0.1-ff", std::process::id()));
+		let dead = directory.join(spool_name(dead_pid));
+		let own = directory.join(spool_name(std::process::id()));
 		let unrelated = directory.join("atomic-command-frozen.1-ff");
-		for path in [&dead, &own, &unrelated] {
+		let foreign = directory.join(format!("{SPOOL_PREFIX}{dead_pid}-notes.txt"));
+		for path in [&dead, &own, &unrelated, &foreign] {
 			fs::write(path, b"output").unwrap();
 		}
 		let removed = sweep_orphaned_spools(&directory, std::process::id());
 		let dead_exists = dead.exists();
 		let own_exists = own.exists();
 		let unrelated_exists = unrelated.exists();
+		let foreign_exists = foreign.exists();
 		fs::remove_dir_all(&directory).unwrap();
 		assert_eq!(removed, 1);
 		assert!(!dead_exists, "spool of an exited process was kept");
 		assert!(own_exists, "sweep removed the current process's spool");
 		assert!(unrelated_exists, "sweep removed a file it does not own");
+		assert!(foreign_exists, "sweep removed a non-spool file of an exited PID");
 	}
 }
