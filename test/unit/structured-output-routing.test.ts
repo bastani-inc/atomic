@@ -170,7 +170,7 @@ test("ordinary entrypoint uses configured provider/auth, complete state, one sch
 		assert.equal(options.maxRetries, 0);
 		assert.equal(options.transport, "sse");
 		assert.equal(options.toolChoice, "auto");
-		assert.equal(options.maxTokens, 4096);
+		assert.equal("maxTokens" in options, false);
 		assert.equal(options.timeoutMs, undefined);
 		assert.deepEqual(
 			JSON.parse(context.messages.find((message: { role: string }) => message.role === "user").content),

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Schema-backed workflow stages and `structured_output` results are no longer capped at 4,096 output tokens. Large typed results such as plans, inventories and multi-item reviews can use the selected model's full output limit instead of failing with `Structured output repair exhausted` or coming back shortened ([#3309](https://github.com/bastani-inc/atomic/issues/3309)).
+
 ## [0.9.21] - 2026-09-26
 
 ### Added

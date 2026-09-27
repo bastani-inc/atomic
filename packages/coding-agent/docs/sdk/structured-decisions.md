@@ -85,7 +85,7 @@ Classifier response bodies are limited by the provider operation. Atomic validat
 
 ## Cancellation and failures
 
-Structured decisions have no built-in wall-clock timeout. Slow authentication, inference, repairs, and chat fallback can finish without the former 30-second cutoff. Pass an `AbortSignal` to cancel; SDK callers that need their own deadline can supply `signal: AbortSignal.timeout(milliseconds)`. Cancellation rejects the whole call immediately, even if a provider ignores its signal. Ordinary output is still bounded by `maxTokens`, default 4096.
+Structured decisions have no built-in wall-clock timeout. Slow authentication, inference, repairs, and chat fallback can finish without the former 30-second cutoff. Pass an `AbortSignal` to cancel; SDK callers that need their own deadline can supply `signal: AbortSignal.timeout(milliseconds)`. Cancellation rejects the whole call immediately, even if a provider ignores its signal. Output has no fixed token cap: a chat decision may use the selected model's full output limit. Pass a positive integer `maxTokens` only when you want a smaller bound.
 
 The `timeoutMs` request option and `DEFAULT_STRUCTURED_OUTPUT_TIMEOUT_MS` export have been removed. Remove these from existing integrations and use `signal` for caller-owned cancellation. Provider transport, credential-preparation and enclosing tool-request limits remain independent; removing the decision timeout does not disable them.
 

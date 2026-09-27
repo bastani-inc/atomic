@@ -34,8 +34,6 @@ export type {
 	StructuredOutputResult,
 } from "./types.js";
 
-const DEFAULT_MAX_TOKENS = 4096;
-
 const DEFAULT_DECISION_RETRY: RetryPolicy = Object.freeze({ enabled: true, maxRetries: 3, baseDelayMs: 2000 });
 
 const STRUCTURED_DECISION_POLICY =
@@ -43,9 +41,10 @@ const STRUCTURED_DECISION_POLICY =
 	"Do not widen the supplied candidates, constraints or authorization. " +
 	"Make only the requested semantic judgments; code owns exact values, validation and execution.";
 
-function positiveInteger(value: number, name: string): void {
+function validateMaxTokensOverride(value: number | undefined): void {
+	if (value === undefined) return;
 	if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
-		throw new Error(`Structured output ${name} must be a positive integer no greater than 2147483647.`);
+		throw new Error("Structured output maxTokens must be a positive integer no greater than 2147483647.");
 	}
 }
 
@@ -130,7 +129,7 @@ async function inferChat<T extends TSchema>(
 							maxRetries: 0,
 							transport: "sse",
 							toolChoice: "auto",
-							maxTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+							...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
 						},
 					)
 					.result(),
@@ -278,7 +277,7 @@ export async function generateStructuredOutput<T extends TSchema>(
 	const current = request.currentModel;
 	if (current && (current.id === "auto" || !isModelType(current, "chat")))
 		throw new Error("Structured output currentModel must be a concrete chat model.");
-	positiveInteger(request.maxTokens ?? DEFAULT_MAX_TOKENS, "maxTokens");
+	validateMaxTokensOverride(request.maxTokens);
 	validateState(request.state);
 	if (!request.instructions?.trim()) throw new Error("Structured output requires complete judgment instructions.");
 	const snapshot = {
@@ -377,7 +376,7 @@ async function inferDecision<T extends TSchema>(
 	fallbackModel?: Model<Api>,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	request.signal?.throwIfAborted();
-	positiveInteger(request.maxTokens ?? DEFAULT_MAX_TOKENS, "maxTokens");
+	validateMaxTokensOverride(request.maxTokens);
 	validateState(request.state);
 	if (!request.instructions?.trim()) throw new Error("Structured output requires complete judgment instructions.");
 	const questions = jsonSnapshot(request.classifier.questions);
