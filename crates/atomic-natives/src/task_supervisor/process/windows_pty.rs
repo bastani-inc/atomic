@@ -62,13 +62,13 @@ impl PseudoConsole {
 		let size = dimensions(columns, rows)?;
 		let (stdin_read, stdin_write) = pipe()?;
 		let (stdout_read, stdout_write) = pipe()?;
-		let output_command = command.clone();
+		let output_writer = DetachedOutputWriter::register(command);
 		let reader =
 			std::thread::Builder::new().name("task-conpty-output".into()).spawn(move || {
 				let mut reader = PipeReader(stdout_read);
 				let mut eof = false;
 				while !eof {
-					drain_pipe(&mut reader, &output_command, &mut eof)?;
+					drain_pipe(&mut reader, output_writer.command(), &mut eof)?;
 					if !eof {
 						std::thread::sleep(PROCESS_POLL);
 					}

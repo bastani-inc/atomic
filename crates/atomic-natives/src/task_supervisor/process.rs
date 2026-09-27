@@ -336,7 +336,7 @@ impl Actor {
 		let runner = RunnerLease { cap: cap.clone() };
 		let spawn = std::thread::Builder::new().name("task-command".into()).spawn(move || {
 			actor.run_command(&runner, &resource);
-			resource.output.lock().unwrap().release_file();
+			resource.output.lock().unwrap().settle();
 			resource.finished.store(true, Ordering::Release);
 		});
 		match spawn {
@@ -858,6 +858,31 @@ thread_local! {
 	static TEST_SPOOL_CANDIDATE: std::cell::Cell<SpoolCandidate> = const { std::cell::Cell::new(spool_candidate) };
 }
 
+/// Registers an output writer thread that can outlive the command worker, such as
+/// the ConPTY reader. The spool stays open until every such writer has stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) struct DetachedOutputWriter(Arc<CommandTask>);
+#[cfg_attr(not(windows), allow(dead_code))]
+impl DetachedOutputWriter {
+	pub(super) fn register(command: &Arc<CommandTask>) -> Self {
+		command.output.lock().unwrap().detached_writers += 1;
+		Self(command.clone())
+	}
+	pub(super) fn command(&self) -> &CommandTask {
+		&self.0
+	}
+}
+impl Drop for DetachedOutputWriter {
+	fn drop(&mut self) {
+		self
+			.0
+			.output
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.detached_writer_stopped();
+	}
+}
+
 /// Raw bytes retain original offsets; consumers carry incomplete UTF-8 while decoding.
 struct OutputStore {
 	path: PathBuf,
@@ -871,6 +896,8 @@ struct OutputStore {
 	spilled: bool,
 	file: Option<File>,
 	released: bool,
+	settled: bool,
+	detached_writers: usize,
 	disk_len: u64,
 	overflow: bool,
 	unavailable: bool,
@@ -910,6 +937,8 @@ impl OutputStore {
 			spilled: false,
 			file: None,
 			released: false,
+			settled: false,
+			detached_writers: 0,
 			disk_len: 0,
 			unavailable: false,
 			spool_error: None,
@@ -1018,6 +1047,19 @@ impl OutputStore {
 		self.released = true;
 		if self.disk_len == 0 {
 			let _ = std::fs::remove_file(&self.path);
+		}
+	}
+	/// The command worker has settled. The spool closes once no detached writer can still append.
+	fn settle(&mut self) {
+		self.settled = true;
+		if self.detached_writers == 0 {
+			self.release_file();
+		}
+	}
+	fn detached_writer_stopped(&mut self) {
+		self.detached_writers -= 1;
+		if self.settled && self.detached_writers == 0 {
+			self.release_file();
 		}
 	}
 	fn read_disk(&mut self, start: u64, bytes: &mut [u8]) -> Option<io::Result<()>> {
@@ -1856,6 +1898,26 @@ mod tests {
 		store.release_file();
 		assert!(!path.exists(), "empty settled spool was kept on disk");
 		assert!(store.page(0, 4).chunks.is_empty());
+	}
+
+	#[test]
+	fn settled_spool_stays_open_until_detached_writers_stop_3313() {
+		let path =
+			std::env::temp_dir().join(format!("atomic-output-late-writer-{}", std::process::id()));
+		let mut store = OutputStore::new(path, 4, 8, 20);
+		store.background();
+		store.append(b"abc");
+		store.detached_writers += 1;
+		store.settle();
+		assert!(store.file.is_some(), "spool closed while a detached writer could still append");
+		store.append(b"def");
+		store.detached_writer_stopped();
+		assert!(store.file.is_none(), "spool stayed open after its last writer stopped");
+		let path = store.path.clone();
+		assert_eq!(std::fs::read(&path).unwrap(), b"abcdef");
+		assert_eq!(store.page(0, 6).chunks[0].bytes.as_ref(), b"abcdef");
+		drop(store);
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 
 	#[test]
