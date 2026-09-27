@@ -709,3 +709,68 @@ describe("renderStatusList — populated", () => {
 		}
 	});
 });
+
+// #2565: the list reads the cue from whichever source it was given, and the
+// persisted path can only be given a map, because it renders with no store.
+describe("resume-eligible failures in the list (#2565)", () => {
+	const theme = deriveGraphTheme({});
+	const failed = (id: string): RunSnapshot =>
+		makeRun({ id, name: "review-and-merge", status: "failed", startedAt: 1_000, endedAt: 5_000 });
+
+	test("an eligible failure reads failed · resumable in the warning tone; a terminal one stays red", () => {
+		const run = failed("aaaaaaaa-1111-4111-8111-111111111111");
+		const eligible = renderStatusList([run], { theme, resumeEligible: () => true });
+		assert.match(stripAnsi(eligible), /✗ failed · resumable/);
+		assert.ok(
+			eligible.includes(`${hexToAnsi(theme.warning)}✗ failed · resumable`),
+			"warning tone on the trailing label",
+		);
+
+		const terminal = renderStatusList([run], { theme, resumeEligible: () => false });
+		assert.match(stripAnsi(terminal), /✗ failed(?! ·)/);
+		assert.ok(terminal.includes(`${hexToAnsi(theme.error)}✗ failed`), "error tone when nothing can be resumed");
+	});
+
+	test("the emit-time map wins over the live lookup, and a payload with neither renders as before", () => {
+		const run = failed("bbbbbbbb-2222-4222-8222-222222222222");
+		const mapped = renderStatusList([run], {
+			theme,
+			resumeEligibility: { [run.id]: true },
+			resumeEligible: () => false,
+		});
+		assert.match(stripAnsi(mapped), /✗ failed · resumable/);
+		// A `/workflow status` entry written before this existed carries neither.
+		assert.match(stripAnsi(renderStatusList([run], { theme })), /✗ failed(?! ·)/);
+	});
+
+	test("a system-owned budget stop keeps its own word with the cue", () => {
+		const run: RunSnapshot = {
+			...makeRun({ id: "cccccccc-3333-4333-8333-333333333333", status: "running", startedAt: 1_000 }),
+			result: { status: "budget_exceeded" },
+			budgetState: { systemOwnedStop: true } as RunSnapshot["budgetState"],
+			// The disposition is what makes this an active block rather than a
+			// still-running run; without it effectiveRunStatus stays "running".
+			failureDisposition: "active_blocked",
+			failureRecoverability: "recoverable",
+			resumable: true,
+			blockedAt: 3_000,
+		};
+		assert.match(
+			stripAnsi(renderStatusList([run], { theme, resumeEligible: () => true })),
+			/budget_exceeded · resumable/,
+		);
+	});
+
+	test("statuses that cannot carry the cue are untouched, whatever the lookup says", () => {
+		for (const [status, expected] of [
+			["completed", /✓ completed/],
+			["running", /● running/],
+			["killed", /⊘ killed/],
+		] as const) {
+			const run = makeRun({ id: `dddddddd-4444-4444-8444-44444444444${status.length}`, status, endedAt: 9_000 });
+			const plain = stripAnsi(renderStatusList([run], { theme, resumeEligible: () => true }));
+			assert.match(plain, expected, status);
+			assert.doesNotMatch(plain, /resumable/, status);
+		}
+	});
+});

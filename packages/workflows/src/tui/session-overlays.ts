@@ -22,6 +22,7 @@
  *  - pi docs/tui.md  Mount points and return contracts
  */
 
+import { createResumableRunOutcomeCache } from "../durable/resume-outcome-eligibility.js";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -84,6 +85,10 @@ export function openSessionPicker(
 		let pickerRevision = 0;
 
 		const resumeCandidateCache = createSessionPickerResumeCandidateCache();
+		// Built for every intent, not just resume: the connect picker colours the
+		// same rows and needs the same answer (#2565). Both caches key on the
+		// local picker revision, so one store change costs one probe per run.
+		const resumeOutcomeCache = createResumableRunOutcomeCache();
 
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,
@@ -125,7 +130,9 @@ export function openSessionPicker(
 			return {
 				render: (width: number) => {
 					const rows = selectRows();
-					return renderSessionPicker({ width, theme, rows, state, allRuns: store.runs() });
+					const liveRuns = store.runs();
+					const resumable = resumeOutcomeCache({ runs: liveRuns, version: pickerRevision });
+					return renderSessionPicker({ width, theme, rows, state, allRuns: liveRuns, resumable });
 				},
 				handleInput: (data: string): boolean => {
 					const rows = selectRows();

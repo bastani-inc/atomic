@@ -30,6 +30,7 @@ import { renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
+import { runOutcomePresentation, runOutcomeToneColor } from "./run-outcome-presentation.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -198,7 +199,13 @@ function renderThemed(
 
 	out.push(...renderDetailHintRows(detail, width - 2, theme));
 
-	const badgeText = badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
+	// The box re-primes its border colour after the title, so each badge can
+	// carry the tone stateBadges chose for it; before #2565 the colour was
+	// computed and then dropped here, and every badge took the accent.
+	const badgeText =
+		badges.length > 0
+			? `  ${badges.map((b) => (b.fg ? `${hexToAnsi(b.fg)}${b.text}${RESET}` : b.text)).join("  ")}`
+			: "";
 	return renderRoundedBox({
 		title: `RUN ${detail.name}${badgeText}`,
 		bodyLines: out,
@@ -447,12 +454,46 @@ function stageActivityString(stage: StageSnapshot, now: number): string | undefi
 // State badges + plain-text equivalents
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this detail's outcome reads as resumable.
+ *
+ * A detail written before `resumeEligible` existed carries only the engine's
+ * claim, and it is re-rendered from the session file long after the store that
+ * could answer the question is gone. Such a detail falls back to the rule this
+ * surface used then: the claim, *and* a status that could carry the cue. The
+ * status guard is not optional. Without it a completed or killed run whose
+ * claim happens to be true would start offering `/workflow resume` in every
+ * restored session, which the old rule never did (#2565 review).
+ */
+function detailResumeEligible(detail: RunDetail): boolean {
+	return detail.resumeEligible ?? (detail.resumable === true && CUE_CAPABLE_DETAIL_STATUSES.has(detail.status));
+}
+
+const CUE_CAPABLE_DETAIL_STATUSES: ReadonlySet<RunDetail["status"]> = new Set(["crashed", "failed", "blocked"]);
+
+/** The three outcomes that can carry the cue, through the shared table; glyphs stay this surface's own. */
+function outcomeBadge(
+	detail: RunDetail,
+	glyph: string,
+): { text: string; tone: ReturnType<typeof runOutcomePresentation>["tone"] } {
+	const presentation = runOutcomePresentation({
+		status: detail.status,
+		resumable: detailResumeEligible(detail),
+		budgetExceeded: detail.budgetExceeded === true,
+	});
+	return { text: `${glyph} ${presentation.label}`, tone: presentation.tone };
+}
+
 function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 	switch (detail.status) {
 		case "running":
 			return [{ text: "● running", fg: theme.warning }];
 		case "crashed":
-			return [{ text: detail.resumable === true ? "✗ crashed · resumable" : "✗ crashed", fg: theme.error }];
+		case "blocked":
+		case "failed": {
+			const badge = outcomeBadge(detail, detail.status === "blocked" ? "↑" : "✗");
+			return [{ text: badge.text, fg: runOutcomeToneColor(badge.tone, theme) }];
+		}
 		case "paused":
 			return [{ text: "❚❚ paused", fg: theme.warning }];
 		case "completed":
@@ -461,10 +502,6 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 			return [{ text: "⊘ skipped", fg: theme.dim }];
 		case "cancelled":
 			return [{ text: "⊘ cancelled", fg: theme.dim }];
-		case "blocked":
-			return [{ text: "↑ blocked", fg: theme.dim }];
-		case "failed":
-			return [{ text: "✗ failed", fg: theme.error }];
 		case "killed":
 			return [{ text: "⊘ killed", fg: theme.dim }];
 		default:
@@ -477,7 +514,9 @@ function stateLabel(detail: RunDetail): string {
 		case "running":
 			return "● running";
 		case "crashed":
-			return detail.resumable === true ? "✗ crashed · resumable" : "✗ crashed";
+		case "blocked":
+		case "failed":
+			return outcomeBadge(detail, detail.status === "blocked" ? "↑" : "✗").text;
 		case "paused":
 			return "❚❚ paused";
 		case "completed":
@@ -486,10 +525,6 @@ function stateLabel(detail: RunDetail): string {
 			return "⊘ skipped";
 		case "cancelled":
 			return "⊘ cancelled";
-		case "blocked":
-			return "↑ blocked";
-		case "failed":
-			return "✗ failed";
 		case "killed":
 			return "⊘ killed";
 		default:
@@ -523,10 +558,11 @@ function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): st
 }
 
 function renderDetailHintRows(detail: RunDetail, width: number, theme?: GraphTheme): string[] {
-	const resumable =
-		(detail.status === "paused" && detail.resumable !== false) ||
-		(detail.resumable === true &&
-			(detail.status === "crashed" || detail.status === "failed" || detail.status === "blocked"));
+	// A paused run continues on the claim, as before; a failed, blocked or
+	// crashed run offers resume only when the stored eligibility says so, so the
+	// hint and the badge above can never disagree, and a run with no restart
+	// point gets "inspect retained state" rather than a resume that would refuse.
+	const resumable = (detail.status === "paused" && detail.resumable !== false) || detailResumeEligible(detail);
 	const inspectOnly =
 		detail.ownerActiveElsewhere === true ||
 		(detail.status === "crashed" && !resumable) ||

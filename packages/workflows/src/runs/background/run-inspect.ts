@@ -8,6 +8,7 @@
  * cross-ref: spec §5.5
  */
 
+import { isBudgetExceededStop, isResumableRunOutcome } from "../../durable/resume-outcome-eligibility.js";
 import {
 	hasActiveTaskCheckpointControl,
 	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
@@ -61,7 +62,22 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly failureDisposition?: RunSnapshot["failureDisposition"];
 	readonly failedStageId?: string;
 	readonly failedToolNodeId?: string;
+	/** The engine's or the author's own claim, copied from the snapshot. Not what decides the cue. */
 	readonly resumable?: boolean;
+	/**
+	 * Whether the outcome reads as resumable: the shared resume rule and a usable
+	 * restart point, as of when this detail was built (#2565). Stored because the
+	 * detail is persisted into the session and re-rendered without a store to
+	 * probe. Presentation reads this and never `resumable` above.
+	 */
+	readonly resumeEligible?: boolean;
+	/**
+	 * The engine-owned budget rail, captured with the eligibility above, because
+	 * deciding it needs `budgetState` and this struct carries only `result`.
+	 * Without it the detail reads `blocked` where every other surface reads
+	 * `budget_exceeded` (#2565 review).
+	 */
+	readonly budgetExceeded?: boolean;
 	readonly retryAfterMs?: number;
 	/** Actionable guidance for a snapshot hydrated from durable storage. */
 	readonly resumeGuidance?: string;
@@ -143,6 +159,8 @@ export function inspectRun(
 		failedStageId: copy.failedStageId,
 		failedToolNodeId: copy.failedToolNodeId,
 		resumable: copy.resumable,
+		resumeEligible: isResumableRunOutcome(copy),
+		budgetExceeded: isBudgetExceededStop(copy),
 		retryAfterMs: copy.retryAfterMs,
 		blockedAt: copy.blockedAt,
 		...(strandedRoot ? { strandedRoot: true as const } : {}),

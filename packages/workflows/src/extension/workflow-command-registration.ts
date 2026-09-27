@@ -1,3 +1,4 @@
+import { resolveResumeEligibility } from "../durable/resume-outcome-eligibility.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
@@ -180,6 +181,7 @@ async function workflowSlashHandler(
 			kind: "status",
 			runs: visibleRuns,
 			indicatorStatuses: resolveRunIndicatorStatuses(visibleRuns, capturedRuns),
+			resumeEligibility: resolveResumeEligibility(visibleRuns),
 		});
 		return;
 	}

@@ -167,6 +167,7 @@ describe("targeted durable workflow inspection", () => {
 			if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
 			assert.equal(result.detail.status, "crashed");
 			assert.equal(result.detail.resumable, true);
+			assert.equal(result.detail.resumeEligible, true);
 			assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
 			assert.deepEqual(
 				result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
@@ -271,6 +272,7 @@ describe("targeted durable workflow inspection", () => {
 		if (live.kind === "found") {
 			assert.equal(live.detail.status, "running");
 			assert.equal(live.detail.resumable, false);
+			assert.equal(live.detail.resumeEligible, false);
 			assert.match(live.detail.resumeGuidance ?? "", /actively running in another Atomic session/);
 		}
 		assert.equal(terminal.kind, "found");

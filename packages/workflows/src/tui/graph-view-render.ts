@@ -1,3 +1,4 @@
+import { createResumableRunOutcomeCache } from "../durable/resume-outcome-eligibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
@@ -48,6 +49,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
 	private detailFrame: ToolDetailFrame | null = null;
+	/**
+	 * Resume eligibility for the header pill (#2565), cached per store revision:
+	 * this pane repaints on every store change and every key, and the check
+	 * touches artifact paths and the durable backend.
+	 */
+	private readonly resumeEligibility = createResumableRunOutcomeCache();
 	constructor(opts: GraphViewOpts) {
 		super(opts);
 		this.graphLayout = new GraphViewLayout({
@@ -80,7 +87,10 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const run = this._getCurrentRun();
 		if (!run) return [`${hexToAnsi(this.graphTheme.dim)}no active workflow${RESET}`];
 		const displayStages = this._displayStages(run);
-		const headerLines = renderHeader({ ...run, stages: displayStages }, { width, theme: this.graphTheme });
+		const headerLines = renderHeader(
+			{ ...run, stages: displayStages },
+			{ width, theme: this.graphTheme, resumable: this._runIsResumable(run) },
+		);
 		const counts = this._counts(displayStages);
 		const trailer =
 			`${hexToAnsi(this.graphTheme.dim)}` +
@@ -239,7 +249,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	private _renderHeader(width: number): string[] {
 		const run = this._currentRenderRun();
-		if (run) return renderHeader({ ...run, stages: this._displayStages(run) }, { width, theme: this.graphTheme });
+		if (run)
+			return renderHeader(
+				{ ...run, stages: this._displayStages(run) },
+				{ width, theme: this.graphTheme, resumable: this._runIsResumable(run) },
+			);
 
 		const t = this.graphTheme;
 		const muted = hexToAnsi(t.textMuted);
@@ -252,6 +266,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			`${chromeBg} ${RESET}${mid}${chromeBg}  ${muted}idle${RESET}${filler}${" ".repeat(2)}${RESET}`,
 			`${chromeBg} ${RESET}${bot}${chromeBg}${" ".repeat(6 + fillerVisible)}${" ".repeat(2)}${RESET}`,
 		].map((line) => fillBackground(line, width, chromeBg));
+	}
+
+	/** Eligibility for the header, or false before the pane has cached a snapshot. */
+	private _runIsResumable(run: RunSnapshot): boolean {
+		const snapshot = this.currentSnapshot;
+		return snapshot === null ? false : this.resumeEligibility(snapshot)(run);
 	}
 
 	private _renderBody(width: number, top: number, rows: number, _contentRows: number): string[] {

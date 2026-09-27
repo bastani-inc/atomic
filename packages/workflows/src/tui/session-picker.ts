@@ -20,6 +20,8 @@
 
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
+import { isBudgetExceededStop, type ResumableRunOutcomeLookup } from "../durable/resume-outcome-eligibility.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
@@ -28,6 +30,7 @@ import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type IdentifierLine, wrapIdentifierLines } from "./run-identity-rows.js";
+import { runOutcomePresentation, runOutcomeToneColor } from "./run-outcome-presentation.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -153,6 +156,8 @@ export interface SessionPickerRenderOpts {
 	now?: number;
 	/** Point-in-time/live run collection used to attribute hidden child prompts. */
 	allRuns?: readonly RunSnapshot[];
+	/** Resume eligibility per run (#2565), so a resumable stop reads in the warning tone here too. */
+	resumable?: ResumableRunOutcomeLookup;
 }
 
 const TITLE = "Connect to workflow run";
@@ -263,13 +268,26 @@ function renderRunRow(
 	theme: GraphTheme,
 	now: number,
 	allRuns: readonly RunSnapshot[],
+	resumable: boolean,
 ): string[] {
 	const border = hexToAnsi(theme.border);
 	const panelBg = hexBg(theme.bg);
 	const run = row.run;
 	const indicatorStatus = isQuitRun(run) ? run.status : runIndicatorStatus(run, allRuns);
 	const icon = statusIcon(indicatorStatus);
-	const iconColor = hexToAnsi(statusColor(indicatorStatus, theme));
+	// An eligible stop takes the shared tone so this picker agrees with the
+	// status list and the run detail; every other status keeps the colour map
+	// that stage and tool nodes share (#2565).
+	const outcomeStatus = effectiveRunStatus(run);
+	const iconColor = hexToAnsi(
+		outcomeStatus === "failed" || outcomeStatus === "blocked"
+			? runOutcomeToneColor(
+					runOutcomePresentation({ status: outcomeStatus, resumable, budgetExceeded: isBudgetExceededStop(run) })
+						.tone,
+					theme,
+				)
+			: statusColor(indicatorStatus, theme),
+	);
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
@@ -367,7 +385,9 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 			prevBucket = row.bucket;
 		}
 		const absIndex = Math.max(0, start) + i;
-		lines.push(...renderRunRow(row, absIndex === sel, inner, theme, now, allRuns));
+		lines.push(
+			...renderRunRow(row, absIndex === sel, inner, theme, now, allRuns, opts.resumable?.(row.run) === true),
+		);
 	}
 	lines.push(renderBlankRow(inner, theme));
 	lines.push(renderBottomBorder(width, theme));

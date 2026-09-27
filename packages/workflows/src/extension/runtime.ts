@@ -12,8 +12,8 @@
 
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { type DurabilityWarningSink, getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import { resolveResumeStage } from "../durable/resume-restart-point.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
-import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type CancellationRegistry, currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
@@ -206,66 +206,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		};
 	}
 
-	function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {
-		return stage.id === identifier || stage.name === identifier;
-	}
-
-	function stageLabel(stage: RunSnapshot["stages"][number]): string {
-		return `${stage.name} (${stage.id})`;
-	}
-
-	function resolveUniqueResumeStage(
-		source: RunSnapshot,
-		identifier: string,
-	): { ok: true; stage: RunSnapshot["stages"][number] } | { ok: false; message: string } {
-		const exactId = source.stages.find((stage) => stage.id === identifier);
-		if (exactId !== undefined) return { ok: true, stage: exactId };
-
-		const exactNames = source.stages.filter((stage) => stage.name === identifier);
-		if (exactNames.length === 1) return { ok: true, stage: exactNames[0]! };
-		if (exactNames.length > 1) {
-			return {
-				ok: false,
-				message: `insufficient_state: ambiguous stage identifier "${identifier}" matches: ${exactNames.map(stageLabel).join(", ")}`,
-			};
-		}
-
-		const matches = source.stages.filter((stage) => matchesResumeStageIdentifier(stage, identifier));
-		if (matches.length === 0)
-			return { ok: false, message: `insufficient_state: stage not found in source run ${source.id}: ${identifier}` };
-		if (matches.length > 1) {
-			return {
-				ok: false,
-				message: `insufficient_state: ambiguous stage identifier "${identifier}" matches: ${matches.map(stageLabel).join(", ")}`,
-			};
-		}
-		return { ok: true, stage: matches[0]! };
-	}
-
-	function resolveResumeStage(
-		source: RunSnapshot,
-		stageId?: string,
-	): { ok: true; stageId?: string; toolNodeId?: string } | { ok: false; message: string } {
-		const budgetExceededSource =
-			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
-		if (stageId !== undefined) {
-			const resolved = resolveUniqueResumeStage(source, stageId);
-			if (!resolved.ok) return { ok: false, message: resolved.message };
-			const stage = resolved.stage;
-			if (stage.status !== "failed" && !(budgetExceededSource && stage.id === source.failedStageId))
-				return { ok: false, message: `insufficient_state: stage ${stage.name} is ${stage.status}, not failed` };
-			return { ok: true, stageId: stage.id };
-		}
-		if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
-			return resolveToolResumeFrontier(source, getDurableBackend());
-		}
-		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
-		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
-		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-		if ((source.toolNodes?.length ?? 0) > 0) return resolveToolResumeFrontier(source, getDurableBackend());
-		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
-	}
-
 	async function resumeFailedRun(
 		sourceRunId: string,
 		stageId?: string,
@@ -295,7 +235,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (def === undefined) {
 			return { ok: false, reason: "workflow_not_found", message: `workflow_not_found: ${source.name}` };
 		}
-		const resolvedStage = resolveResumeStage(source, stageId);
+		const resolvedStage = resolveResumeStage(source, getDurableBackend(), stageId);
 		if (!resolvedStage.ok) {
 			return { ok: false, reason: "insufficient_state", message: resolvedStage.message };
 		}
