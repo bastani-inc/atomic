@@ -65,3 +65,24 @@ fn conpty_create_process_failure_closes_console_and_joins_output_worker() {
 	assert_eq!(Arc::strong_count(&command), 1, "failed setup detached its reader");
 	assert!(!path.exists());
 }
+#[test]
+fn conpty_reader_keeps_settled_spool_open_until_it_stops_3313() {
+	let path =
+		std::env::temp_dir().join(format!("atomic-conpty-late-writer-{}", std::process::id()));
+	let command = command_at(&path, CommandTerminal::Pty { columns: 80, rows: 24 });
+	command.output.lock().unwrap().background();
+	let spool = command.output.lock().unwrap().path.clone();
+	let mut console = None;
+	let stdin = PseudoConsole::create(&command, 80, 24, &mut console).unwrap();
+	command.output.lock().unwrap().settle();
+	let open_while_reading = command.output.lock().unwrap().file.is_some();
+	drop(stdin);
+	let closed = console.as_mut().unwrap().close_until(Instant::now() + PROCESS_DRAIN_GRACE);
+	drop(console);
+	let open_after_reader = command.output.lock().unwrap().file.is_some();
+	drop(command);
+	assert!(open_while_reading, "settled spool closed while the ConPTY reader could still append");
+	assert!(closed, "ConPTY reader did not stop");
+	assert!(!open_after_reader, "spool stayed open after the ConPTY reader stopped");
+	assert!(!spool.exists(), "dropped output store kept its spool");
+}
