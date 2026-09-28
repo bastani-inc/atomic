@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed the OpenCode Go Kimi K2.6 model overrides because models.dev deprecated that model; OpenCode Zen Kimi K2.6 keeps its overrides.
+
 ## [0.9.21] - 2026-09-26
 
 ### Changed
