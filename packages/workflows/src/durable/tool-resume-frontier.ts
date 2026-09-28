@@ -1,9 +1,14 @@
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 
 export type ToolResumeFrontier =
-	| { readonly ok: true; readonly toolNodeId: string }
+	| {
+			readonly ok: true;
+			readonly toolNodeId: string;
+			/** Parallel siblings that were cancelled or threw without a completed checkpoint; resume re-executes them. */
+			readonly retryToolNodes: readonly ToolNodeSnapshot[];
+	  }
 	| { readonly ok: false; readonly message: string };
 
 /** Fail closed before dispatch: a tool frontier must not turn missing completed work into live callbacks. */
@@ -93,11 +98,26 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		)
 			return fail(`unfinished or missing completed stage checkpoint ${stage.id}`);
 	}
+	const retryToolNodes: ToolNodeSnapshot[] = [];
 	for (const tool of tools) {
 		if (tool.id === frontier.id) continue;
 		const checkpoint = backend.getToolCheckpoint(source.id, tool.argsHash);
-		if (checkpoint === undefined || checkpoint.topology?.nodeId !== tool.id)
-			return fail(`unfinished or missing completed tool checkpoint ${tool.id}`);
+		if (checkpoint !== undefined && checkpoint.topology?.nodeId === tool.id) continue;
+		if (checkpoint === undefined && isRetryableSibling(tool)) {
+			retryToolNodes.push(tool);
+			continue;
+		}
+		return fail(`unfinished or missing completed tool checkpoint ${tool.id} (${tool.name}, ${tool.status})`);
 	}
-	return { ok: true, toolNodeId: frontier.id };
+	return { ok: true, toolNodeId: frontier.id, retryToolNodes };
+}
+
+function isRetryableSibling(tool: ToolNodeSnapshot): boolean {
+	return (
+		(tool.status === "cancelled" || tool.status === "failed") &&
+		tool.id === `tool:${tool.argsHash}` &&
+		Number.isInteger(tool.ordinal) &&
+		tool.ordinal >= 1 &&
+		tool.topologyState !== "unavailable"
+	);
 }

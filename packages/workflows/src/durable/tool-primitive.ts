@@ -94,6 +94,8 @@ export interface CreateToolPrimitiveInput {
 	readonly throwIfCancelled: () => void;
 	/** Optional run-level signal; combined with the per-node signal handed to `fn`. */
 	readonly signal?: AbortSignal;
+	/** True once a sibling's failure is failing the run; its cancelled calls then keep resume evidence. */
+	readonly runFailing?: () => boolean;
 	/**
 	 * Publish the per-node abort control so workflow quit/pause actions can abort
 	 * one in-flight node. The returned disposer runs when the node settles.
@@ -598,7 +600,11 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			// a `return_failure` outcome, so resume re-executes it at the same
 			// ordinal instead of replaying a cancellation as data. A targeted
 			// abort needs an inspection-only frontier in either failure mode.
-			if (returnFailure || (isWorkflowToolAbortError(cancellation) && cancellation.scope === "node")) {
+			if (
+				returnFailure ||
+				(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
+				input.runFailing?.() === true
+			) {
 				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 			}
 			const endedAt = Date.now();

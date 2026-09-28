@@ -39,8 +39,10 @@ If the agent is streaming and no `streamingBehavior` is specified, the command r
 
 Response:
 ```json
-{"id": "req-1", "type": "response", "command": "prompt", "success": true}
+{"id": "req-1", "type": "response", "command": "prompt", "success": true, "data": {"disposition": "started"}}
 ```
+
+`data.disposition` is `"handled"` if an extension command or input handler consumed the prompt, `"queued"` if Atomic queued it during a run or held it because the message queue was paused before its run began, or `"started"` if Atomic started a run for it. This describes the submitted prompt, not independent work started by an extension or a guarantee of completion. If it is `"handled"`, no run started for this prompt, so don't wait for `agent_end` or `agent_settled`.
 
 `success: true` means the prompt was accepted, queued, or handled immediately. `success: false` means the prompt was rejected before acceptance. Failures after acceptance are reported through the normal event and message stream, not as a second `response` for the same request id.
 
@@ -63,8 +65,10 @@ The `images` field is optional. Each image uses `ImageContent` format (same as `
 
 Response:
 ```json
-{"type": "response", "command": "steer", "success": true}
+{"type": "response", "command": "steer", "success": true, "data": {"disposition": "queued"}}
 ```
+
+`data.disposition` is `"handled"` if an input handler consumed this steer, or `"queued"` if Atomic queued it (including after a handler transformed it). It does not guarantee this message remains queued.
 
 See [set_steering_mode](#set_steering_mode) for controlling how steering messages are processed.
 
@@ -85,8 +89,10 @@ The `images` field is optional. Each image uses `ImageContent` format (same as `
 
 Response:
 ```json
-{"type": "response", "command": "follow_up", "success": true}
+{"type": "response", "command": "follow_up", "success": true, "data": {"disposition": "queued"}}
 ```
+
+`data.disposition` has the same `"handled"` or `"queued"` meaning as for `steer`, applied to this follow-up.
 
 See [set_follow_up_mode](#set_follow_up_mode) for controlling how follow-up messages are processed.
 

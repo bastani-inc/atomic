@@ -22,7 +22,7 @@ import { currentStageControlRegistry, type StageControlRegistry } from "../runs/
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { Store } from "../shared/store.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
-import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
+import type { RunSnapshot, ToolNodeSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type {
 	WorkflowBudget,
 	WorkflowDefinition,
@@ -245,7 +245,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	function resolveResumeStage(
 		source: RunSnapshot,
 		stageId?: string,
-	): { ok: true; stageId?: string; toolNodeId?: string } | { ok: false; message: string } {
+	):
+		| { ok: true; stageId?: string; toolNodeId?: string; retryToolNodes?: readonly ToolNodeSnapshot[] }
+		| { ok: false; message: string } {
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		if (stageId !== undefined) {
@@ -329,6 +331,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 						source,
 						...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),
 						...(resolvedStage.toolNodeId === undefined ? {} : { resumeFromToolNodeId: resolvedStage.toolNodeId }),
+						...(resolvedStage.retryToolNodes === undefined
+							? {}
+							: { retryToolNodes: resolvedStage.retryToolNodes }),
 					},
 				},
 			},

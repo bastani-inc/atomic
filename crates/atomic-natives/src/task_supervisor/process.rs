@@ -12,6 +12,7 @@ use std::{
 mod input;
 pub use input::*;
 mod resource;
+mod spool;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -210,6 +211,7 @@ impl Actor {
 		options: CommandResourceOptions,
 	) -> Door<TaskLease> {
 		poll_failed_processes();
+		spool::sweep_orphaned_spools_once();
 		let mut state = self.state.lock().unwrap();
 		let oi = state.owner(self.id, &owner.cap, "OwnerClosing")?;
 		if state.closing || state.owners[oi].state != "open" {
@@ -334,6 +336,7 @@ impl Actor {
 		let runner = RunnerLease { cap: cap.clone() };
 		let spawn = std::thread::Builder::new().name("task-command".into()).spawn(move || {
 			actor.run_command(&runner, &resource);
+			resource.output.lock().unwrap().release_file();
 			resource.finished.store(true, Ordering::Release);
 		});
 		match spawn {
@@ -425,7 +428,7 @@ impl Actor {
 					if let Some(env) = &command.intent.env {
 						spawn.envs(env.iter().map(|(key, value)| (key, value.process_text())));
 					}
-					let mut child = spawn.spawn()?;
+					let mut child = spawn.spawn().map_err(explain_spawn_error)?;
 					let stdin = child.stdin.take().unwrap();
 					let stdout = child.stdout.take();
 					let stderr = child.stderr.take();
@@ -713,6 +716,41 @@ fn process_group_gone(pid: libc::pid_t) -> io::Result<bool> {
 	let error = io::Error::last_os_error();
 	if error.raw_os_error() == Some(libc::ESRCH) { Ok(true) } else { Err(error) }
 }
+/// macOS `posix_spawn` refuses to hand a child any descriptor at or above
+/// `OPEN_MAX`, even though the process may still open descriptors past it.
+#[cfg(target_os = "macos")]
+const MACOS_SPAWN_FD_LIMIT: i32 = 10_240;
+/// Three stdio pipes, two ends each.
+#[cfg(unix)]
+const PIPE_STDIO_FDS: i32 = 6;
+#[cfg(unix)]
+fn open_max_spawn_error(error: &io::Error, lowest_free_fd: i32, limit: i32) -> Option<io::Error> {
+	if error.raw_os_error() != Some(libc::EBADF) || lowest_free_fd + PIPE_STDIO_FDS <= limit {
+		return None;
+	}
+	Some(io::Error::new(
+		error.kind(),
+		format!(
+			"{error}: the child's stdio would need file descriptors at or above {limit} (OPEN_MAX), \
+			 which macOS cannot pass to a child process; the lowest free descriptor in this process is \
+			 {lowest_free_fd}. Restart Atomic to release open descriptors."
+		),
+	))
+}
+#[cfg(unix)]
+fn explain_spawn_error(error: io::Error) -> io::Error {
+	#[cfg(target_os = "macos")]
+	if error.raw_os_error() == Some(libc::EBADF)
+		&& let Ok(probe) = File::open("/dev/null")
+	{
+		use std::os::fd::AsRawFd;
+		if let Some(explained) = open_max_spawn_error(&error, probe.as_raw_fd(), MACOS_SPAWN_FD_LIMIT)
+		{
+			return explained;
+		}
+	}
+	error
+}
 #[cfg(unix)]
 fn make_nonblocking(fd: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 	let fd = fd.as_raw_fd();
@@ -832,12 +870,20 @@ struct OutputStore {
 	foreground: Vec<u8>,
 	spilled: bool,
 	file: Option<File>,
+	released: bool,
 	disk_len: u64,
 	overflow: bool,
 	unavailable: bool,
 	spool_error: Option<String>,
 	#[cfg(test)]
 	candidate: SpoolCandidate,
+}
+impl Drop for OutputStore {
+	fn drop(&mut self) {
+		if self.file.take().is_some() || self.released {
+			let _ = std::fs::remove_file(&self.path);
+		}
+	}
 }
 impl OutputStore {
 	/// The retained prefix and rolling tail have at most one gap. No disk reads
@@ -863,6 +909,7 @@ impl OutputStore {
 			foreground: Vec::new(),
 			spilled: false,
 			file: None,
+			released: false,
 			disk_len: 0,
 			unavailable: false,
 			spool_error: None,
@@ -962,6 +1009,29 @@ impl OutputStore {
 		}
 		self.overflow |= overflow && !self.unavailable;
 	}
+	/// Settled output keeps its bytes on disk but not an open descriptor (#3313).
+	/// An empty spool holds nothing worth keeping, so it is removed.
+	fn release_file(&mut self) {
+		if self.file.take().is_none() {
+			return;
+		}
+		self.released = true;
+		if self.disk_len == 0 {
+			let _ = std::fs::remove_file(&self.path);
+		}
+	}
+	fn read_disk(&mut self, start: u64, bytes: &mut [u8]) -> Option<io::Result<()>> {
+		let read_at = |file: &mut File, bytes: &mut [u8]| {
+			file.seek(SeekFrom::Start(start)).and_then(|_| file.read_exact(bytes))
+		};
+		match self.file.as_mut() {
+			Some(file) => Some(read_at(file, bytes)),
+			None if self.released => {
+				Some(File::open(&self.path).and_then(|mut file| read_at(&mut file, bytes)))
+			},
+			None => None,
+		}
+	}
 	/// Snapshot owned segments; gaps are explicit, never concatenated ambiguously.
 	fn page(&mut self, start: u64, maximum: u64) -> OutputPage {
 		let maximum = maximum.min(COMMAND_LIVE_BYTES as u64);
@@ -970,12 +1040,10 @@ impl OutputStore {
 		let disk_end = end.min(self.disk_len);
 		if start < disk_end {
 			let mut bytes = vec![0; (disk_end - start) as usize];
-			if let Some(file) = self.file.as_mut() {
-				if file.seek(SeekFrom::Start(start)).and_then(|_| file.read_exact(&mut bytes)).is_ok() {
-					segments.push((start, bytes));
-				} else {
-					self.unavailable = true;
-				}
+			match self.read_disk(start, &mut bytes) {
+				Some(Ok(())) => segments.push((start, bytes)),
+				Some(Err(_)) => self.unavailable = true,
+				None => {},
 			}
 		}
 		for (offset, bytes) in [(0, self.foreground.as_slice()), (0, self.head.as_slice())] {
@@ -1443,7 +1511,7 @@ mod tests {
 		assert_eq!(probe, -1);
 		assert_eq!(probe_error, Some(libc::EPERM));
 		assert!(member_exited, "fixture must be an unreaped zombie, not a live process");
-		std::fs::remove_file(&command.output.lock().unwrap().path).unwrap();
+		assert!(!command.output.lock().unwrap().path.exists(), "empty settled spool stayed on disk");
 		if reap_within_grace {
 			assert!(!finished, "cleanup settled before the zombie was reaped: {before_reap:?}");
 			assert!(matches!(before_reap.tasks[0].cleanup, Cleanup::Draining {}));
@@ -1627,7 +1695,7 @@ mod tests {
 			vec![OutputOffsets::new(TASK_DISK_BYTES, TASK_DISK_BYTES + 98)]
 		);
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 	#[test]
 	fn capped_prefix_and_rolling_tail_are_owned_pages() {
@@ -1654,7 +1722,7 @@ mod tests {
 		assert!(store.foreground.is_empty());
 		assert!(store.page(3, 0).chunks.is_empty());
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 	#[test]
 	fn output_pages_clamp_large_requests_to_live_budget() {
@@ -1671,7 +1739,7 @@ mod tests {
 		);
 		assert_eq!(store.page(COMMAND_LIVE_BYTES as u64, u64::MAX).chunks[0].bytes.as_ref(), b"x");
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 
 	#[test]
@@ -1694,7 +1762,7 @@ mod tests {
 		assert_eq!(std::fs::read(&path).unwrap(), b"abcdefghi");
 		assert_eq!(store.page(99, 0).requested, OutputOffsets::new(99, 99));
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 
 	#[test]
@@ -1739,7 +1807,7 @@ mod tests {
 		assert_eq!(decoder.decode(b"\xf0\x9f", false), "");
 		assert_eq!(decoder.decode(b"", true), "�");
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
 	}
 
 	#[test]
@@ -1758,6 +1826,92 @@ mod tests {
 		assert!(store.overflow);
 		assert_eq!(std::fs::metadata(&path).unwrap().len(), 5);
 		drop(store);
-		std::fs::remove_file(path).unwrap();
+		assert!(!path.exists(), "dropped output store kept its spool");
+	}
+
+	#[test]
+	fn released_spool_closes_its_descriptor_and_still_pages_output_3313() {
+		let path =
+			std::env::temp_dir().join(format!("atomic-output-released-{}", std::process::id()));
+		let mut store = OutputStore::new(path, 4, 8, 20);
+		store.background();
+		store.append(b"abcdef");
+		let path = store.path.clone();
+		store.release_file();
+		assert!(store.file.is_none(), "settled spool kept an open descriptor");
+		assert_eq!(store.page(1, 4).chunks[0].bytes.as_ref(), b"bcde");
+		assert!(store.file.is_none(), "reading settled output reopened a retained descriptor");
+		assert!(!store.unavailable);
+		drop(store);
+		assert!(!path.exists(), "dropped output store kept its spool");
+	}
+
+	#[test]
+	fn released_empty_spool_is_removed_3313() {
+		let path = std::env::temp_dir().join(format!("atomic-output-empty-{}", std::process::id()));
+		let mut store = OutputStore::new(path, 4, 8, 20);
+		store.background();
+		let path = store.path.clone();
+		assert!(path.exists());
+		store.release_file();
+		assert!(!path.exists(), "empty settled spool was kept on disk");
+		assert!(store.page(0, 4).chunks.is_empty());
+	}
+
+	#[test]
+	fn store_never_removes_a_spool_it_did_not_create() {
+		let path = std::env::temp_dir().join(format!("atomic-output-foreign-{}", std::process::id()));
+		std::fs::write(&path, b"someone else's").unwrap();
+		let store = OutputStore::new(path.clone(), 4, 8, 20);
+		drop(store);
+		let kept = path.exists();
+		std::fs::remove_file(&path).unwrap();
+		assert!(kept, "store removed a file it never created");
+	}
+
+	// #3313: every settled pipe command held its spool descriptor until the process exited.
+	#[cfg(unix)]
+	#[test]
+	fn settled_commands_release_their_spool_descriptors_3313() {
+		let (actor, owner) = command_owner();
+		for index in 0..3 {
+			let command = if index == 0 { "printf kept" } else { "true" };
+			actor
+				.start_command(&owner, pipe_intent(command), format!("settle-{index}").into())
+				.unwrap();
+		}
+		let commands: Vec<_> = actor.state.lock().unwrap().owners[0]
+			.tasks
+			.iter()
+			.map(|task| task.command.clone().unwrap())
+			.collect();
+		for command in &commands {
+			assert!(command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE));
+		}
+		actor.shutdown();
+		let open =
+			commands.iter().filter(|command| command.output.lock().unwrap().file.is_some()).count();
+		let paths: Vec<_> =
+			commands.iter().map(|command| command.output.lock().unwrap().path.clone()).collect();
+		let kept_output = std::fs::read(&paths[0]).ok();
+		let empty_kept = paths[1..].iter().filter(|path| path.exists()).count();
+		let page = commands[0].output.lock().unwrap().page(0, 16);
+		let _ = std::fs::remove_file(&paths[0]);
+		assert_eq!(open, 0, "settled commands kept spool descriptors");
+		assert_eq!(kept_output.as_deref(), Some(b"kept".as_slice()));
+		assert_eq!(page.chunks[0].bytes.as_ref(), b"kept");
+		assert_eq!(empty_kept, 0, "empty spools of settled commands stayed on disk");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn spawn_ebadf_past_open_max_names_the_cause_3313() {
+		let ebadf = || io::Error::from_raw_os_error(libc::EBADF);
+		let explained = open_max_spawn_error(&ebadf(), 10_236, 10_240).unwrap().to_string();
+		assert!(explained.contains("10240 (OPEN_MAX)"), "{explained}");
+		assert!(explained.contains("lowest free descriptor in this process is 10236"), "{explained}");
+		assert!(open_max_spawn_error(&ebadf(), 20, 10_240).is_none());
+		let other = io::Error::from_raw_os_error(libc::ENOENT);
+		assert!(open_max_spawn_error(&other, 10_236, 10_240).is_none());
 	}
 }

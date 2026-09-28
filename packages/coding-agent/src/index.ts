@@ -209,7 +209,25 @@ export {
 	ModelConstraintsSchema,
 	type ModelRouterOutput,
 	parseModelConstraints,
+	setsProviders,
 } from "./core/model-routing-constraints.js";
+export {
+	isModelRoutingDebugEnabled,
+	MODEL_ROUTING_DEBUG_ENV,
+	reportModelRoutingDebug,
+} from "./core/model-routing-debug.js";
+export {
+	DIFFICULTY_LEVELS,
+	type Difficulty,
+	MISTAKE_COST_LEVELS,
+	type MistakeCost,
+	mergeTaskNeeds,
+	parseTaskNeeds,
+	type TaskNeeds,
+	TaskNeedsSchema,
+	WORK_KINDS,
+	type WorkKind,
+} from "./core/model-routing-needs.js";
 export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,
@@ -330,6 +348,7 @@ export {
 	type CompactionModelOverride,
 	type CompactionSettings,
 	type ImageSettings,
+	type ModelRoutingSettings,
 	type PackageSource,
 	type RetrySettings,
 	SettingsManager,

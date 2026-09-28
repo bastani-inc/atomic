@@ -1,4 +1,5 @@
 // #3090: public single/parallel execution door, mock inference and child runtime only.
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,11 +17,11 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import { chatPayload, chatRouter, DEFAULT_NEEDS } from "../helpers/model-routing.js";
 import {
 	decisionMessage,
 	decisionModel,
 	messageStream,
-	parseInferenceUserPayload,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
 
@@ -45,9 +46,7 @@ async function fixture(model?: string) {
 		source: "project",
 		filePath: join(cwd, "worker.md"),
 	};
-	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
-	);
+	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry } = await registeredDecisionRuntime(infer);
 	const runSync = vi.fn(
 		async (
@@ -128,7 +127,7 @@ for (const mode of ["single-explicit", "single-default", "parallel-explicit", "p
 		stream.push({
 			type: "done",
 			reason: "toolUse",
-			message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
+			message: decisionMessage({ ...DEFAULT_NEEDS }),
 		});
 		const result = await pending;
 		assert.notEqual(result.isError, true);
@@ -171,17 +170,17 @@ test("parallel tasks do not share the first decision", async () => {
 	const f = await fixture("auto");
 	const second = { ...decisionModel, id: "other" };
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, second]);
-	f.infer.mockImplementation((_model, context) => {
-		const { state, questions } = parseInferenceUserPayload(context);
-		const candidates = Object.values(questions?.pair?.criteria ?? {}).map((entry) => JSON.parse(entry as string));
-		const preferred = (state?.task ?? "").includes("second") ? "decision-test/other" : "decision-test/chat";
-		return messageStream(
-			decisionMessage({
-				modelId: candidates.find((pair) => pair.model === preferred)?.model ?? candidates[0].model,
-				reasoningEffort: null,
-			}),
-		);
-	});
+	const pick = (offered: string[], context: Parameters<typeof chatPayload>[0]) =>
+		(chatPayload(context).state.needs as { difficulty?: string }).difficulty === "hard" &&
+		offered.includes("decision-test/other")
+			? "decision-test/other"
+			: "decision-test/chat";
+	f.infer.mockImplementation((model, context) =>
+		chatRouter(pick, String(chatPayload(context).state.task ?? "").includes("second") ? { difficulty: "hard" } : {})(
+			model,
+			context,
+		),
+	);
 	await f.call({
 		tasks: [
 			{ agent: "worker", task: "first task" },
@@ -228,7 +227,7 @@ test("router cancellation cannot admit a child through a late result", async () 
 	stream.push({
 		type: "done",
 		reason: "toolUse",
-		message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
+		message: decisionMessage({ ...DEFAULT_NEEDS }),
 	});
 	await pending;
 	assert.equal(f.runSync.mock.calls.length, 0);

@@ -459,16 +459,12 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 	it("explains why an unsaved session cannot be cloned or forked", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
-		const entryId = runtime.session.sessionManager.appendMessage({
-			role: "user",
-			content: [{ type: "text", text: "not answered yet" }],
-			timestamp: Date.now(),
-		});
+		const entryId = runtime.session.sessionManager.appendModelChange("anthropic", "claude-sonnet-4-5");
 		expect(runtime.session.sessionFile).toBeTruthy();
 		expect(existsSync(runtime.session.sessionFile!)).toBe(false);
 
 		await expect(runtime.fork(entryId, { position: "at" })).rejects.toThrow(
-			"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
+			"This session has not been saved yet. Send a message before cloning or forking it.",
 		);
 	});
 

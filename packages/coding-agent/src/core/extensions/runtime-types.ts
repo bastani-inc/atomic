@@ -202,6 +202,7 @@ export interface ExtensionContextActions {
 	getSkillCatalog?: () => SkillCatalog;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getRouterModel?: () => string;
+	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
 }
 
 /**

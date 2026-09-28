@@ -42,7 +42,7 @@ import {
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
-import { runAgentTask, taskToolResult } from "./task-execution.js";
+import { runAgentTask, taskToolResultWithOutput } from "./task-execution.js";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";
@@ -139,6 +139,7 @@ export async function runSinglePath(
 					agent: agentConfig,
 					task: params.task,
 					modelConstraints: params.modelConstraints,
+					taskNeeds: params.taskNeeds,
 					signal,
 				})
 			: undefined;
@@ -283,7 +284,8 @@ export async function runSinglePath(
 							})
 						: getSingleResultOutput(child),
 			});
-			if (!parentAsk || !settledChild?.interrupted) return taskToolResult(response, ctx.getAgentTaskHost());
+			if (!parentAsk || !settledChild?.interrupted)
+				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
 		} else r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
 	} catch (error) {

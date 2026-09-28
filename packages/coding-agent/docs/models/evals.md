@@ -5,23 +5,22 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 # Evals
 
-Last Accessed: 2026-09-22.
+Last Accessed: 2026-09-25.
 
 Key:
 
 - `∅`=source null/absent, not zero.
-- Values are rounded to 1 decimal from the [model leaderboard](https://artificialanalysis.ai/leaderboards/models) payload, Coding Index and Agentic Index fields on free `GET /api/v2/language/models/free`, and default-chart constituent fields on the [Intelligence Index](https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index) page.
+- Values are rounded to 1 decimal from the public [model leaderboard](https://artificialanalysis.ai/leaderboards/models) and [Intelligence Index](https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index) pages. Each row includes the model's release date.
+- `PDF`, `MLCR`, `Open`, `Ent`, and `Analyst` are published only for models shown on the default Intelligence Index chart; other rows are `∅` for those columns.
 - A chart label may show the nearest integer of `idx`.
 - `idx`: Intelligence Index points, aggregate performance across knowledge, reasoning, coding, and agentic work.
-- `Cod`: Coding Index points, aggregate coding capability, including scientific code generation and terminal tasks; distinct from the Coding Agent Index.
-- `Agt`: Agentic Index points, aggregate performance on multi-step tasks using tools.
 - `Brief`: AA-Briefcase, long-horizon business knowledge work producing spreadsheets, presentations, and memos; normalized Elo `clamp((Elo-500)/2000)*100`.
 - `Gn`: GDPval-AA, economically valuable professional work across occupations; normalized Elo `clamp((Elo-500)/2000)*100`.
 - `Omni`: Omniscience Index, factual knowledge reliability, rewarding correct answers and penalizing incorrect guesses without penalizing abstention; -100 to 100.
 - `Open`: Openness Index points, model availability and transparency of training data and methodology, not task-solving ability.
 - Other score columns are percent.
 - `OA`: Omniscience accuracy, factual recall across knowledge domains.
-- `ONH`: Omniscience non-hallucination, avoiding incorrect guesses when unable to answer fully; the 6,000-question ONH rate `(partial+notattempted)/(incorrect+partial+notattempted)`, not 1 minus the hallucination rate.
+- `ONH`: Omniscience non-hallucination, avoiding incorrect guesses when unable to answer fully; the ONH rate `(partial+notattempted)/(incorrect+partial+notattempted)`, not 1 minus the hallucination rate.
 - `PDF`: GDP.pdf All-pass, reasoning over long professional documents while satisfying every task-specific criterion.
 - `Auto`: AutomationBench-AA, completing multi-step SaaS workflows without guardrail violations.
 - `TB4`: Terminal-Bench 4.0, agentic coding and terminal work across software engineering, systems administration, data processing, model training, and security.
@@ -35,47 +34,892 @@ Key:
 - `IF`: IFBench, precise instruction following under verifiable output constraints.
 - `MMMU`: MMMU-Pro, multimodal understanding and visual reasoning across academic disciplines.
 - `tau2`: τ²-Bench Telecom, conversational tool use and coordination with a simulated user to resolve telecom support issues.
-- `tauB`: Banking tool-use benchmark, knowledge retrieval and multi-step customer-support workflows; the snapshot labels this τ²-Banking, while the current source calls it τ³-Banking.
+- `tauB`: Banking tool-use benchmark, knowledge retrieval and multi-step customer-support workflows.
 - `Analyst`: AA-AnalystAgent, end-to-end quantitative analysis of real-world spreadsheets and documents.
 - `ITB`: ITBench SRE, identifying Kubernetes incident root causes from alerts, events, traces, and topology.
-- `Apex`: [APEX-Agents](https://www.mercor.com/apex/apex-agents-leaderboard/), long-horizon, cross-application work in investment banking, consulting, and corporate law.
+- `Apex`: APEX-Agents, long-horizon, cross-application work in investment banking, consulting, and corporate law.
 - `AIME`: AIME 2025, competition-level mathematical problem solving.
 - `LCB`: LiveCodeBench, generating correct code for recent competitive programming problems.
 - `Harvey`: Harvey LAB-AA, producing legal deliverables from case documents, graded against task-specific criteria.
 - `MLCR`: Medical Long Context Reasoning overall, synthesizing long, fragmented medical records for healthcare and insurance case review.
 - `Ent`: EnterpriseOps-Gym-AA, stateful, multi-step business workflows using tools, graded on the resulting database state.
-- `Brief`, `Auto`, `PDF`, `AIME`, `LCB`, `Harvey`, `MLCR`, `Open`, and `Ent` are published for default-chart models; other rows are `∅` for those columns.
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: top 26 catalog models by Intelligence Index, plus GPT-6 Luna (max) from below that cutoff. Fifty does not fit. Jev allows 32k tokens for state plus the longest question, and this snapshot is sent in full with the model-selection guide.
+Table: all 673 models on the Artificial Analysis leaderboard, including models with no published scores.
 
-| slug | Model | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Cod | Agt | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| claude-opus-5-5 | Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 57.6 | 66.1 | 67.3 | 69.5 | 59.6 | 66.9 | 61.4 | 26.2 | 31.7 | 66.2 | 41.4 | 84.7 | ∅ | ∅ | 46.4 | ∅ | ∅ | ∅ | ∅ | 87.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.2 | ∅ | ∅ | ∅ |
-| claude-opus-5-5-xhigh | Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 56 | 64 | 66 | 65 | 59.6 | 65 | 57.5 | 26.6 | 31.7 | 65.4 | 34.3 | 84.7 | ∅ | ∅ | 42.7 | ∅ | ∅ | ∅ | ∅ | 86.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.2 | ∅ | ∅ | ∅ |
-| claude-opus-5-5-high | Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback) | 53.6 | 60.2 | 59.6 | 63.2 | 56.6 | 60.4 | 55.6 | 28.8 | 30.9 | 64.6 | 32.4 | 82.7 | ∅ | ∅ | 40.6 | ∅ | ∅ | ∅ | ∅ | 85.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.9 | ∅ | ∅ | ∅ |
-| claude-fable-5-1 | Claude Fable 5.1 (Adaptive Reasoning, Max Effort, Default Fallback) | 53.4 | 58.9 | 61.7 | 59.4 | 52 | 63.1 | 59.1 | 26.2 | 29.7 | 67.2 | 27.4 | 85.3 | 81.6 | 57.9 | 43.5 | 93.7 | 91.4 | ∅ | ∅ | ∅ | ∅ | 47.2 | 57.5 | ∅ | ∅ | ∅ | ∅ | 93 | 71.1 | ∅ | ∅ |
-| claude-fable-5-1-xhigh | Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 53.2 | 58.4 | 61 | 57.8 | 55.1 | 60.9 | 58.7 | 26.2 | 31.1 | 66.2 | 29.5 | 83 | 80.7 | 57.2 | 42.4 | 93.4 | 91 | ∅ | ∅ | ∅ | ∅ | 45.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 93.3 | ∅ | ∅ | ∅ |
-| gpt-6-astra | GPT-6 Astra (max) | 52.7 | 53.4 | 52.1 | 68.5 | 59.1 | 56.5 | 54.7 | 31 | 31.7 | 62.6 | 48.7 | 80.7 | 76.9 | 51 | 43.4 | 96.1 | 88.4 | ∅ | ∅ | 86.9 | ∅ | 41.4 | 51.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 35 | ∅ | ∅ |
-| gpt-6-astra-xhigh | GPT-6 Astra (xhigh) | 52.4 | 52.2 | 50.8 | 67.2 | 59.6 | 55.7 | 54.6 | 32.2 | 31.4 | 61.9 | 51.7 | 80 | 75.9 | 50.2 | 43.4 | 96.3 | 89.1 | ∅ | ∅ | 86.2 | ∅ | 43.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| claude-fable-5-1-high | Claude Fable 5.1 (Adaptive Reasoning, High Effort, Default Fallback) | 51.2 | 54.6 | 55.9 | 55.3 | 52 | 58.7 | 55.9 | 26.8 | 30.3 | 64.9 | 31.2 | 83.7 | 79.1 | 53.1 | 40.8 | 90.6 | 89.9 | ∅ | ∅ | ∅ | ∅ | 43.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 93 | ∅ | ∅ | ∅ |
-| claude-opus-5-5-medium | Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback) | 51.2 | 57.1 | 53.8 | 61.2 | 52.5 | 59.3 | 54.7 | 25.6 | 27.7 | 64.6 | 31.6 | 84.3 | ∅ | ∅ | 40.3 | ∅ | ∅ | ∅ | ∅ | 85.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.3 | ∅ | ∅ | ∅ |
-| gpt-6-astra-high | GPT-6 Astra (high) | 50.9 | 50.3 | 49.2 | 66.6 | 54 | 55.4 | 53.1 | 31 | 28.9 | 61.1 | 55.2 | 80 | 77.1 | 48.2 | 43.7 | 94.9 | 89.9 | ∅ | ∅ | 86.4 | ∅ | 40 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| claude-opus-5 | Claude Opus 5 (Adaptive Reasoning, Max Effort) | 50.8 | 58.7 | 60.4 | 56.6 | 49 | 56.4 | 54.9 | 21.6 | 29.1 | 60.9 | 39.2 | 79.3 | 78 | 56.5 | 37.1 | 93.2 | 89.1 | ∅ | ∅ | 84.7 | ∅ | 42.1 | 53.8 | ∅ | ∅ | ∅ | ∅ | 93.5 | 55.6 | ∅ | 47.5 |
-| claude-opus-5-xhigh | Claude Opus 5 (Adaptive Reasoning, Xhigh Effort) | 49.7 | 57.5 | 58.8 | 53.2 | 46.5 | 55.7 | 54.4 | 21 | 27.7 | 59.5 | 40.5 | 80.3 | 77 | 55.6 | 35.4 | 93.7 | 88 | ∅ | ∅ | 84 | ∅ | 43.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 58.3 | ∅ | ∅ |
-| claude-fable-5 | Claude Fable 5 (Adaptive Reasoning, Max Effort, Opus 4.8 Fallback) | 49.6 | ∅ | 54.8 | 54.1 | 42.4 | 61 | 55.5 | 24 | 28.6 | 65.4 | 36.4 | 82.3 | 76.5 | 50.7 | 43.3 | 92.6 | 84.6 | 62.9 | 63.5 | ∅ | 98.5 | 38.1 | 48.8 | ∅ | ∅ | ∅ | ∅ | 93.6 | 64.4 | ∅ | 51.1 |
-| gpt-6-astra-medium | GPT-6 Astra (medium) | 49.6 | ∅ | 48.4 | 64.6 | 49.5 | 54.2 | 52.7 | 30.4 | 29.1 | 60.6 | 53.5 | 79.7 | 76.7 | 46 | 42.2 | 93.9 | 89.5 | ∅ | ∅ | 85.1 | ∅ | 35.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| claude-fable-5-1-medium | Claude Fable 5.1 (Adaptive Reasoning, Medium Effort, Default Fallback) | 48.9 | ∅ | 51.8 | 54.7 | 44.9 | 56.4 | 53.8 | 26.8 | 29.1 | 63.1 | 30.9 | 84.7 | 77.1 | 50.2 | 37.6 | 88.6 | 88 | ∅ | ∅ | ∅ | ∅ | 41 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.6 | ∅ | ∅ | ∅ |
-| claude-opus-5-high | Claude Opus 5 (Adaptive Reasoning, High Effort) | 48.1 | ∅ | 54.1 | 53.6 | 46 | 55.4 | 52.8 | 19.6 | 28.3 | 58.9 | 38.8 | 79 | 76.5 | 52.3 | 33.7 | 93.7 | 87.6 | ∅ | ∅ | 82.4 | ∅ | 44.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 59.4 | ∅ | ∅ |
-| muse-spark-1-3 | Muse Spark 1.3 (max) | 48.1 | 54.9 | 58.7 | 57.9 | 33.3 | 58.8 | 48.7 | 26.6 | 24.9 | 43.6 | 67.1 | 83 | 75.8 | 55.5 | 25 | 93.5 | 84.3 | ∅ | ∅ | ∅ | ∅ | 50.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 43.3 | ∅ | ∅ |
-| gpt-6-sol | GPT-6 Sol (max) | 47.5 | ∅ | 49.3 | ∅ | 43.9 | 57.6 | 47.9 | ∅ | 30.9 | 54.5 | 39.9 | 83.7 | ∅ | ∅ | 27.1 | ∅ | ∅ | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| gpt-5-6-sol | GPT-5.6 Sol (max) | 47 | 49.4 | 54.4 | 60.1 | 39.9 | 57.1 | 49.5 | 27.2 | 32.3 | 59.4 | 7.8 | 84 | 77.4 | 50.2 | 22 | 94.1 | 88 | 65.9 | 72.7 | 83.4 | 85.1 | 44.3 | 47.5 | 56.2 | ∅ | ∅ | ∅ | 87.2 | 26.1 | ∅ | 42.9 |
-| claude-fable-5-1-low | Claude Fable 5.1 (Adaptive Reasoning, Low Effort, Default Fallback) | 46.8 | ∅ | 47.5 | 52.2 | 40.4 | 56.7 | 48.9 | 28 | 27.7 | 60.2 | 34.4 | 82.3 | 75.2 | 47.1 | 34.1 | 88.1 | 85 | ∅ | ∅ | ∅ | ∅ | 39 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.3 | ∅ | ∅ | ∅ |
-| grok-4-7 | Grok 4.7 (xhigh) | 46.4 | 57.9 | 59.8 | 65.6 | 25.8 | 57.4 | 43.1 | 20 | 17.7 | 47.5 | 70.7 | 76.7 | ∅ | ∅ | 32 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 15 | ∅ | ∅ |
-| grok-4-7-high | Grok 4.7 (high) | 46.3 | 57.2 | 59.7 | 63.5 | 24.7 | 57.8 | 42.3 | 23.2 | 18 | 47.8 | 67.6 | 77 | ∅ | ∅ | 30.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| mimo-v2-6-pro | MiMo-V2.6-Pro | 46.3 | 51.1 | 58.7 | 58.6 | 34.8 | 60.9 | 49.4 | 19.2 | 26.6 | 34.9 | 59.4 | 86.3 | ∅ | ∅ | 8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| gpt-6-astra-low | GPT-6 Astra (low) | 45.8 | ∅ | 43.3 | 59.1 | 41.9 | 54.1 | 49.2 | 30.4 | 26.3 | 59.5 | 53.1 | 80 | 75.7 | 38.8 | 40.6 | 93.1 | 88 | ∅ | ∅ | 84.6 | ∅ | 32 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
-| qwen3-8-max | Qwen3.8 Max (0902) | 45.4 | 57 | 58.4 | 56.2 | 38.9 | 52.1 | 43.1 | 22.8 | 17.7 | 31.7 | 71.2 | 80.3 | 76.2 | 56 | 12 | 92.8 | 88.8 | ∅ | ∅ | 82.8 | ∅ | 47.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 20 | ∅ | ∅ |
-| muse-spark-1-3-xhigh | Muse Spark 1.3 (xhigh) | 45.1 | ∅ | 56.4 | 56.8 | 16.7 | 59.7 | 47.5 | 24.2 | 26 | 41.5 | 68.5 | 83 | 76.5 | 51.5 | 23.1 | 94.1 | 85.4 | ∅ | ∅ | 82 | ∅ | 47.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 95.5 | ∅ | ∅ | ∅ |
-| gpt-6-luna | GPT-6 Luna (max) | 37.3 | ∅ | 43.4 | ∅ | 12.6 | 54.6 | 38.5 | ∅ | 19.4 | 43.8 | 23.3 | 83.3 | ∅ | ∅ | 0.7 | ∅ | ∅ | ∅ | ∅ | 75.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| claude-opus-5-5 | Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-22 | 57.6 | 66.1 | 67.3 | 69.5 | 59.6 | 66.9 | 61.4 | 26.2 | 31.7 | 66.2 | 41.4 | 84.7 | 46.4 | ∅ | ∅ | ∅ | ∅ | 87.7 | ∅ | ∅ | ∅ | 38.2 | ∅ | ∅ | ∅ | 91.2 | 66.7 | ∅ | ∅ |
+| claude-opus-5-5-xhigh | Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-22 | 56 | 64 | 66 | 65 | 59.6 | 65 | 57.5 | 26.6 | 31.7 | 65.4 | 34.3 | 84.7 | 42.7 | ∅ | ∅ | ∅ | ∅ | 86.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.2 | ∅ | ∅ | ∅ |
+| claude-opus-5-5-high | Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback) | 2026-09-22 | 53.6 | 60.2 | 59.6 | 63.2 | 56.6 | 60.4 | 55.6 | 28.8 | 30.9 | 64.6 | 32.4 | 82.7 | 40.6 | ∅ | ∅ | ∅ | ∅ | 85.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.9 | ∅ | ∅ | ∅ |
+| claude-fable-5-1 | Claude Fable 5.1 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-01 | 53.4 | 58.9 | 61.7 | 59.4 | 52 | 63.1 | 59.1 | 26.2 | 29.7 | 67.2 | 27.4 | 85.3 | 43.5 | 93.7 | 91.4 | ∅ | ∅ | ∅ | ∅ | 47.2 | 57.5 | 49.5 | ∅ | ∅ | ∅ | 93 | 71.1 | ∅ | ∅ |
+| claude-fable-5-1-xhigh | Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-01 | 53.2 | 58.4 | 61 | 57.8 | 55.1 | 60.9 | 58.7 | 26.2 | 31.1 | 66.2 | 29.5 | 83 | 42.4 | 93.4 | 91 | ∅ | ∅ | ∅ | ∅ | 45.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 93.3 | ∅ | ∅ | ∅ |
+| claude-opus-5-5-medium | Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback) | 2026-09-22 | 51.2 | 57.1 | 53.8 | 61.2 | 52.5 | 59.3 | 54.7 | 25.6 | 27.7 | 64.6 | 31.6 | 84.3 | 40.3 | ∅ | ∅ | ∅ | ∅ | 85.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.3 | ∅ | ∅ | ∅ |
+| claude-fable-5-1-high | Claude Fable 5.1 (Adaptive Reasoning, High Effort, Default Fallback) | 2026-09-01 | 51.2 | 54.6 | 55.9 | 55.3 | 52 | 58.7 | 55.9 | ∅ | 30.3 | 64.9 | 31.2 | 83.7 | 40.8 | 90.6 | 89.9 | ∅ | ∅ | ∅ | ∅ | 43.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 93 | ∅ | ∅ | ∅ |
+| claude-opus-5 | Claude Opus 5 (Adaptive Reasoning, Max Effort) | 2026-07-24 | 50.8 | 58.7 | 60.4 | 56.6 | 49 | 56.4 | 54.9 | 21.6 | 29.1 | 60.9 | 39.2 | 79.3 | 37.1 | 93.2 | 89.1 | ∅ | ∅ | 84.7 | ∅ | 42.1 | 53.8 | ∅ | ∅ | ∅ | ∅ | 93.5 | 55.6 | ∅ | 47.5 |
+| claude-opus-5-xhigh | Claude Opus 5 (Adaptive Reasoning, Xhigh Effort) | 2026-07-24 | 49.7 | 57.5 | 58.8 | 53.2 | 46.5 | 55.7 | 54.4 | ∅ | 27.7 | 59.5 | 40.5 | 80.3 | 35.4 | 93.7 | 88 | ∅ | ∅ | 84 | ∅ | 43.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5 | Claude Fable 5 (Adaptive Reasoning, Max Effort, Opus 4.8 Fallback) | 2026-06-09 | 49.6 | 52 | 54.8 | 54.1 | 42.4 | 61 | 55.5 | ∅ | 28.6 | 65.4 | 36.4 | 82.3 | 43.3 | 92.6 | 84.6 | 62.9 | 63.5 | ∅ | 98.5 | 38.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 93.6 | ∅ | ∅ | ∅ |
+| claude-fable-5-1-medium | Claude Fable 5.1 (Adaptive Reasoning, Medium Effort, Default Fallback) | 2026-09-01 | 48.9 | 52.1 | 51.8 | 54.7 | 44.9 | 56.4 | 53.8 | ∅ | 29.1 | 63.1 | 30.9 | 84.7 | 37.6 | 88.6 | 88 | ∅ | ∅ | ∅ | ∅ | 41 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.6 | ∅ | ∅ | ∅ |
+| claude-opus-5-high | Claude Opus 5 (Adaptive Reasoning, High Effort) | 2026-07-24 | 48.1 | 53.7 | 54.1 | 53.6 | 46 | 55.4 | 52.8 | ∅ | 28.3 | 58.9 | 38.8 | 79 | 33.7 | 93.7 | 87.6 | ∅ | ∅ | 82.4 | ∅ | 44.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5-1-low | Claude Fable 5.1 (Adaptive Reasoning, Low Effort, Default Fallback) | 2026-09-01 | 46.8 | 49.5 | 47.5 | 52.2 | 40.4 | 56.7 | 48.9 | ∅ | 27.7 | 60.2 | 34.4 | 82.3 | 34.1 | 88.1 | 85 | ∅ | ∅ | ∅ | ∅ | 39 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.3 | ∅ | ∅ | ∅ |
+| claude-opus-5-medium | Claude Opus 5 (Adaptive Reasoning, Medium Effort) | 2026-07-24 | 44.8 | 47 | 48.8 | 54.3 | 34.3 | 51.5 | 51.3 | ∅ | 26.9 | 57.1 | 39.3 | 82 | 31 | 91.9 | 86.1 | ∅ | ∅ | 81.6 | ∅ | 38.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-5-5-low | Claude Opus 5.5 (Adaptive Reasoning, Low Effort, Default Fallback) | 2026-09-22 | 42.3 | 39.2 | 36.2 | 52.9 | 31.3 | 58.6 | 48.3 | ∅ | 17.7 | 63.5 | 32.4 | 80.7 | 38.9 | ∅ | ∅ | ∅ | ∅ | 84.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.1 | ∅ | ∅ | ∅ |
+| claude-opus-4-8 | Claude Opus 4.8 (Adaptive Reasoning, Max Effort) | 2026-05-28 | 41.8 | 41 | 46.9 | 45.6 | 21.7 | 54.4 | 48.7 | ∅ | 20.9 | 48.8 | 60.7 | 77.7 | 28.8 | 92 | 84.6 | 58.3 | 62.2 | ∅ | 94.4 | 34.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 91.1 | ∅ | ∅ | ∅ |
+| claude-opus-4-7 | Claude Opus 4.7 (Adaptive Reasoning, Max Effort) | 2026-04-16 | 40.7 | 37.7 | 41.9 | ∅ | ∅ | ∅ | 42.3 | ∅ | 12 | 48.9 | 57.7 | 78.7 | 27.3 | 91.4 | 83.1 | 51.5 | 58.6 | 78.8 | 88.6 | 34.6 | ∅ | 46.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-5-low | Claude Opus 5 (Adaptive Reasoning, Low Effort) | 2026-07-24 | 39.4 | 35.5 | 39.7 | 51.8 | 26.3 | 49.2 | 43.4 | ∅ | 23.1 | 56 | 37.8 | 81.3 | 28.6 | 88.9 | 76.4 | ∅ | ∅ | 79.8 | ∅ | 30.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-5 | Claude Sonnet 5 (Adaptive Reasoning, Max Effort) | 2026-06-30 | 38.2 | 43 | 47.5 | 36.5 | 14.1 | 54.3 | 41.3 | ∅ | 16.9 | 40.1 | 60.6 | 82 | 16.5 | 91.1 | 80.5 | ∅ | ∅ | 77.3 | ∅ | 37.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 90.1 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-xhigh | Claude Sonnet 5 (Adaptive Reasoning, Xhigh Effort) | 2026-06-30 | 34.4 | 38.7 | 42.2 | 34.5 | 7.1 | 54.1 | 39 | ∅ | 15.4 | 39 | 41.4 | 76.7 | 3.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-4-6-adaptive | Claude Opus 4.6 (Adaptive Reasoning, Max Effort) | 2026-02-05 | 31.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 39.9 | ∅ | 12.6 | 47 | 37.2 | 78 | 13.7 | 89.6 | ∅ | 46.2 | 53.1 | 75.4 | 92.1 | ∅ | ∅ | ∅ | 33 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-5-high | Claude Sonnet 5 (Adaptive Reasoning, High Effort) | 2026-06-30 | 31.7 | 33.8 | 37.3 | 32.1 | 5.1 | 54.3 | 35.7 | ∅ | 15.1 | 37.4 | 34.3 | 76.7 | -3.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-4-7-non-reasoning | Claude Opus 4.7 (Non-reasoning, High Effort) | 2026-04-16 | 30.9 | 28.3 | ∅ | ∅ | ∅ | ∅ | 33.3 | ∅ | 5.1 | 44.7 | 45.9 | 75.7 | 14.8 | 88.5 | ∅ | 54.5 | 43.6 | 76.4 | 74 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-4-6-adaptive | Claude Sonnet 4.6 (Adaptive Reasoning, Max Effort) | 2026-02-17 | 30.1 | 28.1 | 36 | 20.1 | 3 | 50.1 | 33.6 | ∅ | 3.1 | 40.9 | 51.6 | 80 | 12.2 | 87.5 | 71.2 | 53 | 56.6 | 73.3 | 75.7 | 34.4 | ∅ | 39.8 | 28 | ∅ | ∅ | 86 | ∅ | ∅ | ∅ |
+| claude-opus-4-5-thinking | Claude Opus 4.5 (Reasoning) | 2025-11-24 | 29.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 30.1 | ∅ | 4.6 | 46.6 | 39 | 77.3 | 14 | 86.6 | ∅ | 47 | 58 | 74 | 89.5 | ∅ | ∅ | ∅ | ∅ | 91.3 | 87.1 | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-5-medium | Claude Sonnet 5 (Adaptive Reasoning, Medium Effort) | 2026-06-30 | 28.1 | 27.8 | 32.2 | 27.9 | 2 | 51.6 | 30 | ∅ | 8.6 | 37.1 | 30.1 | 73.7 | -6.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-4-6 | Claude Opus 4.6 (Non-reasoning, High Effort) | 2026-02-05 | 26.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.1 | ∅ | 2.8 | 45.8 | 19.9 | 67 | 2.4 | 84 | ∅ | 48.5 | 44.6 | 72.5 | 84.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-4-6 | Claude Sonnet 4.6 (Non-reasoning, High Effort) | 2026-02-17 | 24.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 13.3 | ∅ | 0.9 | 38.6 | 31.5 | 68.3 | -3.5 | 79.9 | ∅ | 46.2 | 41.2 | 70.6 | 79.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 84.4 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-low | Claude Sonnet 5 (Adaptive Reasoning, Low Effort) | 2026-06-30 | 24.3 | 21.2 | 27.9 | 19.9 | 2.5 | 50.1 | 21.9 | ∅ | 4.6 | 37.4 | 27.2 | 67.3 | -8.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-opus-4-5 | Claude Opus 4.5 (Non-reasoning) | 2025-11-24 | 23.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 13.2 | ∅ | 0.3 | 40.9 | 23.8 | 70.7 | -4.1 | 81 | ∅ | 40.9 | 43 | 71.2 | 86.3 | ∅ | ∅ | ∅ | ∅ | 62.7 | 73.8 | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-4-6-non-reasoning-low-effort | Claude Sonnet 4.6 (Non-reasoning, Low Effort) | 2026-02-17 | 23.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.2 | ∅ | 0.9 | 36.5 | 39.2 | 69.3 | -2.1 | 79.7 | ∅ | 42.4 | 42.4 | 69.2 | 78.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-sonnet-5-non-reasoning | Claude Sonnet 5 (Non-reasoning, High Effort) | 2026-06-30 | 23.2 | ∅ | 35 | ∅ | ∅ | ∅ | 19 | ∅ | 1.1 | 33.8 | 48 | 70 | -0.6 | 80 | 75.3 | ∅ | ∅ | 71.9 | ∅ | 15.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-4-1-opus-thinking | Claude 4.1 Opus (Reasoning) | 2025-08-05 | 22.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.5 | ∅ | 0 | ∅ | ∅ | 76 | ∅ | 80.9 | ∅ | 34.3 | 55.4 | 67.9 | 71.4 | ∅ | ∅ | ∅ | ∅ | 80.3 | 65.4 | ∅ | ∅ | ∅ | ∅ |
+| claude-4-5-sonnet-thinking | Claude 4.5 Sonnet (Reasoning) | 2025-09-29 | 20.7 | 10.7 | 19.6 | 14.1 | 0 | 45.7 | 17.8 | ∅ | 1.1 | 32.9 | 50.9 | 72.3 | -0.1 | 83.4 | 55.8 | 35.6 | 57.3 | 68.7 | 78.1 | 24.5 | ∅ | ∅ | ∅ | 88 | 71.4 | ∅ | ∅ | ∅ | ∅ |
+| claude-4-opus-thinking | Claude 4 Opus (Reasoning) | 2025-05-22 | 20.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.3 | ∅ | ∅ | ∅ | ∅ | 69.3 | ∅ | 79.6 | ∅ | 31.1 | 53.7 | ∅ | 73.4 | ∅ | ∅ | ∅ | ∅ | 73.3 | 63.6 | ∅ | ∅ | ∅ | ∅ |
+| claude-4-5-sonnet | Claude 4.5 Sonnet (Non-reasoning) | 2025-09-29 | 19.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.2 | ∅ | 0 | 28.4 | 47.3 | 54 | -9.4 | 72.7 | ∅ | 28.8 | 42.7 | 65.2 | 70.5 | ∅ | ∅ | ∅ | ∅ | 37 | 59 | ∅ | ∅ | ∅ | ∅ |
+| claude-4-sonnet-thinking | Claude 4 Sonnet (Reasoning) | 2025-05-22 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-4-1-opus | Claude 4.1 Opus (Non-reasoning) | 2025-08-05 | 18.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-3-7-sonnet-thinking | Claude 3.7 Sonnet (Reasoning) | 2025-02-24 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-4-5-haiku-reasoning | Claude 4.5 Haiku (Reasoning) | 2025-10-15 | 16.9 | 5.8 | 10.9 | 3.2 | 0 | 42.2 | 10.4 | ∅ | 0 | 18 | 72.7 | 74.3 | -4.4 | 67.2 | 44.2 | 27.3 | 54.3 | 58.6 | 54.7 | 9.3 | ∅ | 27.3 | ∅ | 83.7 | 61.5 | 61.1 | ∅ | ∅ | ∅ |
+| claude-4-opus | Claude 4 Opus (Non-reasoning) | 2025-05-22 | 16.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 70.1 | ∅ | ∅ | 43.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 36.3 | 54.2 | ∅ | ∅ | ∅ | ∅ |
+| claude-4-sonnet | Claude 4 Sonnet (Non-reasoning) | 2025-05-22 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-4-5-haiku | Claude 4.5 Haiku (Non-reasoning) | 2025-10-15 | 15.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 14.4 | 74.3 | 49.7 | -7.6 | 64.6 | ∅ | 27.3 | 42 | 55.1 | 32.5 | ∅ | ∅ | ∅ | ∅ | 39 | 51.1 | ∅ | ∅ | ∅ | ∅ |
+| claude-3-7-sonnet | Claude 3.7 Sonnet (Non-reasoning) | 2025-02-24 | 15.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 28.2 | 47.2 | 51.7 | -9.7 | 65.6 | ∅ | 21.2 | 44 | 60.1 | 50 | ∅ | ∅ | ∅ | ∅ | 21 | 39.4 | ∅ | ∅ | ∅ | ∅ |
+| claude-3-5-haiku | Claude 3.5 Haiku | 2024-10-22 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-3-opus | Claude 3 Opus | 2024-03-04 | 8.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 2.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 48.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 27.9 | ∅ | ∅ | ∅ | ∅ |
+| claude-35-sonnet | Claude 3.5 Sonnet (Oct '24) | 2024-10-22 | 7.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 59.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.1 | ∅ | ∅ | ∅ | ∅ |
+| claude-35-sonnet-june-24 | Claude 3.5 Sonnet (June '24) | 2024-06-21 | 7.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 56 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-3-sonnet | Claude 3 Sonnet | 2024-03-04 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-21 | Claude 2.1 | 2023-11-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-3-haiku | Claude 3 Haiku | 2024-03-04 | 5.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | 0 | 17.6 | 19.5 | 27.7 | -48.6 | 37.4 | ∅ | 0.8 | 36.1 | 30.8 | 21.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 15.4 | ∅ | ∅ | ∅ | ∅ |
+| claude-2 | Claude 2.0 | 2023-07-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-instant | Claude Instant | 2023-03-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-astra | GPT-6 Astra (max) | 2026-09-03 | 52.7 | 53.4 | 52.1 | 68.5 | 59.1 | 56.5 | 54.7 | 31 | 31.7 | 62.6 | 48.7 | 80.7 | 43.4 | 96.1 | 88.4 | ∅ | ∅ | 86.9 | ∅ | 41.4 | 51.3 | 48.6 | ∅ | ∅ | ∅ | ∅ | 35 | ∅ | ∅ |
+| gpt-6-astra-xhigh | GPT-6 Astra (xhigh) | 2026-09-03 | 52.4 | 52.2 | 50.8 | 67.2 | 59.6 | 55.7 | 54.6 | 32.2 | 31.4 | 61.9 | 51.7 | 80 | 43.4 | 96.3 | 89.1 | ∅ | ∅ | 86.2 | ∅ | 43.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-astra-high | GPT-6 Astra (high) | 2026-09-03 | 50.9 | 50.3 | 49.2 | 66.6 | 54 | 55.4 | 53.1 | ∅ | 28.9 | 61.1 | 55.2 | 80 | 43.7 | 94.9 | 89.9 | ∅ | ∅ | 86.4 | ∅ | 40 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-astra-medium | GPT-6 Astra (medium) | 2026-09-03 | 49.6 | 48 | 48.4 | 64.6 | 49.5 | 54.2 | 52.7 | ∅ | 29.1 | 60.6 | 53.5 | 79.7 | 42.2 | 93.9 | 89.5 | ∅ | ∅ | 85.1 | ∅ | 35.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-sol | GPT-6 Sol (max) | 2026-09-22 | 47.5 | 49.1 | 49.3 | 61.6 | 43.9 | 57.6 | 47.9 | 24.8 | 30.9 | 54.5 | 39.9 | 83.7 | 27.1 | ∅ | ∅ | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | 49.4 | ∅ | ∅ | ∅ | ∅ | 16.1 | ∅ | ∅ |
+| gpt-5-6-sol | GPT-5.6 Sol (max) | 2026-07-09 | 47 | 49.4 | 54.4 | 60.1 | 39.9 | 57.1 | 49.5 | 27.2 | 32.3 | 59.4 | 7.8 | 84 | 22 | 94.1 | 88 | 65.9 | 72.7 | 83.4 | 85.1 | 44.3 | 47.5 | 56.2 | ∅ | ∅ | ∅ | 87.2 | 26.1 | ∅ | 42.9 |
+| gpt-6-astra-low | GPT-6 Astra (low) | 2026-09-03 | 45.8 | 38 | 43.3 | 59.1 | 41.9 | 54.1 | 49.2 | ∅ | 26.3 | 59.5 | 53.1 | 80 | 40.6 | 93.1 | 88 | ∅ | ∅ | 84.6 | ∅ | 32 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-sol-xhigh | GPT-6 Sol (xhigh) | 2026-09-22 | 44.1 | 43.2 | 46.8 | 61.7 | 30.3 | 55.1 | 46.3 | ∅ | 28 | 53.9 | 41.1 | 81.3 | 26.7 | ∅ | ∅ | ∅ | ∅ | 82.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-sol-xhigh | GPT-5.6 Sol (xhigh) | 2026-07-09 | 44 | 47.1 | 52.4 | 55.3 | 24.7 | 57.1 | 47.3 | ∅ | 28.6 | 58.8 | 8.1 | 82.3 | 21 | 93.1 | 89.5 | 61.4 | 71 | 82.7 | 84.8 | 38.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-sol-high | GPT-6 Sol (high) | 2026-09-22 | 42.8 | 39.5 | 43.8 | 60.1 | 26.3 | 54.9 | 44.1 | ∅ | 25.4 | 53.7 | 41.9 | 83.7 | 26.8 | ∅ | ∅ | ∅ | ∅ | 81.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-sol-high | GPT-5.6 Sol (high) | 2026-07-09 | 42.3 | 43.5 | 49 | 55.3 | 20.7 | 57.8 | 46 | ∅ | 25.7 | 58.4 | 8.8 | 81.7 | 20.4 | 92.8 | 87.3 | 62.1 | 69.2 | 81.8 | 83.3 | 36.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-terra | GPT-5.6 Terra (max) | 2026-07-09 | 42.1 | 41.7 | 46.6 | 59.6 | 35.4 | 55 | 42.9 | ∅ | 30 | 46.8 | 12.1 | 83 | 0.1 | 92.5 | 88 | 57.6 | 71.2 | 80.7 | 86.3 | 40.2 | ∅ | 51 | 38.9 | ∅ | ∅ | 85.2 | ∅ | ∅ | ∅ |
+| gpt-6-sol-medium | GPT-6 Sol (medium) | 2026-09-22 | 39.8 | 32.1 | 41 | 58 | 18.7 | 53.8 | 41 | ∅ | 24.6 | 53.5 | 43.2 | 82.3 | 27 | ∅ | ∅ | ∅ | ∅ | 80.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-sol-medium | GPT-5.6 Sol (medium) | 2026-07-09 | 39.2 | 37.1 | 45.1 | 51.3 | 14.6 | 57.4 | 42.2 | ∅ | 22.9 | 57.8 | 9.2 | 80.3 | 19.4 | 92.6 | 86.1 | 62.9 | 69.6 | 81.4 | 81 | 36.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4 | GPT-5.4 (xhigh) | 2026-03-05 | 39 | ∅ | 36.6 | ∅ | ∅ | ∅ | 43.7 | ∅ | 23.4 | 50.9 | 8.3 | 82 | 5.8 | 92 | 78.3 | 57.6 | 73.9 | 78.4 | 87.1 | 39.6 | ∅ | ∅ | 33.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5 | GPT-5.5 (xhigh) | 2026-04-23 | 38.4 | 31.9 | 41.8 | 47.3 | 14.6 | 55.8 | 45.8 | ∅ | 27.1 | 58 | 11 | 84.3 | 20.5 | 93.5 | 84.3 | 60.6 | 75.9 | 79.9 | 93.9 | 39 | ∅ | 45.8 | 37.7 | ∅ | ∅ | 86.3 | ∅ | ∅ | ∅ |
+| gpt-5-6-terra-xhigh | GPT-5.6 Terra (xhigh) | 2026-07-09 | 38 | 41.9 | 46.4 | 47.1 | 10.1 | 52.3 | 41.9 | ∅ | 27.1 | 45.5 | 11 | 79 | -3 | 90.8 | 80.1 | 62.9 | 66.3 | 79.5 | 80.4 | 29.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna | GPT-5.6 Luna (max) | 2026-07-09 | 37.3 | 42.1 | 47.2 | 50.2 | 11.6 | 53.6 | 39.5 | 24 | 20.6 | 42.7 | 7.4 | 83.7 | -10.3 | 91.1 | 80.9 | ∅ | ∅ | 78.6 | ∅ | 31.1 | ∅ | 40.3 | 35.8 | ∅ | ∅ | 87.9 | 19.4 | ∅ | 40.8 |
+| gpt-6-luna | GPT-6 Luna (max) | 2026-09-22 | 37.3 | 40 | 43.4 | 53.2 | 12.6 | 54.6 | 38.5 | 20.4 | 19.4 | 43.8 | 23.3 | 83.3 | 0.7 | ∅ | ∅ | ∅ | ∅ | 75.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 16.1 | ∅ | ∅ |
+| gpt-5-5-high | GPT-5.5 (high) | 2026-04-23 | 37 | 29.4 | 40.5 | 44.3 | 9.1 | 56.1 | 45 | ∅ | 25.4 | 57 | 10.9 | 84.3 | 18.8 | 93.2 | 79.4 | 59.8 | 71.6 | 81.1 | 93 | 36.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna-xhigh | GPT-5.6 Luna (xhigh) | 2026-07-09 | 34.6 | 38.4 | 44.2 | 42.6 | 3.5 | 50.5 | 37 | ∅ | 20.6 | 42.5 | 7.5 | 81.7 | -10.8 | 89.5 | 77.9 | ∅ | ∅ | 78.6 | ∅ | 28.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-terra-high | GPT-5.6 Terra (high) | 2026-07-09 | 34.2 | 35.1 | 43.1 | 42 | 1.5 | 52.4 | 38.5 | ∅ | 22.9 | 45.5 | 10.2 | 77.7 | -3.5 | 89.6 | 75.7 | 57.6 | 64.4 | 79.1 | 78.4 | 28.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-sol-low | GPT-6 Sol (low) | 2026-09-22 | 33.9 | 20.3 | 33.8 | 53.9 | 9.1 | 50.2 | 34.9 | ∅ | 16.3 | 51.3 | 49.3 | 79.3 | 26.5 | ∅ | ∅ | ∅ | ∅ | 78.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-luna-xhigh | GPT-6 Luna (xhigh) | 2026-09-22 | 33.9 | 35.8 | 39.8 | 47.8 | 8.1 | 51.7 | 34.3 | ∅ | 17.4 | 44.2 | 17.6 | 80 | -1.8 | ∅ | ∅ | ∅ | ∅ | 75.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-medium | GPT-5.5 (medium) | 2026-04-23 | 33.8 | 25 | 35.9 | 40.1 | 5.1 | 54.5 | 42.4 | ∅ | 18.6 | 56.8 | 10.4 | 83 | 18.1 | 92.6 | 80.5 | 57.6 | 71 | 81.2 | 91.8 | 29.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-sol-low | GPT-5.6 Sol (low) | 2026-07-09 | 33.5 | 27.1 | 39.5 | 41 | 1 | 56.4 | 39.4 | ∅ | 14.9 | 57.2 | 10.6 | 78 | 18.9 | 89.8 | 76.8 | 60.6 | 66.5 | 81 | 76 | 29.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-3-codex | GPT-5.3 Codex (xhigh) | 2026-02-05 | 32.5 | 18.3 | ∅ | ∅ | ∅ | ∅ | 42.5 | ∅ | 16.9 | 52.9 | 10.8 | 83.3 | 10.9 | 91.5 | ∅ | 53 | 75.4 | 78.5 | 86 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-luna-high | GPT-6 Luna (high) | 2026-09-22 | 32.1 | 33.8 | 39.5 | 47.8 | 4.5 | 50.3 | 32.9 | ∅ | 15.4 | 42.8 | 15.6 | 79.3 | -5.5 | ∅ | ∅ | ∅ | ∅ | 74.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna-high | GPT-5.6 Luna (high) | 2026-07-09 | 32.1 | 33.6 | 40.9 | 35.6 | 2.5 | 51.6 | 33.4 | ∅ | 16.6 | 41.8 | 7.6 | 80.3 | -12 | 89.2 | 69.7 | ∅ | ∅ | 77.6 | ∅ | 25.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-low | GPT-5.5 (low) | 2026-04-23 | 30.7 | ∅ | 26.6 | ∅ | ∅ | ∅ | 32.7 | ∅ | 8 | 54.9 | 12 | 81 | 15.1 | 91 | 65.5 | 52.3 | 64.4 | 79 | 83.9 | 24.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-2 | GPT-5.2 (xhigh) | 2025-12-11 | 30.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 37.7 | ∅ | 11.6 | 44.3 | 18.8 | 82.7 | -0.9 | 90.3 | ∅ | 47 | 75.4 | ∅ | 84.8 | ∅ | ∅ | ∅ | ∅ | 99 | 88.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-terra-medium | GPT-5.6 Terra (medium) | 2026-07-09 | 30.1 | 27 | 37.7 | 33.5 | 1 | 50.5 | 33.3 | ∅ | 17.4 | 44.6 | 10.2 | 74 | -5.1 | 87.2 | 72.3 | ∅ | 62.2 | 76.8 | 72.8 | 25.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-luna-medium | GPT-6 Luna (medium) | 2026-09-22 | 29.5 | 28.2 | 35.9 | 40.5 | 2.5 | 50.9 | 28.3 | ∅ | 10.6 | 43.1 | 15.3 | 78.3 | -5 | ∅ | ∅ | ∅ | ∅ | 73 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-2-codex | GPT-5.2 Codex (xhigh) | 2025-12-11 | 28.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 35.7 | ∅ | 8.7 | 41.1 | 26.6 | 82.3 | -2.2 | 89.9 | ∅ | 37.1 | 77.6 | 76.3 | 92.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-sol-non-reasoning | GPT-5.6 Sol (Non-reasoning) | 2026-07-09 | 28.3 | 25.6 | 36.3 | 22.7 | ∅ | 47.7 | 16.7 | ∅ | 5.1 | 48.7 | 7.2 | 62.3 | 1.1 | 79 | 74.2 | ∅ | ∅ | 71.9 | ∅ | 19.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-sol-non-reasoning | GPT-6 Sol (Non-reasoning) | 2026-09-22 | 28.1 | 29.3 | 36.3 | 34.2 | 13.1 | 47.3 | 18.4 | ∅ | 4 | 45.2 | 16 | 64 | -0.8 | ∅ | ∅ | ∅ | ∅ | 68.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-low | GPT-5.4 (low) | 2026-03-05 | 27.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 30.8 | ∅ | 7.4 | 47.9 | 17.4 | 76.7 | 4.8 | 87.1 | ∅ | 43.2 | 65.9 | 78 | 74.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-terra-low | GPT-5.6 Terra (low) | 2026-07-09 | 27.5 | 25.7 | 29.8 | 29.1 | 1.5 | 49.9 | 29.2 | ∅ | 9.4 | 43.7 | 10.1 | 71.3 | -6.8 | 84.3 | 62.5 | 43.9 | 59.7 | 76.1 | 60.5 | 18.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-2-medium | GPT-5.2 (medium) | 2025-12-11 | 26.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 26.7 | ∅ | 7.9 | 38.3 | 38.4 | 70.3 | 0.3 | 86.4 | ∅ | 43.2 | 65.2 | 74.6 | 74.3 | ∅ | ∅ | ∅ | ∅ | 96.7 | 89.4 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-instant-06-26 | GPT-5.5 Instant (June 2026) | 2026-06-25 | 26 | 29.3 | 0 | 36.4 | 12.6 | 52.5 | 19.9 | ∅ | 0 | 44.4 | 26.7 | 70 | 3.7 | 82.3 | 34.8 | ∅ | ∅ | ∅ | ∅ | 11.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna-medium | GPT-5.6 Luna (medium) | 2026-07-09 | 25 | 21.7 | 30.6 | 23.1 | 0.5 | 46.8 | 25.8 | ∅ | 4.9 | 40.7 | 9.1 | 75 | -13.2 | 85.9 | 53.2 | ∅ | ∅ | 75.8 | ∅ | 17.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-codex | GPT-5 Codex (high) | 2025-09-23 | 24.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ | 5.1 | 38.7 | 24.6 | 71.7 | -7.5 | 83.7 | ∅ | 37.9 | 74.1 | 73.8 | 86.8 | ∅ | ∅ | ∅ | ∅ | 98.7 | 84 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-1 | GPT-5.1 (high) | 2025-11-13 | 24.7 | ∅ | 15.6 | ∅ | ∅ | ∅ | 28.5 | ∅ | 4.9 | 37.7 | 48.1 | 80 | 5.4 | 87.3 | 52.4 | 45.5 | 72.9 | 75.5 | 81.9 | 15.9 | ∅ | ∅ | ∅ | 94 | 86.8 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-mini | GPT-5.4 mini (xhigh) | 2026-03-17 | 24.1 | 10.9 | 25 | 26.2 | 2 | 52.1 | 28.1 | ∅ | 10 | 37.5 | 9.8 | 77 | -18.9 | 87.5 | 59.2 | 52.3 | 73.3 | 73.3 | 83.3 | 25.6 | ∅ | 35.2 | 28.2 | ∅ | ∅ | 60.7 | ∅ | ∅ | ∅ |
+| gpt-5-1-codex | GPT-5.1 Codex (high) | 2025-11-13 | 23.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 25.7 | ∅ | 5.7 | 39.9 | 22.8 | 69.3 | -6.5 | 86 | ∅ | 34.8 | 70 | 72.5 | 83 | ∅ | ∅ | ∅ | ∅ | 95.7 | 84.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-non-reasoning | GPT-5.5 (Non-reasoning) | 2026-04-23 | 23.2 | ∅ | 22.9 | ∅ | ∅ | ∅ | 13.7 | ∅ | 1.4 | 45.6 | 7.3 | 64 | -4.7 | 76.8 | 61 | 49.2 | 46.1 | 71.4 | 69.3 | 14.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5 | GPT-5 (high) | 2025-08-07 | 23 | ∅ | 20.3 | ∅ | ∅ | ∅ | 28.5 | ∅ | 5.7 | 40.3 | 17.8 | 78.2 | -8.7 | 85.4 | 35.2 | 32.6 | 73.1 | 74.2 | 84.8 | 22.1 | ∅ | ∅ | ∅ | 94.3 | 84.6 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-medium | GPT-5 (medium) | 2025-08-07 | 22.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 25.4 | ∅ | 0 | 39.5 | 16.8 | 76 | -10.9 | 84.2 | ∅ | 37.9 | 70.6 | 74.3 | 86.5 | ∅ | ∅ | ∅ | ∅ | 91.7 | 70.3 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-instant-05-26 | GPT-5.5 Instant (May 2026) | 2026-05-05 | 22.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 21.6 | ∅ | 2.6 | 46.3 | 34.7 | 66.3 | 11.2 | 84.6 | ∅ | 42.4 | 71.5 | ∅ | 49.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| o3-pro | o3-pro | 2025-06-10 | 21.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 84.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna-low | GPT-5.6 Luna (low) | 2026-07-09 | 21 | 12.1 | 24 | 11.7 | 0 | 46.1 | 19.8 | ∅ | 2.6 | 39.6 | 10.1 | 70 | -14.6 | 83.5 | 43.4 | ∅ | ∅ | 74 | ∅ | 12.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-luna-low | GPT-6 Luna (low) | 2026-09-22 | 20.9 | 11.2 | 24.6 | 12 | 0 | 46.9 | 20.3 | ∅ | 2.6 | 40.8 | 15.7 | 74 | -9.2 | ∅ | ∅ | ∅ | ∅ | 70.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-low | GPT-5 (low) | 2025-08-07 | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.6 | ∅ | 1.1 | 38.1 | 21 | ∅ | -10.8 | 80.8 | ∅ | 26.5 | 66.6 | 73.8 | 84.2 | ∅ | ∅ | ∅ | ∅ | 83 | 76.3 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-terra-non-reasoning | GPT-5.6 Terra (Non-reasoning) | 2026-07-09 | 20.8 | 22.2 | 29.2 | 12.5 | 0.5 | 45.1 | 11.4 | ∅ | 2 | 36.8 | 5 | 58.7 | -23.2 | 74.6 | 56.2 | ∅ | ∅ | 66.7 | ∅ | 15.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-nano | GPT-5.4 nano (xhigh) | 2026-03-17 | 20.7 | 8.6 | 21.8 | 6 | 0.5 | 47.2 | 28.3 | ∅ | 9.3 | 25.7 | 25.8 | 76.7 | -29.5 | 81.7 | 60.7 | 42.4 | 75.9 | 65.4 | 76 | 27.4 | ∅ | 24.4 | 24.9 | ∅ | ∅ | 52.2 | ∅ | ∅ | ∅ |
+| gpt-5-mini-medium | GPT-5 mini (medium) | 2025-08-07 | 20.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 15.9 | ∅ | 1.4 | 23.1 | 55.7 | 72.3 | -11 | 80.3 | ∅ | 28.8 | 71.2 | 68.8 | 71.1 | ∅ | ∅ | ∅ | ∅ | 85 | 69.2 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-1-codex-mini | GPT-5.1 Codex mini (high) | 2025-11-13 | 20.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 18.5 | ∅ | 0 | 23.2 | 48.4 | 66.7 | -16.4 | 81.3 | ∅ | 33.3 | 67.9 | 69 | 62.9 | ∅ | ∅ | ∅ | ∅ | 91.7 | 83.6 | ∅ | ∅ | ∅ | ∅ |
+| o3 | o3 | 2025-04-16 | 20.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 20.1 | ∅ | 1.1 | 38.6 | 11.9 | 74.7 | -15.5 | 82.7 | ∅ | 37.1 | 71.4 | 70.1 | 80.7 | ∅ | ∅ | ∅ | ∅ | 88.3 | 80.8 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-nano-medium | GPT-5.4 nano (medium) | 2026-03-17 | 20 | ∅ | ∅ | ∅ | ∅ | ∅ | 15.9 | ∅ | 5.1 | 21.9 | 48.9 | 67.3 | -18 | 76.1 | ∅ | 33.3 | 64.4 | 59.5 | 52.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-mini-medium | GPT-5.4 mini (medium) | 2026-03-17 | 19.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 18.6 | ∅ | 2.9 | 36.5 | 10.2 | 67 | -20.6 | 82.3 | ∅ | 34.1 | 64.8 | 71.2 | 36.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-luna-non-reasoning | GPT-6 Luna (Non-reasoning) | 2026-09-22 | 18.3 | 19.6 | 26.7 | 9.1 | 1.5 | 43.1 | 8.6 | ∅ | 1.1 | 31.9 | 21.1 | 39.7 | -21.9 | ∅ | ∅ | ∅ | ∅ | 53.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-non-reasoning | GPT-5.4 (Non-reasoning) | 2026-03-05 | 18.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.3 | ∅ | 0.6 | 37.4 | 15.3 | 58.3 | -15.7 | 74.8 | ∅ | 37.9 | 48.4 | 70.6 | 36 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-2-non-reasoning | GPT-5.2 (Non-reasoning) | 2025-12-11 | 17 | ∅ | ∅ | ∅ | ∅ | ∅ | 8 | ∅ | 0.6 | 30.9 | 37.7 | 45.7 | -12.2 | 71.2 | ∅ | 31.8 | 47.4 | 65.8 | 46.5 | 11.1 | ∅ | ∅ | ∅ | 51 | 66.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-mini | GPT-5 mini (high) | 2025-08-07 | 16.8 | 0 | 12.7 | 6.5 | 0 | 39 | 21.5 | ∅ | 0 | 25 | 43.6 | 72.3 | -17.3 | 82.8 | 3.7 | 33.3 | 75.4 | 70.1 | 68.4 | 15.5 | ∅ | ∅ | ∅ | 90.7 | 83.8 | ∅ | ∅ | ∅ | ∅ |
+| o4-mini | o4-mini (high) | 2025-04-16 | 16.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 16.5 | ∅ | 0.6 | 24.8 | 19.5 | 61 | -35.7 | 78.4 | ∅ | 15.2 | 68.7 | 69.2 | 55.6 | ∅ | ∅ | ∅ | ∅ | 90.7 | 85.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-6-luna-non-reasoning | GPT-5.6 Luna (Non-reasoning) | 2026-07-09 | 15.5 | 10.3 | 20.3 | 5 | 1 | 40.4 | 7.2 | ∅ | 0.3 | 28.6 | 25 | 42.7 | -24.9 | 64.5 | 39 | ∅ | ∅ | 60.3 | ∅ | 9.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| o1 | o1 | 2024-12-05 | 15.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 7 | ∅ | 0.3 | 34.5 | 30.4 | 65 | -11 | 74.7 | ∅ | 12.9 | 70.3 | ∅ | 62.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 67.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-1-non-reasoning | GPT-5.1 (Non-reasoning) | 2025-11-13 | 13.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.3 | ∅ | 0 | 29.5 | 9.4 | 45 | -34.4 | 64.3 | ∅ | 22.7 | 43.2 | 62.4 | 46.5 | ∅ | ∅ | ∅ | ∅ | 38 | 49.4 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-nano | GPT-5 nano (high) | 2025-08-07 | 13 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.5 | ∅ | 0 | 19.1 | 41 | 45 | -28.7 | 67.6 | ∅ | 12.1 | 67.6 | 61 | 36.5 | ∅ | ∅ | ∅ | ∅ | 83.7 | 78.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4-1 | GPT-4.1 | 2025-04-14 | 12.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 27.8 | 6.7 | 68.3 | -39.6 | 66.6 | ∅ | 13.6 | 43 | 61.2 | 47.1 | ∅ | ∅ | ∅ | ∅ | 34.7 | 45.7 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-nano-medium | GPT-5 nano (medium) | 2025-08-07 | 12.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.7 | ∅ | 0 | 17.6 | 47.4 | 43.7 | -25.8 | 67 | ∅ | 17.4 | 65.9 | 58.2 | 30.4 | ∅ | ∅ | ∅ | ∅ | 78.3 | 76.3 | ∅ | ∅ | ∅ | ∅ |
+| o3-mini | o3-mini | 2025-01-31 | 12.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 74.8 | ∅ | 6.8 | ∅ | ∅ | 28.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 71.7 | ∅ | ∅ | ∅ | ∅ |
+| o1-pro | o1-pro | 2025-03-19 | 12.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-nano-non-reasoning | GPT-5.4 nano (Non-Reasoning) | 2026-03-17 | 11.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | 0 | 14.9 | 38.5 | 29.7 | -37.5 | 55.8 | ∅ | 24.2 | 32.7 | 43.8 | 34.8 | ∅ | ∅ | 12.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-oss-120b | gpt-oss-120b (high) | 2025-08-05 | 11.6 | 0 | 4.8 | 0.2 | 0 | 34 | 19.6 | ∅ | 1.1 | 21.8 | 9.2 | 52 | -49.2 | 78.2 | 26.2 | 23.5 | 69 | ∅ | 65.8 | 12.8 | ∅ | 5.6 | 3.1 | 93.4 | 87.8 | 13.9 | ∅ | ∅ | ∅ |
+| gpt-5-minimal | GPT-5 (minimal) | 2025-08-07 | 11.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 6 | ∅ | 0 | 29.6 | 9.9 | ∅ | -33.8 | 67.3 | ∅ | 18.2 | 45.6 | 62.1 | 67 | ∅ | ∅ | ∅ | ∅ | 31.7 | 55.8 | ∅ | ∅ | ∅ | ∅ |
+| o1-preview | o1-preview | 2024-09-12 | 11.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 76.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-mini-non-reasoning | GPT-5.4 mini (Non-Reasoning) | 2026-03-17 | 11.1 | ∅ | 3.8 | ∅ | ∅ | ∅ | 5.9 | ∅ | 0 | 25.7 | 4.4 | 37 | -45.4 | 60.6 | ∅ | 18.2 | 38.8 | 60.5 | 23.4 | ∅ | ∅ | 18.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| o3-mini-high | o3-mini (high) | 2025-01-31 | 11 | 0 | 0 | 0.5 | 0 | 42.8 | 12 | ∅ | 0.3 | 21.3 | 18.9 | 43 | -42.6 | 77.3 | 4.5 | 6.1 | 67.1 | ∅ | 31.3 | 5.2 | ∅ | ∅ | ∅ | ∅ | 73.4 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-chatgpt | GPT-5 (ChatGPT) | 2025-08-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-oss-120b-low | gpt-oss-120b (low) | 2025-08-05 | 10.2 | ∅ | 0 | ∅ | ∅ | ∅ | 5.9 | ∅ | 0 | 19.8 | 8.6 | 46 | -53.5 | 67.2 | 13.9 | 5.3 | 58.3 | ∅ | 45 | 2.9 | ∅ | ∅ | ∅ | 66.7 | 70.7 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4-1-mini | GPT-4.1 mini | 2025-04-14 | 10.2 | ∅ | 0 | ∅ | ∅ | ∅ | 5 | ∅ | 0 | 20.3 | 7.3 | 44 | -53.6 | 66.4 | 10.1 | 7.6 | 38.3 | 58.7 | 52.9 | 5.4 | ∅ | ∅ | ∅ | 46.3 | 48.3 | ∅ | ∅ | ∅ | ∅ |
+| gpt-oss-20b-low | gpt-oss-20b (low) | 2025-08-05 | 10 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.3 | ∅ | 0 | 15.1 | 13.3 | 31 | -58.5 | 61.1 | ∅ | 4.5 | 57.8 | ∅ | 50.3 | ∅ | ∅ | ∅ | ∅ | 62.3 | 65.2 | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-mini-minimal | GPT-5 mini (minimal) | 2025-08-07 | 9.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.1 | ∅ | 0 | 19.2 | 10.7 | 39.3 | -53 | 68.7 | ∅ | 14.4 | 45.6 | 58.4 | 31.9 | ∅ | ∅ | ∅ | ∅ | 46.7 | 54.5 | ∅ | ∅ | ∅ | ∅ |
+| o1-mini | o1-mini | 2024-09-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-4-5 | GPT-4.5 (Preview) | 2025-02-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-oss-20b | gpt-oss-20b (high) | 2025-08-05 | 9 | 0 | 0 | 0.2 | 0 | 38.9 | 11 | ∅ | 1.4 | 16 | 5.9 | 34.7 | -63 | 68.8 | 13.9 | 10.6 | 65.1 | ∅ | 60.2 | 7 | ∅ | ∅ | 0.7 | 89.3 | 77.7 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-chatgpt-03-25 | GPT-4o (March 2025, chatgpt-4o-latest) | 2025-03-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o | GPT-4o (Nov '24) | 2024-11-20 | 8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 2.4 | ∅ | 0 | 19.9 | 62.1 | 49.3 | -10.5 | 54.3 | ∅ | 8.3 | 34.3 | ∅ | 25.1 | ∅ | ∅ | ∅ | ∅ | 6 | 30.9 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4-1-nano | GPT-4.1 nano | 2025-04-14 | 7.8 | ∅ | 0 | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 13.7 | 17.4 | 20.3 | -57.6 | 51.2 | 3.7 | 3.8 | 32 | 40.1 | 17.3 | 3.5 | ∅ | ∅ | ∅ | 24 | 32.6 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-2024-08-06 | GPT-4o (Aug '24) | 2024-08-06 | 7.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 2.3 | ∅ | 0 | 23.7 | 41.6 | 41 | -20.9 | 52.1 | ∅ | 8.3 | 36 | 56.3 | 28.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 31.7 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-2024-05-13 | GPT-4o (May '24) | 2024-05-13 | 7.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 1.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 52.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 33.4 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-chatgpt | GPT-4o (ChatGPT) | 2025-02-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-nano-minimal | GPT-5 nano (minimal) | 2025-08-07 | 7.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 4 | ∅ | 0 | 13.1 | 11.2 | 20 | -64.1 | 42.8 | ∅ | 6.8 | 32.5 | 31.8 | 25.7 | ∅ | ∅ | ∅ | ∅ | 27.3 | 47 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4-turbo | GPT-4 Turbo | 2023-11-06 | 7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 29.1 | ∅ | ∅ | ∅ | ∅ |
+| gpt-4 | GPT-4 | 2023-03-14 | 6.7 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 21 | 30.6 | ∅ | -33.8 | 34.9 | ∅ | ∅ | 33.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-mini | GPT-4o mini | 2024-07-18 | 6.7 | ∅ | 0 | ∅ | ∅ | ∅ | 4.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 42.6 | 5.6 | ∅ | 31 | 41.5 | ∅ | 2.9 | ∅ | ∅ | ∅ | 14.7 | 23.4 | ∅ | ∅ | ∅ | ∅ |
+| gpt-35-turbo | GPT-3.5 Turbo | 2022-11-30 | 5.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 29.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-mini-realtime-dec-2024 | GPT-4o mini Realtime (Dec '24) | 2024-12-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-4-pro | GPT-5.4 Pro (xhigh) | 2026-03-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-3-5-turbo-0613 | GPT-3.5 Turbo (0613) | 2023-06-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-4o-realtime-dec-2024 | GPT-4o Realtime (Dec '24) | 2024-12-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-5-5-pro | GPT-5.5 Pro (xhigh) | 2026-04-23 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| muse-spark-1-3 | Muse Spark 1.3 (max) | 2026-09-02 | 48.1 | 54.4 | 58.7 | 57.9 | 33.3 | 58.8 | 48.7 | 26.6 | 24.9 | 43.6 | 67.1 | 83 | 25 | 93.5 | 84.3 | ∅ | ∅ | ∅ | ∅ | 50.5 | ∅ | 33.2 | ∅ | ∅ | ∅ | ∅ | 43.3 | ∅ | ∅ |
+| muse-spark-1-3-xhigh | Muse Spark 1.3 (xhigh) | 2026-09-02 | 45.1 | 49.3 | 56.4 | 56.8 | 16.7 | 59.7 | 47.5 | ∅ | 26 | 41.5 | 68.5 | 83 | 23.1 | 94.1 | 85.4 | ∅ | ∅ | 82 | ∅ | 47.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 95.5 | ∅ | ∅ | ∅ |
+| muse-spark-1-2 | Muse Spark 1.2 (xhigh) | 2026-08-05 | 39.6 | 41.7 | 49.1 | 40.6 | 7.1 | 57.4 | 45.5 | ∅ | 17.7 | 45.4 | 66.7 | 79 | 27.2 | 90.4 | 80.1 | ∅ | ∅ | ∅ | ∅ | 34.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| muse-spark-1-1 | Muse Spark 1.1 (xhigh) | 2026-07-09 | 33.7 | 17.4 | 35.4 | 38.8 | 6.1 | 58.8 | 46.2 | ∅ | 15.1 | 52.1 | 50 | 77.7 | 28.1 | 89.8 | 77.9 | ∅ | ∅ | ∅ | ∅ | 31.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| muse-spark | Muse Spark | 2026-04-08 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| muse-glimmer | Muse Glimmer (high) | 2026-08-10 | 17.5 | 0 | 13.7 | 6.8 | 0.5 | 44.9 | 22 | 10 | 2.6 | 27 | 18.1 | 83.3 | -32.8 | 83.5 | 51.7 | ∅ | ∅ | 74.3 | ∅ | 23.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 20 | 44.4 | 34.7 |
+| llama-4-maverick | Llama 4 Maverick | 2025-04-05 | 10 | 0 | 0 | 0.2 | 0 | 31.7 | 4.9 | ∅ | 0 | 24.9 | 11.1 | 50 | -41.8 | 67.1 | 7.9 | 6.8 | 43 | 62.1 | 17.8 | 3.7 | ∅ | ∅ | ∅ | 19.3 | 39.7 | ∅ | ∅ | ∅ | ∅ |
+| llama-4-scout | Llama 4 Scout | 2025-04-05 | 8.1 | 0 | 0 | 0.2 | 0 | 21.3 | 3.8 | ∅ | 0 | 15.2 | 20.6 | 27.7 | -52.1 | 58.7 | 3.7 | 1.5 | 39.5 | 52.9 | 15.5 | 3.3 | ∅ | ∅ | ∅ | 14 | 29.9 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-3-instruct-70b | Llama 3.3 Instruct 70B | 2024-12-06 | 7.7 | ∅ | 0 | ∅ | ∅ | ∅ | 3.6 | ∅ | 0 | 19 | 9.8 | 15.7 | -54.2 | 49.8 | 4.9 | 3 | 47.1 | ∅ | 26.6 | ∅ | ∅ | 0.6 | ∅ | 7.7 | 28.8 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-instruct-405b | Llama 3.1 Instruct 405B | 2024-07-23 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-instruct-8b | Llama 3.1 Instruct 8B | 2024-07-23 | 6.9 | ∅ | 0 | ∅ | ∅ | ∅ | 5.3 | ∅ | 0 | 8.5 | 57 | 18 | -30.9 | 25.9 | 1.5 | 0.8 | 28.6 | ∅ | 16.4 | ∅ | ∅ | ∅ | ∅ | 4.3 | 11.6 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-instruct-70b | Llama 3.1 Instruct 70B | 2024-07-23 | 6.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 19.7 | 21.8 | ∅ | -43.1 | 40.9 | ∅ | 3 | 34.4 | ∅ | 15.2 | ∅ | ∅ | ∅ | ∅ | 4 | 23.2 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-2-instruct-90b-vision | Llama 3.2 Instruct 90B (Vision) | 2024-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-2-chat-7b | Llama 2 Chat 7B | 2023-07-18 | 5.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 22.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 0.2 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-2-instruct-3b | Llama 3.2 Instruct 3B | 2024-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-instruct-70b | Llama 3 Instruct 70B | 2024-04-18 | 5.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 17.7 | 12.5 | 0 | -54.3 | 37.9 | ∅ | 0.8 | 37.1 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.8 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-2-instruct-11b-vision | Llama 3.2 Instruct 11B (Vision) | 2024-09-25 | 5.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.5 | ∅ | 0 | 10.6 | 18.1 | 12.7 | -62.6 | 22.1 | ∅ | 0.8 | 30.4 | 29.3 | 14.6 | ∅ | ∅ | ∅ | ∅ | 1.7 | 11 | ∅ | ∅ | ∅ | ∅ |
+| llama-2-chat-70b | Llama 2 Chat 70B | 2023-07-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-2-chat-13b | Llama 2 Chat 13B | 2023-07-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-65b | Llama 65B | 2023-02-24 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-2-instruct-1b | Llama 3.2 Instruct 1B | 2024-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-instruct-8b | Llama 3 Instruct 8B | 2024-04-18 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.1 | ∅ | 0 | 10.4 | 10.2 | 0 | -70.1 | 29.6 | ∅ | 0 | 24.6 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.6 | ∅ | ∅ | ∅ | ∅ |
+| grok-4-7 | Grok 4.7 (xhigh) | 2026-09-21 | 46.4 | 57.9 | 59.8 | 65.6 | 25.8 | 57.4 | 43.1 | 20 | 17.7 | 47.5 | 70.7 | 76.7 | 32 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 42.1 | ∅ | ∅ | ∅ | ∅ | 15 | ∅ | ∅ |
+| grok-4-7-high | Grok 4.7 (high) | 2026-09-21 | 46.3 | 56.8 | 59.7 | 63.5 | 24.7 | 57.8 | 42.3 | ∅ | 18 | 47.8 | 67.6 | 77 | 30.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-6 | Grok 4.6 (high) | 2026-08-12 | 44.3 | 52 | 55.3 | 66.7 | 21.2 | 56.5 | 42.9 | 17 | 17.1 | 48.2 | 65.7 | 80.3 | 30.5 | 94.9 | 88.4 | ∅ | ∅ | ∅ | ∅ | 50.7 | 41.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.2 | ∅ | 48.3 |
+| grok-4-6-xhigh | Grok 4.6 (xhigh) | 2026-08-12 | 44.2 | 52.5 | 56.6 | 67 | 17.2 | 53 | 44.1 | ∅ | 19.7 | 43 | 76 | 81 | 29.3 | 93.5 | 88 | ∅ | ∅ | ∅ | ∅ | 43.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-6-medium | Grok 4.6 (medium) | 2026-08-12 | 42.8 | 49.4 | 55.2 | 63.2 | 13.1 | 55.9 | 42.1 | ∅ | 17.7 | 41.9 | 76 | 81 | 28 | 93.5 | 84.3 | ∅ | ∅ | ∅ | ∅ | 44.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-5 | Grok 4.5 (high) | 2026-07-08 | 38.8 | 39.1 | 43.5 | 57.9 | 10.6 | 55 | 42.7 | ∅ | 15.4 | 51.6 | 45.9 | 79.3 | 25.3 | 93.1 | 81.6 | ∅ | ∅ | 80.4 | ∅ | 42.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.4 | ∅ | ∅ | ∅ |
+| grok-4-6-low | Grok 4.6 (low) | 2026-08-12 | 35.1 | 39.6 | 45.1 | 53.4 | 3 | 49.4 | 27.6 | ∅ | 5.7 | 43.3 | 69.4 | 80.7 | 25.9 | 87.9 | 75.3 | ∅ | ∅ | ∅ | ∅ | 38.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-build-0-1-06-16 | Grok Build 0.1 0616 | 2026-06-16 | 27.2 | ∅ | 27.6 | ∅ | ∅ | ∅ | 38.3 | ∅ | 9.1 | 51.5 | 6.9 | 74.7 | 6.4 | 89.5 | 52.1 | ∅ | ∅ | 76.5 | ∅ | 13.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-20 | Grok 4.20 0309 v2 (Reasoning) | 2026-04-07 | 25.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 34.5 | ∅ | 6.6 | 27.5 | 82.6 | 69 | 14.8 | 91.1 | ∅ | 37.9 | 81.2 | 74.6 | 93 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-20-0309 | Grok 4.20 0309 (Reasoning) | 2026-03-10 | 25.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 32.4 | ∅ | 6 | 28.9 | 77.6 | 67.7 | 13 | 88.5 | ∅ | 40.9 | 82.9 | 73.2 | 96.5 | ∅ | ∅ | ∅ | 14.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-3 | Grok 4.3 (high) | 2026-04-30 | 24.9 | 13.1 | 21.2 | 1.4 | 0 | 48.3 | 37.2 | ∅ | 8 | 34.8 | 74.2 | 73 | 18 | 90.1 | 39.7 | 37.9 | 81.3 | 78.1 | 97.7 | 12.4 | ∅ | 32.7 | 17 | ∅ | ∅ | 68.4 | ∅ | ∅ | ∅ |
+| grok-4-3-medium | Grok 4.3 (medium) | 2026-04-30 | 24.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 30 | ∅ | 4.9 | 28.8 | 83.1 | 75 | 16.7 | 89 | ∅ | 30.3 | 83.3 | 75.8 | 91.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-3-low | Grok 4.3 (low) | 2026-04-30 | 24.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 18.4 | ∅ | 0.6 | 26.7 | 82.6 | 74 | 13.9 | 84.3 | ∅ | 26.5 | 81 | 72.8 | 88.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4 | Grok 4 | 2025-07-10 | 22.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 26.7 | ∅ | 2 | 40.5 | 35.5 | 68 | 2.1 | 87.7 | ∅ | 37.9 | 53.7 | 68.8 | 74.9 | ∅ | ∅ | ∅ | ∅ | 92.7 | 81.9 | ∅ | ∅ | ∅ | ∅ |
+| grok-4-1-fast-reasoning | Grok 4.1 Fast (Reasoning) | 2025-11-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-fast-reasoning | Grok 4 Fast (Reasoning) | 2025-09-19 | 17.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.1 | ∅ | 2.9 | 22.8 | 31.7 | 73.7 | -29.9 | 84.7 | ∅ | 18.9 | 50.5 | 61.8 | 65.8 | ∅ | ∅ | ∅ | ∅ | 89.7 | 83.2 | ∅ | ∅ | ∅ | ∅ |
+| grok-3-mini-reasoning | Grok 3 mini Reasoning (high) | 2025-02-19 | 14.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 11 | ∅ | 0.6 | 15.1 | 74.2 | 55.3 | -6.8 | 79.1 | ∅ | 17.4 | 45.9 | ∅ | 90.4 | ∅ | ∅ | ∅ | ∅ | 84.7 | 69.6 | ∅ | ∅ | ∅ | ∅ |
+| grok-4-20-0309-non-reasoning | Grok 4.20 0309 (Non-reasoning) | 2026-03-10 | 14.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 24.5 | ∅ | 0 | 26.1 | 7.2 | 25.3 | -42.6 | 78.5 | ∅ | 22 | 47.8 | 64 | 69.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-20-non-reasoning | Grok 4.20 0309 v2 (Non-reasoning) | 2026-04-07 | 14.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 27.9 | ∅ | 0.3 | 26.7 | 2.7 | 23.3 | -44.6 | 77.6 | ∅ | 16.7 | 49.3 | 64.9 | 59.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-code-fast-1 | Grok Code Fast 1 | 2025-08-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-3-non-reasoning | Grok 4.3 (Non-reasoning) | 2026-04-30 | 14 | 11.1 | 21.5 | 0.9 | 0 | 39.4 | 6.8 | ∅ | 0 | 23.7 | 25.5 | 32.3 | -33.1 | 65.8 | 34.1 | 18.9 | 47.6 | 64.8 | 65.8 | 8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-3 | Grok 3 | 2025-02-19 | 12.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | 0 | 28.9 | 12.7 | 58 | -33.2 | 69.3 | ∅ | 11.4 | 46.9 | ∅ | 48.8 | ∅ | ∅ | ∅ | ∅ | 58 | 42.5 | ∅ | ∅ | ∅ | ∅ |
+| grok-4-1-fast | Grok 4.1 Fast (Non-reasoning) | 2025-11-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-4-fast | Grok 4 Fast (Non-reasoning) | 2025-09-19 | 11.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 17.7 | 12.4 | 24 | -54.4 | 60.6 | ∅ | 12.1 | 37.7 | 48.1 | 63.7 | ∅ | ∅ | ∅ | ∅ | 41.3 | 40.1 | ∅ | ∅ | ∅ | ∅ |
+| grok-3-reasoning | Grok 3 Reasoning Beta | 2025-02-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-2-1212 | Grok 2 (Dec '24) | 2024-12-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-beta | Grok Beta | 2024-08-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| grok-1 | Grok-1 | 2024-03-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-6-pro | MiMo-V2.6-Pro | 2026-09-21 | 46.3 | 50.9 | 58.7 | 58.6 | 34.8 | 60.9 | 49.4 | 19.2 | 26.6 | 34.9 | 59.4 | 86.3 | 8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 18.3 | ∅ | ∅ |
+| mimo-v2-pro | MiMo-V2-Pro | 2026-03-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-5-pro | MiMo-V2.5-Pro | 2026-04-22 | 26 | 19.1 | 30.4 | 13.7 | 0 | 50.6 | 35.7 | ∅ | 4 | 22.4 | 75.3 | 79.7 | 3.3 | 86.6 | 65.2 | 43.2 | 79.9 | ∅ | 94.2 | 9.9 | ∅ | 38.2 | 2.4 | ∅ | ∅ | 73.3 | ∅ | ∅ | ∅ |
+| mimo-v2-5-0424 | MiMo-V2.5 | 2026-04-22 | 25.2 | 12.6 | 24.3 | 18.4 | 0 | 43.9 | 27.2 | ∅ | 3.7 | 16.8 | 68.1 | 73 | -9.8 | 84.9 | 63.7 | 41.7 | 67.1 | 75.4 | 90.6 | 8.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-omni-0327 | MiMo-V2-Omni-0327 | 2026-03-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-omni | MiMo-V2-Omni | 2026-03-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-0206 | MiMo-V2-Flash (Feb 2026) | 2025-12-16 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-flash-reasoning | MiMo-V2-Flash (Reasoning) | 2025-12-16 | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 22.8 | ∅ | 4.3 | 24.8 | 6.6 | 70.7 | -45.3 | 84.6 | ∅ | 28 | 64.2 | ∅ | 95 | ∅ | ∅ | ∅ | ∅ | 96.3 | 86.8 | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-5-pro-non-reasoning | MiMo-V2.5-Pro (Non-reasoning) | 2026-04-22 | 18.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 14.8 | ∅ | 1.1 | 27.2 | 10.8 | 41.7 | -37.8 | 76.2 | ∅ | 35.6 | 42.7 | ∅ | 72.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mimo-v2-flash | MiMo-V2-Flash (Non-reasoning) | 2025-12-16 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-max | Qwen3.8 Max (0902) | 2026-09-02 | 45.4 | 56.3 | 58.4 | 56.2 | 38.9 | 52.1 | 43.1 | 22.8 | 17.7 | 31.7 | 71.2 | 80.3 | 12 | 92.8 | 88.8 | ∅ | ∅ | 82.8 | ∅ | 47.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 20 | ∅ | ∅ |
+| qwen3-8-max-0803 | Qwen3.8 Max | 2026-08-03 | 40.2 | 44.4 | 54.8 | 49.2 | 18.7 | 53.2 | 43 | ∅ | 20 | 31.9 | 58.3 | 78.3 | 3.4 | 92.7 | 81.3 | ∅ | ∅ | 82.3 | ∅ | 51.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-2-4t-a95b | Qwen3.8 2.4T A95B | 2026-08-12 | 39.9 | 47 | 54.9 | 57.2 | 11.1 | 54.1 | 42.4 | ∅ | 20 | 31.3 | 60.8 | 80.3 | 4.3 | 93.5 | 82 | ∅ | ∅ | ∅ | ∅ | 49.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-flash-next | Qwen3.8-Flash-Next | 2026-08-26 | 39.8 | 54.4 | 55.6 | 55.9 | 25.3 | 50.6 | 38 | ∅ | 11.1 | 24.5 | 54.7 | 79.7 | -9.7 | 92.3 | 86.1 | ∅ | ∅ | 79.8 | ∅ | 45.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-27b | Qwen3.8 27B (xhigh) | 2026-08-14 | 33.7 | 45 | 45.4 | 48.2 | 5.6 | 46.6 | 33.9 | 16.6 | 5.4 | 15.6 | 69.7 | 82 | -10 | 90.5 | 79.8 | ∅ | ∅ | 76.3 | ∅ | 48 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 21.7 | 38.9 | 44.2 |
+| qwen3-7-max | Qwen3.7 Max | 2026-05-19 | 29.5 | 20.7 | 30.7 | 23 | 1.5 | 49.5 | 40.5 | ∅ | 13.4 | 31.1 | 74.4 | 79 | 13.5 | 92.3 | 74.5 | 50.8 | 80.5 | ∅ | 94.7 | 11.8 | ∅ | 42.5 | ∅ | ∅ | ∅ | 83.4 | ∅ | ∅ | ∅ |
+| qwen3-6-max | Qwen3.6 Max Preview | 2026-04-20 | 28.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 30.8 | ∅ | 3.7 | 37.9 | 53.8 | 80.7 | 9.2 | 88.8 | ∅ | 43.9 | 76.6 | ∅ | 95.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-27b-medium | Qwen3.8 27B (medium) | 2026-08-14 | 27.6 | 43.9 | 43.4 | 40.3 | 5.1 | 39 | 14.1 | ∅ | 0 | 18.4 | 33.3 | 79.7 | -36.1 | 84.5 | 65.2 | ∅ | ∅ | 74.2 | ∅ | 47.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-6-plus | Qwen3.6 Plus | 2026-04-02 | 27 | ∅ | 23.8 | ∅ | ∅ | ∅ | 27.8 | ∅ | 2.9 | 26.4 | 65.4 | 78.3 | 0.9 | 88.2 | 61.4 | 43.9 | 75.2 | 78 | 97.7 | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-27b-low | Qwen3.8 27B (low) | 2026-08-14 | 26.2 | 38.7 | 42.1 | 30.1 | 2.5 | 40 | 14 | ∅ | 0 | 17.1 | 47.1 | 77.3 | -26.7 | 84.5 | 67.4 | ∅ | ∅ | 73.8 | ∅ | 32.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-7-plus | Qwen3.7 Plus | 2026-06-01 | 25.2 | 20.6 | 12.8 | 17.4 | 1 | 46.1 | 35.6 | ∅ | 9.1 | 22.5 | 72.3 | 73 | 1.1 | 90 | 61 | 47 | 78 | 80.5 | 93 | 17.5 | ∅ | ∅ | 22.4 | ∅ | ∅ | 81.8 | ∅ | ∅ | ∅ |
+| qwen3-5-27b | Qwen3.5 27B (Reasoning) | 2026-02-24 | 22.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 23.9 | ∅ | 0.9 | 20.7 | 18.5 | 77.7 | -44 | 85.8 | ∅ | 32.6 | 75.6 | 75 | 93.9 | ∅ | ∅ | 35.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-397b-a17b-non-reasoning | Qwen3.5 397B A17B (Non-reasoning) | 2026-02-16 | 21.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.8 | ∅ | 0.9 | 24.5 | 17.3 | 64.3 | -37.9 | 86.1 | ∅ | 35.6 | 51.6 | 52.7 | 83.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-6-27b | Qwen3.6 27B (Reasoning) | 2026-04-22 | 21.4 | 15.7 | 23.7 | 11 | 0 | 42.8 | 23.1 | ∅ | 1.1 | 19.6 | 50.7 | 77.3 | -20 | 84.2 | 60.7 | 34.8 | 67.6 | 74.6 | 94.2 | 16.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 82.3 | ∅ | ∅ | ∅ |
+| qwen3-max-thinking | Qwen3 Max Thinking | 2026-01-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-omni-plus | Qwen3.5 Omni Plus | 2026-03-30 | 20.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 14.9 | ∅ | 0.6 | 17.4 | 63 | 63.7 | -13.1 | 82.6 | ∅ | 21.2 | 51.2 | 70.5 | 88.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8-27b-non-reasoning | Qwen3.8 27B (Non-reasoning) | 2026-08-14 | 20.2 | 19.9 | 27.6 | 12.4 | 0 | 36.2 | 12.1 | ∅ | 0.3 | 8.6 | 81.9 | 69.3 | -7.9 | 81.8 | 49.1 | ∅ | ∅ | 69.9 | ∅ | 20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-6-27b-non-reasoning | Qwen3.6 27B (Non-reasoning) | 2026-04-22 | 19.8 | ∅ | 22.5 | ∅ | ∅ | ∅ | 15.1 | ∅ | 0.9 | 16.7 | 16 | 66.7 | -53.2 | 82.9 | 51.3 | 21.2 | 45.7 | 71.7 | 93.6 | 9.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-27b-non-reasoning | Qwen3.5 27B (Non-reasoning) | 2026-02-24 | 19.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 13.9 | ∅ | 0.3 | 15.7 | 24.9 | 64 | -47.7 | 84.2 | ∅ | 31.8 | 46.9 | 70 | 87.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-35b-a3b | Qwen3.5 35B A3B (Reasoning) | 2026-02-24 | 19.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 21 | ∅ | 0.9 | 20.1 | 14.6 | 72 | -48.1 | 84.5 | ∅ | 26.5 | 72.5 | 72.7 | 89.2 | ∅ | ∅ | 21.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-397b-a17b | Qwen3.5 397B A17B (Reasoning) | 2026-02-16 | 18.4 | 3.1 | 14 | 6.9 | 0 | 44.8 | 29 | ∅ | 1.7 | 30.8 | 11.1 | 77.3 | -30.7 | 89.3 | 51.3 | 40.9 | 78.8 | 77.3 | 95.6 | 13.4 | ∅ | 34.1 | 15.3 | ∅ | ∅ | 72.4 | ∅ | ∅ | ∅ |
+| qwen3-6-35b-a3b | Qwen3.6 35B A3B (Reasoning) | 2026-04-16 | 18.2 | 10.6 | 19 | 5.2 | 0 | 36.6 | 22.2 | ∅ | 0.3 | 18.8 | 49.5 | 71.7 | -22.2 | 84.1 | 44.9 | 34.8 | 64.4 | 75 | 95.3 | 9.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-122b-a10b-non-reasoning | Qwen3.5 122B A10B (Non-reasoning) | 2026-02-24 | 17.7 | ∅ | 9.7 | ∅ | ∅ | ∅ | 15.9 | ∅ | 0.9 | 19.1 | 8.4 | 61.3 | -55 | 82.7 | 47.2 | 29.5 | 50.8 | 70.3 | 84.5 | 10.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-max-thinking-preview | Qwen3 Max Thinking (Preview) | 2025-11-03 | 16.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.7 | ∅ | 0 | 27.4 | 8.5 | 62 | -39.1 | 77.6 | ∅ | 17.4 | 53.8 | ∅ | 83.6 | ∅ | ∅ | ∅ | ∅ | 82.3 | 53.5 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-max | Qwen3 Max | 2025-09-23 | 15.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.9 | ∅ | 0 | 24.4 | 10.1 | 50 | -43.5 | 76.4 | ∅ | 20.5 | 44.1 | ∅ | 74.3 | ∅ | ∅ | ∅ | ∅ | 80.7 | 76.7 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-122b-a10b | Qwen3.5 122B A10B (Reasoning) | 2026-02-24 | 15.6 | 0 | 15.1 | 5.5 | 0 | 39.7 | 25.2 | ∅ | 0.6 | 24.4 | 12.9 | 76.3 | -41.5 | 85.7 | 47.6 | 31.1 | 75.7 | 75 | 93.6 | 15.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-6-35b-a3b-non-reasoning | Qwen3.6 35B A3B (Non-reasoning) | 2026-04-16 | 15.2 | ∅ | 16.9 | ∅ | ∅ | ∅ | 13.9 | ∅ | 0 | 16.7 | 7.9 | 64.3 | -60 | 81.7 | 41.6 | 25.8 | 36.2 | 71 | 85.1 | 5.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-35b-a3b-non-reasoning | Qwen3.5 35B A3B (Non-reasoning) | 2026-02-24 | 15.1 | ∅ | 4.7 | ∅ | ∅ | ∅ | 13.4 | ∅ | 0.6 | 15.7 | 6.6 | 63 | -63 | 81.9 | 40.8 | 10.6 | 44.5 | 69.2 | 86.3 | 4.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-9b | Qwen3.5 9B (Reasoning) | 2026-03-02 | 13.7 | ∅ | 0 | ∅ | ∅ | ∅ | 14.9 | ∅ | 0.3 | 16.4 | 16.4 | 70 | -53.5 | 80.6 | 29.2 | 24.2 | 66.7 | 69.2 | 86.8 | 7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-235b-a22b-reasoning | Qwen3 VL 235B A22B (Reasoning) | 2025-09-23 | 13.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.9 | ∅ | 0 | 20.9 | 14.8 | 63.7 | -46.5 | 77.2 | ∅ | 11.4 | 56.5 | 68.7 | 54.1 | ∅ | ∅ | ∅ | ∅ | 88.3 | 64.6 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-9b-non-reasoning | Qwen3.5 9B (Non-reasoning) | 2026-03-02 | 13.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.4 | ∅ | 0.6 | 14 | 1.6 | 46 | -70.7 | 78.6 | 21.3 | 18.2 | 37.8 | 66.8 | 85.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-4b | Qwen3.5 4B (Reasoning) | 2026-03-02 | 13.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.9 | ∅ | 0 | 15.1 | 13.4 | 63 | -58.3 | 77.1 | 25.8 | 18.2 | 52 | 65.4 | 92.1 | 6.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-235b-a22b-instruct-2507-reasoning | Qwen3 235B A22B 2507 (Reasoning) | 2025-07-25 | 12.7 | 0 | 0 | 2.2 | 0 | 41.4 | 15.9 | ∅ | 0 | 22.8 | 10.2 | 72 | -46.5 | 79 | 12 | 13.6 | 51.2 | ∅ | 53.2 | 7.8 | ∅ | ∅ | ∅ | 91 | 78.8 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-max-preview | Qwen3 Max (Preview) | 2025-09-05 | 12.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 10.1 | ∅ | 0.9 | 24.2 | 11.6 | 43 | -42.8 | 76.4 | ∅ | 19.7 | 48 | ∅ | 32.7 | ∅ | ∅ | ∅ | ∅ | 75 | 65.1 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-omni-flash | Qwen3.5 Omni Flash | 2026-03-30 | 12.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.6 | ∅ | 0 | 14.7 | 6.6 | 52 | -65.1 | 74.2 | ∅ | 8.3 | 38 | 64.7 | 84.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-235b-a22b-instruct-2507 | Qwen3 235B A22B 2507 Instruct | 2025-07-21 | 12 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.1 | ∅ | 0 | 18.7 | 22.8 | 33.9 | -44 | 75.3 | ∅ | 15.2 | 46.1 | ∅ | 33.3 | ∅ | ∅ | ∅ | ∅ | 71.7 | 52.4 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-coder-480b-a35b-instruct | Qwen3 Coder 480B A35B Instruct | 2025-07-22 | 11.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 15.7 | 55.1 | 45.7 | -22.2 | 61.8 | ∅ | 18.9 | 40.5 | ∅ | 43.6 | ∅ | ∅ | ∅ | ∅ | 39.3 | 58.5 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-32b-reasoning | Qwen3 VL 32B (Reasoning) | 2025-10-21 | 11.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 10.1 | ∅ | 0 | 17 | 16.3 | 55.3 | -52.5 | 73.3 | ∅ | 7.6 | 59.4 | 63.4 | 45.6 | ∅ | ∅ | ∅ | ∅ | 84.7 | 73.8 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-next-80b-a3b-reasoning | Qwen3 Next 80B A3B (Reasoning) | 2025-09-11 | 11.2 | ∅ | 0 | ∅ | ∅ | ∅ | 12.6 | ∅ | 0 | 19 | 13 | 63.7 | -51.4 | 75.9 | 6.7 | 9.8 | 60.7 | ∅ | 41.5 | 6.2 | ∅ | ∅ | ∅ | 84.3 | 78.4 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-4b-non-reasoning | Qwen3.5 4B (Non-reasoning) | 2026-03-02 | 10.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 8 | ∅ | 0 | 11.2 | 3.2 | 34.7 | -74.7 | 71.2 | 21.3 | 11.4 | 33.3 | 62.1 | 87.7 | 4.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-235b-a22b-instruct | Qwen3 VL 235B A22B Instruct | 2025-09-23 | 9.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.6 | ∅ | 0 | 20.3 | 8.4 | 32.7 | -52.7 | 71.2 | ∅ | 6.8 | 42.7 | 67.6 | 35.1 | ∅ | ∅ | ∅ | ∅ | 70.7 | 59.4 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-30b-a3b-2507-reasoning | Qwen3 30B A3B 2507 (Reasoning) | 2025-07-30 | 9.8 | 0 | 0 | 0.8 | 0 | 33 | 10.3 | ∅ | 0.3 | 16.3 | 13.5 | 61.3 | -56.1 | 70.7 | 1.5 | 5.3 | 50.7 | ∅ | 28.1 | 5.4 | ∅ | ∅ | ∅ | 56.3 | 70.7 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-next-80b-a3b-instruct | Qwen3 Next 80B A3B Instruct | 2025-09-11 | 9.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.6 | ∅ | 0 | 17.3 | 7.3 | 52.7 | -59.5 | 73.8 | ∅ | 7.6 | 39.7 | ∅ | 21.6 | ∅ | ∅ | ∅ | ∅ | 66.3 | 68.4 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-coder-30b-a3b-instruct | Qwen3 Coder 30B A3B Instruct | 2025-07-31 | 9.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 16.4 | 19.7 | 32.7 | -50.7 | 51.6 | ∅ | 15.2 | 32.7 | ∅ | 34.5 | ∅ | ∅ | ∅ | ∅ | 29 | 40.3 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-235b-a22b-instruct-reasoning | Qwen3 235B A22B (Reasoning) | 2025-04-28 | 9.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 11 | ∅ | 0 | 18.5 | 22.4 | 0 | -44.7 | 70 | ∅ | 6.1 | 38.7 | ∅ | 24 | ∅ | ∅ | ∅ | ∅ | 82 | 62.2 | ∅ | ∅ | ∅ | ∅ |
+| qwq-32b | QwQ 32B | 2025-03-05 | 9.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.4 | ∅ | ∅ | ∅ | ∅ | 26.7 | ∅ | 59.3 | ∅ | ∅ | 38.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 29 | 63.1 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-30b-a3b-reasoning | Qwen3 VL 30B A3B (Reasoning) | 2025-10-03 | 9.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.9 | ∅ | 0 | 16.9 | 10.2 | ∅ | -57.6 | 72 | ∅ | 5.3 | 45.1 | 61.8 | 19.9 | ∅ | ∅ | ∅ | ∅ | 82.3 | 69.7 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-coder-next | Qwen3 Coder Next | 2026-02-03 | 9.2 | 0 | 0 | 1.1 | 0 | 36.2 | 10.1 | ∅ | 0 | 16.2 | 6.3 | 47 | -62.4 | 73.7 | 38.2 | 18.2 | 35.2 | ∅ | 79.5 | 5.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-4b-2507-instruct-reasoning | Qwen3 4B 2507 (Reasoning) | 2025-08-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-32b-instruct-reasoning | Qwen3 32B (Reasoning) | 2025-04-28 | 8.6 | 0 | 0 | 1 | 0 | 36 | 7.4 | ∅ | 0.3 | 17.4 | 17.9 | 0 | -50.4 | 66.8 | 5.2 | 3 | 36.3 | ∅ | 29.8 | 5.4 | ∅ | ∅ | ∅ | 73 | 54.6 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-32b-instruct | Qwen3 VL 32B Instruct | 2025-10-21 | 8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.8 | ∅ | 0 | 14.8 | 8.2 | ∅ | -63.4 | 67.1 | ∅ | 8.3 | 39.2 | 64.3 | 29.2 | ∅ | ∅ | ∅ | ∅ | 68.3 | 51.4 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-235b-a22b-instruct | Qwen3 235B A22B (Non-reasoning) | 2025-04-28 | 8.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 18.6 | 12.9 | 0 | -52.4 | 61.3 | ∅ | 6.1 | 36.6 | ∅ | 27.2 | ∅ | ∅ | ∅ | ∅ | 23.7 | 34.3 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-8b-reasoning | Qwen3 VL 8B (Reasoning) | 2025-10-14 | 8.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0.3 | 20.4 | 8.6 | 33.3 | -52.3 | 57.9 | ∅ | 3.8 | 39.9 | 56.6 | 22.5 | ∅ | ∅ | ∅ | ∅ | 30.7 | 35.3 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-14b-instruct-reasoning | Qwen3 14B (Reasoning) | 2025-04-28 | 8.2 | 0 | 0 | 0.2 | 0 | 30.7 | 4.5 | ∅ | 0 | 15.3 | 24.2 | 0 | -48.9 | 60.4 | 4.9 | 3.8 | 40.5 | ∅ | 34.5 | 5.6 | ∅ | ∅ | ∅ | 55.7 | 52.3 | ∅ | ∅ | ∅ | ∅ |
+| qwen-2-5-max | Qwen2.5 Max | 2025-01-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-30b-a3b-instruct | Qwen3 VL 30B A3B Instruct | 2025-10-03 | 7.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.3 | ∅ | 0 | 15.6 | 6.3 | ∅ | -63.4 | 69.5 | ∅ | 6.1 | 33.1 | 62.1 | 19 | ∅ | ∅ | ∅ | ∅ | 72.3 | 47.6 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-omni-30b-a3b-reasoning | Qwen3 Omni 30B A3B (Reasoning) | 2025-09-22 | 7.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.5 | ∅ | 0 | 14.6 | 11 | 0 | -61.4 | 72.6 | ∅ | 3.8 | 43.4 | 60.2 | 21.3 | ∅ | ∅ | ∅ | ∅ | 74 | 67.9 | ∅ | ∅ | ∅ | ∅ |
+| qwen2-5-72b-instruct | Qwen2.5 Instruct 72B | 2024-09-19 | 7.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.6 | ∅ | 0 | 17.5 | 14.5 | ∅ | -53.1 | 49.1 | ∅ | 4.5 | 36.9 | ∅ | 34.5 | ∅ | ∅ | ∅ | ∅ | 14 | 27.6 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-30b-a3b-instruct-reasoning | Qwen3 30B A3B (Reasoning) | 2025-04-28 | 7.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.2 | ∅ | 0 | 16.2 | 19.3 | 0 | -51.5 | 61.6 | ∅ | 2.3 | 41.5 | ∅ | 26 | ∅ | ∅ | ∅ | ∅ | 72.3 | 50.6 | ∅ | ∅ | ∅ | ∅ |
+| QwQ-32B-Preview | QwQ 32B-Preview | 2024-11-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-30b-a3b-2507 | Qwen3 30B A3B 2507 Instruct | 2025-07-29 | 7.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.9 | ∅ | 0 | 15 | 4.6 | 26.3 | -66.1 | 65.9 | ∅ | 6.1 | 33.1 | ∅ | 10.2 | ∅ | ∅ | ∅ | ∅ | 66.3 | 51.5 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-32b-instruct | Qwen3 32B (Non-reasoning) | 2025-04-28 | 7.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | ∅ | ∅ | ∅ | 0 | ∅ | 53.5 | ∅ | ∅ | 31.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 19.7 | 28.8 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8b-instruct-reasoning | Qwen3 8B (Reasoning) | 2025-04-28 | 7.3 | 0 | 0 | 0.3 | 0 | 27.9 | 3.9 | ∅ | 0 | 13.6 | 9.3 | 0 | -64.7 | 58.9 | 2.2 | 2.3 | 33.5 | ∅ | 27.8 | 4.7 | ∅ | ∅ | ∅ | 19 | 40.6 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-8b-instruct | Qwen3 VL 8B Instruct | 2025-10-14 | 7.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 2.7 | ∅ | 0 | 20.5 | 9 | 16.7 | -51.9 | 42.7 | ∅ | 2.3 | 32.3 | 47.3 | 29.2 | ∅ | ∅ | ∅ | ∅ | 27.3 | 33.2 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-4b-instruct-reasoning | Qwen3 4B (Reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-4b-reasoning | Qwen3 VL 4B (Reasoning) | 2025-10-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-2b | Qwen3.5 2B (Reasoning) | 2026-03-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen2.5-32b-instruct | Qwen2.5 Instruct 32B | 2024-09-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-4b-2507-instruct | Qwen3 4B 2507 Instruct | 2025-08-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen2-5-coder-32b-instruct | Qwen2.5 Coder Instruct 32B | 2024-11-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-14b-instruct | Qwen3 14B (Non-reasoning) | 2025-04-28 | 6.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | 0 | 13.3 | 7.7 | 0 | -66.7 | 47 | ∅ | 5.3 | 23.9 | ∅ | 32.2 | ∅ | ∅ | ∅ | ∅ | 58 | 28 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-30b-a3b-instruct | Qwen3 30B A3B (Non-reasoning) | 2025-04-28 | 6.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 12 | 11.5 | 0 | -66 | 51.5 | ∅ | 6.8 | 31.9 | ∅ | 22.2 | ∅ | ∅ | ∅ | ∅ | 21.7 | 32.2 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-4b-instruct | Qwen3 4B (Non-reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen-turbo | Qwen2.5 Turbo | 2024-11-18 | 6.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 41 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 16.3 | ∅ | ∅ | ∅ | ∅ |
+| qwen2-72b-instruct | Qwen2 Instruct 72B | 2024-06-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-2b-non-reasoning | Qwen3.5 2B (Non-reasoning) | 2026-03-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-0-8b | Qwen3.5 0.8B (Reasoning) | 2026-03-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-omni-30b-a3b-instruct | Qwen3 Omni 30B A3B Instruct | 2025-09-22 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 14.3 | 2.4 | 0 | -69.3 | 62 | ∅ | 1.5 | 31.2 | 55.5 | 16.4 | ∅ | ∅ | ∅ | ∅ | 52.3 | 42.2 | ∅ | ∅ | ∅ | ∅ |
+| qwen3-8b-instruct | Qwen3 8B (Non-reasoning) | 2025-04-28 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | 2 | ∅ | 0 | 11.1 | 4.4 | 0 | -73.9 | 45.2 | ∅ | 2.3 | 28.6 | ∅ | 24.9 | ∅ | ∅ | ∅ | ∅ | 24.3 | 20.2 | ∅ | ∅ | ∅ | ∅ |
+| qwen2-5-coder-7b-instruct | Qwen2.5 Coder Instruct 7B | 2024-09-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-vl-4b-instruct | Qwen3 VL 4B Instruct | 2025-10-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen1.5-110b-chat | Qwen1.5 Chat 110B | 2024-04-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen-chat-72b | Qwen Chat 72B | 2023-11-30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-5-0-8b-non-reasoning | Qwen3.5 0.8B (Non-reasoning) | 2026-03-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-1.7b-instruct-reasoning | Qwen3 1.7B (Reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen-chat-14b | Qwen Chat 14B | 2023-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-1.7b-instruct | Qwen3 1.7B (Non-reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-0.6b-instruct | Qwen3 0.6B (Non-reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| qwen3-0.6b-instruct-reasoning | Qwen3 0.6B (Reasoning) | 2025-04-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-3 | GLM-5.3 (max) | 2026-08-18 | 44.8 | 50.8 | 57.3 | 62.2 | 41.9 | 59 | 42.3 | 11.2 | 19.1 | 33.9 | 70.4 | 79.7 | 14.3 | 91.7 | 83.9 | ∅ | ∅ | ∅ | ∅ | 50.3 | ∅ | 46.1 | ∅ | ∅ | ∅ | ∅ | 48.3 | 33.3 | 36.4 |
+| glm-5-3-flash | GLM 5.3 Flash | 2026-08-26 | 41.8 | 47.6 | 57 | 60.4 | 32.8 | 51.6 | 39.9 | 15.4 | 15.4 | 27.5 | 72.4 | 80 | 7.5 | 91.2 | 84.3 | ∅ | ∅ | ∅ | ∅ | 47.2 | ∅ | 51.2 | ∅ | ∅ | ∅ | ∅ | 51.1 | 44.4 | 33.2 |
+| glm-5-3-low | GLM-5.3 (low) | 2026-08-18 | 34.3 | 34.4 | 40.2 | 52 | 34.8 | 42 | 36.6 | ∅ | 14.6 | 33.9 | 36 | 72.7 | -8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-2 | GLM-5.2 (max) | 2026-06-16 | 33.7 | 36.5 | 42.9 | 28.4 | 1 | 51.2 | 41.1 | ∅ | 20.9 | 24.3 | 73.7 | 78.3 | 4.4 | 89.5 | 77.9 | 50.8 | 73.3 | ∅ | 99.1 | 34.6 | ∅ | 42.7 | 33.7 | ∅ | ∅ | 91 | ∅ | ∅ | ∅ |
+| glm-5 | GLM-5 (Reasoning) | 2026-02-11 | 27.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 29.3 | ∅ | 2 | 26.3 | 64.7 | 75.7 | 0.3 | 82 | ∅ | 43.2 | 72.3 | ∅ | 98.2 | ∅ | ∅ | ∅ | 14.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-turbo | GLM-5-Turbo | 2026-03-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-1 | GLM-5.1 (Reasoning) | 2026-04-07 | 26.1 | 23.1 | 30.2 | 20.3 | 2 | 44.8 | 30.1 | ∅ | 4.6 | 23.7 | 70.1 | 73.7 | 0.9 | 86.8 | 61.8 | 43.2 | 76.3 | ∅ | 97.7 | 13.6 | ∅ | 40.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-1-non-reasoning | GLM-5.1 (Non-reasoning) | 2026-04-07 | 24.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 27.9 | ∅ | 0 | 25.2 | 36.4 | 53.3 | -22.4 | 83.9 | ∅ | 35.6 | 52 | ∅ | 97.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5v-turbo | GLM 5V Turbo (Reasoning) | 2026-04-01 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-5-2-non-reasoning | GLM-5.2 (Non-reasoning) | 2026-06-16 | 22.4 | ∅ | 36.7 | ∅ | ∅ | ∅ | 9.8 | ∅ | 3.1 | 20.3 | 66.3 | 42.3 | -6.6 | 68.6 | 51.7 | ∅ | ∅ | ∅ | ∅ | 16.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-4-7 | GLM-4.7 (Reasoning) | 2025-12-22 | 22.2 | ∅ | 25 | ∅ | ∅ | ∅ | 27.4 | ∅ | 1.7 | 29.3 | 7 | 71 | -36.4 | 85.9 | 45.3 | 31.8 | 67.9 | ∅ | 95.9 | 12.2 | ∅ | ∅ | ∅ | 95 | 89.4 | ∅ | ∅ | ∅ | ∅ |
+| glm-5-non-reasoning | GLM-5 (Non-reasoning) | 2026-02-11 | 21.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.6 | ∅ | 0 | 23.1 | 54.7 | 43.7 | -11.8 | 66.6 | ∅ | 39.4 | 55.2 | ∅ | 97.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-4-6-reasoning | GLM-4.6 (Reasoning) | 2025-09-30 | 18.5 | ∅ | 12.3 | ∅ | ∅ | ∅ | 14.5 | ∅ | 1.1 | 26.9 | 5.9 | 54 | -41.9 | 78 | 49.4 | 25 | 43.4 | ∅ | 70.5 | 13.4 | ∅ | ∅ | ∅ | 86 | 69.5 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-7-non-reasoning | GLM-4.7 (Non-reasoning) | 2025-12-22 | 17.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.4 | ∅ | 0 | 23.6 | 7.1 | 40.7 | -47.3 | 66.4 | ∅ | 30.3 | 54.6 | ∅ | 94.2 | ∅ | ∅ | ∅ | ∅ | 48 | 56.2 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-6 | GLM-4.6 (Non-reasoning) | 2025-09-30 | 14.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.5 | ∅ | 0 | 21.4 | 32.4 | 26.3 | -31.7 | 63.2 | ∅ | 28.8 | 36.7 | ∅ | 76.9 | ∅ | ∅ | ∅ | ∅ | 44.3 | 56.1 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-7-flash | GLM-4.7-Flash (Reasoning) | 2026-01-19 | 14.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.6 | ∅ | 0.3 | 16.2 | 6.1 | 41.7 | -62.6 | 58.1 | ∅ | 22 | 60.8 | ∅ | 98.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-4.5 | GLM-4.5 (Reasoning) | 2025-07-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-4-6v-reasoning | GLM-4.6V (Reasoning) | 2025-12-08 | 11.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.6 | ∅ | 0 | 16.2 | 48.5 | 48.7 | -26.9 | 71.9 | ∅ | 14.4 | 30.1 | 48.6 | 31.6 | ∅ | ∅ | ∅ | ∅ | 85.3 | 16 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-5-air | GLM-4.5-Air | 2025-07-28 | 11.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 7 | ∅ | 0 | 16.3 | 7.1 | 46.7 | -61.5 | 73.3 | ∅ | 20.5 | 37.6 | ∅ | 46.5 | ∅ | ∅ | ∅ | ∅ | 80.7 | 68.4 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-7-flash-non-reasoning | GLM-4.7-Flash (Non-reasoning) | 2026-01-19 | 10.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 5 | ∅ | 0 | 13.1 | 5.7 | 20.3 | -68.9 | 45.2 | ∅ | 3.8 | 46.3 | ∅ | 91.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| glm-4-6v | GLM-4.6V (Non-reasoning) | 2025-12-08 | 8.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.7 | ∅ | 0 | 17.4 | 33.4 | 17 | -37.6 | 56.6 | ∅ | 3 | 27.9 | 42.2 | 30.7 | ∅ | ∅ | ∅ | ∅ | 26.3 | 41.1 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-5v-reasoning | GLM-4.5V (Reasoning) | 2025-08-11 | 7.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.3 | ∅ | 0 | 20.8 | 15.2 | 0 | -46.3 | 68.4 | ∅ | 5.3 | 34.2 | 50.5 | 22.5 | ∅ | ∅ | ∅ | ∅ | 73 | 60.4 | ∅ | ∅ | ∅ | ∅ |
+| glm-4-5v | GLM-4.5V (Non-reasoning) | 2025-08-11 | 6.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.5 | ∅ | 0 | 18.2 | 9.8 | 0 | -55.6 | 57.3 | ∅ | 6.8 | 28.6 | 42.8 | 19.6 | ∅ | ∅ | ∅ | ∅ | 15.3 | 35.2 | ∅ | ∅ | ∅ | ∅ |
+| step-5 | Step 5 Preview | 2026-09-18 | 43.7 | 46.6 | 53.3 | 51 | 33.3 | 58.9 | 46.5 | 14.8 | 20.9 | 41.5 | 57 | 88.3 | 16.4 | ∅ | ∅ | ∅ | ∅ | 76.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 16.7 | ∅ | ∅ |
+| step-3-7-flash | Step 3.7 Flash | 2026-05-29 | 19.5 | ∅ | 17.2 | ∅ | ∅ | 43.9 | 21.4 | ∅ | 2.3 | 25.8 | 15 | 73.7 | -37.3 | 80.9 | 39.3 | 35.6 | 67.3 | 75.3 | 98.5 | 12 | ∅ | 30.3 | 14.8 | ∅ | ∅ | 72.7 | ∅ | ∅ | ∅ |
+| step-3-5-flash | Step 3.5 Flash 2603 | 2026-04-02 | 17 | ∅ | ∅ | ∅ | ∅ | ∅ | 24.5 | ∅ | 2.3 | 24.6 | 8.7 | 63 | -44.2 | 82.6 | ∅ | 32.6 | 66.5 | ∅ | 87.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| step-3-5-flash-0202 | Step 3.5 Flash | 2026-02-02 | 16.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 21.1 | ∅ | 2.5 | 23.6 | 14.3 | 50 | -41.8 | 83.1 | ∅ | 27.3 | 64.6 | ∅ | 94.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| step-3-vl-10b | Step3 VL 10B | 2026-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kimi-k3 | Kimi K3 (max) | 2026-07-16 | 43.6 | 50.3 | 51.2 | 58.3 | 12.6 | 59.5 | 46.9 | 22 | 23.4 | 47.6 | 46.8 | 88.7 | 19.7 | 93.5 | 85 | ∅ | ∅ | 80.5 | ∅ | 46 | 38.8 | 47.7 | 41.3 | ∅ | ∅ | 94.6 | 38.3 | 38.9 | 45.3 |
+| kimi-k3-low | Kimi K3 (low) | 2026-07-16 | 34.5 | 24.1 | ∅ | 49.3 | 12.6 | 52.7 | 25 | ∅ | 3.1 | 45.8 | 22.9 | 79.3 | 3.9 | 84.2 | 82.4 | ∅ | ∅ | 78.5 | ∅ | 41.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2-6 | Kimi K2.6 | 2026-04-20 | 27 | 15.9 | 26.3 | 13 | 0.5 | 51.5 | 37.5 | ∅ | 8 | 32.6 | 59.5 | 81 | 5.3 | 91.1 | 65.9 | 43.9 | 76 | 79.4 | 95.9 | 23.3 | ∅ | 31.2 | 28.5 | ∅ | ∅ | 84.1 | ∅ | ∅ | ∅ |
+| kimi-k2-7-code | Kimi K2.7 Code | 2026-06-12 | 25.8 | 17.8 | 26.3 | 24.5 | 1 | 47.8 | 35 | ∅ | 10 | 39.6 | 17.6 | 79.3 | -10.2 | 89.6 | 67.4 | 44.7 | 63.1 | ∅ | 90.1 | 20.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 85 | ∅ | ∅ | ∅ |
+| kimi-k2-6-non-reasoning | Kimi K2.6 (Non-reasoning) | 2026-04-20 | 23.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.6 | ∅ | 1.4 | 24.3 | 55.8 | 69.7 | -9.2 | 78.8 | ∅ | 37.9 | 44.3 | ∅ | 93.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2-5 | Kimi K2.5 (Reasoning) | 2026-01-27 | 23.5 | ∅ | 16.2 | ∅ | ∅ | ∅ | 30.7 | ∅ | 3.1 | 35.2 | 34.3 | 78 | -7.3 | 87.9 | 45.7 | 34.8 | 70.2 | 75.4 | 95.9 | 14.2 | ∅ | ∅ | 11.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2-thinking | Kimi K2 Thinking | 2025-11-06 | 22 | ∅ | ∅ | ∅ | ∅ | ∅ | 23.8 | ∅ | 2.6 | 30.9 | 24.4 | 72 | -21.4 | 83.8 | ∅ | 31.1 | 68.1 | ∅ | 93 | ∅ | ∅ | ∅ | ∅ | 94.7 | 85.3 | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2-5-non-reasoning | Kimi K2.5 (Non-reasoning) | 2026-01-27 | 19.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 13.2 | ∅ | 0.6 | 24.1 | 50 | 67.3 | -13.8 | 78.9 | ∅ | 18.9 | 43.7 | 73.1 | 81.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2-0905 | Kimi K2 0905 | 2025-09-05 | 15.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.4 | ∅ | 0 | 25.4 | 30.3 | 53 | -26.6 | 76.7 | ∅ | 23.5 | 41.7 | ∅ | 73.4 | ∅ | ∅ | ∅ | ∅ | 57.3 | 61 | ∅ | ∅ | ∅ | ∅ |
+| kimi-k2 | Kimi K2 | 2025-07-11 | 12.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.4 | ∅ | 0 | 27.4 | 23.4 | 53 | -28.3 | 76.6 | ∅ | 15.9 | 41.5 | ∅ | 61.1 | ∅ | ∅ | ∅ | ∅ | 57 | 55.6 | ∅ | ∅ | ∅ | ∅ |
+| kimi-linear-48b-a3b-instruct | Kimi Linear 48B A3B Instruct | 2025-10-30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-8-flash | Gemini 3.8 Flash (high) | 2026-09-02 | 40.9 | 35.1 | 45.6 | 59.9 | 19.7 | 56.6 | 47.8 | 21 | 18.3 | 54.6 | 44.8 | 81.3 | 29.6 | 95.3 | 87.6 | ∅ | ∅ | 85.6 | ∅ | 44.9 | ∅ | 52.5 | ∅ | ∅ | ∅ | ∅ | 21.7 | ∅ | ∅ |
+| gemini-3-8-flash-medium | Gemini 3.8 Flash (medium) | 2026-09-02 | 39.8 | 33.9 | 45.4 | 60.9 | 19.7 | 55.1 | 42.1 | ∅ | 12.3 | 53 | 48.1 | 84 | 28.6 | 93.5 | 83.9 | ∅ | ∅ | 84.2 | ∅ | 45.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-7-flash-medium | Gemini 3.7 Flash (medium) | 2026-08-13 | 39.6 | ∅ | 42 | ∅ | ∅ | 59.8 | 39 | ∅ | 9.4 | 54 | 34.1 | 83 | 23.7 | 92.1 | 78.3 | ∅ | ∅ | 84.7 | ∅ | 35.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-7-flash | Gemini 3.7 Flash (high) | 2026-08-13 | 39.1 | 30.3 | 43.6 | 62 | 13.6 | 57.2 | 47.9 | ∅ | 14.3 | 55.3 | 35.5 | 81.7 | 26.5 | 94.5 | 85.8 | ∅ | ∅ | 85.5 | ∅ | 32.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 90.7 | ∅ | ∅ | ∅ |
+| gemini-3-7-flash-low | Gemini 3.7 Flash (low) | 2026-08-13 | 36.9 | ∅ | 40.3 | ∅ | ∅ | 55.7 | 35.1 | ∅ | 5.7 | 53.6 | 32.3 | 78.7 | 22.1 | 90.1 | 79.8 | ∅ | ∅ | 84.9 | ∅ | 29.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-6-flash | Gemini 3.6 Flash (high) | 2026-07-21 | 34 | 22.5 | 38.2 | 53 | 7.1 | 53.4 | 40.8 | ∅ | 10.6 | 50 | 44.4 | 80 | 22.1 | 92.8 | 77.5 | ∅ | ∅ | 83.2 | ∅ | 29.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 85.1 | ∅ | ∅ | ∅ |
+| gemini-3-5-flash-medium | Gemini 3.5 Flash (medium) | 2026-05-19 | 33.6 | 18.7 | ∅ | ∅ | ∅ | ∅ | 41.3 | ∅ | 10.9 | 51.1 | 38.2 | 74.3 | 20.8 | 92.1 | ∅ | 39.4 | 74.6 | 83.9 | 95.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-8-flash-low | Gemini 3.8 Flash (low) | 2026-09-02 | 33.5 | 27.7 | 39.7 | 36.5 | 10.1 | 55 | 37.1 | ∅ | 4 | 52.2 | 35.4 | 80.7 | 21.4 | 92 | 83.1 | ∅ | ∅ | 84.5 | ∅ | 33.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-5-flash | Gemini 3.5 Flash (high) | 2026-05-19 | 32.6 | 18.6 | 34.2 | 42.1 | 6.6 | 53.9 | 42.7 | ∅ | 13.1 | 51.4 | 37.8 | 73.3 | 21.2 | 92.2 | 78.7 | 40.9 | 76.3 | 84.3 | 95.3 | 32.2 | ∅ | 40.3 | 47.1 | ∅ | ∅ | 82.1 | ∅ | ∅ | ∅ |
+| gemini-3-1-pro-preview | Gemini 3.1 Pro Preview | 2026-02-19 | 29.7 | 0 | 13.8 | 35.4 | 4 | 58.7 | 47 | ∅ | 17.7 | 54.9 | 49.1 | 82 | 31.9 | 94.1 | 73.8 | 53.8 | 77.1 | 82.4 | 95.6 | 21.4 | ∅ | 30.3 | 32 | ∅ | ∅ | 58.9 | ∅ | ∅ | ∅ |
+| gemini-3-pro | Gemini 3 Pro Preview (high) | 2025-11-18 | 28 | ∅ | ∅ | ∅ | ∅ | ∅ | 39.7 | ∅ | 9.1 | 55.8 | 8.5 | 76 | 15.3 | 90.8 | ∅ | 41.7 | 70.4 | 80.2 | 87.1 | ∅ | ∅ | ∅ | ∅ | 95.7 | 91.7 | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-flash-reasoning | Gemini 3 Flash Preview (Reasoning) | 2025-12-17 | 26.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 36.6 | ∅ | 8.6 | 53.4 | 7 | 78 | 10.1 | 89.8 | ∅ | 38.6 | 78 | 79.9 | 80.4 | 20.8 | ∅ | ∅ | 27.7 | 97 | 90.8 | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-5-flash-minimal | Gemini 3.5 Flash (minimal) | 2026-05-19 | 23.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 24.1 | ∅ | 1.4 | 43 | 25.7 | 61.3 | 0.7 | 82.8 | ∅ | 46.2 | 47.3 | 80.1 | 58.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-pro-low | Gemini 3 Pro Preview (low) | 2025-11-18 | 22.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 29.5 | ∅ | 0 | 48.3 | 10 | 74 | 1.8 | 88.7 | ∅ | 34.1 | 49.7 | ∅ | 68.1 | ∅ | ∅ | ∅ | ∅ | 86.7 | 85.7 | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-5-flash-lite | Gemini 3.5 Flash-Lite | 2026-07-21 | 22.2 | 7.4 | 23.5 | 25 | 1 | 41.3 | 18.8 | 13.6 | 0 | 29.5 | 65.6 | 76 | 5.2 | 83.8 | 53.6 | ∅ | ∅ | 79 | ∅ | 17.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 7.2 | ∅ | 42.3 |
+| gemma-4-31b | Gemma 4 31B (Reasoning) | 2026-04-02 | 19 | 0 | 5.3 | 4.9 | 0 | 45.5 | 23.6 | ∅ | 1.4 | 20 | 15 | 69.7 | -47.9 | 85.7 | 43.4 | 36.4 | 75.6 | 73.4 | 59.9 | 14.8 | ∅ | 37.3 | ∅ | ∅ | ∅ | 47.2 | ∅ | ∅ | ∅ |
+| gemini-3-flash | Gemini 3 Flash Preview (Non-reasoning) | 2025-12-17 | 17.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 15 | ∅ | 1.4 | 45.8 | 7.6 | 55.3 | -4.3 | 81.2 | ∅ | 31.8 | 55.1 | 78.6 | 43.3 | ∅ | ∅ | ∅ | ∅ | 55.7 | 79.7 | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-26b-a4b | Gemma 4 26B A4B (Reasoning) | 2026-04-02 | 16.7 | ∅ | 2.6 | ∅ | ∅ | 40 | 19.3 | ∅ | 0 | 19.1 | 13.6 | 65.7 | -50.8 | 79.2 | 39 | 13.6 | 72.4 | 69.2 | 43.6 | 12 | ∅ | 23.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-pro | Gemini 2.5 Pro | 2025-06-05 | 16.1 | 0 | 0 | 2.2 | 0 | 46.3 | 22.5 | ∅ | 2.6 | 39.1 | 9.1 | 69 | -16.3 | 84.4 | 28.5 | 26.5 | 48.7 | 74.9 | 54.1 | 9.7 | ∅ | ∅ | ∅ | 87.7 | 80.1 | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-1-flash-lite-preview | Gemini 3.1 Flash-Lite | 2026-03-03 | 15.6 | 0 | 0 | 6.8 | 0.5 | 43.4 | 17.2 | ∅ | 1.1 | 36.3 | 17.3 | 74.3 | -16.4 | 82.2 | 31.1 | 24.2 | 77.2 | 75.5 | 31.3 | 9.7 | ∅ | ∅ | 12.2 | ∅ | ∅ | 31.1 | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-preview-09-2025-reasoning | Gemini 2.5 Flash Preview (Sep '25) (Reasoning) | 2025-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-pro-03-25 | Gemini 2.5 Pro Preview (Mar' 25) | 2025-03-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-pro-05-06 | Gemini 2.5 Pro Preview (May' 25) | 2025-05-06 | 14.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 19.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 82.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 77 | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-12b | Gemma 4 12B (Reasoning) | 2026-06-03 | 14.2 | ∅ | 0 | ∅ | ∅ | ∅ | 15.7 | ∅ | 0 | 15.6 | 19 | 63.7 | -52.7 | 75.3 | 27.3 | 18.2 | 73.5 | 69.7 | 36.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-31b-non-reasoning | Gemma 4 31B (Non-reasoning) | 2026-04-02 | 13.9 | ∅ | 1.8 | ∅ | ∅ | ∅ | 11.8 | ∅ | 0 | 16.6 | 18.1 | 46.7 | -51.7 | 76.3 | 29.2 | 30.3 | 53.5 | 70.3 | 65.5 | 8.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-26b-a4b-non-reasoning | Gemma 4 26B A4B (Non-reasoning) | 2026-04-02 | 13.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.5 | ∅ | 0 | 15.5 | 7.9 | 42.3 | -62.3 | 71.4 | ∅ | 25 | 45.4 | 66.7 | 40.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-reasoning | Gemini 2.5 Flash (Reasoning) | 2025-05-20 | 13.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.1 | ∅ | 1.1 | 26 | 24.7 | 65.3 | -29.8 | 79 | ∅ | 13.6 | 50.3 | 69.1 | 31.6 | ∅ | ∅ | ∅ | ∅ | 73.3 | 69.5 | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-preview-09-2025 | Gemini 2.5 Flash Preview (Sep '25) (Non-reasoning) | 2025-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-reasoning-04-2025 | Gemini 2.5 Flash Preview (Reasoning) | 2025-04-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-lite-preview-09-2025-reasoning | Gemini 2.5 Flash-Lite Preview (Sep '25) (Reasoning) | 2025-09-25 | 10.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 7 | ∅ | 0 | 18 | 12.2 | 64.7 | -54 | 70.9 | ∅ | 12.9 | 52.6 | 65 | 30.7 | ∅ | ∅ | ∅ | ∅ | 68.7 | 68.8 | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash | Gemini 2.5 Flash (Non-reasoning) | 2025-05-20 | 9.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.7 | ∅ | 1.4 | 26.1 | 7 | 49.9 | -42.6 | 68.3 | ∅ | 12.1 | 39 | 65.5 | 14.9 | ∅ | ∅ | ∅ | ∅ | 60.3 | 49.5 | ∅ | ∅ | ∅ | ∅ |
+| diffusiongemma-26b-a4b | DiffusionGemma 26B A4B | 2026-06-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash-thinking-exp-0121 | Gemini 2.0 Flash Thinking Experimental (Jan '25) | 2025-01-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-12b-non-reasoning | Gemma 4 12B (Non-reasoning) | 2026-06-03 | 9.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.3 | ∅ | 0 | 11.9 | 26.6 | 35 | -52.8 | 66.1 | ∅ | 11.4 | 45.2 | 62 | 31.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-lite-preview-09-2025 | Gemini 2.5 Flash-Lite Preview (Sep '25) (Non-reasoning) | 2025-09-25 | 9.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.1 | ∅ | 0 | 14.2 | 33.9 | 49.7 | -42.6 | 65.1 | ∅ | 7.6 | 41.8 | 63.4 | 30.4 | ∅ | ∅ | ∅ | ∅ | 46.7 | 64.1 | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash | Gemini 2.0 Flash (Feb '25) | 2025-02-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-e4b | Gemma 4 E4B (Reasoning) | 2026-04-03 | 8.9 | ∅ | 0 | ∅ | ∅ | ∅ | 3.8 | ∅ | 0.6 | 8.6 | 69.1 | 32 | -19.7 | 57.6 | 1.9 | 8.3 | 44.2 | 51.4 | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-pro-experimental-02-05 | Gemini 2.0 Pro Experimental (Feb '25) | 2025-02-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-04-2025 | Gemini 2.5 Flash Preview (Non-reasoning) | 2025-04-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-lite-reasoning | Gemini 2.5 Flash-Lite (Reasoning) | 2025-06-17 | 8.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.8 | ∅ | 0 | 17.9 | 22.6 | 55.7 | -45.6 | 62.5 | ∅ | 4.5 | 49.9 | 58.2 | 18.4 | ∅ | ∅ | ∅ | ∅ | 53.3 | 59.3 | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash-experimental | Gemini 2.0 Flash (experimental) | 2024-12-11 | 8.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 63.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 21 | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-5-pro | Gemini 1.5 Pro (Sep '24) | 2024-09-24 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-e2b | Gemma 4 E2B (Reasoning) | 2026-04-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-e4b-non-reasoning | Gemma 4 E4B (Non-reasoning) | 2026-04-03 | 7.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.8 | ∅ | 0.3 | 8.3 | 46.2 | 24 | -41 | 54.9 | ∅ | 7.6 | 40.5 | 51.2 | 26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash-lite-001 | Gemini 2.0 Flash-Lite (Feb '25) | 2025-02-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash-lite-preview | Gemini 2.0 Flash-Lite (Preview) | 2025-02-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-5-flash | Gemini 1.5 Flash (Sep '24) | 2024-09-24 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-5-flash-lite | Gemini 2.5 Flash-Lite (Non-reasoning) | 2025-06-17 | 6.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.7 | ∅ | 0 | 15.4 | 12.2 | 32 | -58.8 | 47.4 | ∅ | 2.3 | 31.5 | 54 | 19 | ∅ | ∅ | ∅ | ∅ | 35.3 | 40 | ∅ | ∅ | ∅ | ∅ |
+| gemini-2-0-flash-thinking-exp-1219 | Gemini 2.0 Flash Thinking Experimental (Dec '24) | 2024-12-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-4-e2b-non-reasoning | Gemma 4 E2B (Non-reasoning) | 2026-04-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-5-pro-may-2024 | Gemini 1.5 Pro (May '24) | 2024-05-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-5-flash-8b | Gemini 1.5 Flash-8B | 2024-10-03 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-5-flash-may-2024 | Gemini 1.5 Flash (May '24) | 2024-05-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-0-ultra | Gemini 1.0 Ultra | 2023-12-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-3n-e4b-preview-0520 | Gemma 3n E4B Instruct Preview (May '25) | 2025-05-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| palm-2 | PALM-2 | 2023-05-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemini-1-0-pro | Gemini 1.0 Pro | 2023-12-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-3-270m | Gemma 3 270M | 2025-08-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-3-27b | Gemma 3 27B Instruct | 2025-03-12 | 4.9 | ∅ | 0 | 0.2 | 0 | 23.3 | 4.4 | ∅ | 0 | 13 | 7.9 | 7.3 | -67.2 | 42.8 | 4.5 | 3.8 | 31.8 | 48 | 10.5 | 0.8 | ∅ | ∅ | ∅ | 20.7 | 13.7 | ∅ | ∅ | ∅ | ∅ |
+| gemma-3-4b | Gemma 3 4B Instruct | 2025-03-12 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.3 | ∅ | 0 | 7.7 | 1.8 | 6.7 | -82.9 | 29.1 | 0.4 | 0.8 | 28.3 | 29.9 | 5 | 0.4 | ∅ | ∅ | ∅ | 12.7 | 11.2 | ∅ | ∅ | ∅ | ∅ |
+| gemma-3n-e4b | Gemma 3n E4B Instruct | 2025-06-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gemma-3n-e2b | Gemma 3n E2B Instruct | 2025-06-26 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 6.8 | 6.6 | 0 | -80.2 | 22.9 | ∅ | 0.8 | 22 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 10.3 | 9.5 | ∅ | ∅ | ∅ | ∅ |
+| gemma-3-1b | Gemma 3 1B Instruct | 2025-03-13 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.3 | ∅ | 0 | 3.8 | 17.7 | 0 | -75.4 | 23.7 | ∅ | 0 | 19.9 | ∅ | 10.5 | ∅ | ∅ | ∅ | ∅ | 3.3 | 1.7 | ∅ | ∅ | ∅ | ∅ |
+| gemma-3-12b | Gemma 3 12B Instruct | 2025-03-12 | 3.8 | ∅ | 0 | 0.2 | 0 | 16.4 | 4.2 | ∅ | 0 | 10.3 | 2.6 | 8.3 | -77.1 | 34.9 | 0 | 0.8 | 36.7 | 37.5 | 10.8 | 0.8 | ∅ | ∅ | ∅ | 18.3 | 13.7 | ∅ | ∅ | ∅ | ∅ |
+| gemini-3-deep-think | Gemini 3 Deep Think | 2026-02-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-1-flash | DeepSeek V4.1 Flash (Reasoning, Max Effort) | 2026-09-10 | 39.5 | 46.3 | 55 | 68.9 | 26.8 | 51.9 | 39.2 | 12.8 | 14.3 | 46.4 | 3.5 | 84 | -5.3 | ∅ | ∅ | ∅ | ∅ | 77 | ∅ | ∅ | ∅ | 46.9 | ∅ | ∅ | ∅ | ∅ | 22.8 | 44.4 | ∅ |
+| deepseek-v4-pro | DeepSeek V4 Pro 0813 (Reasoning, Max Effort) | 2026-08-13 | 36 | 37.9 | 47.1 | 56.7 | 14.1 | 51 | 41 | ∅ | 18 | 49.1 | 5.2 | 80.3 | 0.8 | 92.8 | 78.7 | ∅ | ∅ | ∅ | ∅ | 39.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-flash-vision | DeepSeek V4 Flash Vision (Reasoning, Max Effort) | 2026-08-21 | 34.8 | 46.4 | 51.7 | 47.5 | 12.1 | 49.7 | 34.5 | ∅ | 10.9 | 38.6 | 8.5 | 81.3 | -17.6 | 91.3 | 74.2 | ∅ | ∅ | 74.8 | ∅ | 41 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-flash | DeepSeek V4 Flash 0731 (Reasoning, Max Effort) | 2026-07-31 | 34.3 | 37.8 | 46.3 | 54 | 12.1 | 50.3 | 38.6 | ∅ | 16.6 | 40.4 | 8.3 | 79.7 | -14.3 | 90.8 | 78.7 | ∅ | ∅ | ∅ | ∅ | 39.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-pro-0424 | DeepSeek V4 Pro 0424 (Reasoning, Max Effort) | 2026-04-24 | 30.4 | 21.1 | 32.2 | 56.3 | 14.6 | 50.8 | 37.5 | ∅ | 12.9 | 43 | 5.9 | 74.7 | -10.7 | 88.8 | 64 | 46.2 | 76.5 | ∅ | 96.2 | 30.1 | ∅ | 38.3 | 24.3 | ∅ | ∅ | 84.4 | ∅ | ∅ | ∅ |
+| deepseek-v4-pro-0424-high | DeepSeek V4 Pro 0424 (Reasoning, High Effort) | 2026-04-24 | 30.1 | ∅ | 32 | ∅ | ∅ | ∅ | 35.2 | ∅ | 10 | 41.4 | 11.3 | 70.3 | -10.6 | 90.5 | 64.8 | 41.7 | 71.3 | ∅ | 94.2 | 26.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-flash-0420-high | DeepSeek V4 Flash 0420 (Reasoning, High Effort) | 2026-04-24 | 26 | 27.1 | ∅ | 28.5 | 3 | 40.2 | 30.3 | ∅ | 3.4 | 34.9 | 11 | 72 | -23.1 | 86.7 | 56.9 | 38.6 | 73.5 | ∅ | 95.6 | 26.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-1-flash-non-reasoning | DeepSeek V4.1 Flash (Non-Reasoning) | 2026-09-10 | 24.7 | 30.8 | 41.4 | 47.8 | 5.6 | 35.5 | 10.8 | ∅ | 0.3 | 28.5 | 46 | 55.3 | -10.2 | ∅ | ∅ | ∅ | ∅ | 65.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-flash-0420 | DeepSeek V4 Flash 0420 (Reasoning, Max Effort) | 2026-04-24 | 24.2 | 16.8 | 26.2 | 28 | 2.5 | 45.3 | 34.8 | ∅ | 7.1 | 36.8 | 3.9 | 74.3 | -23.9 | 89.4 | 61.8 | 35.6 | 79.2 | ∅ | 95 | 30.9 | ∅ | 31.5 | ∅ | ∅ | ∅ | 81.3 | ∅ | ∅ | ∅ |
+| deepseek-v3-2-reasoning | DeepSeek V3.2 (Reasoning) | 2025-12-01 | 21.5 | ∅ | 9 | ∅ | ∅ | ∅ | 24.6 | ∅ | 2.9 | 33 | 17.3 | 73.3 | -22.5 | 84 | 46.8 | 35.6 | 60.7 | ∅ | 90.6 | ∅ | ∅ | ∅ | 14.5 | 92 | 86.2 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-pro-0424-non-reasoning | DeepSeek V4 Pro 0424 (Non-reasoning) | 2026-04-24 | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.2 | ∅ | 0.9 | 30.9 | 12.2 | 53 | -29.9 | 71.7 | ∅ | 36.4 | 45.8 | ∅ | 91.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v4-flash-0420-non-reasoning | DeepSeek V4 Flash 0420 (Non-reasoning) | 2026-04-24 | 18.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.8 | ∅ | 0.3 | 26 | 5.5 | 41.7 | -44 | 71.6 | ∅ | 34.1 | 47.2 | ∅ | 94.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-2-reasoning-0925 | DeepSeek V3.2 Exp (Reasoning) | 2025-09-29 | 16.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 14.9 | ∅ | 1.4 | 27.6 | 19.2 | 72.3 | -31 | 79.7 | ∅ | 31.1 | 54.1 | ∅ | 33.9 | ∅ | ∅ | ∅ | ∅ | 87.7 | 78.9 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-2 | DeepSeek V3.2 (Non-reasoning) | 2025-12-01 | 16 | ∅ | ∅ | ∅ | ∅ | ∅ | 11.2 | ∅ | 0.9 | 24 | 6.7 | 45.7 | -46.9 | 75.1 | ∅ | 32.6 | 49 | ∅ | 78.9 | ∅ | ∅ | ∅ | ∅ | 59 | 59.3 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-1-terminus-reasoning | DeepSeek V3.1 Terminus (Reasoning) | 2025-09-22 | 14.8 | 0 | 9.9 | 2.7 | 0 | 38 | 16.4 | ∅ | 1.7 | 27.7 | 25.2 | 69.3 | -26.4 | 79.2 | 44.9 | 30.3 | 57 | ∅ | 37.1 | 21 | ∅ | ∅ | ∅ | 89.7 | 79.8 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-2-speciale | DeepSeek V3.2 Speciale | 2025-12-01 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-1-terminus | DeepSeek V3.1 Terminus (Non-reasoning) | 2025-09-22 | 13.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.7 | ∅ | 0 | 23.5 | 12.4 | 45.3 | -43.5 | 75.1 | ∅ | 31.8 | 41.2 | ∅ | 37.1 | ∅ | ∅ | ∅ | ∅ | 53.7 | 52.9 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-2-0925 | DeepSeek V3.2 Exp (Non-reasoning) | 2025-09-29 | 13.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 9 | ∅ | 1.4 | 22.8 | 7.9 | 44.7 | -48.2 | 73.8 | ∅ | 25 | 43.1 | ∅ | 33.9 | ∅ | ∅ | ∅ | ∅ | 57.7 | 55.4 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-1 | DeepSeek V3.1 (Non-reasoning) | 2025-08-21 | 13.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.7 | ∅ | 0 | 23.1 | 14.3 | 47 | -42.7 | 73.5 | ∅ | 24.2 | 37.8 | ∅ | 34.8 | ∅ | ∅ | ∅ | ∅ | 49.7 | 57.7 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-1-reasoning | DeepSeek V3.1 (Reasoning) | 2025-08-21 | 13.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 14.3 | ∅ | 2 | 29 | 17.5 | 56.7 | -29.6 | 77.9 | ∅ | 25 | 41.5 | ∅ | 37.4 | ∅ | ∅ | ∅ | ∅ | 89.7 | 78.4 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1 | DeepSeek R1 0528 (May '25) | 2025-05-28 | 13.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 15.8 | ∅ | 1.4 | 30.5 | 16.6 | 55.7 | -27.4 | 81.3 | ∅ | 15.9 | 39.6 | ∅ | 36.5 | ∅ | ∅ | ∅ | ∅ | 76 | 77 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-0120 | DeepSeek R1 (Jan '25) | 2025-01-20 | 11.4 | 0 | 0 | 0.2 | 0 | 38.3 | 8.5 | ∅ | 0.6 | 30.5 | 9.7 | 57.7 | -32.2 | 70.8 | 19.1 | 6.1 | 39 | ∅ | 11.4 | 6.4 | ∅ | ∅ | ∅ | 68 | 61.7 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3-0324 | DeepSeek V3 0324 | 2025-03-25 | 9.7 | 0 | 0 | 0.3 | 0 | 39 | 4.7 | ∅ | 0 | 24.3 | 14.1 | 40.7 | -40.7 | 65.5 | 13.9 | 15.2 | 41 | ∅ | 47.1 | 4.7 | ∅ | ∅ | ∅ | 41 | 40.5 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v3 | DeepSeek V3 (Dec '24) | 2024-12-26 | 8.5 | 0 | 0 | 0.6 | 0 | 35.8 | 2.9 | ∅ | 0 | 25.5 | 10 | 29.3 | -41.6 | 55.7 | 16.9 | 6.8 | 34.8 | ∅ | 22.8 | 4.7 | ∅ | ∅ | ∅ | 26 | 35.9 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-distill-qwen-32b | DeepSeek R1 Distill Qwen 32B | 2025-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-qwen3-8b | DeepSeek R1 0528 Qwen3 8B | 2025-05-29 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-distill-llama-70b | DeepSeek R1 Distill Llama 70B | 2025-01-20 | 7.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.1 | ∅ | 0 | 19.2 | 18.9 | 10 | -46.4 | 40.2 | ∅ | 1.5 | 27.6 | ∅ | 21.9 | ∅ | ∅ | ∅ | ∅ | 53.7 | 26.6 | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-distill-qwen-14b | DeepSeek R1 Distill Qwen 14B | 2025-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v2-5 | DeepSeek-V2.5 (Dec '24) | 2024-12-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v2-5-sep-2024 | DeepSeek-V2.5 | 2024-09-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-distill-llama-8b | DeepSeek R1 Distill Llama 8B | 2025-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-coder-v2 | DeepSeek-Coder-V2 | 2024-06-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-r1-distill-qwen-1-5b | DeepSeek R1 Distill Qwen 1.5B | 2025-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-v2 | DeepSeek-V2-Chat | 2024-05-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-coder-v2-lite | DeepSeek Coder V2 Lite Instruct | 2024-06-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deepseek-llm-67b-chat | DeepSeek LLM 67B Chat (V1) | 2023-11-29 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| motif-3 | Motif 3 | 2026-08-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| motif-0714 | Motif 3 (Beta) | 2026-07-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| motif-2-12-7b | Motif-2-12.7B-Reasoning | 2025-12-04 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-horizon-375b-a23b | K2 Horizon 375B A23B | 2026-09-03 | 30.5 | 39.8 | 42.5 | 37.2 | 1.5 | 42.9 | 32 | 7.4 | 4.6 | ∅ | ∅ | 80 | -3 | 87.3 | 71.9 | ∅ | ∅ | ∅ | ∅ | 34.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-horizon-mova-36b-a4b | K2 Horizon MoVA 36B A4B | 2026-09-03 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-horizon-7b | K2 Horizon 7B | 2026-09-03 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-horizon-3-7b | K2 Horizon 3.7B | 2026-09-03 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-think-v2 | K2 Think V2 | 2025-12-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-v2 | K2-V2 (high) | 2025-12-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-v2-medium | K2-V2 (medium) | 2025-12-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-v2-low | K2-V2 (low) | 2025-12-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k2-horizon-0-9b | K2 Horizon 0.9B | 2026-09-03 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minimax-m3 | MiniMax-M3 | 2026-06-01 | 29.2 | 29.5 | 36.5 | 21.3 | 2 | 47.1 | 39 | 9.8 | 3.7 | 16.7 | 81.6 | 83 | 1.4 | 92.9 | 65.2 | 42.4 | 82.9 | 78.6 | 88.9 | 15.3 | 10 | ∅ | ∅ | ∅ | ∅ | 88.4 | 17.2 | 33.3 | 32.1 |
+| minimax-m2-5 | MiniMax-M2.5 | 2026-02-12 | 22.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 20.5 | ∅ | 1.1 | 26.2 | 11.9 | 73.3 | -38.9 | 84.8 | ∅ | 34.8 | 71.6 | ∅ | 95.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minimax-m2-7 | MiniMax-M2.7 | 2026-03-18 | 22.8 | 10.8 | 24.9 | 4.4 | 0 | 50.1 | 29.6 | ∅ | 0.6 | 26.8 | 64.4 | 78.3 | 0.8 | 87.4 | 55.4 | 39.4 | 75.7 | ∅ | 84.8 | 9.9 | ∅ | 26.5 | 10.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minimax-m2-1 | MiniMax-M2.1 | 2025-12-23 | 20.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 23.2 | ∅ | 0.3 | 21.2 | 31.5 | 67.7 | -32.9 | 83 | ∅ | 28.8 | 69.9 | ∅ | 85.4 | ∅ | ∅ | ∅ | ∅ | 82.7 | 81 | ∅ | ∅ | ∅ | ∅ |
+| minimax-m2 | MiniMax-M2 | 2025-10-26 | 18.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 13.7 | ∅ | 0.9 | 23.2 | 9.1 | 64.3 | -46.5 | 77.7 | ∅ | 25.8 | 72.3 | ∅ | 86.8 | ∅ | ∅ | ∅ | ∅ | 78.3 | 82.6 | ∅ | ∅ | ∅ | ∅ |
+| minimax-m1-80k | MiniMax M1 80k | 2025-06-17 | 11.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.9 | ∅ | 0 | 22.5 | 8.5 | 57.7 | -48.5 | 69.7 | ∅ | 3 | 41.8 | ∅ | 34.2 | ∅ | ∅ | ∅ | ∅ | 61 | 71.1 | ∅ | ∅ | ∅ | ∅ |
+| minimax-m1-40k | MiniMax M1 40k | 2025-06-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nex-n2-pro | Nex-N2-Pro (based on Qwen3.5-397B-A17B) | 2026-06-02 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro4 | Solar Pro 4 | 2026-08-06 | 28.2 | ∅ | ∅ | 9.1 | 0.5 | 44.6 | 29.2 | ∅ | 5.4 | 18.9 | 75.6 | 74 | -0.8 | 89.1 | 57.3 | ∅ | ∅ | ∅ | ∅ | 23.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-open2-250b | Solar Open2 250B | 2026-08-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-open-100b-reasoning | Solar Open 100B (Reasoning) | 2025-12-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro-2-preview-reasoning | Solar Pro 2 (Preview) (Reasoning) | 2025-05-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro-2-preview | Solar Pro 2 (Preview) (Non-reasoning) | 2025-05-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro-3 | Solar Pro 3 | 2026-04-06 | 7.8 | 0 | 0 | 0.5 | 0 | 25.5 | 10.3 | ∅ | 0 | 18.5 | 11.8 | 32.3 | -53.4 | 72.4 | 12 | 7.6 | 71.2 | ∅ | 86.3 | 8.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro-2-reasoning | Solar Pro 2 (Reasoning) | 2025-07-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-pro-2 | Solar Pro 2 (Non-reasoning) | 2025-07-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| solar-mini | Solar Mini | 2024-01-25 | 6.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 20.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| inkling-small | Inkling Small | 2026-07-30 | 27.8 | 20.6 | ∅ | 4.8 | 1 | 49.7 | 33.3 | ∅ | 8.3 | 33.2 | 37 | 75.7 | -8.9 | 89.5 | 55.1 | ∅ | ∅ | 74 | ∅ | 18.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| inkling | Inkling (xhigh) | 2026-07-15 | 25 | 16.7 | 28.2 | 5 | 1 | 47 | 31.9 | 12.8 | 5.4 | 41.6 | 32.3 | 77.3 | 2 | 87.2 | 55.1 | ∅ | ∅ | 73.5 | ∅ | 29.1 | 23.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.2 | 38.9 | 38 |
+| jt-4-1-flash-236b-a21b | JT-4.1 Flash 236B A21B | 2026-07-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jt-35b-flash | JT-35B-Flash | 2026-05-14 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jt-mini | JT-MINI | 2026-04-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| quasar-438b | Quasar 438B (max, based on GLM-5.2) | 2026-08-10 | 26.7 | 31.1 | 33.1 | 23.9 | 1 | 48.1 | 18.7 | ∅ | 9.4 | 15.5 | 78.6 | 76.3 | -2.6 | 73.2 | 69.3 | ∅ | ∅ | ∅ | ∅ | 28.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hypernova-60b | HyperNova 60B 2605 (high, based on gpt-oss-120b) | 2026-05-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| apodex-1-1 | Apodex 1.1 | 2026-08-30 | 26.4 | 25.4 | 34.4 | 28.2 | 0 | 45.5 | 34.1 | ∅ | 4.6 | 31.7 | 21.6 | 79.3 | -21.9 | 86.4 | 69.7 | ∅ | ∅ | 79.2 | ∅ | 25.2 | ∅ | ∅ | 31.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hy3 | Hy3 | 2026-07-06 | 25.3 | 22.2 | 27.3 | 18.4 | 0.5 | 48.6 | 33.5 | ∅ | 4.9 | 32 | 25.9 | 79 | -18.5 | 89.7 | 64.4 | ∅ | ∅ | ∅ | ∅ | 22.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hy3-preview | Hy3-preview (Reasoning) | 2026-04-23 | 22.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ | 4.6 | 27.9 | 12.6 | 64.7 | -35 | 86.7 | ∅ | 34.1 | 63.1 | ∅ | 92.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hy3-non-reasoning | Hy3-preview (Non-reasoning) | 2026-04-23 | 17 | ∅ | ∅ | ∅ | ∅ | ∅ | 7 | ∅ | 0.3 | 23.2 | 24.3 | 42 | -34.9 | 73.2 | ∅ | 31.8 | 48 | ∅ | 67.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-3-0-flash | Ling 3.0 Flash | 2026-08-04 | 24.9 | 14.9 | ∅ | 3.2 | 0 | 42 | 23.7 | ∅ | 1.7 | 18.2 | 55.9 | 73 | -17.9 | 85.5 | 55.4 | ∅ | ∅ | ∅ | ∅ | 27.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-3-0-flash-vl | Ling-3.0-flash-VL | 2026-09-10 | 24.6 | 24.2 | 32.5 | 15.7 | 0 | 44.2 | 22 | ∅ | 2 | 14.4 | 78 | 78.3 | -4.5 | 86.2 | 64.4 | ∅ | ∅ | 79 | ∅ | 34.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-3-0-flash-fin | Ling-3.0-flash-Fin | 2026-09-11 | 22.6 | 23.1 | 29.6 | 7.4 | 0 | 42.4 | 22.6 | ∅ | 2.6 | 17.9 | 60.5 | 73.7 | -14.6 | ∅ | 62.5 | ∅ | ∅ | ∅ | ∅ | 38.6 | ∅ | ∅ | 27.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-2-6-1t | Ling-2.6-1T | 2026-04-23 | 17 | ∅ | ∅ | ∅ | ∅ | ∅ | 8.7 | ∅ | 0.3 | 21.9 | 7.2 | 41.7 | -50.6 | 75.2 | ∅ | 31.1 | 56.9 | ∅ | 89.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ring-2-6-1t | Ring-2.6-1T | 2026-05-08 | 16.6 | 8 | 11.7 | 0.7 | 0.5 | 45 | 21.6 | ∅ | 3.7 | 25.7 | 14.7 | 70 | -37.7 | 85.7 | 43.1 | 28.8 | 44.6 | ∅ | 92.4 | 17.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-3-0-tiny | Ling 3.0 Tiny | 2026-08-06 | 15.3 | 0 | ∅ | 0.3 | 0 | 24.2 | 9.3 | ∅ | 0 | 8.5 | 69.5 | 60.3 | -19.3 | 73.4 | 27.7 | ∅ | ∅ | ∅ | ∅ | 20.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ring-1t | Ring-1T | 2025-10-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-2-6-flash | Ling 2.6 Flash | 2026-04-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-1t | Ling-1T | 2025-10-08 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ling-flash-2-0 | Ling-flash-2.0 | 2025-09-17 | 7.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.2 | ∅ | 0 | 14.1 | 10.5 | 17.7 | -62.7 | 65.7 | ∅ | 10.6 | 34.4 | ∅ | 20.8 | ∅ | ∅ | ∅ | ∅ | 65.3 | 58.9 | ∅ | ∅ | ∅ | ∅ |
+| ring-flash-2-0 | Ring-flash-2.0 | 2025-09-19 | 7.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.6 | ∅ | 0.3 | 16.6 | 9.9 | 21 | -58.6 | 72.5 | ∅ | 7.6 | 43.3 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 83.7 | 62.8 | ∅ | ∅ | ∅ | ∅ |
+| ling-mini-2-0 | Ling-mini-2.0 | 2025-09-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-3-ultra-550b-a55b | Nemotron 3 Ultra 550B A55B (Reasoning) | 2026-06-04 | 22.9 | 18.8 | 25 | 3 | 0.5 | 40.3 | 28.4 | 5 | 3.1 | 22.6 | 70.3 | 79.3 | -0.4 | 86.7 | 53.9 | 36.4 | 81.4 | ∅ | 83.3 | 14.2 | 6.3 | ∅ | ∅ | ∅ | ∅ | 81.7 | 11.1 | 83.3 | 28.9 |
+| nemotron-3-5-lightning | Nemotron 3.5 Lightning | 2026-08-11 | 12.9 | 0.2 | 6.2 | 0.8 | 0.5 | 32.1 | 10.6 | ∅ | 0 | 14.4 | 62.4 | 60.3 | -17.7 | 74.3 | 24.3 | ∅ | ∅ | ∅ | ∅ | 8.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-3-super-120b-a12b | Nemotron 3 Super 120B A12B (Reasoning) | 2026-03-11 | 12.8 | 0 | 0 | 3.8 | 0 | 36.2 | 20.8 | ∅ | 3.1 | 24.3 | 13 | 65.7 | -41.5 | 80 | 38.6 | 28.8 | 71.5 | ∅ | 67.8 | 10.3 | ∅ | 1.1 | 1.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nemotron-cascade-2-30b-a3b | Nemotron Cascade 2 30B A3B | 2026-03-19 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nemotron-3-nano-omni-30b-a3b | Nemotron 3 Nano Omni 30B A3B Reasoning | 2026-04-29 | 10.3 | ∅ | 0 | ∅ | ∅ | ∅ | 4.8 | ∅ | 0 | 15.2 | 14.3 | 39.7 | -57.4 | 46.9 | 6.7 | 8.3 | 63.2 | 53.2 | 45.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-nemotron-super-49b-v1-5-reasoning | Llama Nemotron Super 49B v1.5 (Reasoning) | 2025-07-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-3-nemotron-super-49b-reasoning | Llama 3.3 Nemotron Super 49B v1 (Reasoning) | 2025-03-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-3-nano-30b-a3b-reasoning | NVIDIA Nemotron 3 Nano 30B A3B (Reasoning) | 2025-12-15 | 8.9 | 0 | 0 | 1 | 0 | 30.6 | 11.4 | ∅ | 0.9 | 17.3 | 16.7 | 38 | -51.6 | 75.7 | 6.7 | 13.6 | 71.1 | ∅ | 40.9 | 6 | ∅ | ∅ | ∅ | 91 | 74.1 | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-nemotron-ultra-253b-v1-reasoning | Llama 3.1 Nemotron Ultra 253B v1 (Reasoning) | 2025-04-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-nano-12b-v2-vl-reasoning | NVIDIA Nemotron Nano 12B v2 VL (Reasoning) | 2025-10-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-nano-9b-v2-reasoning | NVIDIA Nemotron Nano 9B V2 (Reasoning) | 2025-08-18 | 7.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.9 | ∅ | 0 | 11.8 | 39.5 | 22.7 | -41.5 | 57 | ∅ | 1.5 | 27.6 | ∅ | 21.9 | ∅ | ∅ | ∅ | ∅ | 69.7 | 72.4 | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-3-nano-4b | NVIDIA Nemotron 3 Nano 4B | 2026-03-16 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-nemotron-super-49b-v1-5 | Llama Nemotron Super 49B v1.5 (Non-reasoning) | 2025-07-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-nemotron-nano-4b-reasoning | Llama 3.1 Nemotron Nano 4B v1.1 (Reasoning) | 2025-05-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-3-nemotron-super-49b | Llama 3.3 Nemotron Super 49B v1 (Non-reasoning) | 2025-03-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| llama-3-1-nemotron-instruct-70b | Llama 3.1 Nemotron Instruct 70B | 2024-10-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-3-nano-30b-a3b | NVIDIA Nemotron 3 Nano 30B A3B (Non-reasoning) | 2025-12-15 | 6.8 | ∅ | 0 | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 11.4 | 9 | 10.7 | -69.3 | 39.9 | ∅ | 12.1 | 37.5 | ∅ | 25.4 | ∅ | ∅ | ∅ | ∅ | 13.3 | 36 | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-nano-9b-v2 | NVIDIA Nemotron Nano 9B V2 (Non-reasoning) | 2025-08-18 | 6.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 9.8 | 25.6 | 24 | -57.2 | 55.7 | ∅ | 0.8 | 27.1 | ∅ | 23.4 | ∅ | ∅ | ∅ | ∅ | 62.3 | 70.1 | ∅ | ∅ | ∅ | ∅ |
+| nvidia-nemotron-nano-12b-v2-vl | NVIDIA Nemotron Nano 12B v2 VL (Non-reasoning) | 2025-10-28 | 5.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.3 | ∅ | 0 | 11.9 | 4.5 | 20.7 | -72.2 | 43.9 | ∅ | 0 | 25.9 | 44.5 | 19.3 | ∅ | ∅ | ∅ | ∅ | 26.7 | 34.5 | ∅ | ∅ | ∅ | ∅ |
+| a-x-k2 | A.X-K2 | 2026-08-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| g9v3-39a5b | G9v3-39A5B | 2026-08-20 | 21.8 | ∅ | ∅ | ∅ | ∅ | 36.8 | 17.5 | ∅ | 0.3 | 14.9 | 87 | 65.3 | 3.8 | 80.5 | 32.6 | ∅ | ∅ | ∅ | ∅ | 22.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| g9v3-3b | G9v3-3B | 2026-07-23 | 10.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 6.5 | 88.3 | 41.3 | -4.4 | 43.8 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kat-coder-pro-v2 | KAT Coder Pro V2 | 2026-03-27 | 21.7 | ∅ | 11 | ∅ | ∅ | ∅ | 16.1 | ∅ | 0 | 21.5 | 44 | 73 | -22.5 | 85.5 | 70 | 49.2 | 66.7 | ∅ | 89.5 | 4.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| kat-coder-pro-v1 | KAT-Coder-Pro V1 | 2025-11-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k-exaone-2-0-0803 | K-EXAONE 2.0 0803 | 2026-08-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k-exaone | K-EXAONE (Reasoning) | 2025-12-31 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-5-33b | EXAONE 4.5 33B | 2026-04-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| k-exaone-non-reasoning | K-EXAONE (Non-reasoning) | 2025-12-31 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-0-32b-reasoning | EXAONE 4.0 32B (Reasoning) | 2025-07-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-0-32b | EXAONE 4.0 32B (Non-reasoning) | 2025-07-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-0-1-2b-reasoning | Exaone 4.0 1.2B (Reasoning) | 2025-07-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-0-1-2b | Exaone 4.0 1.2B (Non-reasoning) | 2025-07-15 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| exaone-4-5-33b-non-reasoning | EXAONE 4.5 33B (Non-reasoning) | 2026-04-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| longcat-2-0 | LongCat 2.0 | 2026-06-29 | 19.1 | 12 | 17.8 | 4.5 | 0 | 36.3 | 33.7 | ∅ | 2.6 | 29.6 | 24.6 | 65 | -23.4 | 78 | 50.2 | ∅ | ∅ | ∅ | ∅ | 13.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| longcat-flash-lite | LongCat Flash Lite | 2026-01-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| doubao-seed-code | Doubao Seed Code | 2025-11-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| seed-oss-36b-instruct | Seed-OSS-36B-Instruct | 2025-08-20 | 12.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 9.9 | ∅ | 0 | 18.2 | 13.6 | 61.3 | -52.5 | 72.6 | ∅ | 6.8 | 41.9 | ∅ | 49.4 | ∅ | ∅ | ∅ | ∅ | 84.7 | 76.5 | ∅ | ∅ | ∅ | ∅ |
+| granite-4-2-30b | Granite 4.2 30B | 2026-08-25 | 14.8 | ∅ | 3.2 | 1.5 | ∅ | 37.8 | 11.2 | ∅ | 0.3 | 10.1 | 74.4 | 49 | -12.9 | 64.4 | 26.6 | ∅ | ∅ | ∅ | ∅ | 14.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-2-8b | Granite 4.2 8B | 2026-08-25 | 11.1 | 0 | 0 | 2.1 | 0 | 31.5 | 9.7 | ∅ | 0.3 | 11.2 | 68 | 45 | -17.2 | 63.1 | 18.4 | ∅ | ∅ | ∅ | ∅ | 7.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-2-3b | Granite 4.2 3B | 2026-08-25 | 9.1 | 0 | 0 | 0.4 | 0 | 25.3 | 6.6 | ∅ | 0 | 9.2 | 73.7 | 24.3 | -14.7 | 55.9 | 13.9 | ∅ | ∅ | ∅ | ∅ | 5.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-1-30b | Granite 4.1 30B | 2026-04-29 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-1-8b | Granite 4.1 8B | 2026-04-29 | 6.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 12.3 | 12.9 | 13.3 | -64.1 | 43.3 | 3.4 | 0 | 38.6 | ∅ | 27.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-h-small | Granite 4.0 H Small | 2025-09-22 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 14.3 | 12.2 | 11.3 | -61 | 41.6 | ∅ | 2.3 | 31.5 | ∅ | 17.3 | ∅ | ∅ | ∅ | ∅ | 13.7 | 25.1 | ∅ | ∅ | ∅ | ∅ |
+| granite-4-1-3b | Granite 4.1 3B | 2026-04-29 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-h-nano-1b | Granite 4.0 H 1B | 2025-10-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-micro | Granite 4.0 Micro | 2025-09-22 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-nano-1b | Granite 4.0 1B | 2025-10-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-3-3-8b-instruct | Granite 3.3 8B (Non-reasoning) | 2025-04-16 | 4.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 9.7 | 3.8 | ∅ | -77.3 | 33.8 | ∅ | 0 | 22.4 | ∅ | 10.5 | ∅ | ∅ | ∅ | ∅ | 6.7 | 12.7 | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-350m | Granite 4.0 350M | 2025-10-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| granite-4-0-h-350m | Granite 4.0 H 350M | 2025-10-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ernie-5-0-thinking-preview | ERNIE 5.0 Thinking Preview | 2025-11-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ernie-4-5-300b-a47b | ERNIE 4.5 300B A47B | 2025-06-30 | 7.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.3 | ∅ | 0 | 19.1 | 33.1 | ∅ | -35.1 | 81.1 | ∅ | 6.1 | 39.1 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 41.3 | 46.7 | ∅ | ∅ | ∅ | ∅ |
+| mistral-medium-3-5 | Mistral Medium 3.5 | 2026-04-29 | 14.2 | 1 | 12.4 | 6.3 | 0 | 40.2 | 13.8 | 2.8 | 0 | 24.7 | 18.4 | 69.3 | -36.8 | 74.8 | 50.6 | 33.3 | 68.8 | 64.9 | 94.2 | 15.1 | 12.5 | ∅ | ∅ | ∅ | ∅ | 69.1 | 1.7 | 33.3 | 33.7 |
+| magistral-medium-2509 | Magistral Medium 1.2 | 2025-09-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-4 | Mistral Small 4 (Reasoning) | 2026-03-16 | 11.3 | 0 | 0 | 1 | 0 | 38.8 | 9.9 | ∅ | 0.3 | 21.7 | 33.5 | 49.7 | -30.4 | 76.9 | 21 | 17.4 | 48.2 | 56.8 | 41.2 | 4.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-large-3 | Mistral Large 3 | 2025-12-02 | 9.3 | 0 | 0 | 1.5 | 0 | 36.6 | 4.2 | ∅ | 0 | 25 | 14 | 36 | -39.6 | 68 | 12 | 15.9 | 36.2 | 55.7 | 24.6 | 5.8 | ∅ | ∅ | ∅ | 38 | 46.5 | ∅ | ∅ | ∅ | ∅ |
+| mistral-medium-3-1 | Mistral Medium 3.1 | 2025-08-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| magistral-medium | Magistral Medium 1 | 2025-06-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-medium-3 | Mistral Medium 3 | 2025-05-07 | 9 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | 0 | 18.3 | 39.1 | 31.3 | -31.4 | 57.8 | ∅ | 3.8 | 39.3 | 53 | 24.3 | ∅ | ∅ | ∅ | ∅ | 30.3 | 40 | ∅ | ∅ | ∅ | ∅ |
+| devstral-medium | Devstral Medium | 2025-07-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-4-non-reasoning | Mistral Small 4 (Non-reasoning) | 2026-03-16 | 9 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0.3 | 16.6 | 22 | 28.3 | -48.5 | 57.1 | ∅ | 10.6 | 32.8 | 46.5 | 18.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| devstral-small-2505 | Devstral Small (May '25) | 2025-05-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| devstral-2 | Devstral 2 | 2025-12-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| magistral-small-2509 | Magistral Small 1.2 | 2025-09-17 | 8.6 | ∅ | 0 | 0.2 | ∅ | ∅ | 6.4 | ∅ | 0.3 | 13.5 | 9.2 | 19.3 | -65.1 | 66.3 | 4.5 | 4.5 | 44.4 | 55.5 | 27.8 | 4.5 | ∅ | ∅ | ∅ | 80.3 | 72.3 | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-3-2 | Mistral Small 3.2 | 2025-06-20 | 8.2 | 0 | 0 | 0.3 | 0 | 28.6 | 4.3 | ∅ | 0 | 14.8 | 23.2 | 20.3 | -50.6 | 50.5 | 5.6 | 6.8 | 33.5 | 48 | 29.5 | 6.2 | ∅ | ∅ | ∅ | 27 | 27.5 | ∅ | ∅ | ∅ | ∅ |
+| magistral-small | Magistral Small 1 | 2025-06-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| devstral-small | Devstral Small (Jul '25) | 2025-07-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-large-2 | Mistral Large 2 (Nov '24) | 2024-11-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| devstral-small-2 | Devstral Small 2 | 2025-12-09 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| pixtral-large-2411 | Pixtral Large | 2024-11-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-3-1 | Mistral Small 3.1 | 2025-03-17 | 7.1 | 0 | 0 | 1.2 | 0 | 27.8 | 4.3 | ∅ | 0 | 15.1 | 22.4 | 22.3 | -50.7 | 45.4 | 26.2 | 7.6 | 29.9 | ∅ | 25.1 | 7.4 | ∅ | ∅ | ∅ | 3.7 | 21.2 | ∅ | ∅ | ∅ | ∅ |
+| mistral-large-2407 | Mistral Large 2 (Jul '24) | 2024-07-24 | 6.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 3 | ∅ | ∅ | ∅ | ∅ | 2 | ∅ | 47.2 | ∅ | ∅ | 31.6 | ∅ | 33 | ∅ | ∅ | ∅ | ∅ | 0 | 26.7 | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-3 | Mistral Small 3 | 2025-01-30 | 6.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | ∅ | ∅ | ∅ | 0 | ∅ | 46.2 | ∅ | ∅ | 26.4 | ∅ | 19.6 | ∅ | ∅ | ∅ | ∅ | 4.3 | 25.2 | ∅ | ∅ | ∅ | ∅ |
+| mistral-saba | Mistral Saba | 2025-02-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ministral-3-14b | Ministral 3 14B | 2025-12-02 | 6 | 0 | 0 | 0.6 | 0 | 23.8 | 4.6 | ∅ | 0 | 13.6 | 7.5 | 26.3 | -66.4 | 57.2 | 9.7 | 4.5 | 32 | 49.8 | 27.2 | 6.6 | ∅ | ∅ | ∅ | 30 | 35.1 | ∅ | ∅ | ∅ | ∅ |
+| mistral-small | Mistral Small (Sep '24) | 2024-09-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-large | Mistral Large (Feb '24) | 2024-02-26 | 5.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 35.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 17.8 | ∅ | ∅ | ∅ | ∅ |
+| mistral-8x22b-instruct | Mixtral 8x22B Instruct | 2024-04-17 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-small-2402 | Mistral Small (Feb '24) | 2024-02-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mistral-medium | Mistral Medium | 2023-12-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| ministral-3-8b | Ministral 3 8B | 2025-12-02 | 5.5 | 0 | 0 | 0.5 | 0 | 20.7 | 4.3 | ∅ | 0 | 13 | 5.8 | 25.7 | -68.9 | 47.1 | 4.1 | 4.5 | 29.1 | 46 | 26.6 | 3.7 | ∅ | ∅ | ∅ | 31.7 | 30.3 | ∅ | ∅ | ∅ | ∅ |
+| mixtral-8x7b-instruct | Mixtral 8x7B Instruct | 2023-12-11 | 5.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 29.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 6.6 | ∅ | ∅ | ∅ | ∅ |
+| mistral-7b-instruct | Mistral 7B Instruct | 2023-09-27 | 5 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 9 | 18.7 | 0 | -64.9 | 17.7 | ∅ | ∅ | 19.9 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | ∅ | ∅ | ∅ |
+| ministral-3-3b | Ministral 3 3B | 2025-12-02 | 4.8 | 0 | 0 | 0.7 | 0 | 15.3 | 5.4 | ∅ | 0 | 9 | 19.8 | 17 | -64 | 35.8 | 0 | 0 | 26.8 | 38.1 | 24.9 | 4.7 | ∅ | ∅ | ∅ | 22 | 24.7 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-pro-reasoning-medium | Nova 2.0 Pro Preview (medium) | 2025-11-27 | 14.2 | ∅ | 0 | ∅ | ∅ | ∅ | 9.4 | ∅ | 0 | 22 | 9 | 64 | -49 | 78.5 | 29.6 | 24.2 | 79 | 64.5 | 92.7 | ∅ | ∅ | ∅ | ∅ | 89 | 73 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-omni-reasoning-medium | Nova 2.0 Omni (medium) | 2025-11-26 | 13.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 7 | ∅ | 0 | 17.7 | 6.7 | 59.7 | -59.1 | 76 | ∅ | 4.5 | 66.2 | 61.9 | 80.4 | ∅ | ∅ | ∅ | ∅ | 89.7 | 66 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-lite-reasoning | Nova 2.0 Lite (high) | 2025-10-29 | 13.4 | ∅ | 0 | ∅ | ∅ | ∅ | 11.6 | ∅ | 0.3 | 19 | 8.6 | 60.3 | -55 | 81.1 | 16.1 | 16.7 | 70.7 | 63.8 | 72.8 | ∅ | ∅ | ∅ | ∅ | 94.3 | 71.1 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-pro-reasoning-low | Nova 2.0 Pro Preview (low) | 2025-11-27 | 12.8 | ∅ | 0 | ∅ | ∅ | ∅ | 5.2 | ∅ | 0 | 22 | 12.1 | 64.7 | -46.5 | 75.1 | 19.5 | 17.4 | 79.6 | 62.7 | 90.6 | ∅ | ∅ | ∅ | ∅ | 63.3 | 63.8 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-lite-reasoning-medium | Nova 2.0 Lite (medium) | 2025-10-29 | 12.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 9 | ∅ | 0 | 18.2 | 8.2 | 60 | -57 | 76.8 | ∅ | 17.4 | 68.5 | 62.5 | 75.7 | ∅ | ∅ | ∅ | ∅ | 88.7 | 66.3 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-lite-reasoning-low | Nova 2.0 Lite (low) | 2025-10-29 | 11.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 4 | ∅ | 0 | 17.7 | 12.9 | 54.3 | -54.1 | 69.8 | ∅ | 3.8 | 61.2 | 58 | 71.9 | ∅ | ∅ | ∅ | ∅ | 46.7 | 46.9 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-omni-reasoning-low | Nova 2.0 Omni (low) | 2025-11-26 | 11.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 0 | 18.6 | 15.3 | 57.7 | -50.3 | 69.9 | ∅ | 3.8 | 61.8 | 59.8 | 67.8 | ∅ | ∅ | ∅ | ∅ | 56 | 59.2 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-pro | Nova 2.0 Pro Preview (Non-reasoning) | 2025-11-27 | 10 | ∅ | 0 | ∅ | ∅ | ∅ | 3.9 | ∅ | 0 | 16.9 | 20.1 | 30 | -49.5 | 63.6 | 17.2 | 16.7 | 52 | ∅ | 71.6 | ∅ | ∅ | ∅ | ∅ | 30.7 | 47.3 | ∅ | ∅ | ∅ | ∅ |
+| nova-premier | Nova Premier | 2025-04-30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-lite | Nova 2.0 Lite (Non-reasoning) | 2025-10-29 | 8.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 2.9 | ∅ | 0 | 14 | 14.1 | 18.7 | -59.8 | 60.3 | ∅ | 6.8 | 40.5 | 49 | 62 | ∅ | ∅ | ∅ | ∅ | 33.7 | 34.6 | ∅ | ∅ | ∅ | ∅ |
+| nova-2-0-omni | Nova 2.0 Omni (Non-reasoning) | 2025-11-26 | 8.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 13.2 | 10.7 | 24.7 | -64.2 | 55.5 | ∅ | 6.8 | 41.1 | 49.9 | 44.7 | ∅ | ∅ | ∅ | ∅ | 37 | 30.5 | ∅ | ∅ | ∅ | ∅ |
+| nova-pro | Nova Pro | 2024-12-03 | 7 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.2 | ∅ | 0 | 16.9 | 22.3 | 21 | -47.7 | 49.9 | ∅ | 6.1 | 38.1 | 44.3 | 14 | ∅ | ∅ | ∅ | ∅ | 7 | 23.3 | ∅ | ∅ | ∅ | ∅ |
+| nova-lite | Nova Lite | 2024-12-03 | 6.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.3 | ∅ | 0 | 9.8 | 42.4 | 19 | -42.2 | 43.3 | ∅ | 0.8 | 34.1 | 37.8 | 17.5 | ∅ | ∅ | ∅ | ∅ | 7 | 16.7 | ∅ | ∅ | ∅ | ∅ |
+| nova-micro | Nova Micro | 2024-12-03 | 5.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.6 | ∅ | 0 | 10 | 34.9 | 13 | -48.5 | 35.8 | ∅ | 1.5 | 29.4 | ∅ | 14 | ∅ | ∅ | ∅ | ∅ | 6 | 14 | ∅ | ∅ | ∅ | ∅ |
+| apriel-v1-5-15b-thinker | Apriel-v1.5-15B-Thinker | 2025-09-30 | 13.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 12.1 | ∅ | 1.1 | 16.5 | 14.7 | 21.3 | -54.8 | 71.3 | ∅ | 10.6 | 61.7 | 57.1 | 68.4 | ∅ | ∅ | ∅ | ∅ | 87.5 | 72.8 | ∅ | ∅ | ∅ | ∅ |
+| apriel-v1-6-15b-thinker | Apriel-v1.6-15B-Thinker | 2025-11-25 | 13.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 10.8 | ∅ | 0.3 | 17 | 8.1 | ∅ | -59.4 | 73.3 | ∅ | 14.4 | 69.1 | ∅ | 69.3 | ∅ | ∅ | ∅ | ∅ | 88 | 80.7 | ∅ | ∅ | ∅ | ∅ |
+| mercury-2 | Mercury 2 | 2026-02-20 | 13.8 | 0 | 0 | 1.7 | 0 | 37.7 | 17.1 | ∅ | 0.8 | 21.2 | 8.8 | 43.7 | -50.7 | 77 | 27.3 | 26.5 | 69.8 | ∅ | 70.8 | 9.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mercury-2-5 | Mercury 2.5 | 2026-09-08 | 12.3 | 0 | 0 | 2.4 | 0 | 38.5 | 11.8 | ∅ | 0 | 22.7 | 19.7 | 71.7 | -39.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| command-a-plus | Command A+ | 2026-05-20 | 13.1 | 0 | 0 | 1.8 | 0.5 | 38.5 | 12 | ∅ | 0.3 | 8.9 | 85.8 | 52.7 | -4 | 76.1 | 22.8 | 25 | 73.9 | 63.2 | 80.7 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| north-mini-code | North Mini Code | 2026-06-09 | 9.9 | 0 | 0 | 1.5 | 0.5 | 38.8 | 11.1 | ∅ | 0.3 | 18.9 | 16.8 | 37.3 | -48.6 | 75.7 | 35.6 | 31.1 | 57.6 | ∅ | 37.4 | 6.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| command-a | Command A | 2025-03-13 | 7 | ∅ | ∅ | ∅ | ∅ | ∅ | 4 | ∅ | 0 | 16.4 | 22.7 | 21.3 | -48.3 | 52.7 | ∅ | 0.8 | 36.5 | ∅ | 15.2 | ∅ | ∅ | ∅ | ∅ | 13 | 28.7 | ∅ | ∅ | ∅ | ∅ |
+| command-r-plus-04-2024 | Command-R+ (Apr '24) | 2024-04-04 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| command-r-03-2024 | Command-R (Mar '24) | 2024-03-12 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| tiny-aya-global | Tiny Aya Global | 2026-02-17 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.2 | ∅ | 0 | 6.1 | 3.8 | 0 | -84.3 | 30.5 | ∅ | 0 | 20.1 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minicpm5-2b | MiniCPM5-2B | 2026-09-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minicpm5-1b | MiniCPM5-1B (Reasoning) | 2026-05-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minicpm5-1b-non-reasoning | MiniCPM5-1B (Non-reasoning) | 2026-05-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| minicpm-v4-6-1-3b | MiniCPM-V 4.6 1.3B | 2026-05-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sonar-reasoning-pro | Sonar Reasoning Pro | 2025-01-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sonar-reasoning | Sonar Reasoning | 2025-01-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sonar | Sonar | 2025-01-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sonar-pro | Sonar Pro | 2025-01-21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| r1-1776 | R1 1776 | 2025-02-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hyperclova-x-seed-think-32b | HyperCLOVA X SEED Think (32B) | 2025-12-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| mi-dm-k-2-5-pro-dec28 | Mi:dm K 2.5 Pro | 2025-12-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| midm-250-pro-rsnsft | Mi:dm K 2.5 Pro Preview | 2025-12-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| trinity-large-thinking | Trinity Large Thinking | 2026-04-01 | 10.8 | 0 | 0 | 1.3 | 0.5 | 40.6 | 15.8 | ∅ | 0.9 | 22.5 | 14.1 | 38 | -44.1 | 75.2 | 20.6 | 22.7 | 56.3 | ∅ | 90.1 | 5.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| intellect-3 | INTELLECT-3 (based on GLM-4.5-Air) | 2025-11-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| tri-21b-think-preview | Tri-21B-think Preview | 2026-02-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| tri-21b-think-v0-5 | Tri-21B-Think | 2026-02-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sarvam-105b | Sarvam 105B (high) | 2026-03-06 | 8.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 11 | ∅ | 0 | 17.6 | 6.6 | 0 | -59.4 | 73.8 | ∅ | 1.5 | 34.4 | ∅ | 46.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sarvam-30b | Sarvam 30B (high) | 2026-03-06 | 6.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 7.5 | ∅ | 0.3 | 12.6 | 3.7 | 0 | -71.5 | 63.3 | ∅ | 2.3 | 26.5 | ∅ | 34.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| sarvam-m-reasoning | Sarvam M (Reasoning, based on Mistral Small 3.1) | 2025-05-23 | 5.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.1 | ∅ | 0 | 15.2 | 9.4 | 0 | -61.6 | 41.6 | ∅ | 2.3 | 31.8 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | ∅ | 29.5 | ∅ | ∅ | ∅ | ∅ |
+| nanbeige4-1-3b | Nanbeige4.1-3B | 2026-02-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-5-2-6b | LFM2.5-2.6B | 2026-08-04 | 8.4 | ∅ | 0 | ∅ | ∅ | 14.4 | 6.2 | ∅ | 0 | 4.4 | 84 | 5.7 | -10.9 | 55.8 | 4.5 | ∅ | ∅ | ∅ | ∅ | 7.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-5-8b-a1b | LFM2.5-8B-A1B | 2026-05-28 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-24b-a2b | LFM2 24B A2B | 2026-02-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm-40b | LFM 40B | 2024-09-30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-5-1-2b-thinking | LFM2.5-1.2B-Thinking | 2026-01-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-2-6b | LFM2 2.6B | 2025-09-23 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-5-1-2b-instruct | LFM2.5-1.2B-Instruct | 2026-01-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-8b-a1b | LFM2 8B A1B | 2025-10-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-1-2b | LFM2 1.2B | 2025-07-10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| lfm2-5-vl-1-6b | LFM2.5-VL-1.6B | 2026-01-05 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hermes-4-llama-3-1-70b-reasoning | Hermes 4 - Llama-3.1 70B (Reasoning) | 2025-08-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hermes-4-llama-3-1-405b-reasoning | Hermes 4 - Llama-3.1 405B (Reasoning) | 2025-08-27 | 7.5 | ∅ | ∅ | ∅ | ∅ | ∅ | 10.9 | ∅ | 0.3 | 30.1 | 5.5 | 22.3 | -36 | 72.7 | ∅ | 11.4 | 32.7 | ∅ | 22.2 | ∅ | ∅ | ∅ | ∅ | 69.7 | 68.6 | ∅ | ∅ | ∅ | ∅ |
+| hermes-4-llama-3-1-405b | Hermes 4 - Llama-3.1 405B (Non-reasoning) | 2025-08-27 | 7.4 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.2 | ∅ | 0 | 26.1 | 19.8 | 22 | -33.3 | 53.6 | ∅ | 9.8 | 34.8 | ∅ | 26.6 | ∅ | ∅ | ∅ | ∅ | 15.3 | 54.6 | ∅ | ∅ | ∅ | ∅ |
+| hermes-4-llama-3-1-70b | Hermes 4 - Llama-3.1 70B (Non-reasoning) | 2025-08-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| deephermes-3-mistral-24b-preview | DeepHermes 3 - Mistral 24B Preview (Non-reasoning) | 2025-03-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| hermes-3-llama-3-1-70b | Hermes 3 - Llama-3.1 70B | 2024-08-15 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 40.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 18.8 | ∅ | ∅ | ∅ | ∅ |
+| deephermes-3-llama-3-1-8b-preview | DeepHermes 3 - Llama-3.1 8B Preview (Non-reasoning) | 2025-02-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| falcon-h1r-7b | Falcon-H1R-7B | 2026-01-04 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| tulu3-405b | Llama 3.1 Tulu3 405B | 2025-01-30 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-3-1-32b-think | Olmo 3.1 32B Think | 2025-12-12 | 7.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 6.3 | ∅ | 0 | 13.8 | 33.7 | 0 | -43.4 | 59.1 | ∅ | 0 | 66 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 77.3 | 69.5 | ∅ | ∅ | ∅ | ∅ |
+| olmo-3-1-32b-instruct | Olmo 3.1 32B Instruct | 2026-01-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-3-32b-think | Olmo 3 32B Think | 2025-11-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-2-32b | OLMo 2 32B | 2025-03-13 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-3-7b-think | Olmo 3 7B Think | 2025-11-20 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-2-7b | OLMo 2 7B | 2024-11-26 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| molmo-7b-d | Molmo 7B-D | 2024-09-25 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| olmo-3-7b-instruct | Olmo 3 7B Instruct | 2025-11-20 | 5.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.8 | ∅ | 0 | 7.4 | 8.8 | 0 | -77.1 | 40 | ∅ | 0 | 32.8 | ∅ | 12.6 | ∅ | ∅ | ∅ | ∅ | 41.3 | 26.6 | ∅ | ∅ | ∅ | ∅ |
+| molmo2-8b | Molmo2-8B | 2025-12-11 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| reka-flash | Reka Flash (Sep '24) | 2024-10-04 | 6.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| reka-flash-3 | Reka Flash 3 | 2025-03-10 | 5.6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.4 | ∅ | 0 | 13.7 | 8.7 | 0 | -65.1 | 52.9 | ∅ | 0 | 30.4 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 33.7 | 43.5 | ∅ | ∅ | ∅ | ∅ |
+| celeris-1 | Celeris-1 | 2026-07-24 | 6.3 | 0 | 0 | 0.4 | 0 | 21.6 | 6.8 | ∅ | 0 | 11 | 7.2 | 38 | -71.6 | 63.1 | 11.2 | ∅ | ∅ | ∅ | ∅ | 3.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| phi-4-mini | Phi-4 Mini Instruct | 2024-02-26 | 6.3 | ∅ | 0 | ∅ | ∅ | ∅ | 4.5 | ∅ | 0 | 9.5 | 22 | 15.3 | -61.1 | 33.1 | 0.4 | 0 | 21.1 | ∅ | 8.2 | ∅ | ∅ | ∅ | ∅ | 6.7 | 12.6 | ∅ | ∅ | ∅ | ∅ |
+| phi-4 | Phi-4 | 2024-12-12 | 5.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 3.8 | ∅ | 0 | 14.1 | 18.8 | 0 | -55.7 | 57.5 | ∅ | 3.8 | 23.5 | ∅ | 0 | ∅ | ∅ | ∅ | ∅ | 18 | 23.1 | ∅ | ∅ | ∅ | ∅ |
+| phi-3-mini | Phi-3 Mini Instruct 3.8B | 2024-04-23 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| phi-4-multimodal | Phi-4 Multimodal Instruct | 2025-02-26 | 5.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 31.5 | ∅ | ∅ | ∅ | 14.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 13.1 | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-7-large | Jamba 1.7 Large | 2025-07-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-5-large | Jamba 1.5 Large | 2024-08-22 | 6 | ∅ | ∅ | ∅ | ∅ | ∅ | 4.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 42.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 14.3 | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-6-large | Jamba 1.6 Large | 2025-03-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jamba-reasoning-3b | Jamba Reasoning 3B | 2025-10-08 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-7-mini | Jamba 1.7 Mini | 2025-07-07 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-5-mini | Jamba 1.5 Mini | 2024-08-22 | 5.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 30.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 6.2 | ∅ | ∅ | ∅ | ∅ |
+| jamba-1-6-mini | Jamba 1.6 Mini | 2025-03-06 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| arctic-instruct | Arctic Instruct | 2024-04-24 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| openchat-35 | OpenChat 3.5 (1210) | 2023-12-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| dbrx | DBRX Instruct | 2024-03-27 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| apertus-70b-instruct | Apertus 70B Instruct | 2025-09-02 | 5.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 5.5 | ∅ | 0 | 11.6 | 17.2 | 0 | -61.5 | 27.2 | ∅ | 0 | 25.9 | ∅ | 12.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| apertus-8b-instruct | Apertus 8B Instruct | 2025-09-02 | 4.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 5 | ∅ | 0 | 9.7 | 3.9 | 0 | -77.2 | 25.6 | ∅ | 0 | 22.4 | ∅ | 11.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| cogito-v2-1-reasoning | Cogito v2.1 (Reasoning) | 2025-11-18 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 12 | ∅ | 0 | 30.2 | 19.8 | 22.7 | -25.8 | 76.8 | ∅ | 16.7 | 46.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 72.7 | 68.8 | ∅ | ∅ | ∅ | ∅ |
+
+## DeepSWE v1.1
+
+Source: [DeepSWE leaderboard](https://deepswe.datacurve.ai/) by Datacurve, 113 tasks, updated 2026-09-22, accessed 2026-09-25. Every model runs on [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent); each row is the model's best effort level. 25 of the 28 listed models have v1.1 results.
+
+Key:
+
+- DeepSWE: long-horizon software engineering on 113 original tasks written from scratch across 91 repositories and 5 languages, graded by hand-written behavioral verifiers.
+- `Pass@1`: percent of tasks solved in one attempt; `CI` is the published ± interval.
+- `Cost`: average USD per task. `Out tok`: average output tokens per task. `Steps`: average agent steps per task.
+
+| slug | Model | Effort | Pass@1 | CI | Cost | Out tok | Steps |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| gpt-6-astra | gpt-6-astra | xhigh | 74 | ±3 | $4.43 | 30k | 29 |
+| gemini-3-8-flash | gemini-3.8-flash | high | 74 | ±1 | $2.36 | 143k | 166 |
+| claude-opus-5 | claude-opus-5 | max | 74 | ±4 | $11.84 | 118k | 99 |
+| gpt-5-6-sol | gpt-5.6-sol | max | 73 | ±3 | $6.46 | 60k | 61 |
+| claude-fable-5 | claude-fable-5 | xhigh | 70 | ±3 | $13.41 | 80k | 68 |
+| gpt-5-6-terra | gpt-5.6-terra | max | 70 | ±3 | $3.96 | 72k | 76 |
+| glm-5-3 | glm-5.3 | max | 69 | ±3 | $3.99 | 80k | 124 |
+| kimi-k3 | kimi-k3 | max | 69 | ±5 | $4.65 | 81k | 98 |
+| grok-4-6 | grok-4.6 | medium | 67 | ±2 | $3.45 | 50k | 70 |
+| gpt-5-6-luna | gpt-5.6-luna | max | 67 | ±4 | $0.61 | 73k | 102 |
+| gpt-5-5 | gpt-5.5 | xhigh | 67 | ±6 | $7.23 | 46k | 82 |
+| gemini-3-7-flash | gemini-3.7-flash | medium | 65 | ±3 | $2.03 | 94k | 117 |
+| glm-5-3-flash | glm-5.3-flash | max | 63 | ±4 | $0.24 | 73k | 123 |
+| deepseek-v4-pro | deepseek-v4-pro | max | 63 | ±6 | $1.67 | 106k | 155 |
+| claude-opus-4-8 | claude-opus-4.8 | max | 59 | ±2 | $13.22 | 135k | 120 |
+| qwen3-8-max | qwen3.8-max | xhigh | 57 | ±3 | $3.73 | 95k | 111 |
+| muse-spark-1-2 | muse-spark-1.2 | xhigh | 55 | ±2 | $3.70 | 99k | 101 |
+| claude-sonnet-5 | claude-sonnet-5 | max | 54 | ±4 | $26.40 | 214k | 268 |
+| grok-4-5 | grok-4.5 | high | 54 | ±2 | $2.42 | 36k | 61 |
+| deepseek-v4-flash | deepseek-v4-flash | max | 53 | ±4 | $0.46 | 108k | 153 |
+| muse-spark-1-1 | muse-spark-1.1 | xhigh | 53 | ±3 | $2.36 | 74k | 96 |
+| gpt-5-4 | gpt-5.4 | xhigh | 52 | ±2 | $5.65 | 71k | 70 |
+| gemini-3-6-flash | gemini-3.6-flash | high | 47 | ±4 | $2.21 | 96k | 117 |
+| glm-5-2 | glm-5.2 | max | 44 | ±2 | $3.92 | 78k | 129 |
+| gemini-3-5-flash | gemini-3.5-flash | high | 36 | ±4 | $3.45 | 76k | 105 |
+
+## FrontierCode 1.1
+
+Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognition, current revision, accessed 2026-09-25. Each row is the model's best-scoring reasoning effort, which is the same on both sets.
+
+Key:
+
+- FrontierCode: mergeability of agent-written pull requests on tasks built by open-source maintainers, graded by rubrics, unit tests and other verifiers for correctness, test quality, scope discipline, style and codebase conventions. Runs that consult solution-bearing sources such as the original pull request score zero.
+- `Main`, `Extended`: weighted rubric score in percent on the Main (100 tasks) and Extended (150 tasks) sets; a solution that fails a blocking criterion scores 0.
+- `Main pass`, `Ext pass`: percent of tasks passing every blocking criterion.
+- `Flag`: percent of Main runs flagged for unfair internet use. `Cost`: mean USD per Main rollout.
+
+| slug | Model | Effort | Main | Main pass | Extended | Ext pass | Flag | Cost |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| claude-opus-5-5 | Opus 5.5 | medium | 54.6 | 59.6 | 65.3 | 70.8 | 0.0 | $0.80 |
+| claude-fable-5 | Fable 5 | xhigh | 53.5 | 58.9 | 64.9 | 70.9 | 0.3 | $13.09 |
+| claude-opus-5 | Opus 5 | medium | 53.4 | 58.9 | 63.6 | 69.6 | 0.6 | $4.31 |
+| gpt-6-astra | GPT-6 Astra | max | 53.3 | 58.8 | 64.5 | 70.6 | ∅ | $4.59 |
+| claude-fable-5-1 | Fable 5.1 | medium | 50.9 | 55.5 | 63.6 | 68.8 | 0.0 | $3.28 |
+| swe-2 | SWE-2 | max | 50.0 | 55.5 | 62.5 | 68.4 | ∅ | $1.18 |
+| gpt-6-sol | GPT-6 Sol | max | 49.3 | 54.3 | 60.7 | 66.3 | 0.0 | $2.07 |
+| grok-4-6 | Grok 4.6 | high | 48.0 | 53.1 | 61.3 | 67.0 | 0.7 | $2.88 |
+| grok-4-7 | Grok 4.7 | high | 47.6 | 53.1 | 59.4 | 65.2 | 1.3 | $6.65 |
+| gpt-5-6-sol | GPT-5.6 Sol | max | 47.5 | 52.9 | 60.6 | 66.6 | 0.0 | $5.19 |
+| claude-opus-4-8 | Opus 4.8 | max | 46.5 | 51.6 | 59.6 | 65.5 | 0.6 | $9.62 |
+| kimi-k3 | Kimi K3 | ∅ | 44.2 | 48.9 | 58.2 | 63.6 | 0.2 | $3.82 |
+| gemini-3-7-flash | Gemini 3.7 Flash | medium | 43.6 | 48.9 | 56.3 | 62.3 | 0.0 | $1.82 |
+| gpt-5-5 | GPT-5.5 | xhigh | 43.0 | 48.2 | 56.7 | 62.8 | 0.4 | $4.03 |
+| claude-sonnet-5 | Sonnet 5 | xhigh | 42.7 | 47.6 | 56.2 | 61.7 | 0.5 | $10.07 |
+| grok-4-5 | Grok 4.5 | high | 42.4 | 47.2 | 56.5 | 62.3 | 0.0 | $1.30 |
+| gpt-6-luna | GPT-6 Luna | max | 42.4 | 47.8 | 56.1 | 62.3 | 0.0 | $0.10 |
+| swe-1-7 | SWE-1.7 | ∅ | 42.0 | 47.4 | 54.3 | 60.3 | 1.2 | $1.97 |
+| gpt-5-6-terra | GPT-5.6 Terra | max | 41.3 | 46.3 | 55.8 | 61.8 | 0.1 | $1.87 |
+| gemini-3-8-flash | Gemini 3.8 Flash | medium | 41.2 | 46.7 | 53.4 | 59.6 | 0.0 | $2.60 |
+| glm-5-3 | GLM 5.3 | max | 40.1 | 44.7 | 52.6 | 57.7 | 0.0 | $16.91 |
+| gpt-5-6-luna | GPT-5.6 Luna | max | 39.8 | 44.7 | 55.1 | 60.9 | 0.1 | $0.37 |
+| claude-opus-4-7 | Opus 4.7 | max | 38.5 | 42.8 | 53.9 | 59.1 | 0.1 | $9.09 |
+| gemini-3-6-flash | Gemini 3.6 Flash | medium | 34.4 | 38.9 | 48.0 | 53.3 | 0.0 | $4.04 |
+| glm-5-3-flash | GLM 5.3 Flash | max | 31.8 | 35.7 | 46.2 | 51.1 | 0.0 | $1.15 |
+| kimi-k2-7 | Kimi K2.7 | ∅ | 30.1 | 33.6 | 45.4 | 50.0 | 0.0 | $3.01 |
+| deepseek-v4-pro-0813 | DeepSeek V4 Pro 0813 | high | 28.5 | 31.8 | 44.5 | 48.9 | 10.6 | $1.81 |
+| gpt-5-4-mini | GPT-5.4-mini | xhigh | 27.0 | 30.8 | 43.0 | 47.9 | 0.0 | $1.52 |
+| claude-opus-4-6 | Opus 4.6 | high | 26.6 | 29.7 | 43.7 | 48.0 | 0.1 | $3.98 |
+| composer-2-5 | Composer 2.5 | ∅ | 25.6 | 29.3 | 40.8 | 45.1 | 2.4 | $3.09 |
+| glm-5-2 | GLM 5.2 | ∅ | 24.5 | 27.4 | 40.1 | 44.1 | 0.0 | $2.47 |
+| claude-sonnet-4-6 | Sonnet 4.6 | max | 24.3 | 27.5 | 40.0 | 44.4 | 0.2 | $2.90 |
+| deepseek-v4-flash-0731 | DeepSeek V4 Flash 0731 | high | 18.8 | 21.1 | 31.7 | 35.0 | 25.5 | $1.53 |
+| deepseek-v4-pro | DeepSeek V4 Pro | ∅ | 17.6 | 20.0 | 31.0 | 34.5 | 1.0 | $1.55 |
+| minimax-m3 | MiniMax M3 | ∅ | 14.7 | 16.6 | 28.5 | 31.5 | 1.5 | $0.68 |
+| inkling | Inkling | 0.99 | 14.0 | 15.9 | 24.8 | 27.8 | 7.6 | $3.60 |
+| nvidia-nemotron-3-ultra | Nemotron 3 Ultra | ∅ | 13.6 | 15.4 | 27.2 | 30.3 | 0.2 | $1.47 |
+| qwen3-7-plus | Qwen 3.7 Plus | ∅ | 10.2 | 11.5 | 21.8 | 24.1 | 0.9 | $0.24 |
+| swe-1-6 | SWE-1.6 | ∅ | 9.4 | 10.4 | 20.5 | 22.7 | 0.0 | $0.49 |
+| mistral-medium-3-5 | Mistral 3.5 Medium | ∅ | 8.0 | 9.0 | 18.7 | 20.6 | 0.6 | $1.35 |
+
+## Published benchmark results
+
+Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25. Values are percent. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
+
+Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
+
+Key:
+
+- `ALE`: [Agents' Last Exam](https://agents-last-exam.org/), long-horizon professional tasks in real software, from financial modeling to engineering and media production.
+- `OSW2`, `OSW2s`: [OSWorld 2.0](https://osworld-v2.xlang.ai/), long-horizon computer-use workflows operating desktop applications through the screen; partial credit and strict all-pass scoring.
+- `SSP`: [ScreenSpot-Pro](https://gui-agent.github.io/grounding-leaderboard/), locating GUI elements in high-resolution professional application screenshots.
+- `ABench`: [AutomationBench](https://zapier.com/benchmarks), cross-app business workflows in simulated SaaS tools, graded strictly on the resulting business state; distinct from AutomationBench-AA above.
+- `CAD`: [BenchCAD](https://benchcad.com/), generating CAD code that reproduces a target part, scored by geometric overlap.
+- `BComp`: [BrowseComp](https://openai.com/index/browsecomp/), web browsing to find hard-to-locate facts.
+- `HLEt`, `HLEv`: Humanity's Last Exam with tools, and Google's HLE-Verified; expert-level academic reasoning.
+- `TBSci`: [Terminal-Bench-Science](https://www.terminal-bench-science.ai/), agentic scientific research workflows in a terminal across 70 tasks.
+- `FMT4`: [FrontierMath Tier 4](https://epoch.ai/benchmarks/frontiermath-tier-4-v2), research-level mathematics problems.
+- `XBench`: [ExploitBench](https://exploitbench.ai/), turning known vulnerabilities into exploit primitives and code execution.
+- `XGym`: [ExploitGym](https://www.cybergym.io/exploitgym/), turning real software vulnerabilities into working exploits.
+- `SRE`: [SRE-Bench](https://daplab.cs.columbia.edu/projects/sre-bench/), reverse engineering binaries without source code.
+- `SECPro`: [SEC-Bench Pro](https://sec-bench.github.io/), finding security bugs in critical software.
+- `ARC1`, `ARC2`, `ARC3`: [ARC-AGI](https://arcprize.org/) 1, 2 and 3, abstract reasoning on novel grid puzzles; version 3 is interactive.
+
+| slug | Model | Benchmark | Score | Setting | Source |
+| --- | --- | --- | ---: | --- | --- |
+| gpt-6-astra | GPT-6 Astra | ALE | 59.3 | max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | OSW2 | 72.6 | offline set v2026.08.08, partial, official settings | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SSP | 92.7 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ABench | 41.4 | v1.0.6, max effort; Fable 5.1 with Opus 5 fallback | Zapier |
+| gpt-6-astra | GPT-6 Astra | CAD | 95.9 | geometric overlap (IoU), no tools | OpenAI |
+| gpt-6-astra | GPT-6 Astra | BComp | 91.5 | max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | HLEt | 57.2 | with tools | OpenAI |
+| gpt-6-astra | GPT-6 Astra | TBSci | 68.1 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gpt-6-astra | GPT-6 Astra | TBSci | 64.6 | v0.1, Codex harness | OpenAI |
+| gpt-6-astra | GPT-6 Astra | FMT4 | 97.6 | Tier 4 v2, max effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | XBench | 100.0 | without production safeguards | OpenAI |
+| gpt-6-astra | GPT-6 Astra | XGym | 42.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SRE | 88.0 | single attempt | OpenAI |
+| gpt-6-astra | GPT-6 Astra | SECPro | 85.4 | ∅ | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC1 | 98.5 | semi-private, best effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC2 | 95.0 | semi-private, best effort | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC3 | 99.9 | OpenAI responses harness | OpenAI |
+| gpt-6-astra | GPT-6 Astra | ARC3 | 54.8 | semi-private, high, standard harness | ARC Prize |
+| gpt-5-6-sol | GPT-5.6 Sol | ALE | 53.6 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | OSW2 | 65.7 | offline set v2026.08.08, partial, official settings | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SSP | 76.9 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ABench | 18.1 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | CAD | 83.3 | geometric overlap (IoU), no tools | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | BComp | 90.4 | max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | TBSci | 22.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gpt-5-6-sol | GPT-5.6 Sol | FMT4 | 83.0 | Tier 4 v2, max effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | XBench | 78.5 | without production safeguards | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | XGym | 30.3 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SRE | 55.9 | single attempt | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | SECPro | 79.1 | ∅ | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC2 | 92.5 | semi-private, best effort | OpenAI |
+| gpt-5-6-sol | GPT-5.6 Sol | ARC3 | 7.8 | OpenAI responses harness | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | OSW2 | 77.9 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | OSW2s | 41.7 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | ABench | 31.4 | v1.0.6, max effort; Fable 5.1 with Opus 5 fallback | Zapier |
+| claude-fable-5-1 | Claude Fable 5.1 | CAD | 84.3 | geometric overlap (IoU), no tools | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | HLEt | 65.0 | with tools | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | TBSci | 40.0 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-fable-5-1 | Claude Fable 5.1 | TBSci | 52.6 | v0.1, Anthropic setup | Anthropic |
+| claude-fable-5-1 | Claude Fable 5.1 | FMT4 | 87.8 | Tier 4 v2, max effort | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | XGym | 30.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| claude-fable-5-1 | Claude Fable 5.1 | ARC2 | 90.0 | semi-private, best effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ALE | 48.7 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | OSW2 | 72.9 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-fable-5 | Claude Fable 5 | OSW2s | 36.1 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-fable-5 | Claude Fable 5 | SSP | 87.3 | no tools; Fable 5 value is Mythos 5 | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ABench | 17.4 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | CAD | 67.5 | geometric overlap (IoU), no tools | OpenAI |
+| claude-fable-5 | Claude Fable 5 | BComp | 87.4 | max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | HLEt | 63.8 | with tools | Anthropic |
+| claude-fable-5 | Claude Fable 5 | TBSci | 21.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-fable-5 | Claude Fable 5 | TBSci | 24.7 | v0.1, Anthropic setup | Anthropic |
+| claude-fable-5 | Claude Fable 5 | FMT4 | 90.2 | Tier 4 v2, max effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | XGym | 28.4 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ARC1 | 98.5 | semi-private, best effort | OpenAI |
+| claude-fable-5 | Claude Fable 5 | ARC2 | 89.2 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ALE | 55.5 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | OSW2 | 70.2 | offline set v2026.08.08, partial, official settings | OpenAI |
+| claude-opus-5 | Claude Opus 5 | OSW2 | 75.4 | offline set v2026.08.08, partial, Anthropic grading | Anthropic |
+| claude-opus-5 | Claude Opus 5 | OSW2s | 39.6 | offline set v2026.08.08, strict, Anthropic grading | Anthropic |
+| claude-opus-5 | Claude Opus 5 | ABench | 26.9 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | CAD | 82.1 | geometric overlap (IoU), no tools | OpenAI |
+| claude-opus-5 | Claude Opus 5 | BComp | 90.8 | max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | HLEt | 63.6 | with tools | Anthropic |
+| claude-opus-5 | Claude Opus 5 | TBSci | 30.0 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| claude-opus-5 | Claude Opus 5 | TBSci | 29.0 | v0.1, Anthropic setup | Anthropic |
+| claude-opus-5 | Claude Opus 5 | FMT4 | 73.2 | Tier 4 v2, max effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | XBench | 70.0 | without production safeguards | OpenAI |
+| claude-opus-5 | Claude Opus 5 | XGym | 22.0 | Astra and Sol without the 6-hour limit; Fable values are Mythos | OpenAI |
+| claude-opus-5 | Claude Opus 5 | SRE | 12.5 | single attempt | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC1 | 97.5 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC2 | 90.4 | semi-private, best effort | OpenAI |
+| claude-opus-5 | Claude Opus 5 | ARC3 | 30.2 | OpenAI responses harness | OpenAI |
+| gemini-3-8-flash | Gemini 3.8 Flash | OSW2 | 59.0 | offline set v2026.08.08, partial, batch tool enabled | Google |
+| gemini-3-8-flash | Gemini 3.8 Flash | HLEv | 54.9 | HLE-Verified, tools not stated | Google |
+| gemini-3-8-flash | Gemini 3.8 Flash | TBSci | 12.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC1 | 98.5 | semi-private, high | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC2 | 89.2 | semi-private, high | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC3 | 10.4 | semi-private, high, standard harness | ARC Prize |
+| gemini-3-8-flash | Gemini 3.8 Flash | ARC3 | 35.0 | semi-private, high, provider adapter harness | ARC Prize |

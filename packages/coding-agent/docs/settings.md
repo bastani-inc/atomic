@@ -56,6 +56,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
 | `routerModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
+| `modelRouting` | object | `{}` | Provider filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays). Does not change `routerModel`. See [modelRouting](#modelrouting). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -83,15 +84,35 @@ Use `/settings` → **Router model** to change the effective selection. If the p
 
 An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Gateway classifier IDs are not registered automatically; configure their classifier models and operations before selecting them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
 
-A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Routing has no built-in wall-clock deadline; cancel the request to stop waiting. Independent provider, credential-preparation, and enclosing tool-request limits still apply. Atomic reports the fallback; it can incur chat-provider charges. Cancellation does not trigger fallback.
+A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Routing has no built-in wall-clock deadline; cancel the request to stop waiting. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
-Automatic subagent and workflow-stage model selection uses a bounded excerpt for long tasks, keeping the beginning, end, and `<keepContext>...</keepContext>` spans. Only the router's copy is shortened; execution receives the full task and hard model constraints stay enforced. Put essential model-selection requirements in protected spans. Unprotected middle text may be omitted, so excerpts can affect model choice. This does not truncate general structured decisions.
+A classifier `routerModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`routerModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
 
-If the selected classifier rejects the request for size or context, routing switches to the current chat model.
+Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection.
 
 This setting selects inference for [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection). It does not directly select the child execution model or change the selected chat model, `structured_output` tool, or general structured-output inference. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
 Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the router. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
+
+#### modelRouting
+
+```json
+{
+  "modelRouting": {
+    "allowedProviders": ["github-copilot", "openai-codex", "anthropic"],
+    "excludedProviders": ["openrouter"]
+  }
+}
+```
+
+Limits which providers' models workflow stages and subagents with `model: "auto"` can be routed to. It filters the candidates only; the model that makes the decision is still `routerModel`.
+
+- `allowedProviders`: when nonempty, only models from these providers are candidates.
+- `excludedProviders`: models from these providers are never candidates, even if they are also allowed.
+
+Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so this setting cannot separate them.
+
+A project list replaces the global list of the same name; the other list is kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of these for that call. Provider lists in an agent definition or inherited from a parent workflow only narrow these settings; they never lift an exclusion. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
 
 #### thinkingBudgets
 

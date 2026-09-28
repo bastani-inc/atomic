@@ -29,6 +29,17 @@ export function detectColorMode(): ColorMode {
 	return "truecolor";
 }
 
+/**
+ * Resolve the color mode for a theme from an explicit `terminal.trueColor` setting, then
+ * `PI_TRUE_COLOR=1|0`, then terminal detection.
+ */
+export function resolveColorMode(trueColorSetting: boolean | undefined): ColorMode {
+	const envOverride = process.env.PI_TRUE_COLOR;
+	const trueColor = trueColorSetting ?? (envOverride === "1" ? true : envOverride === "0" ? false : undefined);
+	if (trueColor === undefined) return detectColorMode();
+	return trueColor ? "truecolor" : "256color";
+}
+
 export function hexToRgb(hex: string): { r: number; g: number; b: number } {
 	const cleaned = hex.replace("#", "");
 	if (cleaned.length !== 6) {

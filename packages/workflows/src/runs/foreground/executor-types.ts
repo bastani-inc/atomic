@@ -31,6 +31,8 @@ export interface RunContinuationOpts {
 	readonly source: RunSnapshot;
 	readonly resumeFromStageId?: string;
 	readonly resumeFromToolNodeId?: string;
+	/** Unfinished parallel siblings of the tool frontier that may run live before it. */
+	readonly retryToolNodes?: readonly ToolNodeSnapshot[];
 }
 
 export interface StageSessionCheckpointOptions {

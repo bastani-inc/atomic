@@ -1,28 +1,21 @@
-import { findingBlocksClosure } from "./review-convergence.js";
+import { findingBlocksClosure, stopReviewLoopContradictions } from "./review-convergence.js";
 
 /**
  * Review-gate convergence logic for the builtin `ralph` workflow.
  *
- * The reviewer's self-reported `stop_review_loop` boolean is the single
- * authoritative convergence signal, mirroring the builtin `goal` gate. The
- * harness no longer recomputes approval from findings arrays, priorities, or
- * requirements_traceability statuses: those fields remain required audit
- * evidence for humans and later stages, and the reviewer prompt instructs the
- * model exactly how to derive the flag from them (blocking P0/P1/P2 findings
- * and required_by_objective findings at any priority mean `false`; in-scope
- * P3 nice-to-haves, out-of-scope observations, authorized post-approval final
- * actions such as PR creation, and the multi-reviewer quorum process itself
- * must never hold the flag at `false`).
+ * The reviewer's self-reported `stop_review_loop` boolean is the convergence
+ * signal, mirroring the builtin `goal` gate. The harness does not recompute
+ * approval from requirements_traceability statuses: recomputing it previously
+ * deadlocked runs whose acceptance criteria referenced the review process
+ * itself (for example "three reviewers approve" or "a PR is created"), since
+ * no individual reviewer can prove such clauses.
  *
- * Recomputing approval from those arrays previously deadlocked runs whose
- * acceptance criteria referenced the review process itself (for example
- * "three reviewers approve" or "a PR is created"): no individual reviewer can
- * prove such clauses, so traceability could never be fully `proven` even when
- * every reviewer explicitly approved via the boolean.
- *
- * Two hard guards remain: a reviewer execution failure (`reviewer_error`)
- * never approves, and unparsed reviewer output is synthesized upstream as a
- * `stop_review_loop: false` decision, so parse failures never approve either.
+ * Hard guards: a reviewer execution failure (`reviewer_error`) never
+ * approves; unparsed reviewer output is synthesized upstream as a
+ * `stop_review_loop: false` decision; and a flag contradicted by the same
+ * review's verdict (patch incorrect or a blocking finding) does not count as
+ * approval. In-scope P3 nice-to-haves and out-of-scope observations never
+ * block.
  */
 
 export type ObjectiveAlignment =
@@ -87,8 +80,9 @@ export { MAX_BLOCKING_PRIORITY } from "./review-convergence.js";
  * the shared predicate so Goal and Ralph classify findings identically:
  * objective-required findings block at any priority, in-scope P3
  * nice-to-haves do not, and ambiguity (missing priority or alignment)
- * always blocks. This classification feeds prompts and repair batches; it no
- * longer overrides the reviewer's `stop_review_loop` boolean.
+ * always blocks. This classification feeds prompts and repair batches, and a
+ * blocking finding keeps the reviewer's own `stop_review_loop=true` from
+ * counting as approval.
  */
 export function isBlockingFinding(finding: ReviewFinding): boolean {
   return findingBlocksClosure(finding);
@@ -96,8 +90,11 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
 
 /**
  * Deterministic single-reviewer approval gate: the reviewer approves exactly
- * when it set `stop_review_loop` to `true` and reported no execution error.
+ * when it set `stop_review_loop` to `true`, reported no execution error, and
+ * its own verdict and findings do not contradict the flag.
  */
 export function reviewDecisionApproved(decision: ReviewDecision): boolean {
-  return decision.stop_review_loop === true && decision.reviewer_error == null;
+  return decision.stop_review_loop === true &&
+    decision.reviewer_error == null &&
+    stopReviewLoopContradictions(decision).length === 0;
 }

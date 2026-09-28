@@ -231,6 +231,8 @@ export interface ExtensionContext {
 	getSkillCatalog?(): SkillCatalog;
 	/** Current routing-only inference setting from the owning session. Does not change the chat model. */
 	getRouterModel(): string;
+	/** Provider filters for `model: "auto"` candidates from the owning session's settings. */
+	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 }
 
 /**

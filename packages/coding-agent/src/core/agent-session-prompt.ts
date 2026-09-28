@@ -5,7 +5,7 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { PromptOptions } from "./agent-session-types.js";
+import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
 import {
 	formatNoApiKeyFoundMessage,
 	formatNoModelSelectedMessage,
@@ -132,7 +132,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// Unknown slash input continues through the normal paused admission path.
 		if (expandPromptTemplates && (await tryExecuteSessionSlashCommand(this, text))) {
 			workflowDelivery?.delivered?.("handled");
-			preflightResult?.(true);
+			preflightResult?.(true, "handled");
 			return;
 		}
 		assertCurrent();
@@ -149,7 +149,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
 			else await this._queueSteer(text, options?.images);
 			workflowDelivery?.delivered?.(delivery);
-			preflightResult?.(true);
+			preflightResult?.(true, "queued");
 			return;
 		}
 
@@ -166,7 +166,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			assertCurrent();
 			if (inputResult.action === "handled") {
 				workflowDelivery?.delivered?.("handled");
-				preflightResult?.(true);
+				preflightResult?.(true, "handled");
 				return;
 			}
 			if (inputResult.action === "transform") {
@@ -197,7 +197,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				await this._queueSteer(expandedText, currentImages);
 			}
 			workflowDelivery?.delivered?.(options.streamingBehavior);
-			preflightResult?.(true);
+			preflightResult?.(true, "queued");
 			return;
 		}
 
@@ -308,17 +308,31 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		throw error;
 	}
 
-	preflightResult?.(true);
 	assertCurrent();
-	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted);
+	let dispatched = false;
+	const reportDispatch = (disposition: PromptDisposition) => {
+		if (dispatched) return;
+		dispatched = true;
+		preflightResult?.(true, disposition);
+	};
+	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted, reportDispatch);
 	workflowDelivery?.delivered?.("prompt");
-	await turn;
+	try {
+		await turn;
+	} catch (error) {
+		if (!dispatched) {
+			dispatched = true;
+			preflightResult?.(false);
+		}
+		throw error;
+	}
 }
 
 export async function _runAgentPrompt(
 	this: AgentSession,
 	messages: AgentMessage | AgentMessage[],
 	promptStarted?: () => void,
+	reportDispatch?: (disposition: PromptDisposition) => void,
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -326,12 +340,15 @@ export async function _runAgentPrompt(
 		if (owner._queuedMessagesPaused) {
 			const items = Array.isArray(messages) ? messages : [messages];
 			for (const message of items) owner._queueAgentMessage(message, "steer");
+			reportDispatch?.("queued");
 			return;
 		}
-		return owner._runAgentPrompt(messages, promptStarted);
+		return owner._runAgentPrompt(messages, promptStarted, reportDispatch);
 	}
 	if (this._isEmittingAgentSettled) {
-		this._deferredSettledActions.push(async () => await this._runAgentPrompt(messages, promptStarted));
+		this._deferredSettledActions.push(
+			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch),
+		);
 		return;
 	}
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
@@ -339,12 +356,18 @@ export async function _runAgentPrompt(
 	try {
 		if (this._subagentMessageAdmission) {
 			await this._subagentMessageAdmission.waitForPendingDeliveries();
-			if (!this._subagentMessageAdmission.isOpen()) return;
+			if (!this._subagentMessageAdmission.isOpen()) {
+				reportDispatch?.("handled");
+				return;
+			}
 		}
 		const pendingPriority = preparePriorityContinuation(this);
 		if (pendingPriority) await pendingPriority;
 		if (this._agentRunAbortRequested) {
-			if (this.isStreaming || this._queuedMessagesPaused) return;
+			if (this.isStreaming || this._queuedMessagesPaused) {
+				reportDispatch?.("handled");
+				return;
+			}
 			this._agentRunAbortRequested = false;
 		}
 		// An explicit stop may win during input preflight or priority preparation.
@@ -352,10 +375,12 @@ export async function _runAgentPrompt(
 		if (this._queuedMessagesPaused) {
 			const items = Array.isArray(messages) ? messages : [messages];
 			for (const message of items) this._queueAgentMessage(message, "steer");
+			reportDispatch?.("queued");
 			return;
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
+		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);
 		if (this.isStreaming) promptStarted?.();
 		await turn;
@@ -632,7 +657,7 @@ async function queueUserInput(
 	images: ImageContent[] | undefined,
 	behavior: "steer" | "followUp",
 	source: NonNullable<PromptOptions["source"]>,
-): Promise<void> {
+): Promise<QueuedInputDisposition> {
 	assertSessionOpen(session);
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return queueUserInput(owner, text, images, behavior, source);
@@ -645,7 +670,7 @@ async function admittedQueueUserInput(
 	images: ImageContent[] | undefined,
 	behavior: "steer" | "followUp",
 	source: NonNullable<PromptOptions["source"]>,
-): Promise<void> {
+): Promise<QueuedInputDisposition> {
 	const lifetime = sessionLifetime(session);
 	if (text.startsWith("/")) session._throwIfExtensionCommand(text);
 	if (session._extensionRunner?.hasHandlers("input")) {
@@ -657,7 +682,7 @@ async function admittedQueueUserInput(
 		);
 		assertSessionOpen(session);
 		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
-		if (result.action === "handled") return;
+		if (result.action === "handled") return "handled";
 		if (result.action === "transform") {
 			text = result.text;
 			images = result.images ?? images;
@@ -666,6 +691,7 @@ async function admittedQueueUserInput(
 	const expandedText = expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates]);
 	if (behavior === "steer") await session._queueSteer(expandedText, images);
 	else await session._queueFollowUp(expandedText, images);
+	return "queued";
 }
 
 /**
@@ -682,8 +708,8 @@ export async function steer(
 	text: string,
 	images?: ImageContent[],
 	options?: Pick<PromptOptions, "source">,
-): Promise<void> {
-	await queueUserInput(this, text, images, "steer", options?.source ?? "interactive");
+): Promise<QueuedInputDisposition> {
+	return queueUserInput(this, text, images, "steer", options?.source ?? "interactive");
 }
 
 /**
@@ -699,8 +725,8 @@ export async function followUp(
 	text: string,
 	images?: ImageContent[],
 	options?: Pick<PromptOptions, "source">,
-): Promise<void> {
-	await queueUserInput(this, text, images, "followUp", options?.source ?? "interactive");
+): Promise<QueuedInputDisposition> {
+	return queueUserInput(this, text, images, "followUp", options?.source ?? "interactive");
 }
 
 /**

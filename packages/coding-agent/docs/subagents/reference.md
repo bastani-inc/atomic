@@ -21,11 +21,28 @@ The same value works on individual parallel tasks and in an agent definition's `
 
 Workflow stages also support [prompt-based `model: "auto"`](/workflows/authoring#automatic-stage-model-selection), using the same decision provider and evaluation guidance. Stage model selection is separate from choosing which workflow to launch.
 
-Put requirements that should influence model selection in the task. Atomic supplies `task`, `agent` (name and description), `evals` containing the factual markdown tables from [Evals](/models/evals), and `model_selection_guide`, a fixed policy excerpt from [Model Selection](/models/model-selection) covering benchmarks-as-evidence and the role-based model cost tier and thinking effort table, so exploration and routine implementation lean toward cheaper models while review and verification get frontier ones. Eligible provider-qualified models and efforts, capabilities and prices appear in the choices. There is no separate policy-version field or provider-name filter. You do not need to attach eval records yourself.
+Routing takes at most two short requests, described in [Model Selection](/models/model-selection#automatic-subagent-and-workflow-stage-routing): a chat model answers questions about the task, then the router chooses between a shortlist of models that each carry their own [Evals](/models/evals) results, seeing only those answers and never the task. Effort follows the task's difficulty.
+
+When you launch a subagent, fill in `taskNeeds` with everything you can judge; stated fields are not asked, and stating all six skips the task-reading request. To choose the contenders yourself, list them in `modelConstraints.allowedModels`; the eligible ones become the shortlist:
+
+```typescript
+subagent({
+  agent: "worker",
+  task: "Open Xcode, build the app and verify the settings screen by screenshot",
+  model: "auto",
+  taskNeeds: {
+    work: "computer_use", difficulty: "hard", mistakeCost: "moderate",
+    needsImages: true, longContext: false, latencySensitive: false,
+  },
+  modelConstraints: { allowedModels: ["anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"] },
+})
+```
+
+`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`; `needsImages`, `longContext` (must hold a very large codebase or document set) and `latencySensitive` (a fast answer matters more than extra reasoning) are true or false. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
 
 The agent's system prompt is not routing metadata. For a self-contained agent with no task, it remains the task fallback. The router weighs task-relevant evidence, cost, and latency rather than always choosing a benchmark winner or maximum effort. Benchmark measurement effort does not prescribe execution effort.
 
-Long tasks use a model-selection excerpt of at most 9,000 JSON-encoded UTF-8 bytes (roughly 1,200 words), smaller when many model/effort pairs are eligible. It retains the beginning, end, and `<keepContext>...</keepContext>` spans in source order and marks each cut `[... truncated ...]`. Put the child's role and objective at the start or end of the task, or in a short protected span, and keep bulky reference text in the middle; unprotected middle text may be cut. If the protected spans alone do not fit, the router receives the start and end of the task and the middle is cut, including protected text. This applies to the routing request, not execution: the child still receives its complete task. If a classifier still rejects the request, routing falls back to the current chat model and the warning names the HTTP status and error type. Hard `modelConstraints` are never truncated.
+The chat model reads the complete task; a task too large for its context window is read by the cheapest eligible model whose window holds it. If a classifier rejects the choice request, routing falls back to the current chat model. Fallbacks are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`, which prints them with the HTTP status and error type. Hard `modelConstraints` are never truncated.
 
 The shared [`routerModel`](/settings#routermodel) setting chooses the model making the decision, not the child model. Selection follows this order:
 
@@ -38,7 +55,7 @@ Routing has no built-in wall-clock deadline. Slow decisions can finish; cancel t
 
 The result records a primary `{ model, effort }` and up to two ordered `fallbacks`, each with its own model and effort. Atomic ranks three distinct eligible provider/model IDs, or all available IDs when fewer than three qualify. It selects each rank from the remaining models, excluding all efforts of earlier choices. A supported `"off"` is distinct from `null`, which means no configurable reasoning. The catalog reflects configured authentication, not proof of valid credentials, quota, or entitlement.
 
-The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer triggers a reported switch to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, the child runs on the current chat model instead of failing, with a reported warning, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child.
+The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer switches to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, or Atomic cannot pick a model itself (the task needs images and no eligible model reads them, `allowedModels` lists more models than one routing request holds (roughly 100), or `evals.md` is missing), the child runs on the current chat model instead of failing, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child. These switches are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1` is set.
 
 Router classification is one classify request for the prepared choices. If the provider rejects the request size, routing uses the current chat model. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
@@ -53,12 +70,13 @@ For automatic routing, optional `modelConstraints` on a call, parallel task, or 
 | Field | Meaning |
 | --- | --- |
 | `allowedModels` | Exact provider/model IDs permitted to receive the task |
+| `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. On a call, setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call, so set them only when the user asks; in an agent definition they only narrow those settings |
 | `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap |
 | `minContextWindow` | Minimum advertised context window in tokens |
 | `requiredInputs` | Required input types, `"text"` or `"image"` |
 | `allowedEfforts` | Permitted supported effort values, including `null` for non-reasoning models |
 
-Unknown keys and invalid limits fail validation. An empty eligible set stops the launch. These constraints do not turn a concrete model call into an automatic one. The catalog does not establish a latency SLA or a provider's privacy guarantees. Express hard provider restrictions through `allowedModels`; describe softer preferences in the task.
+Unknown keys and invalid limits fail validation. An empty eligible set stops the launch. These constraints do not turn a concrete model call into an automatic one. The catalog does not establish a latency SLA or a provider's privacy guarantees. Express hard provider restrictions through `allowedProviders`, `excludedProviders` or `allowedModels`; describe softer preferences in the task.
 
 For a persistent builtin override, put this in your user or project settings:
 

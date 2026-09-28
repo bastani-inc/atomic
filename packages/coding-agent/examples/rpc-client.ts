@@ -2,7 +2,7 @@
  * Run one prompt through an Atomic RPC child process.
  *
  * Build the coding-agent package first, then run:
- * npx tsx examples/rpc-client.ts "Explain this repository"
+ * node examples/rpc-client.ts "Explain this repository"
  *
  * RpcClient launches the CLI under Bun by default; pass
  * `runtimeExecutable: process.execPath` to run it under Node instead.

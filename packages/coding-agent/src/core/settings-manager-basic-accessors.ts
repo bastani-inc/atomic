@@ -4,10 +4,25 @@ import { normalizePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { CompactionModelOverride, CompactionSettings, TransportSetting } from "./settings-types.ts";
+import type {
+	CompactionModelOverride,
+	CompactionSettings,
+	ModelRoutingSettings,
+	TransportSetting,
+} from "./settings-types.ts";
 import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts";
 
 type CompactionModel = Pick<Model<string>, "provider" | "id">;
+
+const MODEL_ROUTING_ERROR =
+	'Invalid modelRouting: allowedProviders and excludedProviders must be arrays of provider IDs, such as ["github-copilot"].';
+
+function providerList(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.trim() !== item))
+		throw new Error(MODEL_ROUTING_ERROR);
+	return [...new Set(value as string[])];
+}
 
 function resolveCompactionSetting(
 	compaction: CompactionSettings | undefined,
@@ -49,6 +64,7 @@ interface SettingsManagerBasicAccessors {
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
 	getRouterModel(): string;
+	getModelRouting(): ModelRoutingSettings;
 	setRouterModel(model: string, scope?: "global" | "project"): void;
 	setDefaultProvider(provider: string): void;
 	setDefaultModel(modelId: string): void;
@@ -178,6 +194,18 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
 		}
 		return value;
+	},
+
+	getModelRouting() {
+		const value = settingsInternals(this).settings.modelRouting;
+		if (value === undefined) return {};
+		if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(MODEL_ROUTING_ERROR);
+		const allowedProviders = providerList(value.allowedProviders);
+		const excludedProviders = providerList(value.excludedProviders);
+		return {
+			...(allowedProviders ? { allowedProviders } : {}),
+			...(excludedProviders ? { excludedProviders } : {}),
+		};
 	},
 
 	setRouterModel(model, scope = "global") {

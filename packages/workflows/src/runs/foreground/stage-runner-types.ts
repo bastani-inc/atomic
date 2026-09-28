@@ -62,8 +62,8 @@ export interface StageSessionRuntime {
 	pauseTasks?(): Promise<void>;
 	/** Reopen launches only; cancelled executions must never restart. */
 	resumeTasks?(): void;
-	steer(text: string): Promise<void>;
-	followUp(text: string): Promise<void>;
+	steer(text: string): Promise<void> | Promise<"handled" | "queued">;
+	followUp(text: string): Promise<void> | Promise<"handled" | "queued">;
 	subscribe(listener: (event: StageSessionEvent) => void): () => void;
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;

@@ -3,7 +3,7 @@
  *
  * The changelog once named `resolveUpstreamRequestModel`, a symbol that had been renamed before
  * release. Nothing caught it: the changelog is prose, and no test read the export list. This file
- * compiles under `tsgo -p tsconfig.typetests.json`, which `npm run typecheck` runs, so a renamed or
+ * compiles under `tsc -p tsconfig.typetests.json`, which `npm run typecheck` runs, so a renamed or
  * dropped export becomes a build error rather than a stale sentence.
  */
 import type {

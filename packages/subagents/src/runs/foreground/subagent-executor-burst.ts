@@ -127,6 +127,7 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		...(item.params.progress !== undefined ? { progress: item.params.progress } : {}),
 		...(item.params.model !== undefined ? { model: item.params.model } : {}),
 		...(item.params.modelConstraints !== undefined ? { modelConstraints: item.params.modelConstraints } : {}),
+		...(item.params.taskNeeds !== undefined ? { taskNeeds: item.params.taskNeeds } : {}),
 		...(item.params.skill !== undefined ? { skill: item.params.skill } : {}),
 		...(item.params.group !== undefined ? { group: item.params.group } : {}),
 	};

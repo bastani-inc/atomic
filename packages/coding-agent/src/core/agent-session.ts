@@ -72,7 +72,9 @@ export type {
 	CompactionReason,
 	ExtensionBindings,
 	ModelCycleResult,
+	PromptDisposition,
 	PromptOptions,
+	QueuedInputDisposition,
 	SessionStats,
 } from "./agent-session-types.js";
 

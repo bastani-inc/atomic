@@ -472,6 +472,7 @@ export function _bindExtensionCore(
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			getRouterModel: () => this.settingsManager.getRouterModel(),
+			getModelRouting: () => this.settingsManager.getModelRouting(),
 			getSkillCatalog: () => getSkillCatalog(publication?.resourceLoader ?? this._resourceLoader),
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},

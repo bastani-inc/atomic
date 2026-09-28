@@ -60,13 +60,7 @@ const result = await ctx.task("analyze", {
 
 `ctx.stage("analyze", { model: "auto" }).prompt(text)` works too. Set `model: "auto"` in chain or parallel shared options to route each stage separately. The decision uses the actual supplied prompt after input interpolation and chain context expansion, eligible models and efforts, and compact dated evaluation evidence rather than full guides. It ranks up to three distinct models with an effort for each, trying them in order before remaining configured fallbacks and the current chat model. File references remain references, not guessed file contents. See [automatic model selection](/subagents/reference#automatic-model-selection) for ranking and limits.
 
-Long prompts are excerpted for model selection only; the stage still receives the full execution prompt. The router sees the beginning of the prompt, its end, and every `<keepContext>...</keepContext>` span, with each cut marked `[... truncated ...]`. The excerpt is at most about 9 KB (roughly 1,200 words) and can be smaller when many models are eligible. Hard `modelConstraints` remain enforced independently.
-
-Structure `model: "auto"` prompts so the router sees what decides the model:
-
-- Put the stage's role and objective in the first or last lines, or in a short `<keepContext>` span. Text in the unprotected middle may be cut.
-- Put bulky material (issue bodies, artifact reads, prior-stage output) in the middle, or pass it through files and `reads`.
-- Keep `<keepContext>` spans to a few lines of constraints. If the spans alone exceed the excerpt, the router receives only the start and end of the prompt, cutting through the middle of the protected text.
+A chat model reads the complete stage prompt to answer the routing questions; a classifier router such as Jev never sees it. Hard `modelConstraints` remain enforced independently. Set `taskNeeds` in the stage options when you already know the task's kind of work, difficulty, mistake cost, or need for images, a very large context or a fast answer; stating all six skips the chat model's read, and list the contenders in `modelConstraints.allowedModels` to choose them yourself.
 
 ```ts
 const prompt = [

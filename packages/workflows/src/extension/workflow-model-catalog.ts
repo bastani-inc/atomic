@@ -1,8 +1,11 @@
-import { type CreateAgentSessionOptions, routeExecutionModel } from "@bastani/atomic";
+import { type CreateAgentSessionOptions, type ModelRoutingSettings, routeExecutionModel } from "@bastani/atomic";
 import type { WorkflowModelCatalogPort, WorkflowModelInfo } from "../shared/types.js";
 import type { PiModelContext } from "./public-types.js";
 
-export type WorkflowModelContext = PiModelContext & { getRouterModel?: () => string };
+export type WorkflowModelContext = PiModelContext & {
+	getRouterModel?: () => string;
+	getModelRouting?: () => ModelRoutingSettings;
+};
 
 /**
  * `currentModel` and `preferredProvider` are the launch-time selection. The
@@ -36,6 +39,7 @@ export function workflowModelCatalogFromContext(
 				ctx: {
 					model: current.model,
 					getRouterModel: () => current.getRouterModel!(),
+					...(current.getModelRouting ? { getModelRouting: () => current.getModelRouting!() } : {}),
 					modelRegistry: {
 						getAvailable: () => registry.getAvailable(),
 						getAll: () => registry.getAll!(),
@@ -54,6 +58,8 @@ export function workflowModelCatalogFromContext(
 				constraints: input.constraints,
 				signal: input.signal,
 				selection: input.selection,
+				...(input.taskNeeds ? { taskNeeds: input.taskNeeds } : {}),
+				...(input.overrideProviderSettings ? { overrideProviderSettings: true } : {}),
 			});
 		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {

@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type CreateToolPrimitiveInput, createToolPrimitive } from "../durable/tool-primitive.js";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
+import type { RunContinuationOpts } from "../runs/foreground/executor-types.js";
 import { REPLAY_TOPOLOGY_MISMATCH_MESSAGE } from "../shared/replay-topology-failure.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
@@ -26,6 +27,7 @@ export function createToolNodeLifecycle(input: {
 	readonly run: RunSnapshot;
 	readonly sourceToContinuationNodeIds: Map<string, string>;
 	readonly resumeToolNode?: ToolNodeSnapshot;
+	readonly retryToolNodes?: readonly ToolNodeSnapshot[];
 }): ToolNodeLifecycle {
 	const { store, tracker, run, sourceToContinuationNodeIds } = input;
 	/**
@@ -39,6 +41,8 @@ export function createToolNodeLifecycle(input: {
 	const ownsCurrentRun = (): boolean => store.runs().some((candidate) => candidate === run);
 	const replayedToolNodeIds = new Set<string>();
 	let pendingFrontier = input.resumeToolNode;
+	const pendingRetries = new Map((input.retryToolNodes ?? []).map((node) => [node.id, node]));
+	let frontierMismatch: Error | undefined;
 	return {
 		assertFrontierConsumed: () => {
 			if (pendingFrontier !== undefined) {
@@ -48,16 +52,18 @@ export function createToolNodeLifecycle(input: {
 			}
 		},
 		onNodeStart: (node) => {
+			if (node.replayed !== true && frontierMismatch !== undefined) throw frontierMismatch;
 			const frontier = node.replayed === true ? undefined : pendingFrontier;
-			if (
-				frontier !== undefined &&
-				(node.id !== frontier.id || node.argsHash !== frontier.argsHash || node.ordinal !== frontier.ordinal)
-			) {
-				throw new Error(`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${frontier.id}`);
+			const reachesFrontier = frontier !== undefined && sameToolIdentity(node, frontier);
+			const retry = frontier === undefined || reachesFrontier ? undefined : pendingRetries.get(node.id);
+			if (frontier !== undefined && !reachesFrontier && (retry === undefined || !sameToolIdentity(node, retry))) {
+				frontierMismatch = new Error(`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${frontier.id}`);
+				throw frontierMismatch;
 			}
+			const expected = reachesFrontier ? frontier : retry;
 			const inferredParents = tracker.onSpawn(node.id, node.name);
 			const sourceParents =
-				frontier?.parentIds ??
+				expected?.parentIds ??
 				(node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined);
 			const restored = sourceParents?.map((sourceId) => sourceToContinuationNodeIds.get(sourceId));
 			const translated = restored?.every((id): id is string => id !== undefined) ? restored : undefined;
@@ -83,7 +89,8 @@ export function createToolNodeLifecycle(input: {
 			sourceToContinuationNodeIds.set(node.id, node.id);
 			if (node.replayed === true) replayedToolNodeIds.add(node.id);
 			if (ownsCurrentRun()) store.recordToolNodeStart(run.id, node);
-			if (frontier !== undefined) pendingFrontier = undefined;
+			if (reachesFrontier) pendingFrontier = undefined;
+			if (retry !== undefined) pendingRetries.delete(retry.id);
 		},
 		onNodeRunning: (nodeId, startedAt) => {
 			if (ownsCurrentRun()) store.recordToolNodeRunning(run.id, nodeId, startedAt);
@@ -96,6 +103,22 @@ export function createToolNodeLifecycle(input: {
 		},
 		runTopology: durableRunTopology(run),
 	};
+}
+
+/** The source tool frontier a continuation failed on without ever reaching it. */
+export function unconsumedToolFrontier(
+	continuation: RunContinuationOpts | undefined,
+	errorMessage: string,
+): ToolNodeSnapshot | undefined {
+	const frontierId = continuation?.resumeFromToolNodeId;
+	if (frontierId === undefined) return undefined;
+	if (!errorMessage.includes(`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${frontierId}`))
+		return undefined;
+	return continuation?.source.toolNodes?.find((node) => node.id === frontierId);
+}
+
+function sameToolIdentity(node: ToolNodeSnapshot, expected: ToolNodeSnapshot): boolean {
+	return node.id === expected.id && node.argsHash === expected.argsHash && node.ordinal === expected.ordinal;
 }
 
 /**
@@ -141,6 +164,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly run: RunSnapshot;
 	readonly sourceToContinuationNodeIds: Map<string, string>;
 	readonly resumeToolNode?: ToolNodeSnapshot;
+	readonly retryToolNodes?: readonly ToolNodeSnapshot[];
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;
 	readonly budget: RunBudgetController;
@@ -186,6 +210,7 @@ export function createTrackedToolPrimitive(input: {
 			if (input.controller.signal.aborted) throw new Error("atomic-workflows: workflow cancelled");
 		},
 		signal: input.controller.signal,
+		runFailing: () => input.terminalEvents.winner()?.kind === "failure",
 		trackExecution: admittedTools.track,
 		registerNodeControl: (registration) => {
 			registration.controller.signal.addEventListener(

@@ -226,14 +226,18 @@ async function reloadThroughExtensionContext(
 	sessionStartFile: string,
 	expectedBinding: string,
 ): Promise<void> {
-	// Cooked-startup recovery submits a slash-prefixed draft typed before the input
-	// handler is listening, so the draft must wait for that readiness.
-	await driver.waitFor(
+await driver.waitFor(
 		(report) => report.type === "heartbeat" && report.inputHandlerReady === true,
 		ENGINE_REPORT_TIMEOUT_MS,
-		"input handler readiness before the draft",
+		"interactive input handler readiness",
 	);
-	const from = driver.reports.length;
+	let from = driver.reports.length;
+	driver.send({ type: "input", data: "/reload-keybindings-fixture" });
+	await driver.waitForNext(
+		from,
+		(report) => report.type === "heartbeat" && report.editorText === "/reload-keybindings-fixture",
+	);
+	from = driver.reports.length;
 	driver.send({ type: "input", data: RELOAD_COMMAND_DRAFT });
 	const draft = await driver.waitForNext(
 		from,

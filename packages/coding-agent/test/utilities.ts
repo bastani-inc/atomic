@@ -2,7 +2,7 @@
  * Shared test utilities for coding-agent tests.
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel, streamSimple } from "@bastani/pi-ai/compat";
@@ -88,6 +88,20 @@ export function assistantMsg(text: string) {
 		stopReason: "stop" as const,
 		timestamp: Date.now(),
 	};
+}
+
+/**
+ * Read a session JSONL file and return one label per record: the message role for
+ * message entries, otherwise the entry type (e.g. "session", "model_change").
+ */
+export function readSessionFileRoles(file: string): string[] {
+	return readFileSync(file, "utf-8")
+		.trim()
+		.split("\n")
+		.map((line) => {
+			const record = JSON.parse(line) as { type: string; message?: { role: string } };
+			return record.message?.role ?? record.type;
+		});
 }
 
 /**

@@ -49,9 +49,6 @@ function decision(overrides: Partial<ReviewDecision> = {}): ReviewDecision {
 }
 
 describe("isBlockingFinding", () => {
-	// isBlockingFinding still classifies findings for reviewer prompts and
-	// consolidated repair batches; it no longer overrides the reviewer's
-	// stop_review_loop boolean in the approval gate.
 	test("P0/P1/P2 are blocking", () => {
 		assert.equal(isBlockingFinding(finding(0)), true);
 		assert.equal(isBlockingFinding(finding(1)), true);
@@ -134,7 +131,14 @@ describe("reviewDecisionApproved (boolean convergence gate)", () => {
 			),
 			true,
 		);
-		// Findings arrays are audit evidence, not a second gate.
-		assert.equal(reviewDecisionApproved(decision({ findings: [finding(0)] })), true);
+		// Non-blocking findings stay audit evidence.
+		assert.equal(reviewDecisionApproved(decision({ findings: [finding(3)] })), true);
+		assert.equal(reviewDecisionApproved(decision({ findings: [finding(0, "beyond_objective")] })), true);
+	});
+
+	test("stop_review_loop=true contradicted by the same review does not approve (#3295)", () => {
+		assert.equal(reviewDecisionApproved(decision({ findings: [finding(0)] })), false);
+		assert.equal(reviewDecisionApproved(decision({ findings: [finding(3, "required_by_objective")] })), false);
+		assert.equal(reviewDecisionApproved(decision({ overall_correctness: "patch is incorrect" })), false);
 	});
 });

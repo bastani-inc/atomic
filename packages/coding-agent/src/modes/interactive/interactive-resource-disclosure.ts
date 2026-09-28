@@ -70,13 +70,11 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 		skills: ReadonlyArray<{ filePath: string; name: string }>;
 		prompts: ReadonlyArray<{ filePath: string; name: string }>;
 		extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-		themes: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
 		expandedSections: {
 			context?: string;
 			skills?: string;
 			prompts?: string;
 			extensions?: string;
-			themes?: string;
 		};
 		targetContainer?: Container;
 	},
@@ -122,16 +120,5 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 		"Extensions",
 		this.getCompactExtensionLabels([...options.extensions]),
 		options.expandedSections.extensions,
-	);
-	addSection(
-		"Themes",
-		options.themes.map(
-			(loadedTheme) =>
-				loadedTheme.name ??
-				(loadedTheme.sourcePath
-					? this.getCompactPathLabel(loadedTheme.sourcePath, loadedTheme.sourceInfo)
-					: "theme"),
-		),
-		options.expandedSections.themes,
 	);
 };

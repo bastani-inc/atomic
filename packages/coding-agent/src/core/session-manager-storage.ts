@@ -201,17 +201,24 @@ export function appendSessionEntries(filePath: string, entries: FileEntry[]): vo
 	appendSessionPayload(filePath, serializeSessionEntries(entries));
 }
 
-export function hasAssistantMessage(entries: FileEntry[]): boolean {
+/**
+ * A new session file is created only once the session contains a user or assistant message.
+ * Setup entries alone (model, thinking level) stay in memory, so opening and closing without
+ * chatting leaves no file behind. Starting at the user message (not the first assistant reply)
+ * keeps the prompt on disk if the first turn never completes.
+ */
+export function hasConversationMessage(entries: FileEntry[]): boolean {
 	return entries.some(
-		(entry): entry is SessionEntry => entry.type === "message" && entry.message.role === "assistant",
+		(entry): entry is SessionEntry =>
+			entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"),
 	);
 }
 
 /**
- * Append one already-published entry. Buffered entries stay unwritten until an
- * assistant message exists; the first write after that flushes them together.
+ * Append one already-published entry. Buffered entries stay unwritten until a
+ * user or assistant message exists; the first write after that flushes them together.
  * An explicit flush makes every later entry append immediately, including
- * entries written before the first assistant turn.
+ * entries written before the first user message.
  * Returns the new flushed state and throws without changing it on write failure.
  */
 export function persistAppendedEntry(
@@ -221,7 +228,7 @@ export function persistAppendedEntry(
 	flushed: boolean,
 ): boolean {
 	if (flushed) appendSessionEntry(filePath, entry);
-	else if (!hasAssistantMessage(entries)) return false;
+	else if (!hasConversationMessage(entries)) return false;
 	else appendSessionEntries(filePath, entries);
 	return true;
 }

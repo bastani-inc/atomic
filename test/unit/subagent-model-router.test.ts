@@ -14,17 +14,12 @@ import {
 	type JsonObject,
 	type Model,
 } from "@bastani/pi-ai";
-import { Value } from "typebox/value";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
-	MODEL_SELECTION_GUIDE,
+	AutoRoutingInferenceError,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import {
-	MODEL_ROUTING_TASK_BYTES,
-	ROUTING_REQUEST_BYTES,
-	TRUNCATED_MARKER,
-} from "../../packages/coding-agent/src/core/model-routing-task.js";
+import { ROUTING_REQUEST_BYTES } from "../../packages/coding-agent/src/core/model-routing-bytes.js";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyAgentConfig } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
@@ -36,6 +31,14 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js"
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.js";
 import { routeSubagentModel } from "../../packages/subagents/src/runs/shared/model-router.js";
 import { parseModelConstraints } from "../../packages/subagents/src/shared/model-constraints.js";
+import {
+	chatPayload,
+	chatRouter,
+	classifierOptions,
+	DEFAULT_NEEDS,
+	defaultClassifierChoice,
+	offeredModels,
+} from "../helpers/model-routing.js";
 import {
 	decisionMessage,
 	decisionModel,
@@ -64,9 +67,7 @@ const agent: AgentConfig = {
 	model: "auto",
 };
 async function fixture() {
-	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(() =>
-		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null })),
-	);
+	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry } = await registeredDecisionRuntime(infer);
 	const ctx = {
 		model: decisionModel,
@@ -76,9 +77,14 @@ async function fixture() {
 	return { ctx, infer, route: (task = "Fix the approved defect") => routeSubagentModel({ ctx, agent, task }) };
 }
 
+/** Candidate keys in catalog order (`pair_N`), independent of the task-seeded request order. */
+function byCatalogOrder(keys: readonly string[]): string[] {
+	return [...keys].sort((a, b) => Number(a.slice("pair_".length)) - Number(b.slice("pair_".length)));
+}
+
 function mockClassifier(
 	f: Awaited<ReturnType<typeof fixture>>,
-	select: (keys: string[], id: string, context: ClassifierContext) => string = (keys) => keys[0]!,
+	select: (keys: string[], id: string, context: ClassifierContext) => string = defaultClassifierChoice,
 ) {
 	const model = f.ctx.modelRegistry.getClassifierModel("typesafe", "jev-latest");
 	assert.ok(model);
@@ -186,104 +192,6 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 	}
 });
 
-test("explicit classifier routing receives evals, guide, task, and all eligible candidates", async () => {
-	const f = await fixture();
-	const candidates = Array.from({ length: 9 }, (_, index) => ({
-		...decisionModel,
-		id: `candidate-${index + 1}`,
-		name: `Verbose candidate ${index + 1} with a catalog description`,
-		contextWindow: 128_000,
-		cost: { input: 1.25, output: 7.5, cacheRead: 0.2, cacheWrite: 1.5 },
-	}));
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(candidates);
-	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
-	const seen = new Set<string>();
-	const classify = mockClassifier(f, (keys, _id, context) => {
-		assert.equal(context.state.evals, expectedEvals);
-		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
-		for (const question of Object.values(context.questions)) {
-			assert.equal(question.type, "choice");
-			if (question.type !== "choice") continue;
-			for (const [key, value] of Object.entries(question.criteria)) {
-				seen.add((JSON.parse(value) as { model: string }).model);
-				assert.match(key, /^pair_\d+$/u);
-			}
-		}
-		return keys[0]!;
-	});
-	const result = await f.route(taskNearRoutingLimit());
-	assert.equal(classify.mock.calls.length, 3);
-	assert.equal(seen.size, candidates.length);
-	assert.equal(result.routerSelection.model, "decision-test/candidate-1");
-});
-
-function taskNearRoutingLimit(): string {
-	const seed = 'Route this exact task; preserve JSON characters {"quoted":"value\\n"} and Unicode Ω界. ';
-	const protectedRequirement =
-		"<keepContext>Keep this exact protected requirement Ω and do not drop it.</keepContext>";
-	let task = `${seed}${"context ".repeat(1000)}${protectedRequirement}`;
-	while (Buffer.byteLength(JSON.stringify(`${task} tail`), "utf8") <= MODEL_ROUTING_TASK_BYTES - 100)
-		task = `${task} tail`;
-	return task;
-}
-
-test("a ~240-pair catalog truncates the routing copy of evals and task to fit Jev's input limit", async () => {
-	const f = await fixture();
-	const candidates = Array.from({ length: 240 }, (_, index) => ({
-		...decisionModel,
-		id: `candidate-${index + 1}`,
-		contextWindow: 400_000,
-		cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
-	}));
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(candidates);
-	const requests: ClassifierContext[] = [];
-	mockClassifier(f, (keys, _id, context) => {
-		requests.push(context);
-		return keys[0]!;
-	});
-	const task = `<keepContext>${"Protected requirement. ".repeat(2_000)}</keepContext>`;
-	const result = await f.route(task);
-	assert.equal(result.routerSelection.model, "decision-test/candidate-1");
-	assert.equal(requests.length, 3);
-	const [first] = requests;
-	assert.ok(first);
-	const question = first.questions.pair;
-	assert.equal(question?.type, "choice");
-	if (question?.type !== "choice") return;
-	assert.equal(Object.keys(question.criteria).length, candidates.length);
-	assert.ok(String(first.state.evals).endsWith(TRUNCATED_MARKER));
-	assert.ok(String(first.state.task).includes(TRUNCATED_MARKER));
-	for (const request of requests) {
-		assert.ok(Buffer.byteLength(JSON.stringify(request), "utf8") <= ROUTING_REQUEST_BYTES);
-	}
-});
-test("auto routing receives the shipped evals document verbatim", async () => {
-	const f = await fixture();
-	const selected = await f.route();
-	assert.deepEqual(selected.routerSelection, { model: "decision-test/chat", effort: null });
-	assert.equal(selected.modelOverride, "decision-test/chat");
-	assert.ok(Object.isFrozen(selected.routerSelection));
-	assert.equal(f.infer.mock.calls.length, 1);
-	const [, context, options] = f.infer.mock.calls[0]!;
-	const state = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string).state;
-	assert.equal(state.task, "Fix the approved defect");
-	assert.deepEqual(state.agent, { name: agent.name, description: agent.description });
-	assert.equal(state.policy, undefined);
-	assert.equal(state.evidence, undefined);
-	assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
-	assert.match(state.model_selection_guide, /^## Benchmarks are evidence, not policy\n/);
-	assert.match(state.model_selection_guide, /## Role-based thinking effort/);
-	assert.match(state.model_selection_guide, /\| Deterministic checks \| No model call \|/);
-	assert.match(
-		state.model_selection_guide,
-		/If `xhigh` is unavailable, use `high` rather than automatically promoting to `max`/,
-	);
-	assert.match(state.evals, /# Evals/);
-	assert.match(state.evals, /top 26 catalog models/);
-	assert.equal(state.evals, await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8"));
-	assert.ok(Buffer.byteLength(JSON.stringify(context)) < 30_000);
-	assert.equal(options?.maxRetries, 0);
-});
 test("self-contained agents retain their task fallback without duplicate instructions metadata", async () => {
 	const f = await fixture();
 	await routeSubagentModel({ ctx: f.ctx, agent });
@@ -342,6 +250,9 @@ for (const answer of invalidPairs) {
 		const f = await fixture();
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 		f.infer.mockImplementation(() => messageStream(decisionMessage(answer)));
+		assert.equal((await f.route()).modelOverride, "decision-test/chat");
+		assert.equal(warning.mock.calls.length, 0, "the degrade is silent unless routing debugging is on");
+		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		const route = await f.route();
 		assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
 		assert.equal(route.modelOverride, "decision-test/chat");
@@ -370,14 +281,7 @@ const reasoningModel: Model<Api> = {
 test("explicit legacy effort constrains automatic selection and intersects hard constraints", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	f.infer.mockImplementation((_model, context) => {
-		const payload = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-		assert.deepEqual(
-			Object.values(payload.questions.pair.criteria).map((entry) => JSON.parse(entry as string).effort),
-			["high"],
-		);
-		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" }));
-	});
+	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
 	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
 	const overridden = applyBuiltinOverrides(
 		agents,
@@ -447,9 +351,9 @@ test("builtin primary and fallback checks retain the same hard-constraint snapsh
 	const f = await fixture();
 	const allowedEfforts = ["low"];
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([reasoningModel]);
-	f.infer.mockImplementation(() => {
+	f.infer.mockImplementation((model, context) => {
 		allowedEfforts.push("high");
-		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "low" }));
+		return chatRouter()(model, context);
 	});
 	const route = await routeSubagentModel({
 		ctx: f.ctx,
@@ -464,28 +368,13 @@ test("builtin primary and fallback checks retain the same hard-constraint snapsh
 test("full provider catalog preserves supported off, independent task decisions and fallback effort", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	f.infer.mockImplementation((_model, context) => {
-		const { state, questions } = JSON.parse(
-			context.messages.find((message) => message.role === "user")!.content as string,
-		);
-		const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
-		if (candidates.length === 1)
-			return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
-		assert.deepEqual(
-			[...new Set(candidates.map((entry) => entry.model))],
-			["decision-test/chat", "second-provider/reasoner"],
-		);
-		assert.deepEqual(
-			candidates.filter((entry) => entry.model === "second-provider/reasoner").map((entry) => entry.effort),
-			["off", "low", "high"],
-		);
-		return messageStream(
-			decisionMessage(
-				state.task.includes("proof")
-					? { modelId: "second-provider/reasoner", reasoningEffort: "high" }
-					: { modelId: "second-provider/reasoner", reasoningEffort: "off" },
-			),
-		);
+	f.infer.mockImplementation((model, context) => {
+		const { state } = chatPayload(context);
+		const offered = offeredModels(context);
+		if (offered) assert.deepEqual([...offered].sort(), ["decision-test/chat", "second-provider/reasoner"]);
+		return chatRouter(() => "second-provider/reasoner", {
+			difficulty: String(state.task).includes("proof") ? "hard" : "trivial",
+		})(model, context);
 	});
 	const [proof, edit] = await Promise.all([f.route("Check a mathematical proof"), f.route("Edit a short heading")]);
 	assert.equal(proof.modelOverride, "second-provider/reasoner:high");
@@ -498,9 +387,7 @@ test("full provider catalog preserves supported off, independent task decisions 
 test("cost, context, capability and effort constraints are enforced before inference and on fallback", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "low" })),
-	);
+	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
 	const route = await routeSubagentModel({
 		ctx: f.ctx,
 		agent,
@@ -577,27 +464,42 @@ test("catalog availability is revalidated after inference and immediately before
 	available.mockReturnValue([]);
 	assert.throws(selected.assertCurrent, /no longer eligible/);
 	available.mockReturnValue([decisionModel]);
-	f.infer.mockImplementation(() => {
+	f.infer.mockImplementation((model, context) => {
 		available.mockReturnValue([]);
-		return messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }));
+		return chatRouter()(model, context);
 	});
 	await assert.rejects(f.route(), /no longer eligible/);
 });
 
-for (const evalsCase of ["missing", "empty", "oversized"] as const) {
-	test(`missing, empty and oversized evals fail before inference: ${evalsCase}`, async () => {
+for (const evalsCase of ["missing", "empty"] as const) {
+	test(`missing or empty evals fall back to the current chat model before inference: ${evalsCase}`, async () => {
 		const f = await fixture();
-		const read = vi.spyOn(fs, "readFile");
-		if (evalsCase === "missing") read.mockRejectedValueOnce(new Error("missing"));
-		if (evalsCase === "empty") read.mockResolvedValueOnce("");
-		if (evalsCase === "oversized") read.mockResolvedValueOnce("evals ".repeat(3_000));
-		await assert.rejects(
-			f.route(),
-			/Auto routing requires a nonempty evals\.md document within 14,200 JSON-encoded bytes/,
-		);
-		assert.equal(f.infer.mock.calls.length, 0);
+		const readFile = fs.readFile;
+		const read = vi.spyOn(fs, "readFile").mockImplementation(async (...args: Parameters<typeof readFile>) => {
+			if (!String(args[0]).endsWith("evals.md")) return readFile(...args);
+			if (evalsCase === "missing") throw new Error("missing");
+			return "";
+		});
+		try {
+			assert.equal((await f.route()).modelOverride, `${decisionModel.provider}/${decisionModel.id}`);
+			assert.equal(f.infer.mock.calls.length, 0);
+		} finally {
+			read.mockRestore();
+		}
 	});
 }
+
+test("an oversized evals document does not enlarge routing requests", async () => {
+	const f = await fixture();
+	vi.spyOn(fs, "readFile").mockResolvedValueOnce(
+		`${"unmatched model ".repeat(5_000)}\n| slug | Model |\n| --- | --- |\n| unrelated | Example |`,
+	);
+	await f.route();
+	const [, context] = f.infer.mock.calls[0]!;
+	const payload = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
+	assert.doesNotMatch(JSON.stringify(payload.state), /unmatched model/u);
+	assert.ok(Buffer.byteLength(JSON.stringify(payload), "utf8") <= ROUTING_REQUEST_BYTES);
+});
 
 test("empty catalogs fail before inference", async () => {
 	const f = await fixture();
@@ -642,6 +544,7 @@ for (const [allowed, degrades] of [
 		const f = await fixture();
 		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		f.infer.mockImplementation(() => {
 			throw new Error("mock provider failure");
 		});
@@ -661,27 +564,6 @@ for (const [allowed, degrades] of [
 	});
 }
 
-test("a failed optional fallback-ranking pass keeps the selected primary (#3206)", async () => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	f.infer
-		.mockImplementationOnce(() =>
-			messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" })),
-		)
-		.mockImplementation(() => {
-			throw new Error("mock provider failure");
-		});
-	const route = await routeExecutionModel({
-		ctx: f.ctx,
-		task: "Fix the approved defect",
-		agent: { name: agent.name, description: agent.description },
-	});
-	assert.deepEqual(route.routerSelection, { model: "second-provider/reasoner", effort: "high" });
-	assert.equal(route.modelOverride, "second-provider/reasoner:high");
-	assert.deepEqual(route.fallbackModels, []);
-	assert.equal(f.infer.mock.calls.length, 2);
-});
-
 test("routing accepts a valid selection after the former deadline without retry", async () => {
 	const f = await fixture();
 	vi.useFakeTimers();
@@ -697,73 +579,10 @@ test("routing accepts a valid selection after the former deadline without retry"
 	stream.push({
 		type: "done",
 		reason: "toolUse",
-		message: decisionMessage({ modelId: "decision-test/chat", reasoningEffort: null }),
+		message: decisionMessage({ ...DEFAULT_NEEDS }),
 	});
 	assert.deepEqual((await pending).routerSelection, { model: "decision-test/chat", effort: null });
 	assert.equal(f.infer.mock.calls.length, 1);
-});
-
-test("an explicit registered classifier selects complete pairs and falls back from invalid answers", async () => {
-	const f = await fixture();
-	f.ctx.getRouterModel = () => "";
-	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
-	assert.equal(f.infer.mock.calls.length, 1);
-	let choice = "pair_0";
-	const classify = mockClassifier(f, (_keys, _id, context) => {
-		assert.equal(context.state.task, "Fix the approved defect");
-		assert.deepEqual(context.state.agent, { name: agent.name, description: agent.description });
-		return choice;
-	});
-	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
-	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 1);
-	vi.spyOn(console, "warn").mockImplementation(() => {});
-	choice = "bogus";
-	assert.deepEqual((await f.route()).routerSelection, { model: "decision-test/chat", effort: null });
-	assert.equal(f.infer.mock.calls.length, 2);
-	f.ctx.model = undefined;
-	await assert.rejects(f.route(), /Classifier returned no valid decision/);
-});
-
-test("registered classifiers and chat routers both receive all 1997 eligible model pairs", async () => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
-		Array.from({ length: 1997 }, (_, index) => ({ ...decisionModel, id: `m${index}` })),
-	);
-	const seen = new Set<string>();
-	const classify = mockClassifier(f, (keys, id, context) => {
-		assert.equal(id, "pair");
-		const question = context.questions[id];
-		assert.equal(question?.type, "choice");
-		if (question?.type !== "choice") throw new Error("Expected Choice question");
-		for (const key of Object.keys(question.criteria)) seen.add(key);
-		return keys[0]!;
-	});
-	assert.equal((await f.route()).routerSelection.model, "decision-test/m0");
-	assert.equal(seen.size, 1997);
-	assert.ok(classify.mock.calls.length >= 1);
-	f.ctx.getRouterModel = () => "decision-test/chat";
-	let rank = 255;
-	f.infer.mockImplementation(() =>
-		messageStream(decisionMessage({ modelId: `decision-test/m${rank++}`, reasoningEffort: null })),
-	);
-	assert.equal((await f.route()).routerSelection.model, "decision-test/m255");
-	assert.equal(f.infer.mock.calls.length, 3);
-	const context = f.infer.mock.calls[0]![1];
-	assert.equal(
-		Object.keys(
-			JSON.parse(context.messages.find((message) => message.role === "user")!.content as string).questions.pair
-				.criteria,
-		).length,
-		1997,
-	);
-	const tools = getCurrentTools(context.messages);
-	assert.ok(tools[0]);
-	for (let index = 0; index < 1997; index++)
-		assert.equal(
-			Value.Check(tools[0].parameters, { modelId: `decision-test/m${index}`, reasoningEffort: null }),
-			true,
-		);
 });
 
 test("configured credential text is rejected before inference", async () => {
@@ -805,199 +624,353 @@ test("a stale model catalog fails before a classifier selection can launch a sub
 	const catalog = vi
 		.spyOn(f.ctx.modelRegistry, "getAvailable")
 		.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
-	const classify = mockClassifier(f, (keys) => {
+	const classify = mockClassifier(f, (keys, id) => {
 		catalog.mockReturnValue([]);
-		return keys[0]!;
+		if (id === "work") return "coding";
+		return id === "needs_images" ? "no" : byCatalogOrder(keys)[0]!;
 	});
 	await assert.rejects(f.route(), /no longer eligible/);
 	assert.ok(classify.mock.calls.length >= 1);
-	assert.equal(f.infer.mock.calls.length, 0);
+	assert.equal(f.infer.mock.calls.length, 1, "only the chat model reads the task");
 });
 
 test("classifier provider failure cannot return a route without a current chat model", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
-		Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })),
-	);
+	const catalog = Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` }));
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(catalog);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue(catalog);
 	const classify = mockClassifier(f);
 	f.ctx.model = undefined;
 	classify.mockRejectedValue(new Error("HTTP 422 private provider detail"));
-	await assert.rejects(f.route(), /Classifier returned no valid decision/);
-	assert.equal(classify.mock.calls.length, 1);
+	await assert.rejects(routeTask(f, { taskNeeds: STATED_CODING_NEEDS }), /Classifier returned no valid decision/);
+	assert.ok(classify.mock.calls.length >= 1, "the classifier is asked once and nothing retries on chat");
 	assert.equal(f.infer.mock.calls.length, 0);
+	await assert.rejects(routeTask(f), /Classifier returned no valid decision/);
+	assert.equal(f.infer.mock.calls.length, 1, "with no current chat model, an eligible chat model reads the task");
 });
 
-test("a registered classifier receives a complete short subagent task and its evals", async () => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([{ ...decisionModel, id: "gpt-5.6-luna" }]);
-	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
-	const classify = mockClassifier(f, (keys, _id, context) => {
-		assert.equal(context.state.task, "Reply with exactly: Hello, world! No tools or file changes.");
-		assert.equal(context.state.evals, expectedEvals);
-		assert.equal(context.state.model_selection_guide, MODEL_SELECTION_GUIDE);
-		assert.equal(context.state.policy, undefined);
-		assert.equal(context.state.evidence, undefined);
-		return keys[0]!;
-	});
-	const result = await f.route("Reply with exactly: Hello, world! No tools or file changes.");
-	assert.equal(result.modelOverride, "decision-test/gpt-5.6-luna");
-	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 0);
-});
-
-test("a classifier receives the intact near-limit task, evals, and two eligible pairs", async () => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
-		{ ...decisionModel, id: "small-a" },
-		{ ...decisionModel, id: "small-b", cost: { ...decisionModel.cost, input: 0.25, output: 0.5 } },
-	]);
-	const task = taskNearRoutingLimit();
-	assert.ok(Buffer.byteLength(JSON.stringify(task), "utf8") > MODEL_ROUTING_TASK_BYTES - 200);
-	const expectedEvals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
-	const classify = mockClassifier(f, (keys, _id, context) => {
-		assert.equal(context.state.task, task);
-		assert.equal(context.state.evals, expectedEvals);
-		assert.match(String(context.state.task), /{"quoted":"value\\n"}/);
-		assert.match(String(context.state.task), /Ω界/);
-		return keys[1] ?? keys[0]!;
-	});
-	const result = await f.route(task);
-	assert.equal(result.modelOverride, "decision-test/small-b");
-	assert.equal(classify.mock.calls.length, 2);
-	assert.equal(f.infer.mock.calls.length, 0);
-});
-
-test("long auto-routing tasks preserve protected requirements and both ends for a classifier", async () => {
+test("long tasks reach the chat reader complete and never reach the classifier", async () => {
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
-	const protectedText = "<keepContext>Review only. Never edit files.</keepContext>";
-	const task = `Review this change.\n${"reference data ".repeat(10000)}${protectedText}${"more data ".repeat(10000)}\nReport defects.`;
-	const classify = mockClassifier(f, (keys, _id, context) => {
-		assert.ok(String(context.state.task).includes(protectedText));
-		assert.match(String(context.state.task), /Review this change/);
-		assert.match(String(context.state.task), /Report defects/);
-		assert.ok(String(context.state.task).includes(TRUNCATED_MARKER));
-		return keys[0]!;
-	});
+	const task = `Review this change.\n${"reference data ".repeat(2000)}<keepContext>Review only.</keepContext>${"more data ".repeat(2000)}\nReport defects.`;
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	const classify = mockClassifier(f);
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
+	assert.equal(f.infer.mock.calls.length, 1);
+	assert.equal(chatPayload(f.infer.mock.calls[0]![1]).state.task, task);
 	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 0);
+	assert.equal(classify.mock.calls[0]![1].state.task, undefined, "the classifier never receives the task");
 	assert.deepEqual(notice.mock.calls, []);
 });
 
-test("auto routing screens credentials even in omitted middle text", async () => {
+test("auto routing screens credentials anywhere in a long task", async () => {
 	const f = await fixture();
 	await assert.rejects(f.route(`${"a".repeat(30_000)}mock-chat-secret${"b".repeat(30_000)}`), /credential/);
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("classifier size rejection falls back to chat with the same truncated protected excerpt", async () => {
+test("a classifier that rejects the choice falls back to chat without the task, quietly unless debugging", async () => {
 	const f = await fixture();
-	vi.spyOn(console, "warn").mockImplementation(() => {});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	classify.mockRejectedValue(new Error("request too large"));
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "");
 	await f.route(task);
-	f.ctx.getRouterModel = () => "";
-	await f.route(task);
+	assert.deepEqual(warn.mock.calls, [], "routing fallbacks stay out of the console by default");
 	assert.equal(classify.mock.calls.length, 1);
-	assert.equal(f.infer.mock.calls.length, 2);
-	const routed = String(
-		JSON.parse(f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string).state
-			.task,
-	);
-	assert.equal(classify.mock.calls[0]![1].state.task, routed);
-	assert.match(routed, /<keepContext>required detail/);
-	assert.ok(routed.includes(TRUNCATED_MARKER));
-	assert.ok(routed.endsWith("required detail </keepContext>"));
-	assert.ok(Buffer.byteLength(JSON.stringify(routed), "utf8") <= MODEL_ROUTING_TASK_BYTES);
-});
-
-test("auto ranks three distinct models, excludes their other efforts, and replays without inference", async () => {
-	const f = await fixture();
-	let now = 0;
-	vi.spyOn(performance, "now").mockImplementation(() => now);
-	const models = ["a", "b", "c", "d"].map((id) => ({ ...reasoningModel, id }));
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(models);
-	const ranked = [
-		{ model: "second-provider/c", effort: "high" },
-		{ model: "second-provider/a", effort: "low" },
-		{ model: "second-provider/d", effort: "off" },
-	];
-	let index = 0;
-	f.infer.mockImplementation((_model, context) => {
-		now += 60_000;
-		const { questions } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-		const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
-		for (const prior of ranked.slice(0, index)) assert.ok(candidates.every((pair) => pair.model !== prior.model));
-		return messageStream(
-			decisionMessage({ modelId: ranked[index]!.model, reasoningEffort: ranked[index++]!.effort }),
-		);
-	});
-	const route = await f.route();
-	assert.deepEqual(route.routerSelection, { ...ranked[0], fallbacks: ranked.slice(1) });
-	assert.deepEqual(route.fallbackModels, ["second-provider/a:low", "second-provider/d:off"]);
-	assert.ok(Object.isFrozen(route.routerSelection.fallbacks));
-	const restored = await routeExecutionModel({ ctx: f.ctx, task: "replay", agent, selection: route.routerSelection });
-	assert.deepEqual(restored.fallbackModels, route.fallbackModels);
-	assert.equal(f.infer.mock.calls.length, 3);
-	await assert.rejects(
-		routeExecutionModel({
-			ctx: f.ctx,
-			task: "replay",
-			agent,
-			selection: {
-				...ranked[0]!,
-				fallbacks: [ranked[0]!],
-			},
-		}),
-		/distinct models/,
-	);
-});
-
-test.each([
-	{ catalog: "reasoning-only", nullable: false },
-	{ catalog: "mixed reasoning and non-reasoning", nullable: true },
-])("the effort schema declares a type every enum value matches for a $catalog catalog", async ({ nullable }) => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(
-		nullable ? [reasoningModel, decisionModel] : [reasoningModel],
-	);
-	const effortSchemas: JsonObject[] = [];
-	f.infer.mockImplementation((_model, context) => {
-		const [tool] = getCurrentTools(context.messages);
-		const parameters = tool!.parameters as { properties: { reasoningEffort: JsonObject } };
-		effortSchemas.push(parameters.properties.reasoningEffort);
-		return messageStream(decisionMessage({ modelId: "second-provider/reasoner", reasoningEffort: "high" }));
-	});
-	const route = await f.route();
-	assert.equal(route.modelOverride, "second-provider/reasoner:high");
-	const strings = { type: "string", enum: ["off", "low", "high"] };
-	assert.deepEqual(effortSchemas[0], nullable ? { anyOf: [strings, { type: "null" }] } : strings);
-});
-
-test("auto routing retains the full benchmark snapshot and distinct provider model IDs", async () => {
-	const f = await fixture();
-	const models = ["anthropic", "github-copilot"].map((provider) => ({
-		...decisionModel,
-		provider,
-		id: "claude-fable-5",
+	assert.equal(classify.mock.calls[0]![1].state.task, undefined);
+	const requests = f.infer.mock.calls.map(([, context]) => ({
+		task: chatPayload(context).state.task,
+		choice: offeredModels(context) !== undefined,
 	}));
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(models);
-	const evals = await fs.readFile("packages/coding-agent/docs/models/evals.md", "utf8");
-	let rank = 0;
-	f.infer.mockImplementation((_model, context) => {
-		const { state } = JSON.parse(context.messages.find((message) => message.role === "user")!.content as string);
-		assert.match(String(state.evals), /## Artificial Analysis Intelligence Index/);
-		assert.match(String(state.evals), /\| claude-fable-5 \| Claude Fable 5 \(/);
-		assert.match(String(state.evals), /`Cod`: Coding Index points/);
-		assert.match(String(state.evals), /`Agt`: Agentic Index points/);
-		assert.equal(state.evals, evals);
-		assert.equal(state.model_selection_guide, MODEL_SELECTION_GUIDE);
-		return messageStream(
-			decisionMessage({ modelId: `${models[rank++]!.provider}/claude-fable-5`, reasoningEffort: null }),
-		);
+	assert.deepEqual(requests, [
+		{ task, choice: false },
+		{ task: undefined, choice: true },
+	]);
+
+	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
+	f.ctx.getRouterModel = () => "typesafe/jev-latest";
+	await f.route(task);
+	assert.ok(
+		(warn.mock.calls as unknown[][]).some(([message]) =>
+			/Classifier routing failed; falling back to current chat model/u.test(String(message)),
+		),
+	);
+	vi.unstubAllEnvs();
+});
+
+const STATED_CODING_NEEDS = {
+	work: "coding",
+	difficulty: "hard",
+	mistakeCost: "high",
+	needsImages: false,
+	longContext: false,
+	latencySensitive: false,
+} as const;
+
+const routeTask = (
+	f: Awaited<ReturnType<typeof fixture>>,
+	extra: Partial<Parameters<typeof routeExecutionModel>[0]> = {},
+) =>
+	routeExecutionModel({
+		ctx: f.ctx,
+		task: "Open Xcode, build the app and verify the settings screen by screenshot.",
+		agent: { name: agent.name, description: agent.description },
+		...extra,
 	});
-	await f.route();
-	assert.equal(rank, 2);
+
+const catalogModel = (provider: string, id: string, overrides: Partial<Model<Api>> = {}): Model<Api> => ({
+	...reasoningModel,
+	provider,
+	id,
+	name: id,
+	...overrides,
+});
+
+test("the chat reader is asked only for the task needs the caller did not state", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	const classify = mockClassifier(f);
+	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
+	assert.equal(classify.mock.calls.length, 0, "a single model able to read images leaves nothing to choose between");
+	assert.equal(f.infer.mock.calls.length, 1);
+	const request = f.infer.mock.calls[0]![1];
+	const tool = getCurrentTools(request.messages)[0];
+	assert.ok(tool);
+	assert.deepEqual(Object.keys((tool.parameters as { properties: object }).properties), [
+		"difficulty",
+		"mistake_cost",
+		"long_context",
+		"latency_sensitive",
+	]);
+	assert.deepEqual(chatPayload(request).state.caller_says, { work: "computer_use", needs_images: "yes" });
+	assert.equal(route.routerSelection.model, "second-provider/reasoner");
+});
+
+test("a caller that states every need gets one choice request whose options carry their own evidence", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("anthropic", "claude-opus-5-5"),
+		catalogModel("openai-codex", "gpt-6-luna", { cost: { input: 0.1, output: 0.5, cacheRead: 0, cacheWrite: 0 } }),
+	]);
+	const requests: ClassifierContext[] = [];
+	mockClassifier(f, (keys, _id, context) => {
+		requests.push(context);
+		return keys.find((key) => classifierOptions(context)[key] === "anthropic/claude-opus-5-5")!;
+	});
+	const route = await routeTask(f, { taskNeeds: STATED_CODING_NEEDS });
+	assert.equal(f.infer.mock.calls.length, 0, "a caller that states every need skips the task reader");
+	assert.equal(requests.length, 1);
+	assert.deepEqual(Object.keys(requests[0]!.questions), ["model"]);
+	assert.deepEqual(Object.keys(requests[0]!.state), ["agent", "needs"], "the choice request carries no task");
+	assert.deepEqual(requests[0]!.state.needs, {
+		work: "coding",
+		difficulty: "hard",
+		mistake_cost: "high",
+		needs_images: false,
+		long_context: false,
+		latency_sensitive: false,
+	});
+	const question = requests[0]!.questions.model;
+	assert.ok(question?.type === "choice");
+	const options = Object.values(question.criteria).map((value) => JSON.parse(value) as Record<string, unknown>);
+	for (const option of options)
+		assert.deepEqual(Object.keys(option), ["model", "id", "released", "price", "reads_images", "coding", "overall"]);
+	assert.match(
+		String(options.find((option) => option.id === "anthropic/claude-opus-5-5")?.coding),
+		/Terminal-Bench 4\.0 59\.6%/u,
+	);
+	assert.deepEqual(route.routerSelection.model, "anthropic/claude-opus-5-5");
+	assert.equal(route.routerSelection.effort, "high", "effort follows the stated difficulty");
+	assert.deepEqual(
+		route.routerSelection.fallbacks?.map((pair) => pair.model),
+		["openai-codex/gpt-6-luna"],
+	);
+});
+
+test("a task that needs images never offers models that cannot read them", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("a", "sees-1"),
+		catalogModel("a", "sees-2"),
+		catalogModel("a", "text-only", { input: ["text"] }),
+	]);
+	const offered: string[][] = [];
+	mockClassifier(f, (keys, id, context) => {
+		if (id === "model") offered.push(Object.values(classifierOptions(context)));
+		return defaultClassifierChoice(keys, id, context);
+	});
+	await routeTask(f, { taskNeeds: { needsImages: true } });
+	assert.deepEqual(offered[0]?.sort(), ["a/sees-1", "a/sees-2"]);
+});
+
+test("allowedModels from the caller becomes the shortlist the router chooses from", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("anthropic", "claude-opus-5-5"),
+		catalogModel("anthropic", "claude-opus-5-5-fast"),
+		catalogModel("openai-codex", "gpt-6-astra"),
+		catalogModel("openai-codex", "gpt-6-luna"),
+	]);
+	const offered: string[][] = [];
+	mockClassifier(f, (keys, id, context) => {
+		if (id === "model") offered.push(Object.values(classifierOptions(context)));
+		return defaultClassifierChoice(keys, id, context);
+	});
+	const route = await routeTask(f, {
+		constraints: [
+			{ allowedModels: ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-fast", "openai-codex/gpt-6-astra"] },
+		],
+	});
+	assert.deepEqual(offered[0]?.sort(), [
+		"anthropic/claude-opus-5-5",
+		"anthropic/claude-opus-5-5-fast",
+		"openai-codex/gpt-6-astra",
+	]);
+	assert.ok(!JSON.stringify(route.routerSelection).includes("gpt-6-luna"));
+});
+
+test("without a caller list, one model's fast route and other providers share a single shortlist slot", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("anthropic", "claude-opus-5-5"),
+		catalogModel("anthropic", "claude-opus-5-5-fast", {
+			fastRoute: { baseModelId: "claude-opus-5-5", upstreamModelId: "claude-opus-5-5", speed: "fast" },
+		}),
+		catalogModel("github-copilot", "claude-opus-5.5"),
+		catalogModel("openai-codex", "gpt-6-luna"),
+	]);
+	const offered: string[][] = [];
+	mockClassifier(f, (keys, id, context) => {
+		if (id === "model") offered.push(Object.values(classifierOptions(context)));
+		return defaultClassifierChoice(keys, id, context);
+	});
+	await routeTask(f);
+	assert.equal(offered[0]?.length, 2);
+	assert.equal(offered[0]?.filter((model) => /opus-5[-.]5/u.test(model)).length, 1);
+	assert.ok(offered[0]?.includes("openai-codex/gpt-6-luna"));
+});
+
+test("caller task needs are validated before any inference", async () => {
+	const f = await fixture();
+	await assert.rejects(
+		routeSubagentModel({ ctx: f.ctx, agent, task: "x", taskNeeds: { difficulty: "extreme" } as never }),
+		/Invalid taskNeeds\.difficulty/u,
+	);
+	assert.equal(f.infer.mock.calls.length, 0);
+});
+
+test("a caller's shortlist is described with standings among every model the user could route to", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("anthropic", "claude-opus-5-5"),
+		catalogModel("anthropic", "claude-fable-5-1"),
+		catalogModel("openai-codex", "gpt-6-astra"),
+		catalogModel("openai-codex", "gpt-6-sol"),
+		catalogModel("openai-codex", "gpt-6-luna"),
+	]);
+	const options: Record<string, unknown>[] = [];
+	mockClassifier(f, (keys, id, context) => {
+		const question = context.questions[id];
+		if (id === "model" && question?.type === "choice")
+			for (const value of Object.values(question.criteria))
+				options.push(JSON.parse(value) as Record<string, unknown>);
+		return defaultClassifierChoice(keys, id, context);
+	});
+	const route = await routeTask(f, {
+		taskNeeds: { work: "coding", difficulty: "hard", mistakeCost: "high", needsImages: false },
+		constraints: [{ allowedModels: ["anthropic/claude-opus-5-5", "openai-codex/gpt-6-luna"] }],
+	});
+	assert.deepEqual(options.map((option) => option.id).sort(), [
+		"anthropic/claude-opus-5-5",
+		"openai-codex/gpt-6-luna",
+	]);
+	for (const option of options)
+		assert.doesNotMatch(String(option.overall), /^measured/u, "two listed models alone could not be ranked");
+	assert.ok(
+		[route.routerSelection, ...(route.routerSelection.fallbacks ?? [])].every((pair) =>
+			["anthropic/claude-opus-5-5", "openai-codex/gpt-6-luna"].includes(pair.model),
+		),
+		"fallbacks stay within the caller's list",
+	);
+});
+
+test("a task that needs images falls back to the current chat model when no eligible model can read them", async () => {
+	const f = await fixture();
+	const current = { ...decisionModel, input: ["text" as const] };
+	f.ctx.model = current;
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		current,
+		catalogModel("a", "text-2", { input: ["text"] }),
+	]);
+	mockClassifier(f, defaultClassifierChoice);
+	await assert.rejects(routeTask(f, { taskNeeds: { needsImages: true } }), (error: unknown) => {
+		assert.ok(error instanceof AutoRoutingInferenceError);
+		assert.match(error.message, /needs a model that can read images/u);
+		assert.equal(error.currentModelRoute?.routerSelection.model, `${current.provider}/${current.id}`);
+		return true;
+	});
+});
+
+test("a caller list is offered whole while it fits one choice request, and falls back beyond that", async () => {
+	const f = await fixture();
+	const listed = (count: number) => Array.from({ length: count }, (_, index) => `model-${index}`);
+	const available = vi.spyOn(f.ctx.modelRegistry, "getAvailable");
+	const offered: number[] = [];
+	mockClassifier(f, (keys, id, context) => {
+		if (id === "model") offered.push(keys.length);
+		return defaultClassifierChoice(keys, id, context);
+	});
+	const forty = listed(40);
+	available.mockReturnValue(forty.map((id) => catalogModel("a", id)));
+	await routeTask(f, {
+		taskNeeds: STATED_CODING_NEEDS,
+		constraints: [{ allowedModels: forty.map((id) => `a/${id}`) }],
+	});
+	assert.deepEqual(offered, [40], "no fixed cap below what one request holds");
+
+	const tooMany = listed(300);
+	available.mockReturnValue(tooMany.map((id) => catalogModel("a", id)));
+	await assert.rejects(
+		routeTask(f, {
+			taskNeeds: STATED_CODING_NEEDS,
+			constraints: [{ allowedModels: tooMany.map((id) => `a/${id}`) }],
+		}),
+		(error: unknown) =>
+			error instanceof AutoRoutingInferenceError && /cannot compare 300 different models/u.test(error.message),
+	);
+});
+
+test("a task larger than the preferred reader's window is read by an eligible model that holds it", async () => {
+	const f = await fixture();
+	const wide: Model<Api> = { ...decisionModel, id: "wide", contextWindow: 200_000 };
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, wide]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, wide]);
+	const classify = mockClassifier(f);
+	const task = `Review the attached logs.\n${"log line ".repeat(16_000)}`;
+	await routeTask(f, { task });
+	assert.equal(f.infer.mock.calls.length, 1);
+	const [reader, request] = f.infer.mock.calls[0]!;
+	assert.equal(`${reader.provider}/${reader.id}`, "decision-test/wide", "the 32k current model cannot hold it");
+	assert.equal(chatPayload(request).state.task, task, "the reader still gets the complete task");
+	assert.ok(classify.mock.calls.every(([, context]) => context.state.task === undefined));
+});
+
+test("only the call's own provider lists replace the user's modelRouting settings, never the agent definition's", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, reasoningModel]);
+	f.ctx.getModelRouting = () => ({ excludedProviders: ["second-provider"] });
+	const permissive = { ...agent, modelConstraints: { allowedProviders: ["decision-test", "second-provider"] } };
+	const fromDefinition = await routeSubagentModel({ ctx: f.ctx, agent: permissive, task: "Fix the approved defect" });
+	assert.equal(fromDefinition.modelOverride.startsWith("decision-test/chat"), true);
+	const fromCall = await routeSubagentModel({
+		ctx: f.ctx,
+		agent: permissive,
+		task: "Fix the approved defect",
+		modelConstraints: { allowedProviders: ["second-provider"] },
+	});
+	assert.equal(fromCall.modelOverride.startsWith("second-provider/reasoner"), true);
 });

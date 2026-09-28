@@ -33,8 +33,11 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 
 Push or manual dispatch on `main`
 └─ warm-toolchain-cache.yml
-   ├─ release-linux-cache: persist verified Zig tarballs and npm downloads on Linux x64 and arm64
-   └─ msvc-crt: fetch the MSVC CRT and Windows SDK for each Windows arch
+   ├─ release-linux-cache (x64, arm64): persist verified Zig tarballs and populate the
+   │  Linux release npm download caches
+   ├─ msvc-crt (after release-linux-cache): fetch the MSVC CRT and Windows SDK
+   │  for both Windows arches in one call onto the linux-x64 release volume
+   └─ release-windows-cache: populate the Windows release npm download cache
 
 Push or manual dispatch on `main`
 └─ warm-macos-release-cache.yml
@@ -70,7 +73,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
 | `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `warm-toolchain-cache.yml` Linux Zig/npm x64 plus msvc-crt / Linux Zig/npm arm64 | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16` / `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
+| `warm-toolchain-cache.yml` release-linux-cache x64 (Zig/npm), msvc-crt / release-linux-cache arm64 (Zig/npm) | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
 
@@ -182,7 +185,7 @@ This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` 
 - **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` uses a repository-specific Restricted profile. The cache identity suffix changes storage selection, not API permissions. A fork can edit its workflow to request a different runner or cache, so maintainer approval remains the security boundary for workflow edits. Configuration tests cannot enforce it against a malicious PR.
 - **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs.
 - **Main-only cache updates.** The four `atomic-ci-*` profiles have 50 GB cache volumes. Namespace's [protected cache updates](https://namespace.so/docs/solutions/github-actions/caching#protect-caches-from-updates) allow jobs from `main` to persist changes; PR jobs read the cache and discard their local changes. `test.yml` uses `namespacelabs/nscloud-cache-action` pinned to `1124a6f3ce44e5cf84cc22111530961f4d2a15f9` for npm downloads and, in jobs that build native bindings, Cargo dependencies and build output. `setup-node` has `package-manager-cache: false` to avoid duplicate archive transfers. `npm ci --ignore-scripts` still installs from the lockfile on every run. Cold caches remain valid; no cache miss skips installation or tests. The profile also enables automatic action and toolchain caching. Git checkout still uses `actions/checkout`, not the Namespace mirror action.
-- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads and SHA-256-verified Zig tarballs on the Linux release volumes. Releases verify Zig again before extracting it; they do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. The GitHub Actions cache for MSVC CRT downloads remains separate. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
+- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads, SHA-256-verified Zig tarballs on the Linux release volumes and, for the win32 legs, the MSVC CRT/Windows SDK cache (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)). Releases verify Zig again before extracting it; they do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
 - **Cache restrictions are job configuration.** Main-only labels and profile settings are not proven immutable volume ACLs. Approved workflow edits can request the same cache under different settings. Do not treat a repo-prefixed tag as an authorization boundary. Release npm downloads are checked against lockfile integrity and Linux Zig tarballs against pinned SHA-256; Cargo source caching is withheld because restored sources do not provide the same protection. The macOS profile's automatic action/tool caching also needs hosted isolation verification before release readiness.
 - **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. Against a pull request that changes anything under `.github/workflows`, approval is the only barrier: the Restricted profiles protect only runs that use the committed workflows. Follow [Approving fork workflow runs](#approving-fork-workflow-runs).
 
@@ -467,9 +470,19 @@ The x64 and ARM64 Alpine smoke jobs and the payload job likewise verify the imag
 
 ### MSVC CRT cache epoch
 
-Both Windows legs use cargo-xwin and a bounded CRT/SDK acquisition step backed
-by `actions/cache`, keyed `xwin-v1-<arch>-17`. Each leg sets `XWIN_ARCH` to avoid
-downloading an architecture it does not link.
+Both Windows legs use cargo-xwin and a bounded CRT/SDK acquisition step. The
+cache lives on the same Namespace release cache volume the win32 legs already
+mount (`nscloud-cache-tag-bastani-inc.atomic.release.linux-x64`), bind-mounted
+onto `~/.cache/cargo-xwin` by `namespacelabs/nscloud-cache-action` (the same
+pinned SHA used elsewhere in this file). `XWIN_CACHE_DIR` is pinned to the
+versioned subdirectory `$HOME/.cache/cargo-xwin/v1-17` inside that mount, and
+the same literal path is used in `publish.yml` and in the warmer. Each release
+leg sets `XWIN_ARCH` to the one architecture it links, and it hits when the
+first line of `DONE` names that architecture. The warmer populates both
+architectures in one call (`XWIN_ARCH=x86_64,aarch64`). cargo-xwin 0.23.0
+rewrites `DONE` with only the current call's architectures, and xwin 0.9.0
+deletes `crt/` and `sdk/` before each splat, so one call per architecture
+into the same directory would keep only the last one.
 
 cargo-xwin is built from crates.io (`cargo install cargo-xwin --version 0.23.0
 --locked`), which links it against glibc, rather than installed as the upstream
@@ -478,14 +491,59 @@ calls: on a Namespace amd64 4x16 runner it took 9m56s to populate the arm64
 CRT, past the 8-minute bound, where the glibc build (36s to compile) took 35s.
 Keep the glibc build when bumping cargo-xwin; a cold warmer run is the check.
 
-`XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the key cannot
-express the content version: a cache hit pins the leg to whichever SDK was first
-stored under that key. That is more reproducible than resolving `latest` on every
-release, but it means **the `v1` epoch in the key is the only lever for a
-deliberate SDK refresh**. To force one, bump the epoch (`xwin-v2-…`) in both
-`.github/workflows/publish.yml` and `.github/workflows/warm-toolchain-cache.yml`
-in the same change and review that their keys match. The
-trailing `17` is `XWIN_VERSION`, the Visual Studio major version.
+`XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the path
+cannot express the content version: a hit pins the leg to whichever SDK was
+first stored under that path. A warmer run on a complete tree is also a hit
+and does not resolve `latest` again. That is more reproducible than resolving
+`latest` on every release, but it means **the `v1` subdirectory epoch is the
+only lever for a deliberate SDK refresh**. An empty volume or a
+partial-cache wipe (below) also fetches `latest` again, but not on purpose.
+To force a refresh, bump the epoch
+(`v2-…`) in both `.github/workflows/publish.yml` and
+`.github/workflows/warm-toolchain-cache.yml` in the same change and review
+that their paths match. The trailing `17` is `XWIN_VERSION`, the Visual
+Studio major version.
+
+**Partial-cache detection.** Namespace cache volumes can serve stale or
+missing contents ("Applications using Cache Volumes should not assume that
+the cache contents match exactly the last committed version"), so the
+populate-on-miss step (`cargo-xwin xwin cache xwin`, 8-minute bound) stays the
+fallback on both a miss and a partial hit. cargo-xwin 0.23.0's own
+`setup_msvc_crt` trusts a `DONE` marker that names an architecture without
+re-checking the splat files it lists, so a volume fork that was interrupted
+mid-populate would otherwise look complete. A `Detect partial MSVC CRT cache`
+step runs before the populate step in both workflows: when `DONE`'s first
+line claims an architecture but any of its required splat directories
+(`crt/include`, `crt/lib/<arch>`, `sdk/include/um`, `sdk/include/shared`,
+`sdk/include/ucrt`, `sdk/lib/um/<arch>`, `sdk/lib/ucrt/<arch>`) is missing or empty, it deletes
+the whole `xwin` tree so the populate step starts clean. An architecture that
+`DONE` does not yet claim is left alone; that is an ordinary cache miss, and
+cargo-xwin's own logic already handles it without help. `publish.yml`'s win32
+legs carry `nscloud-cache-exp-do-not-commit`, so this wipe (and any populate
+that follows it) only ever touches that job's private, discarded fork of the
+volume. The warmer probes both architectures before its single populate, so
+a partial tree left by an earlier interrupted warm run is wiped and fetched
+again instead of being accepted as a hit.
+
+**Integrity.** Restored CRT/SDK bytes are not validated against Microsoft's
+manifest checksums; cargo-xwin applies those checksums only during a fresh
+download, and the partial-cache probe above checks structural presence, not
+content. A structurally complete cache hit is an accepted trust boundary for
+this path, unlike npm downloads on the same volume, which are checked against
+lockfile integrity on every install. As `docs/ci.md` notes elsewhere, a cache
+tag is job configuration, not an authorization boundary.
+
+**Volume sizing.** The win32 legs' `-with-cache` runner label carries no
+`nscloud-cache-size-*` suffix, so the attached
+`bastani-inc.atomic.release.linux-x64` volume uses Namespace's 20 GB inline
+default, shared with the npm downloads on the same tag; exceeding it resets
+the whole volume, npm downloads included, back to empty. A local replay of
+the warmer's single populate (cargo-xwin 0.23.0, `XWIN_ARCH=x86_64,aarch64`,
+Ubuntu 24.04 container, 2026-09-25) left a `v1-17` tree of 1,144,008 KiB
+(`du -sk`, about 1.1 GB: `crt` 321 MB, `sdk` 797 MB). cargo-xwin deletes the
+downloaded payloads after the splat. That is under 6 % of the 20 GB cap,
+so no size label is added. The hosted volume's actual usage is not yet
+measured.
 
 ### Warming the release toolchain caches
 
@@ -495,11 +553,36 @@ Warmers install Node and Bun and download locked npm packages. The Linux warmer 
 
 The four Linux native release legs read the volume without committing changes. Before extracting Zig, they verify the pinned SHA-256 and check the extracted binary version. A missing or corrupt tarball falls back to the existing setup-zig mirror download, bounded at 2 minutes plus one 2-minute retry. setup-zig's tool cache remains disabled; after the fallback, the tarball setup-zig used (fresh or restored from its Actions cache) is checked against the same pinned SHA-256. Keep the Zig version and SHA-256 pins in `publish.yml` and `warm-toolchain-cache.yml` together when updating Zig.
 
-MSVC CRT/SDK downloads remain in GitHub's branch-scoped Actions cache with the existing keys. That path is not simultaneously mounted by Namespace. Verify a matching default-branch cache hit on an authorized release before relying on cross-ref reuse.
+The MSVC CRT/Windows SDK cache moved onto the same Namespace release cache
+volume as the win32 legs' npm downloads (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)).
+`msvc-crt` is one job, not a per-arch matrix, because Namespace cache volumes
+are last-write-wins forks: two parallel matrix jobs writing the same tag could
+each commit a fork missing the other architecture's files. It checks out the
+repository, mounts the volume, probes both architectures for a partial cache,
+then runs one `Populate MSVC CRT cache on miss` step for both architectures.
+
+`msvc-crt` and the x64 leg of `release-linux-cache` both write
+`bastani-inc.atomic.release.linux-x64` with
+`nscloud-cache-allow-commit-from-main`. If they ran in parallel, whichever
+committed last would drop the other's writes: either the npm download and Zig
+tarball updates or the xwin tree. `msvc-crt` therefore declares
+`needs: release-linux-cache`, so it forks from that warmer's commit and
+commits last. It runs under `!cancelled()`, so a failed npm warm leg (which
+commits nothing) does not block the xwin warm. The workflow's
+`cancel-in-progress` concurrency group cancels an earlier run when a later
+main push starts one. Release consumers keep the do-not-commit label and never
+write back. Namespace does not promise that a fork sees the latest commit, so
+`msvc-crt` can still start from an older version and drop newer npm or Zig
+writes. Ordering removes this workflow's own race, not that one. Both outcomes
+stay safe for releases: `npm ci` checks lockfile integrity, a missing Zig
+tarball falls back to the verified setup-zig download, and the partial-cache
+probe and populate-on-miss cover the xwin tree.
 
 The MSVC CRT warmer's 19-minute job cap reserves its bounded toolchain setup
-(4 minutes), cargo-xwin installation (3 minutes), and cold-cache population
-(8 minutes), plus 4 minutes for runner setup and cache restore/save.
+(4 minutes), cargo-xwin installation (3 minutes), and one 8-minute cold-cache
+population bound for both architectures, plus 4 minutes for runner setup,
+checkout and cache mount. Its wait for `release-linux-cache` is not part of
+this cap; that job has its own 15-minute cap.
 
 Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Zig release-path behavior remains unverified until a successful main warm run and a subsequent authorized release exercise it. Inspect those runs for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
 
@@ -593,7 +676,7 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 | --- | --- | --- |
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version, clean failed drafts |
-| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs on Linux release volumes, warm release npm downloads, and write MSVC CRT cache keys into the default-branch Actions-cache scope |
+| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
 
 ## Repository-local release workflow gates
 

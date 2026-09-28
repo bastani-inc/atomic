@@ -6,7 +6,7 @@
 	"scripts": {
 		"clean": "echo 'nothing to clean'",
 		"build": "echo 'nothing to build'",
-		"check": "tsgo -p ../../../test/tsconfig.remote-examples.json"
+		"check": "tsc -p ../../../test/tsconfig.remote-examples.json"
 	},
 	"dependencies": {
 		"@earendil-works/gondolin": "0.12.0"

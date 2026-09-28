@@ -342,21 +342,49 @@ jobs:
         if: matrix.platform == 'win32'
         timeout-minutes: 3
         run: cargo install cargo-xwin --version 0.23.0 --locked
-      # Pinned so the populate step, the build step, and actions/cache agree
-      # regardless of XDG_CACHE_HOME.
+      # Pinned to a versioned subdirectory of the mounted cache volume so the
+      # populate step and the build step agree regardless of XDG_CACHE_HOME.
+      # Bump the `v1-17` epoch here and in warm-toolchain-cache.yml together to
+      # force an SDK refresh; the trailing `17` is XWIN_VERSION, the Visual
+      # Studio major version.
       - name: Resolve MSVC CRT cache directory
         if: matrix.platform == 'win32'
         shell: bash
-        run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"
-      # Saves a cold CRT fetch per Windows leg on every release. A hit pins the
-      # leg to the SDK first stored under this key; bump the `xwin-v1` epoch to
-      # force a refresh.
-      - name: Restore MSVC CRT and Windows SDK
+        run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin/v1-17" >> "$GITHUB_ENV"
+      # Bind-mounts ~/.cache/cargo-xwin onto the release cache volume this leg
+      # already carries (nscloud-cache-tag-bastani-inc.atomic.release.linux-x64),
+      # warmed by warm-toolchain-cache.yml. This leg keeps
+      # nscloud-cache-exp-do-not-commit, so it never writes the volume back.
+      - name: Configure MSVC CRT cache volume
         if: matrix.platform == 'win32'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
+          spacectl-version: 0.12.3
           path: ~/.cache/cargo-xwin
-          key: xwin-v1-${{ matrix.arch }}-17
+      # cargo-xwin 0.23.0 trusts a DONE marker that names this arch without
+      # re-checking the splat files it lists, and a cache volume can serve a
+      # stale or partial fork (docs/ci.md, "MSVC CRT cache epoch"). Treat a DONE hit
+      # over a directory missing its splat output as a miss and start clean.
+      - name: Detect partial MSVC CRT cache
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: |
+          set -euo pipefail
+          xwin_dir="$XWIN_CACHE_DIR/xwin"
+          done_file="$xwin_dir/DONE"
+          if [[ -d "$xwin_dir" ]] && [[ -f "$done_file" ]] && head -n1 "$done_file" | grep -qw "$XWIN_ARCH"; then
+            ok=1
+            for required in "crt/include" "crt/lib/$XWIN_ARCH" "sdk/include/um" "sdk/include/shared" "sdk/include/ucrt" "sdk/lib/um/$XWIN_ARCH" "sdk/lib/ucrt/$XWIN_ARCH"; do
+              if [[ ! -d "$xwin_dir/$required" ]] || [[ -z "$(ls -A "$xwin_dir/$required" 2>/dev/null)" ]]; then
+                ok=0
+                break
+              fi
+            done
+            if [[ "$ok" -eq 0 ]]; then
+              echo "Partial or stale MSVC CRT cache detected for $XWIN_ARCH; wiping $xwin_dir" >&2
+              rm -rf "$xwin_dir"
+            fi
+          fi
       # Bounds a cold fetch: the glibc cargo-xwin populated arm64 in 35s on 4x16,
       # where the musl release binary took 7m41s (x64) and 9m56s (arm64).
       - name: Populate MSVC CRT cache on miss

@@ -15,7 +15,12 @@ import type {
 } from "@bastani/pi-ai";
 import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { CompactionReason, SessionStats } from "../../core/agent-session.js";
+import type {
+	CompactionReason,
+	PromptDisposition,
+	QueuedInputDisposition,
+	SessionStats,
+} from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -216,10 +221,16 @@ export interface RpcLogoutProviderResult {
 
 // Success responses with data
 export type RpcResponse =
-	// Prompting (async - events follow)
-	| { id?: string; type: "response"; command: "prompt"; success: true }
-	| { id?: string; type: "response"; command: "steer"; success: true }
-	| { id?: string; type: "response"; command: "follow_up"; success: true }
+	// Prompting
+	| { id?: string; type: "response"; command: "prompt"; success: true; data: { disposition: PromptDisposition } }
+	| { id?: string; type: "response"; command: "steer"; success: true; data: { disposition: QueuedInputDisposition } }
+	| {
+			id?: string;
+			type: "response";
+			command: "follow_up";
+			success: true;
+			data: { disposition: QueuedInputDisposition };
+	  }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 

@@ -219,7 +219,12 @@ describe("ctx.tool persistence and cancellation races", () => {
 		assert.equal(
 			backend
 				.listCheckpoints(runId)
-				.some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "normal-drain-blocker"),
+				.some(
+					(checkpoint) =>
+						checkpoint.kind === "tool" &&
+						checkpoint.name === "normal-drain-blocker" &&
+						checkpoint.cancelled !== true,
+				),
 			false,
 		);
 	});
@@ -277,7 +282,10 @@ describe("ctx.tool persistence and cancellation races", () => {
 		assert.equal(
 			backend
 				.listCheckpoints(runId)
-				.some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "non-cooperative"),
+				.some(
+					(checkpoint) =>
+						checkpoint.kind === "tool" && checkpoint.name === "non-cooperative" && checkpoint.cancelled !== true,
+				),
 			false,
 			"a late sibling callback must not create a successful checkpoint",
 		);

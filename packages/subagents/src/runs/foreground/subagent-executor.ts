@@ -17,7 +17,12 @@ import {
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
-import { subagentTaskResultLabel, taskResponseRecords } from "./task-execution.js";
+import {
+	settledOutputsFromRecords,
+	settledTaskOutputText,
+	subagentTaskResultLabel,
+	taskResponseRecords,
+} from "./task-execution.js";
 
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 /** Observing management actions do not start or mutate child execution. */
@@ -75,11 +80,17 @@ async function handleManagementRequest(input: {
 			ctx.getAgentTaskHost && params.id !== undefined
 				? await ctx.getAgentTaskHost().waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs)
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
+		const settledOutput =
+			observed.ok && observed.value.kind === "settled"
+				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
+						{ taskId: observed.value.taskId, result: observed.value.result },
+					])
+				: "";
 		return {
 			content: [
 				{
 					type: "text",
-					text: `${observed.ok && observed.value.kind === "settled" && subagentTaskResultLabel(observed.value.result) === "killed (non-resumable)" ? "Killed. This child cannot be resumed. Underlying host observation:\n" : ""}${JSON.stringify(observed.ok ? observed.value : observed.error)}`,
+					text: `${observed.ok && observed.value.kind === "settled" && subagentTaskResultLabel(observed.value.result) === "killed (non-resumable)" ? "Killed. This child cannot be resumed. Underlying host observation:\n" : ""}${JSON.stringify(observed.ok ? observed.value : observed.error)}${settledOutput}`,
 				},
 			],
 			details: {
@@ -116,11 +127,13 @@ async function handleManagementRequest(input: {
 			if (watched.ok) {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
+				const settledOutput =
+					action === "status" ? await settledTaskOutputText(host, settledOutputsFromRecords(records)) : "";
 				return {
 					content: [
 						{
 							type: "text",
-							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : action === "kill" ? "Kill requested. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}`,
+							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : action === "kill" ? "Kill requested. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },

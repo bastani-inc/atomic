@@ -637,6 +637,9 @@ async function consumeChatStream(
 			for (const item of contentItems) {
 				if (typeof item === "string") {
 					const textDelta = sanitizeSurrogates(item);
+					// GLM models on Mistral send empty content deltas around thinking and tool calls.
+					// Opening a block for them splits thinking into multiple blocks, which Mistral rejects on replay.
+					if (!textDelta) continue;
 					if (!currentBlock || currentBlock.type !== "text") {
 						finishCurrentBlock(currentBlock);
 						currentBlock = { type: "text", text: "" };
@@ -678,6 +681,7 @@ async function consumeChatStream(
 
 				if (item.type === "text") {
 					const textDelta = sanitizeSurrogates(item.text ?? "");
+					if (!textDelta) continue;
 					if (!currentBlock || currentBlock.type !== "text") {
 						finishCurrentBlock(currentBlock);
 						currentBlock = { type: "text", text: "" };

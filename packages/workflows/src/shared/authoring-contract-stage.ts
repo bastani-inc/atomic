@@ -1,6 +1,6 @@
 /** Workflow authoring primitives, stage/session contracts, and task option types. */
 
-import type { ModelConstraints, ModelRoute, ModelRouterOutput } from "@bastani/atomic";
+import type { ModelConstraints, ModelRoute, ModelRouterOutput, TaskNeeds } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 
 export type { Static, TSchema };
@@ -114,6 +114,9 @@ export interface WorkflowModelCatalogPort {
 		constraints: readonly ModelConstraints[];
 		signal?: AbortSignal;
 		selection?: ModelRouterOutput;
+		taskNeeds?: TaskNeeds;
+		/** The stage's own constraints set a provider list, replacing the user's provider settings. */
+		overrideProviderSettings?: boolean;
 	}): Promise<ModelRoute>;
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;
@@ -167,6 +170,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly model?: WorkflowModelValue;
 	/** Hard restrictions for automatic model selection and its execution fallbacks. */
 	readonly modelConstraints?: ModelConstraints;
+	/** What the author already knows about the task, for `model: "auto"`; routing asks only for the rest. */
+	readonly taskNeeds?: TaskNeeds;
 	readonly mcp?: StageMcpOptions;
 	readonly tools?: readonly string[];
 	readonly noTools?: "all" | "builtin";

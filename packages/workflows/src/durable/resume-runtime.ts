@@ -274,7 +274,11 @@ async function resumeDurableWorkflowClaimed(
 				reason: "startup_failed",
 				message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
 			};
-		toolContinuation = { source: source!, resumeFromToolNodeId: frontier.toolNodeId };
+		toolContinuation = {
+			source: source!,
+			resumeFromToolNodeId: frontier.toolNodeId,
+			retryToolNodes: frontier.retryToolNodes,
+		};
 	}
 	deps.signal?.throwIfAborted();
 	const sourceFailure = {

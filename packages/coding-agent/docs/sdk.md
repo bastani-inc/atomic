@@ -425,13 +425,13 @@ interface PromptOptions {
   images?: ImageContent[];
   streamingBehavior?: "steer" | "followUp";
   source?: InputSource;
-  preflightResult?: (success: boolean) => void;
+  preflightResult?: (success: boolean, disposition?: "handled" | "queued" | "started") => void;
 }
 ```
 
 `preflightResult` is called once per `prompt()` invocation:
 
-- `true` when the prompt was accepted, queued, or handled immediately
+- `true` when the prompt was accepted, queued, or handled immediately. The second argument says which: `"handled"` if an extension command or input handler consumed it, `"queued"` if it was queued during a run, or `"started"` if it started a run
 - `false` when prompt preflight rejected before acceptance
 
 It fires before `prompt()` resolves. `prompt()` still resolves only after the full accepted run finishes, including retries. Failures after acceptance are reported through the normal event and message stream, not through `preflightResult(false)`.
@@ -469,7 +469,7 @@ await session.steer("New instruction");
 await session.followUp("After you're done, also do this");
 ```
 
-Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued).
+Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
 
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 

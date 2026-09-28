@@ -4996,6 +4996,7 @@ test("MCP startup diagnostics are quiet, redacted and owner attributed", async (
 				sessionManager: SessionManager.inMemory(cwd),
 				settingsManager: SettingsManager.inMemory(),
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: { workflows: false, subagents: false, intercom: false, "web-access": false },
 				extensionBindings: { onDiagnostic: (entry) => diagnostics[index]!.push(entry) },
 			});
 			sessions.push(session);

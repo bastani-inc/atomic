@@ -441,7 +441,8 @@ describe("DefaultPackageManager git update", () => {
 
 		it("should not refresh pinned temporary git sources", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
-			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(gitSource), "temporary");
+			const pinnedSource = `${gitSource}@main`;
+			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(pinnedSource), "temporary");
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
 			rmSync(cachedDir, { recursive: true, force: true });
@@ -460,7 +461,7 @@ describe("DefaultPackageManager git update", () => {
 				executedCommands.push(`${command} ${args.join(" ")}`);
 			};
 
-			await packageManager.resolveExtensionSources([`${gitSource}@main`], { temporary: true });
+			await packageManager.resolveExtensionSources([pinnedSource], { temporary: true });
 
 			expect(executedCommands).toEqual([]);
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// pinned");

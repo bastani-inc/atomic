@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-09-27
+
+### Fixed
+
+- Resuming a run that failed in a `ctx.tool` call now works when the call ran in parallel with other tools. Siblings that were cancelled or also threw when the run failed are run again on resume, in any order, instead of failing with `replay topology mismatch` or `unfinished or missing completed tool checkpoint`. A resume rejected by changed code no longer runs the failed tool or makes the run unresumable, including after Atomic restarts ([#3314](https://github.com/bastani-inc/atomic/issues/3314)).
+- `model: "auto"` routing no longer ignores benchmark results when fewer than four models are available. Each model's results are now ranked against every model in the evals catalog rather than only the models you can route to, so with just two or three models (for example Opus and Haiku) the stronger model is no longer outranked on price alone, and a model scores the same however many models are enabled.
+
+## [0.9.23-alpha.1] - 2026-09-27
+
+### Fixed
+
+- Resuming a run that failed in a `ctx.tool` call now works when the call ran in parallel with other tools. Siblings that were cancelled or also threw when the run failed are run again on resume, in any order, instead of failing with `replay topology mismatch` or `unfinished or missing completed tool checkpoint`. A resume rejected by changed code no longer runs the failed tool or makes the run unresumable, including after Atomic restarts ([#3314](https://github.com/bastani-inc/atomic/issues/3314)).
+- `model: "auto"` routing no longer ignores benchmark results when fewer than four models are available. Each model's results are now ranked against every model in the evals catalog rather than only the models you can route to, so with just two or three models (for example Opus and Haiku) the stronger model is no longer outranked on price alone, and a model scores the same however many models are enabled.
+
+## [0.9.21] - 2026-09-26
+
+### Changed
+
+- `model: "auto"` routing has a chat model answer fixed questions about the complete task, then the router chooses between a short, evidence-backed list of models without seeing the task, in at most two small requests. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.
+- `model: "auto"` accepts `taskNeeds` so the caller can state the task's kind of work, difficulty, mistake cost, need for images, need for a very large context and whether speed matters, and `modelConstraints.allowedModels` sets the shortlist the router chooses between. `modelConstraints.allowedProviders` and `excludedProviders` skip whole providers and replace the `modelRouting` provider settings for that call. Falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
+- Workflow authoring guidance now tells agents to put a `model: "auto"` stage's role and objective at the start or end of its prompt or in a short `<keepContext>` span, since model routing sees only those parts of long prompts.
+
+### Fixed
+
+- The builtin `goal` and `ralph` workflows no longer count a reviewer's `stop_review_loop=true` as approval when the same review calls the patch incorrect, reports `goal_oracle_satisfied: false`, or lists a blocking finding. A run whose reviewers all flag an empty implementation no longer ends `complete` or starts the pull-request stage ([#3295](https://github.com/bastani-inc/atomic/issues/3295)).
+
+## [0.9.21-alpha.2] - 2026-09-26
+
+### Changed
+
+- `model: "auto"` routing has a chat model answer fixed questions about the complete task, then the router chooses between a short, evidence-backed list of models without seeing the task, in at most two small requests. The new `modelRouting` setting's `allowedProviders` and `excludedProviders` lists limit which providers are candidates.
+- `model: "auto"` accepts `taskNeeds` so the caller can state the task's kind of work, difficulty, mistake cost, need for images, need for a very large context and whether speed matters, and `modelConstraints.allowedModels` sets the shortlist the router chooses between. `modelConstraints.allowedProviders` and `excludedProviders` skip whole providers and replace the `modelRouting` provider settings for that call. Falling back to the current chat model is silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`.
+
+### Fixed
+
+- The builtin `goal` and `ralph` workflows no longer count a reviewer's `stop_review_loop=true` as approval when the same review calls the patch incorrect, reports `goal_oracle_satisfied: false`, or lists a blocking finding. A run whose reviewers all flag an empty implementation no longer ends `complete` or starts the pull-request stage ([#3295](https://github.com/bastani-inc/atomic/issues/3295)).
+
+## [0.9.21-alpha.1] - 2026-09-25
+
 ### Changed
 
 - Workflow authoring guidance now tells agents to put a `model: "auto"` stage's role and objective at the start or end of its prompt or in a short `<keepContext>` span, since model routing sees only those parts of long prompts.

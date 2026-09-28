@@ -108,6 +108,14 @@ export interface BashInterceptorSettings {
 	enabled?: boolean; // default: false
 }
 
+/** Provider filters for the candidates `model: "auto"` may route to. Does not affect `routerModel`. */
+export interface ModelRoutingSettings {
+	/** When nonempty, only these provider IDs are routing candidates. */
+	allowedProviders?: string[];
+	/** Provider IDs that are never routing candidates; applied after `allowedProviders`. */
+	excludedProviders?: string[];
+}
+
 export interface Settings {
 	lastChangelogVersion?: string;
 	firstRunOnboardingStartedVersion?: string;
@@ -115,6 +123,7 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	routerModel?: string; // default: ""; workflow-stage/subagent auto-model router inference only, never "auto"
+	modelRouting?: ModelRoutingSettings;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	modelThinkingLevels?: Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">;
 	fallbackModels?: string[]; // Ordered main-chat fallback models, optionally suffixed with :thinkingLevel

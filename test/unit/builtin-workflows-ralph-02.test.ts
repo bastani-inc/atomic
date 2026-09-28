@@ -271,11 +271,11 @@ describe("ralph", () => {
 		const approvedFindingReview = JSON.stringify({
 			findings: [
 				{
-					title: "[P2] Low-confidence finding",
-					body: "A low-confidence blocking finding is present for the approved-round fixture.",
+					title: "[P3] Low-confidence finding",
+					body: "A low-confidence non-blocking finding is present for the approved-round fixture.",
 					confidence_score: 0.4,
 					objective_alignment: "consistent_with_objective",
-					priority: 2,
+					priority: 3,
 					code_location: {
 						absolute_file_path: join(cwd, "src/example.ts"),
 						line_range: { start: 1, end: 1 },
@@ -318,8 +318,77 @@ describe("ralph", () => {
 			readonly consolidated_findings: readonly { readonly blocking: boolean }[];
 			readonly reverification: readonly { readonly verdict: string }[];
 		};
-		assert.equal(round.consolidated_findings[0]?.blocking, true);
+		assert.equal(round.consolidated_findings[0]?.blocking, false);
 		assert.deepEqual(round.reverification, []);
+	});
+
+	test("rejects a stop vote contradicted by a blocking finding and re-verifies it (#3295)", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = requireRalphTempCwd();
+		const contradictoryReview = JSON.stringify({
+			findings: [
+				{
+					title: "[P2] Low-confidence blocking finding",
+					body: "The reviewer reports an in-scope defect while also voting to stop the loop.",
+					confidence_score: 0.4,
+					objective_alignment: "consistent_with_objective",
+					priority: 2,
+					code_location: {
+						absolute_file_path: join(cwd, "src/example.ts"),
+						line_range: { start: 1, end: 1 },
+					},
+				},
+			],
+			overall_correctness: "patch is correct",
+			overall_explanation: "The reviewer voted to stop despite its own blocking finding.",
+			overall_confidence_score: 0.9,
+			requirements_traceability: [
+				{
+					requirement: "Review the requested change",
+					status: "proven",
+					evidence: "Current state proves the requested change.",
+				},
+			],
+			stop_review_loop: true,
+			reviewer_error: null,
+		});
+		const cleanReview = JSON.stringify({ ...JSON.parse(contradictoryReview), findings: [] });
+		const ctx = makeMockCtx(
+			{
+				prompt: "Review contradictory stop votes",
+				max_loops: 1,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) =>
+					name === "reviewer-a" ? contradictoryReview : name === "reviewer-b" ? cleanReview : undefined,
+			},
+		);
+
+		const result = await mod.default.run({ ...ctx, cwd });
+		assert.equal(result.approved, false);
+		assert.equal(
+			ctx.calls.task.some((name) => name.startsWith("reverify-")),
+			true,
+		);
+		const round = JSON.parse(readFileSync(String(result.review_report_path), "utf8")) as {
+			readonly consolidated_findings: readonly { readonly blocking: boolean }[];
+			readonly reverification: readonly { readonly verdict: string }[];
+			readonly reviews: readonly {
+				readonly reviewer: string;
+				readonly convergence_decision: { readonly approved: boolean; readonly stopReviewLoop: boolean };
+			}[];
+		};
+		assert.equal(round.consolidated_findings[0]?.blocking, true);
+		assert.ok(round.reverification.length > 0);
+		const approvals = Object.fromEntries(
+			round.reviews.map((review) => [review.reviewer, review.convergence_decision]),
+		);
+		assert.equal(approvals["reviewer-a"]?.stopReviewLoop, true);
+		assert.equal(approvals["reviewer-a"]?.approved, false);
+		assert.equal(approvals["reviewer-b"]?.approved, true);
 	});
 
 	test("passes Ralph review artifacts into follow-up research", async () => {

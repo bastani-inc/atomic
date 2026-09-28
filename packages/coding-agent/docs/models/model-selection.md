@@ -11,27 +11,26 @@ For specific benchmark records, read [Evals](/models/evals). That page is the da
 
 ## Automatic subagent and workflow-stage routing
 
-Subagent and workflow-stage `model: "auto"` routes before execution starts. Atomic sends the router:
+Subagent and workflow-stage `model: "auto"` routes before execution starts, in at most two short requests:
 
-- the final task or stage prompt,
-- the agent or stage name and description,
-- the eligible provider/model and effort choices with catalog capabilities and prices,
-- hard `modelConstraints`, and
-- the factual markdown tables in [Evals](/models/evals).
+1. **Questions about the task, answered by a chat model.** Kind of work, difficulty, mistake cost, image input, very large context, and whether speed matters. The chat model is `routerModel` when that is a chat model, otherwise your current one; a classifier such as Jev never reads the task. A task too large for that model's window is read by the cheapest eligible model that holds it. Anything the caller states in `taskNeeds` is not asked, and when the caller states all six this request is skipped. Computer-use tasks count as needing images unless the caller says otherwise.
+2. **A choice between a shortlist, made by the router without the task.** Atomic narrows the eligible models in code: it drops models that cannot read images when the task needs them and prefers 400k-token windows for long-context tasks, then ranks the rest on the [Evals](/models/evals) results for that kind of work, weighing proven quality against price by how demanding the task is and preferring newer releases. The top six different models form the shortlist; a model's fast route and the same model on another provider share one place. When the caller lists models in `modelConstraints.allowedModels`, those eligible models are the shortlist instead (as many as fit one routing request). Each option carries its own evidence (release date, price tier, image input, and results on this kind of work and overall), ranked against all Evals models however few you enable. With a single option, this request is skipped.
 
-The router returns one primary `{ model, effort }` pair and up to two ordered fallback pairs. It cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: an explicit registered classifier or chat language model. Unset and `auto` use the current chat model, regardless of saved classifier credentials. An image-generation model cannot decide.
+Effort follows the task's difficulty, one level lower when speed matters, limited to the levels the chosen model supports. The two fallbacks are the next models in Atomic's ranking. The router cannot add candidates, bypass constraints, alter the execution prompt, or change the selected chat model. [`routerModel`](/settings#routermodel) chooses the decision model only: an explicit registered classifier or chat language model. Unset and `auto` use the current chat model, regardless of saved classifier credentials. An image-generation model cannot decide.
 
 Only chat language models are eligible for execution `auto`, including models that accept image or PDF input. Image-generation and classifier models cannot be execution candidates, even when a classifier makes the routing decision.
 
 In authored workflows, a classifier can make a structured triage decision without executing the stage; an image model can generate an asset inside a durable tool step. See [classifier and image models in `ctx.tool`](/workflows/authoring#classifier-and-image-models-in-ctx-tool).
 
-Long tasks may be excerpted for routing so the decision fits the decision provider's input budget. Execution still receives the full task. The excerpt keeps the beginning and end of the task plus `<keepContext>...</keepContext>` spans, and marks cuts `[... truncated ...]`. Put the role and objective at the start or end, or in a short protected span, and keep bulky reference text in the middle.
+To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
 ## Benchmarks are evidence, not policy
 
 Benchmark results are measurements under named harnesses, dates, models, efforts, agents, tools, prompts, prices, and scoring rules. Treat a bracketed effort level as the measurement configuration for that row, not a command to run every task at that effort. Compare only records whose measured setup resembles the decision at hand, and keep unmeasured work under ordinary validation rather than inheriting a score.
 
 Missing evidence is unknown, not zero. A rounded lead is not proof of significance. A result for one provider, model version, effort, agent, fallback setting, or benchmark harness does not transfer to another identity.
+
+Prefer recency. Each row in [Evals](/models/evals) has a release date. When candidates fit the same role tier and price range, choose the most recently released model over an older one from the same provider or family; a newer release usually supersedes it. Do not let an older model win only because it has no published results: its missing evidence stays unknown, and a recent comparable model with evidence is the safer choice. Recency does not override the role's cost tier or explicit constraints.
 
 ## Role-based thinking effort
 

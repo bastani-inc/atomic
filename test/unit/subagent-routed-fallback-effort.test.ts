@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import type { Api, Context, Model } from "@bastani/pi-ai";
 import { test, vi } from "vitest";
 import { loadAgentsFromDirWithDiagnostics } from "../../packages/subagents/src/agents/agent-loaders.js";
 import { applyBuiltinOverrides } from "../../packages/subagents/src/agents/agent-overrides.js";
@@ -11,7 +10,8 @@ import type { ChildSpec } from "../../packages/subagents/src/runs/inprocess/runn
 import { routeSubagentModel } from "../../packages/subagents/src/runs/shared/model-router.ts";
 import { toModelInfo } from "../../packages/subagents/src/shared/model-info.ts";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.ts";
-import { decisionMessage, decisionModel, messageStream } from "../helpers/structured-output.ts";
+import { chatRouter } from "../helpers/model-routing.js";
+import { decisionModel } from "../helpers/structured-output.ts";
 
 const capture = vi.hoisted(() => ({ spec: undefined as ChildSpec | undefined }));
 vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () => ({
@@ -42,12 +42,9 @@ async function dispatch(
 		find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
 		hasConfiguredAuth: () => true,
 		containsConfiguredCredential: async () => false,
-		streamSimple: (_model: Model<Api>, context: Context) => {
-			const { questions } = JSON.parse(context.messages[0]!.content as string);
-			const candidates = Object.values(questions.pair.criteria).map((entry) => JSON.parse(entry as string));
-			const selected = candidates.find((pair) => pair.effort === effort) ?? candidates[0];
-			return messageStream(decisionMessage({ modelId: selected.model, reasoningEffort: selected.effort }));
-		},
+		streamSimple: chatRouter((offered) =>
+			offered.includes("decision-test/primary") ? "decision-test/primary" : offered[0]!,
+		),
 	};
 	const agent: AgentConfig = {
 		name: "worker",

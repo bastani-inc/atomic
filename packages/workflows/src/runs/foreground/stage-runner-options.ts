@@ -51,6 +51,7 @@ export function stripWorkflowOnlyOptions(
 		fallbackModels: _fallbackModels,
 		fallbackThinkingLevels: _fallbackThinkingLevels,
 		modelConstraints: _modelConstraints,
+		taskNeeds: _taskNeeds,
 		inheritedModelConstraints: _inheritedModelConstraints,
 		routerSelection: _routerSelection,
 		context,

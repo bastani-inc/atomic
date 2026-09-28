@@ -3,10 +3,12 @@ import {
 	type ModelRoute as ExecutionModelRoute,
 	type ExtensionContext,
 	parseModelConstraints,
+	reportModelRoutingDebug,
 	routeExecutionModel,
+	setsProviders,
 } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
-import type { ModelConstraints } from "../../shared/model-constraints.js";
+import { type ModelConstraints, parseTaskNeeds, type TaskNeeds } from "../../shared/model-constraints.js";
 import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.js";
 import { resolveModelCandidate } from "./model-fallback.js";
 
@@ -19,6 +21,8 @@ export async function routeSubagentModel(input: {
 	agent: AgentConfig;
 	task?: string;
 	modelConstraints?: ModelConstraints;
+	/** What the caller already knows about the task; routing asks only for the rest. */
+	taskNeeds?: TaskNeeds;
 	signal?: AbortSignal;
 }): Promise<ModelRoute> {
 	const { ctx, agent } = input;
@@ -27,6 +31,7 @@ export async function routeSubagentModel(input: {
 			(c): c is ModelConstraints => c !== undefined,
 		),
 	);
+	const taskNeeds = parseTaskNeeds(input.taskNeeds);
 	const effortOverride = agent.source === "builtin" && agent.thinking !== "" ? agent.thinking : undefined;
 	let route: ExecutionModelRoute;
 	try {
@@ -37,6 +42,8 @@ export async function routeSubagentModel(input: {
 			constraints:
 				effortOverride === undefined ? constraints : [...constraints, { allowedEfforts: [effortOverride] }],
 			signal: input.signal,
+			...(taskNeeds ? { taskNeeds } : {}),
+			...(setsProviders(parseModelConstraints(input.modelConstraints)) ? { overrideProviderSettings: true } : {}),
 		});
 	} catch (error) {
 		input.signal?.throwIfAborted();
@@ -46,7 +53,7 @@ export async function routeSubagentModel(input: {
 		// eligibility and ineligible-current-model failures still fail the launch.
 		if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
 		route = error.currentModelRoute;
-		console.warn(
+		reportModelRoutingDebug(
 			`Subagent auto routing failed; running "${agent.name}" on the current chat model ${route.modelOverride}.`,
 		);
 	}

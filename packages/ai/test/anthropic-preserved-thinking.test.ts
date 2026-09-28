@@ -66,7 +66,7 @@ async function capturePayloadAndHeaders(
 		apiKey: "fake-key",
 		...(options?.reasoning ? { reasoning: options.reasoning } : {}),
 		// Parameters are contextually typed by `FetchFunction`; naming DOM types such as
-		// `RequestInfo` here would not compile, because the package builds with `lib: ["ES2022"]`
+		// `RequestInfo` here would not compile, because the package builds with `lib: ["ES2024"]`
 		// and `types: ["node"]` and has no DOM lib.
 		fetch: (async (_input, init) => {
 			const headers = new Headers(init?.headers);

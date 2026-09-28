@@ -647,9 +647,7 @@ export class AgentSessionRuntime {
 				}
 
 				if (!existsSync(currentSessionFile)) {
-					throw new Error(
-						"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
-					);
+					throw new Error("This session has not been saved yet. Send a message before cloning or forking it.");
 				}
 				const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
 				const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);

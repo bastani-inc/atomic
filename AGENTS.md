@@ -23,9 +23,9 @@ everywhere. Where the split differs from pi, the reason is written down.
 | --- | --- | --- |
 | Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
 | Install policy | committed `.npmrc` | `save-exact=true` matches pi. **`min-release-age=0` deliberately diverges** from pi's 2: Atomic adopts pi releases the same day they publish, which a nonzero cooldown blocks by construction. `.github/dependabot.yml` carries the matching `cooldown: 0`; the two must move together |
-| Build | `npm run build` | tsgo, not Bun; no behaviour change |
+| Build | `npm run build` | TypeScript 7 `tsc`, not Bun; no behaviour change |
 | Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
-| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + the coding-agent package's `tsgo -p tsconfig.build.json --noEmit` + shrinkwrap check) | pi runs biome + tsgo here. The second typecheck pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
+| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + the coding-agent package's `tsc -p tsconfig.build.json --noEmit` + shrinkwrap check) | pi runs biome + TypeScript 7 `tsc` here. The second typecheck pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
 | Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
 | `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
@@ -70,7 +70,7 @@ action pins, permissions, and required checks. Keep product and executable relea
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
 - `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `packages/coding-agent`, `crates/`, or `packages/natives/`): builds `@bastani/pi-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), aliases `@earendil-works/pi-ai` onto it, builds the native N-API module, and builds `@bastani/atomic` with its bundled package assets. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these
 - `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
-- `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
+- `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsc -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
 - `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
 - `npm run test:scripts` — `node --test scripts/*.test.mjs`

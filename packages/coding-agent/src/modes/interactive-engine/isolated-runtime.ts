@@ -595,8 +595,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const cancellationEpoch = this.promptCancellationEpoch;
 					await this.waitUntilResourcesReady();
 					if (cancellationEpoch !== this.promptCancellationEpoch) return;
-					await this.client.prompt(text, options?.images, options?.streamingBehavior);
-					options?.preflightResult?.(true);
+					const disposition = await this.client.prompt(text, options?.images, options?.streamingBehavior);
+					options?.preflightResult?.(true, disposition);
 				},
 			},
 			steer: { configurable: true, value: (text: string) => this.client.steer(text) },

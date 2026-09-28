@@ -132,6 +132,7 @@ export interface PiToolOpts<TArgs, TDetails> {
 
 export interface PiExecuteContext extends PiModelContext {
 	getRouterModel?: () => string;
+	getModelRouting?: () => import("@bastani/atomic").ModelRoutingSettings;
 	sessionId?: string;
 	ui?: PiUISurface;
 	hasUI?: boolean;

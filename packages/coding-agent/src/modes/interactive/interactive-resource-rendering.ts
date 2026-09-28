@@ -191,14 +191,12 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...this.session.resourceLoader.getAppendSystemPromptSources(),
 			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
 		];
-		const customThemes = themesResult.themes.filter((t) => t.sourcePath);
 
 		const expandedSections: {
 			context?: string;
 			skills?: string;
 			prompts?: string;
 			extensions?: string;
-			themes?: string;
 		} = {};
 		if (contextFiles.length > 0) {
 			expandedSections.context = contextFiles
@@ -243,25 +241,11 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			});
 		}
 
-		if (customThemes.length > 0) {
-			const groups = this.buildScopeGroups(
-				customThemes.map((loadedTheme) => ({
-					path: loadedTheme.sourcePath!,
-					sourceInfo: loadedTheme.sourceInfo,
-				})),
-			);
-			expandedSections.themes = this.formatScopeGroups(groups, {
-				formatPath: (item) => this.formatDisplayPath(item.path),
-				formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-			});
-		}
-
 		this.addResourceDisclosure({
 			contextFiles,
 			skills,
 			prompts,
 			extensions,
-			themes: customThemes,
 			expandedSections,
 			targetContainer,
 		});

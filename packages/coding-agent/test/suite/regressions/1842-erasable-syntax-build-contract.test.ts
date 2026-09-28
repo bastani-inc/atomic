@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 // Regression for PR #1842: the published `@bastani/atomic` package build runs
-// `tsgo -p tsconfig.build.json` with `erasableSyntaxOnly` and without Bun's
+// `tsc -p tsconfig.build.json` with `erasableSyntaxOnly` and without Bun's
 // ambient types. Two classes of syntax broke that build one error at a time:
 //   1. TS1294 - constructor parameter properties (`constructor(private x)`),
 //      which are not erasable syntax.

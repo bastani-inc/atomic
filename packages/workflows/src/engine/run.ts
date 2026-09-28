@@ -101,7 +101,7 @@ import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
 import { createToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
 import { toolControlRegistry as defaultToolControlRegistry } from "./run-tool-control-registry.js";
-import { createTrackedToolPrimitive } from "./run-tool-node-lifecycle.js";
+import { createTrackedToolPrimitive, unconsumedToolFrontier } from "./run-tool-node-lifecycle.js";
 import { EngineRuntime } from "./runtime.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import {
@@ -539,6 +539,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			resumeToolNode: opts.continuation?.source.toolNodes?.find(
 				(node) => node.id === opts.continuation?.resumeFromToolNodeId,
 			),
+			retryToolNodes: opts.continuation?.retryToolNodes,
 			toolControls,
 			toolAdmission,
 			budget,
@@ -1123,12 +1124,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				runSnapshot.stages.length,
 			),
 		);
+		const rejectedToolFrontier = unconsumedToolFrontier(opts.continuation, selectedMetadata.errorMessage);
 		const failedToolNodeId =
-			selectedMetadata.failedStageId === undefined && selectedMetadata.failureDisposition !== "terminal_killed"
+			rejectedToolFrontier?.id ??
+			(selectedMetadata.failedStageId === undefined && selectedMetadata.failureDisposition !== "terminal_killed"
 				? catchTerminalEvent?.kind === "failure" && Object.is(catchTerminalEvent.error, err)
 					? (catchTerminalEvent.nodeId ?? observedAdmittedToolFailure?.nodeId)
 					: observedAdmittedToolFailure?.nodeId
-				: undefined;
+				: undefined);
 		const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
 
 		if (metadata.failureDisposition === "terminal_killed") {
@@ -1159,6 +1162,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			store: activeStore,
 			persistence: opts.persistence,
 			metadata,
+			...(rejectedToolFrontier === undefined ? {} : { failedToolNode: rejectedToolFrontier }),
 			onRunEnd: opts.onRunEnd,
 		});
 		// Preserve write rejection without retrying persistence in unadmitted cleanup.

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-09-27
+
+### Fixed
+
+- Long sessions no longer leak one open file per bash command. A finished command now releases its output file, an output file with no output is deleted, and output files left behind by Atomic processes that have exited are removed. On macOS, where a child process cannot receive a file descriptor numbered 10240 or higher, the leak eventually made every bash call and spawn fail with `Bad file descriptor`; if a spawn still fails that way, the error now names the cause ([#3313](https://github.com/bastani-inc/atomic/issues/3313)).
+
+## [0.9.23-alpha.1] - 2026-09-27
+
+### Fixed
+
+- Long sessions no longer leak one open file per bash command. A finished command now releases its output file, an output file with no output is deleted, and output files left behind by Atomic processes that have exited are removed. On macOS, where a child process cannot receive a file descriptor numbered 10240 or higher, the leak eventually made every bash call and spawn fail with `Bad file descriptor`; if a spawn still fails that way, the error now names the cause ([#3313](https://github.com/bastani-inc/atomic/issues/3313)).
+
 ## [0.9.20] - 2026-09-24
 
 ### Fixed

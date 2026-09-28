@@ -226,6 +226,7 @@ export class ExtensionRunner {
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getRouterModelFn: ExtensionContextActions["getRouterModel"] = undefined;
+	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -305,6 +306,7 @@ export class ExtensionRunner {
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getRouterModelFn = contextActions.getRouterModel;
+		this.getModelRoutingFn = contextActions.getModelRouting;
 
 		// Flush provider registrations queued during extension loading.
 		for (const registration of this.runtime.pendingProviderRegistrations) {
@@ -762,6 +764,7 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.getSystemPromptFn(),
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
 			...(this.getRouterModelFn ? { getRouterModel: () => this.getRouterModelFn!() } : {}),
+			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),
 			waitForIdle: () => this.waitForIdleFn(),
 			newSession: (options) => this.newSessionHandler(options),

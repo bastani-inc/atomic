@@ -1,4 +1,4 @@
-import { ModelConstraintsSchema } from "../shared/model-constraints.js";
+import { ModelConstraintsSchema, TaskNeedsSchema } from "../shared/model-constraints.js";
 /**
  * TypeBox schemas for subagent tool parameters
  */
@@ -67,6 +67,7 @@ const TaskItem = Type.Object({
 		}),
 	),
 	modelConstraints: Type.Optional(ModelConstraintsSchema),
+	taskNeeds: Type.Optional(TaskNeedsSchema),
 	skill: Type.Optional(SkillOverride),
 	group: Type.Optional(GroupSchema),
 });
@@ -228,6 +229,7 @@ export const SubagentParams = Type.Object(
 			}),
 		),
 		modelConstraints: Type.Optional(ModelConstraintsSchema),
+		taskNeeds: Type.Optional(TaskNeedsSchema),
 	},
 	{ additionalProperties: false },
 );

@@ -3,11 +3,13 @@ import {
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
 	convertToLlm,
+	isModelRoutingDebugEnabled,
 	type ModelConstraints,
 	type ModelRoute,
 	type PromptOptions,
 	parseModelConstraints,
 	type StructuredOutputCapture,
+	setsProviders,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
 import type { StageStartupPhase, StageStartupSnapshot } from "../../shared/stage-startup.js";
@@ -453,6 +455,10 @@ export class StageSessionController {
 						constraints,
 						signal: this.startupWait.signal,
 						selection: options?.routerSelection,
+						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
+						...(setsProviders(parseModelConstraints(options?.modelConstraints))
+							? { overrideProviderSettings: true }
+							: {}),
 					});
 				} catch (error) {
 					this.startupWait.signal.throwIfAborted();
@@ -462,9 +468,10 @@ export class StageSessionController {
 					// current chat model that satisfies every routing constraint.
 					if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
 					this.modelRoute = error.currentModelRoute;
-					this.modelCatalog?.recordWarning?.(
-						`workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`,
-					);
+					if (isModelRoutingDebugEnabled())
+						this.modelCatalog?.recordWarning?.(
+							`workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`,
+						);
 				}
 				this.modelRoute.assertCurrent();
 				this.meta.stageOptions = { ...options, model: this.modelRoute.modelOverride };
