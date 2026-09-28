@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.
+- llama.cpp models are now also listed as classifier models with the same ID, so a local model can make `model: "auto"` routing decisions the way TypeSafe Jev does. Because an explicit `routerModel` resolves a classifier before a chat model, `routerModel: "llama.cpp/<id>"` now routes with the classifier instead of the chat model ([#10119](https://github.com/earendil-works/pi/pull/10119)).
+
 ### Fixed
 
 - OpenCode Go now defaults to Kimi K3 (`kimi-k3`). models.dev deprecated Kimi K2.6 for OpenCode Go, which removed it from the built-in catalog, so the previous default no longer resolved.

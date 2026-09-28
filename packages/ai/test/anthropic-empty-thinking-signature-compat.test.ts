@@ -106,12 +106,10 @@ describe("Anthropic empty thinking signature compat", () => {
 
 	// Regression for #9323: Fireworks emits unsigned thinking that must survive replay.
 	it.each([
-		"accounts/fireworks/models/deepseek-v4-flash-0731",
-		"accounts/fireworks/models/deepseek-v4-flash-vision-exp",
-		"accounts/fireworks/models/deepseek-v4-pro-0813",
+		"accounts/fireworks/models/deepseek-v4p1-flash",
 		"accounts/fireworks/models/qwen3p8-max",
 		"accounts/fireworks/models/qwen3p8-2p4t-a95b",
-		"accounts/fireworks/models/kimi-k2p6",
+		"accounts/fireworks/models/nemotron-3-ultra-nvfp4",
 	] as const)("preserves unsigned thinking for Fireworks %s", async (modelId) => {
 		const model = getModel("fireworks", modelId);
 		expect(model.compat?.allowEmptySignature).toBe(true);
@@ -127,10 +125,10 @@ describe("Anthropic empty thinking signature compat", () => {
 
 	// Regression for #9323: opting into unsigned replay must not change cross-model conversion.
 	it("still converts cross-model Fireworks thinking to text", async () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4-flash-0731");
+		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
 		const payload = await capturePayload(
 			model,
-			makeContext("", "internal reasoning", "fireworks", "accounts/fireworks/models/kimi-k2p6"),
+			makeContext("", "internal reasoning", "fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"),
 		);
 		expect(payload.messages?.find((message) => message.role === "assistant")?.content).toEqual([
 			{ type: "text", text: "internal reasoning" },
@@ -145,4 +143,17 @@ describe("Anthropic empty thinking signature compat", () => {
 		const assistant = payload.messages?.find((message) => message.role === "assistant");
 		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
 	});
+
+	// Regression for upstream #10047: OpenCode Qwen 3.8 Flash thinking must replay as thinking, not text.
+	it.each(["opencode", "opencode-go"] as const)(
+		"preserves unsigned thinking for %s qwen3.8-flash",
+		async (provider) => {
+			const model = getModel(provider, "qwen3.8-flash");
+			expect(model.compat?.allowEmptySignature).toBe(true);
+
+			const payload = await capturePayload(model, makeContext("", "internal reasoning", provider, "qwen3.8-flash"));
+			const assistant = payload.messages?.find((message) => message.role === "assistant");
+			expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
+		},
+	);
 });

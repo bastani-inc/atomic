@@ -1,12 +1,20 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`d6af72e1857cfb10b41d8ff8e69f0d72b4cf6d31`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/d6af72e1857cfb10b41d8ff8e69f0d72b4cf6d31/packages/ai/CHANGELOG.md).
+This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`cb7969d212836b8939001dce159fbd2ed6ad395f`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/cb7969d212836b8939001dce159fbd2ed6ad395f/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Added
+
+- Added Claude Sonnet 5.5 to the built-in Anthropic model catalog with adaptive thinking, mid-conversation effort, 1M context, and official pricing metadata.
+- Added the `llama-cpp-classify` classifier API, which turns a chat model served by llama.cpp's `llama-server` into a classifier by reading the next-token probabilities of single-token answer labels, and a `temperature` classifier option that softens or sharpens answer probabilities on APIs that can apply it ([#10119](https://github.com/earendil-works/pi/pull/10119)).
 
 ### Fixed
 
 - Removed the OpenCode Go Kimi K2.6 model overrides because models.dev deprecated that model; OpenCode Zen Kimi K2.6 keeps its overrides.
+- Fixed Mistral reasoning models ignoring the requested thinking level: GLM 5.3 now uses `reasoning_effort` instead of `prompt_mode`, GLM 5.2 accepts `max`, and Mistral models only offer the effort levels the API supports ([#9678](https://github.com/earendil-works/pi/issues/9678)).
+- Fixed OpenCode Zen and OpenCode Go `qwen3.8-flash` thinking being replayed as plain text on later turns because the endpoint returns empty thinking signatures ([#10047](https://github.com/earendil-works/pi/issues/10047)).
+- Fixed OpenAI Responses streams returning unfinished tool calls as runnable, which made servers that omit `output_index` (such as llama.cpp) run mixed-up commands; such streams now end with an error ([#9974](https://github.com/earendil-works/pi/issues/9974)).
 
 ## [0.9.21] - 2026-09-26
 

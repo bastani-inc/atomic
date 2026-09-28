@@ -409,6 +409,10 @@ function getAliases(): Record<string, string> {
 	// match the package's real dist paths.
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/pi-ai");
 	const piAiCodexResponsesEntry = resolveWorkspaceOrImport("ai/dist/api/openai-codex-responses.js", "@bastani/pi-ai");
+	const piAiLlamaCppClassifyEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/llama-cpp-classify.lazy.js",
+		"@bastani/pi-ai",
+	);
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
 	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
@@ -426,6 +430,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-tui/dist/layout-node.js": piTuiLayoutNodeEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
+		"@bastani/pi-ai/api/llama-cpp-classify.lazy": piAiLlamaCppClassifyEntry,
 		"@bastani/pi-ai/oauth": piAiOauthEntry,
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
 		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
