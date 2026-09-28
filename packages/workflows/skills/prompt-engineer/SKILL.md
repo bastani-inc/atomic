@@ -36,6 +36,7 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 | Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, progress cadence, bounded unattended continuation, pasted-content boundaries |
 | Claude Opus 5 | `references/claude_opus_5.md` | Separate response length from effort, remove redundant verification, bound delegation |
 | Claude Opus 4.8 | `references/claude_opus_4_8.md` | Steerable thinking, literal scope, tool triggering, design alternatives |
+| Claude Sonnet 5.5 | `references/claude_sonnet_5_5.md` | Recalibrated effort, carrying coding work through, scope limits, silent tool loops, search and verification prompts, mid-turn message placement |
 | Claude Sonnet 5 | `references/claude_sonnet_5.md` | Thinking on by default, variety through prompts instead of sampling, literal scope and review recall |
 
 For a migration, read both source and target pages when both are listed. For a cross-model prompt, keep common requirements in the main contract and isolate only the differences that affect behavior. Do not load every page for a single-model task.
