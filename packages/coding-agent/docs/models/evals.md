@@ -46,15 +46,17 @@ Key:
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: all 673 models on the Artificial Analysis leaderboard, including models with no published scores.
+Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28.
 
 | slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | claude-opus-5-5 | Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-22 | 57.6 | 66.1 | 67.3 | 69.5 | 59.6 | 66.9 | 61.4 | 26.2 | 31.7 | 66.2 | 41.4 | 84.7 | 46.4 | ∅ | ∅ | ∅ | ∅ | 87.7 | ∅ | ∅ | ∅ | 38.2 | ∅ | ∅ | ∅ | 91.2 | 66.7 | ∅ | ∅ |
 | claude-opus-5-5-xhigh | Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-22 | 56 | 64 | 66 | 65 | 59.6 | 65 | 57.5 | 26.6 | 31.7 | 65.4 | 34.3 | 84.7 | 42.7 | ∅ | ∅ | ∅ | ∅ | 86.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.2 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-28 | 56 | 65.5 | 67.2 | 71.3 | 63.6 | 61 | 55 | 25.8 | 31.4 | 54 | 53 | 82.7 | 32.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 93.1 | 75 | ∅ | ∅ |
 | claude-opus-5-5-high | Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback) | 2026-09-22 | 53.6 | 60.2 | 59.6 | 63.2 | 56.6 | 60.4 | 55.6 | 28.8 | 30.9 | 64.6 | 32.4 | 82.7 | 40.6 | ∅ | ∅ | ∅ | ∅ | 85.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.9 | ∅ | ∅ | ∅ |
 | claude-fable-5-1 | Claude Fable 5.1 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-01 | 53.4 | 58.9 | 61.7 | 59.4 | 52 | 63.1 | 59.1 | 26.2 | 29.7 | 67.2 | 27.4 | 85.3 | 43.5 | 93.7 | 91.4 | ∅ | ∅ | ∅ | ∅ | 47.2 | 57.5 | 49.5 | ∅ | ∅ | ∅ | 93 | 71.1 | ∅ | ∅ |
 | claude-fable-5-1-xhigh | Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-01 | 53.2 | 58.4 | 61 | 57.8 | 55.1 | 60.9 | 58.7 | 26.2 | 31.1 | 66.2 | 29.5 | 83 | 42.4 | 93.4 | 91 | ∅ | ∅ | ∅ | ∅ | 45.8 | ∅ | ∅ | ∅ | ∅ | ∅ | 93.3 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-5-xhigh | Claude Sonnet 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-28 | 51.9 | 62.3 | 61.2 | 64.7 | 57.1 | 57.3 | 50 | 24.6 | 31.1 | 53 | 37.1 | 79.7 | 23.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 92.4 | ∅ | ∅ | ∅ |
 | claude-opus-5-5-medium | Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback) | 2026-09-22 | 51.2 | 57.1 | 53.8 | 61.2 | 52.5 | 59.3 | 54.7 | 25.6 | 27.7 | 64.6 | 31.6 | 84.3 | 40.3 | ∅ | ∅ | ∅ | ∅ | 85.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 90.3 | ∅ | ∅ | ∅ |
 | claude-fable-5-1-high | Claude Fable 5.1 (Adaptive Reasoning, High Effort, Default Fallback) | 2026-09-01 | 51.2 | 54.6 | 55.9 | 55.3 | 52 | 58.7 | 55.9 | ∅ | 30.3 | 64.9 | 31.2 | 83.7 | 40.8 | 90.6 | 89.9 | ∅ | ∅ | ∅ | ∅ | 43.1 | ∅ | ∅ | ∅ | ∅ | ∅ | 93 | ∅ | ∅ | ∅ |
 | claude-opus-5 | Claude Opus 5 (Adaptive Reasoning, Max Effort) | 2026-07-24 | 50.8 | 58.7 | 60.4 | 56.6 | 49 | 56.4 | 54.9 | 21.6 | 29.1 | 60.9 | 39.2 | 79.3 | 37.1 | 93.2 | 89.1 | ∅ | ∅ | 84.7 | ∅ | 42.1 | 53.8 | ∅ | ∅ | ∅ | ∅ | 93.5 | 55.6 | ∅ | 47.5 |
@@ -63,12 +65,15 @@ Table: all 673 models on the Artificial Analysis leaderboard, including models w
 | claude-fable-5-1-medium | Claude Fable 5.1 (Adaptive Reasoning, Medium Effort, Default Fallback) | 2026-09-01 | 48.9 | 52.1 | 51.8 | 54.7 | 44.9 | 56.4 | 53.8 | ∅ | 29.1 | 63.1 | 30.9 | 84.7 | 37.6 | 88.6 | 88 | ∅ | ∅ | ∅ | ∅ | 41 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.6 | ∅ | ∅ | ∅ |
 | claude-opus-5-high | Claude Opus 5 (Adaptive Reasoning, High Effort) | 2026-07-24 | 48.1 | 53.7 | 54.1 | 53.6 | 46 | 55.4 | 52.8 | ∅ | 28.3 | 58.9 | 38.8 | 79 | 33.7 | 93.7 | 87.6 | ∅ | ∅ | 82.4 | ∅ | 44.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-fable-5-1-low | Claude Fable 5.1 (Adaptive Reasoning, Low Effort, Default Fallback) | 2026-09-01 | 46.8 | 49.5 | 47.5 | 52.2 | 40.4 | 56.7 | 48.9 | ∅ | 27.7 | 60.2 | 34.4 | 82.3 | 34.1 | 88.1 | 85 | ∅ | ∅ | ∅ | ∅ | 39 | ∅ | ∅ | ∅ | ∅ | ∅ | 92.3 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-5-high | Claude Sonnet 5.5 (Adaptive Reasoning, High Effort, Default Fallback) | 2026-09-28 | 46.7 | 56.7 | 50.9 | 59.1 | 43.9 | 53.7 | 45.8 | ∅ | 24.6 | 52 | 35.4 | 78 | 21 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 92.1 | ∅ | ∅ | ∅ |
 | claude-opus-5-medium | Claude Opus 5 (Adaptive Reasoning, Medium Effort) | 2026-07-24 | 44.8 | 47 | 48.8 | 54.3 | 34.3 | 51.5 | 51.3 | ∅ | 26.9 | 57.1 | 39.3 | 82 | 31 | 91.9 | 86.1 | ∅ | ∅ | 81.6 | ∅ | 38.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-opus-5-5-low | Claude Opus 5.5 (Adaptive Reasoning, Low Effort, Default Fallback) | 2026-09-22 | 42.3 | 39.2 | 36.2 | 52.9 | 31.3 | 58.6 | 48.3 | ∅ | 17.7 | 63.5 | 32.4 | 80.7 | 38.9 | ∅ | ∅ | ∅ | ∅ | 84.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.1 | ∅ | ∅ | ∅ |
 | claude-opus-4-8 | Claude Opus 4.8 (Adaptive Reasoning, Max Effort) | 2026-05-28 | 41.8 | 41 | 46.9 | 45.6 | 21.7 | 54.4 | 48.7 | ∅ | 20.9 | 48.8 | 60.7 | 77.7 | 28.8 | 92 | 84.6 | 58.3 | 62.2 | ∅ | 94.4 | 34.2 | ∅ | ∅ | ∅ | ∅ | ∅ | 91.1 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-5-medium | Claude Sonnet 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback) | 2026-09-28 | 40.7 | 48 | 39.6 | 52.9 | 29.8 | 52.9 | 39.8 | ∅ | 16.9 | 47.2 | 48.8 | 76.3 | 20.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.8 | ∅ | ∅ | ∅ |
 | claude-opus-4-7 | Claude Opus 4.7 (Adaptive Reasoning, Max Effort) | 2026-04-16 | 40.7 | 37.7 | 41.9 | ∅ | ∅ | ∅ | 42.3 | ∅ | 12 | 48.9 | 57.7 | 78.7 | 27.3 | 91.4 | 83.1 | 51.5 | 58.6 | 78.8 | 88.6 | 34.6 | ∅ | 46.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-opus-5-low | Claude Opus 5 (Adaptive Reasoning, Low Effort) | 2026-07-24 | 39.4 | 35.5 | 39.7 | 51.8 | 26.3 | 49.2 | 43.4 | ∅ | 23.1 | 56 | 37.8 | 81.3 | 28.6 | 88.9 | 76.4 | ∅ | ∅ | 79.8 | ∅ | 30.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-sonnet-5 | Claude Sonnet 5 (Adaptive Reasoning, Max Effort) | 2026-06-30 | 38.2 | 43 | 47.5 | 36.5 | 14.1 | 54.3 | 41.3 | ∅ | 16.9 | 40.1 | 60.6 | 82 | 16.5 | 91.1 | 80.5 | ∅ | ∅ | 77.3 | ∅ | 37.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 90.1 | ∅ | ∅ | ∅ |
+| claude-sonnet-5-5-low | Claude Sonnet 5.5 (Adaptive Reasoning, Low Effort, Default Fallback) | 2026-09-28 | 35.8 | 38.2 | 33.4 | 50.1 | 20.7 | 49.1 | 36.2 | ∅ | 11.4 | 46.3 | 49.8 | 76 | 19.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89 | ∅ | ∅ | ∅ |
 | claude-sonnet-5-xhigh | Claude Sonnet 5 (Adaptive Reasoning, Xhigh Effort) | 2026-06-30 | 34.4 | 38.7 | 42.2 | 34.5 | 7.1 | 54.1 | 39 | ∅ | 15.4 | 39 | 41.4 | 76.7 | 3.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-opus-4-6-adaptive | Claude Opus 4.6 (Adaptive Reasoning, Max Effort) | 2026-02-05 | 31.9 | ∅ | ∅ | ∅ | ∅ | ∅ | 39.9 | ∅ | 12.6 | 47 | 37.2 | 78 | 13.7 | 89.6 | ∅ | 46.2 | 53.1 | 75.4 | 92.1 | ∅ | ∅ | ∅ | 33 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-sonnet-5-high | Claude Sonnet 5 (Adaptive Reasoning, High Effort) | 2026-06-30 | 31.7 | 33.8 | 37.3 | 32.1 | 5.1 | 54.3 | 35.7 | ∅ | 15.1 | 37.4 | 34.3 | 76.7 | -3.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
@@ -764,7 +769,7 @@ Key:
 
 ## FrontierCode 1.1
 
-Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognition, current revision, accessed 2026-09-25. Each row is the model's best-scoring reasoning effort, which is the same on both sets.
+Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognition, current revision, accessed 2026-09-28. Each row is the model's best-scoring reasoning effort, which is the same on both sets.
 
 Key:
 
@@ -779,6 +784,7 @@ Key:
 | claude-fable-5 | Fable 5 | xhigh | 53.5 | 58.9 | 64.9 | 70.9 | 0.3 | $13.09 |
 | claude-opus-5 | Opus 5 | medium | 53.4 | 58.9 | 63.6 | 69.6 | 0.6 | $4.31 |
 | gpt-6-astra | GPT-6 Astra | max | 53.3 | 58.8 | 64.5 | 70.6 | ∅ | $4.59 |
+| claude-sonnet-5-5 | Sonnet 5.5 | xhigh | 52.1 | 57.2 | 64.4 | 69.9 | 0.0 | $1.59 |
 | claude-fable-5-1 | Fable 5.1 | medium | 50.9 | 55.5 | 63.6 | 68.8 | 0.0 | $3.28 |
 | swe-2 | SWE-2 | max | 50.0 | 55.5 | 62.5 | 68.4 | ∅ | $1.18 |
 | gpt-6-sol | GPT-6 Sol | max | 49.3 | 54.3 | 60.7 | 66.3 | 0.0 | $2.07 |
@@ -818,9 +824,9 @@ Key:
 
 ## Published benchmark results
 
-Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25. Values are percent. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
+Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25; Claude Sonnet 5.5 rows accessed 2026-09-28. Values are percent. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
 
-Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
+Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1), [Claude Sonnet 5.5 announcement](https://www.anthropic.com/claude-sonnet-5-5) and [system card](https://www.anthropic.com/claude-sonnet-5-5-system-card); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
 
 Key:
 
@@ -916,6 +922,12 @@ Key:
 | claude-opus-5 | Claude Opus 5 | ARC1 | 97.5 | semi-private, best effort | OpenAI |
 | claude-opus-5 | Claude Opus 5 | ARC2 | 90.4 | semi-private, best effort | OpenAI |
 | claude-opus-5 | Claude Opus 5 | ARC3 | 30.2 | OpenAI responses harness | OpenAI |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | OSW2 | 80.1 | v2.1 task files (2026-09-10), partial, Anthropic grading | Anthropic |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | OSW2s | 43.5 | v2.1 task files (2026-09-10), strict, Anthropic grading | Anthropic |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | ABench | 44.7 | v1.0.6, max effort, default fallbacks, run by Zapier | Anthropic |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | CAD | 74.7 | voxel IoU, Vision2Code 1,000-file subset, no tools | Anthropic |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | HLEt | 64.5 | with tools | Anthropic |
+| claude-sonnet-5-5 | Claude Sonnet 5.5 | TBSci | 59.9 | v0.1, Anthropic setup | Anthropic |
 | gemini-3-8-flash | Gemini 3.8 Flash | OSW2 | 59.0 | offline set v2026.08.08, partial, batch tool enabled | Google |
 | gemini-3-8-flash | Gemini 3.8 Flash | HLEv | 54.9 | HLE-Verified, tools not stated | Google |
 | gemini-3-8-flash | Gemini 3.8 Flash | TBSci | 12.4 | v0.1, 3 trials per task, vendor harness | TB-Science leaderboard |
