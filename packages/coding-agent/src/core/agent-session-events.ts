@@ -612,7 +612,7 @@ export function closeAgentSession(
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
 		});
-		await attempt("session persistence", () => session.sessionManager.flush());
+		await attempt("session persistence", () => session.sessionManager.flushIfStarted());
 		if (ownedSettingsManagers.get(session.settingsManager) === session)
 			ownedSettingsManagers.delete(session.settingsManager);
 		await attempt("host subscriptions", () => beforeInvalidate?.());

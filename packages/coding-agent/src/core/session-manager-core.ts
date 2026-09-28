@@ -39,6 +39,7 @@ import {
 	ensureDirectory,
 	findMostRecentSession,
 	getSessionHeaderCwd,
+	hasConversationMessage,
 	isInternalHeader,
 	loadEntriesFromFile,
 	persistAppendedEntry,
@@ -216,6 +217,11 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 		this._rewriteFile();
 		this.flushed = true;
+	}
+
+	/** Flush only a session whose file has already been started, so closing an unsaved session writes nothing. */
+	flushIfStarted(): void {
+		if (this.flushed || hasConversationMessage(this.fileEntries)) this.flush();
 	}
 
 	getCwd(): string {
