@@ -37,7 +37,7 @@
     "@bastani/pi-ai": "*",
     "@earendil-works/pi-agent-core": "^0.87.1",
     "@earendil-works/pi-tui": "^0.87.1",
-    "typebox": "*"
+    "typebox": "1.3.34"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {

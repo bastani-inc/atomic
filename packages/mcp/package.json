@@ -34,8 +34,8 @@
     "@bastani/atomic": "*",
     "@bastani/pi-ai": "*",
     "@earendil-works/pi-tui": "^0.87.1",
-    "zod": "^3.25.0 || ^4.0.0",
-    "typebox": "*"
+    "typebox": "1.3.34",
+    "zod": "^3.25.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
