@@ -155,9 +155,9 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
-| `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image or text from clipboard |
+| `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste files on macOS, images, or text from clipboard |
 
-When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
+On macOS, files copied in Finder paste as their paths, one per line, instead of the file icon. In bash mode (input starting with `!`), the paths are shell-quoted and separated by spaces. When `app.clipboard.pasteImage` finds text rather than files or an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 
 On macOS, native `Cmd+V` also pastes a clipboard image when the copy was image-only. Terminals may deliver that as an empty bracketed-paste event or (with Kitty keyboard protocol, e.g. Ghostty) as `super+v`. Text under `Cmd+V` still goes through normal terminal paste when the terminal sends a paste event. `Cmd+V` is not a configurable Atomic keybinding.
 

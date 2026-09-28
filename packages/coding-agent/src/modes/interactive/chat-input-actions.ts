@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
-import { readClipboardText } from "../../utils/clipboard.ts";
+import { readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { editInExternalEditor, resolveExternalEditorCommand } from "./external-editor.ts";
 
@@ -22,6 +22,8 @@ export interface ExternalEditorOptions {
 export interface ClipboardImageEditorOptions {
 	showWarning?: (message: string) => void;
 	cleanupDelayMs?: number;
+	/** Bash mode shell-quotes pasted file paths and separates them as arguments. */
+	isBashMode?: boolean;
 }
 
 const CLIPBOARD_CLEANUP_DELAY_MS = 60 * 60 * 1000;
@@ -66,12 +68,52 @@ export function combineQueuedMessagesForEditor(queuedMessages: readonly string[]
 	return [...queuedMessages, ...(currentText.trim() ? [currentText] : [])].join("\n\n");
 }
 
+/** Quote a shell argument unless it only contains characters that need no quoting. */
+export function quoteIfNeeded(value: string): string {
+	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
+		return value;
+	}
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export interface ClipboardImageEditorTarget {
 	insertTextAtCursor?: (text: string) => void;
 	getText?: () => string;
 	setText?: (text: string) => void;
+	getCursor?: () => { line: number; col: number };
 }
 
+function insertIntoEditor(editor: ClipboardImageEditorTarget, text: string, requestRender?: () => void): boolean {
+	if (editor.insertTextAtCursor) editor.insertTextAtCursor(text);
+	else if (editor.getText && editor.setText) editor.setText(`${editor.getText()}${text}`);
+	else return false;
+	requestRender?.();
+	return true;
+}
+
+/** Copied file paths, separated from adjacent text on the cursor's line. */
+function formatClipboardFilePaths(
+	editor: ClipboardImageEditorTarget,
+	filePaths: readonly string[],
+	isBashMode: boolean,
+): string {
+	if (filePaths.some((filePath) => /\p{Cc}/u.test(filePath))) {
+		throw new Error("Clipboard file path contains control characters");
+	}
+	const paths = isBashMode ? filePaths.map(quoteIfNeeded).join(" ") : filePaths.join("\n");
+	const cursor = editor.getCursor?.();
+	const currentLine = cursor ? (editor.getText?.().split("\n")[cursor.line] ?? "") : "";
+	const characterBeforeCursor = cursor && cursor.col > 0 ? currentLine[cursor.col - 1] : "";
+	const characterAfterCursor = cursor ? currentLine[cursor.col] : "";
+	const leadingSpace = characterBeforeCursor && !/\s/.test(characterBeforeCursor) ? " " : "";
+	const trailingSpace = characterAfterCursor && !/\s/.test(characterAfterCursor) ? " " : "";
+	return `${leadingSpace}${paths}${trailingSpace}`;
+}
+
+/**
+ * Paste from the clipboard: copied files by their original paths (macOS), images via temporary
+ * files, and plain text as the final fallback.
+ */
 export async function pasteClipboardImageToEditor(
 	editor: ClipboardImageEditorTarget,
 	requestRender?: () => void,
@@ -79,15 +121,21 @@ export async function pasteClipboardImageToEditor(
 ): Promise<boolean> {
 	try {
 		cleanupStaleClipboardFiles();
+		// Finder copies also carry the file icon as an image; the paths are what the user copied.
+		const filePaths = await readClipboardFilePaths();
+		if (filePaths) {
+			return insertIntoEditor(
+				editor,
+				formatClipboardFilePaths(editor, filePaths, options.isBashMode ?? false),
+				requestRender,
+			);
+		}
+
 		const image = await readClipboardImage();
 		if (!image) {
 			const text = await readClipboardText();
 			if (!text) return false;
-			if (editor.insertTextAtCursor) editor.insertTextAtCursor(text);
-			else if (editor.getText && editor.setText) editor.setText(`${editor.getText()}${text}`);
-			else return false;
-			requestRender?.();
-			return true;
+			return insertIntoEditor(editor, text, requestRender);
 		}
 
 		const ext = extensionForImageMimeType(image.mimeType) ?? "png";
@@ -96,14 +144,10 @@ export async function pasteClipboardImageToEditor(
 		fs.writeFileSync(filePath, Buffer.from(image.bytes), { flag: "wx", mode: 0o600 });
 		scheduleTempFileCleanup(filePath, options.cleanupDelayMs ?? CLIPBOARD_CLEANUP_DELAY_MS);
 
-		if (editor.insertTextAtCursor) editor.insertTextAtCursor(filePath);
-		else if (editor.getText && editor.setText) editor.setText(`${editor.getText()}${filePath}`);
-		else return false;
-		requestRender?.();
-		return true;
+		return insertIntoEditor(editor, filePath, requestRender);
 	} catch (error) {
 		options.showWarning?.(
-			`Failed to paste clipboard image: ${error instanceof Error ? error.message : String(error)}`,
+			`Failed to paste from clipboard: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		return false;
 	}

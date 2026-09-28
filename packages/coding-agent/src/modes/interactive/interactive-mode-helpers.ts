@@ -1,4 +1,5 @@
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { quoteIfNeeded } from "./chat-input-actions.ts";
 import {
 	APP_NAME,
 	type Api,
@@ -98,13 +99,6 @@ export function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): bool
 
 export function isUnknownModel(model: Model<Api> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
-}
-
-function quoteIfNeeded(value: string): string {
-	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
-		return value;
-	}
-	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {

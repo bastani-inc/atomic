@@ -68,6 +68,7 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 		previousPasteImage?.();
 		void pasteClipboardImageToEditor(chatSessionEditorAccess(state), () => state.requestRender?.(), {
 			showWarning: (message) => notifyChatSessionWarning(state, message),
+			isBashMode: state.isBashMode,
 		});
 	};
 	const previousEscape = actionEditor.onEscape;

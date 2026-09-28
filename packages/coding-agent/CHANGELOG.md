@@ -14,6 +14,7 @@
 - Fixed extension tool schemas leaking TypeBox `~kind`/`~optional` metadata into provider requests, which made Fireworks reject every request with `JSON Schema not supported` ([#3330](https://github.com/bastani-inc/atomic/issues/3330)).
 - Resuming a session no longer appends a spurious system-prompt `tools` update when only the order of the active tools changed, so the resumed session keeps its prompt cache and the model is no longer told that unchanged tools were removed ([#3346](https://github.com/bastani-inc/atomic/issues/3346)).
 - Switching sessions with `/resume` or closing a session before sending a message no longer leaves a header-only session file behind ([#3347](https://github.com/bastani-inc/atomic/issues/3347)).
+- Fixed pasting files copied in Finder with `Ctrl+V` inserting the file icon as an image instead of the file paths. Copied files now paste as their paths, shell-quoted in bash mode, and clipboard read errors are reported instead of pasting the icon ([#10136](https://github.com/earendil-works/pi/pull/10136)).
 
 ## [0.9.23] - 2026-09-27
 
