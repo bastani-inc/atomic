@@ -44,7 +44,7 @@
     "acorn": "8.18.0",
     "acorn-walk": "8.3.4",
     "esbuild": "0.28.2",
-    "jszip": "3.10.1",
+    "jszip": "3.10.2",
     "pg": "8.22.0",
     "superjson": "2.2.6",
     "tar-stream": "3.2.0",
