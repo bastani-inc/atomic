@@ -141,11 +141,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				// original stage prompt (issue #2812).
 				while (!structuredOutputCapture.called) {
 					let nextPrompt = promptText;
+					let newSessionPrompt: string | undefined;
 					let correctiveAttempts = 0;
 					controller.beginStructuredOutputCandidateCycle();
 					while (!structuredOutputCapture.called) {
 						controller.resetStructuredOutputToolError();
-						await controller.promptWithFallback(nextPrompt, sdkOptions);
+						await controller.promptWithFallback(nextPrompt, sdkOptions, "prompt", newSessionPrompt);
 						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
 						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
@@ -155,6 +156,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 							correctiveAttempts,
 							hasOutputArtifact,
 						);
+						// A retry that lands in a new session re-sends the stage prompt
+						// ahead of the correction (issue #3323).
+						newSessionPrompt = `${promptText}\n\n${nextPrompt}`;
 					}
 					if (structuredOutputCapture.called) break;
 					if (!(await controller.failCandidateForStructuredOutputExhaustion(structuredOutputError))) {

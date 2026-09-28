@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A schema-backed stage whose structured-output correction hits a provider failure (for example a 429) that moves the stage to a new session now sends that session the original stage prompt followed by the correction request. Previously the new session received only the correction, so a model that never saw the task could complete the stage with a schema-valid but empty result ([#3323](https://github.com/bastani-inc/atomic/issues/3323)).
+
 ## [0.9.23] - 2026-09-27
 
 ### Fixed
