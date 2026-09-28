@@ -302,6 +302,56 @@ describe("system prompt updates", () => {
 		}
 	});
 
+	test("does not emit a tools section update when resume only reorders active tools (#3346)", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			for (const name of ["first", "second", "third"]) {
+				pi.registerTool({
+					name,
+					label: name,
+					description: `${name} description`,
+					promptSnippet: `${name} prompt snippet`,
+					promptGuidelines: [`Use ${name} carefully.`],
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: name }], details: {} }),
+				});
+			}
+		};
+		const harness = await createHarness({ extensionFactories: [extension] });
+		try {
+			harness.setResponses([
+				fauxAssistantMessage("one"),
+				fauxAssistantMessage("two"),
+				fauxAssistantMessage("three"),
+			]);
+			harness.session.setActiveToolsByName(["first", "second"]);
+			await harness.session.prompt("one");
+			const initial = getCurrentSystemMessage(harness.session.messages);
+			expect(initial?.toolsAdded?.map((tool) => tool.name)).toEqual(["first", "second"]);
+
+			harness.session.setActiveToolsByName(["second", "first"]);
+			await harness.session.prompt("two");
+			const systemEntries = () =>
+				harness.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "message" && entry.message.role === "system");
+			expect(systemEntries()).toHaveLength(1);
+			expect(getCurrentSystemMessage(harness.session.messages)?.sections?.tools).toBe(initial?.sections?.tools);
+			expect(harness.session.getActiveToolNames()).toEqual(["first", "second"]);
+
+			harness.session.setActiveToolsByName(["third", "second"]);
+			await harness.session.prompt("three");
+			expect(systemEntries()).toHaveLength(2);
+			const update = harness.session.messages.filter((message) => message.role === "system").at(-1);
+			expect(update).toMatchObject({ toolsRemoved: [{ name: "first" }] });
+			expect(update?.toolsAdded?.map((tool) => tool.name)).toEqual(["third"]);
+			expect(update?.sections?.tools).toContain("third prompt snippet");
+			expect(update?.sections?.tools).not.toContain("first prompt snippet");
+			expect(harness.session.getActiveToolNames()).toEqual(["second", "third"]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("keeps tool declarations stable across a session JSON round-trip", async () => {
 		const executableTool: AgentTool = {
 			name: "plain",

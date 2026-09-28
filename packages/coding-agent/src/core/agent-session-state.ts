@@ -137,15 +137,15 @@ export function _preparePromptAndToolLoadout(
 	options: NormalizedBuildSystemPromptOptions,
 	messages: AgentMessage[] = this.agent.state.messages,
 ): SystemMessage | undefined {
-	options.selectedTools = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
+	const current = getCurrentSystemMessage(messages);
+	const selected = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
+	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
+	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];
 	this.agent.state.tools = options.selectedTools.flatMap((name) => {
 		const tool = this._toolRegistry.get(name);
 		return tool ? [tool] : [];
 	});
-	const sections = diffSystemPromptSections(
-		getCurrentSystemMessage(messages)?.sections ?? {},
-		buildSystemPromptSections(options),
-	);
+	const sections = diffSystemPromptSections(current?.sections ?? {}, buildSystemPromptSections(options));
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }
 
