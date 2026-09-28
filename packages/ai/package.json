@@ -71,7 +71,7 @@
 		"build:catalog": "npm run generate-models && npm run build:offline"
 	},
 	"dependencies": {
-		"@anthropic-ai/sdk": "0.124.0",
+		"@anthropic-ai/sdk": "0.129.0",
 		"@aws-sdk/client-bedrock-runtime": "3.1127.0",
 		"@earendil-works/pi-telemetry": "0.87.1",
 		"@google/genai": "2.21.0",
