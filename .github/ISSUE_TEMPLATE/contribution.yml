@@ -6,6 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
+        **New features and enhancements are paused** while we make large changes across the codebase. We'll still read proposals and review them case by case. See [#3331](https://github.com/bastani-inc/atomic/issues/3331).
+
         **Before you start:** Read [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md).
 
         Use this form to propose a focused change or feature enhancement. If you need help, have a question, or are unsure whether this belongs here, please ask on [Discord](https://discord.gg/9CvdXUGXR4) instead.

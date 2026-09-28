@@ -2,6 +2,16 @@
 
 Thanks for your interest in contributing to Atomic. This guide explains how to prepare a local checkout, make changes, and submit them for review.
 
+## Current status: P0 bugs only
+
+We're making large changes to Atomic that impact all parts of the codebase. Until they're done:
+
+- **P0 bugs are open for reports and fixes.** A P0 bug crashes Atomic, loses or corrupts data or session history, creates a security problem, or keeps you from using Atomic at all, with no reasonable workaround. The issue-first approval process below still applies to fixes.
+- **New features and enhancements are paused.** Please don't open feature or enhancement PRs. You can still propose an idea with the Contribution issue template. We'll review it case by case, but in general we won't add features until these changes are done.
+- **Existing PRs are paused**, except P0 fixes. Once these changes land we'll review paused PRs one at a time; we can't guarantee each will be carried over.
+
+See [#3331](https://github.com/bastani-inc/atomic/issues/3331) for details. This section will be removed when these changes are done.
+
 ## Getting started
 
 1. Fork and clone the repository.
