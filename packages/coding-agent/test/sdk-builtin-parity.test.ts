@@ -1678,7 +1678,7 @@ test.each(["none", "diagnostic", "error"] as const)(
 			attempts.push("settings");
 			throw new Error("settings flush failed");
 		});
-		const flushSession = vi.spyOn(session.sessionManager, "flush").mockImplementationOnce(() => {
+		const flushSession = vi.spyOn(session.sessionManager, "flushIfStarted").mockImplementationOnce(() => {
 			attempts.push("session");
 		});
 		try {
