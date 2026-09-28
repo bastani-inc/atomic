@@ -5,6 +5,7 @@
 ### Fixed
 
 - OpenCode Go now defaults to Kimi K3 (`kimi-k3`). models.dev deprecated Kimi K2.6 for OpenCode Go, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Fixed extension tool schemas leaking TypeBox `~kind`/`~optional` metadata into provider requests, which made Fireworks reject every request with `JSON Schema not supported` ([#3330](https://github.com/bastani-inc/atomic/issues/3330)).
 
 ## [0.9.23] - 2026-09-27
 
