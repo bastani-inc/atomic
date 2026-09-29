@@ -10,6 +10,7 @@ import {
 } from "../../packages/coding-agent/src/index.ts";
 import mcp from "../../packages/mcp/index.ts";
 import { McpServerManager } from "../../packages/mcp/server-manager.js";
+import { formatToolName } from "../../packages/mcp/types.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 /** Loading the MCP extension from workspace TypeScript and binding a real session is the structural cost here. */
@@ -24,6 +25,8 @@ type McpGatewayTool = {
 		signal: AbortSignal,
 	): Promise<{ details?: { servers?: Array<{ name: string }> } }>;
 };
+
+type McpConnection = Awaited<ReturnType<McpServerManager["connect"]>>;
 
 let root = "";
 const originalConnect = McpServerManager.prototype.connect;
@@ -48,23 +51,127 @@ async function waitFor(check: () => Promise<boolean>, what: string): Promise<voi
 	}
 }
 
+function stubConnect(toolsFor: (name: string) => Array<{ name: string; description: string }> = () => []): string[] {
+	const connected: string[] = [];
+	McpServerManager.prototype.connect = async function connect(name, definition) {
+		connected.push(name);
+		const closeable = { close: async () => undefined };
+		const connection = {
+			client: closeable,
+			transport: closeable,
+			definition,
+			tools: toolsFor(name).map((tool) => ({ ...tool, inputSchema: { type: "object", properties: {} } })),
+			resources: [],
+			lastUsedAt: Date.now(),
+			inFlight: 0,
+			status: "connected",
+		} as unknown as McpConnection;
+		(this as unknown as { connections: Map<string, McpConnection> }).connections.set(name, connection);
+		return connection;
+	};
+	return connected;
+}
+
+async function startMcpSession(
+	factory: (pi: ExtensionAPI) => void,
+): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: false } });
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noExtensions: true,
+		extensionFactories: [mcp, { name: "contributor", factory }],
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(cwd),
+		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+	});
+	return session;
+}
+
+test(
+	"a late eager contributed server exposes its direct tools once it connects (#3355)",
+	async () => {
+		stubConnect((name) => (name === "late-direct" ? [{ name: "ping", description: "Ping the server" }] : []));
+		let api: ExtensionAPI | undefined;
+		const session = await startMcpSession((pi) => {
+			api = pi;
+		});
+		try {
+			const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp") as McpGatewayTool | undefined;
+			assert.ok(gateway, "expected the MCP gateway tool");
+			await gateway.execute("status", {}, new AbortController().signal);
+			assert.ok(api);
+			api.registerMcpServer("late-direct", { url: "https://late.test/mcp", lifecycle: "eager", directTools: true });
+			const directName = formatToolName("ping", "late-direct", "server");
+			await waitFor(
+				async () => session.getActiveToolNames().includes(directName),
+				"the late eager server's direct tool to become active",
+			);
+		} finally {
+			await session.dispose();
+		}
+	},
+	REAL_MCP_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"redefining a contributed server without direct tools retires its direct tools (#3355)",
+	async () => {
+		stubConnect((name) => (name === "direct-server" ? [{ name: "ping", description: "Ping the server" }] : []));
+		let api: ExtensionAPI | undefined;
+		const session = await startMcpSession((pi) => {
+			api = pi;
+			pi.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: true,
+			});
+		});
+		try {
+			const directName = formatToolName("ping", "direct-server", "server");
+			await waitFor(
+				async () => session.getActiveToolNames().includes(directName),
+				"the contributed server's direct tool to become active",
+			);
+			assert.ok(api);
+			api.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: false,
+			});
+			await waitFor(
+				async () => !session.getActiveToolNames().includes(directName),
+				"the redefined server's direct tool to be retired",
+			);
+			api.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: true,
+			});
+			await waitFor(
+				async () => session.getActiveToolNames().includes(directName),
+				"the direct tool to return when the server enables direct tools again",
+			);
+		} finally {
+			await session.dispose();
+		}
+	},
+	REAL_MCP_SESSION_TIMEOUT_MS,
+);
+
 test(
 	"MCP sees package servers and registrations from any extension order, including after initialization (#3355)",
 	async () => {
-		const connected: string[] = [];
-		McpServerManager.prototype.connect = async function connect(name, definition) {
-			connected.push(name);
-			return {
-				client: {},
-				transport: {},
-				definition,
-				tools: [],
-				resources: [],
-				lastUsedAt: Date.now(),
-				inFlight: 0,
-				status: "connected",
-			} as unknown as Awaited<ReturnType<McpServerManager["connect"]>>;
-		};
+		const connected = stubConnect();
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
 		const pkgDir = join(root, "acme-tools");

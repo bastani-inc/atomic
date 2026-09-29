@@ -38,7 +38,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   let renderConfig: McpConfig | undefined;
   let initPromise: Promise<McpExtensionState> | null = null;
   let lifecycleGeneration = 0;
-  let registeredDirectToolNames = new Set<string>();
+  let registeredDirectTools = new Map<string, string>();
+  const retiredDirectToolNames = new Set<string>();
   let registeredProxyTool = false;
   let startupWarmupCancel: (() => void) | null = null;
   let activeSession: ActiveMcpSession | null = null;
@@ -49,6 +50,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   let contributionRefresh: Promise<void> = Promise.resolve();
   const getContributions = () => pi.getMcpServerContributions?.() ?? [];
   const getConfigPath = () => (pi.getFlag("mcp-config") as string | undefined) ?? earlyConfigPath;
+
+  /** Keep names so the next session can retire them, but re-register every tool it still resolves. */
+  function forgetDirectToolRegistrations(): void {
+    registeredDirectTools = new Map([...registeredDirectTools.keys()].map((name) => [name, ""]));
+  }
 
   function startsWithSession(server: ServerEntry | undefined): boolean {
     return server?.lifecycle === "eager" || server?.lifecycle === "keep-alive";
@@ -79,9 +85,18 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     const prefix = config.settings?.toolPrefix ?? "server";
     const directTools = subagentPolicy?.mcpDirectTools;
     const directSpecs = resolveDirectTools(config, cache, prefix, directTools === undefined ? undefined : [...directTools]);
+    const resolvedNames = new Set(directSpecs.map((spec) => spec.prefixedName));
+    const obsoleteNames = [...registeredDirectTools.keys()].filter((name) => !resolvedNames.has(name));
+    const revivedNames = directSpecs.map((spec) => spec.prefixedName).filter((name) => retiredDirectToolNames.has(name));
+    for (const name of obsoleteNames) {
+      registeredDirectTools.delete(name);
+      retiredDirectToolNames.add(name);
+    }
+    for (const name of revivedNames) retiredDirectToolNames.delete(name);
     for (const spec of directSpecs) {
-      if (registeredDirectToolNames.has(spec.prefixedName)) continue;
-      registeredDirectToolNames.add(spec.prefixedName);
+      const signature = JSON.stringify([spec.serverName, spec.originalName, spec.description, spec.inputSchema]);
+      if (registeredDirectTools.get(spec.prefixedName) === signature) continue;
+      registeredDirectTools.set(spec.prefixedName, signature);
       (pi.registerTool as (tool: unknown) => unknown)({
         name: spec.prefixedName,
         label: `MCP: ${spec.originalName}`,
@@ -100,6 +115,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     }
     const refreshTools = (pi as { refreshTools?: () => void }).refreshTools;
     refreshTools?.();
+    if (obsoleteNames.length > 0 || revivedNames.length > 0) {
+      const obsolete = new Set(obsoleteNames);
+      pi.setActiveTools([...pi.getActiveTools().filter((name) => !obsolete.has(name)), ...revivedNames]);
+    }
     return {
       directToolCount: directSpecs.length,
       missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache, directTools),
@@ -305,7 +324,9 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         void lazyConnect(current, name).then(async (connected) => {
           if (!isOwnedState(current, session)) {
             await current.manager.close(name);
-          } else if (!connected && current.failureTracker.has(name)) {
+          } else if (connected) {
+            registerProxyToolIfNeeded(current.config, await registerDirectTools(current, session.ctx.subagentPolicy));
+          } else if (current.failureTracker.has(name)) {
             current.ui?.notify(`MCP: Failed to connect to ${formatMcpServerName(current, name)}`, "error");
           }
         }).catch(() => undefined);
@@ -333,7 +354,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     renderConfig = undefined;
     stateOwner = null;
     initPromise = null;
-    registeredDirectToolNames = new Set<string>();
+    forgetDirectToolRegistrations();
     cancelStartupWarmup();
     const previousStateCleanup = cleanupSessionResources(
       previousState,
@@ -385,7 +406,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     renderConfig = undefined;
     stateOwner = null;
     initPromise = null;
-    registeredDirectToolNames = new Set<string>();
+    forgetDirectToolRegistrations();
     cancelStartupWarmup();
 
     const stateCleanup = cleanupSessionResources(
