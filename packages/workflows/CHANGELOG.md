@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.24-alpha.1] - 2026-09-28
+
 ### Added
 
 - Added source-attributed Claude Sonnet 5.5 guidance to the prompt-engineering skill, covering recalibrated effort, carrying coding work through without unrequested additions, visible progress during tool loops, search and verification prompts, and placement of mid-turn user messages.

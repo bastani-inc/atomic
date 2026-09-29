@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.24-alpha.1] - 2026-09-28
+
 ### Added
 
 - Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.

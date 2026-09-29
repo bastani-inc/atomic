@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.24-alpha.1] - 2026-09-28
+
 ### Added
 
 - MCP servers contributed by packages and by `pi.registerMcpServer()` load as the lowest-precedence config layer, including registrations made after MCP has started. A same-named server in any MCP config file replaces a contributed one, and `"disabled": true` on a server entry, alone or with other fields, removes it. `/mcp` and connection errors show which package or extension contributed each server ([#3355](https://github.com/bastani-inc/atomic/issues/3355)).
