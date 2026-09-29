@@ -170,12 +170,13 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	});
 	pi.on("session_before_fork", async (_event, ctx) => confirmSessionSwitch("fork", ctx));
 
+	const notifyDiscoveryDiagnostics = (ctx: PiCommandContext | undefined): void => {
+		if (!ctx?.ui) return;
+		const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
+		if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
+	};
 	const warmWorkflowDiscovery = (ctx: PiCommandContext | undefined): void => {
-		runtimeState.startWorkflowDiscoveryWarmup(() => {
-			if (!ctx?.ui) return;
-			const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
-			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
-		});
+		runtimeState.startWorkflowDiscoveryWarmup(() => notifyDiscoveryDiagnostics(ctx));
 	};
 	let startupResourcesDiscovered = false;
 
@@ -220,8 +221,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			startupResourcesDiscovered = true;
 			return undefined;
 		}
-		runtimeState.resetWorkflowDiscoveryForSession();
-		warmWorkflowDiscovery(ctx);
+		runtimeState.refreshWorkflowDiscovery(() => notifyDiscoveryDiagnostics(ctx));
 		return undefined;
 	});
 

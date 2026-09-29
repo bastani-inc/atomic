@@ -124,6 +124,8 @@ export interface WorkflowExtensionRuntimeState {
 	ensureWorkflowResourcesLoaded(): Promise<void>;
 	reloadWorkflowResources(): Promise<WorkflowReloadReport>;
 	startWorkflowDiscoveryWarmup(onSettled?: () => void): void;
+	/** Rediscover workflows, keeping the current registry unless the replacement discovery succeeds. */
+	refreshWorkflowDiscovery(onApplied?: () => void): void;
 	runWithLifecycleSuppressedForPolicy<T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>): Promise<T>;
 	setNotificationsActive(active: boolean): void;
 	updateHostStageSessionDir(sessionManager: SessionManager | undefined): void;
@@ -639,6 +641,23 @@ export function createWorkflowExtensionRuntimeState(
 			.catch(() => {});
 	}
 
+	function refreshWorkflowDiscovery(onApplied?: () => void): void {
+		workflowDiscoveryGeneration += 1;
+		lazyDiscoveryPromise = null;
+		if (discoveryRef.current === null) {
+			startWorkflowDiscoveryWarmup(onApplied);
+			return;
+		}
+		const discoveryStart = workflowDiscoveryGeneration;
+		void reloadWorkflowResources()
+			.then((report) => {
+				if (report.outcome === "applied" && isWorkflowDiscoveryCurrent(discoveryStart) && notificationsActive) {
+					onApplied?.();
+				}
+			})
+			.catch(() => {});
+	}
+
 	return {
 		persistenceRef,
 		mcpPort,
@@ -655,6 +674,7 @@ export function createWorkflowExtensionRuntimeState(
 		ensureWorkflowResourcesLoaded,
 		reloadWorkflowResources,
 		startWorkflowDiscoveryWarmup,
+		refreshWorkflowDiscovery,
 		runWithLifecycleSuppressedForPolicy(policy, fn) {
 			return policy.mode !== "non_interactive" || policy.awaitTerminalRun !== true
 				? fn()

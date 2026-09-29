@@ -14,7 +14,12 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
-import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
+import type {
+	ExtensionAPI,
+	PiExecuteContext,
+	PiToolOpts,
+	WorkflowToolArgs,
+} from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 
 const roots: string[] = [];
@@ -127,4 +132,59 @@ test("keeps project package workflows excluded when deferred startup trust is de
 	const { before, after } = await startWithDeferredTrust(false);
 	assert.equal(before.includes("demo-hello"), false);
 	assert.equal(after.includes("demo-hello"), false, `registry after declined trust: ${after.join(", ")}`);
+});
+
+type LifecycleHandler = NonNullable<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>;
+
+test("keeps previously discovered workflows when the post-trust refresh fails (#3354)", async () => {
+	const { project } = await projectWithWorkflowPackage();
+	const workflowPath = join(project, "..", "pkg", "workflows", "hello.ts");
+	const handlers = new Map<string, LifecycleHandler>();
+	let refreshFails = false;
+	let refreshCalls = 0;
+	let tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
+	workflowExtension({
+		registerTool: (options) => {
+			tool = options as unknown as PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+		},
+		registerCommand: () => undefined,
+		registerMessageRenderer: () => undefined,
+		registerFlag: () => undefined,
+		registerShortcut: () => undefined,
+		sendMessage: () => undefined,
+		on: (event, handler) => {
+			handlers.set(event, handler);
+		},
+		refreshWorkflowResources: async () => {
+			refreshCalls += 1;
+			if (refreshFails) throw new Error("post-trust refresh failed");
+			return [{ path: workflowPath, enabled: true }];
+		},
+	});
+	assert.ok(tool);
+	const listed = async (): Promise<string[]> => {
+		const result = await tool!.execute("list-workflows", { action: "list" }, undefined, undefined, {
+			hasUI: false,
+			sessionId: "deferred-trust-refresh-failure",
+		} as PiExecuteContext);
+		assert.equal(result.details.action, "list");
+		return result.details.items.map((item) => item.name);
+	};
+	const cwd = process.cwd();
+	process.chdir(project);
+	try {
+		await handlers.get("session_start")?.({ reason: "startup" });
+		await handlers.get("resources_discover")?.({ reason: "startup" });
+		assert.equal((await listed()).includes("demo-hello"), true);
+
+		refreshFails = true;
+		const callsBeforeRefresh = refreshCalls;
+		await handlers.get("resources_discover")?.({ reason: "startup" });
+		await vi.waitFor(() => assert.ok(refreshCalls > callsBeforeRefresh));
+		const after = await listed();
+		assert.equal(after.includes("demo-hello"), true, `registry after failed refresh: ${after.join(", ")}`);
+	} finally {
+		process.chdir(cwd);
+		await handlers.get("session_shutdown")?.({ reason: "quit" });
+	}
 });
