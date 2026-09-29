@@ -169,6 +169,63 @@ test(
 );
 
 test(
+	"a direct tool the user deactivated stays inactive when its contributed server is removed and restored (#3355)",
+	async () => {
+		stubConnect((name) =>
+			name === "direct-server"
+				? [
+						{ name: "ping", description: "Ping the server" },
+						{ name: "pong", description: "Pong the server" },
+					]
+				: [],
+		);
+		let api: ExtensionAPI | undefined;
+		const session = await startMcpSession((pi) => {
+			api = pi;
+			pi.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: true,
+			});
+		});
+		try {
+			const deactivatedName = formatToolName("ping", "direct-server", "server");
+			const activeName = formatToolName("pong", "direct-server", "server");
+			await waitFor(
+				async () =>
+					session.getActiveToolNames().includes(deactivatedName) &&
+					session.getActiveToolNames().includes(activeName),
+				"the contributed server's direct tools to become active",
+			);
+			session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== deactivatedName));
+			assert.ok(api);
+			api.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: false,
+			});
+			await waitFor(
+				async () => !session.getActiveToolNames().includes(activeName),
+				"the redefined server's direct tools to be retired",
+			);
+			api.registerMcpServer("direct-server", {
+				url: "https://direct.test/mcp",
+				lifecycle: "eager",
+				directTools: true,
+			});
+			await waitFor(
+				async () => session.getActiveToolNames().includes(activeName),
+				"the active direct tool to return when the server enables direct tools again",
+			);
+			assert.ok(!session.getActiveToolNames().includes(deactivatedName));
+		} finally {
+			await session.dispose();
+		}
+	},
+	REAL_MCP_SESSION_TIMEOUT_MS,
+);
+
+test(
 	"MCP sees package servers and registrations from any extension order, including after initialization (#3355)",
 	async () => {
 		const connected = stubConnect();

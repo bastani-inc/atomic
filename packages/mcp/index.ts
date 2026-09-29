@@ -88,9 +88,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     const resolvedNames = new Set(directSpecs.map((spec) => spec.prefixedName));
     const obsoleteNames = [...registeredDirectTools.keys()].filter((name) => !resolvedNames.has(name));
     const revivedNames = directSpecs.map((spec) => spec.prefixedName).filter((name) => retiredDirectToolNames.has(name));
+    const activeNames = new Set(obsoleteNames.length > 0 ? pi.getActiveTools() : []);
     for (const name of obsoleteNames) {
       registeredDirectTools.delete(name);
-      retiredDirectToolNames.add(name);
+      if (activeNames.has(name)) retiredDirectToolNames.add(name);
     }
     for (const name of revivedNames) retiredDirectToolNames.delete(name);
     for (const spec of directSpecs) {
