@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The interactive footer's context percentage, token, cost and cache-hit (`CH`) segments update after every message again, instead of only when a run ends. A new session no longer shows `0.0%` with no token or cost segments for its whole first run, and steered or long runs keep the footer current. The footer totals now include cache-warming requests, which `/session` already counts, and RPC `get_session_stats` responses report the newest reply's usage as `latestAssistantUsage` ([#3328](https://github.com/bastani-inc/atomic/issues/3328)).
+
 ## [0.9.24] - 2026-09-29
 
 ### Added

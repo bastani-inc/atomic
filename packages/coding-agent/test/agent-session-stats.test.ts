@@ -1,5 +1,6 @@
 import {
 	type AssistantMessage,
+	fauxAssistantMessage,
 	getModel,
 	streamSimple,
 	type ToolResultMessage,
@@ -8,10 +9,12 @@ import {
 import { Agent } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import type { SessionStats } from "../src/core/agent-session-types.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createHarness } from "./suite/harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
@@ -277,6 +280,82 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage?.percent).toBe((15_850 / model.contextWindow) * 100);
 		} finally {
 			session.dispose();
+		}
+	});
+
+	it("reports the newest assistant usage in entry order (#3328)", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			const newest: Usage = { ...createUsage(250), cacheRead: 750, totalTokens: 1_000 };
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("older", 100, 2));
+			sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(createAssistantMessageWithUsage("newer", newest, 4));
+			sessionManager.appendMessage(createToolResultMessage(createUsage(999)));
+
+			expect(session.getSessionStats().latestAssistantUsage).toEqual(newest);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("omits the newest assistant usage before any assistant reply (#3328)", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("only", 1));
+
+			expect(session.getSessionStats().latestAssistantUsage).toBeUndefined();
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("reports a newer aborted reply's zero usage over an earlier cached reply (#3328)", async () => {
+		const { session, sessionManager } = await createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage("cached", { ...createUsage(10), cacheRead: 90, totalTokens: 100 }, 2),
+			);
+			sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage({
+				...createAssistantMessageWithUsage("", createUsage(0), 4),
+				stopReason: "aborted",
+			});
+
+			expect(session.getSessionStats().latestAssistantUsage).toEqual(createUsage(0));
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("includes a reply in stats read on the macrotask after its message_end (#3328)", async () => {
+		const harness = await createHarness();
+
+		try {
+			harness.setResponses([fauxAssistantMessage("done")]);
+			const observed: Array<Promise<{ stats: SessionStats; usage: Usage }>> = [];
+			harness.session.subscribe((event) => {
+				if (event.type !== "message_end" || event.message.role !== "assistant") return;
+				const usage = event.message.usage;
+				observed.push(
+					new Promise((resolve) => {
+						setTimeout(() => resolve({ stats: harness.session.getSessionStats(), usage }), 0);
+					}),
+				);
+			});
+
+			await harness.session.prompt("hello");
+			const replies = await Promise.all(observed);
+
+			expect(replies).toHaveLength(1);
+			expect(replies[0]?.stats.assistantMessages).toBe(1);
+			expect(replies[0]?.stats.latestAssistantUsage).toEqual(replies[0]?.usage);
+		} finally {
+			await harness.cleanup();
 		}
 	});
 });

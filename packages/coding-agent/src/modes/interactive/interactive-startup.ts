@@ -8,6 +8,7 @@ import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-
 import {
 	onInteractiveEngineRemoteCommandsChanged,
 	onInteractiveEngineResourceExtensionsChanged,
+	onInteractiveEngineSessionStatsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
@@ -244,6 +245,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
+	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
+	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
+		this.ui.requestRender();
+	});
 
 	seedStartupInput(
 		this.pendingUserInputs,

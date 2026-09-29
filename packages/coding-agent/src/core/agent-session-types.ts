@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, ImageContent, Model, TextContent, Usage } from "@bastani/pi-ai/compat";
 import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
@@ -236,6 +236,8 @@ export interface SessionStats {
 	};
 	cost: number;
 	contextUsage?: ContextUsage;
+	/** Usage of the newest assistant message, which the footer's cache-hit rate reads. */
+	latestAssistantUsage?: Usage;
 }
 
 export interface ToolDefinitionEntry {
