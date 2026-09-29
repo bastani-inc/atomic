@@ -60,7 +60,7 @@
     "typebox": "1.3.27",
     "semver": "7.8.5",
     "hono": "4.13.7",
-    "ip-address": "10.3.1",
+    "ip-address": "10.7.2",
     "@napi-rs/cli": {
       "semver": "7.8.5"
     }
