@@ -264,8 +264,7 @@ describe("OpenAI Responses terminal event handling", () => {
 		).rejects.toThrow("OpenAI Responses stream completed with an unfinished tool call: bash (call_1|fc_1)");
 	});
 
-	// https://github.com/earendil-works/pi/issues/9974
-	it("rejects parallel tool calls without output_index instead of running mixed-up calls", async () => {
+	it("rejects parallel tool calls without output_index instead of running mixed-up calls (#9974)", async () => {
 		const model = createModel();
 
 		await expect(

@@ -144,9 +144,8 @@ describe("Anthropic empty thinking signature compat", () => {
 		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
 	});
 
-	// Regression for upstream #10047: OpenCode Qwen 3.8 Flash thinking must replay as thinking, not text.
 	it.each(["opencode", "opencode-go"] as const)(
-		"preserves unsigned thinking for %s qwen3.8-flash",
+		"replays unsigned %s qwen3.8-flash thinking as thinking, not text (#10047)",
 		async (provider) => {
 			const model = getModel(provider, "qwen3.8-flash");
 			expect(model.compat?.allowEmptySignature).toBe(true);
