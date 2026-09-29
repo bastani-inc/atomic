@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { expect, test, vi } from "vitest";
-import { createChatSessionEditor } from "../src/modes/interactive/components/chat-session-host-editor.ts";
-import { ChatSessionHostState } from "../src/modes/interactive/components/chat-session-host-state.ts";
-import type { ChatSessionHostStyle } from "../src/modes/interactive/components/chat-session-host-types.ts";
+import { createChatSessionEditor } from "../src/modes/interactive/components/chat-session-host-editor.js";
+import { ChatSessionHostState } from "../src/modes/interactive/components/chat-session-host-state.js";
+import type { ChatSessionHostStyle } from "../src/modes/interactive/components/chat-session-host-types.js";
 
 const mocks = vi.hoisted(() => ({
 	readClipboardFilePaths: vi.fn<() => Promise<string[] | null>>(),
 }));
 
-vi.mock("../src/utils/clipboard.ts", () => ({
+vi.mock("../src/utils/clipboard.js", () => ({
 	readClipboardFilePaths: mocks.readClipboardFilePaths,
 	readClipboardText: async () => null,
 }));

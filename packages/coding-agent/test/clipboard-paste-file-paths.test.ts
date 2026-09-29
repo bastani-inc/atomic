@@ -8,11 +8,11 @@ const mocks = vi.hoisted(() => ({
 	readClipboardText: vi.fn<() => Promise<string | null>>(),
 }));
 
-vi.mock("../src/utils/clipboard.ts", () => ({
+vi.mock("../src/utils/clipboard.js", () => ({
 	readClipboardFilePaths: mocks.readClipboardFilePaths,
 	readClipboardText: mocks.readClipboardText,
 }));
-vi.mock("../src/utils/clipboard-image.ts", () => ({
+vi.mock("../src/utils/clipboard-image.js", () => ({
 	extensionForImageMimeType: () => "png",
 	readClipboardImage: mocks.readClipboardImage,
 }));
