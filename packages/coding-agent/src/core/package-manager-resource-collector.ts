@@ -7,6 +7,7 @@ import {
 	getManifestFromPackageJson,
 	manifestEntriesForResource,
 } from "./package-manager-manifest.ts";
+import { collectPackageMcpServers } from "./package-manager-mcp-servers.ts";
 import { resolvePathFromBase } from "./package-manager-paths.ts";
 import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
 import { collectResourceFiles } from "./package-manager-resource-files.ts";
@@ -49,6 +50,7 @@ export async function collectPackageResources(
 	filter: PackageFilter | undefined,
 	metadata: PathMetadata,
 ): Promise<boolean> {
+	await collectPackageMcpServers(packageRoot, accumulator.mcpServers, filter, metadata);
 	if (filter) {
 		for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
 			const patterns = filter[resourceType];

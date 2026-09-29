@@ -61,8 +61,10 @@ export interface ToolState {
 export interface ServerState {
   name: string;
   expanded: boolean;
-  source: "user" | "project" | "import";
+  source: "user" | "project" | "import" | "contributed";
   importKind?: string;
+  /** Contributing package or extension, for `contributed` servers. */
+  contributedBy?: string;
   excludeTools?: string[];
   exposeResources: boolean;
   connectionStatus: ConnectionStatus;

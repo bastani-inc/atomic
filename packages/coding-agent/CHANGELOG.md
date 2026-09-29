@@ -6,6 +6,7 @@
 
 - Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.
 - llama.cpp models are now also listed as classifier models with the same ID, so a local model can make `model: "auto"` routing decisions the way TypeSafe Jev does. Because an explicit `routerModel` resolves a classifier before a chat model, `routerModel: "llama.cpp/<id>"` now routes with the classifier instead of the chat model ([#10119](https://github.com/earendil-works/pi/pull/10119)).
+- Packages can contribute MCP servers with `"atomic": { "mcpServers": "./mcp.json" }` or an inline `mcpServers` object, and extensions can add runtime-computed servers with `pi.registerMcpServer(name, config)` from the factory or `session_start`. Contributed servers are the lowest-precedence MCP layer, so a same-named server in any user or project MCP config replaces them. Package filters accept `mcpServers` name patterns, project packages contribute servers only in trusted projects, and workflow stages see the same servers ([#3355](https://github.com/bastani-inc/atomic/issues/3355)).
 
 ### Changed
 

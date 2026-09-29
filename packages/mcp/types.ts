@@ -313,6 +313,8 @@ export interface ServerEntry {
    * Omit to use the MCP SDK default.
    */
   timeoutMs?: number;
+  /** Drop this server from the effective config; `{ "disabled": true }` alone turns off a contributed server. */
+  disabled?: boolean;
 }
 
 // Settings
@@ -365,8 +367,10 @@ export interface DirectToolSpec {
 
 export interface ServerProvenance {
   path: string;
-  kind: "user" | "project" | "import";
+  kind: "user" | "project" | "import" | "contributed";
   importKind?: string;
+  /** Contributing package or extension, for `contributed` servers. */
+  source?: string;
 }
 
 export interface McpAuthResult {

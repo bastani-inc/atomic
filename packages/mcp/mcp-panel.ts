@@ -234,9 +234,7 @@ class McpPanel {
     if (item.toolIndex !== undefined) {
       const tool = server.tools[item.toolIndex];
       tool.isDirect = !tool.isDirect;
-      if (tool.isDirect && server.source === "import") {
-        this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`;
-      }
+      if (tool.isDirect) this.noteCopyToUserConfig(server);
       this.updateDirty();
     }
   }
@@ -296,21 +294,25 @@ class McpPanel {
     });
   }
 
+  private noteCopyToUserConfig(server: ServerState): void {
+    if (server.source === "import") {
+      this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`;
+    } else if (server.source === "contributed") {
+      this.importNotice = `Contributed by ${server.contributedBy ?? "a package"} — will copy to user config on save`;
+    }
+  }
+
   private toggleItem(item: VisibleItem): void {
     if (this.authOnly) return;
     const server = this.servers[item.serverIndex];
     if (item.type === "server") {
       const newState = !server.tools.every((tool) => tool.isDirect);
-      if (server.source === "import" && newState) {
-        this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`;
-      }
+      if (newState) this.noteCopyToUserConfig(server);
       for (const tool of server.tools) tool.isDirect = newState;
     } else if (item.toolIndex !== undefined) {
       const tool = server.tools[item.toolIndex];
       tool.isDirect = !tool.isDirect;
-      if (tool.isDirect && server.source === "import") {
-        this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`;
-      }
+      if (tool.isDirect) this.noteCopyToUserConfig(server);
     }
     this.updateDirty();
   }

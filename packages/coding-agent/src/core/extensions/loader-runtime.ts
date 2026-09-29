@@ -1,5 +1,6 @@
 import { extensionWorkOpen, trackExtensionWork } from "./extension-work.ts";
 import { hostInputError } from "./host-input.js";
+import { McpServerRegistry } from "./mcp-server-registry.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
 import type {
 	Extension,
@@ -62,6 +63,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		workflowActivityHub: new WorkflowActivityHub((operation) =>
 			extensionWorkOpen(runtime) ? trackExtensionWork(runtime, operation) : Promise.resolve(),
 		),
+		mcpServerRegistry: new McpServerRegistry(),
 		sendMessages: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,

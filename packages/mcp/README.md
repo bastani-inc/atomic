@@ -141,6 +141,7 @@ Pi-specific files are the write targets for imported or shared global servers wh
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
 | `excludeTools` | `string[]` of tool names to hide (matches original names like `get_screenshot` and prefixed names like `figma_get_screenshot`) |
 | `debug` | Show server stderr (default: false) |
+| `disabled` | `true` removes the server from the effective config; `{ "disabled": true }` alone turns off a server contributed by a package or extension |
 
 `timeoutMs` is an **inactivity timeout**, not a total wall-clock limit. Each MCP progress notification resets the timer, so a tool that continues reporting progress can run indefinitely. The value must be a finite number greater than zero; invalid values produce a configuration error when the MCP config loads.
 

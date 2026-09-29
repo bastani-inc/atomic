@@ -55,6 +55,24 @@ The Atomic agent directory can be relocated with `ATOMIC_CODING_AGENT_DIR`. Use 
 
 Servers connect lazily by default. Adding a server does not require an immediate connection at startup.
 
+## Servers from packages and extensions
+
+Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute MCP servers. Contributed servers sit below all four configuration files: a server with the same name in any of them replaces the contributed entry completely. To turn a contributed server off, give its name an entry with only `disabled`:
+
+```json
+{
+  "mcpServers": {
+    "acme-search": { "disabled": true }
+  }
+}
+```
+
+`"disabled": true` removes any server from the effective configuration, contributed or not.
+
+`/mcp` shows where each contributed server came from next to its name: `(package npm:@acme/tools)` for a package manifest, `(extension from package npm:@acme/tools)` for a package's extension, or `(extension /path/to/extension.ts)` for a local extension. Connection errors name the same source. Turning on direct tools for a contributed server in `/mcp` copies its definition into `~/.atomic/agent/mcp.json`, where it then overrides the contributed version.
+
+To choose which servers one package contributes, add `mcpServers` patterns to its [package filter](/packages/reference#package-filtering). Project packages contribute servers only after the project is trusted. Workflow stages see the same contributed servers as the session that starts them.
+
 ## Find and call tools
 
 The `mcp` gateway discovers tools without adding every server's full tool definitions to the session:

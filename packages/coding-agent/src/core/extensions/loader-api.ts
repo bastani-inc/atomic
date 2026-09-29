@@ -4,6 +4,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import { lifecycleScopeForOwner } from "../session-lifecycle-scope.ts";
 import { drainSessionWork, hasCallingSessionWork, trackSessionWork } from "../session-lifecycle-work.ts";
 import {
@@ -110,6 +111,7 @@ export function createExtensionAPI(
 	runtime = invocationRuntime(runtime);
 	extension = invocationExtension(extension);
 	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
+	originalRuntime.mcpServerRegistry.addPackageSource(workflowResources);
 	const pendingRuntimeChanges: Array<{ apply: () => void; rollback: () => void }> = [];
 	const loadingUnsubscribers: Array<() => void> = [];
 	const initialFlagValues = new Map(runtime.flagValues);
@@ -319,6 +321,52 @@ export function createExtensionAPI(
 				const refreshed = await workflowResources.refresh?.();
 				return [...(refreshed ?? workflowResources.get())];
 			});
+		},
+
+		registerMcpServer(name: string, config: McpServerConfig): void {
+			assertActive();
+			if (typeof name !== "string" || name.trim() === "") {
+				throw new Error(`MCP server registered by extension "${extension.path}" must have a non-empty name.`);
+			}
+			if (typeof config !== "object" || config === null || Array.isArray(config)) {
+				throw new Error(`MCP server "${name}" registered by extension "${extension.path}" must be an object.`);
+			}
+			const contribution: McpServerContribution = {
+				name,
+				config: { ...config },
+				origin: "extension",
+				sourceInfo: extension.sourceInfo,
+			};
+			let previous: McpServerContribution | undefined;
+			applyRuntimeChange({
+				apply: () => {
+					previous = runtime.mcpServerRegistry.register(contribution);
+				},
+				rollback: () => runtime.mcpServerRegistry.restore(name, previous),
+			});
+		},
+
+		getMcpServerContributions() {
+			assertActive(true);
+			return runtime.mcpServerRegistry.list();
+		},
+
+		onMcpServerContributionsChanged(listener: () => void) {
+			const ownerRuntime = resolveInvocationRuntime(originalRuntime);
+			const ownerLifetime = (extension as ExtensionWithLifetime)[apiLifetime];
+			const deliver = captureRegistrationInvocation(listener);
+			assertActive();
+			return trackRelease(
+				ownerRuntime.mcpServerRegistry.subscribe(() => {
+					if (ownerLifetime?.retired || ownerLifetime?.cleanup || !extensionWorkOpen(ownerRuntime)) return;
+					if (state !== "loading" && !boundExtensionRuntimes.has(ownerRuntime)) return;
+					void trackExtensionWork(ownerRuntime, () =>
+						trackSessionWork(ownerLifetime!, async () => deliver()),
+					).catch((error: Error) => {
+						console.error(`MCP server contribution listener error (${extension.path}):`, error);
+					});
+				}),
+			);
 		},
 
 		getResourceLoaderInheritanceSnapshot() {

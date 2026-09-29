@@ -1,4 +1,5 @@
 import type { GitSource } from "../utils/git.ts";
+import type { McpServerConfig } from "./mcp-servers.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 
 export type ResourceConfigurationOrigin = "atomic" | "inherited-pi" | "bundled";
@@ -20,12 +21,22 @@ export interface ResolvedResource {
 	metadata: PathMetadata;
 }
 
+export interface ResolvedMcpServer {
+	name: string;
+	config: McpServerConfig;
+	enabled: boolean;
+	/** Manifest file that declared the server: the referenced JSON file, or package.json for inline servers. */
+	path: string;
+	metadata: PathMetadata;
+}
+
 export interface ResolvedPaths {
 	extensions: ResolvedResource[];
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
 	workflows: ResolvedResource[];
+	mcpServers: ResolvedMcpServer[];
 }
 
 export type MissingSourceAction = "install" | "skip" | "error";
@@ -150,6 +161,7 @@ export interface PiManifest {
 	themes?: string[];
 	workflows?: string[];
 	workflow?: string[];
+	mcpServers?: string | Record<string, McpServerConfig>;
 }
 
 export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
@@ -173,6 +185,8 @@ export interface ResourceAccumulator {
 	prompts: ResourceMap;
 	themes: ResourceMap;
 	workflows: ResourceMap;
+	/** Keyed by declaring file and server name; the first resolution of a package wins. */
+	mcpServers: Map<string, ResolvedMcpServer>;
 }
 
 export interface PackageFilter {
@@ -182,6 +196,7 @@ export interface PackageFilter {
 	prompts?: string[];
 	themes?: string[];
 	workflows?: string[];
+	mcpServers?: string[];
 }
 
 export interface ResolveExtensionSourcesOptions {

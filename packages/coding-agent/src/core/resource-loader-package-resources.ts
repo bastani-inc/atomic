@@ -1,6 +1,7 @@
 import { createExtensionRuntime, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
-import type { PathMetadata, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
+import type { McpServerContribution } from "./mcp-servers.ts";
+import type { PathMetadata, ResolvedMcpServer, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { resolveResourcePath } from "./resource-loader-paths.ts";
@@ -8,7 +9,7 @@ import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOpti
 import { createSourceInfo } from "./source-info.ts";
 
 export function emptyResolvedPaths(): ResolvedPaths {
-	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
+	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [], mcpServers: [] };
 }
 
 export async function resolvePackageResourcePaths(
@@ -46,7 +47,7 @@ export async function resolvePackageResourcePaths(
 }
 
 function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
-	const mark = (resources: ResolvedResource[]): ResolvedResource[] =>
+	const mark = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.map((resource) => ({
 			...resource,
 			metadata: { ...resource.metadata, configurationOrigin: "bundled" },
@@ -57,6 +58,7 @@ function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
 		prompts: mark(paths.prompts),
 		themes: mark(paths.themes),
 		workflows: mark(paths.workflows),
+		mcpServers: mark(paths.mcpServers),
 	};
 }
 
@@ -71,7 +73,8 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 		includeProjectLocalResources: true,
 	});
 	const resourcesBySource = new Map<string, ResolvedResource[]>();
-	for (const resources of Object.values(cliExtensionPaths)) {
+	const { extensions, skills, prompts, themes, workflows } = cliExtensionPaths;
+	for (const resources of [extensions, skills, prompts, themes, workflows]) {
 		for (const resource of resources) {
 			if (!resource.metadata.borrowedProjectLocal) {
 				continue;
@@ -97,7 +100,7 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 }
 
 export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, trustedSources: Set<string>): ResolvedPaths {
-	const filterResources = (resources: ResolvedResource[]): ResolvedResource[] =>
+	const filterResources = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.filter(
 			(resource) => !resource.metadata.borrowedProjectLocal || trustedSources.has(resource.metadata.source),
 		);
@@ -107,6 +110,7 @@ export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, truste
 		prompts: filterResources(paths.prompts),
 		themes: filterResources(paths.themes),
 		workflows: filterResources(paths.workflows),
+		mcpServers: filterResources(paths.mcpServers),
 	};
 }
 
@@ -130,11 +134,35 @@ export function collectWorkflowResources(
 	];
 }
 
+/** Enabled manifest MCP servers in workflow-resource order; the first package declaring a name wins. */
+export function collectMcpServerContributions(
+	resolvedPaths: ResolvedPaths,
+	cliExtensionPaths: ResolvedPaths,
+	builtinPackagePaths: ResolvedPaths,
+): McpServerContribution[] {
+	const contributions = new Map<string, McpServerContribution>();
+	for (const server of [
+		...cliExtensionPaths.mcpServers,
+		...resolvedPaths.mcpServers,
+		...builtinPackagePaths.mcpServers,
+	]) {
+		if (!server.enabled || contributions.has(server.name)) continue;
+		contributions.set(server.name, {
+			name: server.name,
+			config: server.config,
+			origin: "package",
+			sourceInfo: createSourceInfo(server.path, server.metadata),
+		});
+	}
+	return [...contributions.values()];
+}
+
 export function createWorkflowResourceProvider(loader: DefaultResourceLoader): WorkflowResourceProvider {
 	const state = resourceInternals(loader);
 	return {
 		get: () => state.workflowResources,
 		refresh: () => state.refreshWorkflowResources(),
+		getMcpServers: () => state.mcpServerContributions,
 	};
 }
 

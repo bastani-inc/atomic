@@ -12,7 +12,7 @@ import {
   writeSharedServerEntry,
   writeStarterProjectConfig,
 } from "./config.ts";
-import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
+import { formatMcpServerName, lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
 import { buildToolMetadata } from "./tool-metadata.js";
 import { supportsOAuth, authenticate, removeAuth } from "./mcp-auth-flow.js";
@@ -49,7 +49,7 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
     }
 
     const toolSuffix = failed ? "" : ` (${toolCount} tools${status === "cached" ? ", cached" : ""})`;
-    lines.push(`${statusIcon} ${name}: ${status}${toolSuffix}`);
+    lines.push(`${statusIcon} ${formatMcpServerName(state, name)}: ${status}${toolSuffix}`);
   }
 
   if (Object.keys(state.config.mcpServers).length === 0) {
@@ -128,7 +128,7 @@ export async function reconnectServers(
       const message = error instanceof Error ? error.message : String(error);
       state.failureTracker.set(name, Date.now());
       if (ctx.hasUI) {
-        ctx.ui.notify(`MCP: Failed to reconnect to ${name}: ${message}`, "error");
+        ctx.ui.notify(`MCP: Failed to reconnect to ${formatMcpServerName(state, name)}: ${message}`, "error");
       }
     }
   }
@@ -350,7 +350,7 @@ export async function openMcpPanel(
   const config = state.config;
   const cache = loadMetadataCache();
   const configPath = pi.getFlag("mcp-config") as string | undefined ?? configOverridePath;
-  const provenanceMap = getServerProvenance(configPath, ctx.cwd);
+  const provenanceMap = getServerProvenance(configPath, ctx.cwd, pi.getMcpServerContributions?.() ?? []);
   const { lines: noticeLines, fingerprint } = buildSharedConfigNoticeLines(configPath, ctx.cwd);
 
   const callbacks = buildMcpPanelCallbacks(state, config, ctx);
@@ -400,7 +400,7 @@ export async function openMcpAuthPanel(
 
   const cache = loadMetadataCache();
   const configPath = pi.getFlag("mcp-config") as string | undefined ?? configOverridePath;
-  const provenanceMap = getServerProvenance(configPath, ctx.cwd);
+  const provenanceMap = getServerProvenance(configPath, ctx.cwd, pi.getMcpServerContributions?.() ?? []);
   const callbacks = buildMcpPanelCallbacks(state, config, ctx);
   const { createMcpPanel } = await import("./mcp-panel.ts");
 

@@ -12,6 +12,7 @@ import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type { CompactOptions, ContextUsage, ExtensionContext, ReplacedSessionContext } from "./context-types.ts";
+import type { McpServerRegistry } from "./mcp-server-registry.ts";
 import type {
 	EntryRenderer,
 	MarkdownTransformer,
@@ -96,6 +97,8 @@ export interface ExtensionRuntimeState {
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Shared by extension loading and its runner generation. */
 	workflowActivityHub: WorkflowActivityHub;
+	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
+	mcpServerRegistry: McpServerRegistry;
 	flagValues: Map<string, boolean | string>;
 	explicitFlagNames?: Set<string>;
 	/** Extension path that owns each active flag registration. */

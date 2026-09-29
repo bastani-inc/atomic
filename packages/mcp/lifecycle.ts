@@ -38,6 +38,12 @@ export class McpLifecycleManager {
     }
   }
 
+  unregisterServer(name: string): void {
+    this.allServers.delete(name);
+    this.keepAliveServers.delete(name);
+    this.serverSettings.delete(name);
+  }
+
   setGlobalIdleTimeout(minutes: number): void {
     this.globalIdleTimeout = minutes * 60 * 1000;
   }
@@ -47,6 +53,7 @@ export class McpLifecycleManager {
   }
   
   startHealthChecks(intervalMs = 30000): void {
+    if (this.healthCheckInterval) return;
     this.healthCheckInterval = setInterval(() => {
       this.checkConnections();
     }, intervalMs);
@@ -88,6 +95,7 @@ export class McpLifecycleManager {
   async gracefulShutdown(): Promise<void> {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = undefined;
     }
     await this.manager.closeAll();
   }

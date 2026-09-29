@@ -56,7 +56,10 @@ function renderServerRow(context: McpPanelRenderContext, server: ServerState, is
   const expandIcon = server.expanded ? "▾" : "▸";
   const prefix = isCursor ? fg(t.selected, expandIcon) : fg(t.border, server.expanded ? expandIcon : "·");
   const nameStr = isCursor ? bold(fg(t.selected, server.name)) : server.name;
-  const importLabel = server.source === "import" ? fg(t.description, ` (${server.importKind ?? "import"})`) : "";
+  const originLabel = server.source === "import"
+    ? ` (${server.importKind ?? "import"})`
+    : server.source === "contributed" ? ` (${server.contributedBy ?? "contributed"})` : "";
+  const importLabel = originLabel ? fg(t.description, originLabel) : "";
   const statusLabel = renderConnectionStatus(context, server);
 
   if (!server.hasCachedData && !context.authOnly) {

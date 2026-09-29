@@ -3,7 +3,7 @@ import { reportOwnedMcpLog } from "./diagnostics.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, getProjectConfigPaths } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getProjectConfigPaths, type McpServerContribution } from "@bastani/atomic";
 import { getAgentPath, getAgentPaths } from "./agent-dir.ts";
 import type { McpConfig, ServerEntry, McpSettings, ImportKind, ServerProvenance } from "./types.js";
 import { buildConfigWritePreview, getServersObject, readRawConfigObject, setServersObject, writeRawConfigObject, type ConfigWritePreview } from "./config-write-utils.ts";
@@ -155,14 +155,58 @@ export function getMcpDiscoverySummary(overridePath?: string, cwd = process.cwd(
     repoPrompt: detectRepoPrompt(summaryWithoutRepoPrompt, cwd),
   };
 }
-export function loadMcpConfig(overridePath?: string, cwd = process.cwd()): McpConfig {
-  let config: McpConfig = { mcpServers: {} };
+/**
+ * Contributed servers (package manifests and `pi.registerMcpServer()`) form the lowest layer; each config
+ * file replaces same-named servers wholesale, and `disabled: true` removes a server from the result.
+ */
+export function loadMcpConfig(
+  overridePath?: string,
+  cwd = process.cwd(),
+  contributions: readonly McpServerContribution[] = [],
+): McpConfig {
+  let config: McpConfig = { mcpServers: validateContributedServers(contributions) };
   for (const source of getConfigSources(overridePath, cwd)) {
     const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`);
     if (!loaded) continue;
     config = mergeConfigs(config, expandImports(loaded, cwd));
   }
-  return config;
+  return withoutDisabledServers(config);
+}
+export function describeMcpContributionSource(contribution: McpServerContribution): string {
+  const { origin, sourceInfo } = contribution;
+  if (origin === "package") return `package ${sourceInfo.source}`;
+  return sourceInfo.origin === "package" ? `extension from package ${sourceInfo.source}` : `extension ${sourceInfo.path}`;
+}
+/** Names contributed servers by their source so diagnostics point at the package or extension to fix. */
+export function getContributedServerSources(
+  overridePath: string | undefined,
+  cwd: string,
+  contributions: readonly McpServerContribution[],
+): Map<string, string> {
+  const sources = new Map<string, string>();
+  if (contributions.length === 0) return sources;
+  for (const [name, provenance] of getServerProvenance(overridePath, cwd, contributions)) {
+    if (provenance.kind === "contributed" && provenance.source) sources.set(name, provenance.source);
+  }
+  return sources;
+}
+function validateContributedServers(contributions: readonly McpServerContribution[]): Record<string, ServerEntry> {
+  const servers: Record<string, ServerEntry> = {};
+  for (const contribution of contributions) {
+    try {
+      Object.assign(servers, validateMcpServerTimeouts({ [contribution.name]: contribution.config }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const message = `Ignoring MCP server "${contribution.name}" from ${describeMcpContributionSource(contribution)}: ${reason}`;
+      if (!reportOwnedMcpLog("warn")) console.warn(message);
+    }
+  }
+  return servers;
+}
+function withoutDisabledServers(config: McpConfig): McpConfig {
+  const enabled = Object.entries(config.mcpServers).filter(([, entry]) => entry.disabled !== true);
+  if (enabled.length === Object.keys(config.mcpServers).length) return config;
+  return { ...config, mcpServers: Object.fromEntries(enabled) };
 }
 function getConfigSources(overridePath?: string, cwd = process.cwd()): ConfigSourceSpec[] {
   const userPath = getPiGlobalConfigPath(overridePath);
@@ -436,9 +480,20 @@ export function writeSharedServerEntry(filePath: string, serverName: string, ent
   writeRawConfigObject(filePath, raw);
   return filePath;
 }
-export function getServerProvenance(overridePath?: string, cwd = process.cwd()): Map<string, ServerProvenance> {
+export function getServerProvenance(
+  overridePath?: string,
+  cwd = process.cwd(),
+  contributions: readonly McpServerContribution[] = [],
+): Map<string, ServerProvenance> {
   const provenance = new Map<string, ServerProvenance>();
   const userPath = getPiGlobalConfigPath(overridePath);
+  for (const contribution of contributions) {
+    provenance.set(contribution.name, {
+      path: userPath,
+      kind: "contributed",
+      source: describeMcpContributionSource(contribution),
+    });
+  }
   for (const source of getConfigSources(overridePath, cwd)) {
     const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`);
     if (!loaded) continue;
@@ -450,7 +505,7 @@ export function getServerProvenance(overridePath?: string, cwd = process.cwd()):
           const imported = JSON.parse(readFileSync(importPath, "utf-8"));
           const servers = extractServers(imported, importKind);
           for (const name of Object.keys(servers)) {
-            if (!provenance.has(name)) {
+            if (!provenance.has(name) || provenance.get(name)?.kind === "contributed") {
               provenance.set(name, { path: userPath, kind: "import", importKind });
             }
           }
@@ -484,7 +539,7 @@ export function writeDirectToolsConfig(
     const raw = readRawConfigObject(filePath);
     const servers = getServersObject(raw);
     for (const { name, value, prov } of entries) {
-      if (prov.kind === "import") {
+      if (prov.kind === "import" || prov.kind === "contributed") {
         const fullDef = fullConfig.mcpServers[name];
         if (fullDef) {
           servers[name] = { ...fullDef, directTools: value };

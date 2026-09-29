@@ -1,9 +1,12 @@
+import type { McpServerContribution } from "../mcp-servers.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 
 export interface WorkflowResourceProvider {
 	get(): ResolvedResource[];
 	refresh?(): Promise<ResolvedResource[]>;
+	/** Package-manifest MCP servers resolved alongside the workflow resources. */
+	getMcpServers?(): McpServerContribution[];
 }
 
 export type WorkflowResourceProviderInput = WorkflowResourceProvider | ResolvedResource[];

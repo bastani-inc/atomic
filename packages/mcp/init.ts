@@ -1,10 +1,10 @@
 import { reportOwnedMcpLog } from "./diagnostics.js";
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import type { ExtensionAPI, ExtensionContext, McpServerContribution } from "@bastani/atomic";
 import { reportMcpDiagnostic } from "./diagnostics.js";
 import type { McpExtensionState } from "./state.js";
-import type { ToolMetadata } from "./types.js";
+import type { ServerEntry, ToolMetadata } from "./types.js";
 import { existsSync } from "node:fs";
-import { loadMcpConfig } from "./config.ts";
+import { getContributedServerSources, loadMcpConfig } from "./config.ts";
 import { ConsentManager } from "./consent-manager.js";
 import { McpLifecycleManager } from "./lifecycle.ts";
 import {
@@ -16,6 +16,7 @@ import {
   saveMetadataCache,
   serializeResources,
   serializeTools,
+  type MetadataCache,
   type ServerCacheEntry,
 } from "./metadata-cache.js";
 import { McpServerManager } from "./server-manager.ts";
@@ -31,7 +32,8 @@ export async function initializeMcp(
   ctx: ExtensionContext
 ): Promise<McpExtensionState> {
   const configPath = pi.getFlag("mcp-config") as string | undefined;
-  const config = loadMcpConfig(configPath, ctx.cwd);
+  const contributions = pi.getMcpServerContributions?.() ?? [];
+  const config = loadMcpConfig(configPath, ctx.cwd, contributions);
 
   const manager = new McpServerManager();
   const lifecycle = new McpLifecycleManager(manager);
@@ -56,6 +58,7 @@ export async function initializeMcp(
       lifecycle,
       toolMetadata,
       config,
+      contributedSources: getContributedServerSources(configPath, ctx.cwd, contributions),
       failureTracker,
       uiResourceHandler,
       consentManager,
@@ -87,21 +90,7 @@ export async function initializeMcp(
     const prefix = config.settings?.toolPrefix ?? "server";
 
     for (const [name, definition] of serverEntries) {
-      const lifecycleMode = definition.lifecycle ?? "lazy";
-      const idleOverride = definition.idleTimeout ?? (lifecycleMode === "eager" ? 0 : undefined);
-      lifecycle.registerServer(
-        name,
-        definition,
-        idleOverride !== undefined ? { idleTimeout: idleOverride } : undefined
-      );
-      if (lifecycleMode === "keep-alive") {
-        lifecycle.markKeepAlive(name, definition);
-      }
-
-      if (cache?.servers?.[name] && isServerCacheValid(cache.servers[name], definition)) {
-        const metadata = reconstructToolMetadata(name, cache.servers[name], prefix, definition);
-        toolMetadata.set(name, metadata);
-      }
+      registerServer(state, name, definition, cache, prefix);
     }
 
     const startupServers = serverEntries.filter(([, definition]) => {
@@ -129,7 +118,7 @@ export async function initializeMcp(
   for (const { name, definition, connection, error } of results) {
     if (error || !connection) {
       if (ctx.hasUI) {
-        ctx.ui.notify(`MCP: Failed to connect to ${name}: ${error}`, "error");
+        ctx.ui.notify(`MCP: Failed to connect to ${formatMcpServerName(state, name)}: ${error}`, "error");
       }
       reportMcpDiagnostic(pi, "MCP startup connection failed");
       continue;
@@ -157,21 +146,7 @@ export async function initializeMcp(
     ctx.ui.notify(msg, "info");
   }
 
-
-  lifecycle.setReconnectCallback((serverName) => {
-    updateServerMetadata(state, serverName);
-    updateMetadataCache(state, serverName);
-    state.failureTracker.delete(serverName);
-    updateStatusBar(state);
-  });
-
-  lifecycle.setIdleShutdownCallback((serverName) => {
-    const idleMinutes = getEffectiveIdleTimeoutMinutes(state, serverName);
-    logger.debug(`${serverName} shut down (idle ${idleMinutes}m)`);
-    updateStatusBar(state);
-  });
-
-  lifecycle.startHealthChecks();
+  startLifecycle(state);
 
   return state;
   } catch (error) {
@@ -182,6 +157,89 @@ export async function initializeMcp(
     }
     throw error;
   }
+}
+
+/** Server name with its contributing package or extension, for user-facing diagnostics. */
+export function formatMcpServerName(state: McpExtensionState, name: string): string {
+  const source = state.contributedSources?.get(name);
+  return source ? `${name} (${source})` : name;
+}
+
+function registerServer(
+  state: McpExtensionState,
+  name: string,
+  definition: ServerEntry,
+  cache: MetadataCache | null,
+  prefix: "server" | "none" | "short",
+): void {
+  const lifecycleMode = definition.lifecycle ?? "lazy";
+  const idleOverride = definition.idleTimeout ?? (lifecycleMode === "eager" ? 0 : undefined);
+  state.lifecycle.registerServer(
+    name,
+    definition,
+    idleOverride !== undefined ? { idleTimeout: idleOverride } : undefined
+  );
+  if (lifecycleMode === "keep-alive") {
+    state.lifecycle.markKeepAlive(name, definition);
+  }
+
+  if (cache?.servers?.[name] && isServerCacheValid(cache.servers[name], definition)) {
+    const metadata = reconstructToolMetadata(name, cache.servers[name], prefix, definition);
+    state.toolMetadata.set(name, metadata);
+  }
+}
+
+function startLifecycle(state: McpExtensionState): void {
+  state.lifecycle.setReconnectCallback((serverName) => {
+    updateServerMetadata(state, serverName);
+    updateMetadataCache(state, serverName);
+    state.failureTracker.delete(serverName);
+    updateStatusBar(state);
+  });
+
+  state.lifecycle.setIdleShutdownCallback((serverName) => {
+    const idleMinutes = getEffectiveIdleTimeoutMinutes(state, serverName);
+    logger.debug(`${serverName} shut down (idle ${idleMinutes}m)`);
+    updateStatusBar(state);
+  });
+
+  state.lifecycle.startHealthChecks();
+}
+
+/**
+ * Reload the server set, contributions included, into a running state: removed or redefined servers are
+ * closed and new definitions registered. Returns the changed names; connecting new startup servers is the
+ * caller's job.
+ */
+export async function applyMcpConfigChanges(
+  state: McpExtensionState,
+  configPath: string | undefined,
+  cwd: string,
+  contributions: readonly McpServerContribution[],
+): Promise<string[]> {
+  const previous = state.config.mcpServers;
+  const next = loadMcpConfig(configPath, cwd, contributions).mcpServers;
+  const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+    .filter((name) => JSON.stringify(previous[name]) !== JSON.stringify(next[name]));
+  state.config = { ...state.config, mcpServers: next };
+  state.contributedSources = getContributedServerSources(configPath, cwd, contributions);
+  if (changed.length === 0) return changed;
+
+  const cache = loadMetadataCache();
+  const settings = state.config.settings;
+  const prefix = settings?.toolPrefix ?? "server";
+  state.lifecycle.setGlobalIdleTimeout(typeof settings?.idleTimeout === "number" ? settings.idleTimeout : 10);
+  for (const name of changed) {
+    await state.manager.close(name);
+    state.lifecycle.unregisterServer(name);
+    state.toolMetadata.delete(name);
+    state.failureTracker.delete(name);
+    const definition = next[name];
+    if (definition) registerServer(state, name, definition, cache, prefix);
+  }
+  startLifecycle(state);
+  updateStatusBar(state);
+  return changed;
 }
 
 export function updateServerMetadata(state: McpExtensionState, serverName: string): void {

@@ -46,6 +46,7 @@ export function createAccumulator(): ResourceAccumulator {
 		prompts: new Map(),
 		themes: new Map(),
 		workflows: new Map(),
+		mcpServers: new Map(),
 	};
 }
 
@@ -73,5 +74,6 @@ export function toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths
 		prompts: mapToResolved(accumulator.prompts),
 		themes: mapToResolved(accumulator.themes),
 		workflows: mapToResolved(accumulator.workflows),
+		mcpServers: [...accumulator.mcpServers.values()],
 	};
 }

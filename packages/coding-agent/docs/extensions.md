@@ -598,6 +598,10 @@ Moved to [Extension API reference](/extensions/api-reference#pi-registerprovider
 
 Moved to [Extension API reference](/extensions/api-reference#pi-unregisterprovider-name).
 
+### pi.registerMcpServer(name, config)
+
+Contribute an MCP server computed at runtime from the factory or `session_start`. See [Extension API reference](/extensions/api-reference#pi-registermcpserver-name-config).
+
 ## State Management
 
 Moved to [Writing extensions](/extensions/authoring#state-management).

@@ -30,6 +30,8 @@ export interface McpExtensionState {
   lifecycle: McpLifecycleManager;
   toolMetadata: Map<string, ToolMetadata[]>;
   config: McpConfig;
+  /** Package or extension that contributed each effective server, for diagnostics. */
+  contributedSources?: Map<string, string>;
   failureTracker: Map<string, number>;
   uiResourceHandler: UiResourceHandler;
   consentManager: ConsentManager;

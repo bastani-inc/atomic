@@ -189,6 +189,7 @@ export {
 	runtimeIntercomGroupEnvKey,
 } from "./core/intercom-runtime-group.ts";
 export { keybindingIdentity } from "./core/keybinding-identity.js";
+export type { McpServerConfig, McpServerContribution, McpServerOAuthConfig } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
@@ -240,6 +241,7 @@ export type {
 	PathMetadata,
 	ProgressCallback,
 	ProgressEvent,
+	ResolvedMcpServer,
 	ResolvedPaths,
 	ResolvedResource,
 } from "./core/package-manager.ts";

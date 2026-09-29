@@ -1000,6 +1000,25 @@ pi.registerCommand("my-setup-teardown", {
 });
 ```
 
+### pi.registerMcpServer(name, config)
+
+Contribute an MCP server whose configuration is only known at runtime, such as the URL of a local service the extension starts. `config` uses the same schema as an entry in [`mcp.json`](/mcp-servers#configure-a-server), including `url`, `command`/`args`/`env`/`cwd`, `auth: "bearer"` with `bearerTokenEnv`, `lifecycle`, `timeoutMs`, and `${VAR}` interpolation.
+
+```typescript
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", async () => {
+    const port = await startLocalService();
+    pi.registerMcpServer("local-service", { url: `http://127.0.0.1:${port}/mcp`, lifecycle: "eager" });
+  });
+}
+```
+
+Call it from the extension factory or from `session_start`. Load order does not matter: registrations made after the MCP adapter has started are picked up without a reload. Registering the same name again replaces the earlier registration.
+
+Registered servers are the lowest-precedence MCP layer. They replace a same-named server from a package manifest, but any user or project MCP config file replaces them, and `{ "disabled": true }` there turns them off. `/mcp` shows the registering extension next to the server name.
+
+`pi.getMcpServerContributions()` returns the package-manifest and registered servers for the session, each with its `name`, `config`, `origin` (`"package"` or `"extension"`), and `sourceInfo`.
+
 ## Error Handling
 
 - Extension errors are logged, agent continues

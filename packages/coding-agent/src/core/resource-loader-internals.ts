@@ -3,6 +3,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { EventBus } from "./event-bus.js";
 import type { WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { McpServerContribution } from "./mcp-servers.ts";
 import type { DefaultPackageManager, PathMetadata, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
@@ -62,6 +63,7 @@ export interface ResourceLoaderInternals {
 	appendSystemPrompt: string[];
 	appendSystemPromptSourcePaths: string[];
 	workflowResources: ResolvedResource[];
+	mcpServerContributions: McpServerContribution[];
 	trustedBorrowedProjectLocalSources?: Set<string>;
 	lastSkillPaths: string[];
 	extensionSkillSourceInfos: Map<string, SourceInfo>;

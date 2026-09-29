@@ -62,6 +62,7 @@ export type {
 	PathMetadata,
 	ProgressCallback,
 	ProgressEvent,
+	ResolvedMcpServer,
 	ResolvedPaths,
 	ResolvedResource,
 	ResolveExtensionSourcesOptions,

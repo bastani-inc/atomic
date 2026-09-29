@@ -4,6 +4,7 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
 import { createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
@@ -85,6 +86,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
 	private workflowResources: ResolvedResource[];
+	private mcpServerContributions: McpServerContribution[];
 	private trustedBorrowedProjectLocalSources?: Set<string>;
 	private lastSkillPaths: string[];
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
@@ -167,6 +169,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = [];
 		this.appendSystemPromptSourcePaths = [];
 		this.workflowResources = [];
+		this.mcpServerContributions = [];
 		this.trustedBorrowedProjectLocalSources =
 			inheritanceSnapshot?.trustedBorrowedProjectLocalSources === undefined
 				? undefined
@@ -228,6 +231,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getWorkflowResources(): ResolvedResource[] {
 		return [...this.workflowResources];
+	}
+
+	/** Enabled package-manifest MCP servers discovered by the last reload. */
+	getMcpServerContributions(): McpServerContribution[] {
+		return [...this.mcpServerContributions];
 	}
 
 	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot {
@@ -419,6 +427,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = candidate.appendSystemPrompt;
 		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
 		this.workflowResources = candidate.workflowResources;
+		this.mcpServerContributions = candidate.mcpServerContributions;
 		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;
 		this.lastSkillPaths = candidate.lastSkillPaths;
 		this.extensionSkillSourceInfos = candidate.extensionSkillSourceInfos;

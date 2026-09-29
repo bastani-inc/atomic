@@ -111,6 +111,7 @@ export function buildServerStates(
       expanded: false,
       source: prov?.kind ?? "user",
       importKind: prov?.importKind,
+      contributedBy: prov?.source,
       excludeTools: definition.excludeTools,
       exposeResources: definition.exposeResources !== false,
       connectionStatus: callbacks.getConnectionStatus(serverName),

@@ -102,6 +102,7 @@ export type PackageSource =
 			prompts?: string[];
 			themes?: string[];
 			workflows?: string[];
+			mcpServers?: string[];
 	  };
 
 export interface BashInterceptorSettings {

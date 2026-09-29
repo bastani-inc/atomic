@@ -142,6 +142,7 @@ function clonePackageSource(source: PackageSource): PackageSource {
 		...(source.prompts === undefined ? {} : { prompts: [...source.prompts] }),
 		...(source.themes === undefined ? {} : { themes: [...source.themes] }),
 		...(source.workflows === undefined ? {} : { workflows: [...source.workflows] }),
+		...(source.mcpServers === undefined ? {} : { mcpServers: [...source.mcpServers] }),
 	};
 }
 

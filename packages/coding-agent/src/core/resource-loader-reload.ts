@@ -30,6 +30,7 @@ import {
 } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import {
+	collectMcpServerContributions,
 	collectWorkflowResources,
 	createInheritanceSnapshotProvider,
 	createWorkflowResourceProvider,
@@ -127,6 +128,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	);
 	const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	state.workflowResources = workflowResources;
+	state.mcpServerContributions = collectMcpServerContributions(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
@@ -218,6 +220,7 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
 			state.workflowResources = [];
+			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
 			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
@@ -301,6 +304,11 @@ export async function prepareDefaultResourceLoaderReload(
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes, metadataByPath);
 		const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 		state.workflowResources = workflowResources;
+		state.mcpServerContributions = collectMcpServerContributions(
+			resolvedPaths,
+			cliExtensionPaths,
+			builtinPackagePaths,
+		);
 		const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
 		// The builtin Herdr reporter supersedes the installed file integration in a
