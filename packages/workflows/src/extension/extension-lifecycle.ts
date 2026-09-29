@@ -170,6 +170,15 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	});
 	pi.on("session_before_fork", async (_event, ctx) => confirmSessionSwitch("fork", ctx));
 
+	const warmWorkflowDiscovery = (ctx: PiCommandContext | undefined): void => {
+		runtimeState.startWorkflowDiscoveryWarmup(() => {
+			if (!ctx?.ui) return;
+			const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
+			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
+		});
+	};
+	let startupResourcesDiscovered = false;
+
 	pi.on("session_start", async (event, ctx) => {
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
@@ -178,6 +187,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			typeof event === "object" && event !== null && "reason" in event
 				? (event as { readonly reason?: string }).reason
 				: undefined;
+		startupResourcesDiscovered = false;
 		runtimeState.resetWorkflowDiscoveryForSession();
 		await runtimeState.ensureWorkflowConfigLoaded();
 		if (replacementStopsWorkflows(reason)) {
@@ -191,11 +201,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		else await stageControlRegistry.clearDetached();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
-		runtimeState.startWorkflowDiscoveryWarmup(() => {
-			if (!ctx?.ui) return;
-			const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
-			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
-		});
+		warmWorkflowDiscovery(ctx);
 		if (ctx?.ui) {
 			const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, null);
 			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
@@ -205,6 +211,18 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		// Session JSONL contains chat transcripts only. Workflow state is loaded
 		// from DBOS on the first workflow command or run, never during startup.
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
+	});
+	// A second startup discovery in one session means deferred startup (such as
+	// project trust) published a changed package set after session_start (#3354).
+	pi.on("resources_discover", (event, ctx) => {
+		if (eventReason(event) !== "startup") return undefined;
+		if (!startupResourcesDiscovered) {
+			startupResourcesDiscovered = true;
+			return undefined;
+		}
+		runtimeState.resetWorkflowDiscoveryForSession();
+		warmWorkflowDiscovery(ctx);
+		return undefined;
 	});
 
 	installCompactionHook(pi, store);
