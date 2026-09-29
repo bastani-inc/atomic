@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-09-29
+
+### Added
+
+- Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.
+- llama.cpp models are now also listed as classifier models with the same ID, so a local model can make `model: "auto"` routing decisions the way TypeSafe Jev does. Because an explicit `routerModel` resolves a classifier before a chat model, `routerModel: "llama.cpp/<id>"` now routes with the classifier instead of the chat model ([#10119](https://github.com/earendil-works/pi/pull/10119)).
+- Packages can contribute MCP servers with `"atomic": { "mcpServers": "./mcp.json" }` or an inline `mcpServers` object, and extensions can add runtime-computed servers with `pi.registerMcpServer(name, config)` from the factory or `session_start`. Contributed servers are the lowest-precedence MCP layer, so a same-named server in any user or project MCP config replaces them. Package filters accept `mcpServers` name patterns, project packages contribute servers only in trusted projects, and workflow stages see the same servers ([#3355](https://github.com/bastani-inc/atomic/issues/3355)).
+
+### Changed
+
+- Recorded Claude Sonnet 5.5 results in the evals snapshot used by automatic model routing: Artificial Analysis Intelligence Index rows for max, xhigh, high, medium and low effort, Cognition FrontierCode 1.1, and Anthropic's published OSWorld, AutomationBench, BenchCAD, Humanity's Last Exam (with tools) and Terminal-Bench-Science scores.
+
+### Fixed
+
+- OpenCode Go now defaults to Kimi K3 (`kimi-k3`). models.dev deprecated Kimi K2.6 for OpenCode Go, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Together now defaults to Kimi K3 (`moonshotai/Kimi-K3`). models.dev removed Kimi K2.6 from Together, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Fixed extension tool schemas leaking TypeBox `~kind`/`~optional` metadata into provider requests, which made Fireworks reject every request with `JSON Schema not supported` ([#3330](https://github.com/bastani-inc/atomic/issues/3330)).
+- Resuming a session no longer appends a spurious system-prompt `tools` update when only the order of the active tools changed, so the resumed session keeps its prompt cache and the model is no longer told that unchanged tools were removed ([#3346](https://github.com/bastani-inc/atomic/issues/3346)).
+- Switching sessions with `/resume` or closing a session before sending a message no longer leaves a header-only session file behind ([#3347](https://github.com/bastani-inc/atomic/issues/3347)).
+- Fixed pasting files copied in Finder with `Ctrl+V` inserting the file icon as an image instead of the file paths. Copied files now paste as their paths, shell-quoted in bash mode, and clipboard read errors are reported instead of pasting the icon ([#10136](https://github.com/earendil-works/pi/pull/10136)).
+
 ## [0.9.24-alpha.1] - 2026-09-28
 
 ### Added

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-09-29
+
+### Added
+
+- Added source-attributed Claude Sonnet 5.5 guidance to the prompt-engineering skill, covering recalibrated effort, carrying coding work through without unrequested additions, visible progress during tool loops, search and verification prompts, and placement of mid-turn user messages.
+
+### Fixed
+
+- A schema-backed stage whose structured-output correction hits a provider failure (for example a 429) that moves the stage to a new session now sends that session the original stage prompt followed by the correction request. Previously the new session received only the correction, so a model that never saw the task could complete the stage with a schema-valid but empty result ([#3323](https://github.com/bastani-inc/atomic/issues/3323)).
+- Workflows from a package listed in a project's `.atomic/settings.json` are now registered as soon as you trust the project at startup. Previously `/workflow <name>` reported `Workflow not found` and `/workflow list` showed only the builtin workflows until you ran `/workflow reload`, even though the package's extensions and skills had loaded ([#3354](https://github.com/bastani-inc/atomic/issues/3354)).
+
 ## [0.9.24-alpha.1] - 2026-09-28
 
 ### Added
