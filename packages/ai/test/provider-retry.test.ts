@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
 
@@ -11,6 +12,30 @@ function providerError(status: number | undefined, headers?: Record<string, stri
 describe("provider request retries", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it.each([
+		{ "retry-after": "not a date" },
+		{ "retry-after": "Infinity" },
+		{ "retry-after-ms": "Infinity" },
+	])("uses exponential backoff for invalid retry headers %j (#9571)", async (headers) => {
+		vi.useFakeTimers();
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		const request = vi.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(providerError(429, headers))
+			.mockRejectedValueOnce(providerError(429, headers))
+			.mockResolvedValue("ok");
+		const result = retryProviderRequest(request, { maxRetries: 2 });
+		await vi.advanceTimersByTimeAsync(499);
+		assert.equal(request.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(request.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(999);
+		assert.equal(request.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(await result, "ok");
+		assert.equal(request.mock.calls.length, 3);
 	});
 
 	it("retries retryable provider errors", async () => {
