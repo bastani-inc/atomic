@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { test } from "vitest";
+import { createCodemodeDescription } from "../src/extensions/codemode/tool.js";
 import { createToolSearchExtension } from "../src/extensions/tool-search/index.js";
+import { createToolSearchDescription } from "../src/extensions/tool-search/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
 test("tool search activates matching deferred tools for the next model call", async () => {
@@ -49,4 +51,30 @@ test("tool search activates matching deferred tools for the next model call", as
 	} finally {
 		await harness.cleanup();
 	}
+});
+
+test("deferred tools do not change codemode or tool-search descriptions (#10212)", () => {
+	const plain = {
+		name: "plain",
+		label: "Plain",
+		description: "Plain tool",
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [], details: {} }),
+	};
+	const deferred = { ...plain, name: "later" };
+	const namespaces = new Map([[deferred.name, { name: "later_namespace", description: "Late source" }]]);
+	for (const inlineBudget of [undefined, 0, 100]) {
+		assert.equal(
+			createCodemodeDescription([plain, deferred], { namespaces, deferred: new Set([deferred.name]), inlineBudget }),
+			createCodemodeDescription([plain], { inlineBudget }),
+		);
+		assert(
+			!createCodemodeDescription([plain, deferred], {
+				namespaces,
+				deferred: new Set([deferred.name]),
+				inlineBudget,
+			}).includes("later_namespace"),
+		);
+	}
+	assert.equal(createToolSearchDescription([...namespaces.values()]), createToolSearchDescription());
 });

@@ -13,6 +13,7 @@
 - Renderer examples now retain the built-in tools' prompt guidance and execution behavior when customizing their display ([#10072](https://github.com/earendil-works/pi/issues/10072)).
 - Reduced model lookup overhead when merging large remote provider catalogs.
 - Invalid extension commands now fail registration with a clear error instead of crashing slash-command completion ([#10054](https://github.com/earendil-works/pi/issues/10054)).
+- Codemode and tool-search descriptions now remain unchanged when deferred tools register, preserving prompt stability while discovery continues to find those tools ([#10212](https://github.com/earendil-works/pi/issues/10212)).
 
 ## [0.9.25-alpha.2] - 2026-09-30
 

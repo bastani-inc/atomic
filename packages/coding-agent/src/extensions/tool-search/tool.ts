@@ -125,8 +125,8 @@ export interface ToolSearchToolOptions {
 export function isToolSearchTool(tool: Pick<ToolInfo, "name" | "parameters">): boolean {
 	return tool.name === TOOL_SEARCH_TOOL_NAME && tool.parameters === toolSearchSchema;
 }
-export function createToolSearchDescription(sources: readonly ToolNamespace[] = []): string {
-	return `Search deferred tool metadata with BM25 and load matching tools for the next model call.\nSources:\n${sources.length ? sources.map((source) => `- ${source.name}: ${source.description ?? ""}`).join("\n") : "None currently enabled."}`;
+export function createToolSearchDescription(_sources: readonly ToolNamespace[] = []): string {
+	return "Search deferred tool metadata with BM25 and load matching tools for the next model call. Some tools may not have been provided upfront; use tool_search to discover currently registered tools.";
 }
 export function createToolSearchToolDefinition(
 	options: ToolSearchToolOptions = {},
@@ -138,16 +138,6 @@ export function createToolSearchToolDefinition(
 		parameters: toolSearchSchema,
 		exposure: "model-only",
 		defaultActive: false,
-		prepareLoadout: (loadout) => {
-			const sources = new Map<string, ToolNamespace>();
-			for (const tool of loadout.registered) {
-				const exposure = loadout.getExposure(tool.name);
-				const namespace = loadout.getNamespace(tool.name);
-				if ((exposure === "codemode" || exposure === "deferred") && namespace)
-					sources.set(namespace.name, namespace);
-			}
-			return { descriptions: { [TOOL_SEARCH_TOOL_NAME]: createToolSearchDescription([...sources.values()]) } };
-		},
 		execute: async (_id, { query, limit = DEFAULT_TOOL_SEARCH_LIMIT }) => {
 			if (!query.trim()) throw new Error("query must not be empty");
 			if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");

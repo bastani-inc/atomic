@@ -82,9 +82,10 @@ export function createCodemodeDescription(
 ): string {
 	const groups = new Map<
 		string,
-		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number; deferred: boolean }[] }
+		{ namespace?: ToolNamespace; entries: { name: string; section: string; cost: number }[] }
 	>();
 	for (const tool of getCodemodeCallableTools(tools)) {
+		if (options.deferred?.has(tool.name)) continue;
 		const namespace = options.namespaces?.get(tool.name);
 		const key = namespace?.name ?? "";
 		let group = groups.get(key);
@@ -98,7 +99,6 @@ export function createCodemodeDescription(
 			name: tool.name,
 			section,
 			cost: Math.ceil(section.length / 4),
-			deferred: options.deferred?.has(tool.name) === true,
 		});
 	}
 	const ordered = [...groups.values()].sort((a, b) =>
@@ -107,7 +107,7 @@ export function createCodemodeDescription(
 	const shown = new Set<string>();
 	let remaining = options.inlineBudget ?? Number.POSITIVE_INFINITY;
 	let queues = ordered
-		.map((group) => group.entries.filter((entry) => !entry.deferred).sort((a, b) => a.cost - b.cost))
+		.map((group) => [...group.entries].sort((a, b) => a.cost - b.cost))
 		.filter((queue) => queue.length);
 	while (queues.length)
 		queues = queues.filter((queue) => {
@@ -118,17 +118,16 @@ export function createCodemodeDescription(
 			queue.shift();
 			return queue.length > 0;
 		});
-	const sections = [INTRO];
+	const sections = [
+		INTRO,
+		"Some nested tools may be omitted, including deferred tools. They remain available through tools and ALL_TOOLS. Use await searchTools(query), describeTool(name), or describeNamespace(name) to discover them.",
+	];
 	if (options.models)
 		sections.push(
 			"Model API: models.getModelsOfType(type, provider?), models.getAvailableOfType(type, provider?), models.getModelOfType(type, provider, id), models.classify(model, context). Types are chat, image, classifier. Catalog entries exclude headers; classifier calls resolve credentials on the host.",
 		);
-	const count = getCodemodeCallableTools(tools).length;
-	sections.push(
-		shown.size === count
-			? "Nested tools: COMPLETE list."
-			: "Nested tools: PARTIAL list. Use searchTools(), describeTool(), or ALL_TOOLS for omitted/deferred tools.",
-	);
+	if (ordered.length === 0) return sections.join("\n\n");
+	sections.push("Nested tools:");
 	for (const group of ordered) {
 		if (group.namespace) {
 			const visible = group.entries.filter((entry) => shown.has(entry.name));

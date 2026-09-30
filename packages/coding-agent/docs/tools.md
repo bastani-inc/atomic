@@ -53,6 +53,8 @@ Set [codemode settings](/settings#tools) to control inline declaration size and 
 
 ## `tool_search`
 
+Deferred tools and their namespaces are omitted from codemode's inline catalog. Discover them with `searchTools()`, `describeNamespace()`, or `ALL_TOOLS`; `tool_search` can load matching registered tools for direct calls.
+
 `tool_search` is inactive by default. Enable it with `"defaultTools": ["+tool_search"]` or include it in `--tools`. It ranks currently registered `codemode` and `deferred` tools by their metadata and activates matching tools for the next model call. It does not bypass session tool restrictions or replace MCP server discovery.
 
 ## `code_search`
