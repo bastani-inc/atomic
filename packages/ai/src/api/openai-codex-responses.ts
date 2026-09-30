@@ -1,7 +1,7 @@
 import type * as NodeZlib from "node:zlib";
 import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
-import { clampThinkingLevel } from "../models.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -45,6 +45,7 @@ import {
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
+	serviceTierForRequest,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -577,8 +578,7 @@ function buildRequestBody(
 		body.temperature = options.temperature;
 	}
 
-	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
-	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
+	const requestedServiceTier = resolveCodexRequestServiceTier(model, options?.serviceTier);
 	if (requestedServiceTier !== undefined) {
 		body.service_tier = requestedServiceTier;
 	}
@@ -631,8 +631,15 @@ function getServiceTierCostMultiplier(
 function applyServiceTierPricing(
 	usage: Usage,
 	serviceTier: ResponsesServiceTier | undefined,
-	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
+	model: Model<"openai-codex-responses">,
 ) {
+	if (serviceTier === "ultrafast") {
+		const cost = model.fastRoute
+			? undefined
+			: model.serviceTiers?.find((advertised) => advertised.id === "ultrafast")?.cost;
+		if (cost) calculateCost({ ...model, cost }, usage);
+		return;
+	}
 	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
 	if (multiplier === 1) return;
 
@@ -643,11 +650,21 @@ function applyServiceTierPricing(
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
+function resolveCodexRequestServiceTier(
+	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "serviceTiers">,
+	optionsServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	return serviceTierForRequest(model, resolveRequestedServiceTier(model, optionsServiceTier));
+}
+
 function resolveCodexServiceTier(
 	responseServiceTier: ResponsesServiceTier | undefined,
 	requestServiceTier: ResponsesServiceTier | undefined,
 ): ResponsesServiceTier | undefined {
-	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTier === "flex" || requestServiceTier === "priority" || requestServiceTier === "ultrafast")
+	) {
 		return requestServiceTier;
 	}
 	return responseServiceTier ?? requestServiceTier;
@@ -693,7 +710,7 @@ async function processStream(
 		stream,
 		model,
 		{
-			serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
+			serviceTier: resolveCodexRequestServiceTier(model, options?.serviceTier),
 			grammarToolInputProperties,
 			resolveServiceTier: resolveCodexServiceTier,
 			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
@@ -1576,7 +1593,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
+				serviceTier: resolveCodexRequestServiceTier(model, options?.serviceTier),
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),

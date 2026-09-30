@@ -398,16 +398,16 @@ describe("codex fast-route first-party transport", () => {
 		const sessionId = `ultrafast-routing-${Date.now()}-${Math.random()}`;
 		const selected = fullModel({
 			...codexModel,
-			id: "gpt-6.1-sol-ultrafast",
-			fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
+			id: "gpt-6-astra-ultrafast",
+			fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "ultrafast" },
 		});
 		const ultraOptions = withChatGptCodexTransportRouting(selected, { sessionId }, closeSessions);
-		await ultraOptions.onPayload?.({ model: "gpt-6.1-sol", service_tier: "ultrafast" }, selected);
+		await ultraOptions.onPayload?.({ model: "gpt-6-astra", service_tier: "ultrafast" }, selected);
 		const actual = forceCodexFastRouteOriginator(
 			"https://chatgpt.com/backend-api/codex/responses",
 			ultraOptions.headers,
 		);
-		assert.equal(actual.get(CODEX_FAST_ROUTE_HEADER), "model=gpt-6.1-sol;tier=ultrafast");
+		assert.equal(actual.get(CODEX_FAST_ROUTE_HEADER), "model=gpt-6-astra;tier=ultrafast");
 		assert.equal(actual.get("originator"), CODEX_FAST_ROUTE_ORIGINATOR);
 		const captured: CapturedStreamCall[] = [];
 		streamWithFastRoute(
@@ -423,11 +423,11 @@ describe("codex fast-route first-party transport", () => {
 		assert.equal(providerOptions.reasoningEffort, "high");
 		const fast = fullModel({
 			...selected,
-			id: "gpt-6.1-sol-fast",
+			id: "gpt-6-astra-fast",
 			fastRoute: { ...selected.fastRoute!, serviceTier: "priority" },
 		});
 		const fastOptions = withChatGptCodexTransportRouting(fast, { sessionId }, closeSessions);
-		await fastOptions.onPayload?.({ model: "gpt-6.1-sol", service_tier: "priority" }, fast);
+		await fastOptions.onPayload?.({ model: "gpt-6-astra", service_tier: "priority" }, fast);
 		assert.equal(closeSessions.mock.calls.length, 1);
 	});
 

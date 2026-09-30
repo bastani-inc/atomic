@@ -719,6 +719,37 @@ describe("openai-responses provider defaults", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("omits an unadvertised ultrafast tier instead of throwing", async () => {
+		const model = getModel("openai", "gpt-5.5");
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: 1,
+						output_tokens: 1,
+						total_tokens: 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		const result = await streamOpenAIResponses(
+			model,
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", serviceTier: "ultrafast" },
+		).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(capturedPayload?.model).toBe("gpt-5.5");
+		expect(capturedPayload?.service_tier).toBeUndefined();
+	});
+
 	it.each([
 		["gpt-5.5-fast", "default", "priority", 2.5],
 		["gpt-5.5-fast", "flex", "priority", 2.5],

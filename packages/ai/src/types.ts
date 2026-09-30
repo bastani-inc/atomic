@@ -1218,6 +1218,21 @@ export interface ModelInputLimits {
 	images?: ModelImageInputLimits;
 }
 
+/** Service tiers a model can advertise beyond standard processing. */
+export type ModelServiceTierId = "priority" | "ultrafast";
+
+/**
+ * A service tier a model advertises, following Codex's `ModelInfo.service_tiers`.
+ *
+ * Adapters send a tier only when the model advertises it. `flex` is an API request option and needs
+ * no advertisement.
+ */
+export interface ModelServiceTier {
+	id: ModelServiceTierId;
+	/** Published per-million-token rates for this tier. Absent while the provider has not published them. */
+	cost?: ModelCost;
+}
+
 /**
  * Explicit routing metadata that marks a model as the fast-inference variant of another model.
  *
@@ -1231,7 +1246,7 @@ export interface ModelFastRoute {
 	/** Model ID to send upstream. OpenAI-style routing keeps the base ID; a provider with real fast siblings sends its own ID. */
 	upstreamModelId: string;
 	/** Service tier to send with the request. Set only for providers that route fast traffic through an OpenAI-style tier. */
-	serviceTier?: "priority" | "ultrafast";
+	serviceTier?: ModelServiceTierId;
 	/** Anthropic inference speed to send with the request. Set only for Claude models that support fast mode. */
 	speed?: "fast";
 }
@@ -1275,6 +1290,11 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	 * upstream routing it needs. Absent on every normal model.
 	 */
 	fastRoute?: ModelFastRoute;
+	/**
+	 * Service tiers this model advertises. When set, the Codex adapter sends only advertised tiers.
+	 * When unset, the model carries no tier metadata and only Ultrafast is withheld.
+	 */
+	serviceTiers?: ModelServiceTier[];
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

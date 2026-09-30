@@ -12,7 +12,7 @@ import {
 	stream as streamOpenAICodexResponses,
 	streamSimple as streamSimpleOpenAICodexResponses,
 } from "../src/api/openai-codex-responses.ts";
-import type { Api, Context, Model } from "../src/types.ts";
+import type { Api, Context, Model, ModelCost } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -174,20 +174,6 @@ describe("openai-codex fast model routing", () => {
 		expect(body?.service_tier).toBe("priority");
 	});
 
-	it.each([streamOpenAICodexResponses, streamSimpleOpenAICodexResponses])(
-		"sends Sol 6.1's unchanged model with ultrafast tier through %s",
-		async (run) => {
-			const ultrafast: Model<"openai-codex-responses"> = {
-				...baseModel,
-				id: "gpt-6.1-sol-ultrafast",
-				fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
-			};
-			const body = await captureBody(ultrafast, run);
-			assert.equal(body?.model, "gpt-6.1-sol");
-			assert.equal(body?.service_tier, "ultrafast");
-		},
-	);
-
 	it("sends no service tier for the normal sibling", async () => {
 		const body = await captureBody(baseModel, streamSimpleOpenAICodexResponses);
 
@@ -221,7 +207,7 @@ describe("openai-codex fast model routing", () => {
 		expect(captured.body?.service_tier).toBe("priority");
 	});
 
-	it.each(["default", "flex"] as const)("honors an explicit %s tier on the normal sibling", async (tier) => {
+	it("honors an explicit flex tier on the normal sibling", async () => {
 		const captured: { body: Record<string, unknown> | null } = { body: null };
 		vi.stubGlobal(
 			"fetch",
@@ -236,10 +222,280 @@ describe("openai-codex fast model routing", () => {
 		await streamOpenAICodexResponses(baseModel, normalizeContext(context), {
 			apiKey: mockToken(),
 			transport: "sse",
-			serviceTier: tier,
+			serviceTier: "flex",
 		}).result();
 
-		expect(captured.body?.service_tier).toBe(tier);
+		expect(captured.body?.service_tier).toBe("flex");
+	});
+});
+
+const ASTRA_STANDARD_COST: ModelCost = {
+	input: 10,
+	output: 50,
+	cacheRead: 1,
+	cacheWrite: 12.5,
+	tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
+};
+
+const ASTRA_ULTRAFAST_COST: ModelCost = {
+	input: 60,
+	output: 300,
+	cacheRead: 6,
+	cacheWrite: 75,
+	tiers: [{ inputTokensAbove: 272_000, input: 120, output: 450, cacheRead: 12, cacheWrite: 150 }],
+};
+
+describe("openai-codex advertised service tiers", () => {
+	const astra: Model<"openai-codex-responses"> = {
+		id: "gpt-6-astra",
+		name: "GPT-6-Astra",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: ASTRA_STANDARD_COST,
+		contextWindow: 272000,
+		maxTokens: 128000,
+		serviceTiers: [{ id: "priority" }, { id: "ultrafast", cost: ASTRA_ULTRAFAST_COST }],
+	};
+	const astraUltrafast: Model<"openai-codex-responses"> = {
+		...astra,
+		id: "gpt-6-astra-ultrafast",
+		name: "GPT-6-Astra (ultrafast)",
+		cost: ASTRA_ULTRAFAST_COST,
+		fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "ultrafast" },
+	};
+	const sol61: Model<"openai-codex-responses"> = {
+		...astra,
+		id: "gpt-6.1-sol",
+		name: "GPT-6.1 Sol",
+		cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+		serviceTiers: [{ id: "priority" }],
+	};
+	const sol61Ultrafast: Model<"openai-codex-responses"> = {
+		...sol61,
+		id: "gpt-6.1-sol-ultrafast",
+		fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
+	};
+	const solUnpublished: Model<"openai-codex-responses"> = {
+		...astra,
+		id: "gpt-5.6-sol-ultrafast",
+		name: "GPT-5.6 Sol (ultrafast)",
+		cost: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+		serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+		fastRoute: { baseModelId: "gpt-5.6-sol", upstreamModelId: "gpt-5.6-sol", serviceTier: "ultrafast" },
+	};
+	const context: Context = {
+		systemPrompt: "You are a helpful assistant.",
+		messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+	};
+
+	function completedSSE(usage: { input: number; output: number }, serviceTier?: string): string {
+		return `data: ${JSON.stringify({
+			type: "response.completed",
+			response: {
+				status: "completed",
+				service_tier: serviceTier,
+				usage: {
+					input_tokens: usage.input,
+					output_tokens: usage.output,
+					total_tokens: usage.input + usage.output,
+					input_tokens_details: { cached_tokens: 0 },
+				},
+			},
+		})}\n\ndata: [DONE]\n\n`;
+	}
+
+	async function run(
+		model: Model<"openai-codex-responses">,
+		options: { serviceTier?: "default" | "flex" | "priority" | "ultrafast" } = {},
+		response: { usage?: { input: number; output: number }; serviceTier?: string } = {},
+	) {
+		const requests: Array<Record<string, unknown> | null> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				requests.push(decodeCodexRequestBody(init?.body));
+				return new Response(
+					completedSSE(response.usage ?? { input: 100_000, output: 10_000 }, response.serviceTier),
+					{
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					},
+				);
+			}),
+		);
+		const result = await streamOpenAICodexResponses(model, normalizeContext(context), {
+			apiKey: mockToken(),
+			transport: "sse",
+			...options,
+		}).result();
+		return { result, body: requests[0] };
+	}
+
+	it.each([
+		["stream", streamOpenAICodexResponses],
+		["streamSimple", streamSimpleOpenAICodexResponses],
+	] as const)("sends an advertised ultrafast route with the base upstream model through %s", async (_name, runner) => {
+		let body: Record<string, unknown> | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				body = decodeCodexRequestBody(init?.body);
+				return new Response(completedSSE({ input: 1, output: 1 }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		await runner(astraUltrafast, normalizeContext(context), { apiKey: mockToken(), transport: "sse" }).result();
+
+		assert.equal((body as Record<string, unknown> | null)?.model, "gpt-6-astra");
+		assert.equal((body as Record<string, unknown> | null)?.service_tier, "ultrafast");
+	});
+
+	it("sends an advertised ultrafast tier requested on the normal model", async () => {
+		const { body } = await run(astra, { serviceTier: "ultrafast" });
+
+		assert.equal(body?.model, "gpt-6-astra");
+		assert.equal(body?.service_tier, "ultrafast");
+	});
+
+	it("omits an unadvertised ultrafast tier requested on the normal model instead of throwing", async () => {
+		const { result, body } = await run(sol61, { serviceTier: "ultrafast" });
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(body?.model, "gpt-6.1-sol");
+		assert.equal(body?.service_tier, undefined);
+	});
+
+	it("omits an unadvertised ultrafast route instead of throwing", async () => {
+		const { result, body } = await run(sol61Ultrafast);
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(body?.model, "gpt-6.1-sol");
+		assert.equal(body?.service_tier, undefined);
+	});
+
+	it("omits a priority tier the model's advertised tiers do not include", async () => {
+		const { result, body } = await run(
+			{ ...astra, serviceTiers: [{ id: "ultrafast" }] },
+			{ serviceTier: "priority" },
+		);
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(body?.service_tier, undefined);
+	});
+
+	it("sends an advertised priority tier", async () => {
+		const { body } = await run(sol61, { serviceTier: "priority" });
+
+		assert.equal(body?.service_tier, "priority");
+	});
+
+	it("passes flex through even when the model advertises no tiers", async () => {
+		const { body } = await run({ ...astra, serviceTiers: [] }, { serviceTier: "flex" });
+
+		assert.equal(body?.service_tier, "flex");
+	});
+
+	it("omits an explicit default tier", async () => {
+		const { body } = await run(astra, { serviceTier: "default" });
+
+		assert.equal(body?.service_tier, undefined);
+	});
+
+	it("fails an advertised ultrafast request the provider rejects without retrying at a lower tier", async () => {
+		const requests: Array<Record<string, unknown> | null> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				requests.push(decodeCodexRequestBody(init?.body));
+				return new Response(
+					JSON.stringify({ error: { message: "service_tier ultrafast is not available for this account" } }),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				);
+			}),
+		);
+
+		const result = await streamOpenAICodexResponses(astraUltrafast, normalizeContext(context), {
+			apiKey: mockToken(),
+			transport: "sse",
+		}).result();
+
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", /ultrafast/);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]?.service_tier, "ultrafast");
+	});
+
+	it("prices an ultrafast route at the model's published Ultrafast rates", async () => {
+		const { result } = await run(
+			astraUltrafast,
+			{},
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
+		);
+
+		expect(result.usage.cost.input).toBeCloseTo(6, 10);
+		expect(result.usage.cost.output).toBeCloseTo(3, 10);
+		expect(result.usage.cost.total).toBeCloseTo(9, 10);
+	});
+
+	it("charges an ultrafast route at the route model's own rates, including a user cost override", async () => {
+		const overridden = { ...astraUltrafast, cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } };
+		const { result } = await run(
+			overridden,
+			{},
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
+		);
+
+		expect(result.usage.cost.input).toBeCloseTo(0.1, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.02, 10);
+	});
+
+	it("prices an ultrafast request on the normal model at the Ultrafast rates", async () => {
+		const { result } = await run(
+			astra,
+			{ serviceTier: "ultrafast" },
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
+		);
+
+		expect(result.usage.cost.input).toBeCloseTo(6, 10);
+		expect(result.usage.cost.output).toBeCloseTo(3, 10);
+		expect(result.usage.cost.total).toBeCloseTo(9, 10);
+	});
+
+	it("keeps Ultrafast pricing when Codex echoes the default tier", async () => {
+		const { result } = await run(
+			astra,
+			{ serviceTier: "ultrafast" },
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "default" },
+		);
+
+		expect(result.usage.cost.total).toBeCloseTo(9, 10);
+	});
+
+	it("applies the long-context Ultrafast rates above 272K input tokens", async () => {
+		const { result } = await run(
+			astraUltrafast,
+			{},
+			{ usage: { input: 300_000, output: 1_000 }, serviceTier: "ultrafast" },
+		);
+
+		expect(result.usage.cost.input).toBeCloseTo(36, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.45, 10);
+	});
+
+	it("prices an ultrafast tier whose rates are unpublished at the model's own rates", async () => {
+		const { result } = await run(
+			solUnpublished,
+			{},
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
+		);
+
+		expect(result.usage.cost.input).toBeCloseTo(0.4, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.2, 10);
 	});
 });
 

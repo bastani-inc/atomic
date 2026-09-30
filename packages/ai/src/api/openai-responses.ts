@@ -37,6 +37,7 @@ import {
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
+	supportsServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -372,9 +373,13 @@ function buildParams(
 
 	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
 	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
-	if (requestedServiceTier === "ultrafast")
+	if (requestedServiceTier === "ultrafast" && supportsServiceTier(model, requestedServiceTier))
 		throw new Error("Ultrafast routing is supported only by the Codex adapter");
-	if (requestedServiceTier !== undefined) {
+	if (
+		requestedServiceTier !== undefined &&
+		requestedServiceTier !== "ultrafast" &&
+		supportsServiceTier(model, requestedServiceTier)
+	) {
 		params.service_tier = requestedServiceTier;
 	}
 

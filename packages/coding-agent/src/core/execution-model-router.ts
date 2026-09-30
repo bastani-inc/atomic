@@ -152,8 +152,8 @@ export async function routeExecutionModel(input: {
 		ctx.modelRegistry
 			.getAvailable()
 			.filter((model) => isModelType(model, "chat") && providerPermitted(model.provider))
-			// Experimental ultrafast pricing/access is unverified. It is selectable manually,
-			// but auto must receive an exact caller allowance or restore an explicit decision.
+			// Ultrafast is billed above Standard and gated by account access. It is selectable
+			// manually, but auto must receive an exact caller allowance or restore an explicit decision.
 			.filter(
 				(model) =>
 					model.fastRoute?.serviceTier !== "ultrafast" ||
@@ -350,6 +350,9 @@ export async function routeExecutionModel(input: {
 				? {
 						fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
 						fastRouteServiceTier: model.fastRoute.serviceTier,
+						ultrafastPriceUnpublished:
+							model.fastRoute.serviceTier === "ultrafast" &&
+							model.serviceTiers?.find((tier) => tier.id === "ultrafast")?.cost === undefined,
 					}
 				: {}),
 		});

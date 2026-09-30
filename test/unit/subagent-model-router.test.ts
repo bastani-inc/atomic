@@ -865,8 +865,8 @@ test("Sol 6.1 Fast reaches bounded auto-routing criteria with base evidence and 
 				serviceTier: "priority",
 			},
 		}),
-		catalogModel("openai-codex", "gpt-6.1-sol-ultrafast", {
-			fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
+		catalogModel("openai-codex", "gpt-6-astra-ultrafast", {
+			fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "ultrafast" },
 		}),
 		catalogModel("openai", "gpt-6.1-sol"),
 		catalogModel("openai-codex", "gpt-6-sol"),
@@ -911,25 +911,29 @@ test("Sol 6.1 Fast reaches bounded auto-routing criteria with base evidence and 
 	);
 });
 
-test("an explicitly listed Sol ultrafast route remains selectable without measured tier claims", async () => {
-	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
-		catalogModel("openai-codex", "gpt-6.1-sol-ultrafast", {
-			fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
-		}),
-	]);
-	await assert.rejects(
-		routeTask(f, { taskNeeds: STATED_CODING_NEEDS }),
-		/no eligible model\/effort pairs/,
-		"an experimental tier alone must not enter unconstrained auto routing",
-	);
-	const route = await routeTask(f, {
-		taskNeeds: { ...STATED_CODING_NEEDS, latencySensitive: true },
-		constraints: [{ allowedModels: ["openai-codex/gpt-6.1-sol-ultrafast"] }],
-	});
-	assert.equal(route.routerSelection.model, "openai-codex/gpt-6.1-sol-ultrafast");
-	assert.equal(f.infer.mock.calls.length, 0, "one explicitly eligible model requires no choice inference");
-});
+test.each(["gpt-6-astra", "gpt-5.6-sol"])(
+	"an explicitly listed %s ultrafast route remains selectable without measured tier claims",
+	async (baseModelId) => {
+		const f = await fixture();
+		const ultrafastId = `${baseModelId}-ultrafast`;
+		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+			catalogModel("openai-codex", ultrafastId, {
+				fastRoute: { baseModelId, upstreamModelId: baseModelId, serviceTier: "ultrafast" },
+			}),
+		]);
+		await assert.rejects(
+			routeTask(f, { taskNeeds: STATED_CODING_NEEDS }),
+			/no eligible model\/effort pairs/,
+			"an account-gated tier alone must not enter unconstrained auto routing",
+		);
+		const route = await routeTask(f, {
+			taskNeeds: { ...STATED_CODING_NEEDS, latencySensitive: true },
+			constraints: [{ allowedModels: [`openai-codex/${ultrafastId}`] }],
+		});
+		assert.equal(route.routerSelection.model, `openai-codex/${ultrafastId}`);
+		assert.equal(f.infer.mock.calls.length, 0, "one explicitly eligible model requires no choice inference");
+	},
+);
 
 test("caller task needs are validated before any inference", async () => {
 	const f = await fixture();

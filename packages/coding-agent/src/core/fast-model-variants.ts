@@ -1,4 +1,4 @@
-import type { Api, Credential, Model, ModelFastRoute, Provider } from "@bastani/pi-ai";
+import type { Api, Credential, Model, ModelCost, ModelFastRoute, Provider } from "@bastani/pi-ai";
 import type { ModelsJsonModelOverride } from "./model-config.ts";
 import { applyModelOverride } from "./provider-composer-internal.ts";
 
@@ -8,7 +8,7 @@ export const FAST_MODEL_ID_SUFFIX = "-fast";
 /** Service tier OpenAI-style providers use to route fast traffic. */
 export const FAST_MODEL_SERVICE_TIER = "priority" as const;
 
-/** Codex's selectable Sol 6.1 tier; availability and pricing depend on the account. */
+/** Codex's Ultrafast tier, offered only for models that advertise it; access depends on the account. */
 export const ULTRAFAST_MODEL_ID_SUFFIX = "-ultrafast";
 export const ULTRAFAST_MODEL_SERVICE_TIER = "ultrafast" as const;
 
@@ -217,18 +217,18 @@ export function deriveFastModelVariants(
 		// hazard as publishing one for an adapter that cannot carry the tier.
 		if (options.extensionOwnedApis?.has(model.api) === true) continue;
 		const fastRoute = fastRouteForBaseModel(model, entitledCopilotFastModelIds);
-		const routes: Array<{ suffix: string; label: string; route: ModelFastRoute }> = [];
+		const routes: Array<{ suffix: string; label: string; route: ModelFastRoute; cost?: ModelCost }> = [];
 		if (fastRoute) routes.push({ suffix: FAST_MODEL_ID_SUFFIX, label: "fast", route: fastRoute });
-		// Codex carries ultrafast in service_tier without changing the upstream model. This
-		// declares a selectable request, not an account entitlement or a measured price.
-		if (model.provider === "openai-codex" && model.api === "openai-codex-responses" && model.id === "gpt-6.1-sol") {
+		const ultrafast = model.serviceTiers?.find((tier) => tier.id === ULTRAFAST_MODEL_SERVICE_TIER);
+		if (ultrafast && model.provider === "openai-codex" && model.api === "openai-codex-responses") {
 			routes.push({
 				suffix: ULTRAFAST_MODEL_ID_SUFFIX,
 				label: "ultrafast",
 				route: { baseModelId: model.id, upstreamModelId: model.id, serviceTier: ULTRAFAST_MODEL_SERVICE_TIER },
+				cost: ultrafast.cost,
 			});
 		}
-		for (const { suffix, label, route } of routes) {
+		for (const { suffix, label, route, cost } of routes) {
 			const variantId = `${model.id}${suffix}`;
 			if (ownedModelIds.has(variantId)) {
 				diagnostics.push({
@@ -242,7 +242,13 @@ export function deriveFastModelVariants(
 				continue;
 			}
 			const override = options.modelOverrides?.[variantId];
-			const variant: Model<Api> = { ...model, id: variantId, name: `${model.name} (${label})`, fastRoute: route };
+			const variant: Model<Api> = {
+				...model,
+				id: variantId,
+				name: `${model.name} (${label})`,
+				fastRoute: route,
+				...(cost ? { cost } : {}),
+			};
 			derived.push(override ? applyModelOverride(variant, override) : variant);
 			changed = true;
 		}

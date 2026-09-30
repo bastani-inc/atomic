@@ -164,6 +164,31 @@ test("falls back to authoritative OpenAI and Codex GPT-6-Astra metadata without 
 	assert.equal(openai.compat?.supportsExplicitPromptCacheMode, true);
 });
 
+test("advertises Codex service tiers per model, with Ultrafast only for GPT-6 Astra and GPT-5.6 Sol", () => {
+	const catalogs = generate();
+	const codex = catalogs["openai-codex"];
+
+	assert.deepEqual(codex["gpt-6-astra"]?.serviceTiers, [
+		{ id: "priority" },
+		{
+			id: "ultrafast",
+			cost: {
+				input: 60,
+				output: 300,
+				cacheRead: 6,
+				cacheWrite: 75,
+				tiers: [{ inputTokensAbove: 272_000, input: 120, output: 450, cacheRead: 12, cacheWrite: 150 }],
+			},
+		},
+	]);
+	assert.deepEqual(codex["gpt-5.6-sol"]?.serviceTiers, [{ id: "priority" }, { id: "ultrafast" }]);
+	for (const [id, model] of Object.entries(codex)) {
+		if (id === "gpt-6-astra" || id === "gpt-5.6-sol") continue;
+		assert.deepEqual(model.serviceTiers, [{ id: "priority" }], `${id} advertises Fast only`);
+	}
+	assert.equal(catalogs.openai["gpt-6-astra"]?.serviceTiers, undefined);
+});
+
 test("prefers a models.dev OpenAI Astra row over the missing-model fallback", () => {
 	const openai = generate([], [], {
 		openai: {

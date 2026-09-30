@@ -512,7 +512,12 @@ describe("ModelRuntime fast model catalog", () => {
 	});
 
 	it("keeps ultrafast ownership, overrides and transport eligibility explicit", () => {
-		const base = model({ id: "gpt-6.1-sol", provider: "openai-codex", api: "openai-codex-responses" });
+		const base = model({
+			id: "gpt-6-astra",
+			provider: "openai-codex",
+			api: "openai-codex-responses",
+			serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+		});
 		const owned = model({ ...base, id: `${base.id}-ultrafast`, name: "Owned ultrafast" });
 		const collision = deriveFastModelVariants(base.provider, [base, owned]);
 		assert.equal(
@@ -540,7 +545,52 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.deepEqual(ids(deriveFastModelVariants(base.provider, [owned]).models), [owned.id]);
 	});
 
-	it("publishes Sol 6.1 ultrafast with the same model and thinking capabilities", async () => {
+	it("derives ultrafast from advertised tier metadata, never from the model ID", () => {
+		const codex = { provider: "openai-codex", api: "openai-codex-responses" } as const;
+		const advertising = model({
+			...codex,
+			id: "any-future-model",
+			serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+		});
+		const fastOnly = model({ ...codex, id: "gpt-6-astra", serviceTiers: [{ id: "priority" }] });
+		const untagged = model({ ...codex, id: "gpt-5.6-sol" });
+
+		assert.deepEqual(ids(deriveFastModelVariants("openai-codex", [advertising]).models), [
+			"any-future-model",
+			"any-future-model-fast",
+			"any-future-model-ultrafast",
+		]);
+		assert.deepEqual(ids(deriveFastModelVariants("openai-codex", [fastOnly]).models), [
+			"gpt-6-astra",
+			"gpt-6-astra-fast",
+		]);
+		assert.deepEqual(ids(deriveFastModelVariants("openai-codex", [untagged]).models), [
+			"gpt-5.6-sol",
+			"gpt-5.6-sol-fast",
+		]);
+	});
+
+	it("gives an ultrafast variant its published Ultrafast rates and keeps the base rates when unpublished", () => {
+		const codex = { provider: "openai-codex", api: "openai-codex-responses" } as const;
+		const ultrafastCost = { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 };
+		const published = model({
+			...codex,
+			id: "published",
+			serviceTiers: [{ id: "priority" }, { id: "ultrafast", cost: ultrafastCost }],
+		});
+		const unpublished = model({
+			...codex,
+			id: "unpublished",
+			serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+		});
+		const derived = deriveFastModelVariants("openai-codex", [published, unpublished]).models;
+
+		assert.deepEqual(derived.find((entry) => entry.id === "published-ultrafast")?.cost, ultrafastCost);
+		assert.deepEqual(derived.find((entry) => entry.id === "published-fast")?.cost, published.cost);
+		assert.deepEqual(derived.find((entry) => entry.id === "unpublished-ultrafast")?.cost, unpublished.cost);
+	});
+
+	it("publishes GPT-6 Astra ultrafast at the published Ultrafast rates with the same capabilities", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
 		tempDirs.push(dir);
 		const runtime = await ModelRuntime.create({
@@ -548,9 +598,9 @@ describe("ModelRuntime fast model catalog", () => {
 			modelsPath: join(dir, "models.json"),
 			allowModelNetwork: false,
 		});
-		const base = runtime.getModel("openai-codex", "gpt-6.1-sol");
-		const fast = runtime.getModel("openai-codex", "gpt-6.1-sol-fast");
-		const ultrafast = runtime.getModel("openai-codex", "gpt-6.1-sol-ultrafast");
+		const base = runtime.getModel("openai-codex", "gpt-6-astra");
+		const fast = runtime.getModel("openai-codex", "gpt-6-astra-fast");
+		const ultrafast = runtime.getModel("openai-codex", "gpt-6-astra-ultrafast");
 		assert.ok(base);
 		assert.ok(fast);
 		assert.ok(ultrafast);
@@ -565,8 +615,52 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.equal(ultrafast.reasoning, true);
 		assert.equal(ultrafast.contextWindow, base.contextWindow);
 		assert.equal(ultrafast.maxTokens, base.maxTokens);
-		assert.deepEqual(ultrafast.cost, base.cost);
+		assert.deepEqual(ultrafast.cost, {
+			input: 60,
+			output: 300,
+			cacheRead: 6,
+			cacheWrite: 75,
+			tiers: [{ inputTokensAbove: 272_000, input: 120, output: 450, cacheRead: 12, cacheWrite: 150 }],
+		});
+		assert.deepEqual(fast.cost, base.cost);
 		assert.equal(runtime.getModel("openai", ultrafast.id), undefined);
+	});
+
+	it("publishes GPT-5.6 Sol ultrafast at its standard rates because Ultrafast rates are unpublished", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+		const base = runtime.getModel("openai-codex", "gpt-5.6-sol");
+		const ultrafast = runtime.getModel("openai-codex", "gpt-5.6-sol-ultrafast");
+		assert.ok(base);
+		assert.ok(ultrafast);
+		assert.equal(ultrafast.fastRoute?.serviceTier, "ultrafast");
+		assert.equal(ultrafast.fastRoute?.upstreamModelId, base.id);
+		assert.deepEqual(ultrafast.cost, base.cost);
+		assert.equal(ultrafast.serviceTiers?.find((tier) => tier.id === "ultrafast")?.cost, undefined);
+	});
+
+	it("publishes ultrafast only for the Codex models that advertise it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+		const ultrafastIds = runtime
+			.getModels("openai-codex")
+			.filter((entry) => entry.fastRoute?.serviceTier === "ultrafast")
+			.map((entry) => entry.id)
+			.sort();
+
+		assert.deepEqual(ultrafastIds, ["gpt-5.6-sol-ultrafast", "gpt-6-astra-ultrafast"]);
+		assert.ok(runtime.getModel("openai-codex", "gpt-6.1-sol-fast"));
+		assert.equal(runtime.getModel("openai-codex", "gpt-6.1-sol-ultrafast"), undefined);
 	});
 
 	it.each([

@@ -4,6 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `Model.serviceTiers` for the service tiers a model advertises. The Codex catalog advertises Fast for every model and Ultrafast for GPT-6 Astra, with OpenAI's published Ultrafast rates, and for GPT-5.6 Sol, whose Ultrafast rates are unpublished.
+
+### Changed
+
+- The Codex Responses adapter now sends `service_tier` only when the model advertises it, following Codex: `flex` always passes through, `default` sends no tier, and an unadvertised tier is left out instead of failing. Ultrafast requests are priced at the model's published Ultrafast rates.
+- The OpenAI Responses adapter leaves out an unadvertised Ultrafast tier instead of throwing.
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added

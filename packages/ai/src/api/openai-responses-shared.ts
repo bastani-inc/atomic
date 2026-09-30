@@ -133,6 +133,23 @@ export function resolveRequestedServiceTier(
 	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
 }
 
+export function supportsServiceTier(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier,
+): boolean {
+	if (serviceTier === "flex") return true;
+	if (model.serviceTiers === undefined) return serviceTier !== "ultrafast";
+	return model.serviceTiers.some((advertised) => advertised.id === serviceTier);
+}
+
+export function serviceTierForRequest(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	if (serviceTier === undefined || serviceTier === "default") return undefined;
+	return supportsServiceTier(model, serviceTier) ? serviceTier : undefined;
+}
+
 type ServiceTier = NonNullable<ResponsesServiceTier>;
 
 export function normalizeResponseServiceTier(serviceTier: string | null | undefined): ServiceTier | undefined {
@@ -153,7 +170,7 @@ export function normalizeResponseServiceTier(serviceTier: string | null | undefi
  * hook may still rewrite every other field, and a model without a route keeps unrestricted freedom.
  */
 export function assertPayloadPreservesFastRoute(
-	model: Pick<Model<Api>, "fastRoute" | "id" | "provider">,
+	model: Pick<Model<Api>, "fastRoute" | "id" | "provider" | "serviceTiers">,
 	payload: unknown,
 ): void {
 	const fastRoute = model.fastRoute;
@@ -172,9 +189,13 @@ export function assertPayloadPreservesFastRoute(
 	if (record.model !== fastRoute.upstreamModelId) {
 		conflicts.push(`model (expected "${fastRoute.upstreamModelId}", got ${JSON.stringify(record.model)})`);
 	}
-	if (record.service_tier !== fastRoute.serviceTier) {
+	const expectedServiceTier =
+		fastRoute.serviceTier !== undefined && supportsServiceTier(model, fastRoute.serviceTier)
+			? fastRoute.serviceTier
+			: undefined;
+	if (record.service_tier !== expectedServiceTier) {
 		conflicts.push(
-			`service_tier (expected ${JSON.stringify(fastRoute.serviceTier)}, got ${JSON.stringify(record.service_tier)})`,
+			`service_tier (expected ${JSON.stringify(expectedServiceTier)}, got ${JSON.stringify(record.service_tier)})`,
 		);
 	}
 	if (conflicts.length === 0) return;

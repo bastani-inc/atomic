@@ -25,6 +25,7 @@ import type {
 	Model,
 	ModelCost,
 	ModelPromptCache,
+	ModelServiceTier,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "../src/types.ts";
@@ -522,6 +523,16 @@ const OPENAI_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
 	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 	"gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+};
+
+// GPT-5.6 Sol has Ultrafast preview access, but OpenAI has not published its rates.
+// https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast
+const CODEX_ULTRAFAST_SERVICE_TIERS: Record<string, ModelServiceTier> = {
+	"gpt-6-astra": {
+		id: "ultrafast",
+		cost: withOpenAiLongContextPricing({ input: 60, output: 300, cacheRead: 6, cacheWrite: 75 }),
+	},
+	"gpt-5.6-sol": { id: "ultrafast" },
 };
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
@@ -3586,6 +3597,10 @@ async function generateModels() {
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 	];
+	for (const model of codexModels) {
+		const ultrafast = CODEX_ULTRAFAST_SERVICE_TIERS[model.id];
+		model.serviceTiers = ultrafast ? [{ id: "priority" }, ultrafast] : [{ id: "priority" }];
+	}
 	allModels.push(...codexModels);
 
 	// Add missing Mistral Medium 3.5 model until models.dev includes it

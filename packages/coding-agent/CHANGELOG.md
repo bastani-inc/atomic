@@ -2,12 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Ultrafast for GPT-6 Astra and GPT-5.6 Sol on the OpenAI Codex provider as `openai-codex/gpt-6-astra-ultrafast` and `openai-codex/gpt-5.6-sol-ultrafast`. GPT-6 Astra Ultrafast lists OpenAI's published Ultrafast rates; GPT-5.6 Sol Ultrafast is a preview whose access is account-dependent and whose rates are unpublished. GPT-6.1 Sol supports Standard and Fast only. As in Codex, Atomic sends a service tier only when the model advertises it and otherwise falls back to standard processing, while a provider rejection of an Ultrafast choice you selected still fails the request.
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added
 
 - Added GPT-6.1 Sol and its first-party Fast variants for OpenAI API keys and ChatGPT Codex subscriptions.
-- Added an experimental `openai-codex/gpt-6.1-sol-ultrafast` choice with the exact Codex `ultrafast` service tier. Account access and tier pricing remain provider-dependent; displayed costs are provisional base-rate estimates. Normal and Fast routing remain unchanged.
 - Added **Sign in with ChatGPT** for the OpenAI provider, independently of Codex backend login.
 - Added Jev decision models on Vercel AI Gateway and OpenCode Zen.
 - Added configurable fullscreen mouse-wheel scrolling with terminal-aware automatic behavior or a fixed line count.

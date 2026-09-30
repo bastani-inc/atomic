@@ -125,6 +125,15 @@ The built-in OpenAI and Codex entries use a 272,000-token default input/context 
 
 Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` are derived canonical choices that keep these base catalog rates; the OpenAI adapters apply Fast's 2x multiplier at request time. The Codex fast choice sends upstream ID `gpt-6-astra` with `service_tier: priority` while Atomic records `gpt-6-astra-fast`.
 
+`openai-codex/gpt-6-astra-ultrafast` sends the same upstream ID with `service_tier: "ultrafast"` and lists OpenAI's published Ultrafast rates, six times Standard:
+
+| Aggregate input | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $60 | $6 | $75 | $300 |
+| Above 272,000 | $120 | $12 | $150 | $450 |
+
+`openai-codex/gpt-5.6-sol-ultrafast` is a preview choice whose access depends on the account. OpenAI has not published its Ultrafast rates, so it lists GPT-5.6 Sol's standard rates and Atomic marks the price as unpublished. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [provider tier caveats](/providers#fast-models).
+
 Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` through the `amazon-bedrock` provider. These entries keep the same 272,000 input and 128,000 output limits, text and image input, and five reasoning levels; Atomic sends the selected effort as Bedrock's OpenAI `reasoning_effort` field. They do not get Fast or OpenAI tool-search metadata. Atomic sends each Bedrock ID unchanged and records all four price fields as zero because AWS had not published Astra pricing. Zero means unknown here, not free.
 
 Atomic does not synthesize Azure OpenAI Astra entries. Live-provider catalogs remain authoritative: the current OpenRouter catalog publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, while the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`. Atomic imports those exact IDs and their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
@@ -146,7 +155,7 @@ Atomic uses a 272,000-token default context and a 128,000-token output limit. In
 
 Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
 
-`openai-codex/gpt-6.1-sol-ultrafast` requests the same model with Codex's `ultrafast` service tier and the same thinking levels. This experimental selection is account-dependent, not a claim of Sol 6.1 entitlement. Its pricing is unknown; displayed costs remain provisional base-rate estimates, not confirmed Ultrafast rates. Auto routing requires its exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [provider tier caveats](/providers#fast-models).
+GPT-6.1 Sol supports Standard and Fast only; it has no `-ultrafast` choice. See [provider tier caveats](/providers#fast-models).
 
 ### Image Input Limits
 
@@ -424,7 +433,7 @@ These rules apply when you write `models.json`:
 - **Your exact ID wins.** If a provider, a custom model in `models`, or an extension already defines that exact `<base>-fast` ID, Atomic keeps yours untouched, does not derive a duplicate, and prints a warning naming the model to rename or remove if you wanted the derived variant instead. A model you define is an ordinary model: the `-fast` suffix alone never gives it fast routing behavior.
 - **`modelOverrides` applies to derived variants.** A derived entry is a real catalog model, so `modelOverrides["gpt-5.6-sol-fast"]` customizes it exactly like any other model, and its routing metadata survives the override. Overriding the *base* model still flows through to the derived entry by inheritance; a fast-specific override wins over that inherited value.
 
-A derived variant inherits the base model's `cost`. The provider adapter applies the fast multiplier at request time (OpenAI's priority tier, Anthropic's fast-mode speed), so do not pre-multiply cost in an override.
+A derived variant inherits the base model's `cost`. The provider adapter applies the fast multiplier at request time (OpenAI's priority tier, Anthropic's fast-mode speed), so do not pre-multiply cost in an override. An Ultrafast variant is the exception: it carries the provider's published Ultrafast rates as its own `cost`, which a `modelOverrides` entry keyed on its ID replaces.
 
 ## Anthropic Messages Compatibility
 

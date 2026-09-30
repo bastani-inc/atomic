@@ -840,7 +840,7 @@ Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astr
 
 GPT-6.1 Sol rows were accessed 2026-09-29. OpenAI = [Sol 6.1 announcement](https://openai.com/index/introducing-gpt-6-1-sol/) and [system card](https://deploymentsafety.openai.com/gpt-6-1-sol); Artificial Analysis = [Sol 6.1 model page](https://artificialanalysis.ai/models/gpt-6-1-sol) and [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking). OpenAI's external benchmark results are vendor-reported, not benchmark-owner leaderboard rows. They ran in its research environment or API; individual harness revisions and run dates are not stated. AA's TBSci result is independent evidence from its own harness.
 
-No matching Sol 6.1 row was retrieved from the DeepSWE, TB-Science, Zapier, Surge GDP.pdf, OSWorld or ARC Prize owner leaderboards on that date. These gaps are unknown, not zero. No `minimal` effort or separate Fast or Ultrafast benchmark is measured here. Atomic's derived routes use explicit base-model metadata to reuse capability evidence, not a separately measured tier score or latency result.
+No matching Sol 6.1 row was retrieved from the DeepSWE, TB-Science, Zapier, Surge GDP.pdf, OSWorld or ARC Prize owner leaderboards on that date. These gaps are unknown, not zero. No `minimal` effort is measured here, and no Fast or Ultrafast tier has a separate benchmark or latency measurement for any model. Atomic's derived `-fast` and `-ultrafast` routes use explicit base-model metadata to reuse capability evidence, not a separately measured tier score or latency result.
 
 Key:
 
