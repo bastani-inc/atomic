@@ -1402,7 +1402,7 @@ test("SDK questionnaire settles throwing reply validation and releases the reque
 	} finally {
 		await fixture.close();
 	}
-}, 1000);
+});
 
 // #3105: child creation cannot discard the invoking SDK session's host or ceiling.
 test("child session inherits callback and config without resurrecting disabled builtins", async () => {

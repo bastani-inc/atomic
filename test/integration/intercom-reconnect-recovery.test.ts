@@ -14,7 +14,7 @@
  * constants; nothing sleeps for a fixed "long enough" interval.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test, vi } from "vitest";
@@ -212,11 +212,29 @@ function failFirstConnectAttempt(reason: "background" | "tool"): {
 	};
 }
 
-function readBrokerPid(): number | undefined {
+/**
+ * A broker process, identified by its pid *and* when it wrote its pid file.
+ *
+ * A pid alone cannot tell a replacement from its predecessor: Windows recycles pids quickly, so a
+ * freshly spawned broker can be handed the pid of the one that was just killed. Every spawn
+ * rewrites `broker.pid` (a SIGKILLed broker never unlinks it), so a strictly newer write is what
+ * proves a new process came up.
+ */
+interface BrokerIdentity {
+	pid: number;
+	pidFileWrittenAtMs: number;
+}
+
+function readBrokerIdentity(): BrokerIdentity | undefined {
 	const pidPath = getBrokerPidPath(agentDir);
-	if (!existsSync(pidPath)) return undefined;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+	try {
+		const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+		if (!Number.isFinite(pid) || pid <= 0) return undefined;
+		return { pid, pidFileWrittenAtMs: statSync(pidPath).mtimeMs };
+	} catch {
+		// Missing, or caught between the broker truncating and rewriting the file.
+		return undefined;
+	}
 }
 
 function processIsAlive(pid: number): boolean {
@@ -228,14 +246,23 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-async function waitForBrokerPid(previousPid?: number): Promise<number> {
+/** The live broker that wrote its pid file after `previous` did, or the first live broker when omitted. */
+async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity> {
 	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		const pid = readBrokerPid();
-		if (pid !== undefined && pid !== previousPid && processIsAlive(pid)) return pid;
+		const current = readBrokerIdentity();
+		if (
+			current !== undefined &&
+			(previous === undefined || current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs) &&
+			processIsAlive(current.pid)
+		) {
+			return current;
+		}
 		await sleep(RECOVERY_POLL_MS);
 	}
-	throw new Error(`No new broker pid replaced ${String(previousPid)} within ${RECOVERY_TIMEOUT_MS}ms`);
+	throw new Error(
+		`No new broker replaced pid ${String(previous?.pid)} within ${RECOVERY_TIMEOUT_MS}ms (pid file now: ${JSON.stringify(readBrokerIdentity())})`,
+	);
 }
 
 /** Poll `probe` until it yields a value, without any Intercom tool call on the runtime under test. */
@@ -326,7 +353,7 @@ async function fanOutToSessionsNamed(
 	}
 }
 
-function killBroker(pid: number): void {
+function killBroker({ pid }: BrokerIdentity): void {
 	try {
 		process.kill(pid, "SIGKILL");
 	} catch {
@@ -334,10 +361,21 @@ function killBroker(pid: number): void {
 	}
 }
 
+/**
+ * Wait for a SIGKILLed broker to be gone. `process.kill` only requests termination, and on
+ * Windows the process stays signalable for a while afterwards, so "it was killed" is not yet
+ * "it is dead". A replacement that inherited the killed broker's pid is alive by definition, so
+ * only a different pid can prove the predecessor died.
+ */
+async function waitForKilledBrokerExit(killed: BrokerIdentity, replacement: BrokerIdentity): Promise<void> {
+	if (replacement.pid === killed.pid) return;
+	await waitFor(`killed broker ${killed.pid} to exit`, async () => (processIsAlive(killed.pid) ? undefined : true));
+}
+
 afterAll(() => {
 	setDurableBackend(undefined);
-	const pid = readBrokerPid();
-	if (pid !== undefined) killBroker(pid);
+	const broker = readBrokerIdentity();
+	if (broker !== undefined) killBroker(broker);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -370,9 +408,9 @@ test("an ordinary host controls a second invocation after joining the first and 
 	try {
 		await host.start();
 		assert.equal((await host.execute({ action: "join", group: groupA })).isError, false);
-		const firstPid = await waitForBrokerPid();
-		killBroker(firstPid);
-		await waitForBrokerPid(firstPid);
+		const firstBroker = await waitForBroker();
+		killBroker(firstBroker);
+		await waitForBroker(firstBroker);
 		await waitFor("the multigroup host to re-register without a tool call", async () =>
 			(await probeSessionNames()).includes("multigroup-host") ? true : undefined,
 		);
@@ -498,9 +536,9 @@ test.each(["", "/worker"])(
 			await assertIsolated();
 			await stage.disconnect();
 			await owner.disconnect();
-			const firstPid = await waitForBrokerPid();
-			killBroker(firstPid);
-			await waitForBrokerPid(firstPid);
+			const firstBroker = await waitForBroker();
+			killBroker(firstBroker);
+			await waitForBroker(firstBroker);
 			await connectVictim();
 			await waitFor("the workflow worker to re-register", async () =>
 				(await owner.listSessions()).some((session) => session.name === "multigroup-worker") ? true : undefined,
@@ -525,25 +563,28 @@ test("a failed background reconnect still recovers the session with no intercom 
 		// An ordinary session connects lazily, so one tool call establishes the baseline
 		// connection. Everything asserted below happens strictly after this point.
 		assert.equal((await session.execute({ action: "status" })).isError, false);
-		const firstPid = await waitForBrokerPid();
+		const firstBroker = await waitForBroker();
 		const toolCallsAtKill = session.toolExecutions;
 
 		forced.arm();
-		killBroker(firstPid);
+		killBroker(firstBroker);
 		// The disconnect arms attempt 0; `beforeConnectAttempt` fails it through the real
 		// catch/finally path, which is exactly the transition that used to strand the runtime.
 		await forced.failed;
 
-		const recoveredPid = await waitForBrokerPid(firstPid);
+		const recoveredBroker = await waitForBroker(firstBroker);
 		const names = await waitFor("the recovered session to reappear in the broker directory", async () => {
 			const listed = await probeSessionNames();
 			return listed.includes("reconnect-recovery") ? listed : undefined;
 		});
 
 		assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
-		assert.equal(processIsAlive(firstPid), false, "the killed broker must not be revived");
-		assert.notEqual(recoveredPid, firstPid, "recovery must run against a freshly spawned broker");
-		assert.equal(processIsAlive(recoveredPid), true, "the replacement broker must be live");
+		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+		assert.ok(
+			recoveredBroker.pidFileWrittenAtMs > firstBroker.pidFileWrittenAtMs,
+			"recovery must run against a freshly spawned broker",
+		);
+		assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
 		assert.ok(names.includes("reconnect-recovery"));
 		assert.equal(
 			session.toolExecutions,
@@ -678,18 +719,18 @@ test("a running workflow stage regains list visibility and both route aliases af
 		);
 		assert.equal(stageIsRunning(), true);
 
-		const firstPid = await waitForBrokerPid();
+		const firstBroker = await waitForBroker();
 		forced.arm();
-		killBroker(firstPid);
+		killBroker(firstBroker);
 		await forced.failed;
 		assert.equal(stageIsRunning(), true, "broker churn must not change the workflow stage lifecycle");
 
 		// Wait for the replacement broker before touching any tool, so the sender's polling can
 		// never be what respawned it. The owner's route client and the stage both recover on
 		// their own timers; whichever wins the spawn, only the stage can restore its live route.
-		const recoveredPid = await waitForBrokerPid(firstPid);
-		assert.equal(processIsAlive(firstPid), false);
-		assert.equal(processIsAlive(recoveredPid), true);
+		const recoveredBroker = await waitForBroker(firstBroker);
+		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+		assert.equal(processIsAlive(recoveredBroker.pid), true);
 		assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
 
 		const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
@@ -746,15 +787,15 @@ test("a reconnect that fails after the broker accepted it leaves no second regis
 	try {
 		await session.start();
 		assert.equal((await session.execute({ action: "status" })).isError, false);
-		const firstPid = await waitForBrokerPid();
+		const firstBroker = await waitForBroker();
 		const toolCallsAtKill = session.toolExecutions;
 
 		armed = true;
-		killBroker(firstPid);
+		killBroker(firstBroker);
 		// The failing attempt spawns the replacement broker and registers on it before `restore`
 		// rejects, so a new pid appearing is the signal that the orphan window has opened.
-		const recoveredPid = await waitForBrokerPid(firstPid);
-		assert.equal(processIsAlive(recoveredPid), true);
+		const recoveredBroker = await waitForBroker(firstBroker);
+		assert.equal(processIsAlive(recoveredBroker.pid), true);
 
 		const receivedFor = (marker: string): number =>
 			session.injectedMessages.filter(({ content }) => (content ?? "").includes(marker)).length;

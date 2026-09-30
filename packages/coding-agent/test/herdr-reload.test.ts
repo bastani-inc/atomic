@@ -204,7 +204,7 @@ test(
 				}
 			} finally {
 				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-				session.dispose();
+				await session.dispose();
 			}
 		} finally {
 			await fake.dispose();
@@ -501,7 +501,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 				}
 			} finally {
 				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-				session.dispose();
+				await session.dispose();
 				providerFailure?.mockRestore();
 			}
 		} finally {
