@@ -557,7 +557,7 @@ test("resume issued at the pause acknowledgement waits for the in-flight durable
 		const resume = resumeRun(runId, { store, toolControlRegistry });
 		const confirmed = resume.then(
 			(result) => ({ result }),
-			(error: unknown) => ({ error }),
+			(error: Error) => ({ error: error.message }),
 		);
 		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
 		const outcome = await confirmed;
