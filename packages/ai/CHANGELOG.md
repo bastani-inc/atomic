@@ -4,17 +4,6 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
-### Added
-
-- Added `Model.serviceTiers` and `getServiceTierCost()` for the Fast and Ultrafast tiers a model advertises and their published rates. The OpenAI catalog follows OpenAI's Fast and Ultrafast pricing tables. The Codex catalog follows Codex's per-model tiers: Fast for every model except GPT-5.3 Codex Spark, and Ultrafast for GPT-6 Astra.
-- The OpenAI Responses adapter can send GPT-6 Astra's `ultrafast` tier.
-
-### Changed
-
-- The Codex Responses adapter sends `service_tier` only when the model advertises it, following Codex: `flex` always passes through, `default` sends no tier, and an unadvertised tier is left out instead of failing.
-- The OpenAI Responses adapter leaves out a Fast or Ultrafast tier the model doesn't advertise. It sends other tiers as requested.
-- Fast and Ultrafast usage is priced at the served tier's published rates. A model without tier metadata keeps the previous Fast multiplier.
-
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added
@@ -24,6 +13,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Added **Sign in with ChatGPT** for the OpenAI Responses API alongside API-key authentication, separate from Codex subscription login.
 - Added Jev classifiers on Vercel AI Gateway and OpenCode Zen, and provider-reported classifier usage and costs, including billed responses with invalid answers.
 - Added the lightweight `@bastani/pi-ai/models` entry point for model catalog consumers.
+- Added `Model.serviceTiers` and `getServiceTierCost()` for the Fast and Ultrafast tiers a model advertises and their published rates. The OpenAI catalog follows OpenAI's Fast and Ultrafast pricing tables. The Codex catalog follows Codex's per-model tiers: Fast for every model except GPT-5.3 Codex Spark, and Ultrafast for GPT-6 Astra.
+- The OpenAI Responses adapter can send GPT-6 Astra's `ultrafast` tier.
+
+### Changed
+
+- The Codex Responses adapter sends `service_tier` only when the model advertises it, following Codex: `flex` always passes through, `default` sends no tier, and an unadvertised tier is left out instead of failing.
+- The OpenAI Responses adapter leaves out a Fast or Ultrafast tier the model doesn't advertise. It sends other tiers as requested.
+- Fast and Ultrafast usage is priced at the served tier's published rates. A model without tier metadata keeps the previous Fast multiplier.
 
 ## [0.9.24] - 2026-09-29
 
