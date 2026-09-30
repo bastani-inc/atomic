@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.25-alpha.3] - 2026-09-30
+
 ### Added
 
 - Set `oauth.clientName` to choose the client name sent during dynamic OAuth registration. The default is `atomic` ([#10226](https://github.com/earendil-works/pi/issues/10226)).
