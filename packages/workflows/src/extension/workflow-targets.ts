@@ -33,6 +33,8 @@ export function stageFailureMessage(runId: string, resultReason: string, action:
 			return `Run not found: ${runId}`;
 		case "already_ended":
 			return `Run already ended: ${runId}`;
+		case "already_paused":
+			return `Run ${runId} is already paused.`;
 		case "stage_not_found":
 			return `Stage not found for run: ${runId}`;
 		default:

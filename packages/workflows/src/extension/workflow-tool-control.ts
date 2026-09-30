@@ -15,13 +15,14 @@ import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
-import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import {
-	classifyControlError,
-	resumeFailureCode,
-	type WorkflowControlFailedRun,
-	type WorkflowControlFailureCode,
-} from "./workflow-control-failure.js";
+	bulkAlreadyPausedCount,
+	bulkFailedRuns,
+	bulkFailureMessage,
+	bulkUnstoppedStatus,
+} from "./workflow-bulk-control.js";
+import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import { classifyControlError, resumeFailureCode } from "./workflow-control-failure.js";
 import { resolveWorkflowResumeTarget, stageScopedDurableResumeMessage } from "./workflow-durable-resume-command.js";
 import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -138,57 +139,6 @@ export async function workflowReloadAction(
 	}
 }
 
-type BulkRunResult =
-	| { readonly ok: true; readonly runId: string; readonly message?: string }
-	| { readonly ok: false; readonly runId: string; readonly reason: string; readonly message?: string };
-
-function bulkFailedRuns(results: readonly BulkRunResult[]): WorkflowControlFailedRun[] {
-	return results.flatMap((result) =>
-		result.ok
-			? []
-			: [
-					{
-						runId: result.runId,
-						reason: result.reason,
-						...(result.message === undefined ? {} : { message: result.message }),
-					},
-				],
-	);
-}
-
-function bulkFailureMessage<T extends BulkRunResult>(
-	verb: "Paused" | "Quit",
-	action: "pause" | "quit",
-	results: readonly T[],
-	describeSuccess: (result: Extract<T, { readonly ok: true }>) => string,
-): string {
-	const successes = results.filter((result) => result.ok).length;
-	const failures = results.length - successes;
-	const outcomes = results
-		.map((result) =>
-			result.ok
-				? describeSuccess(result as Extract<T, { readonly ok: true }>)
-				: `${result.runId}: ${result.reason}${result.message === undefined ? "" : ` (${result.message})`}`,
-		)
-		.join(", ");
-	return `${successes > 0 ? `${verb} ${successes} run(s); ` : ""}failed to ${action} ${failures} run(s); outcomes: ${outcomes}.`;
-}
-
-/**
- * Status for a batch control: any failure downgrades an otherwise `paused` result to `partial`. When nothing
- * succeeded, only failures that leave a run active, other than one with no controllable stage, carry a code.
- */
-function bulkFailureStatus(
-	succeeded: number,
-	failedRuns: readonly WorkflowControlFailedRun[],
-): { status: "partial" | "noop"; code?: WorkflowControlFailureCode } {
-	if (succeeded > 0) return { status: "partial" };
-	const refused = failedRuns.some(
-		(failed) => failed.reason !== "already_ended" && failed.reason !== "no_active_stages",
-	);
-	return refused ? { status: "noop", code: "control_failed" } : { status: "noop" };
-}
-
 /** Machine-readable identities also appear in the quit result; this is the readable copy. */
 function abandonedToolSuffix(abandonedTools: readonly WorkflowToolNodeIdentity[]): string {
 	return abandonedTools.length === 0
@@ -286,7 +236,7 @@ export async function workflowQuitAction(
 			return {
 				action,
 				runId: "--all",
-				...bulkFailureStatus(quitCount, failedRuns),
+				...bulkUnstoppedStatus(results),
 				message: bulkFailureMessage(
 					"Quit",
 					action,
@@ -369,7 +319,7 @@ export async function workflowPauseAction(
 				return {
 					action,
 					runId: "--all",
-					...bulkFailureStatus(paused, failedRuns),
+					...bulkUnstoppedStatus(results),
 					message: bulkFailureMessage(
 						"Paused",
 						action,
@@ -379,12 +329,19 @@ export async function workflowPauseAction(
 					failedRuns,
 				};
 			}
+			const alreadyPaused = bulkAlreadyPausedCount(results);
+			const summary =
+				paused > 0
+					? `Paused ${paused} run(s)${alreadyPaused > 0 ? `; ${alreadyPaused} already paused` : ""}.`
+					: alreadyPaused > 0
+						? `${alreadyPaused} in-flight run(s) already paused.`
+						: "No in-flight runs to pause.";
 			return {
 				action,
 				runId: "--all",
 				status: paused > 0 ? "paused" : "noop",
 				message: [
-					paused > 0 ? `Paused ${paused} run(s).` : "No in-flight runs to pause.",
+					summary,
 					...results.flatMap((result) => (result.ok && result.message !== undefined ? [result.message] : [])),
 				].join("\n"),
 			};

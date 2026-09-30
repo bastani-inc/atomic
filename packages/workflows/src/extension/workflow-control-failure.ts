@@ -15,7 +15,6 @@ export type WorkflowControlFailureCode =
 	| "database_unavailable"
 	| "control_failed";
 
-/** One run a batch pause or quit could not stop, so a partial or empty batch names what remains active. */
 export interface WorkflowControlFailedRun {
 	readonly runId: string;
 	readonly reason: string;

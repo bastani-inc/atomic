@@ -15,6 +15,12 @@ import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext } from "./public-types.js";
+import {
+	bulkAlreadyPausedCount,
+	bulkFailedRuns,
+	bulkFailureMessage,
+	bulkStoppedCount,
+} from "./workflow-bulk-control.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
@@ -143,17 +149,15 @@ export async function handleRunControlCommand(
 			const results = action === "quit" ? await quitAllRuns({ ...owner, actor: "user" }) : await pauseAllRuns(owner);
 			const successes = results.flatMap((result) => (result.ok ? [result] : []));
 			const changed = successes.length;
-			const failures = results.filter((result) => !result.ok);
-			if (action === "quit" && failures.length > 0) {
-				const outcomes = results
-					.map((result) =>
-						result.ok
-							? (result.message ?? `${result.runId}: quit`)
-							: `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
-					)
-					.join(", ");
-				const message = `${changed > 0 ? `Quit ${changed} run(s); ` : ""}failed to quit ${failures.length} run(s); outcomes: ${outcomes}.`;
-				if (changed > 0) print(message);
+			const alreadyPaused = bulkAlreadyPausedCount(results);
+			if (bulkFailedRuns(results).length > 0) {
+				const message = bulkFailureMessage(
+					action === "quit" ? "Quit" : "Paused",
+					action,
+					results,
+					(result) => result.message ?? `${result.runId}: ${action === "quit" ? "quit" : "paused"}`,
+				);
+				if (bulkStoppedCount(results) > 0) print(message);
 				else fail(message);
 			} else if (changed > 0) {
 				print(
@@ -163,6 +167,8 @@ export async function handleRunControlCommand(
 							? `Quit ${changed} run(s); resume with /workflow resume.`
 							: `Paused ${changed} run(s).`,
 				);
+			} else if (alreadyPaused > 0) {
+				print(`${alreadyPaused} in-flight run(s) already paused.`);
 			} else {
 				fail(`No in-flight runs to ${action}.`);
 			}
@@ -209,6 +215,7 @@ export async function handleRunControlCommand(
 		try {
 			const result = await pauseRun(resolved.runId, owner);
 			if (result.ok) print(result.message ?? `Run ${result.runId} paused and can be resumed.`);
+			else if (result.reason === "already_paused") print(`Run ${result.runId} is already paused.`);
 			else
 				fail(
 					result.reason === "not_found"
