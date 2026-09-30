@@ -284,7 +284,41 @@ export class McpServerManager {
       }
       
       // SSE is the legacy transport
-      return protect(new SSEClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch ?? providerFetch }));
+      let pendingStart: { error?: McpProviderAuthError } | undefined;
+      const sseTransport = new SSEClientTransport(url, {
+        requestInit,
+        authProvider,
+        fetch: authProvider?.fetch ?? providerFetch,
+        eventSourceInit: providerFetch ? {
+          fetch: async (input, init) => {
+            const attempt = pendingStart;
+            if (attempt) attempt.error = undefined;
+            try {
+              return await providerFetch(input, init);
+            } catch (error) {
+              if (attempt && pendingStart === attempt && !init?.signal?.aborted && error instanceof McpProviderAuthError) {
+                attempt.error = error;
+              }
+              throw error;
+            }
+          },
+        } : undefined,
+      });
+      if (providerFetch) {
+        const start = sseTransport.start.bind(sseTransport);
+        sseTransport.start = async () => {
+          const attempt: { error?: McpProviderAuthError } = {};
+          pendingStart = attempt;
+          try {
+            await start();
+          } catch (error) {
+            throw attempt.error ?? error;
+          } finally {
+            if (pendingStart === attempt) pendingStart = undefined;
+          }
+        };
+      }
+      return protect(sseTransport);
     }
   }
   

@@ -414,3 +414,107 @@ test("provider auth failures give model-facing calls login guidance and recover 
 		await state.lifecycle.gracefulShutdown();
 	}
 });
+
+test("legacy SSE provider auth gives model-facing login guidance and recovers after a token change", async () => {
+	let token = "rejected";
+	let stream: ServerResponse | undefined;
+	let unavailable = false;
+	const fixture = await startServer(async (request, response) => {
+		if (request.url === "/sse") {
+			if (request.method === "POST") {
+				response.writeHead(405).end();
+			} else if (unavailable) {
+				response.writeHead(503).end();
+			} else if (request.headers.authorization !== "Bearer accepted") {
+				response.writeHead(401).end();
+			} else {
+				stream = response;
+				response.writeHead(200, { "Content-Type": "text/event-stream" });
+				response.write("event: endpoint\ndata: /messages\n\n");
+			}
+			return true;
+		}
+		if (request.url !== "/messages") return false;
+		const message = JSON.parse(await readBody(request));
+		response.writeHead(202).end();
+		if ("id" in message) {
+			const result =
+				message.method === "initialize"
+					? {
+							protocolVersion: "2024-11-05",
+							capabilities: { tools: {} },
+							serverInfo: { name: "legacy", version: "1" },
+						}
+					: message.method === "tools/call"
+						? { content: [{ type: "text", text: "pong" }] }
+						: message.method === "resources/list"
+							? { resources: [] }
+							: { tools: [{ name: "ping", inputSchema: { type: "object", properties: {} } }] };
+			stream?.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`);
+		}
+		return true;
+	});
+	const configPath = join(root, "mcp.json");
+	writeFileSync(
+		configPath,
+		JSON.stringify({ mcpServers: { legacy: { url: `${fixture.origin}/sse`, auth: { provider: "radius" } } } }),
+	);
+	const pi = { getFlag: () => configPath, getMcpServerContributions: () => [], sendMessage: () => {} };
+	const ctx = { cwd: root, hasUI: false, modelRegistry: { getApiKeyForProvider: async () => token } };
+	const state = await initializeMcp(pi as unknown as ExtensionAPI, ctx as unknown as ExtensionContext);
+	try {
+		const blocked = await executeCall(state, "legacy_ping", {}, "legacy");
+		assert.equal(blocked.details?.error, "auth_required");
+		assert.equal(
+			blocked.content[0]?.type === "text" && blocked.content[0].text,
+			'MCP server "legacy" requires sign-in. Run /login radius to sign in.',
+		);
+		assert.equal(state.manager.getConnection("legacy")?.status, "needs-auth");
+		assert.equal(state.failureTracker.has("legacy"), false);
+		assert.deepEqual(
+			fixture.seen.map((request) => [request.method, request.url, request.authorization]),
+			[
+				["POST", "/sse", "Bearer rejected"],
+				["GET", "/sse", "Bearer rejected"],
+			],
+		);
+
+		token = "accepted";
+		const recovered = await executeCall(state, "legacy_ping", {}, "legacy");
+		assert.equal(recovered.content[0]?.type === "text" && recovered.content[0].text, "pong");
+		assert.equal(state.manager.getConnection("legacy")?.status, "connected");
+		assert.ok(fixture.seen.slice(2).every((request) => request.authorization === "Bearer accepted"));
+
+		await state.manager.close("legacy");
+		unavailable = true;
+		const failed = await executeCall(state, "legacy_ping", {}, "legacy");
+		assert.equal(failed.details?.error, "connect_failed");
+		const backedOff = await executeCall(state, "legacy_ping", {}, "legacy");
+		assert.equal(backedOff.details?.error, "server_backoff");
+		assert.notEqual(state.manager.getConnection("legacy")?.status, "needs-auth");
+	} finally {
+		await state.lifecycle.gracefulShutdown();
+	}
+});
+
+test("legacy SSE does not treat an ordinary error containing provider login guidance as an auth failure", async () => {
+	const fixture = await startServer((_request, response) => {
+		response.writeHead(405).end();
+		return true;
+	});
+	let calls = 0;
+	const manager = new McpServerManager();
+	manager.setProviderTokenResolver(async () => {
+		if (++calls > 1) throw new Error('MCP server "legacy" requires sign-in. Run /login radius to sign in.');
+		return "token";
+	});
+	try {
+		await assert.rejects(
+			manager.connect("legacy", { url: `${fixture.origin}/sse`, auth: { provider: "radius" } }),
+			(error: Error) => error.name === "Error" && error.message.includes("Run /login radius"),
+		);
+		assert.equal(manager.getConnection("legacy"), undefined);
+	} finally {
+		await manager.closeAll();
+	}
+});
