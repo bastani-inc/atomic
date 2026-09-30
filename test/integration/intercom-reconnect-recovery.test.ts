@@ -228,9 +228,12 @@ interface BrokerIdentity {
 function readBrokerIdentity(): BrokerIdentity | undefined {
 	const pidPath = getBrokerPidPath(agentDir);
 	try {
+		const writtenBeforeRead = statSync(pidPath).mtimeMs;
 		const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
 		if (!Number.isFinite(pid) || pid <= 0) return undefined;
-		return { pid, pidFileWrittenAtMs: statSync(pidPath).mtimeMs };
+		const writtenAfterRead = statSync(pidPath).mtimeMs;
+		if (writtenAfterRead !== writtenBeforeRead) return undefined;
+		return { pid, pidFileWrittenAtMs: writtenAfterRead };
 	} catch {
 		// Missing, or caught between the broker truncating and rewriting the file.
 		return undefined;
