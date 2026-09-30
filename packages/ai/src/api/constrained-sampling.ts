@@ -31,6 +31,7 @@ const UNSUPPORTED_STRICT_SCHEMA_KEYS = [
 export interface StrictJsonSchemaProfile {
 	readonly unsupportedKeywords: readonly string[];
 	readonly maxMinItems?: number;
+	readonly supportedStringFormats?: readonly string[];
 }
 
 export const ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE: StrictJsonSchemaProfile = Object.freeze({
@@ -40,11 +41,15 @@ export const ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE: StrictJsonSchemaProfile = Obj
 		"exclusiveMinimum",
 		"exclusiveMaximum",
 		"multipleOf",
-		"minLength",
-		"maxLength",
+		"uniqueItems",
+		"minContains",
+		"maxContains",
+		"minProperties",
+		"maxProperties",
 		"maxItems",
 	]),
 	maxMinItems: 1,
+	supportedStringFormats: Object.freeze(["date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"]),
 });
 
 function isJsonSchemaObject(value: unknown): value is JsonSchemaObject {
@@ -80,10 +85,14 @@ function makeJsonSchemaNodeStrict(schema: unknown, profile: StrictJsonSchemaProf
 	}
 	if (
 		profile?.maxMinItems !== undefined &&
-		typeof schema.minItems === "number" &&
-		schema.minItems > profile.maxMinItems
+		schema.minItems !== undefined &&
+		(typeof schema.minItems !== "number" || !Number.isInteger(schema.minItems) || schema.minItems < 0 || schema.minItems > profile.maxMinItems)
 	) {
-		throw new UnsupportedStrictJsonSchemaError(`minItems above ${profile.maxMinItems} is unsupported`);
+		throw new UnsupportedStrictJsonSchemaError(`minItems must be an integer from 0 to ${profile.maxMinItems}`);
+	}
+	if (profile?.supportedStringFormats && schema.format !== undefined &&
+		(typeof schema.format !== "string" || !profile.supportedStringFormats.includes(schema.format))) {
+		throw new UnsupportedStrictJsonSchemaError(`format: ${JSON.stringify(schema.format)} is unsupported`);
 	}
 
 	if (schema.anyOf !== undefined) {

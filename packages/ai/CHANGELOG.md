@@ -7,6 +7,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Fixed
 
 - Fixed context overflow detection for Z.AI CN endpoint `Prompt exceeds max length` errors ([#10208](https://github.com/earendil-works/pi/issues/10208)).
+- Anthropic `strict: "prefer"` tools now fall back to non-strict mode for unsupported string formats and additional array/object constraints instead of rejecting the request. Supported string length and pattern constraints remain strict ([#9953](https://github.com/earendil-works/pi/issues/9953)).
 
 ## [0.9.25-alpha.1] - 2026-09-29
 
