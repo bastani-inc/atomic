@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - MCP sign-in now displays a clickable terminal hyperlink and a Cmd/Ctrl+click hint, including when the authorization URL wraps across lines ([#10186](https://github.com/earendil-works/pi/issues/10186)).
 - MCP tool names now use JavaScript-safe identifiers. Tools whose names sanitize to the same identifier all receive deterministic hash suffixes, preventing codemode calls from reaching the wrong tool. Server names that differ only in `-` and `_` conflict ([#10239](https://github.com/earendil-works/pi/issues/10239)).
+- Cached MCP tools now reconnect after `/login <provider>` when a provider-authenticated server needs sign-in, without requiring `/mcp reconnect`.
 
 ## [0.9.25-alpha.1] - 2026-09-29
 

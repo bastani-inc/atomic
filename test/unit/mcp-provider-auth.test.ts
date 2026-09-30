@@ -8,9 +8,11 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { loadMcpConfig, validateMcpConfig } from "../../packages/mcp/config.js";
 import { initializeMcp } from "../../packages/mcp/init.js";
+import { computeServerHash, saveMetadataCache } from "../../packages/mcp/metadata-cache.js";
 import { createProviderAuthFetch, providerAuthUrlError } from "../../packages/mcp/provider-auth.js";
 import { executeCall } from "../../packages/mcp/proxy-call.js";
 import { McpServerManager } from "../../packages/mcp/server-manager.js";
+import type { ServerEntry } from "../../packages/mcp/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 interface Seen {
@@ -414,6 +416,96 @@ test("provider auth failures give model-facing calls login guidance and recover 
 		await state.lifecycle.gracefulShutdown();
 	}
 });
+
+for (const { initialToken, recovery } of [
+	{ initialToken: undefined, recovery: "connected" },
+	{ initialToken: "rejected", recovery: "connected" },
+	{ initialToken: undefined, recovery: "removed tool" },
+	{ initialToken: "rejected", recovery: "unavailable" },
+]) {
+	test(`cached eager provider tools retry after login from ${initialToken === undefined ? "missing" : "rejected"} credentials: ${recovery}`, async () => {
+		let unavailable = false;
+		const toolName = recovery === "removed tool" ? "radius_obsolete" : "radius_ping";
+		const fixture = await startServer((request, response) => {
+			if (unavailable) {
+				response.writeHead(503).end();
+				return true;
+			}
+			if (request.headers.authorization === "Bearer accepted") return false;
+			response.writeHead(401).end();
+			return true;
+		});
+		const definition: ServerEntry = {
+			url: `${fixture.origin}/mcp`,
+			auth: { provider: "radius" },
+			lifecycle: "eager",
+		};
+		const configPath = join(root, "mcp.json");
+		writeFileSync(configPath, JSON.stringify({ mcpServers: { radius: definition }, settings: { autoAuth: true } }));
+		saveMetadataCache({
+			version: 1,
+			servers: {
+				radius: {
+					configHash: computeServerHash(definition),
+					cachedAt: Date.now(),
+					tools: [
+						{ name: "ping", description: "Cached ping", inputSchema: { type: "object" } },
+						{ name: "obsolete", inputSchema: { type: "object" } },
+					],
+					resources: [],
+				},
+			},
+		});
+		let token = initialToken;
+		const getApiKeyForProvider = vi.fn(async () => token);
+		const pi = { getFlag: () => configPath, getMcpServerContributions: () => [], sendMessage: () => {} };
+		const ctx = { cwd: root, hasUI: false, modelRegistry: { getApiKeyForProvider } };
+		const state = await initializeMcp(pi as unknown as ExtensionAPI, ctx as unknown as ExtensionContext);
+		try {
+			assert.equal(state.manager.getConnection("radius")?.status, "needs-auth");
+			assert.equal(state.toolMetadata.get("radius")?.[0]?.description, "Cached ping");
+			const blocked = await executeCall(state, toolName, {}, "radius");
+			assert.equal(blocked.details?.error, "auth_required");
+			assert.equal(
+				blocked.content[0]?.type === "text" && blocked.content[0].text,
+				'MCP server "radius" requires sign-in. Run /login radius to sign in.',
+			);
+			assert.equal(state.failureTracker.has("radius"), false);
+			if (initialToken === undefined) assert.deepEqual(fixture.seen, []);
+			const requestsBeforeLogin = fixture.seen.length;
+			const resolutionsBeforeLogin = getApiKeyForProvider.mock.calls.length;
+
+			token = "accepted";
+			unavailable = recovery === "unavailable";
+			const recovered = await executeCall(state, toolName, {}, initialToken === undefined ? "radius" : undefined);
+			if (unavailable) {
+				assert.equal(recovered.details?.error, "server_backoff");
+				assert.notEqual(state.manager.getConnection("radius")?.status, "needs-auth");
+				const requestsAfterFailure = fixture.seen.length;
+				const backedOff = await executeCall(state, toolName, {}, "radius");
+				assert.equal(backedOff.details?.error, "server_backoff");
+				assert.equal(fixture.seen.length, requestsAfterFailure);
+			} else {
+				assert.equal(state.manager.getConnection("radius")?.status, "connected");
+				assert.equal(state.toolMetadata.get("radius")?.[0]?.description, "Ping");
+				if (recovery === "removed tool") {
+					assert.equal(recovered.details?.error, "tool_not_found");
+				} else {
+					assert.equal(recovered.details?.error, undefined);
+					assert.equal(recovered.content[0]?.type === "text" && recovered.content[0].text, "pong");
+				}
+			}
+			assert.ok(getApiKeyForProvider.mock.calls.length > resolutionsBeforeLogin);
+			assert.ok(fixture.seen.length > requestsBeforeLogin);
+			assert.ok(
+				fixture.seen.slice(requestsBeforeLogin).every((request) => request.authorization === "Bearer accepted"),
+			);
+			assert.deepEqual(readdirSync(join(root, "oauth")), []);
+		} finally {
+			await state.lifecycle.gracefulShutdown();
+		}
+	});
+}
 
 test("legacy SSE provider auth gives model-facing login guidance and recovers after a token change", async () => {
 	let token = "rejected";

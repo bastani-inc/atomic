@@ -135,6 +135,8 @@ An HTTP server can use the token of a provider you have signed in to instead of 
 
 Atomic reads the provider's current token for each request, so refreshes apply. MCP does not copy or store the token. If the server rejects it or the provider has no token, the connection fails with a message to run `/login <provider>`.
 
+After signing in with `/login <provider>`, retry the MCP gateway call. Atomic reconnects with the current token, including for servers with cached tools; you do not need to run `/mcp reconnect`.
+
 Because the token goes to the server's `url`, `auth.provider` has limits:
 
 - It is accepted in the global `mcp.json` files and in servers registered by extensions. It is ignored, with a warning, in project `.mcp.json` and `.atomic/mcp.json`, in project-relative imports such as `.vscode/mcp.json`, and in package manifest servers.

@@ -14,6 +14,7 @@ import { notifyUiCancellation, rethrowHostAbortAfterUiCancellation } from "./app
 import { asCallToolResult } from "./call-tool-result.js";
 import { assertMcpStateLease, McpStateChangedError, type AssertMcpStateLease } from "./state-lease.js";
 import { callToolWithConfiguredTimeout, formatMcpToolCallFailure } from "./tool-call-timeout.js";
+import { isProviderAuth } from "./provider-auth.js";
 
 export async function executeCall(
   state: McpExtensionState,
@@ -52,7 +53,10 @@ export async function executeCall(
     }
   }
 
-  if (serverName && !toolMeta) {
+  if (serverName && (!toolMeta || (
+    state.manager.getConnection(serverName)?.status === "needs-auth"
+    && isProviderAuth(state.config.mcpServers[serverName]?.auth)
+  ))) {
     const connected = await waitForCaller(() => lazyConnect(state, serverName!), signal);
     signal?.throwIfAborted();
     assertMcpStateLease(assertActive);
