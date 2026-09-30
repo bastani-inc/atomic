@@ -25,6 +25,7 @@
 - Provider retries now use exponential backoff when `Retry-After` contains an unparseable date ([#9571](https://github.com/earendil-works/pi/issues/9571)).
 - MCP sign-in URLs remain clickable when they wrap, including inside the `/mcp` panel ([#10186](https://github.com/earendil-works/pi/issues/10186)).
 - MCP tool names now use JavaScript-safe identifiers with deterministic suffixes for collisions and long names, consistently across direct tools, gateway discovery, and codemode ([#10239](https://github.com/earendil-works/pi/issues/10239)).
+- Codemode `image()` now rejects malformed base64 and unsupported image types before saving a tool result, and detects the MIME type from the image data instead of trusting the supplied type ([#10215](https://github.com/earendil-works/pi/issues/10215)).
 
 ## [0.9.25-alpha.2] - 2026-09-30
 

@@ -41,6 +41,8 @@ Use `text(value)`, `image(dataUrlOrImageContent)`, `console.log(...)`, or a top-
 return await tools.read({ path: "README.md" });
 ```
 
+`image()` accepts base64 PNG, JPEG, GIF, or WebP data URLs and MCP image content. It detects the MIME type from the data, ignores an incorrect supplied type, and rejects malformed base64 or unsupported formats before returning an image. Remote HTTP image URLs are not supported; fetch the image through a permitted tool first.
+
 There is no default deadline. Text output defaults to 10,000 estimated tokens; longer output keeps its start and end and, when saving succeeds, names a temporary file containing the full text. Failed scripts retain partial output and report the error. Unawaited calls are cancelled when a script ends; await work you need to finish.
 
 Tools with `outputSchema` return their `structuredContent` to scripts, including structured error results. Other tools return text and throw on errors. Completed `bash` calls provide structured output as described in the [SDK reference](/sdk/reference#bash-tool-behavior).

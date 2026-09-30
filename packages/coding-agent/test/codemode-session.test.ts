@@ -304,3 +304,57 @@ test("codemode describes namespace instructions on request without listing them 
 		await harness.cleanup();
 	}
 });
+
+test("codemode rejects corrupt image outputs before they enter later provider turns (#10215)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		for (const data of ["%%%", "a", "aGVsbG8="]) {
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("codemode", { code: `image("data:image/png;base64,${data}")` })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			]);
+			await harness.session.prompt("emit image");
+			const result = harness.session.messages.filter((message) => message.role === "toolResult").at(-1);
+			assert.ok(result?.role === "toolResult");
+			assert.equal(result.isError, true);
+			assert.equal(
+				result.content.some((block) => block.type === "image"),
+				false,
+			);
+			assert.match(getMessageText(result), /invalid image output|unsupported image type/);
+		}
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode detects the image MIME type instead of trusting the supplied type (#10215)", async () => {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGZkAAAAASUVORK5CYII=";
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: `image("data:image/jpeg;base64,${png}")` })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("emit image");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert.ok(result?.role === "toolResult");
+		assert.equal(result.isError, false);
+		assert.deepEqual(
+			result.content.filter((block) => block.type === "image"),
+			[{ type: "image", data: png, mimeType: "image/png" }],
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
