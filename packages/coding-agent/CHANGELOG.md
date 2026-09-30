@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.25-alpha.1] - 2026-09-29
+
 ### Added
 
 - Added GPT-6.1 Sol and its first-party Fast variants for OpenAI API keys and ChatGPT Codex subscriptions.

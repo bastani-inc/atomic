@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.25-alpha.1] - 2026-09-29
+
 ### Added
 
 - Added GPT-6.1 Sol for OpenAI and Codex with supported reasoning efforts, prompt-cache and tool capabilities, and long-context pricing metadata.
