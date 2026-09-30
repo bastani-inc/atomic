@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { anthropicOAuth } from "../src/auth/oauth/anthropic.ts";
-import type { AuthEvent, AuthPrompt } from "../src/auth/types.ts";
+import assert from "node:assert/strict";
+import { afterEach, describe, it, vi } from "vitest";
+import { anthropicOAuth } from "../src/auth/oauth/anthropic.js";
+import type { AuthEvent, AuthPrompt } from "../src/auth/types.js";
 
 const neverAbortedSignal = new AbortController().signal;
 
@@ -38,15 +39,15 @@ describe.sequential("Anthropic OAuth", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("keeps the localhost redirect_uri for manual callback login", async () => {
+	it("keeps the localhost redirect_uri for manual callback login (#10194)", async () => {
 		let authUrl = "";
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
-			expect(init?.method).toBe("POST");
+			assert.equal(getUrl(input), "https://platform.claude.com/v1/oauth/token");
+			assert.equal(init?.method, "POST");
 			const body = getJsonBody(init);
-			expect(body.grant_type).toBe("authorization_code");
-			expect(body.code).toBe("manual-code");
-			expect(body.redirect_uri).toBe("http://localhost:53692/callback");
+			assert.equal(body.grant_type, "authorization_code");
+			assert.equal(body.code, "manual-code");
+			assert.equal(body.redirect_uri, "http://localhost:53692/callback");
 			return jsonResponse({
 				access_token: "access-token",
 				refresh_token: "refresh-token",
@@ -61,6 +62,7 @@ describe.sequential("Anthropic OAuth", () => {
 				if (event.type === "auth_url") authUrl = event.url;
 			},
 			prompt: async (prompt) => {
+				if (prompt.type === "select") return "browser";
 				if (prompt.type !== "manual_code") throw new Error(`Unexpected prompt: ${prompt.type}`);
 				const url = new URL(authUrl);
 				const state = url.searchParams.get("state");
@@ -70,20 +72,20 @@ describe.sequential("Anthropic OAuth", () => {
 			},
 		});
 
-		expect(credentials.access).toBe("access-token");
-		expect(credentials.refresh).toBe("refresh-token");
-		expect(fetchMock).toHaveBeenCalledOnce();
+		assert.equal(credentials.access, "access-token");
+		assert.equal(credentials.refresh, "refresh-token");
+		assert.equal(fetchMock.mock.calls.length, 1);
 	});
 
 	it("omits scope from refresh token requests", async () => {
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
-			expect(init?.method).toBe("POST");
+			assert.equal(getUrl(input), "https://platform.claude.com/v1/oauth/token");
+			assert.equal(init?.method, "POST");
 			const body = getJsonBody(init);
-			expect(body.grant_type).toBe("refresh_token");
-			expect(body.client_id).toBeTruthy();
-			expect(body.refresh_token).toBe("refresh-token");
-			expect(body).not.toHaveProperty("scope");
+			assert.equal(body.grant_type, "refresh_token");
+			assert.ok(body.client_id);
+			assert.equal(body.refresh_token, "refresh-token");
+			assert.equal(Object.hasOwn(body, "scope"), false);
 			return jsonResponse({
 				access_token: "new-access-token",
 				refresh_token: "new-refresh-token",
@@ -102,12 +104,12 @@ describe.sequential("Anthropic OAuth", () => {
 			neverAbortedSignal,
 		);
 
-		expect(credentials.access).toBe("new-access-token");
-		expect(credentials.refresh).toBe("new-refresh-token");
-		expect(fetchMock).toHaveBeenCalledOnce();
+		assert.equal(credentials.access, "new-access-token");
+		assert.equal(credentials.refresh, "new-refresh-token");
+		assert.equal(fetchMock.mock.calls.length, 1);
 	});
 
-	it("anthropicOAuth.login resolves through the manual_code prompt and aborts it after settling", async () => {
+	it("manual browser prompt is aborted after settling (#10194)", async () => {
 		const fetchMock = vi.fn(async (input: unknown): Promise<Response> => {
 			const url = typeof input === "string" ? input : String(input);
 			if (url.includes("/oauth/token")) {
@@ -126,6 +128,7 @@ describe.sequential("Anthropic OAuth", () => {
 			notify: (event) => events.push(event),
 			prompt: async (prompt) => {
 				prompts.push(prompt);
+				if (prompt.type === "select") return "browser";
 				if (prompt.type === "manual_code") {
 					manualSignal = prompt.signal;
 					return "the-code";
@@ -134,11 +137,126 @@ describe.sequential("Anthropic OAuth", () => {
 			},
 		});
 
-		expect(credential.type).toBe("oauth");
-		expect(credential.access).toBe("access");
-		expect(events.some((e) => e.type === "auth_url")).toBe(true);
-		expect(prompts.some((p) => p.type === "manual_code")).toBe(true);
+		assert.equal(credential.type, "oauth");
+		assert.equal(credential.access, "access");
+		assert.ok(events.some((e) => e.type === "auth_url"));
+		assert.ok(prompts.some((p) => p.type === "manual_code"));
 		// the prompt's signal is aborted once login settles, so UIs can dismiss it
-		expect(manualSignal?.aborted).toBe(true);
+		assert.equal(manualSignal?.aborted, true);
+	});
+
+	it("offers browser first and exchanges the selected copy code redirect (#10194)", async () => {
+		let authUrl = "";
+		const selections: AuthPrompt[] = [];
+		const exchange = vi.fn(async (input: unknown, init?: RequestInit) => {
+			assert.equal(getUrl(input), "https://platform.claude.com/v1/oauth/token");
+			const body = getJsonBody(init);
+			assert.equal(body.grant_type, "authorization_code");
+			assert.equal(body.code, "copied-code");
+			assert.equal(body.state, new URL(authUrl).searchParams.get("state"));
+			assert.equal(body.redirect_uri, "https://platform.claude.com/oauth/code/callback");
+			return jsonResponse({ access_token: "access-token", refresh_token: "refresh-token", expires_in: 3600 });
+		});
+		vi.stubGlobal("fetch", exchange);
+		const credential = await anthropicOAuth.login({
+			signal: neverAbortedSignal,
+			notify: (event) => {
+				if (event.type === "auth_url") authUrl = event.url;
+			},
+			prompt: async (prompt) => {
+				if (prompt.type === "select") {
+					selections.push(prompt);
+					return "copy_code";
+				}
+				assert.equal(prompt.type, "manual_code");
+				return `copied-code#${new URL(authUrl).searchParams.get("state")}`;
+			},
+		});
+		assert.equal(credential.access, "access-token");
+		assert.equal(credential.refresh, "refresh-token");
+		assert.equal(
+			new URL(authUrl).searchParams.get("redirect_uri"),
+			"https://platform.claude.com/oauth/code/callback",
+		);
+		assert.equal(exchange.mock.calls.length, 1);
+		assert.deepEqual(selections, [
+			{
+				type: "select",
+				message: "Select Anthropic login method:",
+				options: [
+					{ id: "browser", label: "Browser login (default)" },
+					{ id: "copy_code", label: "Copy code login (headless)" },
+				],
+			},
+		]);
+	});
+
+	it("cancels without exchanging tokens when method selection is cancelled (#10194)", async () => {
+		const exchange = vi.fn();
+		vi.stubGlobal("fetch", exchange);
+		await assert.rejects(
+			anthropicOAuth.login({
+				signal: neverAbortedSignal,
+				notify: () => {},
+				prompt: async () => {
+					throw new Error("Login cancelled");
+				},
+			}),
+			/Login cancelled/,
+		);
+		assert.equal(exchange.mock.calls.length, 0);
+	});
+
+	for (const [input, error] of [
+		["copied-code#wrong-state", /OAuth state mismatch/],
+		["", /Missing authorization code/],
+	] as const) {
+		it(`rejects invalid copy code input ${JSON.stringify(input)} (#10194)`, async () => {
+			const exchange = vi.fn();
+			vi.stubGlobal("fetch", exchange);
+			await assert.rejects(
+				anthropicOAuth.login({
+					signal: neverAbortedSignal,
+					notify: () => {},
+					prompt: async (prompt) => (prompt.type === "select" ? "copy_code" : input),
+				}),
+				error,
+			);
+			assert.equal(exchange.mock.calls.length, 0);
+		});
+	}
+
+	it("completes browser callback login and shows the sign-in page (#10194)", async () => {
+		const nativeFetch = globalThis.fetch;
+		let exchangedCode: string | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown, init?: RequestInit) => {
+				if (getUrl(input) !== "https://platform.claude.com/v1/oauth/token")
+					return nativeFetch(input as string, init);
+				exchangedCode = getJsonBody(init).code;
+				return jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
+			}),
+		);
+		let callbackPage: Promise<Response> | undefined;
+		const credential = await anthropicOAuth.login({
+			signal: neverAbortedSignal,
+			notify: (event) => {
+				if (event.type !== "auth_url") return;
+				const state = new URL(event.url).searchParams.get("state") ?? "";
+				callbackPage = nativeFetch(`http://127.0.0.1:53692/callback?code=browser-code&state=${state}`);
+			},
+			prompt: (prompt) =>
+				prompt.type === "select"
+					? Promise.resolve("browser")
+					: new Promise((_resolve, reject) => {
+							prompt.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+						}),
+		});
+		assert.equal(credential.access, "access");
+		assert.equal(exchangedCode, "browser-code");
+		const response = await callbackPage;
+		assert.equal(response?.status, 200);
+		assert.match(await response!.text(), /Signed in to Anthropic\./);
 	});
 });

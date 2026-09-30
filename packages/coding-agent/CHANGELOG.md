@@ -9,6 +9,7 @@
 - `/reload` enables tools newly added to `defaultTools`, while preserving session-disabled tools, tools removed from the setting, and explicit CLI tool restrictions ([#10245](https://github.com/earendil-works/pi/issues/10245)).
 - Added Anthropic workload identity federation from the `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` environment variables, with optional `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID`. See [Providers](docs/providers.md#anthropic-workload-identity-federation) ([#10177](https://github.com/earendil-works/pi/issues/10177), [#10242](https://github.com/earendil-works/pi/pull/10242) by [@philfreo](https://github.com/philfreo)).
 - MCP servers can set `oauth.clientName` for dynamic OAuth registration, or use `"auth": { "provider": "<provider>" }` to send the current provider login token. Provider-token authentication is restricted to global configuration and extension registrations, with HTTPS required except on loopback hosts. See [MCP authentication](docs/mcp-servers.md#authentication) ([#10226](https://github.com/earendil-works/pi/issues/10226)).
+- `/login anthropic` now offers **Copy code login (headless)** when the browser is on another machine and cannot reach Atomic's local callback ([#10194](https://github.com/earendil-works/pi/pull/10194) by [@lucasmeijer](https://github.com/lucasmeijer)).
 
 ### Fixed
 
