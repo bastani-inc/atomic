@@ -4,7 +4,12 @@
 
 ### Added
 
-- Added Ultrafast for GPT-6 Astra and GPT-5.6 Sol on the OpenAI Codex provider as `openai-codex/gpt-6-astra-ultrafast` and `openai-codex/gpt-5.6-sol-ultrafast`. GPT-6 Astra Ultrafast lists OpenAI's published Ultrafast rates; GPT-5.6 Sol Ultrafast is a preview whose access is account-dependent and whose rates are unpublished. GPT-6.1 Sol supports Standard and Fast only. As in Codex, Atomic sends a service tier only when the model advertises it and otherwise falls back to standard processing, while a provider rejection of an Ultrafast choice you selected still fails the request.
+- Added Ultrafast for GPT-6 Astra as `openai/gpt-6-astra-ultrafast` and `openai-codex/gpt-6-astra-ultrafast`, priced at OpenAI's published Ultrafast rates. GPT-6 Astra is the only model with an Ultrafast choice. If the provider rejects an Ultrafast choice you selected, the request fails.
+
+### Changed
+
+- `-fast` and `-ultrafast` choices for OpenAI and Codex models now follow the tiers each model advertises in Codex's catalog and on OpenAI's pricing page. Models without Fast, such as `gpt-5.3-codex-spark`, `openai/gpt-5-nano`, `openai/gpt-5-pro`, and `openai/o1`, no longer list a `-fast` choice. A tier the model doesn't advertise is left out of the request, which runs at standard processing.
+- OpenAI and Codex Fast usage is priced at each model's published Fast rates instead of a flat 2x, for example 1.7x for GPT-4o. A Fast request that OpenAI serves at Standard is priced at Standard.
 
 ## [0.9.25-alpha.1] - 2026-09-29
 

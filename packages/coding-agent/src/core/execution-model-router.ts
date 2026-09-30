@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
 	type Api,
 	containsKnownEnvCredential,
+	getServiceTierCost,
 	getSupportedThinkingLevels,
 	isModelType,
 	type Model,
@@ -341,21 +342,24 @@ export async function routeExecutionModel(input: {
 			: seeing;
 		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
-		const toCandidate = (model: Model<Api>): CandidateModel => ({
-			model: `${model.provider}/${model.id}`,
-			name: model.name,
-			cost: model.cost,
-			input: model.input,
-			...(model.fastRoute
-				? {
-						fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
-						fastRouteServiceTier: model.fastRoute.serviceTier,
-						ultrafastPriceUnpublished:
-							model.fastRoute.serviceTier === "ultrafast" &&
-							model.serviceTiers?.find((tier) => tier.id === "ultrafast")?.cost === undefined,
-					}
-				: {}),
-		});
+		const toCandidate = (model: Model<Api>): CandidateModel => {
+			const routeCost = model.fastRoute?.serviceTier
+				? getServiceTierCost(model, model.fastRoute.serviceTier)
+				: undefined;
+			return {
+				model: `${model.provider}/${model.id}`,
+				name: model.name,
+				cost: routeCost ?? model.cost,
+				input: model.input,
+				...(model.fastRoute
+					? {
+							fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
+							fastRouteServiceTier: model.fastRoute.serviceTier,
+							fastRoutePriced: routeCost !== undefined,
+						}
+					: {}),
+			};
+		};
 		// A caller that lists models (`allowedModels`) chooses the contenders itself,
 		// but price and recency still compare them with every model the user could route to.
 		const callerListed = constraints.some((constraint) => (constraint.allowedModels?.length ?? 0) > 0);

@@ -17,8 +17,8 @@ export interface CandidateModel {
 	readonly fastRouteOf?: string;
 	/** Explicit provider tier, used to avoid claiming measured latency for ultrafast. */
 	readonly fastRouteServiceTier?: "priority" | "ultrafast";
-	/** True when the provider has not published this ultrafast route's rates, so `cost` is the standard rate. */
-	readonly ultrafastPriceUnpublished?: boolean;
+	/** True when `cost` already holds the route tier's published rates rather than the base model's. */
+	readonly fastRoutePriced?: boolean;
 }
 
 interface Metric {
@@ -397,7 +397,7 @@ export function describeOption(
 		model: option.name,
 		id: option.model,
 		released,
-		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens${option.ultrafastPriceUnpublished ? "; Ultrafast pricing is not published; this is the standard rate" : ""}`,
+		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens`,
 		reads_images: option.input.includes("image"),
 		[needs.work]: quote(WORK_METRICS[needs.work], option.workStanding),
 		overall: quote([OVERALL], option.overallStanding),
@@ -406,7 +406,7 @@ export function describeOption(
 					route:
 						option.fastRouteServiceTier === "ultrafast"
 							? `ultrafast request for ${fastBase?.name ?? option.fastRouteOf}; base-model evidence only, no separate latency or benchmark score; account access required`
-							: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; billed above the listed prices`,
+							: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; ${option.fastRoutePriced ? "the listed prices are its Fast rates" : "billed above the listed prices"}`,
 				}
 			: {}),
 	});

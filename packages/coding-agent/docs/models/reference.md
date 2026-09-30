@@ -123,16 +123,21 @@ The built-in OpenAI and Codex entries use a 272,000-token default input/context 
 | Up to 272,000 | $10 | $1 | $12.50 | $50 |
 | Above 272,000 | $20 | $2 | $25 | $75 |
 
-Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` are derived canonical choices that keep these base catalog rates; the OpenAI adapters apply Fast's 2x multiplier at request time. The Codex fast choice sends upstream ID `gpt-6-astra` with `service_tier: priority` while Atomic records `gpt-6-astra-fast`.
+Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` are derived canonical choices. They send upstream ID `gpt-6-astra` with `service_tier: priority` while Atomic records `gpt-6-astra-fast`. Usage is priced at OpenAI's published Fast rates when Fast serves the request:
 
-`openai-codex/gpt-6-astra-ultrafast` sends the same upstream ID with `service_tier: "ultrafast"` and lists OpenAI's published Ultrafast rates, six times Standard:
+| Aggregate input | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $20 | $2 | $25 | $100 |
+| Above 272,000 | $40 | $4 | $50 | $150 |
+
+`openai/gpt-6-astra-ultrafast` and `openai-codex/gpt-6-astra-ultrafast` send the same upstream ID with `service_tier: "ultrafast"` and are priced at OpenAI's published Ultrafast rates, six times Standard:
 
 | Aggregate input | Input | Cached input | Cache write | Output |
 | --- | ---: | ---: | ---: | ---: |
 | Up to 272,000 | $60 | $6 | $75 | $300 |
 | Above 272,000 | $120 | $12 | $150 | $450 |
 
-`openai-codex/gpt-5.6-sol-ultrafast` is a preview choice whose access depends on the account. OpenAI has not published its Ultrafast rates, so it lists GPT-5.6 Sol's standard rates and Atomic marks the price as unpublished. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [provider tier caveats](/providers#fast-models).
+GPT-6 Astra is the only model with an Ultrafast choice. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers).
 
 Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` through the `amazon-bedrock` provider. These entries keep the same 272,000 input and 128,000 output limits, text and image input, and five reasoning levels; Atomic sends the selected effort as Bedrock's OpenAI `reasoning_effort` field. They do not get Fast or OpenAI tool-search metadata. Atomic sends each Bedrock ID unchanged and records all four price fields as zero because AWS had not published Astra pricing. Zero means unknown here, not free.
 

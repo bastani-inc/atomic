@@ -31,13 +31,14 @@ import {
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
+	applyServiceTierPricing,
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
-	supportsServiceTier,
+	openAIServiceTierForRequest,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -211,7 +212,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				model,
 				{
 					onProviderStreamEvent: options?.onProviderStreamEvent,
-					serviceTier: resolveRequestedServiceTier(model, options?.serviceTier),
+					serviceTier: resolveOpenAIRequestServiceTier(model, options?.serviceTier),
 					grammarToolInputProperties,
 					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 				},
@@ -371,15 +372,8 @@ function buildParams(
 		params.temperature = options?.temperature;
 	}
 
-	// A fast variant carries its own tier, so a caller that only hands over the model still routes fast.
-	const requestedServiceTier = resolveRequestedServiceTier(model, options?.serviceTier);
-	if (requestedServiceTier === "ultrafast" && supportsServiceTier(model, requestedServiceTier))
-		throw new Error("Ultrafast routing is supported only by the Codex adapter");
-	if (
-		requestedServiceTier !== undefined &&
-		requestedServiceTier !== "ultrafast" &&
-		supportsServiceTier(model, requestedServiceTier)
-	) {
+	const requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
+	if (requestedServiceTier !== undefined) {
 		params.service_tier = requestedServiceTier;
 	}
 
@@ -418,35 +412,9 @@ function buildParams(
 	return params;
 }
 
-function getServiceTierCostMultiplier(
-	model: Pick<Model<"openai-responses">, "fastRoute" | "id">,
-	serviceTier: ResponsesServiceTier | undefined,
-): number {
-	// Price against the model that was actually billed upstream, so a `-fast` variant of a
-	// per-model rate (gpt-5.5) is not silently charged the generic multiplier.
-	const pricedModelId = model.fastRoute?.baseModelId ?? model.id;
-	switch (serviceTier) {
-		case "flex":
-			return 0.5;
-		case "priority":
-		case "fast":
-			return pricedModelId === "gpt-5.5" ? 2.5 : 2;
-		default:
-			return 1;
-	}
-}
-
-function applyServiceTierPricing(
-	usage: Usage,
-	serviceTier: ResponsesServiceTier | undefined,
-	model: Pick<Model<"openai-responses">, "fastRoute" | "id">,
-) {
-	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
-	if (multiplier === 1) return;
-
-	usage.cost.input *= multiplier;
-	usage.cost.output *= multiplier;
-	usage.cost.cacheRead *= multiplier;
-	usage.cost.cacheWrite *= multiplier;
-	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+function resolveOpenAIRequestServiceTier(
+	model: Model<"openai-responses">,
+	optionsServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	return openAIServiceTierForRequest(model, resolveRequestedServiceTier(model, optionsServiceTier));
 }

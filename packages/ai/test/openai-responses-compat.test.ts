@@ -750,6 +750,71 @@ describe("openai-responses provider defaults", () => {
 		expect(capturedPayload?.service_tier).toBeUndefined();
 	});
 
+	async function streamAstra(
+		model: Model<"openai-responses">,
+		options: { serviceTier?: "priority" | "ultrafast" },
+		responseServiceTier: string | undefined,
+	) {
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					service_tier: responseServiceTier,
+					usage: {
+						input_tokens: 100_000,
+						output_tokens: 10_000,
+						total_tokens: 110_000,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+		const result = await streamOpenAIResponses(
+			model,
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", ...options },
+		).result();
+		return { result, payload: capturedPayload };
+	}
+
+	it("sends GPT-6 Astra's advertised ultrafast tier and prices it at the published Ultrafast rates", async () => {
+		const { result, payload } = await streamAstra(
+			getModel("openai", "gpt-6-astra"),
+			{ serviceTier: "ultrafast" },
+			"ultrafast",
+		);
+
+		expect(result.stopReason).toBe("stop");
+		expect(payload?.model).toBe("gpt-6-astra");
+		expect(payload?.service_tier).toBe("ultrafast");
+		expect(result.usage.cost.input).toBeCloseTo(6, 10);
+		expect(result.usage.cost.output).toBeCloseTo(3, 10);
+	});
+
+	it("omits a Fast tier the OpenAI API model does not advertise", async () => {
+		const { payload } = await streamAstra(getModel("openai", "gpt-5-nano"), { serviceTier: "priority" }, undefined);
+
+		expect(payload?.service_tier).toBeUndefined();
+	});
+
+	it("bills a Fast route that OpenAI served at Standard at the base rates", async () => {
+		const base = getModel("openai", "gpt-6-astra");
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-6-astra-fast",
+			fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "priority" },
+		};
+		const { result, payload } = await streamAstra(fast, {}, "default");
+
+		expect(payload?.service_tier).toBe("priority");
+		expect(result.usage.cost.input).toBeCloseTo(1, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.5, 10);
+	});
+
 	it.each([
 		["gpt-5.5-fast", "default", "priority", 2.5],
 		["gpt-5.5-fast", "flex", "priority", 2.5],

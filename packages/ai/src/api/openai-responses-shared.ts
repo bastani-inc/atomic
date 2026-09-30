@@ -13,12 +13,13 @@ import type {
 	ResponseStreamEvent,
 	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
-import { calculateCost } from "../models.ts";
+import { calculateCost, getServiceTierCost } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
 	ImageContent,
 	Model,
+	ModelServiceTierId,
 	StopReason,
 	StreamOptions,
 	SystemMessage,
@@ -133,21 +134,78 @@ export function resolveRequestedServiceTier(
 	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
 }
 
+function advertisedServiceTierId(serviceTier: ResponsesServiceTier | undefined): ModelServiceTierId | undefined {
+	if (serviceTier === "priority" || serviceTier === "fast") return "priority";
+	return serviceTier === "ultrafast" ? "ultrafast" : undefined;
+}
+
+/**
+ * Whether the model offers a Fast or Ultrafast tier. A model without tier metadata keeps offering Fast
+ * but never Ultrafast. Other tiers (`flex`, `default`, `auto`, `scale`) need no advertisement.
+ */
 export function supportsServiceTier(
 	model: Pick<Model<Api>, "serviceTiers">,
 	serviceTier: ResponsesServiceTier,
 ): boolean {
-	if (serviceTier === "flex") return true;
-	if (model.serviceTiers === undefined) return serviceTier !== "ultrafast";
-	return model.serviceTiers.some((advertised) => advertised.id === serviceTier);
+	const advertisedId = advertisedServiceTierId(serviceTier);
+	if (advertisedId === undefined) return true;
+	if (model.serviceTiers === undefined) return advertisedId !== "ultrafast";
+	return getServiceTierCost(model, advertisedId) !== undefined;
 }
 
-export function serviceTierForRequest(
+/** OpenAI API: drop a Fast or Ultrafast tier the model does not advertise and send any other tier as asked. */
+export function openAIServiceTierForRequest(
 	model: Pick<Model<Api>, "serviceTiers">,
 	serviceTier: ResponsesServiceTier | undefined,
 ): ResponsesServiceTier | undefined {
-	if (serviceTier === undefined || serviceTier === "default") return undefined;
-	return supportsServiceTier(model, serviceTier) ? serviceTier : undefined;
+	return serviceTier !== undefined && supportsServiceTier(model, serviceTier) ? serviceTier : undefined;
+}
+
+/**
+ * Codex's `service_tier_for_request`: send `flex` or an advertised tier, and omit `default` and every
+ * tier the model does not advertise.
+ */
+export function codexServiceTierForRequest(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	if (serviceTier === "flex") return serviceTier;
+	return advertisedServiceTierId(serviceTier) !== undefined && supportsServiceTier(model, serviceTier)
+		? serviceTier
+		: undefined;
+}
+
+/**
+ * Reprice usage at the tier that actually served the request, using the advertised tier's published
+ * rates. A model without tier metadata keeps the documented Fast multiplier.
+ */
+export function applyServiceTierPricing(
+	usage: Usage,
+	serviceTier: ResponsesServiceTier | undefined,
+	model: Model<Api>,
+): void {
+	if (serviceTier === "flex") {
+		scaleUsageCost(usage, 0.5);
+		return;
+	}
+	const advertisedId = advertisedServiceTierId(serviceTier);
+	if (advertisedId === undefined) return;
+	const tierCost = getServiceTierCost(model, advertisedId);
+	if (tierCost) {
+		calculateCost({ ...model, cost: tierCost }, usage);
+		return;
+	}
+	if (advertisedId === "priority") {
+		scaleUsageCost(usage, (model.fastRoute?.baseModelId ?? model.id) === "gpt-5.5" ? 2.5 : 2);
+	}
+}
+
+function scaleUsageCost(usage: Usage, multiplier: number): void {
+	usage.cost.input *= multiplier;
+	usage.cost.output *= multiplier;
+	usage.cost.cacheRead *= multiplier;
+	usage.cost.cacheWrite *= multiplier;
+	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
 type ServiceTier = NonNullable<ResponsesServiceTier>;

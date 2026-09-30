@@ -1222,15 +1222,15 @@ export interface ModelInputLimits {
 export type ModelServiceTierId = "priority" | "ultrafast";
 
 /**
- * A service tier a model advertises, following Codex's `ModelInfo.service_tiers`.
+ * A service tier a model advertises, following Codex's `ModelInfo.service_tiers`, with the provider's
+ * published per-million-token rates for that tier.
  *
  * Adapters send a tier only when the model advertises it. `flex` is an API request option and needs
  * no advertisement.
  */
 export interface ModelServiceTier {
 	id: ModelServiceTierId;
-	/** Published per-million-token rates for this tier. Absent while the provider has not published them. */
-	cost?: ModelCost;
+	cost: ModelCost;
 }
 
 /**

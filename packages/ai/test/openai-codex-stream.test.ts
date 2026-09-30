@@ -237,6 +237,14 @@ const ASTRA_STANDARD_COST: ModelCost = {
 	tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
 };
 
+const ASTRA_FAST_COST: ModelCost = {
+	input: 20,
+	output: 100,
+	cacheRead: 2,
+	cacheWrite: 25,
+	tiers: [{ inputTokensAbove: 272_000, input: 40, output: 150, cacheRead: 4, cacheWrite: 50 }],
+};
+
 const ASTRA_ULTRAFAST_COST: ModelCost = {
 	input: 60,
 	output: 300,
@@ -257,13 +265,16 @@ describe("openai-codex advertised service tiers", () => {
 		cost: ASTRA_STANDARD_COST,
 		contextWindow: 272000,
 		maxTokens: 128000,
-		serviceTiers: [{ id: "priority" }, { id: "ultrafast", cost: ASTRA_ULTRAFAST_COST }],
+		serviceTiers: [
+			{ id: "priority", cost: ASTRA_FAST_COST },
+			{ id: "ultrafast", cost: ASTRA_ULTRAFAST_COST },
+		],
 	};
 	const astraUltrafast: Model<"openai-codex-responses"> = {
 		...astra,
 		id: "gpt-6-astra-ultrafast",
 		name: "GPT-6-Astra (ultrafast)",
-		cost: ASTRA_ULTRAFAST_COST,
+		cost: ASTRA_STANDARD_COST,
 		fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "ultrafast" },
 	};
 	const sol61: Model<"openai-codex-responses"> = {
@@ -271,20 +282,12 @@ describe("openai-codex advertised service tiers", () => {
 		id: "gpt-6.1-sol",
 		name: "GPT-6.1 Sol",
 		cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-		serviceTiers: [{ id: "priority" }],
+		serviceTiers: [{ id: "priority", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } }],
 	};
 	const sol61Ultrafast: Model<"openai-codex-responses"> = {
 		...sol61,
 		id: "gpt-6.1-sol-ultrafast",
 		fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
-	};
-	const solUnpublished: Model<"openai-codex-responses"> = {
-		...astra,
-		id: "gpt-5.6-sol-ultrafast",
-		name: "GPT-5.6 Sol (ultrafast)",
-		cost: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
-		serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
-		fastRoute: { baseModelId: "gpt-5.6-sol", upstreamModelId: "gpt-5.6-sol", serviceTier: "ultrafast" },
 	};
 	const context: Context = {
 		systemPrompt: "You are a helpful assistant.",
@@ -380,7 +383,7 @@ describe("openai-codex advertised service tiers", () => {
 
 	it("omits a priority tier the model's advertised tiers do not include", async () => {
 		const { result, body } = await run(
-			{ ...astra, serviceTiers: [{ id: "ultrafast" }] },
+			{ ...astra, serviceTiers: [{ id: "ultrafast", cost: ASTRA_ULTRAFAST_COST }] },
 			{ serviceTier: "priority" },
 		);
 
@@ -442,16 +445,15 @@ describe("openai-codex advertised service tiers", () => {
 		expect(result.usage.cost.total).toBeCloseTo(9, 10);
 	});
 
-	it("charges an ultrafast route at the route model's own rates, including a user cost override", async () => {
-		const overridden = { ...astraUltrafast, cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } };
+	it("prices a priority response at the model's published Fast rates", async () => {
 		const { result } = await run(
-			overridden,
-			{},
-			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
+			astra,
+			{ serviceTier: "priority" },
+			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "priority" },
 		);
 
-		expect(result.usage.cost.input).toBeCloseTo(0.1, 10);
-		expect(result.usage.cost.output).toBeCloseTo(0.02, 10);
+		expect(result.usage.cost.input).toBeCloseTo(2, 10);
+		expect(result.usage.cost.output).toBeCloseTo(1, 10);
 	});
 
 	it("prices an ultrafast request on the normal model at the Ultrafast rates", async () => {
@@ -485,17 +487,6 @@ describe("openai-codex advertised service tiers", () => {
 
 		expect(result.usage.cost.input).toBeCloseTo(36, 10);
 		expect(result.usage.cost.output).toBeCloseTo(0.45, 10);
-	});
-
-	it("prices an ultrafast tier whose rates are unpublished at the model's own rates", async () => {
-		const { result } = await run(
-			solUnpublished,
-			{},
-			{ usage: { input: 100_000, output: 10_000 }, serviceTier: "ultrafast" },
-		);
-
-		expect(result.usage.cost.input).toBeCloseTo(0.4, 10);
-		expect(result.usage.cost.output).toBeCloseTo(0.2, 10);
 	});
 });
 

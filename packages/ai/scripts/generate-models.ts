@@ -26,6 +26,7 @@ import type {
 	ModelCost,
 	ModelPromptCache,
 	ModelServiceTier,
+	ModelServiceTierId,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "../src/types.ts";
@@ -525,15 +526,73 @@ const OPENAI_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
 };
 
-// GPT-5.6 Sol has Ultrafast preview access, but OpenAI has not published its rates.
-// https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast
-const CODEX_ULTRAFAST_SERVICE_TIERS: Record<string, ModelServiceTier> = {
-	"gpt-6-astra": {
-		id: "ultrafast",
-		cost: withOpenAiLongContextPricing({ input: 60, output: 300, cacheRead: 6, cacheWrite: 75 }),
-	},
-	"gpt-5.6-sol": { id: "ultrafast" },
+// Published Fast and Ultrafast rates per model. A model absent from a table does not offer that tier.
+// https://developers.openai.com/api/docs/pricing (Fast and Ultrafast tabs)
+const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6-astra": { input: 20, output: 100, cacheRead: 2, cacheWrite: 25 },
+	"gpt-6.1-sol": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+	"gpt-6-luna": { input: 0.2, output: 1, cacheRead: 0.02, cacheWrite: 0.25 },
+	"gpt-6-sol": { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+	"gpt-5.6-sol": { input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10 },
+	"gpt-5.6-terra": { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 5 },
+	"gpt-5.6-luna": { input: 0.4, output: 2.4, cacheRead: 0.04, cacheWrite: 0.5 },
+	"gpt-5.5": { input: 12.5, output: 75, cacheRead: 1.25, cacheWrite: 0 },
+	"gpt-5.4": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+	"gpt-5.4-mini": { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 },
+	"gpt-5.2": { input: 3.5, output: 28, cacheRead: 0.35, cacheWrite: 0 },
+	"gpt-5.1": { input: 2.5, output: 20, cacheRead: 0.25, cacheWrite: 0 },
+	"gpt-5": { input: 2.5, output: 20, cacheRead: 0.25, cacheWrite: 0 },
+	"gpt-5-mini": { input: 0.45, output: 3.6, cacheRead: 0.045, cacheWrite: 0 },
+	"gpt-4.1": { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
+	"gpt-4.1-mini": { input: 0.7, output: 2.8, cacheRead: 0.175, cacheWrite: 0 },
+	"gpt-4.1-nano": { input: 0.2, output: 0.8, cacheRead: 0.05, cacheWrite: 0 },
+	"gpt-4o": { input: 4.25, output: 17, cacheRead: 2.125, cacheWrite: 0 },
+	"gpt-4o-2024-05-13": { input: 8.75, output: 26.25, cacheRead: 0, cacheWrite: 0 },
+	"gpt-4o-mini": { input: 0.25, output: 1, cacheRead: 0.125, cacheWrite: 0 },
+	o3: { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
+	"o4-mini": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
 };
+const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
+};
+
+function openAiServiceTierCost(modelId: string, cost: ModelCost): ModelCost {
+	return OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS.has(modelId) ? withOpenAiLongContextPricing(cost) : cost;
+}
+
+function openAiServiceTiers(modelId: string): ModelServiceTier[] {
+	const tiers: ModelServiceTier[] = [];
+	const fast = OPENAI_FAST_COSTS[modelId];
+	if (fast) tiers.push({ id: "priority", cost: openAiServiceTierCost(modelId, fast) });
+	const ultrafast = OPENAI_ULTRAFAST_COSTS[modelId];
+	if (ultrafast) tiers.push({ id: "ultrafast", cost: openAiServiceTierCost(modelId, ultrafast) });
+	return tiers;
+}
+
+// Mirrors the service_tiers each model advertises in openai/codex codex-rs/models-manager/models.json
+// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates.
+const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
+	"gpt-5.3-codex-spark": [],
+	"gpt-5.5": ["priority"],
+	"gpt-5.6-luna": ["priority"],
+	"gpt-5.6-sol": ["priority"],
+	"gpt-5.6-terra": ["priority"],
+	"gpt-6-astra": ["priority", "ultrafast"],
+	"gpt-6.1-sol": ["priority"],
+	"gpt-6-sol": ["priority"],
+	"gpt-6-luna": ["priority"],
+};
+
+function codexServiceTiers(modelId: string): ModelServiceTier[] {
+	const advertised = CODEX_SERVICE_TIER_IDS[modelId];
+	if (!advertised) throw new Error(`Codex model ${modelId} has no advertised service tiers`);
+	const priced = openAiServiceTiers(modelId);
+	return advertised.map((id) => {
+		const tier = priced.find((candidate) => candidate.id === id);
+		if (!tier) throw new Error(`Codex model ${modelId} advertises ${id} without published OpenAI rates`);
+		return tier;
+	});
+}
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
@@ -3598,8 +3657,7 @@ async function generateModels() {
 		},
 	];
 	for (const model of codexModels) {
-		const ultrafast = CODEX_ULTRAFAST_SERVICE_TIERS[model.id];
-		model.serviceTiers = ultrafast ? [{ id: "priority" }, ultrafast] : [{ id: "priority" }];
+		model.serviceTiers = codexServiceTiers(model.id);
 	}
 	allModels.push(...codexModels);
 
@@ -3702,6 +3760,11 @@ async function generateModels() {
 			contextWindow: AZURE_CONTEXT_WINDOW_OVERRIDES[model.id] ?? model.contextWindow,
 		}));
 	allModels.push(...azureOpenAiModels);
+	for (const model of allModels) {
+		if (model.provider === "openai" && model.api === "openai-responses") {
+			model.serviceTiers = openAiServiceTiers(model.id);
+		}
+	}
 
 	for (const model of allModels) {
 		applyOpenAICompletionsCompatMetadata(model);

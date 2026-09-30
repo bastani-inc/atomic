@@ -36,7 +36,9 @@ import type {
 	ImagesContext,
 	ImagesOptions,
 	Model,
+	ModelCost,
 	ModelCostRates,
+	ModelServiceTierId,
 	ModelThinkingLevel,
 	ModelType,
 	ModelTypeMap,
@@ -1186,6 +1188,14 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
  */
 export function hasApi<TApi extends Api>(model: AnyModel, api: TApi): model is Model<TApi> {
 	return isModelType(model, "chat") && model.api === api;
+}
+
+/** Published rates of a service tier the model advertises, or `undefined` when it does not offer the tier. */
+export function getServiceTierCost(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ModelServiceTierId,
+): ModelCost | undefined {
+	return model.serviceTiers?.find((tier) => tier.id === serviceTier)?.cost;
 }
 
 export function calculateCost(model: AnyModel, usage: Usage): Usage["cost"] {

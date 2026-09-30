@@ -164,29 +164,55 @@ test("falls back to authoritative OpenAI and Codex GPT-6-Astra metadata without 
 	assert.equal(openai.compat?.supportsExplicitPromptCacheMode, true);
 });
 
-test("advertises Codex service tiers per model, with Ultrafast only for GPT-6 Astra and GPT-5.6 Sol", () => {
+test("advertises OpenAI and Codex service tiers per model with their published rates", () => {
 	const catalogs = generate();
-	const codex = catalogs["openai-codex"];
-
-	assert.deepEqual(codex["gpt-6-astra"]?.serviceTiers, [
-		{ id: "priority" },
-		{
-			id: "ultrafast",
-			cost: {
-				input: 60,
-				output: 300,
-				cacheRead: 6,
-				cacheWrite: 75,
-				tiers: [{ inputTokensAbove: 272_000, input: 120, output: 450, cacheRead: 12, cacheWrite: 150 }],
+	const withLongContext = (input: number, output: number, cacheRead: number, cacheWrite: number) => ({
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		tiers: [
+			{
+				inputTokensAbove: 272_000,
+				input: input * 2,
+				output: output * 1.5,
+				cacheRead: cacheRead * 2,
+				cacheWrite: cacheWrite * 2,
 			},
-		},
-	]);
-	assert.deepEqual(codex["gpt-5.6-sol"]?.serviceTiers, [{ id: "priority" }, { id: "ultrafast" }]);
-	for (const [id, model] of Object.entries(codex)) {
-		if (id === "gpt-6-astra" || id === "gpt-5.6-sol") continue;
-		assert.deepEqual(model.serviceTiers, [{ id: "priority" }], `${id} advertises Fast only`);
+		],
+	});
+	const astraTiers = [
+		{ id: "priority", cost: withLongContext(20, 100, 2, 25) },
+		{ id: "ultrafast", cost: withLongContext(60, 300, 6, 75) },
+	];
+	assert.deepEqual(catalogs.openai["gpt-6-astra"]?.serviceTiers, astraTiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6-astra"]?.serviceTiers, astraTiers);
+	for (const provider of ["openai", "openai-codex"]) {
+		assert.deepEqual(catalogs[provider]["gpt-5.6-sol"]?.serviceTiers, [
+			{ id: "priority", cost: withLongContext(8, 40, 0.8, 10) },
+		]);
+		assert.deepEqual(catalogs[provider]["gpt-6.1-sol"]?.serviceTiers, [
+			{ id: "priority", cost: withLongContext(4, 20, 0.2, 5) },
+		]);
 	}
-	assert.equal(catalogs.openai["gpt-6-astra"]?.serviceTiers, undefined);
+
+	const codexTierIds = Object.fromEntries(
+		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
+			id,
+			(model.serviceTiers ?? []).map((tier) => tier.id),
+		]),
+	);
+	assert.deepEqual(codexTierIds, {
+		"gpt-5.3-codex-spark": [],
+		"gpt-5.5": ["priority"],
+		"gpt-5.6-luna": ["priority"],
+		"gpt-5.6-sol": ["priority"],
+		"gpt-5.6-terra": ["priority"],
+		"gpt-6-astra": ["priority", "ultrafast"],
+		"gpt-6-luna": ["priority"],
+		"gpt-6-sol": ["priority"],
+		"gpt-6.1-sol": ["priority"],
+	});
 });
 
 test("prefers a models.dev OpenAI Astra row over the missing-model fallback", () => {

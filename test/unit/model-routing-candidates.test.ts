@@ -105,20 +105,21 @@ test("ultrafast inherits measured base evidence only through route metadata, wit
 	assert.equal(owned.values.size, 0);
 });
 
-test("an ultrafast route without published rates says so in its price", () => {
-	const base = { ...model("gpt-5.6-sol", 4), model: "openai-codex/gpt-5.6-sol" };
-	const ultra = {
+test("a Fast route priced at its published Fast rates says the listed price is that rate", () => {
+	const base = { ...model("gpt-6.1-sol", 4), model: "openai/gpt-6.1-sol" };
+	const route = {
 		...base,
-		model: `${base.model}-ultrafast`,
+		model: `${base.model}-fast`,
 		fastRouteOf: base.model,
-		fastRouteServiceTier: "ultrafast" as const,
-		ultrafastPriceUnpublished: true,
+		fastRouteServiceTier: "priority" as const,
 	};
-	const latencyNeeds = { ...needs("moderate", "high"), latencySensitive: true };
-	const selected = rankCandidates(catalog, [ultra], latencyNeeds)[0]!;
-	const description = JSON.parse(describeOption(selected, latencyNeeds, [selected]));
-	assert.match(description.price, /\$4 \/ \$20 per million tokens/);
-	assert.match(description.price, /Ultrafast pricing is not published; this is the standard rate/);
+	const task = needs("moderate", "high");
+	const describe = (candidate: typeof route & { fastRoutePriced?: boolean }) => {
+		const selected = rankCandidates(catalog, [candidate], task)[0]!;
+		return JSON.parse(describeOption(selected, task, [selected])).route as string;
+	};
+	assert.match(describe({ ...route, fastRoutePriced: true }), /the listed prices are its Fast rates/);
+	assert.match(describe(route), /billed above the listed prices/);
 });
 
 test("an owned Sol Fast ID has no base metrics or ranking credit without route metadata", async () => {
