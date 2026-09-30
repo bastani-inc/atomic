@@ -261,6 +261,7 @@ echo "==> Building shared app bundle..."
 bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
 bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
 bun build --target=bun --format=cjs ./src/extensions/codemode/worker.ts --outfile "$shared_app_dir/codemode-worker.js"
+cp ../../node_modules/quickjs-wasi/quickjs.wasm "$shared_app_dir/quickjs.wasm"
 
 for platform in "${PLATFORMS[@]}"; do
     echo "Building for $platform..."
@@ -467,7 +468,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp "$shared_app_dir/native-platform.js" "binaries/$platform/"
     cp "$shared_app_dir/image-resize-worker.js" "binaries/$platform/"
     cp "$shared_app_dir/codemode-worker.js" "binaries/$platform/"
-    cp ../../node_modules/quickjs-wasi/quickjs.wasm "binaries/$platform/"
+    cp "$shared_app_dir/quickjs.wasm" "binaries/$platform/"
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "binaries/$platform/"
     mkdir -p "binaries/$platform/theme"
     cp dist/modes/interactive/theme/*.json "binaries/$platform/theme/"
