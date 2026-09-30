@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../src/types.ts";
 import { isContextOverflow, isRecoverableLength } from "../src/utils/overflow.ts";
@@ -39,6 +40,11 @@ describe("isContextOverflow", () => {
 		// Regression for earendil-works/pi#9805.
 		const message = createErrorMessage('400 {"code":"1261","message":"Prompt too long"}', "zai");
 		expect(isContextOverflow(message, 1048576)).toBe(true);
+	});
+
+	it("detects z.ai CN endpoint prompt-exceeds-max-length errors (#10208)", () => {
+		const message = createErrorMessage('400 {"code":"1261","message":"Prompt exceeds max length"}', "zai");
+		assert.equal(isContextOverflow(message, 1048576), true);
 	});
 
 	it("detects Together AI context length errors", () => {

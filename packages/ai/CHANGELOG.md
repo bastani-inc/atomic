@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed context overflow detection for Z.AI CN endpoint `Prompt exceeds max length` errors ([#10208](https://github.com/earendil-works/pi/issues/10208)).
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added
