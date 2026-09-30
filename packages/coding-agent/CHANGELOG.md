@@ -8,6 +8,7 @@
 - Codemode scripts can retrieve namespace summaries, instructions, and callable tool names with `describeNamespace(name)`. Tool search indexes namespace instructions without including them in inline tool listings, and codemode listings no longer include tool counts ([#10212](https://github.com/earendil-works/pi/issues/10212)).
 - `/reload` enables tools newly added to `defaultTools`, while preserving session-disabled tools, tools removed from the setting, and explicit CLI tool restrictions ([#10245](https://github.com/earendil-works/pi/issues/10245)).
 - Added Anthropic workload identity federation from the `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` environment variables, with optional `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID`. See [Providers](docs/providers.md#anthropic-workload-identity-federation) ([#10177](https://github.com/earendil-works/pi/issues/10177), [#10242](https://github.com/earendil-works/pi/pull/10242) by [@philfreo](https://github.com/philfreo)).
+- MCP servers can set `oauth.clientName` for dynamic OAuth registration, or use `"auth": { "provider": "<provider>" }` to send the current provider login token. Provider-token authentication is restricted to global configuration and extension registrations, with HTTPS required except on loopback hosts. See [MCP authentication](docs/mcp-servers.md#authentication) ([#10226](https://github.com/earendil-works/pi/issues/10226)).
 
 ### Fixed
 
@@ -18,6 +19,11 @@
 - Codemode and tool-search descriptions now remain unchanged when deferred tools register, preserving prompt stability while discovery continues to find those tools ([#10212](https://github.com/earendil-works/pi/issues/10212)).
 - Collapsed codemode scripts and results now limit wrapped screen lines, so long single-line JSON no longer fills the transcript. Bash previews use the same cached visual-line component.
 - In `codemode.mode: "only"`, the system prompt's tool list no longer advertises tools whose direct declarations are hidden ([#10192](https://github.com/earendil-works/pi/issues/10192)).
+- Fixed context overflow detection for Z.AI CN endpoint `Prompt exceeds max length` errors ([#10208](https://github.com/earendil-works/pi/issues/10208)).
+- Anthropic tools with strict-schema constraints the provider rejects now fall back to non-strict mode when strict sampling is preferred ([#9953](https://github.com/earendil-works/pi/issues/9953)).
+- Provider retries now use exponential backoff when `Retry-After` contains an unparseable date ([#9571](https://github.com/earendil-works/pi/issues/9571)).
+- MCP sign-in URLs remain clickable when they wrap, including inside the `/mcp` panel ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+- MCP tool names now use JavaScript-safe identifiers with deterministic suffixes for collisions and long names, consistently across direct tools, gateway discovery, and codemode ([#10239](https://github.com/earendil-works/pi/issues/10239)).
 
 ## [0.9.25-alpha.2] - 2026-09-30
 
