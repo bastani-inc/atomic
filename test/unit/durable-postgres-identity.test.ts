@@ -1314,6 +1314,82 @@ test("a non-PostgreSQL listener cannot satisfy the bounded SQL probe", async () 
 	assert.equal(foreign.server.listening, true);
 });
 
+test("a query read timeout is not reported as lost connectivity by the identity probe", async () => {
+	const timeout = new Error("Query read timeout");
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+	vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
+	const query = vi.spyOn(Client.prototype, "query") as unknown as { mockRejectedValue(error: Error): void };
+	query.mockRejectedValue(timeout);
+	await assert.rejects(probePostgresIdentity(1), (error) => error === timeout);
+});
+
+test.each([
+	Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+	Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+	Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+	Object.assign(new Error("terminating connection due to administrator command"), { code: "57P01" }),
+	Object.assign(new Error("terminating connection"), { code: "57P02" }),
+	Object.assign(new Error("the database system is starting up"), { code: "57P03" }),
+	new Error("Connection terminated unexpectedly"),
+	new Error("timeout expired"),
+	new Error("Connection terminated due to connection timeout"),
+])("the identity probe still reports lost connectivity as unavailable: %s", async (failure) => {
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+	vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
+	const query = vi.spyOn(Client.prototype, "query") as unknown as { mockRejectedValue(error: Error): void };
+	query.mockRejectedValue(failure);
+	assert.equal(await probePostgresIdentity(1), undefined);
+});
+
+test("startup readiness retries an existing server whose identity query read-times-out", async () => {
+	const f = fixture();
+	f.pidfile(await availablePostgresPort(0));
+	let probes = 0;
+	await hooks.ensureCluster({
+		...f.options,
+		probeIdentity: async (port) => {
+			if (++probes === 1) throw new Error("Query read timeout");
+			return f.row(port);
+		},
+	});
+	assert.ok(probes >= 2);
+	assert.ok(embeddedPostgresHealth());
+});
+
+test("a monitoring probe read timeout is a dependency failure that keeps consumers and never recovers", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let slow = false;
+	let starts = 0;
+	await hooks.ensureCluster({
+		...f.options,
+		probeIdentity: async (candidate) => {
+			if (slow) throw new Error("Query read timeout");
+			return f.row(candidate);
+		},
+	});
+	hooks.setRetainedPostgresSpawner(() => {
+		starts++;
+		throw new Error("a slow health query must not start PostgreSQL");
+	});
+	const health = embeddedPostgresHealth()!;
+	await health.check();
+	let invalidations = 0;
+	health.subscribe(() => invalidations++);
+	slow = true;
+	const failure = await health.check().then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isDbosDependencyError(failure), true);
+	assert.equal(invalidations, 0);
+	assert.equal(starts, 0);
+	slow = false;
+	assert.equal(await health.check(), embeddedDbosSystemDatabaseUrl());
+	assert.equal(invalidations, 0);
+});
+
 test("unregistered existing data is never adopted or initialized", async () => {
 	const f = fixture();
 	removeTempDirectory(join(f.root, "v18.shared"));

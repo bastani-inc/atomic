@@ -69,7 +69,7 @@ import {
 	type EmbeddedPostgresHost,
 	resolveEmbeddedPostgresTarget,
 } from "./dbos-embedded-postgres-targets.js";
-import { PostgresHealth } from "./dbos-postgres-health.js";
+import { isQueryReadTimeout, PostgresHealth } from "./dbos-postgres-health.js";
 import {
 	availablePostgresPort,
 	managedPostgresLaunchExecutable,
@@ -278,6 +278,15 @@ async function ensureCluster(
 			}
 			let verified: ManagedPostgresServer | undefined;
 			const existingServerProbe = (): PostgresIdentityProbe => options.probeIdentity ?? probePostgresIdentity;
+			// A server still starting may not answer in time; readiness polling retries instead of failing startup.
+			const startupServerProbe: PostgresIdentityProbe = async (probePort) => {
+				try {
+					return await existingServerProbe()(probePort);
+				} catch (error) {
+					if (isQueryReadTimeout(error)) return undefined;
+					throw error;
+				}
+			};
 			let prepared = options.prepared ? options.binaries : undefined;
 			let selectedIdentity = options.runtimeIdentity;
 			let reservedLiveGeneration: string | undefined;
@@ -446,7 +455,7 @@ async function ensureCluster(
 					logFile,
 					undefined,
 					async () => {
-						verified = await verifyPostgresIdentity(metadata!, port, existing.pid, existingServerProbe());
+						verified = await verifyPostgresIdentity(metadata!, port, existing.pid, startupServerProbe);
 						return verified !== undefined || managedPostmaster(metadata!) === undefined;
 					},
 					READY_ATTEMPTS,
@@ -486,7 +495,7 @@ async function ensureCluster(
 							logFile,
 							startedCluster,
 							async () => {
-								verified = await verifyPostgresIdentity(metadata!, port, lease.pid, options.probeIdentity);
+								verified = await verifyPostgresIdentity(metadata!, port, lease.pid, startupServerProbe);
 								return verified !== undefined;
 							},
 							READY_ATTEMPTS,

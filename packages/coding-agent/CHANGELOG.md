@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- On a heavily loaded machine, a workflow run could fail with a bare `Query read timeout` while Atomic verified its managed PostgreSQL connection, even though the database was healthy. Health queries now get more time (3 s) on every path, and checks of a borrowed connection repeat once after a timeout. If the timeout persists, the run fails with a resumable database-unavailable error instead of `Query read timeout`, and other running workflows' database connections are not closed.
+- On a heavily loaded machine, a workflow run could fail with a bare `Query read timeout` while Atomic verified its managed PostgreSQL connection, even though the database was healthy. Health queries now get more time (3 s) on every path, and both the check of a borrowed connection and Atomic's periodic background health check repeat once after a timeout. If the timeout persists, the run fails with a resumable database-unavailable error instead of `Query read timeout`, and other running workflows' database connections are not closed and PostgreSQL is not restarted. A refused or terminated connection, a server shutdown, or a changed database identity is still treated as an outage.
 
 ## [0.9.25-alpha.2] - 2026-09-30
 

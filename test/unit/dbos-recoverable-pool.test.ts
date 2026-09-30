@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { Client, Pool, type PoolClient } from "pg";
 import { test, vi } from "vitest";
 import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
-import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
+import {
+	PostgresHealth,
+	type PostgresHealthIdentity,
+} from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 import { createRecoverablePostgresPool } from "../../packages/workflows/src/durable/dbos-recoverable-pool.js";
 
 const initialUrl = "postgresql://fixture:unused@127.0.0.1:1/isolated?connect_timeout=3&sslmode=disable";
@@ -394,6 +397,72 @@ test("a validation timeout destroys only the unanswered checkout and keeps concu
 	assert.equal(end.mock.calls.length, 0, "the physical pool must not be retired for a slow query");
 	active.release();
 	assert.deepEqual(heldRelease.mock.calls, [[undefined]]);
+	await health.stop();
+	await pool.end();
+});
+
+const healthy: PostgresHealthIdentity = { url: initialUrl, identity: "same" };
+test.each([
+	{
+		name: "a monitoring query read timeout",
+		degraded: async (): Promise<PostgresHealthIdentity | undefined> => {
+			throw new Error("Query read timeout");
+		},
+		releases: false,
+	},
+	{ name: "a lost monitoring answer", degraded: async () => undefined, releases: true },
+	{
+		name: "ECONNREFUSED",
+		degraded: async (): Promise<PostgresHealthIdentity | undefined> => {
+			throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+		},
+		releases: true,
+	},
+	{
+		name: "a 57P01 shutdown",
+		degraded: async (): Promise<PostgresHealthIdentity | undefined> => {
+			throw Object.assign(new Error("terminating connection"), { code: "57P01" });
+		},
+		releases: true,
+	},
+	{ name: "a changed server identity", degraded: async () => ({ ...healthy, identity: "new" }), releases: true },
+])("$name during monitoring keeps held checkouts only when it is a read timeout", async ({ degraded, releases }) => {
+	const f = fixture();
+	let outage = false;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		probe: async () => (outage ? degraded() : healthy),
+		recover: async () => {
+			recoveries++;
+			outage = false;
+		},
+		wait: async () => {},
+	});
+	const { pool, invalidate } = createRecoverablePostgresPool(initialUrl, {
+		createPool: f.createPool,
+		beforeConnect: () => health.check(),
+	});
+	health.subscribe(invalidate);
+	await pool.connect();
+	outage = true;
+	const next = await pool.connect().then(
+		(borrowed) => ({ borrowed, error: undefined }),
+		(error: unknown) => ({ borrowed: undefined, error }),
+	);
+	if (releases) {
+		assert.notEqual(next.borrowed, undefined);
+		assert.deepEqual(f.physical[0].release.mock.calls, [[true]]);
+		assert.equal(f.physical.length, 2);
+	} else {
+		assert.equal(isDbosDependencyError(next.error), true);
+		assert.equal(f.physical[0].release.mock.calls.length, 0, "a healthy held checkout must stay usable");
+		assert.equal(f.physical[0].end.mock.calls.length, 0, "the physical pool must not be retired");
+		assert.equal(recoveries, 0);
+		outage = false;
+		await pool.connect();
+		assert.equal(f.physical.length, 1);
+		assert.equal(f.physical[0].release.mock.calls.length, 0);
+	}
 	await health.stop();
 	await pool.end();
 });

@@ -52,7 +52,6 @@ test.each([
 	new Error("identity mismatch"),
 	Object.assign(new Error("authentication failed"), { code: "28P01" }),
 	Object.assign(new Error("statement timeout"), { code: "57014" }),
-	new Error("Query read timeout"),
 ])("monitoring does not retry authoritative failure: %s (#3246)", async (failure) => {
 	let probes = 0;
 	let recoveries = 0;
@@ -70,6 +69,75 @@ test.each([
 	assert.equal(recoveries, 0);
 	await health.stop();
 });
+test("a monitoring probe repeats once after a query read timeout without invalidating or recovering", async () => {
+	let probes = 0;
+	let recoveries = 0;
+	let invalidations = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			if (++probes === 2) throw new Error("Query read timeout");
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+	});
+	health.subscribe(() => invalidations++);
+	assert.equal(await health.check(), "managed");
+	assert.equal(await health.check(), "managed");
+	assert.equal(probes, 3);
+	assert.equal(recoveries, 0);
+	assert.equal(invalidations, 0);
+	assert.equal(health.lastFailure, undefined);
+	await health.stop();
+});
+
+test("a persistent monitoring read timeout is a dependency failure that never invalidates or recovers", async () => {
+	let slow = false;
+	let probes = 0;
+	let recoveries = 0;
+	let invalidations = 0;
+	let identity = "same";
+	const health = new PostgresHealth({
+		probe: async () => {
+			probes++;
+			if (slow) throw new Error("Query read timeout");
+			return { url: "managed", identity };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+		wait: async () => {},
+	});
+	health.subscribe(() => invalidations++);
+	assert.equal(await health.check(), "managed");
+	slow = true;
+	probes = 0;
+	for (let round = 0; round < 3; round++) {
+		const failure = await health.check().then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.equal(isDbosDependencyError(failure), true);
+	}
+	assert.equal(probes, 6, "each check repeats the read-only probe exactly once");
+	assert.equal(isDbosDependencyError(health.lastFailure), true);
+	assert.equal(recoveries, 0);
+	assert.equal(invalidations, 0);
+	slow = false;
+	assert.equal(await health.check(), "managed");
+	assert.equal(recoveries, 0);
+	assert.equal(invalidations, 0);
+	slow = true;
+	await assert.rejects(health.check());
+	slow = false;
+	identity = "restarted";
+	assert.equal(await health.check(), "managed");
+	assert.equal(invalidations, 1, "the identity known before the timeouts is still compared");
+	assert.equal(recoveries, 0);
+	await health.stop();
+});
+
 // #3074: health loss is shared by concurrent consumers, not a fresh startup per caller.
 test("health loss invalidates before a single shared recovery and reconnects", async () => {
 	let healthy = true;
