@@ -249,16 +249,19 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-/** The live broker that replaced `previous` (a different pid, or a newer pid-file write for a recycled pid), or the first live broker when omitted. */
+/** A different pid proves a new broker; a recycled pid needs a strictly newer pid-file write. */
+function replacesBroker(current: BrokerIdentity, previous: BrokerIdentity): boolean {
+	return current.pid !== previous.pid || current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs;
+}
+
+/** The live broker that replaced `previous`, or the first live broker when omitted. */
 async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity> {
 	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const current = readBrokerIdentity();
 		if (
 			current !== undefined &&
-			(previous === undefined ||
-				current.pid !== previous.pid ||
-				current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs) &&
+			(previous === undefined || replacesBroker(current, previous)) &&
 			processIsAlive(current.pid)
 		) {
 			return current;
@@ -585,10 +588,7 @@ test("a failed background reconnect still recovers the session with no intercom 
 
 		assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
 		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
-		assert.ok(
-			recoveredBroker.pidFileWrittenAtMs > firstBroker.pidFileWrittenAtMs,
-			"recovery must run against a freshly spawned broker",
-		);
+		assert.ok(replacesBroker(recoveredBroker, firstBroker), "recovery must run against a freshly spawned broker");
 		assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
 		assert.ok(names.includes("reconnect-recovery"));
 		assert.equal(
