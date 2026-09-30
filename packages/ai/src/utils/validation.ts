@@ -268,6 +268,10 @@ function normalizeOptionalNulls(value: unknown, schema: JsonSchemaObject): void 
 	}
 }
 
+export function omitOptionalNulls(value: unknown, schema: Tool["parameters"]): void {
+	normalizeOptionalNulls(value, schema as JsonSchemaObject);
+}
+
 function getValidator(schema: Tool["parameters"]): ReturnType<typeof Compile> {
 	const key = schema as object;
 	const cached = validatorCache.get(key);

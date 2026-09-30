@@ -4,6 +4,7 @@ import {
 	type ClassifierChoiceQuestion,
 	isModelType,
 	type Model,
+	omitOptionalNulls,
 	type RetryPolicy,
 	retryAssistantCall,
 } from "@bastani/pi-ai";
@@ -453,6 +454,7 @@ async function inferDecision<T extends TSchema>(
 				} catch {
 					throw new InvalidDecisionOutputError("Invalid structured output: non-JSON decision.");
 				}
+				if (request.candidateFallback && selected.kind === "chat") omitOptionalNulls(value, snapshot.schema);
 				if (!Check(snapshot.schema, value) || (validateDecision && !validateDecision(value)))
 					throw new InvalidDecisionOutputError(
 						"Invalid structured output: response does not match the decision schema.",
