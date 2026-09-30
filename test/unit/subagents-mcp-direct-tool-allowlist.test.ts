@@ -97,6 +97,39 @@ describe("MCP direct-tool allowlist resolution", () => {
 		}
 	});
 
+	test("ignores resources without a URI when matching MCP tool names (#10239)", () => {
+		const config: McpConfig = { mcpServers: { "my-server-mcp": { command: "fixture", directTools: true } } };
+		for (const resource of [{ name: "Page Snapshot", uri: "" }, { name: "Page Snapshot" }]) {
+			const cache = cacheFor(
+				config,
+				"my-server-mcp",
+				["get-page-snapshot", "get-schema"],
+				[{ name: "Schema", uri: "mcp://schema" }],
+			);
+			cache.servers["my-server-mcp"]!.resources!.push(resource);
+			const mcpCache = {
+				version: 1,
+				servers: {
+					"my-server-mcp": {
+						...cache.servers["my-server-mcp"]!,
+						configHash: computeServerHash(config.mcpServers["my-server-mcp"]!),
+					},
+				},
+			};
+			for (const prefix of ["server", "short", "none"] as const) {
+				for (const selections of [["my-server-mcp"], ["my-server-mcp/get-page-snapshot"]]) {
+					const mcpNames = resolveDirectTools(config as never, mcpCache as never, prefix, selections).map(
+						(spec) => spec.prefixedName,
+					);
+					const serverPrefix = prefix === "none" ? "" : prefix === "short" ? "my_server_" : "my_server_mcp_";
+					assert.ok(mcpNames.includes(`${serverPrefix}get_page_snapshot`));
+					assert.equal(mcpNames.length, selections[0]!.includes("/") ? 1 : 3);
+					assert.deepEqual(resolveMcpDirectToolNamesFromConfig(config, cache, prefix, selections), mcpNames);
+				}
+			}
+		}
+	});
+
 	test("supports short and none prefixes for selected tools", () => {
 		const config: McpConfig = {
 			mcpServers: {

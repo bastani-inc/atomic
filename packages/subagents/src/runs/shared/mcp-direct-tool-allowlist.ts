@@ -231,7 +231,12 @@ export function resolveMcpDirectToolNamesFromConfig(
 				...(definition.exposeResources === false
 					? []
 					: (Array.isArray(serverCache.resources) ? serverCache.resources : []).map((resource) =>
-							resource?.name ? `get_${resourceNameToToolName(resource.name)}` : undefined,
+							typeof resource?.name === "string" &&
+							resource.name &&
+							typeof resource.uri === "string" &&
+							resource.uri
+								? `get_${resourceNameToToolName(resource.name)}`
+								: undefined,
 						)),
 			].filter((name): name is string => typeof name === "string" && name.length > 0),
 			serverName,
