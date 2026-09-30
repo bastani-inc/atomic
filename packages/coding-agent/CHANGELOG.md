@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenAI's **Sign in with ChatGPT** login now shows a redirect-URL paste input, allowing authentication from remote machines without a reachable local browser callback.
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Added

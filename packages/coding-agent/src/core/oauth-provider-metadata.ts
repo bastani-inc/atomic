@@ -16,7 +16,7 @@ import type { ProviderConfigInput } from "./provider-composer.ts";
  * `loginOpenRouter` now races `waitForCredential()` against a `manual_code`
  * prompt exactly as Anthropic and Codex do.
  */
-const CALLBACK_SERVER_PROVIDERS = new Set(["anthropic", "openai-codex", "openrouter"]);
+const CALLBACK_SERVER_PROVIDERS = new Set(["anthropic", "openai", "openai-codex", "openrouter"]);
 
 export function collectOAuthProviderMetadata(
 	providers: readonly Provider[],

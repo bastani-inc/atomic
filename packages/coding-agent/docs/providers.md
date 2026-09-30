@@ -61,7 +61,7 @@ Checks refresh expired OAuth credentials by default through the ordinary locked 
 
 Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. The ChatGPT option authenticates the `openai` provider for requests to OpenAI's Responses API; it is separate from `/login openai-codex`, which uses the Codex backend. Choose the provider/model identity appropriate to the account and endpoint you intend to use.
 
-Complete the browser callback, or paste the full callback URL when prompted on a remote machine. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
+Complete the browser callback, or paste the full callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the final URL from its address bar, including `code`, `state`, and `client_id`, and paste it into Atomic. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
 
 ### OpenAI Codex
 

@@ -213,58 +213,69 @@ describe("interactive OAuth cancellation", () => {
 		expect(vi.mocked(openBrowser)).toHaveBeenCalledWith("https://corp.invalid/login");
 	}, 1_000);
 
-	it("offers the paste input for a real OpenRouter login, so a headless host has a way through", async () => {
-		// pi 0.83.0 races OpenRouter's loopback callback against a `manual_code`
-		// prompt (upstream 61da9e2). The host answers that prompt with a promise
-		// only `showManualInput` resolves, so without OpenRouter's real metadata
-		// declaring a callback server the prompt waits on an input that is never
-		// shown and the login ends at the callback timeout.
-		const showManualInput = vi
-			.spyOn(LoginDialogComponent.prototype, "showManualInput")
-			.mockResolvedValue("https://openrouter.ai/callback?code=pasted");
-		const completeProviderAuthentication = vi.fn(async () => {});
-		const loginOAuthProvider = vi.fn(
-			async (
-				_provider: string,
-				callbacks: {
-					onAuth(info: { url: string; instructions?: string }): void;
-					onManualCodeInput?(): Promise<string>;
+	for (const provider of [
+		{
+			id: "openrouter",
+			name: "OpenRouter",
+			authUrl: "https://openrouter.ai/auth",
+			redirectUrl: "https://openrouter.ai/callback?code=pasted",
+		},
+		{
+			id: "openai",
+			name: "OpenAI",
+			authUrl: "https://auth.openai.com/api/accounts/authorize",
+			redirectUrl: "http://127.0.0.1:1455/auth/callback?code=pasted&state=state&client_id=issued",
+		},
+	]) {
+		it(`offers redirect paste for ${provider.name} login on a remote host`, async () => {
+			const showManualInput = vi
+				.spyOn(LoginDialogComponent.prototype, "showManualInput")
+				.mockResolvedValue(provider.redirectUrl);
+			const completeProviderAuthentication = vi.fn(async () => {});
+			const loginOAuthProvider = vi.fn(
+				async (
+					_provider: string,
+					callbacks: {
+						onAuth(info: { url: string; instructions?: string }): void;
+						onManualCodeInput?(): Promise<string>;
+					},
+				) => {
+					callbacks.onAuth({ url: provider.authUrl });
+					expect(showManualInput).toHaveBeenCalledWith("Paste redirect URL below, or complete login in browser:");
+					expect(await callbacks.onManualCodeInput?.()).toBe(provider.redirectUrl);
+					return { modelsRefreshed: true };
 				},
-			) => {
-				callbacks.onAuth({ url: "https://openrouter.ai/auth" });
-				expect(await callbacks.onManualCodeInput?.()).toBe("https://openrouter.ai/callback?code=pasted");
-				return { modelsRefreshed: true };
-			},
-		);
-		const harness = {
-			session: {
-				model: undefined,
-				modelRuntime: {
-					// The shipped metadata, not a hand-written stub: this asserts the
-					// provider set the terminal actually reads.
-					getOAuthProviderMetadata: () => collectOAuthProviderMetadata(builtinProviders(), new Map()),
+			);
+			const harness = {
+				session: {
+					model: undefined,
+					modelRuntime: {
+						// The shipped metadata, not a hand-written stub: this asserts the
+						// provider set the terminal actually reads.
+						getOAuthProviderMetadata: () => collectOAuthProviderMetadata(builtinProviders(), new Map()),
+					},
 				},
-			},
-			runtimeHost: { loginOAuthProvider },
-			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
-			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
-			editor: {},
-			showError: vi.fn(),
-			completeProviderAuthentication,
-			showOAuthLoginSelect: vi.fn(),
-		};
-		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness,
-			providerId: string,
-			providerName: string,
-		) => Promise<void>;
+				runtimeHost: { loginOAuthProvider },
+				ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+				editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+				editor: {},
+				showError: vi.fn(),
+				completeProviderAuthentication,
+				showOAuthLoginSelect: vi.fn(),
+			};
+			const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+				this: typeof harness,
+				providerId: string,
+				providerName: string,
+			) => Promise<void>;
 
-		await showLoginDialog.call(harness, "openrouter", "OpenRouter");
+			await showLoginDialog.call(harness, provider.id, provider.name);
 
-		expect(showManualInput).toHaveBeenCalledWith("Paste redirect URL below, or complete login in browser:");
-		expect(harness.showError).not.toHaveBeenCalled();
-		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
-	}, 1_000);
+			expect(showManualInput).toHaveBeenCalledWith("Paste redirect URL below, or complete login in browser:");
+			expect(harness.showError).not.toHaveBeenCalled();
+			expect(completeProviderAuthentication).toHaveBeenCalledOnce();
+		}, 1_000);
+	}
 
 	it("keeps a post-login refresh AbortError visible", async () => {
 		const refreshFailure = new DOMException("catalog refresh aborted", "AbortError");
