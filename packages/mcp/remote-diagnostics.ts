@@ -1,6 +1,7 @@
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isJSONRPCErrorResponse, type JSONRPCErrorResponse } from "@modelcontextprotocol/sdk/types.js";
+import { McpProviderAuthError } from "./provider-auth.js";
 
 function secretRepresentations(rawSecrets: string[], decodedSecrets: Iterable<string> = []): Set<string> {
 	const secrets = new Set([...rawSecrets, ...decodedSecrets]);
@@ -71,7 +72,12 @@ export function sanitizeRemoteError(error: unknown, endpoint: string): Error {
 	const message = redactDiagnosticText(error instanceof Error ? error.message : String(error), endpoint);
 	// Never attach the original error: stack, cause, event and arbitrary SDK fields
 	// can all contain secrets. Preserve the auth discriminator and numeric status.
-	const safe = error instanceof UnauthorizedError ? new UnauthorizedError(message) : new Error(message);
+	const safe =
+		error instanceof UnauthorizedError
+			? new UnauthorizedError(message)
+			: error instanceof McpProviderAuthError
+				? new McpProviderAuthError(message, error.provider)
+				: new Error(message);
 	if (error instanceof Error && "code" in error && typeof error.code === "number") {
 		Object.assign(safe, { code: error.code });
 	}

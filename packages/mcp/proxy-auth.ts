@@ -1,6 +1,7 @@
 import type { McpExtensionState } from "./state.js";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
 import { formatAuthRequiredMessage } from "./utils.js";
+import { providerSignInGuidance } from "./provider-auth.js";
 
 export type AutoAuthResult =
   | { status: "skipped" }
@@ -10,7 +11,8 @@ export type AutoAuthResult =
 export function getAuthRequiredMessage(
   state: McpExtensionState,
   serverName: string,
-  defaultMessage = `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`,
+  defaultMessage = providerSignInGuidance(state.config.mcpServers[serverName], serverName)
+    ?? `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`,
 ): string {
   return formatAuthRequiredMessage(state.config, serverName, defaultMessage);
 }

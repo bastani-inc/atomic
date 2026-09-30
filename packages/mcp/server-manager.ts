@@ -20,6 +20,13 @@ import { supportsOAuth } from "./mcp-auth-flow.js";
 import { registerSamplingHandler, type ServerSamplingConfig } from "./sampling-handler.ts";
 import { interpolateEnvRecord, resolveServerUrl, resolveBearerToken, resolveConfigPath } from "./utils.js";
 import { protectRemoteTransport } from "./remote-diagnostics.js";
+import {
+  createProviderAuthFetch,
+  isProviderAuth,
+  McpProviderAuthError,
+  providerAuthUrlError,
+  type ProviderTokenResolver,
+} from "./provider-auth.js";
 
 interface ServerConnection {
   client: Client;
@@ -39,9 +46,14 @@ export class McpServerManager {
   private connectPromises = new Map<string, Promise<ServerConnection>>();
   private uiStreamListeners = new Map<string, UiStreamListener>();
   private samplingConfig: ServerSamplingConfig | undefined;
+  private providerToken: ProviderTokenResolver | undefined;
 
   setSamplingConfig(config: ServerSamplingConfig | undefined): void {
     this.samplingConfig = config;
+  }
+
+  setProviderTokenResolver(resolver: ProviderTokenResolver | undefined): void {
+    this.providerToken = resolver;
   }
   
   async connect(name: string, definition: ServerDefinition): Promise<ServerConnection> {
@@ -99,7 +111,23 @@ export class McpServerManager {
       });
     } else if (definition.url !== undefined) {
       // HTTP transport with fallback
-      transport = await this.createHttpTransport(definition, name);
+      try {
+        transport = await this.createHttpTransport(definition, name);
+      } catch (error) {
+        if (error instanceof McpProviderAuthError && error.provider !== undefined) {
+          return {
+            client,
+            transport: new StreamableHTTPClientTransport(new URL(resolveServerUrl(definition.url))),
+            definition,
+            tools: [],
+            resources: [],
+            lastUsedAt: Date.now(),
+            inFlight: 0,
+            status: "needs-auth",
+          };
+        }
+        throw error;
+      }
     } else {
       throw new Error(`Server ${name} has no command or url`);
     }
@@ -126,7 +154,10 @@ export class McpServerManager {
       };
     } catch (error) {
       // Check for UnauthorizedError - server requires OAuth
-      if (error instanceof UnauthorizedError && supportsOAuth(definition)) {
+      if (
+        (error instanceof UnauthorizedError && supportsOAuth(definition)) ||
+        (error instanceof McpProviderAuthError && error.provider !== undefined)
+      ) {
         // Clean up both client and transport before reporting needs-auth.
         await client.close().catch(() => {});
         await transport.close().catch(() => {});
@@ -204,6 +235,17 @@ export class McpServerManager {
         }
       );
     }
+    let providerFetch: ReturnType<typeof createProviderAuthFetch> | undefined;
+    if (isProviderAuth(definition.auth)) {
+      const urlError = providerAuthUrlError(resolvedUrl);
+      if (urlError) throw new Error(`MCP server "${serverName}": ${urlError}`);
+      providerFetch = createProviderAuthFetch({
+        serverName,
+        provider: definition.auth.provider,
+        serverUrl: resolvedUrl,
+        token: this.providerToken,
+      });
+    }
     const protect = <T extends Transport>(transport: T): T => {
       if (authProvider) {
         const close = transport.close.bind(transport);
@@ -219,7 +261,7 @@ export class McpServerManager {
     const streamableTransport = protect(new StreamableHTTPClientTransport(url, {
       requestInit,
       authProvider,
-      fetch: authProvider?.fetch,
+      fetch: authProvider?.fetch ?? providerFetch,
     }));
     
     try {
@@ -231,18 +273,18 @@ export class McpServerManager {
       await streamableTransport.close().catch(() => {});
       
       // StreamableHTTP works - create fresh transport for actual use
-      return protect(new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch }));
+      return protect(new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch ?? providerFetch }));
     } catch (error) {
       // StreamableHTTP failed, close and try SSE fallback
       await streamableTransport.close().catch(() => {});
       
       // If this was an UnauthorizedError, don't try SSE - the server needs auth
-      if (error instanceof UnauthorizedError) {
+      if (error instanceof UnauthorizedError || error instanceof McpProviderAuthError) {
         throw error;
       }
       
       // SSE is the legacy transport
-      return protect(new SSEClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch }));
+      return protect(new SSEClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch ?? providerFetch }));
     }
   }
   

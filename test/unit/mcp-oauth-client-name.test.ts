@@ -20,17 +20,35 @@ afterEach(async () => {
 	registrations.length = 0;
 });
 
-test("validates OAuth client name (#10226)", () => {
-	const server = (clientName: string | number | null) => ({
-		mcpServers: { docs: { url: "https://example.com/mcp", oauth: { clientName } } },
-	});
-	assert.equal(
-		validateMcpConfig(server("Claude Code")).mcpServers.docs?.oauth &&
-			(validateMcpConfig(server("Claude Code")).mcpServers.docs!.oauth as { clientName: string }).clientName,
-		"Claude Code",
-	);
-	for (const name of ["", " ", 42, null])
-		assert.throws(() => validateMcpConfig(server(name)), /oauth.clientName must be a non-empty string/);
+test("skips only servers with an invalid OAuth client name and keeps the rest (#10226)", () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const server = (clientName: string | number | null) => ({
+			url: "https://example.com/mcp",
+			oauth: { clientName },
+		});
+		const config = validateMcpConfig({
+			mcpServers: {
+				good: server("Claude Code"),
+				empty: server(""),
+				blank: server(" "),
+				number: server(42),
+				missing: server(null),
+				plain: { url: "https://example.com/plain" },
+			},
+		});
+		assert.deepEqual(Object.keys(config.mcpServers), ["good", "plain"]);
+		assert.deepEqual(config.mcpServers.good?.oauth, { clientName: "Claude Code" });
+		for (const name of ["empty", "blank", "number", "missing"]) {
+			assert.ok(
+				warn.mock.calls.some(([message]) =>
+					String(message).includes(`"${name}": oauth.clientName must be a non-empty string`),
+				),
+			);
+		}
+	} finally {
+		warn.mockRestore();
+	}
 });
 
 test("registers configured OAuth name or Atomic default for both grant types (#10226)", async () => {

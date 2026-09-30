@@ -2,6 +2,7 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { JsonObject } from "@bastani/pi-ai";
 import type { McpExtensionState } from "./state.js";
 import type { DirectToolSpec, McpContent } from "./types.js";
+import { providerSignInGuidance } from "./provider-auth.js";
 import { getFailureAgeSeconds, lazyConnect } from "./init.js";
 import { formatSchema } from "./tool-metadata.js";
 import { transformMcpContent } from "./tool-registrar.js";
@@ -42,7 +43,8 @@ export type DirectAutoAuthResult =
 function getDirectAuthRequiredMessage(
   state: McpExtensionState,
   serverName: string,
-  defaultMessage = `MCP server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`,
+  defaultMessage = providerSignInGuidance(state.config.mcpServers[serverName], serverName)
+    ?? `MCP server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`,
 ): string {
   return formatAuthRequiredMessage(state.config, serverName, defaultMessage);
 }

@@ -16,7 +16,7 @@ export interface McpServerConfig {
 	cwd?: string;
 	url?: string;
 	headers?: Record<string, string>;
-	auth?: "oauth" | "bearer" | false;
+	auth?: "oauth" | "bearer" | false | { provider: string };
 	bearerToken?: string;
 	bearerTokenEnv?: string;
 	oauth?: McpServerOAuthConfig | false;

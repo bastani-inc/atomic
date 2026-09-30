@@ -8,6 +8,8 @@ import { getAgentPath, getAgentPaths } from "./agent-dir.ts";
 import type { McpConfig, ServerEntry, McpSettings, ImportKind, ServerProvenance } from "./types.js";
 import { buildConfigWritePreview, getServersObject, readRawConfigObject, setServersObject, writeRawConfigObject, type ConfigWritePreview } from "./config-write-utils.ts";
 import { MCP_TIMEOUT_MS_CONFIG_ERROR, McpTimeoutConfigError, validateMcpServerTimeouts } from "./tool-call-timeout.js";
+import { interpolateEnvVars } from "./utils.js";
+import { providerAuthShapeError, providerAuthUrlError } from "./provider-auth.js";
 export { MCP_TIMEOUT_MS_CONFIG_ERROR };
 export type { ConfigWritePreview } from "./config-write-utils.ts";
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
@@ -109,7 +111,7 @@ export function findAvailableImportConfigs(cwd = process.cwd()): DiscoveredImpor
 }
 export function getMcpDiscoverySummary(overridePath?: string, cwd = process.cwd()): McpDiscoverySummary {
   const sources = getConfigSources(overridePath, cwd).map((source) => {
-    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`);
+    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`, source.scope === "global");
     return {
       id: source.id,
       label: source.label,
@@ -166,9 +168,9 @@ export function loadMcpConfig(
 ): McpConfig {
   let config: McpConfig = { mcpServers: validateContributedServers(contributions) };
   for (const source of getConfigSources(overridePath, cwd)) {
-    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`);
+    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`, source.scope === "global");
     if (!loaded) continue;
-    config = mergeConfigs(config, expandImports(loaded, cwd));
+    config = mergeConfigs(config, expandImports(loaded, cwd, source.scope === "global"));
   }
   return withoutDisabledServers(config);
 }
@@ -194,14 +196,21 @@ function validateContributedServers(contributions: readonly McpServerContributio
   const servers: Record<string, ServerEntry> = {};
   for (const contribution of contributions) {
     try {
-      Object.assign(servers, validateServerEntries({ [contribution.name]: contribution.config }));
+      Object.assign(
+        servers,
+        validateServerEntries(
+          { [contribution.name]: contribution.config },
+          contribution.origin === "extension",
+          describeMcpContributionSource(contribution),
+        ),
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const message = `Ignoring MCP server "${contribution.name}" from ${describeMcpContributionSource(contribution)}: ${reason}`;
       if (!reportOwnedMcpLog("warn")) console.warn(message);
     }
   }
-  return validateServerEntries(servers);
+  return validateServerEntries(servers, true);
 }
 function withoutDisabledServers(config: McpConfig): McpConfig {
   const enabled = Object.entries(config.mcpServers).filter(([, entry]) => entry.disabled !== true);
@@ -282,7 +291,7 @@ function mergeImports(left: ImportKind[] | undefined, right: ImportKind[] | unde
   if (merged.length === 0) return undefined;
   return [...new Set(merged)];
 }
-function expandImports(config: McpConfig, cwd = process.cwd()): McpConfig {
+function expandImports(config: McpConfig, cwd = process.cwd(), allowProviderAuth = false): McpConfig {
   if (!config.imports?.length) return config;
   const importedServers: Record<string, ServerEntry> = {};
   for (const importKind of config.imports) {
@@ -290,7 +299,7 @@ function expandImports(config: McpConfig, cwd = process.cwd()): McpConfig {
     if (!importPath) continue;
     try {
       const imported = JSON.parse(readFileSync(importPath, "utf-8"));
-      const servers = extractServers(imported, importKind);
+      const servers = extractServers(imported, importKind, allowProviderAuth && importKind !== "vscode");
       for (const [name, definition] of Object.entries(servers)) {
         if (!importedServers[name]) {
           importedServers[name] = definition;
@@ -320,22 +329,22 @@ function resolveImportPath(importKind: ImportKind, cwd = process.cwd()): string 
 function getImportServerCount(importKind: ImportKind, path: string): number {
   try {
     const raw = JSON.parse(readFileSync(path, "utf-8"));
-    return Object.keys(extractServers(raw, importKind)).length;
+    return Object.keys(extractServers(raw, importKind, importKind !== "vscode")).length;
   } catch {
     return 0;
   }
 }
-function readValidatedConfig(path: string, label: string): McpConfig | null {
+function readValidatedConfig(path: string, label: string, allowProviderAuth: boolean): McpConfig | null {
   if (!existsSync(path)) return null;
   try {
-    return validateMcpConfig(JSON.parse(readFileSync(path, "utf-8")));
+    return validateMcpConfig(JSON.parse(readFileSync(path, "utf-8")), allowProviderAuth);
   } catch (error) {
     if (error instanceof McpTimeoutConfigError) throw error;
     if (!reportOwnedMcpLog("warn")) console.warn(`Failed to load ${label}:`, error);
     return null;
   }
 }
-export function validateMcpConfig(raw: unknown): McpConfig {
+export function validateMcpConfig(raw: unknown, allowProviderAuth = true): McpConfig {
   if (!raw || typeof raw !== "object") {
     return { mcpServers: {} };
   }
@@ -345,20 +354,41 @@ export function validateMcpConfig(raw: unknown): McpConfig {
     return { mcpServers: {} };
   }
   return {
-    mcpServers: validateServerEntries(servers as Record<string, unknown>),
+    mcpServers: validateServerEntries(servers as Record<string, unknown>, allowProviderAuth),
     imports: Array.isArray(obj.imports) ? (obj.imports as ImportKind[]) : undefined,
     settings: obj.settings as McpSettings | undefined,
   };
 }
-function validateServerEntries(servers: Record<string, unknown>): Record<string, ServerEntry> {
-  for (const [name, entry] of Object.entries(servers)) {
-    const oauth = (entry as ServerEntry)?.oauth;
-    if (oauth && oauth.clientName !== undefined &&
-      (typeof oauth.clientName !== "string" || !oauth.clientName.trim())) {
-      throw new Error(`server "${name}": oauth.clientName must be a non-empty string`);
-    }
+function serverEntryError(entry: ServerEntry | null | undefined, allowProviderAuth: boolean): string | undefined {
+  const oauth = entry?.oauth;
+  if (oauth && oauth.clientName !== undefined && (typeof oauth.clientName !== "string" || !oauth.clientName.trim())) {
+    return "oauth.clientName must be a non-empty string";
   }
-  const validated = validateMcpServerTimeouts(servers);
+  const auth: unknown = entry?.auth;
+  if (typeof auth !== "object" || auth === null) return undefined;
+  return (
+    providerAuthShapeError(auth) ??
+    (allowProviderAuth ? undefined : "auth.provider is only allowed in the global mcp.json and from extensions") ??
+    providerAuthUrlError(typeof entry?.url === "string" ? interpolateEnvVars(entry.url) : undefined)
+  );
+}
+function validateServerEntries(
+  servers: Record<string, unknown>,
+  allowProviderAuth: boolean,
+  origin?: string,
+): Record<string, ServerEntry> {
+  const candidates: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(servers)) {
+    const reason = serverEntryError(entry as ServerEntry | null | undefined, allowProviderAuth);
+    if (reason) {
+      if (!reportOwnedMcpLog("warn")) {
+        console.warn(`Ignoring MCP server "${name}"${origin ? ` from ${origin}` : ""}: ${reason}`);
+      }
+      continue;
+    }
+    candidates[name] = entry;
+  }
+  const validated = validateMcpServerTimeouts(candidates);
   const accepted: Record<string, ServerEntry> = {};
   for (const [name, entry] of Object.entries(validated)) {
     const clash = Object.keys(accepted).find((other) => other !== name && other.replace(/-/g, "_") === name.replace(/-/g, "_"));
@@ -370,7 +400,7 @@ function validateServerEntries(servers: Record<string, unknown>): Record<string,
   }
   return accepted;
 }
-function extractServers(config: unknown, kind: ImportKind): Record<string, ServerEntry> {
+function extractServers(config: unknown, kind: ImportKind, allowProviderAuth: boolean): Record<string, ServerEntry> {
   if (!config || typeof config !== "object") return {};
   const obj = config as Record<string, unknown>;
   let servers: unknown;
@@ -390,7 +420,7 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
     return {};
   }
-  return validateServerEntries(servers as Record<string, unknown>);
+  return validateServerEntries(servers as Record<string, unknown>, allowProviderAuth);
 }
 function isRepoPromptServer(name: string, entry: ServerEntry): boolean {
   const normalizedName = name.toLowerCase();
@@ -429,7 +459,7 @@ function buildRepoPromptEntry(executablePath: string): ServerEntry {
 function detectRepoPrompt(summary: Omit<McpDiscoverySummary, "fingerprint" | "repoPrompt">, cwd = process.cwd()): RepoPromptDiscovery {
   for (const source of summary.sources) {
     if (source.kind !== "shared" || source.serverCount === 0) continue;
-    const config = readValidatedConfig(source.path, `MCP config from ${source.path}`);
+    const config = readValidatedConfig(source.path, `MCP config from ${source.path}`, source.scope === "global");
     if (!config) continue;
     for (const [name, entry] of Object.entries(config.mcpServers)) {
       if (isRepoPromptServer(name, entry)) {
@@ -522,7 +552,7 @@ export function getServerProvenance(
     });
   }
   for (const source of getConfigSources(overridePath, cwd)) {
-    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`);
+    const loaded = readValidatedConfig(source.readPath, `MCP config from ${source.readPath}`, source.scope === "global");
     if (!loaded) continue;
     if (loaded.imports?.length) {
       for (const importKind of loaded.imports) {
@@ -530,7 +560,7 @@ export function getServerProvenance(
         if (!importPath) continue;
         try {
           const imported = JSON.parse(readFileSync(importPath, "utf-8"));
-          const servers = extractServers(imported, importKind);
+          const servers = extractServers(imported, importKind, source.scope === "global" && importKind !== "vscode");
           for (const name of Object.keys(servers)) {
             if (!provenance.has(name) || provenance.get(name)?.kind === "contributed") {
               provenance.set(name, { path: userPath, kind: "import", importKind });

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Set `oauth.clientName` to choose the client name sent during dynamic OAuth registration. The default is `atomic` ([#10226](https://github.com/earendil-works/pi/issues/10226)).
+- HTTP MCP servers can set `"auth": { "provider": "<provider>" }` to send the current `/login` token of a provider as the bearer token instead of using MCP OAuth. The token is read for every request and is never stored by MCP. It is accepted only from the global `mcp.json` and extension registrations, requires `https` except on `localhost`, `127.0.0.1`, and `[::1]`, and is sent only to the server's origin.
 
 ### Fixed
 

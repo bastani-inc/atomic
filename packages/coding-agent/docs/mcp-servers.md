@@ -125,6 +125,22 @@ Atomic registers OAuth clients as `atomic`. If a server requires a known client 
 
 The name is sent only during dynamic client registration. Run `/mcp logout figma` before signing in again to register under a changed name.
 
+### Authenticate with a provider login
+
+An HTTP server can use the token of a provider you have signed in to instead of MCP OAuth:
+
+```json
+{ "mcpServers": { "radius": { "url": "https://radius.example/mcp", "auth": { "provider": "radius" } } } }
+```
+
+Atomic reads the provider's current token for each request, so refreshes apply. MCP does not copy or store the token. If the server rejects it or the provider has no token, the connection fails with a message to run `/login <provider>`.
+
+Because the token goes to the server's `url`, `auth.provider` has limits:
+
+- It is accepted in the global `mcp.json` files and in servers registered by extensions. It is ignored, with a warning, in project `.mcp.json` and `.atomic/mcp.json`, in project-relative imports such as `.vscode/mcp.json`, and in package manifest servers.
+- The URL must use `https`, or `http` on `localhost`, `127.0.0.1`, or `[::1]`.
+- Atomic sends the token only to the server's origin. It follows `307` and `308` redirects within that origin and refuses every other redirect.
+
 ## Troubleshooting
 
 - Run `/mcp` to check server status and `/mcp tools` to list available tools.

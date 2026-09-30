@@ -288,9 +288,10 @@ export interface ServerEntry {
    * - 'oauth' - Use OAuth 2.1 (auto-discovers endpoints, supports dynamic client registration)
    * - 'bearer' - Use static Bearer token
    * - false - Disable authentication
+   * - { provider } - Send the current `/login` token of a provider (global config and extensions only)
    * If not specified and url is present, OAuth will be auto-detected
    */
-  auth?: "oauth" | "bearer" | false;
+  auth?: "oauth" | "bearer" | false | { provider: string };
   bearerToken?: string;
   bearerTokenEnv?: string;
   /** 
@@ -382,7 +383,7 @@ export interface McpAuthResult {
 export interface McpPanelCallbacks {
   reconnect: (serverName: string) => Promise<boolean>;
   canAuthenticate: (serverName: string) => boolean;
-  authenticate: (serverName: string) => Promise<McpAuthResult>;
+  authenticate: (serverName: string, onAuthorizationUrl?: (url: string) => void) => Promise<McpAuthResult>;
   getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth";
   refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.js").ServerCacheEntry | null;
 }

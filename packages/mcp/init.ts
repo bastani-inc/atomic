@@ -23,6 +23,7 @@ import { McpServerManager } from "./server-manager.ts";
 import { buildToolMetadata, totalToolCount } from "./tool-metadata.js";
 import { UiResourceHandler } from "./ui-resource-handler.ts";
 import { openUrl, parallelLimit } from "./utils.js";
+import { isProviderAuth, providerSignInGuidance } from "./provider-auth.js";
 import { logger } from "./logger.ts";
 
 const FAILURE_BACKOFF_MS = 60 * 1000;
@@ -36,6 +37,7 @@ export async function initializeMcp(
   const config = loadMcpConfig(configPath, ctx.cwd, contributions);
 
   const manager = new McpServerManager();
+  manager.setProviderTokenResolver((provider) => ctx.modelRegistry.getApiKeyForProvider(provider));
   const lifecycle = new McpLifecycleManager(manager);
   try {
     const samplingAutoApprove = config.settings?.samplingAutoApprove === true;
@@ -106,7 +108,12 @@ export async function initializeMcp(
       try {
         const connection = await manager.connect(name, definition);
         if (connection.status === "needs-auth") {
-          return { name, definition, connection: null, error: `OAuth authentication required. Run /mcp-auth ${name}.` };
+          return {
+            name,
+            definition,
+            connection: null,
+            error: providerSignInGuidance(definition, name) ?? `OAuth authentication required. Run /mcp-auth ${name}.`,
+          };
         }
         return { name, definition, connection, error: null };
     } catch (error) {
@@ -332,7 +339,8 @@ export function getFailureAgeSeconds(state: McpExtensionState, serverName: strin
 export async function lazyConnect(state: McpExtensionState, serverName: string): Promise<boolean> {
   const connection = state.manager.getConnection(serverName);
   if (connection?.status === "needs-auth") {
-    return false;
+    if (!isProviderAuth(state.config.mcpServers[serverName]?.auth)) return false;
+    await state.manager.close(serverName);
   }
   if (connection?.status === "connected") {
     updateServerMetadata(state, serverName);
