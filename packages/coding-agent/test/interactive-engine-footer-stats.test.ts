@@ -4,16 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
 import { beforeAll, test, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import type { SessionStats } from "../src/core/agent-session-types.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { UsageMeterComponent } from "../src/modes/interactive/components/footer.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import type { SessionStats } from "../src/core/agent-session-types.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.js";
+import { stripAnsi } from "../src/utils/ansi.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 beforeAll(() => {
 	initTheme(undefined, false);

@@ -8,7 +8,7 @@ import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
-import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.ts";
+import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { renderTaskFooter } from "./task-list.js";
 

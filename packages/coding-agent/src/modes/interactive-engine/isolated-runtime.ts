@@ -22,7 +22,7 @@ import type {
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
 import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
-import { EngineSessionStats } from "./engine-session-stats.ts";
+import { EngineSessionStats } from "./engine-session-stats.js";
 import {
 	type AtomicOAuthLoginCallbacks,
 	loginIsolatedApiKeyProvider,

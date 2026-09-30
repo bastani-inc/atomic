@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	type AssistantMessage,
 	fauxAssistantMessage,
@@ -9,12 +10,12 @@ import {
 import { Agent } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
-import type { SessionStats } from "../src/core/agent-session-types.ts";
+import type { SessionStats } from "../src/core/agent-session-types.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createHarness } from "./suite/harness.ts";
+import { createHarness } from "./suite/harness.js";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
@@ -294,7 +295,7 @@ describe("AgentSession.getSessionStats", () => {
 			sessionManager.appendMessage(createAssistantMessageWithUsage("newer", newest, 4));
 			sessionManager.appendMessage(createToolResultMessage(createUsage(999)));
 
-			expect(session.getSessionStats().latestAssistantUsage).toEqual(newest);
+			assert.deepEqual(session.getSessionStats().latestAssistantUsage, newest);
 		} finally {
 			session.dispose();
 		}
@@ -306,7 +307,7 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			sessionManager.appendMessage(createUserMessage("only", 1));
 
-			expect(session.getSessionStats().latestAssistantUsage).toBeUndefined();
+			assert.equal(session.getSessionStats().latestAssistantUsage, undefined);
 		} finally {
 			session.dispose();
 		}
@@ -326,7 +327,7 @@ describe("AgentSession.getSessionStats", () => {
 				stopReason: "aborted",
 			});
 
-			expect(session.getSessionStats().latestAssistantUsage).toEqual(createUsage(0));
+			assert.deepEqual(session.getSessionStats().latestAssistantUsage, createUsage(0));
 		} finally {
 			session.dispose();
 		}
@@ -351,9 +352,9 @@ describe("AgentSession.getSessionStats", () => {
 			await harness.session.prompt("hello");
 			const replies = await Promise.all(observed);
 
-			expect(replies).toHaveLength(1);
-			expect(replies[0]?.stats.assistantMessages).toBe(1);
-			expect(replies[0]?.stats.latestAssistantUsage).toEqual(replies[0]?.usage);
+			assert.equal(replies.length, 1);
+			assert.equal(replies[0]?.stats.assistantMessages, 1);
+			assert.deepEqual(replies[0]?.stats.latestAssistantUsage, replies[0]?.usage);
 		} finally {
 			await harness.cleanup();
 		}
