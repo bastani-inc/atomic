@@ -1,7 +1,8 @@
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
 import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
+import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.js";
 import { highlightCode, type Theme } from "../../modes/interactive/theme/theme.js";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
 
@@ -35,20 +36,32 @@ export const codemodeRenderers: Pick<
 > = {
 	renderCall(args, theme, context) {
 		const code = str(args?.code);
-		let text = theme.fg("toolTitle", theme.bold("codemode"));
-		if (code === null) text += ` ${theme.fg("error", "[invalid arg]")}`;
-		else if (code) {
-			const lines = highlightCode(replaceTabs(code.replace(/\r/g, "").trimEnd()), "javascript");
-			const shown = context.expanded ? lines : lines.slice(0, 10);
-			text += `\n${shown.join("\n")}`;
-			if (shown.length < lines.length) text += `\n${hint(theme, lines.length - shown.length, "lines")}`;
+		const title = theme.fg("toolTitle", theme.bold("codemode"));
+		const component = (context.lastComponent as Container | undefined) ?? new Container();
+		component.clear();
+		if (code === null) {
+			component.addChild(new Text(`${title} ${theme.fg("error", "[invalid arg]")}`, 0, 0));
+			return component;
 		}
-		const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-		component.setText(text);
+		component.addChild(new Text(title, 0, 0));
+		if (code) {
+			const highlighted = highlightCode(replaceTabs(code.replace(/\r/g, "").trimEnd()), "javascript").join("\n");
+			component.addChild(
+				context.expanded
+					? new Text(highlighted, 0, 0)
+					: new VisualLinePreview({
+							text: highlighted,
+							maxVisualLines: 10,
+							keep: "start",
+							formatHint: (hidden) => hint(theme, hidden, "lines"),
+						}),
+			);
+		}
 		return component;
 	},
 	renderResult(result, options, theme, context) {
-		const sections: string[] = [];
+		const component = (context.lastComponent as Container | undefined) ?? new Container();
+		component.clear();
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
 			const shown = options.expanded ? calls : calls.slice(-8);
@@ -59,22 +72,31 @@ export const codemodeRenderers: Pick<
 				lines.push(
 					theme.fg("muted", `Model calls: ${cost(priced.reduce((sum, call) => sum + (call.cost ?? 0), 0))}`),
 				);
-			sections.push(lines.join("\n"));
+			component.addChild(new Spacer(1));
+			component.addChild(new Text(lines.join("\n"), 0, 0));
 		}
 		const [first, ...rest] = result.content;
 		const content = first?.type === "text" && SCRIPT_HEADER.test(first.text) ? rest : result.content;
 		const output = options.isPartial ? "" : getTextOutput({ ...result, content }, context.showImages).trim();
 		if (output) {
-			const lines = replaceTabs(output).split("\n");
-			const shown = options.expanded ? lines : lines.slice(0, 5);
-			let text = shown.map((line) => theme.fg(context.isError ? "error" : "toolOutput", line)).join("\n");
-			if (shown.length < lines.length) text += `\n${hint(theme, lines.length - shown.length, "lines")}`;
+			const styled = replaceTabs(output)
+				.split("\n")
+				.map((line) => theme.fg(context.isError ? "error" : "toolOutput", line))
+				.join("\n");
+			component.addChild(new Spacer(1));
+			component.addChild(
+				options.expanded
+					? new Text(styled, 0, 0)
+					: new VisualLinePreview({
+							text: styled,
+							maxVisualLines: 5,
+							keep: "start",
+							formatHint: (hidden) => hint(theme, hidden, "lines"),
+						}),
+			);
 			if (result.details?.fullOutputPath && !options.expanded)
-				text += `\n${theme.fg("muted", `Full output: ${result.details.fullOutputPath}`)}`;
-			sections.push(text);
+				component.addChild(new Text(theme.fg("muted", `Full output: ${result.details.fullOutputPath}`), 0, 0));
 		}
-		const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-		component.setText(sections.length ? `\n${sections.join("\n\n")}` : "");
 		return component;
 	},
 };
