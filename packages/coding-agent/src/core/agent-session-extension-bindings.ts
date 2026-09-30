@@ -33,7 +33,7 @@ import {
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
-import { getDefaultToolNames } from "./tools/index.js";
+import { getDefaultToolNames } from "./tools/index.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;

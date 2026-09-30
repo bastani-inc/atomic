@@ -2,7 +2,7 @@ import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
 import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
-import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.js";
+import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
 import { highlightCode, type Theme } from "../../modes/interactive/theme/theme.js";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
 
