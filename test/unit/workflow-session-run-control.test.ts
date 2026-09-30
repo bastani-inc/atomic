@@ -6,10 +6,16 @@ import {
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
 } from "@bastani/atomic";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { Client, Pool } from "pg";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import {
+	type DurableWorkflowCatalogEntries,
+	type DurableWorkflowHydrationResult,
+	InMemoryDurableBackend,
+} from "../../packages/workflows/src/durable/backend.js";
 import { DbosNotReadyError } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
+import { createRecoverablePostgresPool } from "../../packages/workflows/src/durable/dbos-recoverable-pool.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -32,6 +38,58 @@ class ThrowingHydrationBackend extends InMemoryDurableBackend {
 	}
 }
 
+class CatalogScanCountingBackend extends InMemoryDurableBackend {
+	catalogScans = 0;
+	override async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+		this.catalogScans += 1;
+		return super.prepareWorkflowCatalog();
+	}
+}
+
+class FailingInspectionBackend extends InMemoryDurableBackend {
+	private readonly failure: Error;
+	constructor(failure: Error) {
+		super();
+		this.failure = failure;
+	}
+	override async hydrateWorkflowForInspection(): Promise<DurableWorkflowHydrationResult> {
+		throw this.failure;
+	}
+}
+
+async function invalidatedPostgresQueryError(): Promise<Error> {
+	const borrowed = Object.assign(new Client(), { release: vi.fn() });
+	let queryStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		queryStarted = resolve;
+	});
+	vi.spyOn(borrowed, "query").mockImplementation(() => {
+		queryStarted();
+	});
+	const createPool = (url: string) => {
+		const physical = new Pool({ connectionString: url });
+		physical.connect = vi.fn(async () => borrowed) as Pool["connect"];
+		physical.end = vi.fn(async () => {}) as Pool["end"];
+		return physical;
+	};
+	const { pool, invalidate } = createRecoverablePostgresPool(
+		"postgresql://fixture:unused@127.0.0.1:1/isolated?connect_timeout=3&sslmode=disable",
+		{ createPool },
+	);
+	const pending = pool.query("SELECT 1");
+	await started;
+	invalidate();
+	try {
+		await pending;
+	} catch (error) {
+		await pool.end();
+		assert.ok(error instanceof Error, "expected an Error rejection");
+		return error;
+	}
+	await pool.end();
+	throw new assert.AssertionError({ message: "expected the invalidated query to reject" });
+}
+
 function sessionContext(sessionId: string): PiEventContext {
 	return { sessionManager: { getSessionId: () => sessionId }, ui: { notify: () => undefined }, hasUI: false };
 }
@@ -51,7 +109,7 @@ function setup(sessionId: string = SESSION_ID) {
 	);
 	return {
 		execute,
-		control: createSessionRunControl({ execute, context: () => sessionContext(sessionId) }),
+		control: createSessionRunControl({ execute, context: () => sessionContext(sessionId), store }),
 	};
 }
 
@@ -279,6 +337,57 @@ describe("session workflow run control", () => {
 		}
 	});
 
+	test.sequential("rejects unknown and foreign run prefixes without scanning the durable catalog (#3377)", async () => {
+		const foreignId = testRunId("session-run-control-prefix-foreign");
+		const backend = new CatalogScanCountingBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: foreignId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 3,
+			ownerExecutorId: "atomic-other-process",
+		});
+		const { control } = setup();
+
+		for (const target of ["deadbeef", foreignId.slice(0, 8), testRunId("session-run-control-prefix-unknown")]) {
+			for (const operation of [
+				() => control.getRun(target),
+				() => control.getStages(target),
+				() => control.pause(target),
+				() => control.quit(target),
+			]) {
+				const error = await rejection(operation());
+				assert.ok(error instanceof WorkflowRunNotFoundError, error.message);
+				assert.equal(error.code, "WORKFLOW_RUN_NOT_FOUND");
+			}
+		}
+
+		assert.equal(backend.catalogScans, 0);
+	});
+
+	test.sequential("resolves a session-owned run by its 8-character prefix (#3377)", async () => {
+		const runId = testRunId("session-run-control-owned-prefix");
+		store.recordRunStart(
+			run(runId, {
+				stages: [
+					{ id: "review", name: "review", status: "running", parentIds: [], toolEvents: [], attachable: true },
+				],
+			}),
+		);
+		const { control } = setup();
+		const prefix = runId.slice(0, 8);
+
+		assert.equal((await control.getRun(prefix)).runId, runId);
+		assert.deepEqual(
+			(await control.getStages(prefix)).map((stage) => stage.id),
+			["review"],
+		);
+		assert.equal((await control.getRun(prefix.toUpperCase())).runId, runId);
+	});
+
 	test.sequential("reports non-resumable runs as WorkflowRunNotResumableError (#3377)", async () => {
 		const completedId = testRunId("session-run-control-completed");
 		store.recordRunStart(run(completedId));
@@ -320,6 +429,26 @@ describe("session workflow run control", () => {
 		const thrown = await rejection(control.pause(runId));
 		assert.ok(thrown instanceof WorkflowRunDatabaseError, thrown.message);
 		assert.ok(thrown.cause instanceof DbosNotReadyError);
+	});
+
+	test.sequential("reports a reset Postgres connection as WorkflowRunDatabaseError (#3377)", async () => {
+		const failure = await invalidatedPostgresQueryError();
+		setDurableBackend(new FailingInspectionBackend(failure));
+		const { control } = setup();
+		const runId = testRunId("session-run-control-database-reset");
+
+		for (const operation of [
+			() => control.getRun(runId),
+			() => control.getStages(runId),
+			() => control.pause(runId),
+			() => control.quit(runId),
+		]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowRunDatabaseError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_DATABASE");
+			assert.equal(error.runId, runId);
+			assert.equal(error.cause, failure);
+		}
 	});
 
 	test.sequential("returns acknowledged noop outcomes instead of throwing for benign no-ops (#3377)", async () => {
@@ -408,11 +537,13 @@ describe("session workflow run control", () => {
 
 	test.sequential("rejects with WorkflowRunControlUnavailableError before the session starts (#3377)", async () => {
 		const { execute } = setup();
-		const control = createSessionRunControl({ execute, context: () => undefined });
+		const control = createSessionRunControl({ execute, context: () => undefined, store });
 
-		const error = await rejection(control.listRuns());
+		for (const operation of [() => control.listRuns(), () => control.getRun("deadbeef")]) {
+			const error = await rejection(operation());
 
-		assert.ok(error instanceof WorkflowRunControlUnavailableError, error.message);
-		assert.equal(error.code, "WORKFLOW_RUN_CONTROL_UNAVAILABLE");
+			assert.ok(error instanceof WorkflowRunControlUnavailableError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_CONTROL_UNAVAILABLE");
+		}
 	});
 });

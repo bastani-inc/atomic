@@ -20,9 +20,11 @@ import {
 } from "../src/index.js";
 
 const REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS = 180_000;
+const UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS = 15_000;
 const UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000";
+const UNKNOWN_RUN_PREFIX = "deadbeef";
 
-type Scenario = "pause" | "quit" | "reload" | "guard";
+type Scenario = "pause" | "quit" | "reload" | "prefix" | "guard";
 
 interface Markers {
 	readonly reached: string;
@@ -75,7 +77,7 @@ beforeAll(async () => {
 	const workflowsDir = join(packageDir, "workflows");
 	mkdirSync(join(cwd, ".atomic"), { recursive: true });
 	mkdirSync(workflowsDir, { recursive: true });
-	const scenarios: readonly Scenario[] = ["pause", "quit", "reload", "guard"];
+	const scenarios: readonly Scenario[] = ["pause", "quit", "reload", "prefix", "guard"];
 	const markersFor = (scenario: Scenario): Markers => ({
 		reached: join(root, `${scenario}-reached`),
 		gate: join(root, `${scenario}-gate`),
@@ -85,6 +87,7 @@ beforeAll(async () => {
 		pause: markersFor("pause"),
 		quit: markersFor("quit"),
 		reload: markersFor("reload"),
+		prefix: markersFor("prefix"),
 		guard: markersFor("guard"),
 	};
 	for (const scenario of scenarios) {
@@ -156,6 +159,21 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 		return error;
 	}
 	throw new assert.AssertionError({ message: "expected the operation to reject" });
+}
+
+async function settledRejection(operation: Promise<unknown>, label: string): Promise<Error> {
+	let timer: NodeJS.Timeout | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`${label} did not settle within ${UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS}ms`)),
+			UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS,
+		);
+	});
+	try {
+		return await rejection(Promise.race([operation, timeout]));
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function findRun(session: AgentSession, runId: string): Promise<WorkflowRunSummary | undefined> {
@@ -256,6 +274,48 @@ test(
 		assert.equal((await owner.workflows.getRun(runId)).status, "running");
 		const paused = await owner.workflows.pause(runId);
 		assert.equal(paused.status, "paused");
+		writeFileSync(files.gate, "release");
+		const resumed = await owner.workflows.resume(runId);
+		assert.equal(resumed.status, "ok");
+		await completed(owner, runId);
+		assert.equal(existsSync(files.finished), true);
+	},
+	REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS,
+);
+
+test(
+	"SDK run control rejects unknown and foreign run prefixes promptly and stays usable (#3377)",
+	async () => {
+		const files = markers.prefix;
+		const runId = await launchThroughSessionTool(owner, "prefix");
+		await waitForFile(files.reached);
+		const prefix = runId.slice(0, 8);
+
+		for (const [session, target] of [
+			[owner, UNKNOWN_RUN_PREFIX],
+			[other, UNKNOWN_RUN_PREFIX],
+			[other, prefix],
+		] as const) {
+			for (const [name, operation] of [
+				["getRun", () => session.workflows.getRun(target)],
+				["getStages", () => session.workflows.getStages(target)],
+				["pause", () => session.workflows.pause(target)],
+				["quit", () => session.workflows.quit(target)],
+			] as const) {
+				const error = await settledRejection(operation(), `${name}(${target})`);
+				assert.ok(error instanceof WorkflowRunNotFoundError, error.message);
+				assert.equal(error.code, "WORKFLOW_RUN_NOT_FOUND");
+			}
+		}
+
+		assert.equal((await owner.workflows.getRun(prefix)).runId, runId);
+		const foreign = await settledRejection(other.workflows.pause(runId), "pause(full foreign id)");
+		assert.ok(foreign instanceof WorkflowRunOwnershipError, foreign.message);
+		const paused = await owner.workflows.pause({ all: true });
+		assert.equal(paused.runId, "--all");
+		assert.equal(paused.status, "paused");
+		assert.equal((await owner.workflows.getRun(prefix)).status, "paused");
+
 		writeFileSync(files.gate, "release");
 		const resumed = await owner.workflows.resume(runId);
 		assert.equal(resumed.status, "ok");

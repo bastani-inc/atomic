@@ -50,7 +50,7 @@ async function foreignRunFailure(
 	target: string,
 	guard: WorkflowForeignRunGuard | undefined,
 ): Promise<WorkflowToolResult | undefined> {
-	if (guard === undefined || target.length === 0) return undefined;
+	if (guard === undefined || !isFullRunId(target)) return undefined;
 	const durable = await guard.getRuntime().inspectDurableWorkflow(target);
 	if (durable.kind !== "found") return undefined;
 	const runId = durable.detail.runId;

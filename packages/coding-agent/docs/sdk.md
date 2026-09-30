@@ -242,13 +242,13 @@ interface SessionWorkflows {
 }
 ```
 
-`listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect; read `message` and call `getRun()` before retrying.
+`listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `getRun()`, `getStages()`, `pause()` and `quit()` resolve a prefix against the runs this session holds and reject it at once when none matches, so pass the full UUID for a run recorded by an earlier process. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect; read `message` and call `getRun()` before retrying.
 
 Requests that cannot be carried out reject with a subclass of `WorkflowRunControlError`. Branch on `code` or use `instanceof`:
 
 | Class | `code` | Meaning |
 | --- | --- | --- |
-| `WorkflowRunNotFoundError` | `WORKFLOW_RUN_NOT_FOUND` | The run ID is unknown, malformed, or an ambiguous prefix. |
+| `WorkflowRunNotFoundError` | `WORKFLOW_RUN_NOT_FOUND` | The run ID is unknown or malformed, or a prefix is ambiguous or matches no run in this session. |
 | `WorkflowRunOwnershipError` | `WORKFLOW_RUN_OWNED_ELSEWHERE` | The run belongs to another session, or is running in another live Atomic process. Control it from its owner. |
 | `WorkflowRunNotResumableError` | `WORKFLOW_RUN_NOT_RESUMABLE` | The run completed, was killed, or has no durable progress to resume. |
 | `WorkflowRunDatabaseError` | `WORKFLOW_RUN_DATABASE` | Workflow durability is unavailable. Restore the database, then inspect the run before retrying. |

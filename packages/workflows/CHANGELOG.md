@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `pause`, `quit` and `resume` results from the `workflow` tool now carry a machine-readable `code` (`run_not_found`, `not_resumable`, `owned_elsewhere`, `database_unavailable` or `control_failed`) when the request could not be carried out, so SDK hosts using `session.workflows` receive typed errors. Resuming a run that is executing in another live Atomic process now reports `owned_elsewhere` instead of `not_resumable` ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+- `pause`, `quit` and `resume` results from the `workflow` tool now carry a machine-readable `code` (`run_not_found`, `not_resumable`, `owned_elsewhere`, `database_unavailable` or `control_failed`) when the request could not be carried out, so SDK hosts using `session.workflows` receive typed errors. Resuming a run that is executing in another live Atomic process now reports `owned_elsewhere` instead of `not_resumable`. Pausing or quitting, by full run id, a run owned by another session or executing in another live Atomic process now reports `owned_elsewhere` instead of `Run not found` ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
 
 ## [0.9.25-alpha.1] - 2026-09-29
 

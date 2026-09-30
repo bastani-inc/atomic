@@ -145,7 +145,7 @@ function factory(pi: ExtensionAPI): void {
 		sessionContext = undefined;
 	});
 	pi.registerWorkflowRunControl?.(
-		createSessionRunControl({ execute: executeWorkflowTool, context: () => sessionContext }),
+		createSessionRunControl({ execute: executeWorkflowTool, context: () => sessionContext, store: owner.store }),
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);
