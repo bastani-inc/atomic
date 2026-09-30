@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { hyperlink } from "@earendil-works/pi-tui";
 import type { McpExtensionState } from "./state.js";
 import type { McpAuthResult, McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ImportKind } from "./types.js";
 import {
@@ -168,7 +169,10 @@ export async function authenticateServer(
 
   try {
     ctx.ui.setStatus("mcp-auth", `Authenticating ${serverName}...`);
-    const status = await authenticate(serverName, definition.url, definition);
+    const status = await authenticate(serverName, definition.url, definition, (url) => {
+      const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
+      ctx.ui.notify(`Approve access in your browser. If it did not open, visit:\n${hyperlink(url, url)}\n${hyperlink(clickHint, url)}`, "info");
+    });
 
     if (status === "authenticated") {
       const message = `OAuth authentication successful for "${serverName}"! Run /mcp reconnect ${serverName} to connect with the new token.`;

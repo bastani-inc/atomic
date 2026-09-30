@@ -240,6 +240,7 @@ async function performAuthentication(
   owner: PendingAuthentication,
   serverUrl: string,
   definition?: ServerEntry,
+  onAuthorizationUrl?: (url: string) => void,
 ): Promise<AuthStatus> {
   const serverName = owner.serverName
   const started = await startAuthAttempt(serverName, serverUrl, definition, owner)
@@ -251,6 +252,7 @@ async function performAuthentication(
 
   const callbackPromise = waitForCallback(started.oauthState)
   try {
+    onAuthorizationUrl?.(started.authorizationUrl)
     if (!reportOwnedMcpLog("info")) console.log(`MCP Auth: Opening browser for ${serverName}`)
     try {
       await open(started.authorizationUrl)
@@ -288,6 +290,7 @@ export function authenticate(
   serverName: string,
   serverUrl: string,
   definition?: ServerEntry,
+  onAuthorizationUrl?: (url: string) => void,
 ): Promise<AuthStatus> {
   const { pendingAuthentications, oauthCleanupBarrier } = oauthLifecycle()
   const inFlight = pendingAuthentications.get(serverName)
@@ -302,7 +305,7 @@ export function authenticate(
   const controller = new AbortController()
   const inheritedCleanup = oauthCleanupBarrier.wait()
   let owner!: PendingAuthentication
-  const producer = inheritedCleanup.then(() => performAuthentication(owner, serverUrl, definition))
+  const producer = inheritedCleanup.then(() => performAuthentication(owner, serverUrl, definition, onAuthorizationUrl))
   owner = { serverName, controller, result, producer, resolve, reject }
   pendingAuthentications.set(serverName, owner)
   const removeOwner = (): void => {

@@ -111,6 +111,8 @@ In a headless SDK session, cached direct tools are available at startup, but dis
 
 For an OAuth server, run `/mcp-auth my-server` in an interactive session. You can also select the server in `/mcp` and press Enter or `Ctrl+A`. Run `/mcp logout my-server` to remove stored OAuth credentials and disconnect.
 
+While sign-in waits for browser approval, Atomic displays the authorization URL as a terminal hyperlink with a Cmd/Ctrl+click hint. You can use it if the browser did not open automatically.
+
 Automatic OAuth is opt-in through `settings.autoAuth`. Browser-based authorization requires an interactive session; authenticate before running unattended work.
 
 ## Troubleshooting

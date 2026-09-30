@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP sign-in now displays a clickable terminal hyperlink and a Cmd/Ctrl+click hint, including when the authorization URL wraps across lines ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+
 ## [0.9.25-alpha.1] - 2026-09-29
 
 ### Changed
