@@ -225,6 +225,19 @@ export function resolveMcpDirectToolNamesFromConfig(
 		const serverCache = cache.servers[serverName];
 		if (!isServerCacheValid(serverCache, definition)) continue;
 
+		const assignedNames = assignToolNames(
+			[
+				...(Array.isArray(serverCache.tools) ? serverCache.tools : []).map((tool) => tool?.name),
+				...(definition.exposeResources === false
+					? []
+					: (Array.isArray(serverCache.resources) ? serverCache.resources : []).map((resource) =>
+							resource?.name ? `get_${resourceNameToToolName(resource.name)}` : undefined,
+						)),
+			].filter((name): name is string => typeof name === "string" && name.length > 0),
+			serverName,
+			prefix,
+		);
+
 		const toolFilter = selectedServers.has(serverName) ? true : selectedTools.get(serverName);
 		if (!toolFilter) continue;
 
@@ -232,7 +245,7 @@ export function resolveMcpDirectToolNamesFromConfig(
 			if (typeof tool?.name !== "string" || !tool.name) continue;
 			if (toolFilter !== true && !toolFilter.has(tool.name)) continue;
 			if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) continue;
-			const prefixedName = formatToolName(tool.name, serverName, prefix);
+			const prefixedName = assignedNames.get(tool.name)!;
 			if (BUILTIN_TOOL_NAMES.has(prefixedName) || seenNames.has(prefixedName)) continue;
 			seenNames.add(prefixedName);
 			names.push(prefixedName);
@@ -245,7 +258,7 @@ export function resolveMcpDirectToolNamesFromConfig(
 			const baseName = `get_${resourceNameToToolName(resource.name)}`;
 			if (toolFilter !== true && !toolFilter.has(baseName)) continue;
 			if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) continue;
-			const prefixedName = formatToolName(baseName, serverName, prefix);
+			const prefixedName = assignedNames.get(baseName)!;
 			if (BUILTIN_TOOL_NAMES.has(prefixedName) || seenNames.has(prefixedName)) continue;
 			seenNames.add(prefixedName);
 			names.push(prefixedName);
@@ -320,7 +333,25 @@ function getServerPrefix(serverName: string, mode: ToolPrefix): string {
 
 function formatToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
 	const serverPrefix = getServerPrefix(serverName, prefix);
-	return serverPrefix ? `${serverPrefix}_${toolName}` : toolName;
+	const name = (serverPrefix ? `${serverPrefix}_${toolName}` : toolName).replace(/[^A-Za-z0-9_]/g, "_");
+	return /^\d/.test(name) ? `_${name}` : name;
+}
+
+function assignToolNames(names: readonly string[], server: string, prefix: ToolPrefix): Map<string, string> {
+	const unique = [...new Set(names)];
+	const counts = new Map<string, number>();
+	for (const name of unique) {
+		const plain = formatToolName(name, server, prefix);
+		counts.set(plain, (counts.get(plain) ?? 0) + 1);
+	}
+	return new Map(
+		unique.map((name) => {
+			const plain = formatToolName(name, server, prefix);
+			if (plain.length <= 64 && counts.get(plain) === 1) return [name, plain];
+			const hash = createHash("sha256").update(`${server}\0${name}`).digest("hex").slice(0, 8);
+			return [name, `${plain.slice(0, 55)}_${hash}`];
+		}),
+	);
 }
 
 function isToolExcluded(toolName: string, serverName: string, prefix: ToolPrefix, excludeTools: unknown): boolean {

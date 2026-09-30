@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
+import { resolveDirectTools } from "../../packages/mcp/direct-tools.js";
+import { computeServerHash } from "../../packages/mcp/metadata-cache.js";
 import {
 	computeMcpServerHash,
 	type McpConfig,
@@ -67,6 +69,32 @@ describe("MCP direct-tool allowlist resolution", () => {
 			"chrome_devtools_read",
 			"chrome_devtools_get_page_snapshot",
 		]);
+	});
+
+	test("matches MCP resolver names for dashed and underscored tools (#10239)", () => {
+		for (const tools of [
+			["read-file", "read_file"],
+			["read_file", "read-file"],
+		]) {
+			const config: McpConfig = { mcpServers: { "my-server": { command: "fixture", directTools: true } } };
+			const cache = cacheFor(config, "my-server", tools);
+			const subagentNames = resolveMcpDirectToolNamesFromConfig(config, cache, "server", ["my-server"]);
+			const mcpCache = {
+				version: 1,
+				servers: {
+					"my-server": {
+						...cache.servers["my-server"]!,
+						configHash: computeServerHash(config.mcpServers["my-server"]!),
+					},
+				},
+			};
+			const mcpNames = resolveDirectTools(config as never, mcpCache as never, "server").map(
+				(spec) => spec.prefixedName,
+			);
+			assert.deepEqual(subagentNames, mcpNames);
+			assert.equal(new Set(subagentNames).size, 2);
+			for (const name of subagentNames) assert.match(name, /^my_server_read_file_[a-f0-9]{8}$/);
+		}
 	});
 
 	test("supports short and none prefixes for selected tools", () => {

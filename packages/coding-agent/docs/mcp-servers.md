@@ -103,6 +103,8 @@ mcp({ tool: "my_server_search", args: '{"query":"example"}' })
 
 Use the tool names returned by discovery. `args` is a JSON string, not an object. Search may connect configured servers when their metadata has not yet been cached.
 
+Tool names replace punctuation with `_` and receive a leading `_` if they start with a digit. Names longer than 64 characters and tools whose names collide after this conversion receive a deterministic hash suffix. Both gateway discovery and direct tools use these names; call the returned name rather than constructing one yourself. Server names that differ only in `-` and `_` are rejected within one configuration file. A higher-precedence file replaces a contributed or lower-precedence server with the same normalized name.
+
 To expose a server's tools directly in the agent's tool list, add `"directTools": true` to that server's configuration. To expose only selected tools, set `directTools` to an array of the original MCP tool names. The default is gateway-only access.
 
 In a headless SDK session, cached direct tools are available at startup, but discovery does not connect uncached lazy servers. Call the `mcp` gateway when you need them. Set the server's `lifecycle` to `"eager"` or `"keep-alive"` if it must connect during startup.

@@ -19,6 +19,12 @@ export class McpServerRegistry {
 
 	/** Returns the registration it replaced so a rolled-back extension load can restore it. */
 	register(contribution: McpServerContribution): McpServerContribution | undefined {
+		const clash = this.list().find(
+			(server) =>
+				server.name !== contribution.name &&
+				server.name.replace(/-/g, "_") === contribution.name.replace(/-/g, "_"),
+		);
+		if (clash) throw new Error(`MCP server "${contribution.name}" conflicts with registered server "${clash.name}"`);
 		const previous = this.registrations.get(contribution.name);
 		this.registrations.set(contribution.name, contribution);
 		this.notify();

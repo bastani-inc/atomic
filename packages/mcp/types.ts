@@ -417,7 +417,8 @@ export function formatToolName(
   prefix: "server" | "none" | "short"
 ): string {
   const p = getServerPrefix(serverName, prefix);
-  return p ? `${p}_${toolName}` : toolName;
+  const name = (p ? `${p}_${toolName}` : toolName).replace(/[^A-Za-z0-9_]/g, "_");
+  return /^\d/.test(name) ? `_${name}` : name;
 }
 
 function normalizeToolName(value: string): string {

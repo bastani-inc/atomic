@@ -201,7 +201,7 @@ function validateContributedServers(contributions: readonly McpServerContributio
       if (!reportOwnedMcpLog("warn")) console.warn(message);
     }
   }
-  return servers;
+  return validateServerEntries(servers);
 }
 function withoutDisabledServers(config: McpConfig): McpConfig {
   const enabled = Object.entries(config.mcpServers).filter(([, entry]) => entry.disabled !== true);
@@ -264,8 +264,15 @@ function getConfigSources(overridePath?: string, cwd = process.cwd()): ConfigSou
   return sources;
 }
 function mergeConfigs(base: McpConfig, next: McpConfig): McpConfig {
+  const servers = { ...base.mcpServers };
+  for (const [name, entry] of Object.entries(next.mcpServers)) {
+    for (const previous of Object.keys(servers)) {
+      if (previous !== name && previous.replace(/-/g, "_") === name.replace(/-/g, "_")) delete servers[previous];
+    }
+    servers[name] = entry;
+  }
   return {
-    mcpServers: { ...base.mcpServers, ...next.mcpServers },
+    mcpServers: servers,
     imports: mergeImports(base.imports, next.imports),
     settings: next.settings ? { ...base.settings, ...next.settings } : base.settings,
   };
@@ -351,7 +358,17 @@ function validateServerEntries(servers: Record<string, unknown>): Record<string,
       throw new Error(`server "${name}": oauth.clientName must be a non-empty string`);
     }
   }
-  return validateMcpServerTimeouts(servers);
+  const validated = validateMcpServerTimeouts(servers);
+  const accepted: Record<string, ServerEntry> = {};
+  for (const [name, entry] of Object.entries(validated)) {
+    const clash = Object.keys(accepted).find((other) => other !== name && other.replace(/-/g, "_") === name.replace(/-/g, "_"));
+    if (clash) {
+      if (!reportOwnedMcpLog("warn")) console.warn(`MCP server "${name}" conflicts with "${clash}"`);
+      continue;
+    }
+    accepted[name] = entry as ServerEntry;
+  }
+  return accepted;
 }
 function extractServers(config: unknown, kind: ImportKind): Record<string, ServerEntry> {
   if (!config || typeof config !== "object") return {};
