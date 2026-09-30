@@ -30,8 +30,8 @@ const writeSettings = (settings: object) => writeFileSync(join(agentDir, "settin
 async function createFileSession(
 	options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludedTools"> = {},
 	transactional = true,
+	settingsManager = SettingsManager.create(tempDir, agentDir),
 ) {
-	const settingsManager = SettingsManager.create(tempDir, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: tempDir,
 		agentDir,
@@ -83,6 +83,24 @@ for (const transactional of [true, false]) {
 		writeSettings({ defaultTools: ["-read"] });
 		await session.reload();
 		assert.deepEqual(session.getActiveToolNames().sort(), expected);
+	});
+
+	test(`reload activates new defaults for sessions sharing settings with transactional=${transactional}`, async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const first = await createFileSession({}, transactional, settingsManager);
+		const second = await createFileSession({}, transactional, settingsManager);
+		const defaults = [...getDefaultToolNames()];
+		assert.equal(first.settingsManager, second.settingsManager);
+		assert.deepEqual(second.getActiveToolNames(), defaults);
+		second.setActiveToolsByName(defaults.filter((name) => name !== "bash"));
+		writeSettings({ defaultTools: ["+inactive_tool", "+ls"] });
+		await first.reload();
+		assert.deepEqual(first.getActiveToolNames().sort(), [...defaults, "inactive_tool", "ls"].sort());
+		await second.reload();
+		assert.deepEqual(
+			second.getActiveToolNames().sort(),
+			[...defaults.filter((name) => name !== "bash"), "inactive_tool", "ls"].sort(),
+		);
 	});
 }
 

@@ -584,16 +584,10 @@ async function reloadOwnedGeneration(
 	const oldRunner = this._extensionRunner;
 	const previousFlagValues = oldRunner.getExplicitFlagValues();
 	const activeToolNames = this.getActiveToolNames();
-	const previousDefaultTools = new Set(
-		this._usesDefaultTools ? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()) : [],
-	);
-	const activeToolsAfterReload = () => [
+	const previousDefaultTools = this._appliedDefaultTools;
+	const activeToolsAfterReload = (defaultTools: readonly string[]) => [
 		...activeToolNames,
-		...(this._usesDefaultTools
-			? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()).filter(
-					(name) => !previousDefaultTools.has(name),
-				)
-			: []),
+		...(this._usesDefaultTools ? defaultTools.filter((name) => !previousDefaultTools.has(name)) : []),
 	];
 	const prepareResourceReload = this._resourceLoader.prepareReload?.bind(this._resourceLoader);
 	if (prepareResourceReload === undefined || this._resourceLoader.supportsTransactionalReload?.() === false) {
@@ -605,11 +599,13 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
+		const defaultTools = this.settingsManager.getDefaultTools() ?? getDefaultToolNames();
 		this._buildRuntime({
-			activeToolNames: activeToolsAfterReload(),
+			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		this._appliedDefaultTools = new Set(defaultTools);
 		retainedRuntimes.add(this._resourceLoader.getExtensions().runtime);
 		for (const extension of this._resourceLoader.getExtensions().extensions)
 			factoryAcquisitions.getStore()?.pending?.delete(extension);
@@ -632,6 +628,7 @@ async function reloadOwnedGeneration(
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
+	const defaultTools = settingsTransaction.settingsManager.getDefaultTools() ?? getDefaultToolNames();
 	const errors = resourceTransaction.loader.getExtensions().errors;
 	const extensionsResult = resourceTransaction.loader.getExtensions();
 	for (const [name, value] of previousFlagValues) {
@@ -732,11 +729,12 @@ async function reloadOwnedGeneration(
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
 		this._buildRuntime({
-			activeToolNames: activeToolsAfterReload(),
+			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 			preserveRunner: true,
 		});
+		this._appliedDefaultTools = new Set(defaultTools);
 	} catch (error) {
 		failures.push(error);
 	}
