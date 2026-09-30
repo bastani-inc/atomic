@@ -1,6 +1,6 @@
 import type { AgentSession } from "../../core/agent-session.js";
 import type { SessionStats } from "../../core/agent-session-types.js";
-import type { RpcClient } from "../rpc/rpc-client.js";
+import type { RpcClient } from "../rpc/rpc-client.ts";
 
 const trackedSessions = new WeakMap<AgentSession, EngineSessionStats>();
 
