@@ -43,6 +43,17 @@ import { invalidateNativeSearchCache } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";
 
+const STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024;
+const bashOutputSchema = Type.Object({
+	output: Type.String({
+		description: "Combined stdout and stderr, up to 1 MiB, keeping the first and last 512 KiB when longer.",
+	}),
+	truncated: Type.Boolean(),
+	full_output_path: Type.Optional(Type.String()),
+	exit_code: Type.Number(),
+	wall_time_seconds: Type.Number(),
+});
+
 const envSchema = Type.Unsafe<Record<string, string>>({
 	type: "object",
 	description: "Environment variables to add or override.",
@@ -334,13 +345,11 @@ type BashRenderState = {
 type BashResultRenderState = {
 	cachedWidth: number | undefined;
 	cachedLines: string[] | undefined;
-	cachedSkipped: number | undefined;
 };
 class BashResultRenderComponent extends Container {
 	state: BashResultRenderState = {
 		cachedWidth: undefined,
 		cachedLines: undefined,
-		cachedSkipped: undefined,
 	};
 }
 function formatDuration(ms: number): string {
@@ -410,22 +419,21 @@ function rebuildBashResultRenderComponent(
 				render: (width: number) => {
 					if (state.cachedLines === undefined || state.cachedWidth !== width) {
 						const preview = truncateToVisualLines(styledOutput, BASH_PREVIEW_LINES, width);
-						state.cachedLines = preview.visualLines;
-						state.cachedSkipped = preview.skippedCount;
+						const hintLines: string[] = [];
+						if (preview.skippedCount > 0) {
+							const hint =
+								theme.fg("muted", "... ") +
+								parenthesizedKeyHint("app.tools.expand", "Expand", `${preview.skippedCount} earlier lines`);
+							hintLines.push(truncateToWidth(hint, width, "..."));
+						}
+						state.cachedLines = ["", ...hintLines, ...preview.visualLines];
 						state.cachedWidth = width;
 					}
-					if (state.cachedSkipped && state.cachedSkipped > 0) {
-						const hint =
-							theme.fg("muted", "... ") +
-							parenthesizedKeyHint("app.tools.expand", "Expand", `${state.cachedSkipped} earlier lines`);
-						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
-					}
-					return ["", ...(state.cachedLines ?? [])];
+					return state.cachedLines;
 				},
 				invalidate: () => {
 					state.cachedWidth = undefined;
 					state.cachedLines = undefined;
-					state.cachedSkipped = undefined;
 				},
 			});
 		}
@@ -484,6 +492,7 @@ export function createBashToolDefinition(
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
 		prepareArguments: prepareShellInput,
 		parameters: bashSchema,
+		outputSchema: bashOutputSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, ctx?: ExtensionContext) {
 			if (bashCommand.action !== undefined) {
@@ -719,14 +728,25 @@ export function createBashToolDefinition(
 				if (exitCode === null) {
 					throw new Error(appendStatus(outputText, "Command terminated without an exit code"));
 				}
+				const fullOutput = await output.readFullOutput(STRUCTURED_OUTPUT_MAX_BYTES);
+				const structuredContent = {
+					output: fullOutput.content,
+					truncated: fullOutput.truncated,
+					...(fullOutput.truncated && snapshot.fullOutputPath
+						? { full_output_path: snapshot.fullOutputPath }
+						: {}),
+					exit_code: exitCode,
+					wall_time_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
+				};
 				if (exitCode !== 0) {
 					return {
 						content: [{ type: "text", text: appendStatus(outputText, `Command exited with code ${exitCode}`) }],
 						details: { ...withTiming(details), exitCode },
 						isError: true,
+						structuredContent,
 					};
 				}
-				return { content: [{ type: "text", text: outputText }], details: withTiming(details) };
+				return { content: [{ type: "text", text: outputText }], details: withTiming(details), structuredContent };
 			} finally {
 				invalidateNativeSearchCache();
 				clearUpdateTimer();

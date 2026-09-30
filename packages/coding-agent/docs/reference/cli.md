@@ -102,6 +102,8 @@ Once the complete credential reaches stdout, the command has succeeded. If the s
 
 Interactive sessions use fullscreen, with a scrolling transcript above the docked editor and status area. Wheel and trackpad input goes to a focused workflow graph or stage chat first, then the transcript when not consumed. Scrolling, scrollbar dragging, and selection remain available outside overlays.
 
+Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail and chat views.
+
 Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X returns tool detail or stage chat to the graph, returns the graph to main chat, or clears a scoped-model selection. It does not copy; `/copy` copies the last assistant message.
 
 On exit, `fullscreenExitOutput: "transcript"` prints the final transcript and resume hint. `"resume-hint"` restores the previous screen and prints only the hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
@@ -148,6 +150,8 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-tools`, `-nt` | Disable every tool, including Intercom, even with `--tools` |
 
 Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `ls` remains available but is not a default. `defaultTools` selects initial coding tools without narrowing extension/custom tools. `--tools` selects an explicit allowlist; `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--no-tools` overrides all selection. To retain Intercom with an allowlist, include `intercom` explicitly.
+
+To add opt-in [codemode](/tools#codemode) or [tool search](/tools#tool_search) alongside defaults, use `"defaultTools": ["+codemode", "+tool_search"]` in settings. With `--tools`, include their names and every other tool you want available.
 
 ## Project Trust Options
 

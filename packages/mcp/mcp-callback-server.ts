@@ -6,6 +6,7 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http"
+import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/pi-ai/utils/oauth-page";
 import {
   OAUTH_CALLBACK_PATH,
   getConfiguredOAuthCallbackPort,
@@ -15,47 +16,9 @@ import {
 import { logger } from "./logger.ts"
 import { getMcpOwner } from "./diagnostics.js"
 
-// HTML templates for callback responses
-const HTML_SUCCESS = `<!DOCTYPE html>
-<html>
-<head>
-  <title>Pi - Authorization Successful</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
-    .container { text-align: center; padding: 2rem; }
-    h1 { color: #4ade80; margin-bottom: 1rem; }
-    p { color: #aaa; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Authorization Successful</h1>
-    <p>You can close this window and return to Pi.</p>
-  </div>
-  <script>setTimeout(() => window.close(), 2000);</script>
-</body>
-</html>`
+const HTML_SUCCESS = oauthSuccessHtml("You can close this window and return to Atomic.");
 
-export const renderCallbackErrorHtml = () => `<!DOCTYPE html>
-<html>
-<head>
-  <title>Pi - Authorization Failed</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
-    .container { text-align: center; padding: 2rem; }
-    h1 { color: #f87171; margin-bottom: 1rem; }
-    p { color: #aaa; }
-    .error { color: #fca5a5; font-family: monospace; margin-top: 1rem; padding: 1rem; background: rgba(248,113,113,0.1); border-radius: 0.5rem; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Authorization Failed</h1>
-    <p>An error occurred during authorization.</p>
-    <div class="error">Return to Atomic and try again.</div>
-  </div>
-</body>
-</html>`
+export const renderCallbackErrorHtml = () => oauthErrorHtml("Return to Atomic and try again.");
 
 /** Pending authorization request */
 interface PendingAuth {

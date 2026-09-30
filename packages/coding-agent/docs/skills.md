@@ -82,7 +82,7 @@ This is progressive disclosure: only descriptions are always in context, full in
 
 ### Built-in prompt engineering guidance
 
-The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubleshoots prompts for GPT and Claude models. Its small routing file points to separate, source-attributed guides for GPT-6 Astra, GPT-5.6, GPT-5.5, Claude Fable 5.1, Claude Fable 5, Claude Opus 5.5, Claude Opus 5, Claude Opus 4.8, Claude Sonnet 5.5, and Claude Sonnet 5. Read the target model's page, or both relevant pages for a migration, without loading every guide. Shared references cover prompt structure, tools, evaluation, and instruction audits; model defaults, effort, verification, and API compatibility stay in their own pages.
+The bundled `/skill:prompt-engineer` creates, optimizes, evaluates, and troubleshoots prompts for GPT and Claude models. Its small routing file points to separate, source-attributed guides for GPT-6.1 Sol, GPT-6 Astra, GPT-5.6, GPT-5.5, Claude Fable 5.1, Claude Fable 5, Claude Opus 5.5, Claude Opus 5, Claude Opus 4.8, Claude Sonnet 5.5, and Claude Sonnet 5. Read the target model's page, or both relevant pages for a migration, without loading every guide. Shared references cover prompt structure, tools, evaluation, and instruction audits; model defaults, effort, verification, and API compatibility stay in their own pages. For example, use `/skill:prompt-engineer Improve this prompt for GPT-6.1 Sol: ...`.
 
 Each model guide pairs an observed behavior with a prompt adjustment, example wording, and caveats. Choose the patterns that address your task instead of copying the whole guide; compatibility notes explain when a prompt also needs provider or application support.
 

@@ -80,6 +80,29 @@ export type ToolRenderResultLike<TDetails> = {
 	details: TDetails;
 };
 
+export function formatToolCallWithArgs(
+	title: string,
+	args: unknown,
+	theme: { fg: (name: ThemeColor, text: string) => string; bold: (text: string) => string },
+	expanded: boolean,
+): string {
+	const clean = (text: string) => sanitizeBinaryOutput(stripAnsi(text));
+	const header = theme.fg("toolTitle", theme.bold(clean(title)));
+	if (args == null) return header;
+	const entries = typeof args === "object" && !Array.isArray(args) ? Object.entries(args) : [["args", args]];
+	if (entries.length === 0) return header;
+	if (expanded) {
+		const lines = entries.map(([key, value]) => {
+			const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
+			return `  ${clean(String(key))}: ${replaceTabs(clean(text)).replace(/\r/g, "").split("\n").join("\n    ")}`;
+		});
+		return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
+	}
+	const pairs = clean(entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`).join(" "));
+	const preview = pairs.length > 100 ? `${pairs.slice(0, 97)}...` : pairs;
+	return `${header} ${theme.fg("muted", preview)}`;
+}
+
 export function invalidArgText(theme: { fg: (name: ThemeColor, text: string) => string }): string {
 	return theme.fg("error", "[invalid arg]");
 }

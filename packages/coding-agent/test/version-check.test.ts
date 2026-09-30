@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	checkForNewPiVersion,
 	comparePackageVersions,
@@ -11,6 +11,12 @@ import {
 
 const originalSkipVersionCheck = process.env.ATOMIC_SKIP_VERSION_CHECK;
 const originalOffline = process.env.ATOMIC_OFFLINE;
+
+beforeEach(() => {
+	for (const name of ["ATOMIC_SKIP_VERSION_CHECK", "PI_SKIP_VERSION_CHECK", "ATOMIC_OFFLINE", "PI_OFFLINE"]) {
+		vi.stubEnv(name, undefined);
+	}
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();

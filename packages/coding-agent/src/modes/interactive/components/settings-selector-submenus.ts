@@ -184,17 +184,25 @@ export function themeItems(availableThemes: string[], currentTheme: string): Sel
 	return availableThemes.map((name) => ({
 		value: name,
 		label: `${name === currentTheme ? "✓ " : "  "}${name}`,
+		description: name === "system" ? "Use the terminal's foreground, background, and palette" : undefined,
 	}));
 }
 
 function singleModeThemeItems(availableThemes: string[], currentTheme: string): SelectItem[] {
 	return [
+		...themeItems(
+			availableThemes.filter((name) => name === "system"),
+			currentTheme,
+		),
 		{
 			value: AUTOMATIC_THEME_VALUE,
 			label: "  Automatic",
 			description: "Use separate themes for light and dark terminal appearance",
 		},
-		...themeItems(availableThemes, currentTheme),
+		...themeItems(
+			availableThemes.filter((name) => name !== "system"),
+			currentTheme,
+		),
 	];
 }
 

@@ -91,6 +91,19 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		values: ["true", "false"],
 	});
 	insertAfter(items, "fullscreen-copy-on-select", {
+		id: "fullscreen-wheel-scroll-lines",
+		label: "Fullscreen wheel scroll lines",
+		description: "Lines per wheel event, or auto acceleration",
+		currentValue: String(config.fullscreenWheelScrollLines ?? "auto"),
+		values: [
+			"auto",
+			...[...new Set([1, 2, 3, 5, 10, config.fullscreenWheelScrollLines])]
+				.filter((lines): lines is number => typeof lines === "number")
+				.sort((a, b) => a - b)
+				.map(String),
+		],
+	});
+	insertAfter(items, "fullscreen-wheel-scroll-lines", {
 		id: "editor-padding",
 		label: "Editor padding",
 		description: "Horizontal padding for input editor (0-3)",

@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { getAgentPath } from './agent-dir.ts';
 import { getMcpOwner, reportOwnedMcpLog } from './diagnostics.js';
+import lockfile from "proper-lockfile";
 
 export interface OAuthTransient {
   oauthState?: string;
@@ -98,6 +99,16 @@ function ensureServerDir(serverName: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+}
+
+/** Hold the server lock across the refresh token reread, exchange and persistence. */
+export async function acquireTokenRefreshLock(serverName: string): Promise<() => Promise<void>> {
+  ensureServerDir(serverName);
+  return lockfile.lock(getServerDir(serverName), {
+    realpath: false,
+    retries: { retries: 120, minTimeout: 100, maxTimeout: 1000 },
+    stale: 60_000,
+  });
 }
 
 /**

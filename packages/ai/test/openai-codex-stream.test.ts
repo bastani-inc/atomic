@@ -174,6 +174,20 @@ describe("openai-codex fast model routing", () => {
 		expect(body?.service_tier).toBe("priority");
 	});
 
+	it.each([streamOpenAICodexResponses, streamSimpleOpenAICodexResponses])(
+		"sends Sol 6.1's unchanged model with ultrafast tier through %s",
+		async (run) => {
+			const ultrafast: Model<"openai-codex-responses"> = {
+				...baseModel,
+				id: "gpt-6.1-sol-ultrafast",
+				fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
+			};
+			const body = await captureBody(ultrafast, run);
+			assert.equal(body?.model, "gpt-6.1-sol");
+			assert.equal(body?.service_tier, "ultrafast");
+		},
+	);
+
 	it("sends no service tier for the normal sibling", async () => {
 		const body = await captureBody(baseModel, streamSimpleOpenAICodexResponses);
 

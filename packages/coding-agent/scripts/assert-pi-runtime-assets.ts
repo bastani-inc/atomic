@@ -2,11 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
-export const expectedPiVersion = "0.87.1";
+export const expectedPiVersion = "0.99.1";
 export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",
+	"dist/models.js",
 	"dist/providers/data/.manifest.json",
 	"dist/providers/data/amazon-bedrock.json",
 	"dist/providers/data/anthropic.json",
@@ -14,6 +15,9 @@ const requiredPiAiFiles = [
 	"dist/providers/data/openrouter.json",
 	"dist/auth/oauth/kimi-coding.js",
 	"dist/auth/oauth/openrouter.js",
+	"dist/auth/oauth/openai-chatgpt.js",
+	"dist/auth/oauth/callback-server.js",
+	"dist/utils/oauth-page.js",
 	"dist/bun-oauth.js",
 ] as const;
 const requiredPiTuiFiles = [
@@ -32,6 +36,7 @@ const requiredAppMarkers = [
 	"global.anthropic.claude-opus-5",
 	"https://openrouter.ai/auth",
 	"https://auth.kimi.com",
+	"chatgpt.tokens.use.direct",
 ] as const;
 
 export interface PiRuntimeAssetOptions {
@@ -49,6 +54,8 @@ function requireFile(path: string): void {
 
 export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 	const nodeModulesRoot = resolve(options.nodeModulesRoot);
+	requireFile(join(packagePath(nodeModulesRoot, "@earendil-works/pi-codemode"), "dist/runtime/worker.js"));
+	requireFile(join(packagePath(nodeModulesRoot, "quickjs-wasi"), "quickjs.wasm"));
 	const piAiRoot = packagePath(nodeModulesRoot, "@bastani/pi-ai");
 	for (const relativePath of requiredPiAiFiles) requireFile(join(piAiRoot, relativePath));
 	const piTuiRoot = packagePath(nodeModulesRoot, "@earendil-works/pi-tui");
@@ -64,6 +71,8 @@ export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 
 	if (options.appBundlePath) {
 		const appBundlePath = resolve(options.appBundlePath);
+		requireFile(join(dirname(appBundlePath), "codemode-worker.js"));
+		requireFile(join(dirname(appBundlePath), "quickjs.wasm"));
 		requireFile(appBundlePath);
 		requireFile(join(dirname(appBundlePath), "native-modifiers.js"));
 		requireFile(join(dirname(appBundlePath), "native-module-path.js"));

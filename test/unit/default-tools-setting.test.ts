@@ -54,7 +54,7 @@ function sessionRoots(prefix: string): { cwd: string; agentDir: string } {
 
 /**
  * Structural cost, not a slow test: the case performs a full builtin-package
- * loader reload (workflows, subagents, mcp, web-access, i-have-adhd, intercom)
+ * loader reload (workflows, subagents, mcp, web-access, intercom)
  * and creates a real agent session from the result. Do not reuse this budget
  * for a test that merely inspects data.
  */
@@ -240,82 +240,112 @@ describe("defaultTools setting", () => {
 
 	// One session per test: each session loads every builtin extension package,
 	// and the CI duration gate scores tests individually.
-	test("an explicit tools allowlist takes precedence over the setting", async () => {
-		const session = await createSession(["read", "find"], { tools: ["read"] });
-		try {
-			assert.deepEqual(session.getActiveToolNames(), ["read"]);
-		} finally {
-			session.dispose();
-		}
-	});
+	test(
+		"an explicit tools allowlist takes precedence over the setting",
+		async () => {
+			const session = await createSession(["read", "find"], { tools: ["read"] });
+			try {
+				assert.deepEqual(session.getActiveToolNames(), ["read"]);
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 
-	test("excludedTools takes precedence over the setting", async () => {
-		const session = await createSession(["read", "find"], { excludedTools: ["read"] });
-		try {
-			assert.deepEqual([...session.getActiveToolNames()].sort(), ["find", ...BUILTIN_EXTENSION_TOOLS].sort());
-		} finally {
-			session.dispose();
-		}
-	});
+	test(
+		"excludedTools takes precedence over the setting",
+		async () => {
+			const session = await createSession(["read", "find"], { excludedTools: ["read"] });
+			try {
+				assert.deepEqual([...session.getActiveToolNames()].sort(), ["find", ...BUILTIN_EXTENSION_TOOLS].sort());
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 
-	test('noTools: "all" takes precedence over the setting', async () => {
-		const session = await createSession(["read"], { noTools: "all" });
-		try {
-			assert.deepEqual(
-				session.getAllTools().map((tool) => tool.name),
-				[],
-			);
-			assert.deepEqual(session.getActiveToolNames(), []);
-		} finally {
-			session.dispose();
-		}
-	});
+	test(
+		'noTools: "all" takes precedence over the setting',
+		async () => {
+			const session = await createSession(["read"], { noTools: "all" });
+			try {
+				assert.deepEqual(
+					session.getAllTools().map((tool) => tool.name),
+					[],
+				);
+				assert.deepEqual(session.getActiveToolNames(), []);
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 
-	test('noTools: "builtin" ignores the configured defaults but keeps extension tools', async () => {
-		const session = await createSession(["read"], { noTools: "builtin" }, [staticExtensionTool("static_tool")]);
-		try {
-			assert.deepEqual([...session.getActiveToolNames()].sort(), ["static_tool", ...BUILTIN_EXTENSION_TOOLS].sort());
-			assert.ok(
-				session
-					.getAllTools()
-					.map((tool) => tool.name)
-					.includes("read"),
-				'expected built-ins to stay registered under noTools: "builtin"',
-			);
-		} finally {
-			session.dispose();
-		}
-	});
-
-	test("an unset setting keeps the standard built-in defaults", async () => {
-		const session = await createSession(undefined);
-		try {
-			assert.deepEqual(
-				[...session.getActiveToolNames()].sort(),
-				[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
-			);
-		} finally {
-			session.dispose();
-		}
-	});
-
-	test("an empty list keeps no built-ins active but leaves them registered", async () => {
-		const session = await createSession([], {}, [staticExtensionTool("static_tool")]);
-		try {
-			assert.deepEqual([...session.getActiveToolNames()].sort(), ["static_tool", ...BUILTIN_EXTENSION_TOOLS].sort());
-			for (const builtin of registrableToolNames) {
+	test(
+		'noTools: "builtin" ignores the configured defaults but keeps extension tools',
+		async () => {
+			const session = await createSession(["read"], { noTools: "builtin" }, [staticExtensionTool("static_tool")]);
+			try {
+				assert.deepEqual(
+					[...session.getActiveToolNames()].sort(),
+					["static_tool", ...BUILTIN_EXTENSION_TOOLS].sort(),
+				);
 				assert.ok(
 					session
 						.getAllTools()
 						.map((tool) => tool.name)
-						.includes(builtin),
-					`expected built-in '${builtin}' to stay registered under defaultTools: []`,
+						.includes("read"),
+					'expected built-ins to stay registered under noTools: "builtin"',
 				);
+			} finally {
+				session.dispose();
 			}
-		} finally {
-			session.dispose();
-		}
-	});
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
+
+	test(
+		"an unset setting keeps the standard built-in defaults",
+		async () => {
+			const session = await createSession(undefined);
+			try {
+				assert.deepEqual(
+					[...session.getActiveToolNames()].sort(),
+					[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
+				);
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
+
+	test(
+		"an empty list keeps no built-ins active but leaves them registered",
+		async () => {
+			const session = await createSession([], {}, [staticExtensionTool("static_tool")]);
+			try {
+				assert.deepEqual(
+					[...session.getActiveToolNames()].sort(),
+					["static_tool", ...BUILTIN_EXTENSION_TOOLS].sort(),
+				);
+				for (const builtin of registrableToolNames) {
+					assert.ok(
+						session
+							.getAllTools()
+							.map((tool) => tool.name)
+							.includes(builtin),
+						`expected built-in '${builtin}' to stay registered under defaultTools: []`,
+					);
+				}
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 
 	// Settings load unvalidated from disk. Before the accessor guarded the
 	// stored shape, a string value spread into single characters and silently
@@ -326,20 +356,24 @@ describe("defaultTools setting", () => {
 		["a string", '"read"'],
 		["a number", "42"],
 		["an object", '{"read":true}'],
-	])("an unreadable setting value (%s) falls back to the standard built-in defaults", async (_label, raw) => {
-		const { cwd, agentDir } = sessionRoots("atomic-default-tools-invalid-");
-		writeTextSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
-		const settingsManager = SettingsManager.create(cwd, agentDir);
+	])(
+		"an unreadable setting value (%s) falls back to the standard built-in defaults",
+		async (_label, raw) => {
+			const { cwd, agentDir } = sessionRoots("atomic-default-tools-invalid-");
+			writeTextSync(join(agentDir, "settings.json"), `{"defaultTools": ${raw}}`);
+			const settingsManager = SettingsManager.create(cwd, agentDir);
 
-		const session = await createSessionFromManager(settingsManager, cwd, agentDir);
-		try {
-			assert.deepEqual(
-				[...session.getActiveToolNames()].sort(),
-				[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
-				`expected malformed defaultTools ${raw} to fall back to the standard defaults`,
-			);
-		} finally {
-			session.dispose();
-		}
-	});
+			const session = await createSessionFromManager(settingsManager, cwd, agentDir);
+			try {
+				assert.deepEqual(
+					[...session.getActiveToolNames()].sort(),
+					[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
+					`expected malformed defaultTools ${raw} to fall back to the standard defaults`,
+				);
+			} finally {
+				session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
 });

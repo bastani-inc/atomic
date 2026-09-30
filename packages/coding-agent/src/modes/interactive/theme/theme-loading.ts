@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import { type ColorMode, detectColorMode, resolveThemeColors } from "./color-utils.ts";
+import { generateSystemThemeColors, SYSTEM_THEME_NAME } from "./system-theme.js";
+import { areTerminalColorsPending, getTerminalColors, getTerminalTheme } from "./terminal-colors.js";
 import { Theme, type ThemeBg, type ThemeColor, type WorkingIndicatorTone } from "./theme-class.ts";
 import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts";
 import type { ThemeJson } from "./theme-schema.ts";
@@ -44,6 +46,7 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 		seen.add(info.name);
 		result.push(info);
 	};
+	addTheme({ name: SYSTEM_THEME_NAME, path: undefined });
 
 	// Built-in themes
 	for (const name of Object.keys(getBuiltinThemes())) {
@@ -59,7 +62,9 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 		addTheme({ name, path: theme.sourcePath });
 	}
 
-	return result.sort((a, b) => a.name.localeCompare(b.name));
+	return result.sort((a, b) =>
+		a.name === SYSTEM_THEME_NAME ? -1 : b.name === SYSTEM_THEME_NAME ? 1 : a.name.localeCompare(b.name),
+	);
 }
 
 function getCustomThemeInfos(): ThemeInfo[] {
@@ -88,6 +93,15 @@ function getCustomThemeInfos(): ThemeInfo[] {
 }
 
 export function loadThemeJson(name: string): ThemeJson {
+	if (name === SYSTEM_THEME_NAME)
+		return {
+			name,
+			colors: generateSystemThemeColors({
+				...getTerminalColors(),
+				saturation: areTerminalColorsPending() ? 0 : 1,
+				appearanceHint: getTerminalTheme(),
+			}).colors,
+		};
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
 		return builtinThemes[name];
@@ -109,7 +123,7 @@ export function loadThemeJson(name: string): ThemeJson {
 	return parseThemeJsonContent(name, content);
 }
 
-function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
+function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string, dim?: ThemeColor[]): Theme {
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
 	const workingIndicator = themeJson.workingIndicator
@@ -138,6 +152,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		name: themeJson.name,
 		sourcePath,
 		workingIndicator: workingIndicator as Partial<Record<WorkingIndicatorTone, string | number>> | undefined,
+		dim,
 	});
 }
 
@@ -152,6 +167,14 @@ export function loadThemeFromContent(themePath: string, content: string, mode?: 
 }
 
 export function loadTheme(name: string, mode?: ColorMode): Theme {
+	if (name === SYSTEM_THEME_NAME) {
+		const generated = generateSystemThemeColors({
+			...getTerminalColors(),
+			saturation: areTerminalColorsPending() ? 0 : 1,
+			appearanceHint: getTerminalTheme(),
+		});
+		return createTheme({ name, colors: generated.colors }, mode, undefined, generated.dim);
+	}
 	const registeredTheme = registeredThemes.get(name);
 	if (registeredTheme) {
 		return registeredTheme;

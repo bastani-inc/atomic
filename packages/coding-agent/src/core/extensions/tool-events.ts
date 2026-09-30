@@ -24,6 +24,7 @@ import type {
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	parentToolCallId?: string;
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
@@ -91,6 +92,9 @@ export type ToolCallEvent =
 interface ToolResultEventBase {
 	type: "tool_result";
 	toolCallId: string;
+	parentToolCallId?: string;
+	structuredContent?: import("@bastani/pi-ai").JsonValue;
+	usage?: import("@bastani/pi-ai").Usage;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	isError: boolean;

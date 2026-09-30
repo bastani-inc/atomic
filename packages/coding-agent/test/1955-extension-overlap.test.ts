@@ -610,7 +610,7 @@ export default function(pi) {
 			extensionFactories: builtInExtensions,
 		});
 		await loader.reload();
-		const inline = loader.getExtensions().extensions.find((extension) => extension.path === "<inline:llama.cpp>");
+		const inline = loader.getExtensions().extensions.find((extension) => extension.path === "builtin:llama.cpp");
 		expect(inline?.sourceInfo.configurationOrigin).toBe("bundled");
 
 		const commands = resolveRegisteredCommands(loader.getExtensions().extensions);

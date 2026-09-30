@@ -1,0 +1,249 @@
+import assert from "node:assert/strict";
+import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
+import { Type } from "typebox";
+import { test } from "vitest";
+import { createCodemodeExtension } from "../src/extensions/codemode/index.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
+
+test("codemode executes nested tools in a worker and persists successful branch-local store writes", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "echo",
+					label: "Echo",
+					description: "Echo",
+					exposure: "codemode",
+					parameters: Type.Object({ value: Type.String() }),
+					execute: async (_id, args) => ({ content: [{ type: "text", text: args.value }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: 'store("note", await tools.echo({value: "hello"})); return load("note");',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run script");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert.match(getMessageText(result), /Script completed/);
+		assert.match(getMessageText(result), /hello/);
+		assert.equal(result?.role === "toolResult" && result.nestedCalls?.calls[0].name, "echo");
+		assert(
+			harness.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode respects content redaction instead of leaking stale structured results", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "secret",
+					label: "Secret",
+					description: "fixture",
+					exposure: "codemode",
+					parameters: Type.Object({}),
+					outputSchema: Type.Object({ token: Type.String() }),
+					execute: async () => ({
+						content: [{ type: "text", text: "private-token" }],
+						structuredContent: { token: "private-token" },
+						details: {},
+					}),
+				});
+				pi.on("tool_result", (event) =>
+					event.toolName === "secret" ? { content: [{ type: "text", text: "redacted" }] } : undefined,
+				);
+			},
+		],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: "return await tools.secret({});" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("read redacted data");
+		const output = getMessageText(harness.session.messages.find((message) => message.role === "toolResult"));
+		assert.match(output, /redacted/);
+		assert(!output.includes("private-token"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode model catalog omits headers and credential-bearing provider URLs", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const registry = harness.session.extensionRunner.createContext().modelRegistry;
+		const model = registry.find(harness.getModel().provider, harness.getModel().id);
+		assert(model);
+		model.headers = { Authorization: "private-catalog-token" };
+		model.baseUrl = "https://private-catalog-token@example.invalid/?key=private-catalog-token";
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `return await models.getModelOfType("chat", ${JSON.stringify(model.provider)}, ${JSON.stringify(model.id)});`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("inspect public catalog");
+		const output = getMessageText(harness.session.messages.find((message) => message.role === "toolResult"));
+		assert.match(output, /Script completed/);
+		assert(output.includes(model.id));
+		assert(!output.includes("private-catalog-token"));
+		assert(!output.includes("baseUrl"));
+		assert(!output.includes("headers"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode timeout discards store writes and releases the worker for later scripts", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: '// @options: {"timeout_ms": 50}\nstore("bad", "uncommitted"); while (true) {}',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("stopped"),
+		]);
+		await harness.session.prompt("run bounded script");
+		const failed = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(failed?.role === "toolResult" && failed.isError);
+		assert.match(getMessageText(failed), /Script failed/);
+		assert(
+			!harness.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
+		);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("codemode", { code: 'return load("bad") === undefined ? "clean" : "leaked";' })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run another script");
+		const later = harness.session.messages.findLast((message) => message.role === "toolResult");
+		assert.match(getMessageText(later), /Script completed/);
+		assert.match(getMessageText(later), /clean/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode filters full nested output while direct calls retain the model-facing cap", async () => {
+	const large = `${"x".repeat(70_000)}tail`;
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "large",
+					label: "Large",
+					description: "fixture",
+					parameters: Type.Object({}),
+					maxResultSizeChars: 1000,
+					execute: async () => ({ content: [{ type: "text", text: large }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode", "large"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: "return (await tools.large({})).slice(-4);" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage([fauxToolCall("large", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("filter large output then call directly");
+		const script = harness.session.messages.find(
+			(message) => message.role === "toolResult" && message.toolName === "codemode",
+		);
+		assert.match(getMessageText(script), /Output:\n\ntail$/);
+		const direct = harness.session.messages.find(
+			(message) => message.role === "toolResult" && message.toolName === "large",
+		);
+		assert(getMessageText(direct).length < large.length);
+		assert.notEqual(getMessageText(direct), large);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode only hides direct declarations in requests without disabling nested access or branch activation", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension({ mode: "only" }),
+			(pi) => {
+				pi.registerTool({
+					name: "echo",
+					label: "Echo",
+					description: "Echo",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode", "echo"],
+	});
+	try {
+		harness.setResponses([
+			(context) => {
+				const names = getCurrentTools(context.messages).map((tool) => tool.name);
+				assert(names.includes("codemode"));
+				assert(!names.includes("echo"));
+				return fauxAssistantMessage([fauxToolCall("codemode", { code: "return await tools.echo({});" })], {
+					stopReason: "toolUse",
+				});
+			},
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("call through script only");
+		assert(harness.session.getActiveToolNames().includes("echo"));
+		assert(harness.session.getCallableToolNames().includes("echo"));
+		assert(getCurrentTools(harness.session.messages).some((tool) => tool.name === "echo"));
+		assert.match(
+			getMessageText(harness.session.messages.find((message) => message.role === "toolResult")),
+			/Script completed/,
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});

@@ -310,7 +310,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(proxyModel, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					onPayload: stopAfterPayload((payload) => {
 						capturedPayload = payload;
 					}),
@@ -338,7 +338,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const response = streamOpenAIResponses(configuredModel, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention,
 					sessionId: "session-cache-test",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {

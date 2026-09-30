@@ -213,18 +213,27 @@ export function makeStageChatViewForSlashCommand(callbacks: { onClose?: () => vo
 }
 
 export function fakeFooterAgentSession(isStreaming = false): AgentSession {
+	const state = {
+		model: {
+			id: "gpt-5.5",
+			provider: "openai-codex",
+			reasoning: true,
+			contextWindow: 200000,
+		},
+		thinkingLevel: "high",
+	};
 	return {
-		state: {
-			model: {
-				id: "gpt-5.5",
-				provider: "openai-codex",
-				reasoning: true,
-				contextWindow: 200000,
-			},
-			thinkingLevel: "high",
+		state,
+		get model() {
+			return state.model;
 		},
 		sessionManager: {
 			getCwd: () => "/home/alilavaee/Documents/projects/atomic",
+			getSessionId: () => "footer-session",
+			getLeafId: () => "footer-message",
+			getEntryCount() {
+				return this.getEntries().length;
+			},
 			getEntries: () => [
 				{
 					type: "message",

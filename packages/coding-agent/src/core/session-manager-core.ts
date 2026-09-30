@@ -399,7 +399,7 @@ export class SessionManager {
 	 * `hasName: false`. Read-side only: the JSONL already records the distinction.
 	 */
 	getSessionNameState(): SessionNameState {
-		return getLatestSessionName(this.getEntries());
+		return getLatestSessionName(this.fileEntries);
 	}
 
 	/** Append a custom message entry (for extensions) that participates in LLM context unless excluded. */
@@ -497,6 +497,11 @@ export class SessionManager {
 	getHeader(): SessionHeader | null {
 		const header = this.fileEntries.find((entry) => entry.type === "session");
 		return header ? (header as SessionHeader) : null;
+	}
+
+	/** Number of entries without copying the session history. */
+	getEntryCount(): number {
+		return this.byId.size;
 	}
 
 	/** Get all session entries (excludes header). Returns a shallow copy. */

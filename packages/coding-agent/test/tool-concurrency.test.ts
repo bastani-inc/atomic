@@ -4,7 +4,11 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { describe, expect, test, vi } from "vitest";
-import { resolveToolConcurrency, ToolExecutionScheduler } from "../src/core/tools/tool-concurrency.ts";
+import {
+	resolveToolConcurrency,
+	scheduleToolExecution,
+	ToolExecutionScheduler,
+} from "../src/core/tools/tool-concurrency.ts";
 import { createHarness } from "./suite/harness.js";
 
 function deferred() {
@@ -66,6 +70,112 @@ describe("tool execution scheduler", () => {
 		await expect(failed).rejects.toThrow("boom");
 		await expect(later).resolves.toBe("ran");
 	});
+
+	test("nested exclusive work completes under its parent lock without admitting independent calls", async () => {
+		const scheduler = new ToolExecutionScheduler();
+		const enterNested = deferred();
+		const releaseParent = deferred();
+		const log: string[] = [];
+		const parent = scheduler.schedule("exclusive", async () => {
+			await enterNested.promise;
+			await scheduler.schedule("exclusive", async () => {
+				log.push("nested");
+			});
+			await releaseParent.promise;
+		});
+		const independent = scheduler.schedule("exclusive", async () => {
+			log.push("independent");
+		});
+		enterNested.resolve();
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+		expect(log).toEqual(["nested"]);
+		releaseParent.resolve();
+		await Promise.all([parent, independent]);
+		expect(log).toEqual(["nested", "independent"]);
+	});
+
+	test("shared parent rejects nested exclusive mutation and still releases independent work", async () => {
+		const scheduler = new ToolExecutionScheduler();
+		const calls: string[] = [];
+		const parent = scheduler.schedule("shared", async () => {
+			await expect(
+				scheduler.schedule("exclusive", async () => {
+					calls.push("mutation");
+				}),
+			).rejects.toThrow("concurrency: 'exclusive'");
+			await scheduler.schedule("shared", async () => {
+				calls.push("nested read");
+			});
+		});
+		const independent = scheduler.schedule("exclusive", async () => {
+			calls.push("independent");
+		});
+		await Promise.all([parent, independent]);
+		expect(calls).toEqual(["nested read", "independent"]);
+	});
+	test("exclusive nested siblings retain ordering inside the parent lock", async () => {
+		const scheduler = new ToolExecutionScheduler();
+		const release = deferred();
+		const calls: string[] = [];
+		const parent = scheduler.schedule("exclusive", async () => {
+			const first = scheduler.schedule("shared", async () => {
+				calls.push("read:start");
+				await release.promise;
+				calls.push("read:end");
+			});
+			const second = scheduler.schedule("exclusive", async () => {
+				calls.push("mutation");
+			});
+			await Promise.all([first, second]);
+		});
+		await Promise.resolve();
+		expect(calls).toEqual(["read:start"]);
+		release.resolve();
+		await parent;
+		expect(calls).toEqual(["read:start", "read:end", "mutation"]);
+	});
+
+	test.each(["shared", "exclusive"] as const)(
+		"cancelled %s tool rejects before invocation and releases later calls",
+		async (mode) => {
+			const scheduler = new ToolExecutionScheduler();
+			const release = deferred();
+			const cancel = new AbortController();
+			const calls: string[] = [];
+			const tool = scheduleToolExecution(
+				{
+					name: "probe",
+					label: "Probe",
+					description: "local ordering fixture",
+					parameters: Type.Object({ id: Type.String() }),
+					concurrency: mode,
+					execute: async (_id, args) => {
+						const { id } = args as { id: string };
+						calls.push(id);
+						return { content: [{ type: "text", text: id }], details: undefined };
+					},
+				},
+				scheduler,
+			);
+			const first = scheduler.schedule("exclusive", async () => {
+				calls.push("A:start");
+				await release.promise;
+				calls.push("A:end");
+			});
+			const queued = tool.execute("B", { id: "B" }, cancel.signal);
+			const rejected = expect(queued).rejects.toThrow("Operation aborted");
+			const later = tool.execute("C", { id: "C" });
+			expect(calls).toEqual(["A:start"]);
+			cancel.abort(new Error("custom abort reason"));
+			release.resolve();
+			await first;
+			await rejected;
+			await expect(later).resolves.toEqual({ content: [{ type: "text", text: "C" }], details: undefined });
+			expect(calls).toEqual(["A:start", "A:end", "C"]);
+			await expect(tool.execute("D", { id: "D" }, cancel.signal)).rejects.toThrow("Operation aborted");
+			expect(calls).toEqual(["A:start", "A:end", "C"]);
+		},
+	);
 
 	test("a throwing concurrency resolver runs the call exclusively", () => {
 		expect(resolveToolConcurrency(undefined, {})).toBe("shared");

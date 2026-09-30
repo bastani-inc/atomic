@@ -203,12 +203,23 @@ export class McpServerManager {
         }
       );
     }
+    const protect = <T extends Transport>(transport: T): T => {
+      if (authProvider) {
+        const close = transport.close.bind(transport);
+        transport.close = async () => {
+          await authProvider.waitForRefresh();
+          await close();
+        };
+      }
+      return protectRemoteTransport(transport, resolvedUrl);
+    };
     
     // Try StreamableHTTP first (modern MCP servers)
-    const streamableTransport = protectRemoteTransport(new StreamableHTTPClientTransport(url, {
+    const streamableTransport = protect(new StreamableHTTPClientTransport(url, {
       requestInit,
       authProvider,
-    }), resolvedUrl);
+      fetch: authProvider?.fetch,
+    }));
     
     try {
       // Create a test client to verify the transport works
@@ -219,7 +230,7 @@ export class McpServerManager {
       await streamableTransport.close().catch(() => {});
       
       // StreamableHTTP works - create fresh transport for actual use
-      return protectRemoteTransport(new StreamableHTTPClientTransport(url, { requestInit, authProvider }), resolvedUrl);
+      return protect(new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch }));
     } catch (error) {
       // StreamableHTTP failed, close and try SSE fallback
       await streamableTransport.close().catch(() => {});
@@ -230,7 +241,7 @@ export class McpServerManager {
       }
       
       // SSE is the legacy transport
-      return protectRemoteTransport(new SSEClientTransport(url, { requestInit, authProvider }), resolvedUrl);
+      return protect(new SSEClientTransport(url, { requestInit, authProvider, fetch: authProvider?.fetch }));
     }
   }
   

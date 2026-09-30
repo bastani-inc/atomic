@@ -123,14 +123,17 @@ function convertToolResultOutput<TApi extends Api>(
  * A normal model has no route, so an explicit `serviceTier` still applies there exactly as it did
  * before fast variants existed.
  */
+/** Codex accepts an additional tier not yet represented by the OpenAI API SDK. */
+export type ResponsesServiceTier = ResponseCreateParamsStreaming["service_tier"] | "ultrafast";
+
 export function resolveRequestedServiceTier(
 	model: Pick<Model<Api>, "fastRoute">,
-	optionsServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	optionsServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
 	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
 }
 
-type ServiceTier = NonNullable<ResponseCreateParamsStreaming["service_tier"]>;
+type ServiceTier = NonNullable<ResponsesServiceTier>;
 
 export function normalizeResponseServiceTier(serviceTier: string | null | undefined): ServiceTier | undefined {
 	if (serviceTier === null || serviceTier === undefined) return undefined;
@@ -185,16 +188,13 @@ export function assertPayloadPreservesFastRoute(
 
 export interface OpenAIResponsesStreamOptions {
 	onProviderStreamEvent?: StreamOptions["onProviderStreamEvent"];
-	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+	serviceTier?: ResponsesServiceTier;
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	resolveServiceTier?: (
-		responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-		requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	) => ResponseCreateParamsStreaming["service_tier"] | undefined;
-	applyServiceTierPricing?: (
-		usage: Usage,
-		serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	) => void;
+		responseServiceTier: ResponsesServiceTier | undefined,
+		requestServiceTier: ResponsesServiceTier | undefined,
+	) => ResponsesServiceTier | undefined;
+	applyServiceTierPricing?: (usage: Usage, serviceTier: ResponsesServiceTier | undefined) => void;
 }
 
 export interface ConvertResponsesMessagesOptions {

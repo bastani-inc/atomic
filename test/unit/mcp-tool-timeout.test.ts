@@ -159,6 +159,71 @@ test("timeoutMs config accepts positive values for local and remote servers", ()
 	assert.equal(config.mcpServers.remote?.timeoutMs, 50);
 });
 
+test("direct MCP tools preserve the full server result for nested scripts", async () => {
+	const serverResult: CallToolResult = {
+		content: [{ type: "text", text: "display text" }],
+		structuredContent: { count: 3 },
+		_meta: { revision: "fixture" },
+		isError: false,
+	};
+	const pair = await createSdkPair(async () => serverResult);
+	try {
+		const { state, getInFlight } = createConnectedState(pair.client);
+		const execute = createDirectToolExecutor(
+			async () => state,
+			(candidate) => candidate === state,
+			DIRECT_TOOL,
+		);
+		const result = await execute("call", {}, undefined, undefined, {} as never);
+		assert.deepEqual(result.structuredContent, serverResult);
+		assert.deepEqual(result.content, serverResult.content);
+		assert.equal(getInFlight(), 0);
+	} finally {
+		await pair.close();
+	}
+});
+
+test("direct MCP server errors remain structured results, not text-only script failures", async () => {
+	const serverResult: CallToolResult = {
+		content: [{ type: "text", text: "rejected" }],
+		isError: true,
+		structuredContent: { reason: "denied" },
+	};
+	const pair = await createSdkPair(async () => serverResult);
+	try {
+		const { state } = createConnectedState(pair.client);
+		const execute = createDirectToolExecutor(
+			async () => state,
+			(candidate) => candidate === state,
+			DIRECT_TOOL,
+		);
+		const result = await execute("call", {}, undefined, undefined, {} as never);
+		assert.deepEqual(result.structuredContent, serverResult);
+		assert.match(result.content.find((item) => item.type === "text")?.text ?? "", /Error: rejected/);
+	} finally {
+		await pair.close();
+	}
+});
+
+test("direct MCP transport failures have an isError envelope for scripts", async () => {
+	const pair = await createSdkPair(async () => {
+		throw new McpError(ErrorCode.InternalError, "fixture failed");
+	});
+	try {
+		const { state } = createConnectedState(pair.client);
+		const execute = createDirectToolExecutor(
+			async () => state,
+			(candidate) => candidate === state,
+			DIRECT_TOOL,
+		);
+		const result = await execute("call", {}, undefined, undefined, {} as never);
+		assert.deepEqual(result.structuredContent, { content: result.content, isError: true });
+		assert.equal(result.details.error, "call_failed");
+	} finally {
+		await pair.close();
+	}
+});
+
 test("configured direct tool timeout fires and names the server and inactivity limit", async () => {
 	const pair = await createSdkPair(async () => {
 		await sleep(100);

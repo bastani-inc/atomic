@@ -439,6 +439,54 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("arg:bar");
 	});
 
+	test("shows safe arguments in collapsed and expanded fallback calls", () => {
+		const longValue = "x".repeat(200);
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-args",
+			{ query: "atomic", long: longValue, text: "one\ntwo\u001b[2J" },
+			{},
+			createBaseToolDefinition(),
+			createFakeTui(),
+			process.cwd(),
+		);
+		const collapsed = stripAnsi(component.render(300).join("\n"));
+		assert.ok(collapsed.includes('custom_tool query="atomic"'));
+		assert.ok(collapsed.includes("..."));
+		assert.ok(!collapsed.includes(longValue));
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(300).join("\n"));
+		assert.ok(expanded.includes("  query: atomic"));
+		assert.ok(expanded.includes(longValue));
+		assert.ok(expanded.includes("    two"));
+		assert.ok(!expanded.includes("\u001b[2J"));
+	});
+
+	test("does not disclose custom call arguments when its renderer fails", () => {
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"private-call",
+			{ title: "private" },
+			{},
+			{
+				...createBaseToolDefinition(),
+				renderCall: () => {
+					throw new Error("renderer failed");
+				},
+			},
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded);
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			assert.match(rendered, /custom_tool/);
+			assert.match(rendered, /done/);
+			assert.doesNotMatch(rendered, /private/);
+		}
+	});
+
 	test("falls back when custom renderers are absent", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition(),

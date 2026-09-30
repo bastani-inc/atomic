@@ -152,6 +152,14 @@ export async function routeExecutionModel(input: {
 		ctx.modelRegistry
 			.getAvailable()
 			.filter((model) => isModelType(model, "chat") && providerPermitted(model.provider))
+			// Experimental ultrafast pricing/access is unverified. It is selectable manually,
+			// but auto must receive an exact caller allowance or restore an explicit decision.
+			.filter(
+				(model) =>
+					model.fastRoute?.serviceTier !== "ultrafast" ||
+					constraints.some((constraint) => constraint.allowedModels?.includes(`${model.provider}/${model.id}`)) ||
+					input.selection?.model === `${model.provider}/${model.id}`,
+			)
 			.map((model) => ({
 				model,
 				pairs: (model.reasoning ? getSupportedThinkingLevels(model) : [null])
@@ -338,7 +346,12 @@ export async function routeExecutionModel(input: {
 			name: model.name,
 			cost: model.cost,
 			input: model.input,
-			...(model.fastRoute ? { fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}` } : {}),
+			...(model.fastRoute
+				? {
+						fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
+						fastRouteServiceTier: model.fastRoute.serviceTier,
+					}
+				: {}),
 		});
 		// A caller that lists models (`allowedModels`) chooses the contenders itself,
 		// but price and recency still compare them with every model the user could route to.

@@ -72,6 +72,56 @@ afterEach(async () => {
 	llamaUiProbe.connectionErrors.length = 0;
 });
 
+it("preserves cached llama.cpp context for unloaded presets (#10158)", async () => {
+	let stored: ModelsStoreEntry | undefined;
+	let loaded = true;
+	let args: string[] | undefined;
+	const { url } = await listen((request, response) => {
+		if (request.url === "/models") {
+			json(response, {
+				data: [
+					{
+						id: "qwen",
+						source: "preset",
+						status: { value: loaded ? "loaded" : "unloaded", args },
+						meta: loaded ? { n_ctx: 65536, n_ctx_train: 128000 } : { n_ctx_train: 128000 },
+					},
+				],
+			});
+		} else if (request.url === "/props") json(response, { role: "router", models_autoload: true });
+		else if (request.url === "/props?model=qwen&autoload=false") json(response, {});
+		else response.writeHead(404).end();
+	});
+	const publish = async (publication: ModelsPublication): Promise<boolean> => {
+		if (publication.persist) stored = structuredClone(publication.persist);
+		publication.update?.();
+		return true;
+	};
+	const refresh = async () => {
+		const controller = createLlamaProvider();
+		await controller.provider.refreshModels?.({
+			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
+			stored,
+			publish,
+			allowNetwork: true,
+			signal: new AbortController().signal,
+		});
+	};
+	await refresh();
+	loaded = false;
+	await refresh();
+	assert.deepEqual(
+		stored?.models.map((model) => model.contextWindow),
+		[65536, 65536],
+	);
+	args = ["llama-server", "--ctx-size", "32768"];
+	await refresh();
+	assert.deepEqual(
+		stored?.models.map((model) => model.contextWindow),
+		[32768, 32768],
+	);
+});
+
 describe("llama.cpp extension", () => {
 	it("registers a native provider and /llama command", async () => {
 		const runtime = createExtensionRuntime();

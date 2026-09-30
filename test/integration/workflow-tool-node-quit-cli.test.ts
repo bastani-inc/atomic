@@ -374,6 +374,15 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 				`the run ended (${premature.status}) before hang-tool's callback parked: ${premature.error ?? "no error recorded"}`,
 			);
 		}
+		// Prompt admission and the callback's state file do not order the RPC
+		// dispatch message; await its public payload before reading the run id.
+		await cli.waitUntil(
+			() =>
+				cli
+					.surfaces()
+					.some((surface) => surface.details.kind === "dispatch" && surface.details.runId !== undefined),
+			"the workflow dispatch surface",
+		);
 		const dispatched = cli.surfaces().find((surface) => surface.details.kind === "dispatch");
 		const runId = dispatched?.details.runId;
 		if (runId === undefined) throw new Error("the CLI did not render a dispatched run id");

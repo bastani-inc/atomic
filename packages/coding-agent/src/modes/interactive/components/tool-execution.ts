@@ -3,7 +3,7 @@ import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, t
 import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
@@ -155,7 +155,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
-		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
+		return new Text(formatToolCallWithArgs(this.toolName, this.args, theme, this.expanded), 0, 0);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -324,7 +324,9 @@ export class ToolExecutionComponent extends Container {
 					hasContent = true;
 				} catch {
 					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createCallFallback());
+					// A custom renderer may intentionally omit private arguments.
+					// Do not disclose them if that renderer fails.
+					renderContainer.addChild(new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0));
 					hasContent = true;
 				}
 			}

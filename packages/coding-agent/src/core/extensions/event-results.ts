@@ -34,6 +34,9 @@ export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
 	isError?: boolean;
+	/** Content replacement without this field drops machine-readable data to prevent redaction leaks. */
+	structuredContent?: import("@bastani/pi-ai").JsonValue;
+	usage?: import("@bastani/pi-ai").Usage;
 }
 
 export interface MessageEndEventResult {

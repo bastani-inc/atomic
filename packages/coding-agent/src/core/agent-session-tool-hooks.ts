@@ -2,8 +2,10 @@ import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { normalizeBuildSystemPromptOptions } from "./system-prompt.ts";
+import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
 export function _installAgentToolHooks(this: AgentSession): void {
@@ -20,6 +22,7 @@ export function _installAgentToolHooks(this: AgentSession): void {
 				type: "tool_call",
 				toolName: toolCall.name,
 				toolCallId: toolCall.id,
+				parentToolCallId: getParentToolCallId(),
 				input: args as Record<string, unknown>,
 			});
 			if (result?.block && result.terminate === true) {
@@ -44,9 +47,12 @@ export function _installAgentToolHooks(this: AgentSession): void {
 						type: "tool_result",
 						toolName: toolCall.name,
 						toolCallId: toolCall.id,
+						parentToolCallId: getParentToolCallId(),
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
+						structuredContent: result.structuredContent,
+						usage: result.usage,
 						isError,
 					},
 					true,
@@ -66,6 +72,8 @@ export function _installAgentToolHooks(this: AgentSession): void {
 						content: normalizedContent,
 						details: hookResult?.details,
 						isError: hookResult?.isError ?? isError,
+						structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
+						usage: hookResult?.usage ?? result.usage,
 					}
 				: undefined;
 		const finalResult = {
@@ -73,8 +81,12 @@ export function _installAgentToolHooks(this: AgentSession): void {
 			// Preserve original details when an extension hook rewrites only content;
 			// the redirect check only replaces model-visible content blocks.
 			details: hookResult?.details ?? result.details,
+			structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
+			usage: hookResult?.usage ?? result.usage,
 		};
 		const finalIsError = hookResult?.isError ?? isError;
+		// Nested output is script-visible, not model-visible. The orchestrating tool applies its final output cap.
+		if (getParentToolCallId()) return resultReplacement;
 		const redirectReplacement = await redirectOversizedToolResult({
 			toolName: toolCall.name,
 			toolCallId: toolCall.id,
@@ -87,7 +99,9 @@ export function _installAgentToolHooks(this: AgentSession): void {
 
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
 		else this._terminatingToolCallIds.delete(toolCall.id);
-		return redirectReplacement ?? resultReplacement;
+		return redirectReplacement
+			? { ...redirectReplacement, structuredContent: finalResult.structuredContent, usage: finalResult.usage }
+			: resultReplacement;
 	};
 }
 
@@ -129,7 +143,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		// here becomes an unrecoverable provider 400, so surface it as an Atomic error.
 		assertToolPairingInvariant(guarded);
 		const forced = this._runSystemPromptOptions?.forceSystemPrompt ?? this._baseSystemPromptOptions.forceSystemPrompt;
-		if (forced === undefined) return guarded;
+		if (forced === undefined) return projectToolLoadout(this, guarded);
 		const current = getCurrentSystemMessage(guarded);
 		const head: SystemMessage = {
 			role: "system",
@@ -137,7 +151,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),
 		};
-		return [head, ...guarded.filter((message) => message.role !== "system")];
+		return projectToolLoadout(this, [head, ...guarded.filter((message) => message.role !== "system")]);
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {

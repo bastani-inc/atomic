@@ -95,4 +95,30 @@ describe("max thinking level", () => {
 			expect(payload).toMatchObject({ reasoning: { effort: "max", summary: "auto" } });
 		},
 	);
+	it.each(["minimal", "low", "max"] as const)("maps Sol 6.1 %s to supported Codex wire effort", async (reasoning) => {
+		const base = getModel("openai-codex", "gpt-6.1-sol")!;
+		for (const fast of [false, true]) {
+			const model = fast
+				? {
+						...base,
+						id: `${base.id}-fast`,
+						fastRoute: { baseModelId: base.id, upstreamModelId: base.id, serviceTier: "priority" as const },
+					}
+				: base;
+			let payload: unknown;
+			await streamSimpleOpenAICodexResponses(model, normalizeContext({ messages: [] }), {
+				apiKey: mockToken(),
+				reasoning,
+				onPayload: (request) => {
+					payload = request;
+					throw new Error("captured");
+				},
+			}).result();
+			expect(payload).toMatchObject({
+				model: "gpt-6.1-sol",
+				reasoning: { effort: reasoning === "max" ? "max" : "low" },
+			});
+			if (fast) expect(payload).toMatchObject({ service_tier: "priority" });
+		}
+	});
 });

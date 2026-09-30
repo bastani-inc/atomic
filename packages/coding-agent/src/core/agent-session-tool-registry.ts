@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
+import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.js";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -91,7 +92,14 @@ export function _refreshToolRegistry(
 
 	const toolRegistry = new Map<string, AgentTool>();
 	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
-		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler));
+		const abortError =
+			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool)
+				? () =>
+						runner.createContext().hasHumanInput
+							? hostInputError("HumanInputCancelled")
+							: new Error("Operation aborted")
+				: undefined;
+		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler, abortError));
 	}
 	this._toolRegistry = toolRegistry;
 
@@ -99,6 +107,11 @@ export function _refreshToolRegistry(
 		options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 	).filter((name) => isExposedTool(name));
 
+	const activatesOnRegistration = (name: string): boolean => {
+		const definition = this._toolDefinitions.get(name)?.definition;
+		const exposure = definition?.exposure ?? "direct";
+		return definition?.defaultActive !== false && (exposure === "direct" || exposure === "model-only");
+	};
 	if (allowedToolNames) {
 		for (const toolName of this._toolRegistry.keys()) {
 			if (allowedToolNames.has(toolName)) {
@@ -107,11 +120,11 @@ export function _refreshToolRegistry(
 		}
 	} else if (options?.includeAllExtensionTools) {
 		for (const tool of wrappedExtensionTools) {
-			nextActiveToolNames.push(tool.name);
+			if (activatesOnRegistration(tool.name)) nextActiveToolNames.push(tool.name);
 		}
 	} else if (!options?.activeToolNames) {
 		for (const toolName of this._toolRegistry.keys()) {
-			if (!previousRegistryNames.has(toolName)) {
+			if (!previousRegistryNames.has(toolName) && activatesOnRegistration(toolName)) {
 				nextActiveToolNames.push(toolName);
 			}
 		}

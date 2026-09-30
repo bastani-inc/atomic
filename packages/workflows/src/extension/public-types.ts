@@ -2,6 +2,7 @@ import type {
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	ModelRegistry,
+	ToolDefinition,
 	WorkflowActivityPublisher,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
@@ -109,6 +110,7 @@ export interface PiAgentToolResult<TDetails> {
 
 export interface PiToolOpts<TArgs, TDetails> {
 	name: string;
+	exposure?: ToolDefinition["exposure"];
 	label: string;
 	description: string;
 	parameters: unknown;

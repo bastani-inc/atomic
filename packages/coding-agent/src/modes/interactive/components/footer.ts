@@ -4,6 +4,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { SessionStats } from "../../../core/agent-session-types.js";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
@@ -59,6 +60,16 @@ function rightAlign(line: string, width: number): string {
 
 type UsageSummary = { totals: UsageTotals; latestCacheHitRate: number | undefined };
 
+interface MirrorStats extends UsageSummary {
+	sessionId: string;
+	leafId: string | null;
+	entryCount: number;
+	limitsModel: AgentSession["model"];
+	contextUsage: ContextUsage | undefined;
+}
+
+const mirrorStats = new WeakMap<AgentSession, MirrorStats>();
+
 function getCacheHitRate(usage: Usage): number | undefined {
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	return promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
@@ -98,17 +109,36 @@ function summarizeEntryUsage(session: AgentSession): UsageSummary {
 	return { totals, latestCacheHitRate };
 }
 
+function getMirrorStats(session: AgentSession): MirrorStats {
+	const manager = session.sessionManager;
+	const sessionId = manager.getSessionId();
+	const leafId = manager.getLeafId();
+	const entryCount = manager.getEntryCount();
+	const limitsModel = session.model;
+	const cached = mirrorStats.get(session);
+	if (
+		cached &&
+		cached.sessionId === sessionId &&
+		cached.leafId === leafId &&
+		cached.entryCount === entryCount &&
+		cached.limitsModel === limitsModel
+	)
+		return cached;
+
+	const { totals, latestCacheHitRate } = summarizeEntryUsage(session);
+	const contextUsage = session.getContextUsage();
+	const stats = { sessionId, leafId, entryCount, limitsModel, totals, latestCacheHitRate, contextUsage };
+	mirrorStats.set(session, stats);
+	return stats;
+}
+
 function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
 	const state = session.state;
 	// An isolated engine owns the live session; its stats replace the host's mirror entries.
 	const engineStats = getEngineSessionStats(session);
-	const { totals, latestCacheHitRate } = engineStats
-		? summarizeEngineUsage(engineStats)
-		: summarizeEntryUsage(session);
-
-	// Calculate context usage from session (handles compaction correctly).
-	// After compaction, tokens are unknown until the next LLM response.
-	const contextUsage = engineStats ? engineStats.contextUsage : session.getContextUsage();
+	const { totals, latestCacheHitRate, contextUsage } = engineStats
+		? { ...summarizeEngineUsage(engineStats), contextUsage: engineStats.contextUsage }
+		: getMirrorStats(session);
 	const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 	const contextPercentValue = contextUsage?.percent ?? 0;
 	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";

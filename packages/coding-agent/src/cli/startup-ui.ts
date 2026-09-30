@@ -38,10 +38,9 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 }
 
 /**
- * Detect the terminal theme for first-run setup. The colour-scheme (DSR 996)
- * and background (OSC 11) probes start concurrently through
- * `detectTerminalThemeForAuto`, so a terminal that answers neither costs one
- * timeout window instead of two. Exported for probe-concurrency coverage.
+ * Detect terminal appearance for first-run setup using one shared color query.
+ * The terminal's background and foreground decide the result; unsupported
+ * queries fall back to COLORFGBG and then dark.
  */
 export async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
 	return detectTerminalThemeForAuto({ ui, timeoutMs: 100 });

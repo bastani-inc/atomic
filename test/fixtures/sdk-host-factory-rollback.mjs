@@ -66,7 +66,7 @@ try {
 			(pi) => { const id = generation; pi.on("session_shutdown", async () => { log.push(`held${id}`); if ((!reloading && mode !== "peer-replay") || id > 1) { entered.resolve(); await held.promise; } if (mode === "peer-error") throw cleanup; }); if (mode === "peer-replay" && id > 1) throw primary; },
 		] });
 		if (reloading || mode === "peer-replay") await resourceLoader.reload();
-		if (reloading) { session = new AgentSession({ agent: new Agent(), cwd, settingsManager, modelRuntime, resourceLoader, sessionManager: options.sessionManager }); await session.bindExtensions({}); }
+		if (reloading) { session = new AgentSession({ agent: new Agent({ streamFn: () => { throw new Error("Rollback fixture must not invoke a model"); } }), cwd, settingsManager, modelRuntime, resourceLoader, sessionManager: options.sessionManager }); await session.bindExtensions({}); }
 		operation = (reloading ? session.reload() : createAgentSession({ ...options, resourceLoader, initialContextTransform() { throw primary; } })).then(() => undefined, (error) => error);
 		await entered.promise;
 		let closed = false, closing;

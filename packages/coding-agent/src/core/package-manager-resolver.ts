@@ -15,7 +15,12 @@ import {
 } from "./package-manager-resource-accumulator.ts";
 import { collectPackageResources, resolveLocalEntries } from "./package-manager-resource-collector.ts";
 import { resolveExtensionEntries } from "./package-manager-resource-files.ts";
-import { splitPatterns } from "./package-manager-resource-patterns.ts";
+import {
+	applyAutoloadDisabledPatterns,
+	isEnabledByOverrides,
+	isOverridePattern,
+	splitPatterns,
+} from "./package-manager-resource-patterns.ts";
 import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
 import type {
 	MissingSourceAction,
@@ -28,6 +33,7 @@ import type {
 	SourceScope,
 } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
 async function exists(path: string): Promise<boolean> {
 	try {
@@ -89,6 +95,25 @@ export async function resolvePackages(
 		globalBaseDir,
 		projectBaseDir,
 	);
+	for (const name of context.builtinExtensions ?? []) {
+		const path = `${BUILTIN_PATH_PREFIX}${name}`;
+		const projectEnabled = applyAutoloadDisabledPatterns(
+			[path],
+			(projectSettings.extensions ?? []).filter(isOverridePattern),
+			projectBaseDir,
+		).get(path);
+		addResource(
+			accumulator.extensions,
+			path,
+			{
+				source: "builtin",
+				scope: projectEnabled === undefined ? "user" : "project",
+				origin: "top-level",
+				configurationOrigin: "bundled",
+			},
+			projectEnabled ?? isEnabledByOverrides(path, globalSettings.extensions ?? [], globalBaseDir),
+		);
+	}
 	return toResolvedPaths(accumulator);
 }
 
@@ -101,7 +126,9 @@ async function resolveConfiguredLocalEntries(
 	fieldOrigin: "atomic" | "inherited-pi",
 ): Promise<void> {
 	const { plain, patterns } = splitPatterns(entries);
-	const relativeEntries = plain.filter((entry) => !isAbsolute(entry) && !entry.startsWith("~"));
+	const relativeEntries = plain.filter(
+		(entry) => !entry.startsWith(BUILTIN_PATH_PREFIX) && !isAbsolute(entry) && !entry.startsWith("~"),
+	);
 	const fixedEntries = plain.filter((entry) => isAbsolute(entry) || entry.startsWith("~"));
 	for (const [baseIndex, baseDir] of baseDirs.entries()) {
 		const metadata: PathMetadata = {
@@ -132,7 +159,17 @@ export async function resolveExtensionSources(
 ): Promise<ResolvedPaths> {
 	const accumulator = createAccumulator();
 	const scope: SourceScope = options?.temporary ? "temporary" : options?.local ? "project" : "user";
-	const packageSources = sources.map((source) => ({ pkg: source, scope }));
+	const packageSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
+	for (const source of sources) {
+		if (typeof source === "string" && source.startsWith(BUILTIN_PATH_PREFIX)) {
+			addResource(
+				accumulator.extensions,
+				source,
+				{ source: "builtin", scope, origin: "top-level", configurationOrigin: "bundled" },
+				true,
+			);
+		} else packageSources.push({ pkg: source, scope });
+	}
 	await resolvePackageSources(context, packageSources, accumulator, undefined, {
 		includeProjectLocalResources: options?.includeProjectLocalResources === true,
 	});

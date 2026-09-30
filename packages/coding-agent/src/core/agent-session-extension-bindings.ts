@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import { resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
@@ -432,6 +433,9 @@ export function _bindExtensionCore(
 		},
 		{
 			getModel: () => this.model,
+			executeTool: (callerId, name, args, options) => executeNestedToolCall(this, callerId, name, args, options),
+			getCallableTools: () => getCallableTools(this),
+			getSettings: () => this.settingsManager.getSettings(),
 			// Read through the public accessor, not `_scopedModels`: in the isolated
 			// engine the host-side facade session has `scopedModels` redefined by
 			// RemoteModelCatalog to the engine's catalogue, and the private field it

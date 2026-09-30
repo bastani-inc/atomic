@@ -21,6 +21,7 @@ import type {
 	WorkflowToolArgs,
 } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 const roots: string[] = [];
 
@@ -77,7 +78,7 @@ async function registeredWorkflowNames(
 		{ action: "list" } as never,
 		new AbortController().signal,
 		undefined,
-		session.extensionRunner.createContext(),
+		toolContext(session.extensionRunner.createContext()),
 	);
 	const details = result.details as WorkflowToolResult;
 	assert.equal(details.action, "list");

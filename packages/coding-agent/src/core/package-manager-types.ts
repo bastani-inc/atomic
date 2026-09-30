@@ -83,6 +83,7 @@ export interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	builtinExtensions?: string[];
 }
 
 export interface GitUpdateTargetInfo {
@@ -115,6 +116,7 @@ export interface PackageManagerContext {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	builtinExtensions?: string[];
 	globalNpmRoot?: string;
 	globalNpmRootCommandKey?: string;
 	progressCallback?: ProgressCallback;

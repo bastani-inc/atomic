@@ -7,10 +7,60 @@ import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extens
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
+import { BUILTIN_PATH_PREFIX, isSyntheticPath } from "./source-info.ts";
 import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 function resolveExtensionLoadPath(loader: DefaultResourceLoader, path: string): string {
-	return resolvePath(path, resourceInternals(loader).cwd, { normalizeUnicodeSpaces: true });
+	return isSyntheticPath(path)
+		? path
+		: resolvePath(path, resourceInternals(loader).cwd, { normalizeUnicodeSpaces: true });
+}
+
+export async function loadExtensionPaths(
+	loader: DefaultResourceLoader,
+	paths: string[],
+	workflowResourceProvider: WorkflowResourceProvider,
+	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+	runtime?: ExtensionRuntime,
+): Promise<LoadExtensionsResult> {
+	const state = resourceInternals(loader);
+	const result = await loadExtensionsCached(
+		paths.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+		state.cwd,
+		state.eventBus,
+		workflowResourceProvider,
+		runtime,
+		inheritanceSnapshotProvider,
+	);
+	for (const path of paths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX))) {
+		const builtin = state.extensionFactories.find(
+			(input) =>
+				typeof input !== "function" && input.builtin && input.name === path.slice(BUILTIN_PATH_PREFIX.length),
+		);
+		if (!builtin || typeof builtin === "function") {
+			result.errors.push({ path, error: `Unknown built-in extension: ${path}` });
+			continue;
+		}
+		try {
+			const extension = await loadExtensionFromFactory(
+				builtin.factory,
+				state.cwd,
+				state.eventBus,
+				result.runtime,
+				path,
+				workflowResourceProvider,
+				inheritanceSnapshotProvider,
+			);
+			extension.hidden = true;
+			extension.replaceable = builtin.replaceable === true;
+			if (builtin.bundled) extension.sourceInfo.configurationOrigin = "bundled";
+			result.extensions.push(extension);
+		} catch (error) {
+			if (error instanceof Error && "code" in error && error.code === "ShutdownFailed") throw error;
+			result.errors.push({ path, error: error instanceof Error ? error.message : "failed to load extension" });
+		}
+	}
+	return result;
 }
 
 export async function loadFinalExtensionSet(
@@ -20,15 +70,12 @@ export async function loadFinalExtensionSet(
 	workflowResourceProvider: WorkflowResourceProvider,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 ): Promise<LoadExtensionsResult> {
-	const state = resourceInternals(loader);
 	if (!preTrustExtensions) {
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
-		const extensionsResult = await loadExtensionsCached(
+		const extensionsResult = await loadExtensionPaths(
+			loader,
 			extensionPaths,
-			state.cwd,
-			state.eventBus,
 			workflowResourceProvider,
-			undefined,
 			inheritanceSnapshotProvider,
 		);
 		endTimingSpan(loadExtensionsSpan);
@@ -58,13 +105,12 @@ export async function loadFinalExtensionSet(
 		return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
 	});
 	const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
-	const remainingExtensions = await loadExtensionsCached(
+	const remainingExtensions = await loadExtensionPaths(
+		loader,
 		remainingPaths,
-		state.cwd,
-		state.eventBus,
 		workflowResourceProvider,
-		preTrustExtensions.runtime,
 		inheritanceSnapshotProvider,
+		preTrustExtensions.runtime,
 	);
 	endTimingSpan(loadExtensionsSpan);
 	const loadedByPath = new Map(preloadedByPath);
@@ -105,6 +151,7 @@ export async function loadExtensionFactories(
 			await yieldToEventLoop();
 		}
 		const descriptor = typeof inlineExtension === "function" ? undefined : inlineExtension;
+		if (descriptor?.builtin) continue;
 		const factory = typeof inlineExtension === "function" ? inlineExtension : inlineExtension.factory;
 		const extensionPath = `<inline:${descriptor?.name ?? index + 1}>`;
 		try {
@@ -118,6 +165,7 @@ export async function loadExtensionFactories(
 				inheritanceSnapshotProvider,
 			);
 			extension.hidden = descriptor?.hidden;
+			extension.replaceable = descriptor?.replaceable === true;
 			if (descriptor?.bundled) extension.sourceInfo.configurationOrigin = "bundled";
 			extensions.push(extension);
 		} catch (error) {
@@ -130,12 +178,43 @@ export async function loadExtensionFactories(
 	return { extensions, errors };
 }
 
+function omitReplacedBuiltins(result: LoadExtensionsResult): void {
+	const names = (extension: Extension) => [
+		...[...extension.tools.keys()].map((name) => `tool:${name}`),
+		...[...extension.commands.keys()].map((name) => `command:${name}`),
+		...[...extension.flags.keys()].map((name) => `flag:${name}`),
+	];
+	const taken = new Map(
+		result.extensions
+			.filter((extension) => !extension.replaceable)
+			.flatMap((extension) => names(extension).map((name) => [name, extension] as const)),
+	);
+	result.extensions = result.extensions.filter((extension) => {
+		if (!extension.replaceable) return true;
+		const replacement = names(extension)
+			.map((name) => ({ name, owner: taken.get(name) }))
+			.find((entry) => entry.owner !== undefined);
+		if (!replacement?.owner) return true;
+		if (extension.path.startsWith(BUILTIN_PATH_PREFIX)) {
+			const [kind, rawName] = replacement.name.split(":", 2);
+			const registeredName = kind === "command" ? `/${rawName}` : kind === "flag" ? `--${rawName}` : rawName;
+			result.warnings ??= [];
+			result.warnings.push({
+				path: extension.path,
+				warning: `Extension ${replacement.owner.path} registers ${kind} \`${registeredName}\`, so built-in extension \`${extension.path.slice(BUILTIN_PATH_PREFIX.length)}\` was replaced. Run \`atomic config\` to enable the builtin, then disable or remove the replacement extension. Keep only one enabled.`,
+			});
+		}
+		return false;
+	});
+}
+
 export function resolveInheritedExtensionOverlaps(extensionsResult: LoadExtensionsResult): void {
 	extensionsResult.overlaps = [];
 	removeInheritedRegistrations("tool", extensionsResult, (extension) => extension.tools);
 	removeInheritedRegistrations("command", extensionsResult, (extension) => extension.commands);
 	removeInheritedRegistrations("flag", extensionsResult, (extension) => extension.flags);
 	removeInheritedRegistrations("shortcut", extensionsResult, (extension) => extension.shortcuts);
+	omitReplacedBuiltins(extensionsResult);
 	installRegistrationPolicy(extensionsResult);
 	rebuildFlagDefaults(extensionsResult);
 

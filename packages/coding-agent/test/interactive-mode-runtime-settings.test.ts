@@ -1,4 +1,4 @@
-import { getCapabilities, setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilityOverrides, type WheelScrollLines } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";
@@ -19,6 +19,7 @@ interface RuntimeSettingsHarness {
 		getHideThinkingBlock: () => boolean;
 		getTerminalCapabilityOverrides: () => { images?: null };
 		getFullscreenCopyOnSelect: () => boolean;
+		getFullscreenWheelScrollLines: () => WheelScrollLines;
 		getFullscreenScrollbar: () => "auto" | "always" | "hidden";
 		getOutputPad: () => 0 | 1;
 		getShowHardwareCursor: () => boolean;
@@ -27,6 +28,7 @@ interface RuntimeSettingsHarness {
 		getAutocompleteMaxVisible: () => number;
 	};
 	setFullscreenCopyOnSelect: Setter<boolean>;
+	setFullscreenWheelScrollLines: Setter<WheelScrollLines>;
 	ui: { setShowHardwareCursor: Setter<boolean>; setClearOnShrink: Setter<boolean> };
 	defaultEditor: { setPaddingX: Setter<number>; setAutocompleteMaxVisible: Setter<number> };
 	editor: { setPaddingX?: Setter<number>; setAutocompleteMaxVisible?: Setter<number> };
@@ -59,6 +61,7 @@ describe("InteractiveMode runtime settings", () => {
 				getHideThinkingBlock: () => true,
 				getTerminalCapabilityOverrides: () => ({ images: null }),
 				getFullscreenCopyOnSelect: () => false,
+				getFullscreenWheelScrollLines: () => "auto",
 				getFullscreenScrollbar: () => "always",
 				getOutputPad: () => 0,
 				getShowHardwareCursor: () => true,
@@ -67,6 +70,7 @@ describe("InteractiveMode runtime settings", () => {
 				getAutocompleteMaxVisible: () => 7,
 			},
 			setFullscreenCopyOnSelect: vi.fn(),
+			setFullscreenWheelScrollLines: vi.fn(),
 			ui: { setShowHardwareCursor: vi.fn(), setClearOnShrink: vi.fn() },
 			defaultEditor: { setPaddingX: vi.fn(), setAutocompleteMaxVisible: vi.fn() },
 			editor: secondaryEditor,
@@ -80,6 +84,7 @@ describe("InteractiveMode runtime settings", () => {
 		expect(secondaryEditor.setPaddingX).toHaveBeenCalledWith(2);
 		expect(secondaryEditor.setAutocompleteMaxVisible).toHaveBeenCalledWith(7);
 		expect(harness.setFullscreenCopyOnSelect).toHaveBeenCalledWith(false);
+		expect(harness.setFullscreenWheelScrollLines).toHaveBeenCalledWith("auto");
 		expect(harness.transcriptScrollView?.setScrollbar).toHaveBeenCalledWith("always");
 		expect(getCapabilities().images).toBeNull();
 	});

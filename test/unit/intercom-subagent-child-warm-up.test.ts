@@ -24,6 +24,7 @@ import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import intercom from "../../packages/intercom/index.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
 type ImportResult = { error: Error } | { module: HeavyModule };
@@ -156,7 +157,7 @@ async function emitThroughHost(
 function executeIntercomTool(tools: Map<string, ToolDefinition>, action: string, ctx: ExtensionContext) {
 	const tool = tools.get("intercom");
 	assert.ok(tool, "intercom tool should be registered");
-	return tool.execute("tool-call", { action }, new AbortController().signal, undefined, ctx);
+	return tool.execute("tool-call", { action }, new AbortController().signal, undefined, toolContext(ctx));
 }
 
 function heavyModule(onSessionStart: (ctx: ExtensionContext) => void): HeavyModule {

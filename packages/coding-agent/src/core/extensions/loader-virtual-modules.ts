@@ -414,6 +414,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai",
 	);
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
+	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
 	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
 	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/pi-ai");
@@ -432,6 +433,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@bastani/pi-ai/api/llama-cpp-classify.lazy": piAiLlamaCppClassifyEntry,
 		"@bastani/pi-ai/oauth": piAiOauthEntry,
+		"@bastani/pi-ai/models": piAiModelsEntry,
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
 		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
 		"@bastani/pi-ai/utils/provider-env": piAiProviderEnvEntry,
@@ -440,6 +442,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai": piAiEntry,
 		"@earendil-works/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
+		"@earendil-works/pi-ai/models": piAiModelsEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiEntry,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
@@ -448,6 +451,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-tui/dist/layout.js": piTuiLayoutEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
+		"@mariozechner/pi-ai/models": piAiModelsEntry,
 		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
 		"@mariozechner/pi-ai/compat": piAiEntry,
 		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,

@@ -1082,35 +1082,43 @@ finally {
 if (powershellEngines.length === 0) {
 	test.skip("available PowerShell engines enforce every preflight guard before I/O", () => {});
 }
+// One real PowerShell child runs the full installer for 20 preflight cases
+// (22 on Windows), including filesystem guards. Keep its existing 90s kill
+// bound inside a named test budget rather than the shared 30s default.
+const REAL_POWERSHELL_PREFLIGHT_TIMEOUT_MS = 120_000;
 for (const engine of powershellEngines) {
-	test(`${engine.label} enforces PATHEXT, tag grammar, and pointer guards before any request`, () => {
-		const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-preflight-"));
-		const probePath = join(workspace, "preflight-guard-probe.ps1");
-		writeFileSync(probePath, preflightGuardProbeHarness);
-		try {
-			const result = spawnSyncCollect(
-				[
-					engine.executable,
-					"-NoLogo",
-					"-NoProfile",
-					"-NonInteractive",
-					"-ExecutionPolicy",
-					"Bypass",
-					"-File",
-					probePath,
-					"-InstallerPath",
-					installerPath,
-					"-Workspace",
-					workspace,
-				],
-				{ timeout: 90_000 },
-			);
-			assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
-			assert.match(result.stdout.toString(), /PREFLIGHT_GUARDS_OK/u);
-		} finally {
-			rmSync(workspace, { recursive: true, force: true });
-		}
-	});
+	test(
+		`${engine.label} enforces PATHEXT, tag grammar, and pointer guards before any request`,
+		() => {
+			const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-preflight-"));
+			const probePath = join(workspace, "preflight-guard-probe.ps1");
+			writeFileSync(probePath, preflightGuardProbeHarness);
+			try {
+				const result = spawnSyncCollect(
+					[
+						engine.executable,
+						"-NoLogo",
+						"-NoProfile",
+						"-NonInteractive",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File",
+						probePath,
+						"-InstallerPath",
+						installerPath,
+						"-Workspace",
+						workspace,
+					],
+					{ timeout: 90_000 },
+				);
+				assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+				assert.match(result.stdout.toString(), /PREFLIGHT_GUARDS_OK/u);
+			} finally {
+				rmSync(workspace, { recursive: true, force: true });
+			}
+		},
+		REAL_POWERSHELL_PREFLIGHT_TIMEOUT_MS,
+	);
 }
 
 interface AsyncProcessResult {

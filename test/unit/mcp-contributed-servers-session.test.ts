@@ -116,6 +116,16 @@ test(
 				async () => session.getActiveToolNames().includes(directName),
 				"the late eager server's direct tool to become active",
 			);
+			const definition = session.getToolDefinition(directName);
+			assert.ok(definition?.outputSchema, "direct MCP scripts must receive a CallToolResult envelope");
+			assert.equal(definition.exposure, "direct");
+			assert.equal(definition.namespace?.name, "mcp:late-direct");
+			assert.ok(session.getCallableToolNames().includes(directName));
+			session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== directName));
+			assert.ok(
+				!session.getCallableToolNames().includes(directName),
+				"inactive direct MCP tools stay unavailable to scripts",
+			);
 		} finally {
 			await session.dispose();
 		}

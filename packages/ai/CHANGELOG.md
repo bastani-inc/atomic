@@ -4,6 +4,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6.1 Sol for OpenAI and Codex with supported reasoning efforts, prompt-cache and tool capabilities, and long-context pricing metadata.
+- Added GPT-6.1 Sol to the GitHub Copilot catalog with Copilot's Responses endpoint, supported reasoning efforts, and provider-published context and output limits. Availability remains subject to the account's model policy.
+- Added **Sign in with ChatGPT** for the OpenAI Responses API alongside API-key authentication, separate from Codex subscription login.
+- Added Jev classifiers on Vercel AI Gateway and OpenCode Zen, and provider-reported classifier usage and costs, including billed responses with invalid answers.
+- Added the lightweight `@bastani/pi-ai/models` entry point for model catalog consumers.
+
 ## [0.9.24] - 2026-09-29
 
 ### Added

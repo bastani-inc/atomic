@@ -511,6 +511,64 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.equal(base.fastRoute, undefined);
 	});
 
+	it("keeps ultrafast ownership, overrides and transport eligibility explicit", () => {
+		const base = model({ id: "gpt-6.1-sol", provider: "openai-codex", api: "openai-codex-responses" });
+		const owned = model({ ...base, id: `${base.id}-ultrafast`, name: "Owned ultrafast" });
+		const collision = deriveFastModelVariants(base.provider, [base, owned]);
+		assert.equal(
+			collision.models.find((entry) => entry.id === owned.id),
+			owned,
+		);
+		assert.equal(collision.models.length, 3);
+		assert.equal(collision.diagnostics[0]?.modelId, owned.id);
+		assert.equal(owned.fastRoute, undefined);
+		const overridden = deriveFastModelVariants(base.provider, [base], {
+			modelOverrides: { [owned.id]: { name: "Overridden ultrafast", maxTokens: 1234 } },
+		}).models.find((entry) => entry.id === owned.id)!;
+		assert.equal(overridden.name, "Overridden ultrafast");
+		assert.equal(overridden.maxTokens, 1234);
+		assert.equal(overridden.fastRoute?.serviceTier, "ultrafast");
+		assert.deepEqual(
+			ids(deriveFastModelVariants(base.provider, [base], { extensionOwnedApis: new Set([base.api]) }).models),
+			[base.id],
+		);
+		assert.deepEqual(
+			ids(deriveFastModelVariants(base.provider, [base], { customModelIds: new Set([base.id]) }).models),
+			[base.id],
+		);
+		assert.deepEqual(ids(deriveFastModelVariants("proxy", [{ ...base, provider: "proxy" }]).models), [base.id]);
+		assert.deepEqual(ids(deriveFastModelVariants(base.provider, [owned]).models), [owned.id]);
+	});
+
+	it("publishes Sol 6.1 ultrafast with the same model and thinking capabilities", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+		const base = runtime.getModel("openai-codex", "gpt-6.1-sol");
+		const fast = runtime.getModel("openai-codex", "gpt-6.1-sol-fast");
+		const ultrafast = runtime.getModel("openai-codex", "gpt-6.1-sol-ultrafast");
+		assert.ok(base);
+		assert.ok(fast);
+		assert.ok(ultrafast);
+		assert.deepEqual(ultrafast.fastRoute, {
+			baseModelId: base.id,
+			upstreamModelId: base.id,
+			serviceTier: "ultrafast",
+		});
+		assert.equal(fast.fastRoute?.serviceTier, "priority");
+		assert.equal(base.fastRoute, undefined);
+		assert.deepEqual(ultrafast.thinkingLevelMap, base.thinkingLevelMap);
+		assert.equal(ultrafast.reasoning, true);
+		assert.equal(ultrafast.contextWindow, base.contextWindow);
+		assert.equal(ultrafast.maxTokens, base.maxTokens);
+		assert.deepEqual(ultrafast.cost, base.cost);
+		assert.equal(runtime.getModel("openai", ultrafast.id), undefined);
+	});
+
 	it.each([
 		["openai", "gpt-6-sol"],
 		["openai", "gpt-6-luna"],

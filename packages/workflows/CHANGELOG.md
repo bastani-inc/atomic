@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added an official-source GPT-6.1 Sol reference to the prompt-engineering skill, with supported-effort migration guidance and selective use of shared templates whose behavior was observed on Astra.
+
 ## [0.9.24] - 2026-09-29
 
 ### Added

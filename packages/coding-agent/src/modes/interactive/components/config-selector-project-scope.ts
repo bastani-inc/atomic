@@ -1,6 +1,7 @@
 import { dirname, join, relative } from "node:path";
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "../../../core/source-info.ts";
 import { isLocalPath, resolvePath } from "../../../utils/paths.ts";
 import type { ResourceItem, ResourceType } from "./config-selector-list.ts";
 
@@ -60,7 +61,9 @@ export function toggleProjectResource(
 	const current = [...(settings.getProjectSettings()[item.resourceType] ?? [])];
 	const projectBase = join(cwd, CONFIG_DIR_NAME);
 	const pattern =
-		item.metadata.scope === "user" ? item.path : relative(item.metadata.baseDir ?? projectBase, item.path);
+		item.path.startsWith(BUILTIN_PATH_PREFIX) || item.metadata.scope === "user"
+			? item.path
+			: relative(item.metadata.baseDir ?? projectBase, item.path);
 	const updated = current.filter((entry) => stripPrefix(entry) !== pattern);
 	updated.push(`${enabled ? "+" : "-"}${pattern}`);
 	setProjectPaths(settings, item.resourceType, updated);

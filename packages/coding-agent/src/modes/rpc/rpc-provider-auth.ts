@@ -78,7 +78,9 @@ export class RpcProviderAuth {
 		try {
 			const callbacks = createRpcOAuthCallbacks(provider, loginId, controller.signal, this.oauthTransport);
 			try {
-				await session.modelRuntime.login(provider, "oauth", createAuthInteraction(callbacks));
+				await session.modelRuntime.login(provider, "oauth", createAuthInteraction(callbacks), {
+					getDeviceId: () => session.settingsManager.getOrCreateDeviceId(),
+				});
 			} catch (error) {
 				if (isOAuthLoginCancelled(error, controller.signal)) return { provider, cancelled: true };
 				throw error;

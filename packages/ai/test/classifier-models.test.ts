@@ -135,4 +135,20 @@ describe("Models with classifier models", () => {
 			expect(models.getModelOfType("classifier", "openrouter", model.id)).toEqual(model);
 		}
 	});
+	it("routes Jev classifiers on Gateway and Zen without exposing them as chat models", () => {
+		const models = builtinModels();
+		const gateway = models.getModelOfType("classifier", "vercel-ai-gateway", "typesafe-ai/jev");
+		expect(gateway).toMatchObject({
+			api: "typesafe-system-one",
+			baseUrl: "https://ai-gateway.vercel.sh/typesafe/v1",
+		});
+		for (const id of ["jev-1.13", "jev-1.13-free"]) {
+			expect(models.getModelOfType("classifier", "opencode", id)).toMatchObject({
+				api: "typesafe-system-one",
+				baseUrl: "https://opencode.ai/zen/v1",
+			});
+			expect(models.getModel("opencode", id)).toBeUndefined();
+		}
+		expect(models.getModel("vercel-ai-gateway", "typesafe-ai/jev")).toBeUndefined();
+	});
 });

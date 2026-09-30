@@ -22,6 +22,7 @@ describe("createAgentSession provider attribution headers", () => {
 	let cwd: string;
 	let agentDir: string;
 	let originalTelemetryEnv: string | undefined;
+	let originalAtomicTelemetryEnv: string | undefined;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `pi-sdk-attribution-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -30,7 +31,9 @@ describe("createAgentSession provider attribution headers", () => {
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		originalTelemetryEnv = process.env.PI_TELEMETRY;
+		originalAtomicTelemetryEnv = process.env.ATOMIC_TELEMETRY;
 		delete process.env.PI_TELEMETRY;
+		delete process.env.ATOMIC_TELEMETRY;
 	});
 
 	afterEach(() => {
@@ -38,6 +41,11 @@ describe("createAgentSession provider attribution headers", () => {
 			delete process.env.PI_TELEMETRY;
 		} else {
 			process.env.PI_TELEMETRY = originalTelemetryEnv;
+		}
+		if (originalAtomicTelemetryEnv === undefined) {
+			delete process.env.ATOMIC_TELEMETRY;
+		} else {
+			process.env.ATOMIC_TELEMETRY = originalAtomicTelemetryEnv;
 		}
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -123,6 +131,7 @@ describe("createAgentSession provider attribution headers", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
 		});
 
 		try {

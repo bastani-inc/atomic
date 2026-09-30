@@ -38,7 +38,8 @@ export function isFirstPartyCodexEndpoint(input: string | URL | Request): boolea
 }
 
 function hasCodexPriorityRoutingHint(headers: Headers): boolean {
-	return headers.get(CODEX_FAST_ROUTE_HEADER)?.endsWith(";tier=priority") === true;
+	const hint = headers.get(CODEX_FAST_ROUTE_HEADER);
+	return hint?.endsWith(";tier=priority") === true || hint?.endsWith(";tier=ultrafast") === true;
 }
 
 function codexFastRouteRequestMarker(headers: Headers): "normal" | "priority" | undefined {

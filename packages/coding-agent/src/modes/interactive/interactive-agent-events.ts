@@ -64,6 +64,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 	this: InteractiveModeBase,
 	event: AgentSessionEvent | JsonAgentSessionEvent,
 ): Promise<void> {
+	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
 		await this.init();
 	}

@@ -311,7 +311,7 @@ pi.registerTool({
 });
 ```
 
-**Signaling errors:** To mark a tool execution as failed (sets `isError: true` on the result and reports it to the LLM), throw an error from `execute`. Returning a value never sets the error flag regardless of what properties you include in the return object.
+**Signaling errors:** Throw from `execute` to report an execution failure. When a failure also has useful data, return an error result with `isError: true`, `content`, and optional `structuredContent`.
 
 Return `terminate: true` from `execute()` to skip the automatic follow-up model call only when every finalized result in the tool batch also terminates.
 
@@ -406,6 +406,36 @@ pi.registerTool({
   },
 });
 ```
+
+### Structured results and nested tools
+
+Declare `outputSchema` when a tool returns machine-readable data, and return a matching `structuredContent` alongside model-facing `content`. Script callers receive the structured value; tools without an output schema return text to scripts. A `tool_result` handler that redacts text must also replace `structuredContent`; replacing only `content` drops the structured value to prevent it leaking through another path.
+
+Inside `execute`, the context is an `ExtensionToolContext`. `ctx.tools` lists permitted callable tools, and `ctx.executeTool(name, args, { signal, onUpdate })` returns an `AgentToolCallOutcome`. Nested calls use the ordinary argument preparation, schema validation, permission hooks, and result hooks. They cannot bypass session allowlists, exclusions, or `model-only` exposure.
+
+If your orchestrator invokes a tool with `concurrency: "exclusive"`, give the orchestrator `concurrency: "exclusive"` too. A shared orchestrator cannot safely upgrade its nested call to exclusive access and receives an error before that target executes. File mutation queues remain required for read-modify-write operations.
+
+Nested execution events include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
+
+### Tool exposure
+
+`ToolDefinition.exposure` controls whether a tool is declared to the model or callable by another tool. Omission means `direct`:
+
+| Exposure | Model declaration | Callable from another tool |
+| --- | --- | --- |
+| `direct` | While active | While active |
+| `model-only` | While active | Never |
+| `codemode` | Only if explicitly activated | When registered and permitted by the session |
+| `deferred` | Only if explicitly activated | When registered and permitted by the session |
+| `hidden` | Never | Never |
+
+Use `model-only` for interactive or orchestration tools that should not be called from scripts. `codemode` tools are advertised in the codemode tool's catalog; `deferred` tools are discoverable without occupying that inline catalog. Session allowlists and exclusions remain authoritative. Exposure cannot restore a suppressed tool.
+
+Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: a script cannot launch agents, send coordination messages, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
+
+`direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a registered tool inactive until you select it with `pi.setActiveTools()`. `namespace: { name, description }` groups related tools. Optional `annotations` carry `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; these are advisory hints, not permission checks or verified guarantees.
+
+An active orchestrator may implement `prepareLoadout(loadout)`. The loadout lists `declared`, `callable`, and `registered` tools and provides `getExposure(name)` and `getNamespace(name)`. Return `descriptions` to replace model-facing descriptions or `hiddenDeclarations` to hide declarations while retaining permitted nested access. This changes presentation, not authorization.
 
 ### Fireworks deferred tool loading
 

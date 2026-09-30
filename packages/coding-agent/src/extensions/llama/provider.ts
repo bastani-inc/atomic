@@ -52,13 +52,30 @@ async function routerAutoloadEnabled(
 	}
 }
 
-function contextWindowOf(model: LlamaModelInfo): number {
-	const reportedContextWindow = model.meta?.n_ctx ?? model.meta?.n_ctx_train;
-	return reportedContextWindow && reportedContextWindow > 0 ? reportedContextWindow : 128000;
+function configuredContextWindow(model: LlamaModelInfo): number | undefined {
+	const args = model.status.args ?? [];
+	for (let index = 0; index < args.length - 1; index++) {
+		if (!["--ctx-size", "-c", "-ctx"].includes(args[index])) continue;
+		const contextWindow = Number(args[index + 1]);
+		if (Number.isSafeInteger(contextWindow) && contextWindow > 0) return contextWindow;
+	}
+	return undefined;
+}
+
+function contextWindowOf(model: LlamaModelInfo, cachedContextWindow?: number): number {
+	if (model.meta?.n_ctx && model.meta.n_ctx > 0) return model.meta.n_ctx;
+	const configured = configuredContextWindow(model);
+	if (configured) return configured;
+	if (cachedContextWindow && cachedContextWindow > 0) return cachedContextWindow;
+	return model.meta?.n_ctx_train && model.meta.n_ctx_train > 0 ? model.meta.n_ctx_train : 128000;
 }
 
 /** The same llama.cpp model used as a classifier: answers are read from next-token label probabilities. */
-function toPiClassifierModel(model: LlamaModelInfo, serverUrl: string): ClassifierModel<"llama-cpp-classify"> {
+function toPiClassifierModel(
+	model: LlamaModelInfo,
+	serverUrl: string,
+	cachedContextWindow?: number,
+): ClassifierModel<"llama-cpp-classify"> {
 	return {
 		type: "classifier",
 		id: model.id,
@@ -68,12 +85,17 @@ function toPiClassifierModel(model: LlamaModelInfo, serverUrl: string): Classifi
 		baseUrl: serverUrl,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: contextWindowOf(model),
+		contextWindow: contextWindowOf(model, cachedContextWindow),
 	};
 }
 
-function toPiModel(model: LlamaModelInfo, serverUrl: string, props?: LlamaServerProps): Model<"openai-completions"> {
-	const contextWindow = contextWindowOf(model);
+function toPiModel(
+	model: LlamaModelInfo,
+	serverUrl: string,
+	props?: LlamaServerProps,
+	cachedContextWindow?: number,
+): Model<"openai-completions"> {
+	const contextWindow = contextWindowOf(model, cachedContextWindow);
 	const reasoning = props?.chat_template?.includes("enable_thinking") === true;
 	return {
 		id: model.id,
@@ -171,6 +193,7 @@ export function createLlamaProvider(): LlamaProviderController {
 		getModels: () => models,
 		getAllModels: () => [...models, ...classifiers],
 		refreshModels: async (context: RefreshModelsContext): Promise<void> => {
+			const cachedContextWindows = new Map<string, number>();
 			if (context.stored) {
 				const stored = context.stored.models.filter((model) => model.provider === LLAMA_PROVIDER_ID);
 				const restored = stored.filter(
@@ -181,6 +204,8 @@ export function createLlamaProvider(): LlamaProviderController {
 					(model): model is ClassifierModel<"llama-cpp-classify"> =>
 						isModelType(model, "classifier") && model.api === "llama-cpp-classify",
 				);
+				for (const model of [...restored, ...restoredClassifiers])
+					cachedContextWindows.set(model.id, model.contextWindow);
 				if (
 					!(await context.publish({
 						update: () => {
@@ -205,11 +230,19 @@ export function createLlamaProvider(): LlamaProviderController {
 			const refreshed = await Promise.all(
 				selectable.map(async (model) => {
 					// Query only loaded models: sleeping and autoload presets must not be woken by discovery.
-					if (model.status.value !== "loaded") return toPiModel(model, serverUrl);
-					return toPiModel(model, serverUrl, await client.props({ model: model.id, signal: context.signal }));
+					const cachedContextWindow = cachedContextWindows.get(model.id);
+					if (model.status.value !== "loaded") return toPiModel(model, serverUrl, undefined, cachedContextWindow);
+					return toPiModel(
+						model,
+						serverUrl,
+						await client.props({ model: model.id, signal: context.signal }),
+						cachedContextWindow,
+					);
 				}),
 			);
-			const refreshedClassifiers = selectable.map((model) => toPiClassifierModel(model, serverUrl));
+			const refreshedClassifiers = selectable.map((model) =>
+				toPiClassifierModel(model, serverUrl, cachedContextWindows.get(model.id)),
+			);
 			if (context.signal.aborted) return;
 			await context.publish({
 				persist: { models: [...refreshed, ...refreshedClassifiers], checkedAt: Date.now() },

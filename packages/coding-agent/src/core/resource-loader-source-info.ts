@@ -6,7 +6,7 @@ import type { PathMetadata } from "./package-manager.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
-import { createSourceInfo, type SourceInfo } from "./source-info.ts";
+import { createSourceInfo, getSyntheticPathSource, isSyntheticPath, type SourceInfo } from "./source-info.ts";
 
 export function applyExtensionSourceInfo(
 	loader: DefaultResourceLoader,
@@ -40,8 +40,9 @@ export function findSourceInfoForPath(
 		return undefined;
 	}
 
-	if (resourcePath.startsWith("<")) {
-		return getDefaultSourceInfoForPath(loader, resourcePath);
+	if (isSyntheticPath(resourcePath)) {
+		const metadata = metadataByPath?.get(resourcePath);
+		return metadata ? createSourceInfo(resourcePath, metadata) : getDefaultSourceInfoForPath(loader, resourcePath);
 	}
 
 	const normalizedResourcePath = resolve(resourcePath);
@@ -79,10 +80,11 @@ export function findSourceInfoForPath(
 
 export function getDefaultSourceInfoForPath(loader: DefaultResourceLoader, filePath: string): SourceInfo {
 	const state = resourceInternals(loader);
-	if (filePath.startsWith("<") && filePath.endsWith(">")) {
+	const syntheticSource = getSyntheticPathSource(filePath);
+	if (syntheticSource) {
 		return {
 			path: filePath,
-			source: filePath.slice(1, -1).split(":")[0] || "temporary",
+			source: syntheticSource,
 			scope: "temporary",
 			origin: "top-level",
 		};

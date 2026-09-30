@@ -24,6 +24,7 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "intercom-active-child-")));
@@ -117,7 +118,7 @@ async function endpoint(name: string, child = false, tools: AgentTool[] = [], op
 		},
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<unknown> & { isError?: boolean }> =>
-		(tool as ToolDefinition).execute(`${name}-${++calls}`, params, signal, undefined, context);
+		(tool as ToolDefinition).execute(`${name}-${++calls}`, params, signal, undefined, toolContext(context));
 	const status = await execute({ action: "status" });
 	assert.notEqual(status.isError, true, JSON.stringify(status));
 	const id = getMessageText(status).match(/Session ID: ([^\n]+)/)?.[1];

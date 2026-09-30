@@ -57,7 +57,8 @@ export function isLocalPath(value: string): boolean {
 		trimmed.startsWith("github:") ||
 		trimmed.startsWith("http:") ||
 		trimmed.startsWith("https:") ||
-		trimmed.startsWith("ssh:")
+		trimmed.startsWith("ssh:") ||
+		trimmed.startsWith("builtin:")
 	) {
 		return false;
 	}

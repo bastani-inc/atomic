@@ -13,7 +13,10 @@ import type {
   OAuthClientInformation,
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/sdk/shared/auth.js"
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  acquireTokenRefreshLock,
   getAuthForUrl,
   getOwnedOAuthTransients,
   updateTokens,
@@ -30,6 +33,57 @@ import {
 // Callback server configuration
 const DEFAULT_OAUTH_CALLBACK_PORT = 19876
 const OAUTH_CALLBACK_PATH = "/callback"
+
+const REFRESH_REQUEST_TIMEOUT_MS = 15_000;
+
+async function fetchRefreshResponse(url: Parameters<FetchLike>[0], init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => controller.abort(new DOMException("MCP token refresh timed out", "TimeoutError")), REFRESH_REQUEST_TIMEOUT_MS);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      void reader?.cancel(signal.reason).catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  const request = (async () => {
+    signal.throwIfAborted();
+    const response = await fetch(url, { ...init, signal });
+    if (signal.aborted) {
+      void response.body?.cancel(signal.reason).catch(() => {});
+      signal.throwIfAborted();
+    }
+    reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    if (reader) {
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          signal.throwIfAborted();
+          if (chunk.done) break;
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        text += decoder.decode();
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    return new Response(response.body ? text : null, {
+      status: response.status, statusText: response.statusText, headers: response.headers,
+    });
+  })();
+  try {
+    return await Promise.race([request, aborted]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 let configuredOAuthCallbackPort = DEFAULT_OAUTH_CALLBACK_PORT
 
@@ -74,6 +128,61 @@ export interface McpOAuthCallbacks {
  */
 export class McpOAuthProvider implements OAuthClientProvider {
   private readonly transients = getOwnedOAuthTransients()
+  private refreshRelease: (() => Promise<void>) | undefined;
+  private readonly refreshes = new Set<Promise<void>>();
+
+  /** SDK-supported fetch hook keeps rotating-token exchanges serialized across processes. */
+  readonly fetch: FetchLike = async (url, init) => {
+    if (!(init?.body instanceof URLSearchParams) || init.body.get("grant_type") !== "refresh_token") {
+      return fetch(url, init);
+    }
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    this.refreshes.add(pending);
+    const release = await acquireTokenRefreshLock(this.serverName).catch((error) => {
+      this.refreshes.delete(pending);
+      finish();
+      throw error;
+    });
+    this.refreshRelease = async () => {
+      this.refreshRelease = undefined;
+      try { await release(); } finally { this.refreshes.delete(pending); finish(); }
+    };
+    try {
+      init.signal?.throwIfAborted();
+      const current = getAuthForUrl(this.serverName, this.serverUrl)?.tokens;
+      if (!current?.refreshToken) throw new UnauthorizedError("MCP refresh credentials are no longer available");
+      if (current.refreshToken !== init.body.get("refresh_token") && (!current.expiresAt || current.expiresAt > Date.now() / 1000)) {
+        return Response.json({
+          access_token: current.accessToken, refresh_token: current.refreshToken, token_type: "Bearer",
+          ...(current.expiresAt ? { expires_in: Math.max(0, current.expiresAt - Date.now() / 1000) } : {}),
+          ...(current.scope ? { scope: current.scope } : {}),
+        });
+      }
+      const body = new URLSearchParams(init.body);
+      body.set("refresh_token", current.refreshToken);
+      const response = await fetchRefreshResponse(url, { ...init, body });
+      // The SDK only calls saveTokens after a successful schema parse. Release on every other path.
+      if (!response.ok) {
+        await this.refreshRelease();
+        return response;
+      }
+      const parsed = OAuthTokensSchema.safeParse(await response.clone().json());
+      if (!parsed.success) {
+        await this.refreshRelease();
+        return response;
+      }
+      // The SDK's fallback captured the old token before locking. Keep the token actually exchanged.
+      return Response.json({ refresh_token: current.refreshToken, ...parsed.data });
+    } catch (error) {
+      await this.refreshRelease?.();
+      throw error;
+    }
+  };
+
+  async waitForRefresh(): Promise<void> {
+    await Promise.all(this.refreshes);
+  }
 
   private transientEntry() {
     if (!this.transients) return getAuthForUrl(this.serverName, this.serverUrl)
@@ -206,14 +315,18 @@ export class McpOAuthProvider implements OAuthClientProvider {
    * Save OAuth tokens.
    */
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    this.ensureActive()
-    const storedTokens: StoredTokens = {
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: tokens.expires_in ? Date.now() / 1000 + tokens.expires_in : undefined,
-      scope: tokens.scope,
+    try {
+      if (!this.refreshRelease) this.ensureActive();
+      const storedTokens: StoredTokens = {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        expiresAt: tokens.expires_in ? Date.now() / 1000 + tokens.expires_in : undefined,
+        scope: tokens.scope,
+      };
+      updateTokens(this.serverName, storedTokens, this.serverUrl);
+    } finally {
+      await this.refreshRelease?.();
     }
-    updateTokens(this.serverName, storedTokens, this.serverUrl)
   }
 
   /**

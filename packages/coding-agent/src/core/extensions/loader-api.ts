@@ -418,6 +418,11 @@ export function createExtensionAPI(
 			return trackAPIWork(() => execCommand(command, args, options?.cwd ?? cwd, options));
 		},
 
+		getSettings() {
+			assertActive(true);
+			return runtime.getSettings?.() ?? {};
+		},
+
 		getActiveTools(): string[] {
 			assertActive(true);
 			return runtime.getActiveToolsAfterRegistration?.(extension) ?? runtime.getActiveTools();

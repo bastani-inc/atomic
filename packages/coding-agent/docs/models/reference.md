@@ -131,6 +131,23 @@ Atomic does not synthesize Azure OpenAI Astra entries. Live-provider catalogs re
 
 On OpenAI Responses, Astra uses the newer prompt-cache payload. `cacheRetention: "long"` sends `prompt_cache_options.ttl: "30m"` instead of the legacy `prompt_cache_retention: "24h"`; `none` sends explicit mode without a cache key, and `short` sends neither cache option. Earlier Responses models keep the 24-hour field for long retention.
 
+<a id="gpt-6-1-sol" />
+
+### GPT-6.1 Sol
+
+Select `openai/gpt-6.1-sol` with API-key authentication or `openai-codex/gpt-6.1-sol` with a ChatGPT subscription. Both accept text and images and support `low`, `medium`, `high`, `xhigh`, and `max`. Reasoning cannot be turned off. Codex also offers a `minimal` UI alias that sends `low`, not a separate API effort.
+
+Atomic uses a 272,000-token default context and a 128,000-token output limit. Increase `contextWindow` through a model override only when you intend to use the larger API window and its whole-request long-context prices:
+
+| Aggregate input | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $2 | $0.10 | $2.50 | $10 |
+| Above 272,000 | $4 | $0.20 | $5 | $15 |
+
+Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
+
+`openai-codex/gpt-6.1-sol-ultrafast` requests the same model with Codex's `ultrafast` service tier and the same thinking levels. This experimental selection is account-dependent, not a claim of Sol 6.1 entitlement. Its pricing is unknown; displayed costs remain provisional base-rate estimates, not confirmed Ultrafast rates. Auto routing requires its exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [provider tier caveats](/providers#fast-models).
+
 ### Image Input Limits
 
 Use `inputLimits.images.resize` to configure how new images are encoded before they enter conversation history:

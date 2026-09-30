@@ -11,6 +11,20 @@ import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission
 import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.js";
 import type { WorkflowActivityObserver, WorkflowActivitySubscription } from "./workflow-events.js";
+export interface ExecuteToolOptions {
+	signal?: AbortSignal;
+	onUpdate?: import("@earendil-works/pi-agent-core").AgentToolUpdateCallback;
+}
+
+/** Tool-only context. Nested calls retain session validation and permission hooks. */
+export interface ExtensionToolContext extends ExtensionContext {
+	readonly tools: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	executeTool(
+		name: string,
+		args: unknown,
+		options?: ExecuteToolOptions,
+	): Promise<import("@earendil-works/pi-agent-core").AgentToolCallOutcome>;
+}
 
 export interface ContextUsage {
 	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */

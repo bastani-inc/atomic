@@ -24,6 +24,7 @@ import type { SubagentChildPolicy } from "../../packages/coding-agent/src/index.
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { inProcessChildResourceLoaderOptions } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 const tempDirs: string[] = [];
 
@@ -299,7 +300,7 @@ describe("in-process child session resources", () => {
 					{ agent: "worker", task: "delegate one level further", context: "fresh" } as never,
 					new AbortController().signal,
 					undefined,
-					session.extensionRunner.createContext(),
+					toolContext(session.extensionRunner.createContext()),
 				);
 				assert.equal(
 					delegated.content.map((part) => (part.type === "text" ? part.text : "")).join("\n"),
@@ -311,7 +312,7 @@ describe("in-process child session resources", () => {
 					{ action: "list" } as never,
 					new AbortController().signal,
 					undefined,
-					session.extensionRunner.createContext(),
+					toolContext(session.extensionRunner.createContext()),
 				);
 				assert.ok(
 					!listed.content
@@ -344,7 +345,7 @@ describe("in-process child session resources", () => {
 					{ agent: "worker", task: "delegate one level further", context: "fresh" } as never,
 					new AbortController().signal,
 					undefined,
-					session.extensionRunner.createContext(),
+					toolContext(session.extensionRunner.createContext()),
 				);
 				const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 

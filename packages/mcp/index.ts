@@ -104,13 +104,21 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         description: spec.description || "(no description)",
         promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
         parameters: Type.Unsafe((spec.inputSchema || { type: "object", properties: {} }) as never),
+        exposure: "direct",
+        namespace: { name: `mcp:${spec.serverName}` },
+        ...(!spec.resourceUri ? { outputSchema: Type.Object({
+          content: Type.Array(Type.Object({ type: Type.String() }, { additionalProperties: true })),
+          isError: Type.Optional(Type.Boolean()),
+          structuredContent: Type.Optional(Type.Object({}, { additionalProperties: true })),
+          _meta: Type.Optional(Type.Object({}, { additionalProperties: true })),
+        }, { additionalProperties: true }) } : {}),
         execute: createDirectToolExecutor(
           () => ensureMcpInitialized(),
           (candidate) => isOwnedState(candidate),
           spec,
         ),
-        renderCall: (_args: Record<string, unknown>, theme: Parameters<typeof renderMcpDirectToolCall>[2]) =>
-          renderMcpDirectToolCall(spec.serverName, spec.originalName, theme),
+        renderCall: (args: Record<string, unknown>, theme: Parameters<typeof renderMcpDirectToolCall>[2], context: { expanded: boolean }) =>
+          renderMcpDirectToolCall(spec.serverName, spec.originalName, theme, args, context.expanded),
         renderResult: renderMcpToolResult,
       });
     }
@@ -456,8 +464,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         server: Type.Optional(Type.String({ description: "Filter to specific server (also disambiguates tool calls)" })),
         action: Type.Optional(Type.String({ description: "Action: 'ui-messages' to retrieve prompts/intents from UI sessions" })),
       }),
-      renderCall: (args: Record<string, unknown>, theme: Parameters<typeof renderMcpToolCall>[1]) =>
-        renderMcpToolCall(args, theme, { config: state?.config ?? renderConfig, toolMetadata: state?.toolMetadata }),
+      renderCall: (args: Record<string, unknown>, theme: Parameters<typeof renderMcpToolCall>[1], context: { expanded: boolean }) =>
+        renderMcpToolCall(args, theme, { config: state?.config ?? renderConfig, toolMetadata: state?.toolMetadata }, context.expanded),
       renderResult: renderMcpToolResult,
       async execute(_toolCallId: string, params: {
         tool?: string;

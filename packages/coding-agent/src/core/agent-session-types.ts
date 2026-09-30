@@ -23,7 +23,7 @@ import type { SourceInfo } from "./source-info.ts";
 export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSummary";
 
 export type AgentSessionEvent =
-	| AgentEvent
+	| (AgentEvent & { parentToolCallId?: string })
 	| { type: "agent_settled" }
 	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
 	| {

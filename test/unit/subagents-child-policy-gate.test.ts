@@ -1,3 +1,4 @@
+import { toolContext } from "../helpers/tool-context.js";
 /**
  * Regression coverage for the #2205 child-policy gate.
  *
@@ -399,7 +400,7 @@ describe("workflow stage subagent policy", () => {
 			{ action: "list" },
 			new AbortController().signal,
 			undefined,
-			makeContext(cwd, policy),
+			toolContext(makeContext(cwd, policy)),
 		)) as ExecutorResultForTest;
 
 		assert.notEqual(result.isError, true);
