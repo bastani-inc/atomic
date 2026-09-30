@@ -7,6 +7,12 @@ description: "Configure MCP servers, discover tools, and authenticate connection
 
 Atomic includes MCP support in both npm and binary installations. No separate extension install is needed. Use `/mcp` to inspect servers or `/mcp setup` to configure them.
 
+## Quick setup
+
+Run `atomic`, then use `/mcp setup` to create configuration or preview imports from another client. For manual setup, add a local server's `command` and `args`, or a remote server's `url`, to one of the configuration files below. Restart Atomic after editing a file manually.
+
+Use `/mcp` to inspect connections and `/mcp tools` to list tools. Servers connect lazily by default; discovery or a tool call can establish the connection. Use `/mcp reconnect my-server` to reconnect a configured server. For a server that requires OAuth, run `/mcp-auth my-server` before unattended work.
+
 ## Configure a server
 
 Put shared project configuration in `.mcp.json` at your project root:
@@ -54,6 +60,17 @@ Atomic reads configuration in this order, with later files overriding earlier se
 The Atomic agent directory can be relocated with `ATOMIC_CODING_AGENT_DIR`. Use `/mcp setup` to inspect detected configuration and preview imports from other hosts before writing changes.
 
 Servers connect lazily by default. Adding a server does not require an immediate connection at startup.
+
+### Configuration rules
+
+- `command` is one executable and `args` contains its arguments, not one shell command string. Use `cwd` for the server's working directory and `env` for its environment.
+- Remote servers use `url` and optional `headers`. Keep credentials out of shared files; use environment variable references or `bearerTokenEnv` for bearer authentication.
+- Put personal servers and credentials in user-level configuration. Use project configuration only for servers the project requires, in trusted projects.
+- Use `timeoutMs` for the per-request inactivity timeout. Progress notifications reset it.
+
+### Import configuration from another client
+
+Clients that use a top-level `mcpServers` object can share the same server entries. Copy compatible entries into `.mcp.json`, or use `/mcp setup` to preview detected imports before saving. Check executable paths, working directories, and required environment variables on the current machine. Restart Atomic after manual changes, then use `/mcp` to diagnose connection errors.
 
 ## Servers from packages and extensions
 
