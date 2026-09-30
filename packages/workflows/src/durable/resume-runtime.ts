@@ -45,6 +45,7 @@ export type ResumeDurableResult =
 			reason:
 				| "workflow_not_found"
 				| "not_resumable"
+				| "owned_elsewhere"
 				| "invalid_inputs"
 				| "not_registered"
 				| "stale"
@@ -450,7 +451,7 @@ async function resumeDurableWorkflowClaimed(
 function foreignRunningResult(name: string, workflowId: string): ResumeDurableResult {
 	return {
 		ok: false,
-		reason: "not_resumable",
+		reason: "owned_elsewhere",
 		message:
 			`Workflow "${name}" (${workflowId}) is actively running in another Atomic session. ` +
 			"Control it from that session; it becomes resumable here only after that session pauses, quits, or crashes.",

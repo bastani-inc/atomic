@@ -11,6 +11,7 @@ import type {
 	RegisteredTool,
 } from "./types.ts";
 import { WorkflowActivityHub } from "./workflow-activity-hub.js";
+import { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 /** Prepared generations do not own session event delivery until bound by a runner. */
 export const boundExtensionRuntimes = new WeakSet<ExtensionRuntime>();
@@ -63,6 +64,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		workflowActivityHub: new WorkflowActivityHub((operation) =>
 			extensionWorkOpen(runtime) ? trackExtensionWork(runtime, operation) : Promise.resolve(),
 		),
+		workflowRunControlHub: new WorkflowRunControlHub(),
 		mcpServerRegistry: new McpServerRegistry(),
 		sendMessages: notInitialized,
 		sendUserMessage: notInitialized,
@@ -243,6 +245,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			} catch (error) {
 				failures.push(error);
 			}
+			runtime.workflowRunControlHub.dispose();
 			for (const unsubscribe of eventBusUnsubscribers) {
 				try {
 					unsubscribe();

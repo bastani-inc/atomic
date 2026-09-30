@@ -106,7 +106,7 @@ export type ResumeFailedRunResult =
 	  }
 	| {
 			ok: false;
-			reason: "run_not_found" | "not_resumable" | "workflow_not_found" | "insufficient_state";
+			reason: "run_not_found" | "not_resumable" | "owned_elsewhere" | "workflow_not_found" | "insufficient_state";
 			message: string;
 	  };
 
@@ -345,9 +345,11 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				reason:
 					resumed.reason === "workflow_not_found"
 						? "workflow_not_found"
-						: resumed.reason === "not_resumable" || resumed.reason === "stale"
-							? "not_resumable"
-							: "insufficient_state",
+						: resumed.reason === "owned_elsewhere"
+							? "owned_elsewhere"
+							: resumed.reason === "not_resumable" || resumed.reason === "stale"
+								? "not_resumable"
+								: "insufficient_state",
 				message: resumed.message,
 			};
 		return {

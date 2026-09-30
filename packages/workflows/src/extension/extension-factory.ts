@@ -16,7 +16,7 @@ import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.j
 import { trackLiveHostGeneration } from "./live-host-generation.js";
 import { registerPendingStageIntercomBridge } from "./pending-stage-intercom.js";
 import { createPostMortemHandleResolver } from "./postmortem-deps.js";
-import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
+import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { type RunEndPayload, type RunStartPayload, renderRunBanner, renderRunSummary } from "./renderers.js";
 import { buildRuntimeAdapters } from "./wiring.js";
@@ -25,6 +25,7 @@ import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow
 import { createWorkflowObservation } from "./workflow-observation.js";
 import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
@@ -135,6 +136,16 @@ function factory(pi: ExtensionAPI): void {
 		runtimeState.reloadWorkflowResources,
 		runtimeState.ensureWorkflowResourcesLoaded,
 		owner,
+	);
+	let sessionContext: PiEventContext | undefined;
+	pi.on?.("session_start", (_event, ctx) => {
+		sessionContext = ctx;
+	});
+	pi.on?.("session_shutdown", () => {
+		sessionContext = undefined;
+	});
+	pi.registerWorkflowRunControl?.(
+		createSessionRunControl({ execute: executeWorkflowTool, context: () => sessionContext }),
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);

@@ -266,4 +266,13 @@ export {
 } from "./types.ts";
 export { OVERLAY_ACTIVE_ROW_MARKER } from "./ui-types.js";
 export type * from "./workflow-events.js";
+export type * from "./workflow-run-control.js";
+export {
+	WorkflowRunControlError,
+	WorkflowRunControlUnavailableError,
+	WorkflowRunDatabaseError,
+	WorkflowRunNotFoundError,
+	WorkflowRunNotResumableError,
+	WorkflowRunOwnershipError,
+} from "./workflow-run-control.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

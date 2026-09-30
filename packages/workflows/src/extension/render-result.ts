@@ -31,6 +31,7 @@ import { renderRunDetail } from "../tui/run-detail.js";
 import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
+import type { WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
@@ -161,10 +162,28 @@ type AnswerResult = {
 	| { status: "ok" | "noop" }
 	| { status: "failed"; code: "WORKFLOW_TERMINAL"; workflowStatus: RunStatus; error: string }
 );
-type PauseResult = { action: "pause"; runId: string; status: string; message: string };
+type PauseResult = {
+	action: "pause";
+	runId: string;
+	status: string;
+	message: string;
+	code?: WorkflowControlFailureCode;
+};
 type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
-type QuitResult = { action: "quit"; runId: string; status: string; message: string };
-type ResumeResult = { action: "resume"; runId: string; status: string; message: string };
+type QuitResult = {
+	action: "quit";
+	runId: string;
+	status: string;
+	message: string;
+	code?: WorkflowControlFailureCode;
+};
+type ResumeResult = {
+	action: "resume";
+	runId: string;
+	status: string;
+	message: string;
+	code?: WorkflowControlFailureCode;
+};
 
 /**
  * Outcome of aborting one in-flight `ctx.tool` node with `quit`/`pause`.

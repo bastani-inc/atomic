@@ -174,7 +174,14 @@ export {
 	isWriteToolResult,
 	OVERLAY_ACTIVE_ROW_MARKER,
 	STALE_EXTENSION_CONTEXT_MARKER,
+	WorkflowRunControlError,
+	WorkflowRunControlUnavailableError,
+	WorkflowRunDatabaseError,
+	WorkflowRunNotFoundError,
+	WorkflowRunNotResumableError,
+	WorkflowRunOwnershipError,
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.js";
 export type * from "./core/extensions/workflow-events.js";
+export type * from "./core/extensions/workflow-run-control.js";

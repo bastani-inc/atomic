@@ -16,6 +16,7 @@ import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import { classifyControlError, resumeFailureCode } from "./workflow-control-failure.js";
 import { resolveWorkflowResumeTarget, stageScopedDurableResumeMessage } from "./workflow-durable-resume-command.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
@@ -47,6 +48,7 @@ function controlFailure(action: "pause" | "quit" | "resume", runId: string, erro
 		runId,
 		status: "noop",
 		message: `Failed to ${action} run ${runId}: ${error instanceof Error ? error.message : String(error)}`,
+		code: classifyControlError(error),
 	};
 }
 
@@ -63,6 +65,7 @@ function resumeControlFailure(runId: string, error: unknown, store: Store): Work
 		runId,
 		status: visiblyRunning ? "partial" : "noop",
 		message: `Failed to resume run ${runId}: ${detail}`,
+		...(visiblyRunning ? {} : { code: classifyControlError(error) }),
 	};
 }
 
@@ -213,7 +216,7 @@ export async function workflowQuitAction(
 		};
 	}
 	if (target.kind === "malformed" || target.kind === "not_found") {
-		return { action, runId: target.target, status: "noop", message: target.message };
+		return { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
@@ -230,6 +233,7 @@ export async function workflowQuitAction(
 					`Run ${result.runId} quit and can be resumed with /workflow resume.${cancelledToolSummary(result)}`,
 			};
 		}
+		const benign = result.reason === "already_ended" || result.reason === "no_active_stages";
 		return {
 			action,
 			runId: target.runId,
@@ -240,6 +244,7 @@ export async function workflowQuitAction(
 					: result.reason === "no_active_stages"
 						? `No controllable stages on run ${target.runId}; the run remains active.`
 						: `Run not found: ${target.runId}`,
+			...(benign ? {} : { code: "run_not_found" as const }),
 		};
 	} catch (error) {
 		return controlFailure(action, target.runId, error);
@@ -274,7 +279,7 @@ export async function workflowPauseAction(
 		}
 	}
 	if (target.kind === "malformed" || target.kind === "not_found")
-		return { action, runId: target.target, status: "noop", message: target.message };
+		return { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action, owner);
@@ -300,6 +305,7 @@ export async function workflowPauseAction(
 			runId: stageRunId,
 			status: "noop",
 			message: stageFailureMessage(stageRunId, result.reason, "pause"),
+			...(result.reason === "not_found" ? { code: "run_not_found" as const } : {}),
 		};
 	} catch (error) {
 		return controlFailure(action, stageRunId, error);
@@ -340,6 +346,7 @@ async function resumeDurableShadow(
 		runId: resumed.ok ? resumed.runId : runId,
 		status: resumed.ok ? "running" : "noop",
 		message,
+		...(resumed.ok ? {} : { code: resumeFailureCode(resumed.reason) }),
 	};
 }
 
@@ -363,6 +370,7 @@ async function resumePreparedDurableTarget(
 			runId: resumed.ok ? resumed.runId : runId,
 			status: resumed.ok ? "running" : "noop",
 			message: resumed.message,
+			...(resumed.ok ? {} : { code: resumeFailureCode(resumed.reason) }),
 		};
 	} catch (error) {
 		return controlFailure("resume", runId, error);
@@ -418,7 +426,7 @@ async function resolveExplicitDurableTarget(
 	deps.signal?.throwIfAborted();
 	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, completed);
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
-		return { action: "resume", runId: target, status: "noop", message: resolved.message };
+		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
 	if (resolved.kind === "durable" || resolved.kind === "live" || resolved.kind === "completed")
 		deps.authorize?.(resolved.workflowId);
@@ -436,6 +444,7 @@ async function resolveExplicitDurableTarget(
 			runId: resolved.workflowId,
 			status: "noop",
 			message: `Workflow ${resolved.workflowId} is completed, not resumable.`,
+			code: "not_resumable",
 		};
 	}
 	const durableHandle = getDurableBackend().getWorkflow(target);
@@ -451,6 +460,7 @@ async function resolveExplicitDurableTarget(
 			runId: target,
 			status: "noop",
 			message: `Workflow ${target} has no durable checkpoint or pending prompt progress and is not resumable.`,
+			code: "not_resumable",
 		};
 	}
 	if (durableHandle !== undefined) {
@@ -458,7 +468,13 @@ async function resolveExplicitDurableTarget(
 		if (refusal !== undefined) return refusal;
 		return resumePreparedDurableTarget(target, deps, args.budget);
 	}
-	return { action: "resume", runId: target, status: "noop", message: `Run not found: ${target}` };
+	return {
+		action: "resume",
+		runId: target,
+		status: "noop",
+		message: `Run not found: ${target}`,
+		code: "run_not_found",
+	};
 }
 
 export async function workflowResumeAction(
@@ -482,13 +498,13 @@ export async function workflowResumeAction(
 	if (target.kind === "all")
 		return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
 	if (target.kind === "malformed") {
-		return { action: "resume", runId: target.target, status: "noop", message: target.message };
+		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
 	if (target.kind === "not_found") {
 		if (explicitTarget !== undefined && explicitTarget.length > 0) {
 			return resolveExplicitDurableTarget(explicitTarget, args, deps);
 		}
-		return { action: "resume", runId: target.target, status: "noop", message: target.message };
+		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
 	deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
@@ -519,6 +535,7 @@ export async function workflowResumeAction(
 			runId: target.runId,
 			status: "noop",
 			message: `Workflow ${target.runId} has no durable checkpoint or pending prompt progress and is not resumable.`,
+			code: "not_resumable",
 		};
 	}
 	if (toolControlRegistry.runControl(target.runId) === undefined && !backend.isWorkflowLoadable(target.runId)) {
@@ -535,7 +552,13 @@ export async function workflowResumeAction(
 		deps.signal?.throwIfAborted();
 		if (!backend.isWorkflowLoadable(target.runId)) {
 			store.removeRun(target.runId);
-			return { action: "resume", runId: target.runId, status: "noop", message: `Run not found: ${target.runId}` };
+			return {
+				action: "resume",
+				runId: target.runId,
+				status: "noop",
+				message: `Run not found: ${target.runId}`,
+				code: "run_not_found",
+			};
 		}
 	}
 	let warning: string | undefined;
@@ -544,6 +567,7 @@ export async function workflowResumeAction(
 	const stageRunId = stage.runId ?? target.runId;
 	const run = store.runs().find((candidate) => candidate.id === stageRunId);
 	const hadPausedRunState = run?.status === "paused";
+	const endedBeforeResume = run?.endedAt !== undefined;
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 	const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 	const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
@@ -577,6 +601,7 @@ export async function workflowResumeAction(
 			runId: continuation.ok ? continuation.runId : stageRunId,
 			status: continuation.ok ? "running" : "noop",
 			message,
+			...(continuation.ok ? {} : { code: resumeFailureCode(continuation.reason) }),
 		};
 	}
 	try {
@@ -606,9 +631,24 @@ export async function workflowResumeAction(
 			const noContinuation =
 				result.mode === "not_resumable" || (result.mode === "snapshot" && result.snapshot.status === "blocked");
 			const status = result.mode === "partial" ? "partial" : noContinuation || noPausedProgress ? "noop" : "ok";
-			return { action: "resume", runId: result.runId, status, message };
+			const notResumable =
+				result.mode === "not_resumable" ||
+				(endedBeforeResume && result.mode === "snapshot" && result.snapshot.resumable !== true);
+			return {
+				action: "resume",
+				runId: result.runId,
+				status,
+				message,
+				...(notResumable ? { code: "not_resumable" as const } : {}),
+			};
 		}
-		return { action: "resume", runId: stageRunId, status: "noop", message: `Run not found: ${stageRunId}` };
+		return {
+			action: "resume",
+			runId: stageRunId,
+			status: "noop",
+			message: `Run not found: ${stageRunId}`,
+			code: "run_not_found",
+		};
 	} catch (error) {
 		return resumeControlFailure(stageRunId, error, store);
 	}

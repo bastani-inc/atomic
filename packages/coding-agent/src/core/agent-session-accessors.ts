@@ -1,4 +1,5 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
 export function installAgentSessionAccessors(prototype: AgentSession): void {
@@ -140,6 +141,12 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		extensionRunner: {
 			get() {
 				return this._extensionRunner;
+			},
+		},
+		workflows: {
+			get() {
+				this._workflows ??= new SessionWorkflowsHandle(() => this._extensionRunner?.getWorkflowRunControl());
+				return this._workflows;
 			},
 		},
 	});

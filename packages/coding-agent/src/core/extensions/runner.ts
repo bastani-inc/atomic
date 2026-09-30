@@ -126,6 +126,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
+import type { SessionWorkflows } from "./workflow-run-control.js";
 
 export type {
 	ExtensionErrorListener,
@@ -205,6 +206,10 @@ export class ExtensionRunner {
 		resolver: import("../child-session-options.ts").ChildSessionOptionsResolver | undefined,
 	): void {
 		this.runtime.getChildSessionOptions = resolver;
+	}
+	/** The run-control implementation registered by the current extension generation, if any. */
+	getWorkflowRunControl(): SessionWorkflows | undefined {
+		return this.runtime.workflowRunControlHub.current();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		return {

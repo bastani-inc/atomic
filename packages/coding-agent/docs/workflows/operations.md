@@ -372,6 +372,8 @@ This reopens only the conversation. The workflow DAG and terminal stage snapshot
 
 Workflow stages and their subagent transcripts are excluded from ordinary `/resume`, `atomic -r`, `--continue`, and global history. Use workflow inspection and resume commands for stages; terminal subagents remain transcript artifacts, not resumable children. An explicit `--session` file path can still open a stage transcript. Older unmarked workflow sessions may remain in ordinary history.
 
+Embedding hosts can run the same pause, quit, and resume actions programmatically with `session.workflows`; see [Workflow run control](/sdk#workflow-run-control).
+
 ## Workflow activity for extensions
 
 Extensions can subscribe with `ctx.observeWorkflowActivity(observer)` and use the typed `workflow_lifecycle`, `workflow_activity_changed`, `workflow_stage_completed`, and `workflow_heartbeat` hooks. See [Workflow activity and lifecycle hooks](/extensions/events#workflow-activity-and-lifecycle-hooks) for the public types and subscription example.

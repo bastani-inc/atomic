@@ -2,8 +2,10 @@ import type {
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	ModelRegistry,
+	SessionWorkflows,
 	ToolDefinition,
 	WorkflowActivityPublisher,
+	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
@@ -145,6 +147,11 @@ export interface PiExecuteContext extends PiModelContext {
 	[key: string]: unknown;
 }
 
+export type PiEventContext = PiCommandContext & {
+	sessionManager?: SessionManager;
+	hasUI?: boolean;
+};
+
 export interface WorkflowResourceInfo {
 	readonly path: string;
 	readonly enabled: boolean;
@@ -164,6 +171,7 @@ export interface ExtensionAPI {
 	/** @internal Stable ownership identity across host generation replacement. */
 	readonly lifecycleScope?: object;
 	registerWorkflowActivityPublisher?: () => WorkflowActivityPublisher;
+	registerWorkflowRunControl?: (control: SessionWorkflows) => WorkflowRunControlRegistration;
 	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
 	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
@@ -211,10 +219,7 @@ export interface ExtensionAPI {
 		event: string,
 		handler: (
 			event?: unknown,
-			ctx?: PiCommandContext & {
-				sessionManager?: SessionManager;
-				hasUI?: boolean;
-			},
+			ctx?: PiEventContext,
 			// `unknown`: a handler may return a result object, a promise of one, or
 			// nothing at all. The host narrows what it actually consumes.
 		) => unknown,

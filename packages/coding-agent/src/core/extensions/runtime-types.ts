@@ -23,6 +23,7 @@ import type {
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 import type { WorkflowActivityHub } from "./workflow-activity-hub.js";
+import type { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 export interface RegisteredTool {
 	definition: ToolDefinition;
@@ -98,6 +99,8 @@ export interface ExtensionRuntimeState {
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Shared by extension loading and its runner generation. */
 	workflowActivityHub: WorkflowActivityHub;
+	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
+	workflowRunControlHub: WorkflowRunControlHub;
 	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
 	mcpServerRegistry: McpServerRegistry;
 	flagValues: Map<string, boolean | string>;

@@ -41,6 +41,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
+import type { SessionWorkflows } from "./workflow-run-control.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -189,6 +190,11 @@ export function createExtensionAPI(
 			assertActive();
 			const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 			return { ...publisher, dispose: trackRelease(() => publisher.dispose()) };
+		},
+		registerWorkflowRunControl(control: SessionWorkflows) {
+			assertActive();
+			const registration = runtime.workflowRunControlHub.register(control);
+			return { dispose: trackRelease(() => registration.dispose()) };
 		},
 		on(event: string, handler: HandlerFn): () => void {
 			assertActive();

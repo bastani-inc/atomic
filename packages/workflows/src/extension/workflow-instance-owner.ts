@@ -4,6 +4,13 @@ import type { PiExecuteContext } from "./public-types.js";
 
 const anonymousCallers = new WeakMap<object, string>();
 
+export class WorkflowInstanceOwnershipError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "WorkflowInstanceOwnershipError";
+	}
+}
+
 /** Session IDs survive host replacement; unattributed callers retain object-local authority only. */
 export function workflowCaller(ctx: PiExecuteContext): string {
 	const sessionId = ctx.sessionId ?? ctx.sessionManager?.getSessionId?.();
@@ -30,9 +37,11 @@ export function assertWorkflowInstanceOwner(id: string, ctx: PiExecuteContext, s
 		const modelOwner = durable?.modelOwner ?? local?.modelOwner;
 		if (modelOwner !== undefined) {
 			if (modelOwner !== workflowCaller(ctx))
-				throw new Error("Workflow instance belongs to another caller/session.");
+				throw new WorkflowInstanceOwnershipError("Workflow instance belongs to another caller/session.");
 		} else if ((durable?.origin ?? local?.origin) === "agent") {
-			throw new Error("Workflow instance ownership is unavailable; another caller cannot assume authority.");
+			throw new WorkflowInstanceOwnershipError(
+				"Workflow instance ownership is unavailable; another caller cannot assume authority.",
+			);
 		}
 		const parentId = durable?.rootWorkflowId ?? local?.parentRunId;
 		if (parentId !== undefined) assertOne(parentId);
