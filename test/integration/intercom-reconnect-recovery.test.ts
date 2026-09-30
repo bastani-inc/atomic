@@ -249,14 +249,16 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-/** The live broker that wrote its pid file after `previous` did, or the first live broker when omitted. */
+/** The live broker that replaced `previous` (a different pid, or a newer pid-file write for a recycled pid), or the first live broker when omitted. */
 async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity> {
 	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const current = readBrokerIdentity();
 		if (
 			current !== undefined &&
-			(previous === undefined || current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs) &&
+			(previous === undefined ||
+				current.pid !== previous.pid ||
+				current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs) &&
 			processIsAlive(current.pid)
 		) {
 			return current;
