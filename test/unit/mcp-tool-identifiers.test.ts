@@ -77,3 +77,24 @@ test("rejects normalized server collisions and lets config override contributed 
 		removeTempDirectory(root);
 	}
 });
+
+test("MCP name assignment retains malformed metadata guards (#10239)", () => {
+	const tools = [{ name: "valid" }, null] as never;
+	const resources = [{ uri: "missing-name" }, null] as never;
+	const live = buildToolMetadata(tools, resources, {}, "docs", "server");
+	assert.deepEqual(live.failedTools, ["(unnamed)"]);
+	assert.deepEqual(
+		live.metadata.map((tool) => tool.name),
+		["docs_valid"],
+	);
+	const cached = reconstructToolMetadata(
+		"docs",
+		{ configHash: "", cachedAt: Date.now(), tools, resources },
+		"server",
+		{},
+	);
+	assert.deepEqual(
+		cached.map((tool) => tool.name),
+		["docs_valid"],
+	);
+});

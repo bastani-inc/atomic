@@ -122,8 +122,8 @@ export function reconstructToolMetadata(
 ): ToolMetadata[] {
   const metadata: ToolMetadata[] = [];
   const names = assignToolNames([
-    ...(entry.tools ?? []).map((tool) => tool.name),
-    ...(definition.exposeResources !== false ? (entry.resources ?? []).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
+    ...(entry.tools ?? []).filter((tool) => tool?.name).map((tool) => tool.name),
+    ...(definition.exposeResources !== false ? (entry.resources ?? []).filter((resource) => resource?.name && resource?.uri).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
   ], serverName, prefix);
 
   for (const tool of entry.tools ?? []) {

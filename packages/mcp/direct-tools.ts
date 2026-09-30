@@ -58,8 +58,8 @@ export function resolveDirectTools(
     const serverCache = cache.servers[serverName];
     if (!serverCache || !isServerCacheValid(serverCache, definition)) continue;
     const names = assignToolNames([
-      ...(serverCache.tools ?? []).map((tool) => tool.name),
-      ...(definition.exposeResources !== false ? (serverCache.resources ?? []).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
+      ...(serverCache.tools ?? []).filter((tool) => tool?.name).map((tool) => tool.name),
+      ...(definition.exposeResources !== false ? (serverCache.resources ?? []).filter((resource) => resource?.name && resource?.uri).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
     ], serverName, prefix);
 
     let toolFilter: true | string[] | false = false;
@@ -81,6 +81,7 @@ export function resolveDirectTools(
     if (!toolFilter) continue;
 
     for (const tool of serverCache.tools ?? []) {
+      if (!tool?.name) continue;
       if (toolFilter !== true && !toolFilter.includes(tool.name)) continue;
       if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) continue;
       const prefixedName = names.get(tool.name)!;
@@ -106,6 +107,7 @@ export function resolveDirectTools(
 
     if (definition.exposeResources !== false) {
       for (const resource of serverCache.resources ?? []) {
+        if (!resource?.name || !resource?.uri) continue;
         const baseName = `get_${resourceNameToToolName(resource.name)}`;
         if (toolFilter !== true && !toolFilter.includes(baseName)) continue;
         if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) continue;

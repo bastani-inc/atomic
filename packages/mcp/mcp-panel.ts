@@ -1,4 +1,5 @@
 import { matchesKey } from "@earendil-works/pi-tui";
+import { authorizationNotice } from "./authorization-notice.js";
 import type { MetadataCache } from "./metadata-cache.js";
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js";
 import {
@@ -278,7 +279,10 @@ class McpPanel {
     this.authNotice = `Authenticating ${server.name}...`;
     this.tui.requestRender();
 
-    this.callbacks.authenticate(server.name).then((result) => {
+    this.callbacks.authenticate(server.name, (url) => {
+      this.authNotice = authorizationNotice(url);
+      this.tui.requestRender();
+    }).then((result) => {
       server.connectionStatus = this.callbacks.getConnectionStatus(server.name);
       this.authNotice = result.ok
         ? `OAuth finished for ${server.name}. Run reconnect if it is still idle.`

@@ -206,3 +206,35 @@ test("MCP browser fallback retains an interpolated path word using the attempt s
 		removeTempDirectory(dir);
 	}
 });
+
+test("joined MCP sign-ins receive the pending authorization URL (#10186)", async () => {
+	const dir = makeTempDirectory("mcp-browser-join-");
+	vi.stubEnv("MCP_OAUTH_DIR", dir);
+	const notices: string[] = [];
+	let opened!: () => void;
+	const opening = new Promise<void>((resolve) => {
+		opened = resolve;
+	});
+	let failOpen!: (error: Error) => void;
+	browser.open.mockImplementation(() => {
+		opened();
+		return new Promise<void>((_resolve, reject) => {
+			failOpen = reject;
+		});
+	});
+	const first = authenticate("joined", "https://example.com/mcp", undefined, (url) => notices.push(`first:${url}`));
+	const failure = assert.rejects(first, /Could not open browser/);
+	try {
+		await opening;
+		const second = authenticate("joined", "https://example.com/mcp", undefined, (url) =>
+			notices.push(`second:${url}`),
+		);
+		assert.equal(first, second);
+		assert.deepEqual(notices, [`first:${browser.url}`, `second:${browser.url}`]);
+		failOpen(new Error("browser unavailable"));
+		await failure;
+	} finally {
+		await shutdownOAuth();
+		removeTempDirectory(dir);
+	}
+});

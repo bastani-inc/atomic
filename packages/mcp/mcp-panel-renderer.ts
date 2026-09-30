@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   fg,
   rainbowProgress,
@@ -224,7 +224,7 @@ export function renderMcpPanel(context: McpPanelRenderContext): string[] {
       lines.push(emptyRow());
     }
     if (context.authNotice) {
-      lines.push(row(fg(t.needsAuth, italic(context.authNotice))));
+      for (const line of new Text(fg(t.needsAuth, context.authNotice), 0, 0).render(Math.max(1, innerW - 1))) lines.push(row(line));
       lines.push(emptyRow());
     }
   }

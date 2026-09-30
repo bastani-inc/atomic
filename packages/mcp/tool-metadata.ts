@@ -16,8 +16,8 @@ export function buildToolMetadata(
   const metadata: ToolMetadata[] = [];
   const failedTools: string[] = [];
   const names = assignToolNames([
-    ...tools.map((tool) => tool.name),
-    ...(definition.exposeResources !== false ? resources.map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
+    ...tools.filter((tool) => tool?.name).map((tool) => tool.name),
+    ...(definition.exposeResources !== false ? resources.filter((resource) => resource?.name && resource?.uri).map((resource) => `get_${resourceNameToToolName(resource.name)}`) : []),
   ], serverName, prefix);
 
   for (const tool of tools) {
@@ -47,6 +47,7 @@ export function buildToolMetadata(
 
   if (definition.exposeResources !== false) {
     for (const resource of resources) {
+      if (!resource?.name || !resource?.uri) continue;
       const baseName = `get_${resourceNameToToolName(resource.name)}`;
       if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) {
         continue;
