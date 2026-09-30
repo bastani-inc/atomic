@@ -2,6 +2,7 @@ import type { Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { EventBus } from "./event-bus.js";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { McpServerContribution } from "./mcp-servers.ts";
 import type { PathMetadata, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
@@ -54,6 +55,9 @@ export interface ResourceLoaderReloadTransaction {
 
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
+	getWorkflowResources?(): ResolvedResource[];
+	refreshWorkflowResources?(): Promise<ResolvedResource[]>;
+	getMcpServerContributions?(): McpServerContribution[];
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getSkillCatalog?(): SkillCatalog;
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };

@@ -68,6 +68,18 @@ class MandatoryResourceLoader implements ResourceLoader {
 		return this.extensionsResult;
 	}
 
+	getWorkflowResources() {
+		return this.delegate.getWorkflowResources?.() ?? [];
+	}
+
+	async refreshWorkflowResources() {
+		return (await this.delegate.refreshWorkflowResources?.()) ?? this.getWorkflowResources();
+	}
+
+	getMcpServerContributions() {
+		return this.delegate.getMcpServerContributions?.() ?? [];
+	}
+
 	async createSessionLoader(): Promise<ResourceLoader> {
 		const scope = sessionLifecycleCreation.getStore()!.scope;
 		if (sessionLifecycleScopes.get(this.extensionsResult.runtime) === scope) return this;

@@ -5,6 +5,8 @@
 ### Fixed
 
 - OpenAI's **Sign in with ChatGPT** login now shows a redirect-URL paste input, allowing authentication from remote machines without a reachable local browser callback.
+- SDK-created sessions now discover package-provided workflows from their resource loader, including after workflow reload, while preserving project trust and custom loaders without workflow resources ([#3372](https://github.com/bastani-inc/atomic/issues/3372)).
+- SDK-created sessions now retain package-contributed MCP servers when adding the shipped MCP extension to a custom resource loader ([#3372](https://github.com/bastani-inc/atomic/issues/3372)).
 
 ## [0.9.25-alpha.1] - 2026-09-29
 

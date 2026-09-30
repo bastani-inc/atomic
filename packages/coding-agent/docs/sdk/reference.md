@@ -666,6 +666,12 @@ const themes = loader.getThemes();
 const contextFiles = loader.getAgentsFiles().agentsFiles;
 ```
 
+Package workflows returned by `DefaultResourceLoader` are available through the SDK session's `workflow` tool, even when the factory adds the shipped workflows extension. Use the tool's `reload` action to pick up added or removed package workflows without recreating the session. Project packages still require project trust; workflow reload does not grant it.
+
+Custom `ResourceLoader` implementations can optionally provide `getWorkflowResources()` returning `ResolvedResource[]` and `refreshWorkflowResources()` returning `Promise<ResolvedResource[]>`. Refresh should return the current trust-filtered resources. If refresh is omitted, workflow reload uses the getter's current snapshot. If both are omitted, shipped workflows and normal workflow-directory discovery remain available.
+
+Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
+
 ## Return Value
 
 `createAgentSession()` returns:
