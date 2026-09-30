@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import {
+	WorkflowRunControlError,
 	WorkflowRunControlUnavailableError,
 	WorkflowRunDatabaseError,
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowStageAmbiguousError,
+	WorkflowStageNotFoundError,
+	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
 import { Client, Pool } from "pg";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -111,6 +115,10 @@ function setup(sessionId: string = SESSION_ID) {
 		execute,
 		control: createSessionRunControl({ execute, context: () => sessionContext(sessionId), store }),
 	};
+}
+
+function toolContext(sessionId: string = SESSION_ID): never {
+	return { sessionId, sessionManager: { getSessionId: () => sessionId } } as never;
 }
 
 function run(id: string, overrides: Partial<RunSnapshot> = {}): RunSnapshot {
@@ -437,17 +445,19 @@ describe("session workflow run control", () => {
 		const { control } = setup();
 		const runId = testRunId("session-run-control-database-reset");
 
-		for (const operation of [
-			() => control.getRun(runId),
-			() => control.getStages(runId),
-			() => control.pause(runId),
-			() => control.quit(runId),
-		]) {
+		for (const operation of [() => control.getRun(runId), () => control.getStages(runId)]) {
 			const error = await rejection(operation());
 			assert.ok(error instanceof WorkflowRunDatabaseError, error.message);
 			assert.equal(error.code, "WORKFLOW_RUN_DATABASE");
 			assert.equal(error.runId, runId);
 			assert.equal(error.cause, failure);
+		}
+		for (const operation of [() => control.pause(runId), () => control.quit(runId)]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowRunDatabaseError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_DATABASE");
+			assert.equal(error.runId, runId);
+			assert.match(error.message, new RegExp(failure.message));
 		}
 	});
 
@@ -522,17 +532,327 @@ describe("session workflow run control", () => {
 		assert.equal((await control.getRun(runId)).status, "completed");
 	});
 
-	test.sequential("forwards stage and message options to the workflow tool (#3377)", async () => {
-		const runId = testRunId("session-run-control-options");
+	test.sequential("rejects a stage that does not exist with WorkflowStageNotFoundError (#3377)", async () => {
+		const runId = testRunId("session-run-control-stage-missing");
 		store.recordRunStart(run(runId));
 		const { control } = setup();
 
-		const pause = await control.pause(runId, { stageId: "missing-stage" });
-		assert.equal(pause.status, "noop");
-		assert.match(pause.message, /Stage not found in run .*missing-stage/);
-		const resume = await control.resume(runId, { stageId: "missing-stage", message: "continue" });
-		assert.equal(resume.status, "noop");
-		assert.match(resume.message, /Stage not found in run .*missing-stage/);
+		for (const operation of [
+			() => control.pause(runId, { stageId: "missing-stage" }),
+			() => control.resume(runId, { stageId: "missing-stage", message: "continue" }),
+		]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowStageNotFoundError, error.message);
+			assert.equal(error.code, "WORKFLOW_STAGE_NOT_FOUND");
+			assert.equal(error.runId, runId);
+			assert.match(error.message, /Stage not found in run .*missing-stage/);
+		}
+	});
+
+	test.sequential("rejects an ambiguous stage with WorkflowStageAmbiguousError (#3377)", async () => {
+		const runId = testRunId("session-run-control-stage-ambiguous");
+		store.recordRunStart(run(runId));
+		for (const id of ["review-a", "review-b"]) {
+			store.recordStageStart(runId, { id, name: "review", status: "running", parentIds: [], toolEvents: [] });
+		}
+		const { control } = setup();
+
+		for (const operation of [
+			() => control.pause(runId, { stageId: "review" }),
+			() => control.resume(runId, { stageId: "review" }),
+		]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowStageAmbiguousError, error.message);
+			assert.equal(error.code, "WORKFLOW_STAGE_AMBIGUOUS");
+			assert.equal(error.runId, runId);
+			assert.match(error.message, /Ambiguous stage identifier "review"/);
+		}
+	});
+
+	test.sequential("rejects a pause of a stage with no control handle as WorkflowStageNotFoundError (#3377)", async () => {
+		const runId = testRunId("session-run-control-stage-unregistered");
+		store.recordRunStart(run(runId));
+		store.recordStageStart(runId, { id: "review", name: "review", status: "running", parentIds: [], toolEvents: [] });
+		const { control } = setup();
+
+		const error = await rejection(control.pause(runId, { stageId: "review" }));
+
+		assert.ok(error instanceof WorkflowStageNotFoundError, error.message);
+		assert.equal(error.runId, runId);
+	});
+
+	test.sequential("rejects a stage-scoped resume of a durable run with WorkflowStageResumeUnsupportedError (#3377)", async () => {
+		const runId = testRunId("session-run-control-stage-durable-resume");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 3,
+		});
+		const { control } = setup();
+
+		const error = await rejection(control.resume(runId, { stageId: "review" }));
+
+		assert.ok(error instanceof WorkflowStageResumeUnsupportedError, error.message);
+		assert.equal(error.code, "WORKFLOW_STAGE_RESUME_UNSUPPORTED");
+		assert.equal(error.runId, runId);
+		assert.match(error.message, /Stage-scoped resume is not supported for durable workflow/);
+	});
+
+	test.sequential("resolves pausing an already paused run as an uncoded noop (#3377)", async () => {
+		const runId = testRunId("session-run-control-already-paused");
+		const stageId = "review";
+		let controlStatus: StageControlStatus = "running";
+		store.recordRunStart(run(runId));
+		store.recordStageStart(runId, { id: stageId, name: stageId, status: "running", parentIds: [], toolEvents: [] });
+		stageControlRegistry.register(
+			stageHandle({
+				runId,
+				stageId,
+				status: () => controlStatus,
+				pause: async () => {
+					controlStatus = "paused";
+				},
+				resume: async () => undefined,
+			}),
+		);
+		const { execute, control } = setup();
+		assert.equal((await control.pause(runId)).status, "paused");
+
+		const again = await control.pause(runId);
+		assert.equal(again.status, "noop");
+		assert.equal(again.runId, runId);
+		const raw = await execute({ action: "pause", runId }, toolContext());
+		assert.equal(raw.action, "pause");
+		assert.equal("code" in raw, false);
+	});
+
+	test.sequential("reports a batch pause that stopped only some runs as partial with the failed run ids (#3377)", async () => {
+		const pausedId = testRunId("session-run-control-batch-paused");
+		const failedId = testRunId("session-run-control-batch-failed");
+		let pausedStatus: StageControlStatus = "running";
+		for (const runId of [pausedId, failedId]) {
+			store.recordRunStart(run(runId));
+			store.recordStageStart(runId, {
+				id: "review",
+				name: "review",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+		}
+		stageControlRegistry.register(
+			stageHandle({
+				runId: pausedId,
+				stageId: "review",
+				status: () => pausedStatus,
+				pause: async () => {
+					pausedStatus = "paused";
+				},
+				resume: async () => undefined,
+			}),
+		);
+		stageControlRegistry.register(
+			stageHandle({
+				runId: failedId,
+				stageId: "review",
+				status: () => "running",
+				pause: async () => {
+					throw new Error("stage refused to pause");
+				},
+				resume: async () => undefined,
+			}),
+		);
+		const { control } = setup();
+
+		const outcome = await control.pause({ all: true });
+
+		assert.equal(outcome.action, "pause");
+		assert.equal(outcome.runId, "--all");
+		assert.equal(outcome.status, "partial");
+		assert.deepEqual(outcome.failedRuns, [
+			{
+				runId: failedId,
+				reason: "pause_failed",
+				message: "stage refused to pause",
+			},
+		]);
+		assert.match(
+			outcome.message,
+			new RegExp(`Paused 1 run\\(s\\); failed to pause 1 run\\(s\\).*${failedId}: pause_failed`),
+		);
+		assert.equal((await control.getRun(pausedId)).status, "paused");
+	});
+
+	test.sequential("rejects a batch pause that stopped no run with the failed run ids (#3377)", async () => {
+		const failedId = testRunId("session-run-control-batch-none");
+		store.recordRunStart(run(failedId));
+		store.recordStageStart(failedId, {
+			id: "review",
+			name: "review",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		stageControlRegistry.register(
+			stageHandle({
+				runId: failedId,
+				stageId: "review",
+				status: () => "running",
+				pause: async () => {
+					throw new Error("stage refused to pause");
+				},
+				resume: async () => undefined,
+			}),
+		);
+		const { control } = setup();
+
+		const error = await rejection(control.pause({ all: true }));
+
+		assert.ok(error instanceof WorkflowRunControlError, error.message);
+		assert.equal(error.code, "WORKFLOW_RUN_CONTROL_FAILED");
+		assert.deepEqual(
+			error.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[failedId, "pause_failed"]],
+		);
+		assert.match(error.message, new RegExp(failedId));
+	});
+
+	test.sequential("resolves a batch pause of runs with no controllable stage as a noop naming them (#3377)", async () => {
+		const idleId = testRunId("session-run-control-batch-idle");
+		store.recordRunStart(run(idleId));
+		const { control } = setup();
+
+		const outcome = await control.pause({ all: true });
+
+		assert.equal(outcome.status, "noop");
+		assert.deepEqual(
+			outcome.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[idleId, "no_active_stages"]],
+		);
+	});
+
+	test.sequential("reports a batch quit that stopped only some runs as partial with the failed run ids (#3377)", async () => {
+		const quitId = testRunId("session-run-control-batch-quit-ok");
+		const failedId = testRunId("session-run-control-batch-quit-failed");
+		let quitStatus: StageControlStatus = "running";
+		for (const runId of [quitId, failedId]) {
+			store.recordRunStart(run(runId));
+			store.recordStageStart(runId, {
+				id: "review",
+				name: "review",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+		}
+		stageControlRegistry.register(
+			stageHandle({
+				runId: quitId,
+				stageId: "review",
+				status: () => quitStatus,
+				pause: async () => {
+					quitStatus = "paused";
+				},
+				resume: async () => undefined,
+			}),
+		);
+		stageControlRegistry.register(
+			stageHandle({
+				runId: failedId,
+				stageId: "review",
+				status: () => "running",
+				pause: async () => {
+					throw new Error("stage refused to pause");
+				},
+				resume: async () => undefined,
+			}),
+		);
+		const { control } = setup();
+
+		const outcome = await control.quit({ all: true });
+
+		assert.equal(outcome.action, "quit");
+		assert.equal(outcome.status, "partial");
+		assert.deepEqual(
+			outcome.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[failedId, "pause_failed"]],
+		);
+		assert.match(outcome.message, new RegExp(`failed to quit 1 run\\(s\\).*${failedId}: pause_failed`));
+	});
+
+	test.sequential("rejects a batch quit that stopped no run with the failed run ids (#3377)", async () => {
+		const failedId = testRunId("session-run-control-batch-quit-none");
+		store.recordRunStart(run(failedId));
+		store.recordStageStart(failedId, {
+			id: "review",
+			name: "review",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		stageControlRegistry.register(
+			stageHandle({
+				runId: failedId,
+				stageId: "review",
+				status: () => "running",
+				pause: async () => {
+					throw new Error("stage refused to pause");
+				},
+				resume: async () => undefined,
+			}),
+		);
+		const { control } = setup();
+
+		const error = await rejection(control.quit({ all: true }));
+
+		assert.ok(error instanceof WorkflowRunControlError, error.message);
+		assert.equal(error.code, "WORKFLOW_RUN_CONTROL_FAILED");
+		assert.deepEqual(
+			error.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[failedId, "pause_failed"]],
+		);
+	});
+
+	test.sequential("returns a structured database_unavailable result when durable inspection fails for an unknown run (#3377)", async () => {
+		const runId = testRunId("session-run-control-inspection-outage");
+		setDurableBackend(new FailingInspectionBackend(new DbosNotReadyError()));
+		const { execute } = setup();
+
+		for (const action of ["pause", "quit"] as const) {
+			const result = await execute({ action, runId }, toolContext());
+			assert.equal(result.action, action);
+			assert.equal("runId" in result ? result.runId : undefined, runId);
+			assert.equal("status" in result ? result.status : undefined, "noop");
+			assert.equal("code" in result ? result.code : undefined, "database_unavailable");
+			assert.match("message" in result ? result.message : "", new RegExp(`Failed to ${action} run ${runId}`));
+		}
+	});
+
+	test.sequential("still reports the foreign owner when durable inspection succeeds (#3377)", async () => {
+		const runId = testRunId("session-run-control-inspection-healthy");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 3,
+			ownerExecutorId: "atomic-other-process",
+		});
+		const { execute } = setup();
+
+		for (const action of ["pause", "quit"] as const) {
+			const result = await execute({ action, runId }, toolContext());
+			assert.equal("status" in result ? result.status : undefined, "noop");
+			assert.equal("code" in result ? result.code : undefined, "owned_elsewhere");
+		}
 	});
 
 	test.sequential("rejects with WorkflowRunControlUnavailableError before the session starts (#3377)", async () => {

@@ -2,6 +2,7 @@ import {
 	type SessionWorkflows,
 	type WorkflowRunAllTarget,
 	WorkflowRunControlError,
+	type WorkflowRunControlFailedRun,
 	type WorkflowRunControlOutcome,
 	type WorkflowRunControlStatus,
 	WorkflowRunControlUnavailableError,
@@ -9,6 +10,9 @@ import {
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowStageAmbiguousError,
+	WorkflowStageNotFoundError,
+	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
@@ -38,10 +42,21 @@ function executeContext(ctx: PiEventContext | undefined): PiExecuteContext {
 	};
 }
 
-function errorOptions(runId: string | undefined, cause?: Error): { runId?: string; cause?: Error } {
+interface ControlErrorOptions {
+	runId?: string;
+	cause?: Error;
+	failedRuns?: readonly WorkflowRunControlFailedRun[];
+}
+
+function errorOptions(
+	runId: string | undefined,
+	cause?: Error,
+	failedRuns?: readonly WorkflowRunControlFailedRun[],
+): ControlErrorOptions {
 	return {
 		...(runId === undefined || runId === "--all" ? {} : { runId }),
 		...(cause === undefined ? {} : { cause }),
+		...(failedRuns === undefined ? {} : { failedRuns }),
 	};
 }
 
@@ -50,8 +65,9 @@ function failure(
 	message: string,
 	runId: string | undefined,
 	cause?: Error,
+	failedRuns?: readonly WorkflowRunControlFailedRun[],
 ): WorkflowRunControlError {
-	const options = errorOptions(runId, cause);
+	const options = errorOptions(runId, cause, failedRuns);
 	switch (code) {
 		case "run_not_found":
 			return new WorkflowRunNotFoundError(message, options);
@@ -59,6 +75,12 @@ function failure(
 			return new WorkflowRunNotResumableError(message, options);
 		case "owned_elsewhere":
 			return new WorkflowRunOwnershipError(message, options);
+		case "stage_not_found":
+			return new WorkflowStageNotFoundError(message, options);
+		case "stage_ambiguous":
+			return new WorkflowStageAmbiguousError(message, options);
+		case "stage_resume_unsupported":
+			return new WorkflowStageResumeUnsupportedError(message, options);
 		case "database_unavailable":
 			return new WorkflowRunDatabaseError(message, options);
 		case "control_failed":
@@ -91,7 +113,15 @@ function controlOutcome(result: WorkflowToolResult): WorkflowRunControlOutcome {
 	if (result.action !== "pause" && result.action !== "quit" && result.action !== "resume") {
 		throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
 	}
-	if ("code" in result && result.code !== undefined) throw failure(result.code, result.message, result.runId);
+	if ("code" in result && result.code !== undefined) {
+		throw failure(
+			result.code,
+			result.message,
+			result.runId,
+			undefined,
+			"failedRuns" in result ? result.failedRuns : undefined,
+		);
+	}
 	return { ...result, status: controlStatus(result.status, result.runId) };
 }
 

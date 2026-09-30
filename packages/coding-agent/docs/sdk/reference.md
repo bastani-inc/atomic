@@ -854,10 +854,14 @@ type SessionWorkflows
 type WorkflowRunSummary
 type WorkflowRunDetail
 type WorkflowRunControlOutcome
+type WorkflowRunControlFailedRun
 WorkflowRunControlError
 WorkflowRunNotFoundError
 WorkflowRunOwnershipError
 WorkflowRunNotResumableError
+WorkflowStageNotFoundError
+WorkflowStageAmbiguousError
+WorkflowStageResumeUnsupportedError
 WorkflowRunDatabaseError
 WorkflowRunControlUnavailableError
 

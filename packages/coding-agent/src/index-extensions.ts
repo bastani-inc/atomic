@@ -180,6 +180,9 @@ export {
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowStageAmbiguousError,
+	WorkflowStageNotFoundError,
+	WorkflowStageResumeUnsupportedError,
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.js";

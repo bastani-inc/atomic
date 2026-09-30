@@ -16,7 +16,12 @@ import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import { classifyControlError, resumeFailureCode } from "./workflow-control-failure.js";
+import {
+	classifyControlError,
+	resumeFailureCode,
+	type WorkflowControlFailedRun,
+	type WorkflowControlFailureCode,
+} from "./workflow-control-failure.js";
 import { resolveWorkflowResumeTarget, stageScopedDurableResumeMessage } from "./workflow-durable-resume-command.js";
 import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -51,7 +56,12 @@ async function foreignRunFailure(
 	guard: WorkflowForeignRunGuard | undefined,
 ): Promise<WorkflowToolResult | undefined> {
 	if (guard === undefined || !isFullRunId(target)) return undefined;
-	const durable = await guard.getRuntime().inspectDurableWorkflow(target);
+	let durable: Awaited<ReturnType<ExtensionRuntime["inspectDurableWorkflow"]>>;
+	try {
+		durable = await guard.getRuntime().inspectDurableWorkflow(target);
+	} catch (error) {
+		return controlFailure(action, target, error);
+	}
 	if (durable.kind !== "found") return undefined;
 	const runId = durable.detail.runId;
 	const foreign = (message: string): WorkflowToolResult => ({
@@ -128,17 +138,55 @@ export async function workflowReloadAction(
 	}
 }
 
-function bulkQuitFailureMessage(results: Awaited<ReturnType<typeof quitAllRuns>>): string {
+type BulkRunResult =
+	| { readonly ok: true; readonly runId: string; readonly message?: string }
+	| { readonly ok: false; readonly runId: string; readonly reason: string; readonly message?: string };
+
+function bulkFailedRuns(results: readonly BulkRunResult[]): WorkflowControlFailedRun[] {
+	return results.flatMap((result) =>
+		result.ok
+			? []
+			: [
+					{
+						runId: result.runId,
+						reason: result.reason,
+						...(result.message === undefined ? {} : { message: result.message }),
+					},
+				],
+	);
+}
+
+function bulkFailureMessage<T extends BulkRunResult>(
+	verb: "Paused" | "Quit",
+	action: "pause" | "quit",
+	results: readonly T[],
+	describeSuccess: (result: Extract<T, { readonly ok: true }>) => string,
+): string {
 	const successes = results.filter((result) => result.ok).length;
 	const failures = results.length - successes;
 	const outcomes = results
 		.map((result) =>
 			result.ok
-				? (result.message ?? `${result.runId}: quit${abandonedToolSuffix(result.abandonedTools)}`)
-				: `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
+				? describeSuccess(result as Extract<T, { readonly ok: true }>)
+				: `${result.runId}: ${result.reason}${result.message === undefined ? "" : ` (${result.message})`}`,
 		)
 		.join(", ");
-	return `${successes > 0 ? `Quit ${successes} run(s); ` : ""}failed to quit ${failures} run(s); outcomes: ${outcomes}.`;
+	return `${successes > 0 ? `${verb} ${successes} run(s); ` : ""}failed to ${action} ${failures} run(s); outcomes: ${outcomes}.`;
+}
+
+/**
+ * Status for a batch control: any failure downgrades an otherwise `paused` result to `partial`. When nothing
+ * succeeded, only failures that leave a run active, other than one with no controllable stage, carry a code.
+ */
+function bulkFailureStatus(
+	succeeded: number,
+	failedRuns: readonly WorkflowControlFailedRun[],
+): { status: "partial" | "noop"; code?: WorkflowControlFailureCode } {
+	if (succeeded > 0) return { status: "partial" };
+	const refused = failedRuns.some(
+		(failed) => failed.reason !== "already_ended" && failed.reason !== "no_active_stages",
+	);
+	return refused ? { status: "noop", code: "control_failed" } : { status: "noop" };
 }
 
 /** Machine-readable identities also appear in the quit result; this is the readable copy. */
@@ -233,19 +281,31 @@ export async function workflowQuitAction(
 		const results = await quitAllRuns({ ...owner, actor: "agent" });
 		const successes = results.filter((result) => result.ok);
 		const quitCount = successes.length;
-		const failures = results.filter((result) => !result.ok);
+		const failedRuns = bulkFailedRuns(results);
+		if (failedRuns.length > 0) {
+			return {
+				action,
+				runId: "--all",
+				...bulkFailureStatus(quitCount, failedRuns),
+				message: bulkFailureMessage(
+					"Quit",
+					action,
+					results,
+					(result) => result.message ?? `${result.runId}: quit${abandonedToolSuffix(result.abandonedTools)}`,
+				),
+				failedRuns,
+			};
+		}
 		return {
 			action,
 			runId: "--all",
-			status: failures.length > 0 ? (quitCount > 0 ? "partial" : "noop") : quitCount > 0 ? "paused" : "noop",
+			status: quitCount > 0 ? "paused" : "noop",
 			message:
-				failures.length > 0
-					? bulkQuitFailureMessage(results)
-					: quitCount > 0
-						? successes.some((result) => result.message !== undefined)
-							? successes.map((result) => result.message ?? `Run ${result.runId} quit.`).join("\n")
-							: `Quit ${quitCount} run(s); resume with /workflow resume.`
-						: "No in-flight runs to quit.",
+				quitCount > 0
+					? successes.some((result) => result.message !== undefined)
+						? successes.map((result) => result.message ?? `Run ${result.runId} quit.`).join("\n")
+						: `Quit ${quitCount} run(s); resume with /workflow resume.`
+					: "No in-flight runs to quit.",
 		};
 	}
 	if (target.kind === "malformed" || target.kind === "not_found") {
@@ -255,7 +315,9 @@ export async function workflowQuitAction(
 		);
 	}
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
-	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
+	if (!controlNode.ok) {
+		return { action, runId: target.runId, status: "noop", message: controlNode.message, code: controlNode.code };
+	}
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action, owner);
 	try {
 		const result = await quitRun(target.runId, { ...owner, actor: "agent" });
@@ -302,6 +364,21 @@ export async function workflowPauseAction(
 		try {
 			const results = await pauseAllRuns(owner);
 			const paused = results.filter((result) => result.ok).length;
+			const failedRuns = bulkFailedRuns(results);
+			if (failedRuns.length > 0) {
+				return {
+					action,
+					runId: "--all",
+					...bulkFailureStatus(paused, failedRuns),
+					message: bulkFailureMessage(
+						"Paused",
+						action,
+						results,
+						(result) => result.message ?? `${result.runId}: paused`,
+					),
+					failedRuns,
+				};
+			}
 			return {
 				action,
 				runId: "--all",
@@ -322,10 +399,12 @@ export async function workflowPauseAction(
 		);
 	}
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
-	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
+	if (!controlNode.ok) {
+		return { action, runId: target.runId, status: "noop", message: controlNode.message, code: controlNode.code };
+	}
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action, owner);
 	const stage = resolveToolStageTarget(target.runId, args.stageId, store);
-	if (!stage.ok) return { action, runId: target.runId, status: "noop", message: stage.message };
+	if (!stage.ok) return { action, runId: target.runId, status: "noop", message: stage.message, code: stage.code };
 	const stageRunId = stage.runId ?? target.runId;
 	try {
 		const result = await pauseRun(stageRunId, { ...owner, stageId: stage.stageId });
@@ -347,6 +426,7 @@ export async function workflowPauseAction(
 			status: "noop",
 			message: stageFailureMessage(stageRunId, result.reason, "pause"),
 			...(result.reason === "not_found" ? { code: "run_not_found" as const } : {}),
+			...(result.reason === "stage_not_found" ? { code: "stage_not_found" as const } : {}),
 		};
 	} catch (error) {
 		return controlFailure(action, stageRunId, error);
@@ -426,6 +506,7 @@ function refuseStageScopedDurableResume(runId: string, args: WorkflowToolArgs): 
 		runId,
 		status: "noop",
 		message: stageScopedDurableResumeMessage(runId),
+		code: "stage_resume_unsupported",
 	};
 }
 
@@ -552,8 +633,15 @@ export async function workflowResumeAction(
 	// so it cannot disagree with the resolved run; the old re-resolution branch
 	// here is unreachable.
 	const requestedStage = resolveToolStageTarget(target.runId, args.stageId, store);
-	if (!requestedStage.ok)
-		return { action: "resume", runId: target.runId, status: "noop", message: requestedStage.message };
+	if (!requestedStage.ok) {
+		return {
+			action: "resume",
+			runId: target.runId,
+			status: "noop",
+			message: requestedStage.message,
+			code: requestedStage.code,
+		};
+	}
 	const backend = getDurableBackend();
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow =
@@ -604,7 +692,9 @@ export async function workflowResumeAction(
 	}
 	let warning: string | undefined;
 	const stage = resolveToolStageTarget(target.runId, args.stageId, store);
-	if (!stage.ok) return { action: "resume", runId: target.runId, status: "noop", message: stage.message };
+	if (!stage.ok) {
+		return { action: "resume", runId: target.runId, status: "noop", message: stage.message, code: stage.code };
+	}
 	const stageRunId = stage.runId ?? target.runId;
 	const run = store.runs().find((candidate) => candidate.id === stageRunId);
 	const hadPausedRunState = run?.status === "paused";

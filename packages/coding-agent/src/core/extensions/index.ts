@@ -274,5 +274,8 @@ export {
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowStageAmbiguousError,
+	WorkflowStageNotFoundError,
+	WorkflowStageResumeUnsupportedError,
 } from "./workflow-run-control.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

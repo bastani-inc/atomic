@@ -84,6 +84,8 @@ export type PauseResult =
 			reason: "not_found" | "already_ended" | "no_active_stages" | "stage_not_found";
 	  };
 
+export type PauseAllRunResult = PauseResult | { ok: false; runId: string; reason: "pause_failed"; message: string };
+
 export { type InspectRunResult, inspectRun, type RunDetail } from "./run-inspect.js";
 // ---------------------------------------------------------------------------
 // statusRuns
@@ -583,10 +585,10 @@ export async function pauseAllRuns(opts?: {
 	stageControlRegistry?: StageControlRegistry;
 	toolControlRegistry?: ToolControlRegistry;
 	jobs?: JobTracker;
-}): Promise<PauseResult[]> {
+}): Promise<PauseAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
-	return Promise.all(
+	const settled = await Promise.allSettled(
 		inFlight.map((run) =>
 			pauseRun(run.id, {
 				store: activeStore,
@@ -596,4 +598,13 @@ export async function pauseAllRuns(opts?: {
 			}),
 		),
 	);
+	return settled.map((result, index): PauseAllRunResult => {
+		if (result.status === "fulfilled") return result.value;
+		return {
+			ok: false,
+			runId: inFlight[index]!.id,
+			reason: "pause_failed",
+			message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+		};
+	});
 }

@@ -141,7 +141,7 @@ export async function handleRunControlCommand(
 				}
 			}
 			const results = action === "quit" ? await quitAllRuns({ ...owner, actor: "user" }) : await pauseAllRuns(owner);
-			const successes = results.filter((result) => result.ok);
+			const successes = results.flatMap((result) => (result.ok ? [result] : []));
 			const changed = successes.length;
 			const failures = results.filter((result) => !result.ok);
 			if (action === "quit" && failures.length > 0) {

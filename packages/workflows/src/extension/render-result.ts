@@ -31,7 +31,7 @@ import { renderRunDetail } from "../tui/run-detail.js";
 import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
-import type { WorkflowControlFailureCode } from "./workflow-control-failure.js";
+import type { WorkflowControlFailedRun, WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
@@ -168,6 +168,7 @@ type PauseResult = {
 	status: string;
 	message: string;
 	code?: WorkflowControlFailureCode;
+	failedRuns?: readonly WorkflowControlFailedRun[];
 };
 type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
 type QuitResult = {
@@ -176,6 +177,7 @@ type QuitResult = {
 	status: string;
 	message: string;
 	code?: WorkflowControlFailureCode;
+	failedRuns?: readonly WorkflowControlFailedRun[];
 };
 type ResumeResult = {
 	action: "resume";

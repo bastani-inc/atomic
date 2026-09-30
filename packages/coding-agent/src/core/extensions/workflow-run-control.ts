@@ -99,11 +99,20 @@ export interface WorkflowRunResumeOptions {
 
 export type WorkflowRunControlStatus = "ok" | "running" | "paused" | "partial" | "noop" | "cancelled";
 
+/** A run that a batch pause or quit could not stop; it may still be active. */
+export interface WorkflowRunControlFailedRun {
+	readonly runId: string;
+	/** Machine-readable refusal, such as `not_found`, `no_active_stages` or `pause_failed`. */
+	readonly reason: string;
+	readonly message?: string;
+}
+
 /**
  * The acknowledged result of a pause, quit or resume request, as the `workflow`
  * tool reports it. `runId` is `--all` for a batch request. `noop` means the request was
  * understood and found nothing to change; `partial` means only part of the
- * request took effect, so read `message` for the remainder.
+ * request took effect. For a batch pause or quit, `failedRuns` names every run that
+ * could not be stopped, so a `partial` outcome is never a complete stop.
  */
 export interface WorkflowRunControlOutcome {
 	readonly action: "pause" | "quit" | "resume";
@@ -113,6 +122,7 @@ export interface WorkflowRunControlOutcome {
 	readonly stageId?: string;
 	readonly workflowStatus?: WorkflowRunStatus;
 	readonly abandoned?: boolean;
+	readonly failedRuns?: readonly WorkflowRunControlFailedRun[];
 }
 
 /** Typed run management for the workflow runs owned by one session. */
@@ -134,24 +144,31 @@ export type WorkflowRunControlErrorCode =
 	| "WORKFLOW_RUN_NOT_FOUND"
 	| "WORKFLOW_RUN_OWNED_ELSEWHERE"
 	| "WORKFLOW_RUN_NOT_RESUMABLE"
+	| "WORKFLOW_STAGE_NOT_FOUND"
+	| "WORKFLOW_STAGE_AMBIGUOUS"
+	| "WORKFLOW_STAGE_RESUME_UNSUPPORTED"
 	| "WORKFLOW_RUN_DATABASE"
 	| "WORKFLOW_RUN_CONTROL_FAILED"
 	| "WORKFLOW_RUN_CONTROL_UNAVAILABLE";
 
 export interface WorkflowRunControlErrorOptions extends ErrorOptions {
 	readonly runId?: string;
+	readonly failedRuns?: readonly WorkflowRunControlFailedRun[];
 }
 
 /** Base class for every failure reported by {@link SessionWorkflows}; branch on `code`. */
 export class WorkflowRunControlError extends Error {
 	readonly code: WorkflowRunControlErrorCode;
 	readonly runId?: string;
+	/** Runs a batch pause or quit could not stop, when the whole batch was refused. */
+	readonly failedRuns?: readonly WorkflowRunControlFailedRun[];
 
 	constructor(code: WorkflowRunControlErrorCode, message: string, options: WorkflowRunControlErrorOptions = {}) {
 		super(message, options);
 		this.name = "WorkflowRunControlError";
 		this.code = code;
 		if (options.runId !== undefined) this.runId = options.runId;
+		if (options.failedRuns !== undefined) this.failedRuns = options.failedRuns;
 	}
 }
 
@@ -176,6 +193,30 @@ export class WorkflowRunNotResumableError extends WorkflowRunControlError {
 	constructor(message: string, options?: WorkflowRunControlErrorOptions) {
 		super("WORKFLOW_RUN_NOT_RESUMABLE", message, options);
 		this.name = "WorkflowRunNotResumableError";
+	}
+}
+
+/** The stage identifier matches no stage or tool node of the run. */
+export class WorkflowStageNotFoundError extends WorkflowRunControlError {
+	constructor(message: string, options?: WorkflowRunControlErrorOptions) {
+		super("WORKFLOW_STAGE_NOT_FOUND", message, options);
+		this.name = "WorkflowStageNotFoundError";
+	}
+}
+
+/** The stage identifier matches more than one stage or tool node; pass a more specific identifier. */
+export class WorkflowStageAmbiguousError extends WorkflowRunControlError {
+	constructor(message: string, options?: WorkflowRunControlErrorOptions) {
+		super("WORKFLOW_STAGE_AMBIGUOUS", message, options);
+		this.name = "WorkflowStageAmbiguousError";
+	}
+}
+
+/** A durable run can only be resumed whole; resume it without a stage identifier. */
+export class WorkflowStageResumeUnsupportedError extends WorkflowRunControlError {
+	constructor(message: string, options?: WorkflowRunControlErrorOptions) {
+		super("WORKFLOW_STAGE_RESUME_UNSUPPORTED", message, options);
+		this.name = "WorkflowStageResumeUnsupportedError";
 	}
 }
 

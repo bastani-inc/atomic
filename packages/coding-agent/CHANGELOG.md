@@ -4,7 +4,7 @@
 
 ### Added
 
-- SDK hosts can now manage the workflow runs their session owns through `session.workflows`: `listRuns()`, `getRun()`, `getStages()`, `pause()`, `quit()` and `resume()` return the workflow tool's structured results, and failures reject with typed `WorkflowRunControlError` subclasses (`WorkflowRunNotFoundError`, `WorkflowRunOwnershipError`, `WorkflowRunNotResumableError`, `WorkflowRunDatabaseError`) instead of strings. It uses the same ownership and durable-resume rules as the `workflow` tool, so runs owned by another session or live process stay read-only ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+- SDK hosts can now manage the workflow runs their session owns through `session.workflows`: `listRuns()`, `getRun()`, `getStages()`, `pause()`, `quit()` and `resume()` return the workflow tool's structured results, and failures reject with typed `WorkflowRunControlError` subclasses (`WorkflowRunNotFoundError`, `WorkflowRunOwnershipError`, `WorkflowRunNotResumableError`, `WorkflowRunDatabaseError`, `WorkflowStageNotFoundError`, `WorkflowStageAmbiguousError`, `WorkflowStageResumeUnsupportedError`) instead of strings. A batch `pause({ all: true })` or `quit({ all: true })` that stops only some runs returns a `partial` outcome whose `failedRuns` names the runs still active, and rejects with `failedRuns` when none stopped. It uses the same ownership and durable-resume rules as the `workflow` tool, so runs owned by another session or live process stay read-only ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
 
 ## [0.9.25-alpha.2] - 2026-09-30
 
