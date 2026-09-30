@@ -1,3 +1,4 @@
+import { colorToHex, parseColor } from "@earendil-works/pi-tui";
 import type { ColorValue } from "./theme-schema.ts";
 
 export type ColorMode = "truecolor" | "256color";
@@ -167,6 +168,7 @@ export function resolveVarRefs(
 	vars: Record<string, ColorValue>,
 	visited = new Set<string>(),
 ): string | number {
+	if (typeof value === "string" && /^okhsl\(/i.test(value)) return colorToHex(parseColor(value));
 	if (typeof value === "number" || value === "" || value.startsWith("#")) {
 		return value;
 	}

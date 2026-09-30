@@ -1218,6 +1218,56 @@ test("SDK questionnaire preserves multi-selection and empty custom answers", asy
 	}
 });
 
+test("SDK queued questionnaire cancellation preserves its typed error without asking the host", async () => {
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const result: QuestionnaireResult = { answers: [], cancelled: true };
+	const params: QuestionParams = {
+		questions: [
+			{
+				question: "Choose?",
+				header: "Choice",
+				options: [
+					{ label: "A", description: "First" },
+					{ label: "B", description: "Second" },
+				],
+			},
+		],
+	};
+	let asked = 0;
+	const fixture = await hostSession({
+		humanInput: callbackHost({
+			questionnaire: async () => {
+				asked++;
+				started.resolve();
+				await release.promise;
+				return result;
+			},
+		}),
+	});
+	try {
+		const tool = fixture.session.agent.state.tools.find((entry) => entry.name === "ask_user_question")!;
+		const first = tool.execute("first", params);
+		await started.promise;
+		const cancel = new AbortController();
+		const queued = tool.execute("queued", params, cancel.signal);
+		const rejected = assert.rejects(queued, { code: "HumanInputCancelled" });
+		cancel.abort();
+		release.resolve();
+		await first;
+		await rejected;
+		assert.equal(asked, 1);
+		assert.deepEqual((await tool.execute("later", params)).details, result);
+		assert.equal(asked, 2);
+		await fixture.session.bindExtensions({ humanInput: null });
+		await assert.rejects(tool.execute("unavailable", params, cancel.signal), /Operation aborted/);
+		assert.equal(asked, 2);
+	} finally {
+		release.resolve();
+		await fixture.close();
+	}
+});
+
 // #3105: a fully typed adapter is present before the first startup event, not after it.
 test("SDK startup hooks can await human input without rendering", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-host-start-"));

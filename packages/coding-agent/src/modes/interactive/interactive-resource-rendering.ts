@@ -3,13 +3,14 @@ import {
 	getInteractiveEngineResourceExtensions,
 	getInteractiveEngineResourceOverlaps,
 } from "../interactive-engine/extension-ui-bridge.ts";
+import { ThemedText } from "./components/themed-text.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,
 	type ResourceDiagnostic,
 	type SourceInfo,
 	Spacer,
-	Text,
+	type Text,
 	theme,
 } from "./interactive-mode-deps.ts";
 
@@ -261,11 +262,12 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		if (overlapFingerprint && overlapLabels.length > 0) {
 			const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
 			const verb = overlapLabels.length === 1 ? "provides" : "provide";
-			const notice = new Text(
-				theme.fg(
-					"warning",
-					`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
-				),
+			const notice = new ThemedText(
+				() =>
+					theme.fg(
+						"warning",
+						`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
+					),
 				0,
 				0,
 			);
@@ -280,15 +282,27 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 
 		const skillDiagnostics = skillsResult.diagnostics;
 		if (skillDiagnostics.length > 0) {
-			const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
-			targetContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
+			targetContainer.addChild(
+				new ThemedText(
+					() =>
+						`${theme.fg("warning", "[Skill conflicts]")}\n${this.formatDiagnostics(skillDiagnostics, sourceInfos)}`,
+					0,
+					0,
+				),
+			);
 			targetContainer.addChild(new Spacer(1));
 		}
 
 		const promptDiagnostics = promptsResult.diagnostics;
 		if (promptDiagnostics.length > 0) {
-			const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
-			targetContainer.addChild(new Text(`${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`, 0, 0));
+			targetContainer.addChild(
+				new ThemedText(
+					() =>
+						`${theme.fg("warning", "[Prompt conflicts]")}\n${this.formatDiagnostics(promptDiagnostics, sourceInfos)}`,
+					0,
+					0,
+				),
+			);
 			targetContainer.addChild(new Spacer(1));
 		}
 
@@ -309,15 +323,27 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		extensionDiagnostics.push(...shortcutDiagnostics);
 
 		if (extensionDiagnostics.length > 0) {
-			const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
-			targetContainer.addChild(new Text(`${theme.fg("warning", "[Extension issues]")}\n${warningLines}`, 0, 0));
+			targetContainer.addChild(
+				new ThemedText(
+					() =>
+						`${theme.fg("warning", "[Extension issues]")}\n${this.formatDiagnostics(extensionDiagnostics, sourceInfos)}`,
+					0,
+					0,
+				),
+			);
 			targetContainer.addChild(new Spacer(1));
 		}
 
 		const themeDiagnostics = themesResult.diagnostics;
 		if (themeDiagnostics.length > 0) {
-			const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
-			targetContainer.addChild(new Text(`${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`, 0, 0));
+			targetContainer.addChild(
+				new ThemedText(
+					() =>
+						`${theme.fg("warning", "[Theme conflicts]")}\n${this.formatDiagnostics(themeDiagnostics, sourceInfos)}`,
+					0,
+					0,
+				),
+			);
 			targetContainer.addChild(new Spacer(1));
 		}
 	}

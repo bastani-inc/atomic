@@ -7,6 +7,7 @@ import {
 	TuiAltScreen,
 	type TuiInputListener,
 	TuiMainScreen,
+	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
@@ -116,6 +117,7 @@ export interface InteractiveTuiOptions {
 	logDirectory: string;
 	terminal?: Terminal;
 	copyOnSelect?: boolean;
+	wheelScrollLines?: WheelScrollLines;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
@@ -635,6 +637,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 				}),
 			onRightClickPaste: options.onRightClickPaste,
 			copyOnSelect: options.copyOnSelect,
+			wheelScrollLines: options.wheelScrollLines ?? "auto",
 		},
 		options.shouldHandleViewportInput,
 		options.onOverlayUnhandledInput,

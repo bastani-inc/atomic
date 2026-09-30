@@ -15,6 +15,8 @@ export interface CandidateModel {
 	readonly input: readonly string[];
 	/** `provider/id` of the base model when this entry is its derived fast route (`fastRoute` metadata). */
 	readonly fastRouteOf?: string;
+	/** Explicit provider tier, used to avoid claiming measured latency or pricing for ultrafast. */
+	readonly fastRouteServiceTier?: "priority" | "ultrafast";
 }
 
 interface Metric {
@@ -39,6 +41,7 @@ const WORK_METRICS: Record<WorkKind, readonly Metric[]> = {
 	coding: [
 		percent("aa:TB4", "Terminal-Bench 4.0"),
 		percent("dswe:Pass@1", "DeepSWE"),
+		percent("pub:DSWE", "DeepSWE"),
 		percent("fc:Main", "FrontierCode"),
 		percent("aa:TB21", "Terminal-Bench 2.1"),
 	],
@@ -257,7 +260,7 @@ export function rankCandidates(
 	const measured = candidates.map((candidate) => ({
 		candidate,
 		base: baseKey(candidate),
-		...measure(catalog, candidate.model),
+		...measure(catalog, candidate.fastRouteOf ?? candidate.model),
 	}));
 	const rankOf = (key: string, value: number, own: ReadonlySet<string>): number | undefined => {
 		const cohort = cohorts.get(key);
@@ -301,7 +304,9 @@ export function rankCandidates(
 					qualityWeight * quality +
 					priceWeight * cheapness +
 					0.1 * recency +
-					(needs.latencySensitive && candidate.fastRouteOf ? FAST_ROUTE_BONUS : 0),
+					(needs.latencySensitive && candidate.fastRouteOf && candidate.fastRouteServiceTier !== "ultrafast"
+						? FAST_ROUTE_BONUS
+						: 0),
 				values,
 				conditions,
 				...(released ? { released } : {}),
@@ -390,13 +395,16 @@ export function describeOption(
 		model: option.name,
 		id: option.model,
 		released,
-		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens`,
+		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens${option.fastRouteServiceTier === "ultrafast" ? "; provisional base-rate estimate, not a confirmed ultrafast rate" : ""}`,
 		reads_images: option.input.includes("image"),
 		[needs.work]: quote(WORK_METRICS[needs.work], option.workStanding),
 		overall: quote([OVERALL], option.overallStanding),
 		...(option.fastRouteOf
 			? {
-					route: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; billed above the listed prices`,
+					route:
+						option.fastRouteServiceTier === "ultrafast"
+							? `ultrafast request for ${fastBase?.name ?? option.fastRouteOf}; base-model evidence only, pricing and access are unknown`
+							: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; billed above the listed prices`,
 				}
 			: {}),
 	});

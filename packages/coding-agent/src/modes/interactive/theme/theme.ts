@@ -7,6 +7,15 @@ export {
 	stopThemeWatcher,
 	theme,
 } from "./global-theme.ts";
+export { SYSTEM_THEME_NAME } from "./system-theme.js";
+export {
+	detectColorFgBgTheme,
+	detectTerminalTheme,
+	getTerminalTheme,
+	markTerminalColorsPending,
+	setTerminalColorScheme,
+	setTerminalColors,
+} from "./terminal-colors.js";
 export {
 	detectTerminalBackgroundFromEnv,
 	detectTerminalBackgroundTheme,

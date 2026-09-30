@@ -153,7 +153,7 @@ async function startAuthAttempt(
   }
   if (config.grantType === "client_credentials") {
     const authProvider = new McpOAuthProvider(serverName, serverUrl, config, providerCallbacks)
-    const result = await runSdkAuth(authProvider, { serverUrl }).catch((error) => {
+    const result = await runSdkAuth(authProvider, { serverUrl, fetchFn: authProvider.fetch }).catch((error) => {
       throw sanitizeRemoteError(error, serverUrl)
     })
     assertActive(owner)
@@ -174,7 +174,7 @@ async function startAuthAttempt(
   })
 
   try {
-    const result = await runSdkAuth(authProvider, { serverUrl }).catch((error) => {
+    const result = await runSdkAuth(authProvider, { serverUrl, fetchFn: authProvider.fetch }).catch((error) => {
       throw sanitizeRemoteError(error, serverUrl)
     })
     assertActive(owner)
@@ -186,7 +186,7 @@ async function startAuthAttempt(
     const pendingTransport = {
       serverName,
       serverUrl,
-      transport: new StreamableHTTPClientTransport(new URL(serverUrl), { authProvider }),
+      transport: new StreamableHTTPClientTransport(new URL(serverUrl), { authProvider, fetch: authProvider.fetch }),
       oauthState,
     }
     pendingTransports.set(serverName, pendingTransport)
@@ -366,7 +366,7 @@ export async function getValidToken(
         if (!reportOwnedMcpLog("info")) console.log(`MCP Auth: No client info for refresh for ${serverName}`)
         return null
       }
-      const result = await runSdkAuth(authProvider, { serverUrl })
+      const result = await runSdkAuth(authProvider, { serverUrl, fetchFn: authProvider.fetch })
       if (result !== "AUTHORIZED") return null
       return getAuthForUrl(serverName, serverUrl)?.tokens ?? null
     } catch (error) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { theme as activeTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { McpCallRenderSource } from "../../packages/mcp/tool-call-renderer.js";
 import { renderMcpDirectToolCall, renderMcpToolCall } from "../../packages/mcp/tool-call-renderer.js";
 
@@ -85,4 +86,37 @@ test("direct call header uses its registered identity, independent of prefix mod
 test("call labels strip terminal commands and keep names on one line", () => {
 	const rendered = render({ server: "my\nserver\x1b[2J", tool: "tool\tname" });
 	assert.equal(rendered, "MCP my server · tool name");
+});
+
+test("MCP argument previews show ordinary fields and redact credentials", () => {
+	const args = { title: "hello", token: "private", nested: { password: "hidden" } };
+	const collapsed = renderMcpDirectToolCall("github-mcp", "create_issue", theme, args).render(200).join("\n");
+	assert.ok(collapsed.includes('title="hello"'));
+	assert.ok(collapsed.includes("[redacted]"));
+	assert.ok(!collapsed.includes("private") && !collapsed.includes("hidden"));
+	const expanded = renderMcpDirectToolCall("github-mcp", "create_issue", theme, args, true).render(200).join("\n");
+	assert.ok(expanded.includes("title: hello"));
+	assert.ok(!expanded.includes("private") && !expanded.includes("hidden"));
+});
+
+test("registered MCP argument previews work with the runtime theme", () => {
+	initTheme("dark");
+	const rendered = renderMcpDirectToolCall("github-mcp", "create_issue", activeTheme, {
+		title: "hello",
+		password: "private",
+	})
+		.render(200)
+		.join("\n");
+	assert.match(rendered, /MCP github-mcp/);
+	assert.match(rendered, /hello/);
+	const gateway = renderMcpToolCall(
+		{ server: "github-mcp", tool: "create_issue", args: '{"title":"hello","password":"private"}' },
+		activeTheme,
+		source,
+	)
+		.render(200)
+		.join("\n");
+	assert.match(gateway, /hello/);
+	assert.doesNotMatch(gateway, /private/);
+	assert.doesNotMatch(rendered, /private/);
 });

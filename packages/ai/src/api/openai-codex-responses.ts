@@ -1,10 +1,5 @@
 import type * as NodeZlib from "node:zlib";
-import type {
-	Tool as OpenAITool,
-	ResponseCreateParamsStreaming,
-	ResponseInput,
-	ResponseStreamEvent,
-} from "openai/resources/responses/responses.js";
+import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
 import { clampThinkingLevel } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
@@ -48,6 +43,7 @@ import {
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
+	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
@@ -86,7 +82,7 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
-	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+	serviceTier?: ResponsesServiceTier;
 	textVerbosity?: "low" | "medium" | "high";
 	toolChoice?: "auto" | "none" | "required";
 }
@@ -105,7 +101,7 @@ interface RequestBody {
 	parallel_tool_calls?: boolean;
 	temperature?: number;
 	reasoning?: { effort?: string; summary?: string };
-	service_tier?: ResponseCreateParamsStreaming["service_tier"];
+	service_tier?: ResponsesServiceTier;
 	text?: { verbosity?: string };
 	include?: string[];
 	prompt_cache_key?: string;
@@ -617,7 +613,7 @@ function buildRequestBody(
 
 function getServiceTierCostMultiplier(
 	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
-	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+	serviceTier: ResponsesServiceTier | undefined,
 ): number {
 	// Price against the model that was actually billed upstream, so a `-fast` variant of a
 	// per-model rate (gpt-5.5) is not silently charged the generic multiplier.
@@ -634,7 +630,7 @@ function getServiceTierCostMultiplier(
 
 function applyServiceTierPricing(
 	usage: Usage,
-	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+	serviceTier: ResponsesServiceTier | undefined,
 	model: Pick<Model<"openai-codex-responses">, "fastRoute" | "id">,
 ) {
 	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
@@ -648,9 +644,9 @@ function applyServiceTierPricing(
 }
 
 function resolveCodexServiceTier(
-	responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	responseServiceTier: ResponsesServiceTier | undefined,
+	requestServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
 	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
 		return requestServiceTier;
 	}

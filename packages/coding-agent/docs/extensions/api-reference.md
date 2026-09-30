@@ -229,6 +229,10 @@ pi.on("session_start", (_event, ctx) => {
 
 `pi.getCommands()` already includes the same advertised `/skill:name` and `/skill:name@source` names. See [Skill Commands](/skills#skill-commands).
 
+## ExtensionToolContext
+
+Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools` and `executeTool(name, args, options?)`. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.
@@ -842,7 +846,7 @@ pi.setActiveTools([...new Set([...active, "my_custom_tool"])]); // Keep current 
 pi.setActiveTools(["read", "bash"]); // Switch to read-only
 ```
 
-`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
+`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, `exposure`, `namespace`, `annotations`, and `sourceInfo`. See [tool exposure](/extensions/authoring#tool-exposure) before changing activation for script-callable tools.
 
 Typical `sourceInfo.source` values:
 - `builtin` for built-in tools

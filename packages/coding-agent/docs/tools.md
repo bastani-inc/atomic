@@ -14,6 +14,45 @@ Atomic enables these coding tools in normal sessions by default: `read`, `write`
 
 Bundled integrations also provide [public repository search](#code_search), [web fetching](/web-access), and [MCP tools](/mcp-servers).
 
+## `codemode`
+
+Codemode lets the model compose permitted tool calls in JavaScript and return only the useful output. It is shipped but inactive by default. Enable it alongside Atomic's defaults in `~/.atomic/agent/settings.json` or project `.atomic/settings.json`:
+
+```json
+{ "defaultTools": ["+codemode"] }
+```
+
+For one invocation, `--tools` is a replacement allowlist: `atomic --tools read,search,find,codemode`. Include every tool you want available, including `intercom` when needed. `codemode({ code: "..." })` accepts top-level `await` and `return`, for example:
+
+```js
+const files = await Promise.all([
+  tools.read({ path: "README.md" }),
+  tools.read({ path: "package.json" }),
+]);
+return files.map((text) => text.slice(0, 1000));
+```
+
+Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Workflow, subagent, Intercom/supervisor, and user-question tools are model-only and cannot be called from scripts. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
+
+Use `text(value)`, `image(dataUrlOrImageContent)`, `console.log(...)`, or a top-level return for output; `exit()` ends early. An optional first line configures output and a caller-owned deadline:
+
+```js
+// @options: {"max_output_tokens": 2000, "timeout_ms": 60000}
+return await tools.read({ path: "README.md" });
+```
+
+There is no default deadline. Text output defaults to 10,000 estimated tokens; longer output keeps its start and end and, when saving succeeds, names a temporary file containing the full text. Failed scripts retain partial output and report the error. Unawaited calls are cancelled when a script ends; await work you need to finish.
+
+Tools with `outputSchema` return their `structuredContent` to scripts, including structured error results. Other tools return text and throw on errors. Completed `bash` calls provide structured output as described in the [SDK reference](/sdk/reference#bash-tool-behavior).
+
+`ALL_TOOLS`, `searchTools(query, { limit, namespace })`, and `describeTool(name)` discover the currently permitted tools. `store(key, value)` and `load(key)` preserve JSON values across successful calls on the current session branch, including after resume. Failed scripts discard store writes, not tool side effects. `models.getModelsOfType`, `getAvailableOfType`, and `getModelOfType` expose public catalog metadata; `models.classify(model, context)` calls a registered classifier with host-resolved credentials, at most four concurrently. Reported classifier usage contributes to the script's session cost.
+
+Set [codemode settings](/settings#tools) to control inline declaration size and whether ordinary direct tool declarations remain visible. Atomic's existing [MCP host](/mcp-servers) remains the only MCP connection/configuration owner: codemode calls the permitted gateway or direct tools, not a second MCP host. Use MCP discovery for server tools not yet registered in the session.
+
+## `tool_search`
+
+`tool_search` is inactive by default. Enable it with `"defaultTools": ["+tool_search"]` or include it in `--tools`. It ranks currently registered `codemode` and `deferred` tools by their metadata and activates matching tools for the next model call. It does not bypass session tool restrictions or replace MCP server discovery.
+
 ## `code_search`
 
 The bundled web-access extension provides `code_search` for questions about code, architecture, and APIs in a public GitHub repository. It uses DeepWiki MCP at `https://mcp.deepwiki.com/mcp` without an API key or local MCP configuration.

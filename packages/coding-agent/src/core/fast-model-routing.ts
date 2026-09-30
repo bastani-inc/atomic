@@ -27,10 +27,10 @@ import {
 	markCodexFastRouteRequest,
 	wrapCodexFastRouteFetch,
 } from "./fast-model-routing-transport.ts";
-import { FAST_MODEL_SERVICE_TIER, isNativeFastRouteApi } from "./fast-model-variants.ts";
+import { FAST_MODEL_SERVICE_TIER, isNativeFastRouteApi, ULTRAFAST_MODEL_SERVICE_TIER } from "./fast-model-variants.ts";
 
 export interface FastRouteStreamOptions extends SimpleStreamOptions {
-	serviceTier?: typeof FAST_MODEL_SERVICE_TIER;
+	serviceTier?: ModelFastRoute["serviceTier"];
 }
 
 export interface FastRouteStreamers {
@@ -111,16 +111,13 @@ export function withCodexFastRouteHeaders(
 	model: Pick<Model<Api>, "baseUrl" | "fastRoute" | "id" | "provider">,
 	headers: ProviderHeaders | undefined,
 ): ProviderHeaders | undefined {
-	if (getModelFastRoute(model)?.serviceTier !== FAST_MODEL_SERVICE_TIER || !usesFirstPartyCodexRouting(model)) {
+	const tier = getModelFastRoute(model)?.serviceTier;
+	if (tier === undefined || !usesFirstPartyCodexRouting(model)) {
 		return headers;
 	}
 	const fastHeaders: ProviderHeaders = { ...(headers ?? {}) };
 	setHeader(fastHeaders, "originator", CODEX_FAST_ROUTE_ORIGINATOR);
-	setHeader(
-		fastHeaders,
-		CODEX_FAST_ROUTE_HEADER,
-		`model=${resolveUpstreamModelId(model)};tier=${FAST_MODEL_SERVICE_TIER}`,
-	);
+	setHeader(fastHeaders, CODEX_FAST_ROUTE_HEADER, `model=${resolveUpstreamModelId(model)};tier=${tier}`);
 	return fastHeaders;
 }
 
@@ -138,7 +135,10 @@ export function shouldUseNativeFastRoute(
 	model: Pick<Model<Api>, "api">,
 	options: FastRouteStreamOptions | undefined,
 ): boolean {
-	return isNativeFastRouteApi(model.api) && options?.serviceTier === FAST_MODEL_SERVICE_TIER;
+	return (
+		isNativeFastRouteApi(model.api) &&
+		(options?.serviceTier === FAST_MODEL_SERVICE_TIER || options?.serviceTier === ULTRAFAST_MODEL_SERVICE_TIER)
+	);
 }
 
 function codexEnvironmentScope(env: StreamOptions["env"]): string {
@@ -156,11 +156,11 @@ function updateCodexWebSocketRoutingState(
 	model: Pick<Model<Api>, "baseUrl" | "provider">,
 	routedModel: string,
 	options: Pick<StreamOptions, "env" | "sessionId" | "transport">,
-	priority: boolean,
+	tier: ModelFastRoute["serviceTier"],
 	closeWebSocketSessions: CloseCodexWebSocketSessions,
 ): void {
 	if (options.transport === "sse" || !options.sessionId) return;
-	const signature = `${model.provider}\0${model.baseUrl}\0${codexEnvironmentScope(options.env)}\0${priority ? `priority:${routedModel}` : "normal"}`;
+	const signature = `${model.provider}\0${model.baseUrl}\0${codexEnvironmentScope(options.env)}\0${tier ? `${tier}:${routedModel}` : "normal"}`;
 	const previous = codexWebSocketRoutingState.get(options.sessionId);
 	if (previous?.signature !== undefined && previous.signature !== signature) {
 		closeWebSocketSessions(options.sessionId);
@@ -182,8 +182,7 @@ export function withChatGptCodexTransportRouting<TOptions extends StreamOptions>
 ): TOptions {
 	const headers: ProviderHeaders = { ...(options.headers ?? {}) };
 	const onPayload = options.onPayload;
-	const priority =
-		getModelFastRoute(model)?.serviceTier === FAST_MODEL_SERVICE_TIER && usesFirstPartyCodexRouting(model);
+	const tier = usesFirstPartyCodexRouting(model) ? getModelFastRoute(model)?.serviceTier : undefined;
 	const routedModel = resolveUpstreamModelId(model);
 	return {
 		...options,
@@ -194,15 +193,15 @@ export function withChatGptCodexTransportRouting<TOptions extends StreamOptions>
 			const finalPayload = replacement === undefined ? payload : replacement;
 			deleteHeader(headers, CODEX_FAST_ROUTE_HEADER);
 			clearCodexFastRouteRequestMarker(headers);
-			if (priority) {
-				setHeader(headers, CODEX_FAST_ROUTE_HEADER, `model=${routedModel};tier=${FAST_MODEL_SERVICE_TIER}`);
+			if (tier) {
+				setHeader(headers, CODEX_FAST_ROUTE_HEADER, `model=${routedModel};tier=${tier}`);
 			} else {
 				for (const [name, value] of Object.entries(headers)) {
 					if (name.toLowerCase() === "originator" && value === CODEX_FAST_ROUTE_ORIGINATOR) delete headers[name];
 				}
 			}
-			markCodexFastRouteRequest(headers, priority);
-			updateCodexWebSocketRoutingState(model, routedModel, options, priority, closeWebSocketSessions);
+			markCodexFastRouteRequest(headers, tier !== undefined);
+			updateCodexWebSocketRoutingState(model, routedModel, options, tier, closeWebSocketSessions);
 			return finalPayload;
 		},
 	} as TOptions;

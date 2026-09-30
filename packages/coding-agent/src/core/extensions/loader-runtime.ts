@@ -183,6 +183,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
 						? { constrainedSampling: definition.constrainedSampling }
 						: {}),
 					promptGuidelines: definition.promptGuidelines,
+					exposure: definition.exposure ?? "direct",
+					namespace: definition.namespace,
+					annotations: definition.annotations,
 					sourceInfo,
 				});
 				names.add(pending.name);

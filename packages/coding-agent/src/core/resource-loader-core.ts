@@ -109,11 +109,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.settingsManager =
 			options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir, inheritedSettingsOptions);
 		this.eventBus = options.eventBus ?? createEventBus();
-		this.packageManager = new DefaultPackageManager({
-			cwd: this.cwd,
-			agentDir: this.agentDir,
-			settingsManager: this.settingsManager,
-		});
 		this.additionalExtensionPaths = mergeInheritedStrings(
 			inheritanceSnapshot?.additionalExtensionPaths,
 			options.additionalExtensionPaths,
@@ -138,6 +133,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			...(inheritanceSnapshot?.extensionFactories ?? []),
 			...(options.extensionFactories ?? []),
 		];
+		this.packageManager = new DefaultPackageManager({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsManager,
+			builtinExtensions: this.extensionFactories.flatMap((input) =>
+				typeof input !== "function" && input.builtin ? [input.name] : [],
+			),
+		});
 		this.noExtensions = options.noExtensions ?? inheritanceSnapshot?.noExtensions ?? false;
 		this.noSkills = options.noSkills ?? inheritanceSnapshot?.noSkills ?? false;
 		this.noPromptTemplates = options.noPromptTemplates ?? inheritanceSnapshot?.noPromptTemplates ?? false;
@@ -409,7 +412,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private replaceSettingsManager(settingsManager: SettingsManager): void {
 		this.settingsManager = settingsManager;
-		this.packageManager = new DefaultPackageManager({ cwd: this.cwd, agentDir: this.agentDir, settingsManager });
+		this.packageManager = new DefaultPackageManager({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+			builtinExtensions: this.extensionFactories.flatMap((input) =>
+				typeof input !== "function" && input.builtin ? [input.name] : [],
+			),
+		});
 	}
 
 	private publishCandidate(candidate: DefaultResourceLoader): void {

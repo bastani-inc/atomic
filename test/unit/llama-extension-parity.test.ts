@@ -313,7 +313,7 @@ describe("built-in inline extension", () => {
 			extensionFactories: builtInExtensions,
 		});
 		await loader.reload();
-		const extension = loader.getExtensions().extensions.find((entry) => entry.path === "<inline:llama.cpp>");
+		const extension = loader.getExtensions().extensions.find((entry) => entry.path === "builtin:llama.cpp");
 		assert.ok(extension);
 		assert.equal(extension.hidden, true);
 		assert.equal(extension.commands.has("llama"), true);

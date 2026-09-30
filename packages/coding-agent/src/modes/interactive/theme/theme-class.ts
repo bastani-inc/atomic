@@ -91,6 +91,7 @@ export class Theme {
 			sourcePath?: string;
 			sourceInfo?: SourceInfo;
 			workingIndicator?: Partial<Record<WorkingIndicatorTone, string | number>>;
+			dim?: ThemeColor[];
 		} = {},
 	) {
 		this.name = options.name;
@@ -103,7 +104,7 @@ export class Theme {
 			searchMatchText: fgColors.searchMatchText ?? fgColors.text,
 		};
 		for (const [key, value] of Object.entries(foregrounds) as [ThemeColor, string | number][]) {
-			this.fgColors.set(key, fgAnsi(value, mode));
+			this.fgColors.set(key, `${options.dim?.includes(key) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
 		}
 		this.bgColors = new Map();
 		const backgrounds = {
@@ -126,7 +127,7 @@ export class Theme {
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.fgColors.get(color);
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
-		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
+		return `${ansi}${text}${ansi.startsWith("\x1b[2m") ? "\x1b[22m" : ""}\x1b[39m`; // Reset foreground and optional faint styling
 	}
 
 	bg(color: ThemeBg, text: string): string {

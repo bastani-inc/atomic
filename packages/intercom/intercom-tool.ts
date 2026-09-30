@@ -190,6 +190,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   pi.registerTool({
     name: "intercom",
+    exposure: "model-only",
     label: "Intercom",
     description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.

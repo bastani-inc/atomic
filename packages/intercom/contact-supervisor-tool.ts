@@ -40,6 +40,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
   if (childOrchestratorMetadata !== null) {
     pi.registerTool({
       name: "contact_supervisor",
+      exposure: "model-only",
       label: "Contact Supervisor",
       description: "Subagent-only tool for contacting the supervisor agent that delegated this task. In a live foreground child, need_decision and interview_request end the child and return a fresh-subagent handoff to the supervisor; fallback Intercom delivery waits for a reply when no foreground owner claims the request. One blocking supervisor request is allowed per child and may coexist with ordinary intercom asks. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
       promptSnippet: "Subagent-only: yield decisions or structured interviews to the supervisor for a fresh-child follow-up, or send meaningful plan-changing progress updates.",

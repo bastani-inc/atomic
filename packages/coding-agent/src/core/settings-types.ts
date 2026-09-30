@@ -2,7 +2,7 @@ export const CACHE_WARMING_MODES = ["off", "streaming", "idle"] as const;
 export type CacheWarmingMode = (typeof CACHE_WARMING_MODES)[number];
 
 import type { Transport } from "@bastani/pi-ai/compat";
-import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, WheelScrollLines } from "@earendil-works/pi-tui";
 
 export interface CompactionModelOverride {
 	reserveTokens?: number;
@@ -86,6 +86,8 @@ export type TransportSetting = Transport;
 /** What the terminal keeps when Atomic's fullscreen session exits. */
 export type FullscreenExitOutput = "transcript" | "resume-hint";
 
+export type CodemodeMode = "on" | "only";
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -134,6 +136,7 @@ export interface Settings {
 	theme?: string;
 	enableAnalytics?: boolean; // storage only; no analytics transmission is performed
 	trackingId?: string; // stable UUID generated on first analytics opt-in
+	deviceId?: string; // global installation ID, created only when a login needs it
 	showCacheMissNotices?: boolean; // default: false - show cache costs and provider recovery diagnostics
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
@@ -161,7 +164,7 @@ export interface Settings {
 	herdr?: { enabled?: boolean }; // default: true, only inside an interactive Herdr pane
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
-	defaultTools?: string[]; // Initial built-in tool selection; extension and SDK custom tools stay enabled
+	defaultTools?: string[]; // Initial tool selection; +name/-name modify inherited selection
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -172,6 +175,8 @@ export interface Settings {
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"
 	fullscreenCopyOnSelect?: boolean; // default: true
+	fullscreenWheelScrollLines?: WheelScrollLines; // default: "auto", numeric values 1-100
+	codemode?: { mode?: CodemodeMode; inlineBudget?: number };
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)

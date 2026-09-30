@@ -393,6 +393,44 @@ describe("codex fast-route first-party transport", () => {
 		expect(websocketCaptured).toEqual(httpCaptured);
 	});
 
+	it("preserves ultrafast tier hints and resets cached connections across tier changes", async () => {
+		const closeSessions = vi.fn<(sessionId?: string) => void>();
+		const sessionId = `ultrafast-routing-${Date.now()}-${Math.random()}`;
+		const selected = fullModel({
+			...codexModel,
+			id: "gpt-6.1-sol-ultrafast",
+			fastRoute: { baseModelId: "gpt-6.1-sol", upstreamModelId: "gpt-6.1-sol", serviceTier: "ultrafast" },
+		});
+		const ultraOptions = withChatGptCodexTransportRouting(selected, { sessionId }, closeSessions);
+		await ultraOptions.onPayload?.({ model: "gpt-6.1-sol", service_tier: "ultrafast" }, selected);
+		const actual = forceCodexFastRouteOriginator(
+			"https://chatgpt.com/backend-api/codex/responses",
+			ultraOptions.headers,
+		);
+		assert.equal(actual.get(CODEX_FAST_ROUTE_HEADER), "model=gpt-6.1-sol;tier=ultrafast");
+		assert.equal(actual.get("originator"), CODEX_FAST_ROUTE_ORIGINATOR);
+		const captured: CapturedStreamCall[] = [];
+		streamWithFastRoute(
+			selected,
+			emptyContext,
+			withFastRouteStreamOptions(selected.fastRoute, { reasoning: "high", transport: "sse" }),
+			makeStreamers(captured),
+		);
+		assert.equal(captured.length, 1);
+		assert.equal(captured[0]!.name, "streamOpenAICodexResponses");
+		const providerOptions = captured[0]!.options as OpenAICodexResponsesOptions;
+		assert.equal(providerOptions.serviceTier, "ultrafast");
+		assert.equal(providerOptions.reasoningEffort, "high");
+		const fast = fullModel({
+			...selected,
+			id: "gpt-6.1-sol-fast",
+			fastRoute: { ...selected.fastRoute!, serviceTier: "priority" },
+		});
+		const fastOptions = withChatGptCodexTransportRouting(fast, { sessionId }, closeSessions);
+		await fastOptions.onPayload?.({ model: "gpt-6.1-sol", service_tier: "priority" }, fast);
+		assert.equal(closeSessions.mock.calls.length, 1);
+	});
+
 	it("drops cached WebSockets when the model routing identity changes", async () => {
 		const closeSessions = vi.fn<(sessionId?: string) => void>();
 		const sessionId = `fast-routing-${Date.now()}-${Math.random()}`;

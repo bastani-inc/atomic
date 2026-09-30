@@ -11,7 +11,7 @@ Key:
 
 - `∅`=source null/absent, not zero.
 - Values are rounded to 1 decimal from the public [model leaderboard](https://artificialanalysis.ai/leaderboards/models) and [Intelligence Index](https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index) pages. Each row includes the model's release date.
-- `PDF`, `MLCR`, `Open`, `Ent`, and `Analyst` are published only for models shown on the default Intelligence Index chart; other rows are `∅` for those columns.
+- `PDF`, `MLCR`, `Open`, `Ent`, and `Analyst` are generally published only for models shown on the default Intelligence Index chart. The GPT-6.1 Sol model page publishes `PDF` at all five efforts and `MLCR` at max; other missing values remain `∅`.
 - A chart label may show the nearest integer of `idx`.
 - `idx`: Intelligence Index points, aggregate performance across knowledge, reasoning, coding, and agentic work.
 - `Brief`: AA-Briefcase, long-horizon business knowledge work producing spreadsheets, presentations, and memos; normalized Elo `clamp((Elo-500)/2000)*100`.
@@ -46,10 +46,17 @@ Key:
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28.
+Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28 and 5 GPT-6.1 Sol rows accessed 2026-09-29.
+
+GPT-6.1 Sol's five effort rows were accessed 2026-09-29 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and [model page](https://artificialanalysis.ai/models/gpt-6-1-sol). The release date is not an evaluation run date; run dates are unpublished. AA's [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) uses mini-swe-agent for TB4, all 66 tasks, pass@1 averaged over three repeats, a 500-step cap and no context compaction.
 
 | slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gpt-6-1-sol | GPT-6.1 Sol (max) | 2026-09-29 | 51.8 | 53.2 | 53.8 | 64.9 | 56.1 | 54.2 | 52.9 | 31 | 31.7 | 62.1 | 45.7 | 83 | 41.5 | ∅ | ∅ | ∅ | ∅ | 86 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 33.9 | ∅ | ∅ |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol (xhigh) | 2026-09-29 | 51 | 50.3 | 50.5 | 66.6 | 54 | 55.7 | 52.6 | 31.8 | 31.7 | 60.8 | 49.1 | 79.7 | 40.9 | ∅ | ∅ | ∅ | ∅ | 85.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-1-sol-high | GPT-6.1 Sol (high) | 2026-09-29 | 50.2 | 48.6 | 49.3 | 64.5 | 51.5 | 55.8 | 51.4 | 32 | 30 | 60.8 | 50.6 | 82.3 | 41.5 | ∅ | ∅ | ∅ | ∅ | 84.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-1-sol-medium | GPT-6.1 Sol (medium) | 2026-09-29 | 47.8 | 43.2 | 46.6 | 62.6 | 48 | 53.2 | 49.9 | 30 | 27.7 | 60.4 | 48.4 | 83.3 | 40 | ∅ | ∅ | ∅ | ∅ | 83.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| gpt-6-1-sol-low | GPT-6.1 Sol (low) | 2026-09-29 | 42.1 | 30.9 | 39.9 | 52.6 | 30.8 | 53.2 | 47.4 | 27 | 24.9 | 58.9 | 48.4 | 84 | 37.6 | ∅ | ∅ | ∅ | ∅ | 83.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | claude-opus-5-5 | Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-22 | 57.6 | 66.1 | 67.3 | 69.5 | 59.6 | 66.9 | 61.4 | 26.2 | 31.7 | 66.2 | 41.4 | 84.7 | 46.4 | ∅ | ∅ | ∅ | ∅ | 87.7 | ∅ | ∅ | ∅ | 38.2 | ∅ | ∅ | ∅ | 91.2 | 66.7 | ∅ | ∅ |
 | claude-opus-5-5-xhigh | Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback) | 2026-09-22 | 56 | 64 | 66 | 65 | 59.6 | 65 | 57.5 | 26.6 | 31.7 | 65.4 | 34.3 | 84.7 | 42.7 | ∅ | ∅ | ∅ | ∅ | 86.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 91.2 | ∅ | ∅ | ∅ |
 | claude-sonnet-5-5 | Claude Sonnet 5.5 (Adaptive Reasoning, Max Effort, Default Fallback) | 2026-09-28 | 56 | 65.5 | 67.2 | 71.3 | 63.6 | 61 | 55 | 25.8 | 31.4 | 54 | 53 | 82.7 | 32.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 93.1 | 75 | ∅ | ∅ |
@@ -771,6 +778,8 @@ Key:
 
 Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognition, current revision, accessed 2026-09-28. Each row is the model's best-scoring reasoning effort, which is the same on both sets.
 
+GPT-6.1 Sol was added 2026-09-29 and accessed that day in the [primary JSON](https://cognition.com/data/frontiercode-leaderboard/data.json). Its best score on both sets is medium effort under the `codex` harness. The Codex revision and run date are unpublished. Main averages 11,365 output tokens and 14.42 minutes per rollout.
+
 Key:
 
 - FrontierCode: mergeability of agent-written pull requests on tasks built by open-source maintainers, graded by rubrics, unit tests and other verifiers for correctness, test quality, scope discipline, style and codebase conventions. Runs that consult solution-bearing sources such as the original pull request score zero.
@@ -787,6 +796,7 @@ Key:
 | claude-sonnet-5-5 | Sonnet 5.5 | xhigh | 52.1 | 57.2 | 64.4 | 69.9 | 0.0 | $1.59 |
 | claude-fable-5-1 | Fable 5.1 | medium | 50.9 | 55.5 | 63.6 | 68.8 | 0.0 | $3.28 |
 | swe-2 | SWE-2 | max | 50.0 | 55.5 | 62.5 | 68.4 | ∅ | $1.18 |
+| gpt-6-1-sol | GPT-6.1 Sol | medium | 50.2 | 55.8 | 60.4 | 66.5 | 0.4 | $0.36 |
 | gpt-6-sol | GPT-6 Sol | max | 49.3 | 54.3 | 60.7 | 66.3 | 0.0 | $2.07 |
 | grok-4-6 | Grok 4.6 | high | 48.0 | 53.1 | 61.3 | 67.0 | 0.7 | $2.88 |
 | grok-4-7 | Grok 4.7 | high | 47.6 | 53.1 | 59.4 | 65.2 | 1.3 | $6.65 |
@@ -828,7 +838,14 @@ Scores published by model vendors and benchmark owners for recent frontier model
 
 Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1), [Claude Sonnet 5.5 announcement](https://www.anthropic.com/claude-sonnet-5-5) and [system card](https://www.anthropic.com/claude-sonnet-5-5-system-card); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
 
+GPT-6.1 Sol rows were accessed 2026-09-29. OpenAI = [Sol 6.1 announcement](https://openai.com/index/introducing-gpt-6-1-sol/) and [system card](https://deploymentsafety.openai.com/gpt-6-1-sol); Artificial Analysis = [Sol 6.1 model page](https://artificialanalysis.ai/models/gpt-6-1-sol) and [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking). OpenAI's external benchmark results are vendor-reported, not benchmark-owner leaderboard rows. They ran in its research environment or API; individual harness revisions and run dates are not stated. AA's TBSci result is independent evidence from its own harness.
+
+No matching Sol 6.1 row was retrieved from the DeepSWE, TB-Science, Zapier, Surge GDP.pdf, OSWorld or ARC Prize owner leaderboards on that date. These gaps are unknown, not zero. No `minimal` effort or separate Fast or Ultrafast benchmark is measured here. Atomic's derived routes use explicit base-model metadata to reuse capability evidence, not a separately measured tier score or latency result.
+
 Key:
+
+- `DSWE`: DeepSWE v1.1, vendor-reported software-engineering results; distinct from Datacurve's independent table above.
+- `GDPpdf`: GDP.pdf All-pass, satisfying every criterion on professional-document tasks.
 
 - `ALE`: [Agents' Last Exam](https://agents-last-exam.org/), long-horizon professional tasks in real software, from financial modeling to engineering and media production.
 - `OSW2`, `OSW2s`: [OSWorld 2.0](https://osworld-v2.xlang.ai/), long-horizon computer-use workflows operating desktop applications through the screen; partial credit and strict all-pass scoring.
@@ -847,6 +864,32 @@ Key:
 
 | slug | Model | Benchmark | Score | Setting | Source |
 | --- | --- | --- | ---: | --- | --- |
+| gpt-6-1-sol | GPT-6.1 Sol | TBSci | 58.1 | max effort; v0.1.0, 70 tasks, mini-swe-agent, pass@1 over 3 repeats, 1000-step cap | Artificial Analysis |
+| gpt-6-1-sol-low | GPT-6.1 Sol | DSWE | 64.4 | low effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-medium | GPT-6.1 Sol | DSWE | 73 | medium effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-high | GPT-6.1 Sol | DSWE | 75.2 | high effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol | DSWE | 71.9 | xhigh effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol | GPT-6.1 Sol | DSWE | 71.9 | max effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-low | GPT-6.1 Sol | GDPpdf | 27 | low effort; All-pass; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-medium | GPT-6.1 Sol | GDPpdf | 30 | medium effort; All-pass; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-high | GPT-6.1 Sol | GDPpdf | 32 | high effort; All-pass; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol | GDPpdf | 31.8 | xhigh effort; All-pass; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol | GPT-6.1 Sol | GDPpdf | 31 | max effort; All-pass; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-low | GPT-6.1 Sol | ABench | 24.7 | low effort; v1.0.6, strict state-based scoring; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-medium | GPT-6.1 Sol | ABench | 31.7 | medium effort; v1.0.6, strict state-based scoring; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-high | GPT-6.1 Sol | ABench | 33.2 | high effort; v1.0.6, strict state-based scoring; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol | ABench | 35.5 | xhigh effort; v1.0.6, strict state-based scoring; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol | GPT-6.1 Sol | ABench | 36.1 | max effort; v1.0.6, strict state-based scoring; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-low | GPT-6.1 Sol | OSW2 | 59 | low effort; v2026.08.08 offline set, partial reward; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-medium | GPT-6.1 Sol | OSW2 | 66.8 | medium effort; v2026.08.08 offline set, partial reward; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-high | GPT-6.1 Sol | OSW2 | 69.6 | high effort; v2026.08.08 offline set, partial reward; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol | OSW2 | 69.4 | xhigh effort; v2026.08.08 offline set, partial reward; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol | GPT-6.1 Sol | OSW2 | 71.4 | max effort; v2026.08.08 offline set, partial reward; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-low | GPT-6.1 Sol | TBSci | 43.7 | low effort; v0.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-medium | GPT-6.1 Sol | TBSci | 47.6 | medium effort; v0.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-high | GPT-6.1 Sol | TBSci | 51.1 | high effort; v0.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol-xhigh | GPT-6.1 Sol | TBSci | 53.7 | xhigh effort; v0.1; OpenAI-reported, harness not stated | OpenAI |
+| gpt-6-1-sol | GPT-6.1 Sol | TBSci | 57 | max effort; v0.1; OpenAI-reported, harness not stated | OpenAI |
 | gpt-6-astra | GPT-6 Astra | ALE | 59.3 | max effort | OpenAI |
 | gpt-6-astra | GPT-6 Astra | OSW2 | 72.6 | offline set v2026.08.08, partial, official settings | OpenAI |
 | gpt-6-astra | GPT-6 Astra | SSP | 92.7 | no tools; Fable 5 value is Mythos 5 | OpenAI |

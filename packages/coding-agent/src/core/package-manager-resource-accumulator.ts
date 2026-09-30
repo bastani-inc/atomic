@@ -9,6 +9,7 @@ import type {
 } from "./package-manager-types.ts";
 
 function resourcePrecedenceRank(m: PathMetadata): number {
+	if (m.source === "builtin") return 6;
 	if (m.origin === "package") return 4;
 	if (m.borrowedProjectLocal) return 5;
 	const scopeBase = m.scope === "project" ? 0 : 2;

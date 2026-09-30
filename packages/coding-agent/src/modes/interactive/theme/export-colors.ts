@@ -1,5 +1,6 @@
 import { ansi256ToHex, resolveThemeColors, resolveVarRefs } from "./color-utils.ts";
 import { getCurrentThemeName } from "./global-theme.ts";
+import { getTerminalTheme } from "./terminal-colors.js";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import { loadThemeJson } from "./theme-loading.ts";
 import type { ColorValue } from "./theme-schema.ts";
@@ -35,7 +36,11 @@ export function getResolvedThemeColors(themeName?: string): Record<string, strin
  * Check if a theme is a "light" theme (for CSS that needs light/dark variants).
  */
 export function isLightTheme(themeName?: string): boolean {
-	return themeName === "light" || themeName === "catppuccin-latte";
+	return (
+		themeName === "light" ||
+		themeName === "catppuccin-latte" ||
+		(themeName === "system" && getTerminalTheme() === "light")
+	);
 }
 
 /**

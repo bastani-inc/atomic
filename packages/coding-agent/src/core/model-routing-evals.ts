@@ -6,7 +6,6 @@ export const MODEL_SELECTION_EVALS_JSON_BYTES = 14_200;
 const VENDOR_OR_REGION_PREFIX = /^(?:[a-z][a-z-]*\.)+/u;
 const SNAPSHOT_TOKEN = /^\d{4}$/u;
 const DEPLOYMENT_TOKENS = new Set([
-	"fast",
 	"highspeed",
 	"ultraspeed",
 	"lightning",
@@ -80,10 +79,10 @@ export function catalogModelIdentity(slug: readonly string[]): string {
 
 /**
  * The candidate's own tokens first, then the same model without trailing
- * deployment, reasoning-mode or snapshot suffixes (`gpt-5.4-fast`,
- * `grok-4.20-reasoning`, `qwen3.8-max-0902`). A fallback applies only when the
- * more specific form matched no row, so a model that is itself named `-fast`
- * keeps its own evidence.
+ * deployment, reasoning-mode or snapshot suffixes (`grok-4.20-reasoning`,
+ * `qwen3.8-max-0902`). Fast is part of the owned identity, not a deployment
+ * alias: only explicit route metadata at the caller permits base-model reuse.
+ * A fallback applies only when the more specific form matched no row.
  */
 function candidateForms(tokens: readonly string[]): string[][] {
 	const forms = [[...tokens]];

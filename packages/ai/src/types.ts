@@ -634,6 +634,25 @@ export interface AssistantMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+/** A tool call made by another tool, such as a codemode script. */
+export interface NestedToolCallRecord {
+	id: string;
+	name: string;
+	/** Omitted when over the size limits. */
+	arguments?: JsonObject;
+	/** UTF-8 JSON size when arguments are omitted. */
+	argumentsBytes?: number;
+	status: "ok" | "error" | "unfinished";
+	durationMs?: number;
+	error?: string;
+}
+
+/** Bounded nested-call record. Results are not recorded. */
+export interface NestedToolCalls {
+	calls: NestedToolCallRecord[];
+	complete: boolean;
+}
+
 export type ToolResultMessage<TDetails = JsonValue> =
 	IsJsonCompatible<TDetails> extends true
 		? {
@@ -644,6 +663,8 @@ export type ToolResultMessage<TDetails = JsonValue> =
 				details?: JsonRepresentation<TDetails>;
 				/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 				usage?: Usage;
+				/** Nested calls retained in the session, not sent to the model. */
+				nestedCalls?: NestedToolCalls;
 				isError: boolean;
 				timestamp: number; // Unix timestamp in milliseconds
 			}
@@ -723,6 +744,8 @@ export interface ClassifierResult {
 	provider: ProviderId;
 	model: string;
 	answers: Record<string, ClassifierAnswer>;
+	/** Token usage and cost at the model's catalog price, when reported. */
+	usage?: Usage;
 	stopReason: ClassifierStopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
@@ -1208,7 +1231,7 @@ export interface ModelFastRoute {
 	/** Model ID to send upstream. OpenAI-style routing keeps the base ID; a provider with real fast siblings sends its own ID. */
 	upstreamModelId: string;
 	/** Service tier to send with the request. Set only for providers that route fast traffic through an OpenAI-style tier. */
-	serviceTier?: "priority";
+	serviceTier?: "priority" | "ultrafast";
 	/** Anthropic inference speed to send with the request. Set only for Claude models that support fast mode. */
 	speed?: "fast";
 }

@@ -1,0 +1,23 @@
+import type { ExtensionFactory } from "../../core/extensions/types.ts";
+import type { CodemodeMode } from "../../core/settings-manager.ts";
+import { createCodemodeToolDefinition } from "./tool.js";
+
+export interface CodemodeExtensionOptions {
+	mode?: CodemodeMode;
+	inlineBudget?: number;
+	models?: boolean;
+}
+export function createCodemodeExtension(options: CodemodeExtensionOptions = {}): ExtensionFactory {
+	return (pi) => {
+		pi.registerTool(
+			createCodemodeToolDefinition({
+				models: options.models ?? true,
+				appendEntry: (type, data) => pi.appendEntry(type, data),
+				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
+				getMode: () => options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : "on"),
+				getInlineBudget: () => options.inlineBudget ?? pi.getSettings().codemode?.inlineBudget,
+			}),
+		);
+	};
+}
+export default createCodemodeExtension();

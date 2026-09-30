@@ -27,6 +27,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 			"deepseek-ai/DeepSeek-V4-Pro",
 			"deepseek-ai/DeepSeek-V4-Pro-0813",
 			"deepseek-ai/DeepSeek-V4.1-Flash",
+			"deepseek-ai/DeepSeek-V4.1-Flash-Fast",
 			"moonshotai/Kimi-K2.5",
 			"moonshotai/Kimi-K2.6",
 			"moonshotai/Kimi-K2.7-Code",

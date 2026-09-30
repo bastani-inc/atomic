@@ -5,18 +5,19 @@ import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 export interface FirstTimeSetupResult {
-	theme: TerminalTheme;
+	theme: string;
 	shareAnalytics: boolean;
 }
 export interface FirstTimeSetupOptions {
 	detectedTheme: TerminalTheme;
-	onThemePreview(themeName: TerminalTheme): void;
+	onThemePreview(themeName: string): void;
 	onSubmit(result: FirstTimeSetupResult): void;
 	onCancel(): void;
 }
-const THEMES: Array<{ value: TerminalTheme; label: string }> = [
+const THEMES: Array<{ value: string; label: string }> = [
 	{ value: "dark", label: "Dark" },
 	{ value: "light", label: "Light" },
+	{ value: "system", label: "System (matches your terminal colors)" },
 ];
 const ANALYTICS = [
 	{ value: true, label: "Share anonymous usage data" },

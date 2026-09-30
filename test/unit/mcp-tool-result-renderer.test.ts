@@ -41,7 +41,7 @@ describe("MCP tool result rendering", () => {
 	});
 
 	test("formats collapsed result hint with the configured expand keybinding", () => {
-		const rendered = renderResult("one\ntwo\nthree\nfour", {
+		const rendered = renderResult("one\ntwo\nthree\nfour\nfive\nsix", {
 			expanded: false,
 			isPartial: false,
 		});
@@ -63,19 +63,19 @@ describe("MCP tool result rendering", () => {
 
 	test("omits the unavailable expand affordance when the binding is empty", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
-		const rendered = renderResult("one\ntwo\nthree\nfour", { expanded: false, isPartial: false });
+		const rendered = renderResult("one\ntwo\nthree\nfour\nfive\nsix", { expanded: false, isPartial: false });
 
 		assert.doesNotMatch(rendered, /Expand|\(\s*\)/);
 		assert.match(rendered, /…/);
 	});
 
 	test("reports truncation only when collapsed content exceeds the line budget", () => {
-		assert.deepEqual(formatMcpToolResultLines(textResult("one\ntwo\nthree\nfour"), false), {
-			lines: ["one", "two", "three", "…"],
+		assert.deepEqual(formatMcpToolResultLines(textResult("one\ntwo\nthree\nfour\nfive\nsix"), false), {
+			lines: ["one", "two", "three", "four", "five", "…"],
 			truncated: true,
 		});
-		assert.deepEqual(formatMcpToolResultLines(textResult("one\ntwo\nthree\nfour"), true), {
-			lines: ["one", "two", "three", "four"],
+		assert.deepEqual(formatMcpToolResultLines(textResult("one\ntwo\nthree\nfour\nfive\nsix"), true), {
+			lines: ["one", "two", "three", "four", "five", "six"],
 			truncated: false,
 		});
 	});

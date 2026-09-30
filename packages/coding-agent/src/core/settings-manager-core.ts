@@ -13,6 +13,11 @@ import type {
 import { ownedSettingsManagers, recordSettingsWrite, settingsWriteOwner } from "./settings-write-ownership.ts";
 
 export class SettingsManager {
+	/** A defensive snapshot of the effective merged settings. */
+	getSettings(): Settings {
+		return structuredClone(this.settings);
+	}
+
 	private storage: SettingsStorage;
 	private globalSettings: Settings;
 	private projectSettings: Settings;

@@ -94,6 +94,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "fullscreen-copy-on-select":
 				callbacks.onFullscreenCopyOnSelectChange(newValue === "true");
 				break;
+			case "fullscreen-wheel-scroll-lines":
+				callbacks.onFullscreenWheelScrollLinesChange?.(newValue === "auto" ? "auto" : Number(newValue));
+				break;
 			case "editor-padding":
 				callbacks.onEditorPaddingXChange(parseInt(newValue, 10));
 				break;

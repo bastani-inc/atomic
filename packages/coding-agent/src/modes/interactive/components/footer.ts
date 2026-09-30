@@ -2,9 +2,10 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.js";
 import { renderTaskFooter } from "./task-list.js";
 
@@ -54,8 +55,33 @@ function rightAlign(line: string, width: number): string {
 	return `${" ".repeat(width - lineWidth)}${line}`;
 }
 
-function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
-	const state = session.state;
+interface SessionStats {
+	sessionId: string;
+	leafId: string | null;
+	entryCount: number;
+	limitsModel: AgentSession["model"];
+	totals: UsageTotals;
+	latestCacheHitRate: number | undefined;
+	contextUsage: ContextUsage | undefined;
+}
+
+const sessionStats = new WeakMap<AgentSession, SessionStats>();
+
+function getSessionStats(session: AgentSession): SessionStats {
+	const manager = session.sessionManager;
+	const sessionId = manager.getSessionId();
+	const leafId = manager.getLeafId();
+	const entryCount = manager.getEntryCount();
+	const limitsModel = session.model;
+	const cached = sessionStats.get(session);
+	if (
+		cached &&
+		cached.sessionId === sessionId &&
+		cached.leafId === leafId &&
+		cached.entryCount === entryCount &&
+		cached.limitsModel === limitsModel
+	)
+		return cached;
 
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
@@ -84,9 +110,15 @@ function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width:
 		}
 	}
 
-	// Calculate context usage from session (handles compaction correctly).
-	// After compaction, tokens are unknown until the next LLM response.
 	const contextUsage = session.getContextUsage();
+	const stats = { sessionId, leafId, entryCount, limitsModel, totals, latestCacheHitRate, contextUsage };
+	sessionStats.set(session, stats);
+	return stats;
+}
+
+function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
+	const state = session.state;
+	const { totals, latestCacheHitRate, contextUsage } = getSessionStats(session);
 	const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 	const contextPercentValue = contextUsage?.percent ?? 0;
 	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";

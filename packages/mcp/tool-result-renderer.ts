@@ -27,7 +27,7 @@ function blockToLines(block: McpToolContentBlock): string[] {
 export function formatMcpToolResultLines(
   result: Pick<AgentToolResult<McpToolResultDetails>, "content">,
   expanded: boolean,
-  maxCollapsedLines = 3,
+  maxCollapsedLines = 5,
 ): McpToolResultDisplay {
   const allLines = result.content.flatMap(blockToLines);
   const lines = allLines.length > 0 ? allLines : ["(empty result)"];

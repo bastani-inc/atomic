@@ -1070,6 +1070,18 @@
           }
         }
 
+        const nested = result?.nestedCalls;
+        if (nested && Array.isArray(nested.calls) && nested.calls.length > 0) {
+          const icons = { ok: '✓', error: '✗', unfinished: '…' };
+          const lines = nested.calls.map(c => {
+            const args = c.arguments ? JSON.stringify(c.arguments) : `[arguments omitted, ${c.argumentsBytes} bytes]`;
+            const duration = c.durationMs !== undefined ? ` ${c.durationMs}ms` : '';
+            const error = c.error ? `\n    ${c.error.split('\n').join('\n    ')}` : '';
+            return `${icons[c.status] || '?'} ${c.name} ${args}${duration}${error}`;
+          });
+          html += formatExpandableOutput([`Nested calls: ${nested.calls.length}${nested.complete ? '' : ' (incomplete record)'}`, ...lines].join('\n'), 1);
+        }
+
         html += '</div>';
         return html;
       }

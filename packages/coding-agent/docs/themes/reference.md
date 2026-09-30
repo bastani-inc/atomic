@@ -153,11 +153,12 @@ The `export` section controls colors for `/export` HTML output. If omitted, colo
 
 ## Color Values
 
-Four formats are supported:
+Five formats are supported:
 
 | Format | Example | Description |
 |--------|---------|-------------|
 | Hex | `"#ff0000"` | 6-digit hex RGB |
+| OKHSL | `"okhsl(295 0.6 0.5)"` | Hue in degrees, saturation and lightness from 0 to 1. Converted to hex for HTML export. |
 | 256-color | `39` | xterm 256-color palette index (0-255) |
 | Variable | `"primary"` | Reference to a `vars` entry |
 | Default | `""` | Terminal's default color |

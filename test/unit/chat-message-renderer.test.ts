@@ -128,6 +128,35 @@ describe("chat message renderer utilities", () => {
 		);
 	});
 
+	test("nested tool events stay in their parent codemode row rather than creating direct rows", () => {
+		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+		const live = new LiveChatEntriesController(entries);
+		live.applyEvent({
+			type: "tool_execution_start",
+			toolCallId: "parent",
+			toolName: "codemode",
+			args: { code: "return tools.read({path:'a.ts'});" },
+		});
+		live.applyEvent({
+			type: "tool_execution_start",
+			toolCallId: "parent/1",
+			parentToolCallId: "parent",
+			toolName: "read",
+			args: { path: "a.ts" },
+		});
+		live.applyEvent({
+			type: "tool_execution_end",
+			toolCallId: "parent/1",
+			parentToolCallId: "parent",
+			toolName: "read",
+			result: { content: [{ type: "text", text: "nested output" }] },
+		});
+		assert.deepEqual(
+			entries.filter((entry) => entry.kind === "tool").map((entry) => entry.toolCallId),
+			["parent"],
+		);
+	});
+
 	test("renders distinct rows and output for parallel same-name tool calls (live events)", () => {
 		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
 		const live = new LiveChatEntriesController(entries);

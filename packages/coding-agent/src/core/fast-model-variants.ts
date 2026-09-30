@@ -8,6 +8,10 @@ export const FAST_MODEL_ID_SUFFIX = "-fast";
 /** Service tier OpenAI-style providers use to route fast traffic. */
 export const FAST_MODEL_SERVICE_TIER = "priority" as const;
 
+/** Codex's selectable Sol 6.1 tier; availability and pricing depend on the account. */
+export const ULTRAFAST_MODEL_ID_SUFFIX = "-ultrafast";
+export const ULTRAFAST_MODEL_SERVICE_TIER = "ultrafast" as const;
+
 /** Inference speed Anthropic's Messages API uses to route fast traffic. */
 export const FAST_MODEL_SPEED = "fast" as const;
 
@@ -201,30 +205,47 @@ export function deriveFastModelVariants(
 	let changed = false;
 	for (const model of models) {
 		derived.push(model);
-		if (model.fastRoute !== undefined || model.id.endsWith(FAST_MODEL_ID_SUFFIX)) continue;
+		if (
+			model.fastRoute !== undefined ||
+			model.id.endsWith(FAST_MODEL_ID_SUFFIX) ||
+			model.id.endsWith(ULTRAFAST_MODEL_ID_SUFFIX)
+		)
+			continue;
 		if (options.customModelIds?.has(model.id)) continue;
 		// An extension that supplies this API's stream function owns its serialization, so Atomic cannot
 		// guarantee the route reaches the wire. Publishing a `-fast` choice it may not honor is the same
 		// hazard as publishing one for an adapter that cannot carry the tier.
 		if (options.extensionOwnedApis?.has(model.api) === true) continue;
 		const fastRoute = fastRouteForBaseModel(model, entitledCopilotFastModelIds);
-		if (!fastRoute) continue;
-		const variantId = fastModelId(model.id);
-		if (ownedModelIds.has(variantId)) {
-			diagnostics.push({
-				provider: providerId,
-				modelId: variantId,
-				message:
-					`Model "${providerId}/${variantId}" is already defined by the provider, models.json, or an extension, ` +
-					`so Atomic did not derive a fast variant of "${providerId}/${model.id}". ` +
-					`That model routes exactly as declared. Rename or remove it to get the derived fast variant instead.`,
+		const routes: Array<{ suffix: string; label: string; route: ModelFastRoute }> = [];
+		if (fastRoute) routes.push({ suffix: FAST_MODEL_ID_SUFFIX, label: "fast", route: fastRoute });
+		// Codex carries ultrafast in service_tier without changing the upstream model. This
+		// declares a selectable request, not an account entitlement or a measured price.
+		if (model.provider === "openai-codex" && model.api === "openai-codex-responses" && model.id === "gpt-6.1-sol") {
+			routes.push({
+				suffix: ULTRAFAST_MODEL_ID_SUFFIX,
+				label: "ultrafast",
+				route: { baseModelId: model.id, upstreamModelId: model.id, serviceTier: ULTRAFAST_MODEL_SERVICE_TIER },
 			});
-			continue;
 		}
-		const override = options.modelOverrides?.[variantId];
-		const variant: Model<Api> = { ...model, id: variantId, name: `${model.name} (fast)`, fastRoute };
-		derived.push(override ? applyModelOverride(variant, override) : variant);
-		changed = true;
+		for (const { suffix, label, route } of routes) {
+			const variantId = `${model.id}${suffix}`;
+			if (ownedModelIds.has(variantId)) {
+				diagnostics.push({
+					provider: providerId,
+					modelId: variantId,
+					message:
+						`Model "${providerId}/${variantId}" is already defined by the provider, models.json, or an extension, ` +
+						`so Atomic did not derive a ${label} variant of "${providerId}/${model.id}". ` +
+						`That model routes exactly as declared. Rename or remove it to get the derived ${label} variant instead.`,
+				});
+				continue;
+			}
+			const override = options.modelOverrides?.[variantId];
+			const variant: Model<Api> = { ...model, id: variantId, name: `${model.name} (${label})`, fastRoute: route };
+			derived.push(override ? applyModelOverride(variant, override) : variant);
+			changed = true;
+		}
 	}
 	if (!changed && diagnostics.length === 0) return { models, diagnostics };
 	return { models: derived, diagnostics };

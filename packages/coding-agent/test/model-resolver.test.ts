@@ -1,6 +1,7 @@
 import type { Model } from "@bastani/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { parseModelPattern, resolveCliModel } from "../src/core/model-resolver.ts";
+import { findPreferredAvailableModel } from "../src/core/model-resolver-defaults.ts";
 
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [
@@ -608,4 +609,9 @@ describe("resolveCliModel", () => {
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
 	});
+});
+
+test("prefers GPT-6.1 Sol when Codex models are available", () => {
+	const sol = { ...openaiCodexBaseModel, id: "gpt-6.1-sol", name: "GPT-6.1 Sol" };
+	expect(findPreferredAvailableModel([openaiCodexBaseModel, sol])).toBe(sol);
 });

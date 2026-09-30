@@ -59,11 +59,11 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28 and (\d+) GPT-6\.1 Sol rows accessed 2026-09-29\.$/mu.exec(
 			evals,
 		);
-	assert.ok(caption, "the caption dates the leaderboard rows and the Claude Sonnet 5.5 rows separately");
-	assert.equal(aaRows.length, Number(caption[1]) + Number(caption[2]));
+	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
+	assert.equal(aaRows.length, Number(caption[1]) + Number(caption[2]) + Number(caption[3]));
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
 	for (const row of aaRows) assert.equal(row.split("|").length, aaHeaderCells, row);
@@ -107,7 +107,7 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 	assert.match(evals, /\[DeepSWE leaderboard\]\(https:\/\/deepswe\.datacurve\.ai\/\)/u);
 
 	const frontierCode = sectionTable(evals, "## FrontierCode 1.1");
-	assert.equal(frontierCode.rows.length, 41);
+	assert.equal(frontierCode.rows.length, 42);
 	assert.deepEqual(frontierCode.rows.find((row) => row[0] === "claude-sonnet-5-5")?.slice(2), [
 		"xhigh",
 		"52.1",
@@ -126,7 +126,15 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 	assert.match(evals, /\[FrontierCode leaderboard\]\(https:\/\/cognition\.com\/frontiercode\)/u);
 
 	const published = sectionTable(evals, "## Published benchmark results");
-	const sources = new Set(["OpenAI", "Anthropic", "Google", "ARC Prize", "TB-Science leaderboard", "Zapier"]);
+	const sources = new Set([
+		"OpenAI",
+		"Anthropic",
+		"Google",
+		"ARC Prize",
+		"TB-Science leaderboard",
+		"Zapier",
+		"Artificial Analysis",
+	]);
 	for (const row of published.rows) {
 		assert.ok(sources.has(row[5]!), `unknown source in ${row.join(" | ")}`);
 		const description = evals.split("\n").find((line) => line.includes(`\`${row[2]}\``) && line.startsWith("- "));

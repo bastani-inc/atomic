@@ -123,4 +123,11 @@ export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
 /** Inline extension factory, optionally carrying a stable name and display visibility. */
 export type InlineExtension =
 	| ExtensionFactory
-	| { name: string; factory: ExtensionFactory; hidden?: boolean; bundled?: boolean };
+	| {
+			name: string;
+			factory: ExtensionFactory;
+			hidden?: boolean;
+			bundled?: boolean;
+			builtin?: boolean;
+			replaceable?: boolean;
+	  };

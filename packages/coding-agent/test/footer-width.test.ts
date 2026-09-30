@@ -79,8 +79,14 @@ function createSession(options: {
 			},
 			thinkingLevel: options.thinkingLevel ?? "off",
 		},
+		get model() {
+			return this.state.model;
+		},
 		sessionManager: {
 			getEntries: () => entries,
+			getEntryCount: () => entries.length,
+			getSessionId: () => "test",
+			getLeafId: () => "leaf",
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},

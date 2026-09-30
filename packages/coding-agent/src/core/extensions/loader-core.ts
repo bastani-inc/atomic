@@ -3,7 +3,7 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "../mandatory-runtime-tools.ts";
-import { createSyntheticSourceInfo } from "../source-info.ts";
+import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
@@ -132,11 +132,8 @@ const INTER_EXTENSION_YIELD_THRESHOLD_MS = 16;
  * Create an Extension object with empty collections.
  */
 function createExtension(extensionPath: string, resolvedPath: string): Extension {
-	const source =
-		extensionPath.startsWith("<") && extensionPath.endsWith(">")
-			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
-			: "local";
-	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
+	const source = getSyntheticPathSource(extensionPath) ?? "local";
+	const baseDir = isSyntheticPath(extensionPath) ? undefined : path.dirname(resolvedPath);
 
 	return {
 		path: extensionPath,

@@ -89,6 +89,20 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
+	it("supports GPT-6.1 Sol efforts without sending none", () => {
+		for (const provider of ["openai", "azure-openai-responses", "openai-codex"] as const) {
+			const model = getModel(provider, "gpt-6.1-sol");
+			expect(model).toBeDefined();
+			expect(getSupportedThinkingLevels(model!)).toEqual(
+				provider === "openai-codex"
+					? ["minimal", "low", "medium", "high", "xhigh", "max"]
+					: ["low", "medium", "high", "xhigh", "max"],
+			);
+			expect(model!.thinkingLevelMap?.off).toBeNull();
+			expect(model!.cost.cacheRead).toBe(0.1);
+		}
+	});
+
 	it("includes max but not xhigh for Anthropic Sonnet 4.6 on anthropic-messages API", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-6");
 		expect(model).toBeDefined();

@@ -94,6 +94,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	getSettings?: () => import("../settings-types.ts").Settings;
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Shared by extension loading and its runner generation. */
 	workflowActivityHub: WorkflowActivityHub;
@@ -206,6 +207,14 @@ export interface ExtensionContextActions {
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getRouterModel?: () => string;
 	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
+	executeTool?: (
+		callerId: string,
+		name: string,
+		args: unknown,
+		options: import("./context-types.ts").ExecuteToolOptions,
+	) => Promise<import("@earendil-works/pi-agent-core").AgentToolCallOutcome>;
+	getCallableTools?: () => readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	getSettings?: () => import("../settings-types.ts").Settings;
 }
 
 /**
@@ -244,6 +253,7 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 export interface Extension {
 	path: string;
 	hidden?: boolean;
+	replaceable?: boolean;
 	resolvedPath: string;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;

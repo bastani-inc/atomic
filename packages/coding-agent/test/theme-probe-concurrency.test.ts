@@ -1,117 +1,78 @@
-import type { RgbColor, TUI } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { detectStartupTheme } from "../src/cli/startup-ui.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { initTheme, type TerminalTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { InteractiveThemeController } from "../src/modes/interactive/theme/theme-controller.ts";
+import assert from "node:assert/strict";
+import type { TerminalColors, TUI } from "@earendil-works/pi-tui";
+import { afterEach, test, vi } from "vitest";
+import { detectStartupTheme } from "../src/cli/startup-ui.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { setTerminalColorScheme, setTerminalColors } from "../src/modes/interactive/theme/terminal-colors.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { InteractiveThemeController } from "../src/modes/interactive/theme/theme-controller.js";
 
-/**
- * A TUI double whose colour-scheme and background probes stay unsettled until
- * the test releases them, so a test can observe which probes have started
- * while neither has answered yet.
- */
 function createProbeUi() {
-	let releaseColorScheme: ((terminalTheme: TerminalTheme | undefined) => void) | undefined;
-	let releaseBackground: ((rgb: RgbColor | undefined) => void) | undefined;
-	let colorSchemeCalls = 0;
-	let backgroundCalls = 0;
-	const setTerminalColorSchemeNotifications = vi.fn();
+	let release: ((colors: TerminalColors) => void) | undefined;
+	let late: ((colors: TerminalColors) => void) | undefined;
+	const queryTerminalColors = vi.fn((options: { onLateReply?: (colors: TerminalColors) => void }) => {
+		late = options.onLateReply;
+		return new Promise<TerminalColors>((resolve) => {
+			release = resolve;
+		});
+	});
 	const ui = {
 		invalidate: vi.fn(),
 		requestRender: vi.fn(),
-		setTerminalColorSchemeNotifications,
+		setTerminalColorSchemeNotifications: vi.fn(),
 		onTerminalColorSchemeChange: vi.fn(() => vi.fn()),
-		queryTerminalColorScheme: vi.fn(
-			() =>
-				new Promise<TerminalTheme | undefined>((resolve) => {
-					colorSchemeCalls += 1;
-					releaseColorScheme = resolve;
-				}),
-		),
-		queryTerminalBackgroundColor: vi.fn(
-			() =>
-				new Promise<RgbColor | undefined>((resolve) => {
-					backgroundCalls += 1;
-					releaseBackground = resolve;
-				}),
-		),
+		queryTerminalColors,
 	} as unknown as TUI;
 	return {
 		ui,
-		setTerminalColorSchemeNotifications,
-		colorSchemeCallCount: () => colorSchemeCalls,
-		backgroundCallCount: () => backgroundCalls,
-		/** Settle the still-pending colour-scheme probe; the background probe keeps waiting. */
-		settleColorScheme(terminalTheme: TerminalTheme): void {
-			expect(releaseColorScheme).toBeTypeOf("function");
-			releaseColorScheme?.(terminalTheme);
-		},
-		/** Settle the still-pending background probe. */
-		settleBackground(rgb: RgbColor | undefined): void {
-			expect(releaseBackground).toBeTypeOf("function");
-			releaseBackground?.(rgb);
-		},
+		queryTerminalColors,
+		settle: (colors: TerminalColors) => release?.(colors),
+		late: (colors: TerminalColors) => late?.(colors),
 	};
 }
-
 afterEach(() => {
+	setTerminalColors({});
+	setTerminalColorScheme(undefined);
 	initTheme("dark");
 });
 
-describe("InteractiveThemeController theme probes", () => {
-	it("starts the colour-scheme and background probes together for an automatic theme", async () => {
-		const probes = createProbeUi();
-		const manager = SettingsManager.inMemory({ theme: "light/dark" });
-		const controller = new InteractiveThemeController(probes.ui, {
-			getSettingsManager: () => manager,
-			showError: vi.fn(),
-			onChanged: vi.fn(),
-		});
-
-		const applied = controller.applyFromSettings();
-		// Both probes must be in flight before either settles: each resolver is
-		// still held by the test.
-		expect(probes.colorSchemeCallCount()).toBe(1);
-		expect(probes.backgroundCallCount()).toBe(1);
-
-		// Answering the colour-scheme probe alone completes automatic theming;
-		// the still-pending background probe must not hold it back.
-		probes.settleColorScheme("light");
-		await applied;
-
-		expect(theme.name).toBe("light");
-		expect(probes.setTerminalColorSchemeNotifications).toHaveBeenCalledWith(true);
+test("automatic theme applies immediately and waits for one shared color probe", async () => {
+	const probe = createProbeUi();
+	const manager = SettingsManager.inMemory({ theme: "light/dark" });
+	const controller = new InteractiveThemeController(probe.ui, {
+		getSettingsManager: () => manager,
+		showError: vi.fn(),
+		onChanged: vi.fn(),
 	});
-
-	it("queries only the background probe when no theme is configured", async () => {
-		const probes = createProbeUi();
-		const manager = SettingsManager.inMemory({});
-		const controller = new InteractiveThemeController(probes.ui, {
-			getSettingsManager: () => manager,
-			showError: vi.fn(),
-			onChanged: vi.fn(),
-		});
-		const applied = controller.applyFromSettings();
-		expect(probes.backgroundCallCount()).toBe(1);
-		expect(probes.colorSchemeCallCount()).toBe(0);
-
-		probes.settleBackground({ r: 250, g: 250, b: 250 });
-		await applied;
-
-		// High-confidence background detection wins and is applied directly.
-		expect(theme.name).toBe("light");
-	});
+	const applied = controller.applyFromSettings();
+	assert.equal(probe.queryTerminalColors.mock.calls.length, 1);
+	assert.equal(theme.name, "dark");
+	probe.settle({ background: { r: 255, g: 255, b: 255 } });
+	await applied;
+	assert.equal(theme.name, "light");
 });
 
-describe("startup theme probe", () => {
-	it("starts the colour-scheme and background probes together before first-run setup", async () => {
-		const probes = createProbeUi();
-
-		const detection = detectStartupTheme(probes.ui);
-		expect(probes.colorSchemeCallCount()).toBe(1);
-		expect(probes.backgroundCallCount()).toBe(1);
-
-		probes.settleColorScheme("light");
-		await expect(detection).resolves.toBe("light");
+test("system theme updates when terminal colors arrive after the probe timeout", async () => {
+	const probe = createProbeUi();
+	const manager = SettingsManager.inMemory({ theme: "system" });
+	const controller = new InteractiveThemeController(probe.ui, {
+		getSettingsManager: () => manager,
+		showError: vi.fn(),
+		onChanged: vi.fn(),
 	});
+	const applied = controller.applyFromSettings();
+	probe.settle({});
+	await applied;
+	const before = theme.getFgAnsi("accent");
+	probe.late({ background: { r: 20, g: 20, b: 20 } });
+	assert.notEqual(theme.getFgAnsi("accent"), before);
+	assert.equal(theme.name, "system");
+});
+
+test("startup uses one shared terminal color probe", async () => {
+	const probe = createProbeUi();
+	const detection = detectStartupTheme(probe.ui);
+	assert.equal(probe.queryTerminalColors.mock.calls.length, 1);
+	probe.settle({ background: { r: 255, g: 255, b: 255 } });
+	assert.equal(await detection, "light");
 });

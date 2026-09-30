@@ -97,6 +97,8 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	/** Snapshot of effective settings. Available after the session runtime is bound. */
+	getSettings(): import("../settings-types.ts").Settings;
 	/** @internal Owning runtime identity, retained across generation replacement. */
 	lifecycleScope?: object;
 	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;

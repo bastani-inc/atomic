@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6.1 Sol and its first-party Fast variants for OpenAI API keys and ChatGPT Codex subscriptions.
+- Added an experimental `openai-codex/gpt-6.1-sol-ultrafast` choice with the exact Codex `ultrafast` service tier. Account access and tier pricing remain provider-dependent; displayed costs are provisional base-rate estimates. Normal and Fast routing remain unchanged.
+- Added **Sign in with ChatGPT** for the OpenAI provider, independently of Codex backend login.
+- Added Jev decision models on Vercel AI Gateway and OpenCode Zen.
+- Added configurable fullscreen mouse-wheel scrolling with terminal-aware automatic behavior or a fixed line count.
+- Extension tools can declare exposure, namespaces, annotations and output schemas, and invoke permitted nested tools through the ordinary validation and permission hooks.
+- Added a selectable system theme based on the terminal's palette and contrast, and OKHSL colors for custom themes.
+- Added opt-in `codemode` scripts for composing permitted tools, filtering output, branch-local JSON storage, and classifier calls, plus `tool_search` for activating deferred tools. Interactive and orchestration tools remain unavailable from scripts.
+- Added `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` extension resources for explicit loading and settings-based enable/disable controls, with diagnostics when an extension replaces codemode or tool search.
+
+### Changed
+
+- `defaultTools` now accepts `+name` and `-name` modifiers. Project modifier-only lists adjust the global selection instead of replacing it.
+- Automatic model routing now includes GPT-6.1 Sol results from Artificial Analysis, FrontierCode, and OpenAI's published external benchmarks, preserving measured efforts and independent reporters. Metadata-backed Fast variants use base-model evidence without inventing separate Fast scores; independently registered Fast IDs require their own evidence.
+- Completed `bash` commands now return bounded structured output for programmatic callers, including nonzero exits, without increasing model-facing output limits.
+- Codex's automatic provider default is now GPT-6.1 Sol. Explicit saved model selections remain unchanged.
+- Reduced transcript/footer and shell-preview rendering work in long sessions.
+- Tool previews without custom renderers now show their arguments in collapsed and expanded views.
+
+### Fixed
+
+- Theme-colored notices now refresh after theme changes and late terminal color replies.
+- llama.cpp unloaded autoload presets now retain their cached effective context size instead of falling back to the model's training limit.
+- Native extension providers with stored credentials become available immediately after registration without exposing unrelated unauthenticated models.
+- Cancelled tools no longer start queued native or nested sequential calls after cancellation.
+
 ## [0.9.24] - 2026-09-29
 
 ### Added

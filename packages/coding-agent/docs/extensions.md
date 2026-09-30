@@ -215,6 +215,20 @@ Additional paths via `settings.json`:
 }
 ```
 
+### Built-in extension resources
+
+Atomic exposes `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` as extension resources, not filesystem paths. Disable one in the `extensions` setting, for example:
+
+```json
+{ "extensions": ["-builtin:codemode"] }
+```
+
+A trusted project `"+builtin:codemode"` entry can override a global exclusion. Explicit loading also works with `--no-extensions`: `atomic --no-extensions -e builtin:codemode --tools read,codemode`. Loading the resource registers the tool; activating it still requires `defaultTools` or `--tools` because codemode and tool search are inactive by default.
+
+Codemode and tool search are replaceable: an extension that registers the same tool, command, or flag can take over. Atomic reports the replacement and names its owner. Disable that extension through `atomic config` when you want the built-in implementation instead.
+
+These symbolic names do not replace Atomic's bundled MCP, workflow, subagent, web-access, or Intercom resources. There are no corresponding `builtin:mcp`, `builtin:workflows`, or `builtin:subagents` aliases. Keep using the existing package controls and MCP configuration.
+
 To share extensions via npm or git as Atomic packages, see [Atomic packages](/packages).
 
 ## Available Imports

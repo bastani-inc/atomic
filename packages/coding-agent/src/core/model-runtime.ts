@@ -24,6 +24,7 @@ import {
 	type ImageApi,
 	type ImageModel,
 	type ImagesContext,
+	type LoginOptions,
 	type Model,
 	type Models,
 	type ModelsApiStreamOptions,
@@ -949,10 +950,15 @@ export class ModelRuntime implements Models {
 		});
 	}
 
-	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
+	async login(
+		providerId: string,
+		type: AuthType,
+		interaction: AuthInteraction,
+		options?: LoginOptions,
+	): Promise<Credential> {
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
-			const credential = await this.models.login(providerId, type, { ...interaction, signal });
+			const credential = await this.models.login(providerId, type, { ...interaction, signal }, options);
 			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "login", credential, () => {
 				// Credential acquisition and persistence are the login transaction. Publish
@@ -1142,6 +1148,11 @@ export class ModelRuntime implements Models {
 		this.nativeExtensionProviders.set(provider.id, provider);
 		this.recomposeProvider(provider.id);
 		this.updateModelSnapshot();
+		this.markProvisionallyConfigured(
+			provider.id,
+			configuredRequestAuthStatus(this.config.getProvider(provider.id), undefined),
+			provider.auth?.oauth && !provider.auth.apiKey ? "oauth" : "api_key",
+		);
 		this.scheduleRegistrationRefresh();
 	}
 
@@ -1160,34 +1171,32 @@ export class ModelRuntime implements Models {
 		this.extensionProviders.set(providerId, effective);
 		this.recomposeProvider(providerId);
 		this.updateModelSnapshot();
-		if (
-			this.snapshot.storedProviders.has(providerId) ||
-			configuredRequestAuthStatus(this.config.getProvider(providerId), effective)?.configured
-		) {
-			const configuredProviders = new Set(this.snapshot.configuredProviders).add(providerId);
-			const auth = new Map(this.snapshot.auth);
-			// Provisional entry until the async refresh lands; never clobber a real check result.
-			if (!auth.get(providerId)) {
-				auth.set(providerId, {
-					type: effective.oauth && !effective.apiKey ? "oauth" : "api_key",
-					source: "configured provider",
-				});
-			}
-			// A provider that was already configured has an availability result — possibly
-			// a credential-filtered subset of its catalog, as with an additive GitHub
-			// Copilot override — and keeps it until the refresh this registration schedules
-			// republishes it. Only a provider this registration newly configures has no
-			// result to keep, so only its catalog is exposed provisionally.
-			let available = this.snapshot.available;
-			if (!this.snapshot.configuredProviders.has(providerId)) {
-				const preserved = new Set(available.map(snapshotModelKey));
-				available = this.snapshot.all.filter(
-					(model) => model.provider === providerId || preserved.has(snapshotModelKey(model)),
-				);
-			}
-			this.snapshot = { ...this.snapshot, auth, configuredProviders, available };
-		}
+		this.markProvisionallyConfigured(
+			providerId,
+			configuredRequestAuthStatus(this.config.getProvider(providerId), effective),
+			effective.oauth && !effective.apiKey ? "oauth" : "api_key",
+		);
 		this.scheduleRegistrationRefresh();
+	}
+
+	private markProvisionallyConfigured(
+		providerId: string,
+		configuredStatus: AuthStatus | undefined,
+		type: AuthType,
+	): void {
+		if (!this.snapshot.storedProviders.has(providerId) && !configuredStatus?.configured) return;
+		const configuredProviders = new Set(this.snapshot.configuredProviders).add(providerId);
+		const auth = new Map(this.snapshot.auth);
+		if (!auth.has(providerId)) auth.set(providerId, { type, source: "configured provider" });
+		// Preserve credential-filtered availability for providers already configured.
+		let available = this.snapshot.available;
+		if (!this.snapshot.configuredProviders.has(providerId)) {
+			const preserved = new Set(available.map(snapshotModelKey));
+			available = this.snapshot.all.filter(
+				(model) => model.provider === providerId || preserved.has(snapshotModelKey(model)),
+			);
+		}
+		this.snapshot = { ...this.snapshot, auth, configuredProviders, available };
 	}
 
 	unregisterProvider(providerId: string): void {

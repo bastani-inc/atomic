@@ -261,9 +261,17 @@ export async function handleConfigCommand(
 	}
 	reportSettingsErrors(settingsManager, "config command");
 	const globalManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	const global = await new DefaultPackageManager({ cwd, agentDir, settingsManager: globalManager }).resolve();
+	const builtinExtensions = (runtimeOptions.extensionFactories ?? []).flatMap((input) =>
+		typeof input !== "function" && input.builtin ? [input.name] : [],
+	);
+	const global = await new DefaultPackageManager({
+		cwd,
+		agentDir,
+		settingsManager: globalManager,
+		builtinExtensions,
+	}).resolve();
 	const project = settingsManager.isProjectTrusted()
-		? await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve()
+		? await new DefaultPackageManager({ cwd, agentDir, settingsManager, builtinExtensions }).resolve()
 		: global;
 	await selectConfig({
 		resolvedPaths: { global, project },

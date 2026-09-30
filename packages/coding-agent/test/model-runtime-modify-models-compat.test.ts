@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,25 @@ function model(id: string): Model<"openai-completions"> {
 }
 
 describe("extension provider model lifecycle", () => {
+	it("immediately configures native providers with stored credentials (#9962)", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({
+				"extension-native": { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 60_000 },
+			}),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		runtime.registerNativeProvider({
+			id: "extension-native",
+			name: "Native",
+			auth: { oauth: { name: "OAuth", resolve: async () => undefined } },
+			getModels: () => [{ ...model("native"), provider: "extension-native" }],
+		});
+		assert.equal(runtime.hasConfiguredAuth("extension-native"), true);
+		assert.equal(runtime.isUsingOAuth("extension-native"), true);
+		assert.ok(runtime.getAvailableSnapshot().some((entry) => entry.id === "native"));
+	});
 	it("registers native pi-ai providers with their auth implementation", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),

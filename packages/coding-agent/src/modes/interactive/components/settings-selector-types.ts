@@ -1,6 +1,6 @@
 import type { Api, ClassifierApi, ClassifierModel, Model, Transport } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, WheelScrollLines } from "@earendil-works/pi-tui";
 import type {
 	CacheWarmingMode,
 	DefaultProjectTrust,
@@ -48,6 +48,7 @@ export interface SettingsConfig {
 	fullscreenScrollbar: ScrollViewScrollbar;
 	fullscreenExitOutput: FullscreenExitOutput;
 	fullscreenCopyOnSelect: boolean;
+	fullscreenWheelScrollLines?: WheelScrollLines;
 	editorPaddingX: number;
 	outputPad: 0 | 1;
 	showCacheMissNotices: boolean;
@@ -89,6 +90,7 @@ export interface SettingsCallbacks {
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
 	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
 	onFullscreenCopyOnSelectChange: (enabled: boolean) => void;
+	onFullscreenWheelScrollLinesChange?: (lines: WheelScrollLines) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
 	onShowCacheMissNoticesChange: (enabled: boolean) => void;

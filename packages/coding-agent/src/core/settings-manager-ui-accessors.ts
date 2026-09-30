@@ -1,4 +1,4 @@
-import type { ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@earendil-works/pi-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.js";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
@@ -44,6 +44,8 @@ interface SettingsManagerUiAccessors {
 	setFullscreenExitOutput(output: FullscreenExitOutput): void;
 	getFullscreenCopyOnSelect(): boolean;
 	setFullscreenCopyOnSelect(enabled: boolean): void;
+	getFullscreenWheelScrollLines(): WheelScrollLines;
+	setFullscreenWheelScrollLines(lines: WheelScrollLines): void;
 	getTerminalCapabilityOverrides(): Partial<TerminalCapabilities>;
 }
 
@@ -222,6 +224,20 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.fullscreenCopyOnSelect = enabled;
 		state.markModified("fullscreenCopyOnSelect");
+		state.save();
+	},
+
+	getFullscreenWheelScrollLines() {
+		const lines = settingsInternals(this).settings.fullscreenWheelScrollLines;
+		return typeof lines === "number" && Number.isFinite(lines)
+			? Math.max(1, Math.min(100, Math.floor(lines)))
+			: "auto";
+	},
+	setFullscreenWheelScrollLines(lines) {
+		const state = settingsInternals(this);
+		state.globalSettings.fullscreenWheelScrollLines =
+			lines === "auto" ? lines : Math.max(1, Math.min(100, Math.floor(lines)));
+		state.markModified("fullscreenWheelScrollLines");
 		state.save();
 	},
 

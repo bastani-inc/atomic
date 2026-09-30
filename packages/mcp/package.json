@@ -33,7 +33,7 @@
   "peerDependencies": {
     "@bastani/atomic": "*",
     "@bastani/pi-ai": "*",
-    "@earendil-works/pi-tui": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.99.1",
     "zod": "^3.25.0 || ^4.0.0",
     "typebox": "*"
   },
@@ -52,6 +52,10 @@
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "open": "^11.0.1",
+    "proper-lockfile": "4.1.2",
     "zod": "^3.25.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
   }
 }

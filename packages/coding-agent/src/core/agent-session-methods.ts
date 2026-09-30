@@ -202,6 +202,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	resumeTasks(): void;
 
 	getActiveToolNames(): string[];
+	getCallableToolNames(): string[];
 	getAllTools(): ToolInfo[];
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	setActiveToolsByName(toolNames: string[]): void;
@@ -433,6 +434,7 @@ export interface AgentSessionPublicSurface
 		| "subscribe"
 		| "dispose"
 		| "getActiveToolNames"
+		| "getCallableToolNames"
 		| "getAllTools"
 		| "getToolDefinition"
 		| "setActiveToolsByName"

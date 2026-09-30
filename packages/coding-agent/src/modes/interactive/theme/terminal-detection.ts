@@ -1,5 +1,8 @@
-import type { RgbColor } from "@earendil-works/pi-tui";
-import { ansi256ToHex, hexToRgb } from "./color-utils.ts";
+import type { RgbColor, TerminalColors } from "@earendil-works/pi-tui";
+import { terminalAppearance } from "./system-theme.js";
+import { detectColorFgBgTheme, detectTerminalTheme, getTerminalTheme } from "./terminal-colors.js";
+
+export { detectColorFgBgTheme, detectTerminalTheme, getTerminalTheme } from "./terminal-colors.js";
 
 export type TerminalTheme = "dark" | "light";
 
@@ -45,7 +48,7 @@ export interface TerminalThemeDetectionOptions {
 }
 
 export interface TerminalBackgroundThemeDetector {
-	queryTerminalBackgroundColor({ timeoutMs }: { timeoutMs: number }): Promise<RgbColor | undefined>;
+	queryTerminalColors({ timeoutMs }: { timeoutMs: number }): Promise<TerminalColors>;
 }
 
 export interface TerminalBackgroundThemeDetectionOptions extends TerminalThemeDetectionOptions {
@@ -53,51 +56,25 @@ export interface TerminalBackgroundThemeDetectionOptions extends TerminalThemeDe
 	timeoutMs: number;
 }
 
-export interface TerminalAutoThemeDetector extends TerminalBackgroundThemeDetector {
-	queryTerminalColorScheme({ timeoutMs }: { timeoutMs: number }): Promise<TerminalTheme | undefined>;
-}
+export interface TerminalAutoThemeDetector extends TerminalBackgroundThemeDetector {}
 
 export interface TerminalAutoThemeDetectionOptions extends TerminalThemeDetectionOptions {
 	ui: TerminalAutoThemeDetector;
 	timeoutMs: number;
 }
 
-function getColorFgBgBackgroundIndex(colorfgbg: string): number | undefined {
-	const parts = colorfgbg.split(";");
-	for (let i = parts.length - 1; i >= 0; i--) {
-		const bg = parseInt(parts[i].trim(), 10);
-		if (Number.isInteger(bg) && bg >= 0 && bg <= 255) {
-			return bg;
-		}
-	}
-	return undefined;
-}
-
-function getRgbColorLuminance({ r, g, b }: RgbColor): number {
-	const toLinear = (channel: number) => {
-		const value = channel / 255;
-		return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-	};
-	return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
-}
-
-function getAnsiColorLuminance(index: number): number {
-	return getRgbColorLuminance(hexToRgb(ansi256ToHex(index)));
-}
-
 export function getThemeForRgbColor(rgb: RgbColor): TerminalTheme {
-	return getRgbColorLuminance(rgb) >= 0.5 ? "light" : "dark";
+	return terminalAppearance(rgb);
 }
 
 export function detectTerminalBackgroundFromEnv(options: TerminalThemeDetectionOptions = {}): TerminalThemeDetection {
 	const env = options.env ?? process.env;
-	const colorfgbg = env.COLORFGBG || "";
-	const bg = getColorFgBgBackgroundIndex(colorfgbg);
+	const bg = detectColorFgBgTheme(env);
 	if (bg !== undefined) {
 		return {
-			theme: getAnsiColorLuminance(bg) >= 0.5 ? "light" : "dark",
+			theme: bg,
 			source: "COLORFGBG",
-			detail: `background color index ${bg}`,
+			detail: `background color index ${env.COLORFGBG?.split(";").at(-1)}`,
 			confidence: "high",
 		};
 	}
@@ -116,10 +93,11 @@ export async function detectTerminalBackgroundTheme({
 	env,
 }: TerminalBackgroundThemeDetectionOptions): Promise<TerminalThemeDetection> {
 	try {
-		const rgb = await ui.queryTerminalBackgroundColor({ timeoutMs });
+		const colors = await ui.queryTerminalColors({ timeoutMs });
+		const rgb = colors.background;
 		if (rgb) {
 			return {
-				theme: getThemeForRgbColor(rgb),
+				theme: detectTerminalTheme(colors, undefined, env),
 				source: "terminal background",
 				detail: `OSC 11 background rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
 				confidence: "high",
@@ -137,23 +115,9 @@ export async function detectTerminalThemeForAuto({
 	timeoutMs,
 	env,
 }: TerminalAutoThemeDetectionOptions): Promise<TerminalTheme> {
-	let colorSchemePromise: Promise<TerminalTheme | undefined> | undefined;
-	try {
-		colorSchemePromise = ui.queryTerminalColorScheme({ timeoutMs });
-	} catch {
-		// Fall back to OSC 11 / COLORFGBG detection when starting the color-scheme query fails.
-	}
-	const backgroundThemePromise = detectTerminalBackgroundTheme({ ui, timeoutMs, env });
-
-	try {
-		const colorScheme = await colorSchemePromise;
-		if (colorScheme) return colorScheme;
-	} catch {
-		// Fall back to the concurrently queried OSC 11 / COLORFGBG detection.
-	}
-	return (await backgroundThemePromise).theme;
+	return (await detectTerminalBackgroundTheme({ ui, timeoutMs, env })).theme;
 }
 
 export function getDefaultTheme(): string {
-	return detectTerminalBackgroundFromEnv().theme;
+	return getTerminalTheme();
 }

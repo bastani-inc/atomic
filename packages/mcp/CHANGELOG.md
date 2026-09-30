@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- MCP tool previews now show arguments in collapsed and expanded views while redacting sensitive argument fields.
+
+### Fixed
+
+- Concurrent Atomic processes now coordinate rotating OAuth refresh tokens, reusing the refreshed credential rather than independently rotating the same token.
+- Stalled OAuth refresh requests now time out after 15 seconds, including response-body reads, so connection shutdown can finish and release the refresh lock.
+
 ## [0.9.24] - 2026-09-29
 
 ### Added

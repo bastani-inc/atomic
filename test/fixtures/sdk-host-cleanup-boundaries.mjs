@@ -49,7 +49,7 @@ try {
 			await createAgentSession({ ...options, resourceLoader, systemPromptTransform() { unavailable = true; throw primary; } }).then((result) => { session = result.session; }, (failure) => { error = failure; });
 		} else {
 			await resourceLoader.reload();
-			session = new AgentSession({ agent: new Agent(), cwd, settingsManager, modelRuntime, resourceLoader, sessionManager: options.sessionManager });
+			session = new AgentSession({ agent: new Agent({ streamFn: () => { throw new Error("Cleanup fixture must not invoke a model"); } }), cwd, settingsManager, modelRuntime, resourceLoader, sessionManager: options.sessionManager });
 			await session.bindExtensions({});
 			await session.reload({ beforeSessionStart() { if (mode === "getter-after-transfer") { unavailable = true; throw primary; } } }).catch((failure) => { error = failure; });
 		}

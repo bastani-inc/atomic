@@ -33,7 +33,7 @@ const resourceLoader = new DefaultResourceLoader({
 	}],
 });
 await resourceLoader.reload();
-const session = new AgentSession({ agent: new Agent(), sessionManager: SessionManager.inMemory(root), settingsManager, cwd: root, modelRuntime, resourceLoader });
+const session = new AgentSession({ agent: new Agent({ streamFn: () => { throw new Error("Startup fixture must not invoke a model"); } }), sessionManager: SessionManager.inMemory(root), settingsManager, cwd: root, modelRuntime, resourceLoader });
 const startup = session.bindExtensions({}).catch((error) => error);
 await entered.promise;
 let settled = false;

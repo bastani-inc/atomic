@@ -217,6 +217,7 @@ export interface MessageEndEvent {
 export interface ToolExecutionStartEvent {
 	type: "tool_execution_start";
 	toolCallId: string;
+	parentToolCallId?: string;
 	toolName: string;
 	args: unknown;
 }
@@ -225,6 +226,7 @@ export interface ToolExecutionStartEvent {
 export interface ToolExecutionUpdateEvent {
 	type: "tool_execution_update";
 	toolCallId: string;
+	parentToolCallId?: string;
 	toolName: string;
 	args: unknown;
 	partialResult: unknown;
@@ -234,6 +236,7 @@ export interface ToolExecutionUpdateEvent {
 export interface ToolExecutionEndEvent {
 	type: "tool_execution_end";
 	toolCallId: string;
+	parentToolCallId?: string;
 	toolName: string;
 	result: unknown;
 	isError: boolean;

@@ -49,7 +49,7 @@ const result = await generateStructuredOutput({
 console.log(result.value.category, result.model);
 ```
 
-The returned `value` is the schema-validated decision, not the request arguments. `model` names the candidate that produced it. `modelAttempts` records skips and failed candidates when a chain was used. A classifier result does not include token usage, so `usage` on a classifier-produced decision is not a classifier bill. Chat usage is reported only when a chat candidate supplies the accepted result. A valid shape is not proof that the judgment is correct. Validate current policy again before any later action.
+The returned `value` is the schema-validated decision, not the request arguments. `model` names the candidate that produced it. `modelAttempts` records skips and failed candidates when a chain was used. This decision API does not expose classifier billing usage: its classifier-produced `usage` is not a classifier bill. The lower-level classifier operation may report usage and cost separately. Chat usage is reported when a chat candidate supplies the accepted result. A valid shape is not proof that the judgment is correct. Validate current policy again before any later action.
 
 The `structured_output` tool takes the same decision inputs from the calling model: required `instructions` and nonempty named `state`, plus optional `model` and `fallbackModels`. The registered schema is fixed by `createStructuredOutputTool({ schema })`. The tool resolves those IDs through the session registry and returns the inferred value. Omitting `model` uses the current stage or session chat model. See [Structured output final results](/sdk/reference#structured-output-final-results).
 
@@ -81,7 +81,7 @@ The structured-decision path never trims supplied state. A general structured-ou
 
 Automatic subagent and workflow-stage model selection has a chat model read the task and sends a classifier only the resulting answers and candidate models; see [automatic model selection](/subagents/reference#automatic-model-selection).
 
-Classifier response bodies are limited by the provider operation. Atomic validates that every question receives a known Choice option. The classify result does not report token usage. Reported model, probabilities, and confidence are advisory and never reject an otherwise valid decision.
+Classifier response bodies are limited by the provider operation. Atomic validates that every question receives a known Choice option. Lower-level classify results may report usage and cost when the provider supplies them; this structured-decision API does not expose them as classifier billing usage. Reported model, probabilities, and confidence are advisory and never reject an otherwise valid decision.
 
 ## Cancellation and failures
 

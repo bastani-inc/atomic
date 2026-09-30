@@ -28,6 +28,7 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 
 | Target | Read | Main distinctions |
 | --- | --- | --- |
+| GPT-6.1 Sol | `references/gpt_6_1_sol.md` | Supported-effort migration, task and approval contracts, selective Astra-observed templates, tool and conversation compatibility |
 | GPT-6 Astra, Sol, Luna | `references/gpt_6.md` | OpenAI's official templates for approval pauses, skill-instruction conflicts, writing style, delegation, and verification; Sol/Luna effort sensitivity |
 | GPT-5.6 Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, high-effort and pro-mode prompts, programmatic tool stages, cache-friendly ordering |
 | GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, grounded drafts, explicit validation |

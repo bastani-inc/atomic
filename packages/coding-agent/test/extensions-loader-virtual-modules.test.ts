@@ -101,6 +101,36 @@ export default function extension() {}
 	);
 
 	it(
+		"loads the lightweight models entry through transformed extension imports",
+		async () => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-models-entry-extension-"));
+			try {
+				for (const [index, specifier] of [
+					"@bastani/pi-ai/models",
+					"@earendil-works/pi-ai/models",
+					"@mariozechner/pi-ai/models",
+				].entries()) {
+					const extensionPath = path.join(directory, `extension-${index}.ts`);
+					fs.writeFileSync(
+						extensionPath,
+						`
+import { createModels } from ${JSON.stringify(specifier)};
+const models = createModels();
+if (models.getProviders().length !== 0) throw new Error("models entry loaded implicit providers");
+export default function extension() {}
+`,
+					);
+					const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(extensionPath);
+					assert.equal(typeof factory, "function");
+				}
+			} finally {
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
 		"maps pi-tui layout helpers through both loader resolution paths",
 		async () => {
 			const specifiers = ["@earendil-works/pi-tui/dist/layout.js", "@mariozechner/pi-tui/dist/layout.js"] as const;

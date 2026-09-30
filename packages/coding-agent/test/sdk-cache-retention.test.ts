@@ -80,7 +80,10 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 		"github-copilot",
 		"opencode",
 	]) {
-		await credentials.modify(provider, async () => ({ type: "api_key", key: "test-key" }));
+		await credentials.modify(provider, async () => ({
+			type: "api_key",
+			key: provider === "openai" ? "sk-test-key" : "test-key",
+		}));
 	}
 	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null });
 	const gpt4o = getModel("openai", "gpt-4o");

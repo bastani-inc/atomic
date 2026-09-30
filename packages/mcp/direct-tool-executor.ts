@@ -1,4 +1,5 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@bastani/atomic";
+import type { JsonObject } from "@bastani/pi-ai";
 import type { McpExtensionState } from "./state.js";
 import type { DirectToolSpec, McpContent } from "./types.js";
 import { getFailureAgeSeconds, lazyConnect } from "./init.js";
@@ -100,7 +101,7 @@ export function createDirectToolExecutor(
 ): DirectToolExecute {
   const startUiSession = options.startUiSession ?? maybeStartUiSession;
   const startAutoAuth = options.startAutoAuth ?? attemptDirectAutoAuth;
-  return async function execute(_toolCallId, params, signal) {
+  const execute: DirectToolExecute = async function execute(_toolCallId, params, signal) {
     signal?.throwIfAborted();
     let state: McpExtensionState;
     try {
@@ -238,6 +239,7 @@ export function createDirectToolExecutor(
         if (spec.inputSchema) errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
         return {
           content: [{ type: "text" as const, text: `Error: ${errorText}` }],
+          structuredContent: result as JsonObject,
           details: { error: "tool_error", server: spec.serverName },
         };
       }
@@ -249,12 +251,14 @@ export function createDirectToolExecutor(
           : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
         return {
           content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
+          structuredContent: result as JsonObject,
           details: { server: spec.serverName, tool: spec.originalName, uiOpen: true },
         };
       }
 
       return {
         content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
+        structuredContent: result as JsonObject,
         details: { server: spec.serverName, tool: spec.originalName },
       };
     } catch (error) {
@@ -276,5 +280,18 @@ export function createDirectToolExecutor(
         if (isActiveStateOwner(state)) state.manager.touch(spec.serverName);
       }
     }
+  };
+  return async (...args) => {
+    const result = await execute(...args);
+    if (spec.resourceUri || result.structuredContent !== undefined) return result;
+    return {
+      ...result,
+      structuredContent: {
+        content: result.content.map((block): JsonObject => block.type === "text"
+          ? { type: "text", text: block.text }
+          : { type: "image", data: block.data, mimeType: block.mimeType }),
+        isError: !!result.details.error,
+      },
+    };
   };
 }

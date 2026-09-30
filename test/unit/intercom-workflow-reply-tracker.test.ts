@@ -10,6 +10,7 @@ import {
 	bindWorkflowReplyTracker,
 	preserveWorkflowReplyTracker,
 } from "../../packages/intercom/workflow-reply-tracker.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 const sender: SessionInfo = {
 	id: "sender-1",
@@ -173,7 +174,11 @@ test("public pending and reply isolate a workflow parent and two typed children"
 					{ action, message: "answer", ...(replyTo ? { replyTo } : {}) },
 					undefined,
 					undefined,
-					{ ...context, sessionManager: { getSessionId: () => owner }, hasUI: false } as ExtensionContext,
+					toolContext({
+						...context,
+						sessionManager: { getSessionId: () => owner },
+						hasUI: false,
+					} as ExtensionContext),
 				);
 				return { ...result, isError: "isError" in result && result.isError };
 			},

@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/at
 import { type JsonObject, validateToolArguments } from "@bastani/pi-ai";
 import { Value } from "typebox/value";
 import { test, vi } from "vitest";
+import { toolContext } from "../helpers/tool-context.js";
 
 interface ExtractedContent {
 	url: string;
@@ -151,7 +152,7 @@ test("fetch_content passes single and multiple URLs to extraction unchanged", as
 			{ urls },
 			new AbortController().signal,
 			undefined,
-			{} as ExtensionContext,
+			toolContext({} as ExtensionContext),
 		);
 		assert.deepEqual(fetchAllContent.mock.lastCall?.[0], urls);
 		assert.ok(typeof result.details === "object" && result.details !== null && "successful" in result.details);
@@ -167,7 +168,7 @@ test("fetch_content reports each failed URL and recovery steps when a batch fail
 	]);
 	const result = await registrations
 		.heavy()
-		.execute("test", { urls }, new AbortController().signal, undefined, {} as ExtensionContext);
+		.execute("test", { urls }, new AbortController().signal, undefined, toolContext({} as ExtensionContext));
 	assert.ok(typeof result.details === "object" && result.details !== null && "error" in result.details);
 	const error = result.details.error;
 	assert.equal(typeof error, "string");
@@ -191,7 +192,7 @@ test("fetch_content exposes retained excerpts when every extraction reports an e
 		]);
 		const result = await registrations
 			.heavy()
-			.execute("test", { urls }, new AbortController().signal, undefined, {} as ExtensionContext);
+			.execute("test", { urls }, new AbortController().signal, undefined, toolContext({} as ExtensionContext));
 		assert.ok(typeof result.details === "object" && result.details !== null && "error" in result.details);
 		assert.ok("outcome" in result.details && result.details.outcome === "all_failed");
 		assert.ok("successful" in result.details && result.details.successful === 0);
@@ -216,7 +217,7 @@ test("fetch_content preserves successful content retrieval guidance for mixed ba
 	]);
 	const result = await registrations
 		.heavy()
-		.execute("test", { urls }, new AbortController().signal, undefined, {} as ExtensionContext);
+		.execute("test", { urls }, new AbortController().signal, undefined, toolContext({} as ExtensionContext));
 	assert.ok(typeof result.details === "object" && result.details !== null);
 	assert.equal("error" in result.details, false);
 	const text = result.content.find((item) => item.type === "text");

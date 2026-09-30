@@ -1,4 +1,5 @@
 export type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
+export type { ExecuteToolOptions, ExtensionToolContext } from "./context-types.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -8,6 +9,7 @@ export type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "./host-input.js";
+export type { ToolAnnotations, ToolExposure, ToolLoadout, ToolLoadoutChanges, ToolNamespace } from "./tool-types.ts";
 /**
  * Extension system for lifecycle events and custom tools.
  */
