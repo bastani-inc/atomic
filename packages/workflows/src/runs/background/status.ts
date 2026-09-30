@@ -459,9 +459,7 @@ function isRunFullyPaused(activeStore: Store, runId: string, controlRunIds: read
 		(controlRunId) =>
 			runs
 				.find((candidate) => candidate.id === controlRunId)
-				?.stages.some(
-					(stage) => stage.status === "running" || stage.status === "pending" || stage.status === "awaiting_input",
-				) === true,
+				?.stages.some((stage) => stage.status === "running" || stage.status === "pending") === true,
 	);
 	return !hasLiveStage && runs.find((candidate) => candidate.id === runId)?.status === "paused";
 }

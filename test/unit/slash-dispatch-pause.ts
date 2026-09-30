@@ -346,6 +346,48 @@ describe("/workflow run-control chat commands", () => {
 		assert.deepEqual(levels, ["info"]);
 	});
 
+	test.sequential("top-level /workflow pause --all treats a paused run with a stage awaiting input as already paused (#3377)", async () => {
+		const runId = testRunId(`pause-slash-paused-awaiting-input-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(runId));
+		store.recordStageStart(runId, {
+			id: "pause-stage",
+			name: "worker",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		store.recordStageStart(runId, {
+			id: "prompt-stage",
+			name: "prompt",
+			status: "awaiting_input",
+			parentIds: [],
+			toolEvents: [],
+		});
+		registerTestStageHandle(runId, "pause-stage");
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+		await workflowCmd.options.handler(`pause ${runId}`, ctx);
+		assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
+		registerTestStageHandle(runId, "pause-stage", "paused");
+		messages.length = 0;
+		levels.length = 0;
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		assert.match(messages.join("\n"), /already paused/);
+		assert.doesNotMatch(messages.join("\n"), /failed to pause|no_active_stages/);
+		assert.deepEqual(levels, ["info"]);
+	});
+
 	test.sequential.each([
 		["-y <id>", "-y"],
 		["--yes <id>", "--yes"],

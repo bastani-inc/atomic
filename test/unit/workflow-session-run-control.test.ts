@@ -186,6 +186,23 @@ function startPausableRun(runId: string): void {
 	);
 }
 
+function startPausableRunWithPendingPrompt(runId: string): void {
+	startPausableRun(runId);
+	store.recordStageStart(runId, {
+		id: "question",
+		name: "question",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+	});
+	store.recordStagePendingPrompt(runId, "question", {
+		id: "prompt",
+		kind: "input",
+		message: "Proceed?",
+		createdAt: 1,
+	});
+}
+
 function startUncontrollableRun(runId: string): void {
 	store.recordRunStart(run(runId));
 }
@@ -799,6 +816,57 @@ describe("session workflow run control", () => {
 		const raw = await execute({ action: "pause", all: true }, toolContext());
 		assert.equal("code" in raw, false);
 		assert.equal("failedRuns" in raw, false);
+	});
+
+	test.sequential("resolves a batch pause of a paused run that still has a stage awaiting input as already paused (#3377)", async () => {
+		const runId = testRunId("session-run-control-batch-paused-awaiting-input");
+		startPausableRunWithPendingPrompt(runId);
+		const { execute, control } = setup();
+		assert.equal((await control.pause(runId)).status, "paused");
+		assert.equal((await control.getRun(runId)).status, "paused");
+		assert.equal(
+			store
+				.runs()
+				.find((candidate) => candidate.id === runId)
+				?.stages.at(-1)?.status,
+			"awaiting_input",
+		);
+
+		const again = await control.pause({ all: true });
+
+		assert.notEqual(again.status, "partial");
+		assert.equal(again.failedRuns, undefined);
+		const raw = await execute({ action: "pause", all: true }, toolContext());
+		assert.equal("status" in raw ? raw.status : undefined, "noop");
+		assert.equal("code" in raw, false);
+		assert.equal("failedRuns" in raw, false);
+	});
+
+	test.sequential("counts a paused run with a stage awaiting input as stopped beside a newly started run (#3377)", async () => {
+		const pausedId = testRunId("session-run-control-batch-paused-awaiting-ok");
+		const runningId = testRunId("session-run-control-batch-paused-awaiting-new");
+		startPausableRunWithPendingPrompt(pausedId);
+		const { control } = setup();
+		assert.equal((await control.pause(pausedId)).status, "paused");
+		startPausableRun(runningId);
+
+		const outcome = await control.pause({ all: true });
+
+		assert.equal(outcome.status, "paused");
+		assert.equal(outcome.failedRuns, undefined);
+		assert.equal((await control.getRun(runningId)).status, "paused");
+	});
+
+	test.sequential("resolves a batch quit of a paused run that still has a stage awaiting input without failed runs (#3377)", async () => {
+		const runId = testRunId("session-run-control-batch-quit-paused-awaiting-input");
+		startPausableRunWithPendingPrompt(runId);
+		const { control } = setup();
+		assert.equal((await control.pause(runId)).status, "paused");
+
+		const outcome = await control.quit({ all: true });
+
+		assert.notEqual(outcome.status, "partial");
+		assert.equal(outcome.failedRuns, undefined);
 	});
 
 	test.sequential("rejects a batch pause that stopped nothing when an already paused run sits beside a run with no controllable stage (#3377)", async () => {
