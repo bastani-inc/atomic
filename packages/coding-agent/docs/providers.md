@@ -130,6 +130,12 @@ Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock
 
 `ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
 
+### Anthropic workload identity federation
+
+With no Anthropic key, bearer token, or login configured, Atomic uses workload identity federation when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` are all set. The Anthropic SDK exchanges the identity token for a short-lived access token and refreshes it, re-reading the token file each time, so keep that file fresh in long sessions. `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are sent when set.
+
+Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. Federation applies only to the `anthropic` provider, not to other Anthropic-compatible providers.
+
 ### GitHub Copilot
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
