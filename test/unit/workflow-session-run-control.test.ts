@@ -801,6 +801,69 @@ describe("session workflow run control", () => {
 		assert.equal("failedRuns" in raw, false);
 	});
 
+	test.sequential("rejects a batch pause that stopped nothing when an already paused run sits beside a run with no controllable stage (#3377)", async () => {
+		const pausedId = testRunId("session-run-control-batch-paused-idle-ok");
+		const idleId = testRunId("session-run-control-batch-paused-idle-stuck");
+		startPausableRun(pausedId);
+		const { execute, control } = setup();
+		assert.equal((await control.pause(pausedId)).status, "paused");
+		startUncontrollableRun(idleId);
+
+		const error = await rejection(control.pause({ all: true }));
+
+		assert.ok(error instanceof WorkflowRunControlError, error.message);
+		assert.equal(error.code, "WORKFLOW_RUN_CONTROL_FAILED");
+		assert.deepEqual(
+			error.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[idleId, "no_active_stages"]],
+		);
+		assert.equal((await control.getRun(idleId)).status, "running");
+		assert.equal((await control.getRun(pausedId)).status, "paused");
+		const raw = await execute({ action: "pause", all: true }, toolContext());
+		assert.equal("status" in raw ? raw.status : undefined, "noop");
+		assert.equal("code" in raw ? raw.code : undefined, "control_failed");
+		assert.deepEqual(
+			"failedRuns" in raw ? raw.failedRuns?.map((failed) => [failed.runId, failed.reason]) : undefined,
+			[[idleId, "no_active_stages"]],
+		);
+	});
+
+	test.sequential("rejects a batch pause that stopped nothing when an already paused run sits beside a run whose pause throws (#3377)", async () => {
+		const pausedId = testRunId("session-run-control-batch-paused-refusing-ok");
+		const refusingId = testRunId("session-run-control-batch-paused-refusing-stuck");
+		startPausableRun(pausedId);
+		const { control } = setup();
+		assert.equal((await control.pause(pausedId)).status, "paused");
+		store.recordRunStart(run(refusingId));
+		store.recordStageStart(refusingId, {
+			id: "review",
+			name: "review",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		stageControlRegistry.register(
+			stageHandle({
+				runId: refusingId,
+				stageId: "review",
+				status: () => "running",
+				pause: async () => {
+					throw new Error("stage refused to pause");
+				},
+				resume: async () => undefined,
+			}),
+		);
+
+		const error = await rejection(control.pause({ all: true }));
+
+		assert.ok(error instanceof WorkflowRunControlError, error.message);
+		assert.equal(error.code, "WORKFLOW_RUN_CONTROL_FAILED");
+		assert.deepEqual(
+			error.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[refusingId, "pause_failed"]],
+		);
+	});
+
 	test.sequential("resolves a repeated batch pause as a benign noop without failed runs (#3377)", async () => {
 		startPausableRun(testRunId("session-run-control-batch-repeat-a"));
 		startPausableRun(testRunId("session-run-control-batch-repeat-b"));
@@ -943,6 +1006,25 @@ describe("session workflow run control", () => {
 		assert.equal(again.failedRuns, undefined);
 	});
 
+	test.sequential("reports a batch quit as partial when it quits an already paused run beside a run with no controllable stage (#3377)", async () => {
+		const pausedId = testRunId("session-run-control-batch-quit-paused-ok");
+		const idleId = testRunId("session-run-control-batch-quit-paused-idle");
+		startPausableRun(pausedId);
+		const { control } = setup();
+		assert.equal((await control.pause(pausedId)).status, "paused");
+		startUncontrollableRun(idleId);
+
+		const outcome = await control.quit({ all: true });
+
+		assert.equal(outcome.status, "partial");
+		assert.deepEqual(
+			outcome.failedRuns?.map((failed) => [failed.runId, failed.reason]),
+			[[idleId, "no_active_stages"]],
+		);
+		assert.equal((await control.getRun(pausedId)).status, "paused");
+		assert.equal((await control.getRun(idleId)).status, "running");
+	});
+
 	test.sequential("returns a structured database_unavailable result when durable inspection fails for an unknown run (#3377)", async () => {
 		const runId = testRunId("session-run-control-inspection-outage");
 		setDurableBackend(new FailingInspectionBackend(new DbosNotReadyError()));
@@ -955,6 +1037,31 @@ describe("session workflow run control", () => {
 			assert.equal("status" in result ? result.status : undefined, "noop");
 			assert.equal("code" in result ? result.code : undefined, "database_unavailable");
 			assert.match("message" in result ? result.message : "", new RegExp(`Failed to ${action} run ${runId}`));
+		}
+	});
+
+	test.sequential("returns a structured database_unavailable result when durable inspection throws a plain error (#3377)", async () => {
+		const runId = testRunId("session-run-control-inspection-plain-error");
+		setDurableBackend(new FailingInspectionBackend(new Error("connect ECONNREFUSED 127.0.0.1:5432")));
+		const { execute, control } = setup();
+
+		for (const action of ["pause", "quit"] as const) {
+			const result = await execute({ action, runId }, toolContext());
+			assert.equal(result.action, action);
+			assert.equal("runId" in result ? result.runId : undefined, runId);
+			assert.equal("status" in result ? result.status : undefined, "noop");
+			assert.equal("code" in result ? result.code : undefined, "database_unavailable");
+			assert.match(
+				"message" in result ? result.message : "",
+				new RegExp(`Failed to ${action} run ${runId}: connect ECONNREFUSED 127\\.0\\.0\\.1:5432`),
+			);
+		}
+		for (const operation of [() => control.pause(runId), () => control.quit(runId)]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowRunDatabaseError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_DATABASE");
+			assert.equal(error.runId, runId);
+			assert.match(error.message, /connect ECONNREFUSED 127\.0\.0\.1:5432/);
 		}
 	});
 

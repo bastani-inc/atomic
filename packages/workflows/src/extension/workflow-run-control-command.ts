@@ -15,12 +15,7 @@ import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext } from "./public-types.js";
-import {
-	bulkAlreadyPausedCount,
-	bulkFailedRuns,
-	bulkFailureMessage,
-	bulkStoppedCount,
-} from "./workflow-bulk-control.js";
+import { bulkAlreadyPausedCount, bulkFailedRuns, bulkFailureMessage } from "./workflow-bulk-control.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
@@ -157,7 +152,7 @@ export async function handleRunControlCommand(
 					results,
 					(result) => result.message ?? `${result.runId}: ${action === "quit" ? "quit" : "paused"}`,
 				);
-				if (bulkStoppedCount(results) > 0) print(message);
+				if (changed > 0) print(message);
 				else fail(message);
 			} else if (changed > 0) {
 				print(

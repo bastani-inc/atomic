@@ -22,10 +22,6 @@ export function bulkFailedRuns(results: readonly BulkRunResult[]): WorkflowContr
 	}));
 }
 
-export function bulkStoppedCount(results: readonly BulkRunResult[]): number {
-	return results.filter((result) => result.ok || isAlreadyPaused(result)).length;
-}
-
 export function bulkAlreadyPausedCount(results: readonly BulkRunResult[]): number {
 	return results.filter(isAlreadyPaused).length;
 }
@@ -33,7 +29,7 @@ export function bulkAlreadyPausedCount(results: readonly BulkRunResult[]): numbe
 export function bulkUnstoppedStatus(
 	results: readonly BulkRunResult[],
 ): { status: "partial" } | { status: "noop"; code: "control_failed" } {
-	return bulkStoppedCount(results) > 0 ? { status: "partial" } : { status: "noop", code: "control_failed" };
+	return results.some((result) => result.ok) ? { status: "partial" } : { status: "noop", code: "control_failed" };
 }
 
 export function bulkFailureMessage<T extends BulkRunResult>(

@@ -267,6 +267,62 @@ describe("/workflow run-control chat commands", () => {
 		assert.deepEqual(levels, ["info"]);
 	});
 
+	test.sequential("top-level /workflow pause --all reports an error when it stopped nothing beside an already paused run (#3377)", async () => {
+		const alreadyPaused = testRunId(`pause-slash-paused-beside-stuck-${Date.now()}`);
+		const noController = testRunId(`pause-slash-stuck-beside-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		store.recordRunStart(makeInflightRun(noController));
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /failed to pause 1 run\(s\)/);
+		assert.match(output, new RegExp(`${noController}: no_active_stages`));
+		assert.doesNotMatch(output, /Paused \d+ run\(s\)/);
+		assert.deepEqual(levels, ["error"]);
+		assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+	});
+
+	test.sequential("top-level /workflow quit --all reports info when it quits an already paused run beside a stuck run (#3377)", async () => {
+		const alreadyPaused = testRunId(`quit-slash-paused-beside-stuck-${Date.now()}`);
+		const noController = testRunId(`quit-slash-stuck-beside-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		store.recordRunStart(makeInflightRun(noController));
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("quit --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /Quit 1 run\(s\)/);
+		assert.match(output, new RegExp(`${noController}: no_active_stages`));
+		assert.deepEqual(levels, ["info"]);
+		assert.equal(store.runs().find((run) => run.id === alreadyPaused)?.exitReason, "quit");
+		assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+	});
+
 	test.sequential("top-level /workflow pause --all treats only already paused runs as a benign no-op (#3377)", async () => {
 		const alreadyPaused = testRunId(`pause-slash-only-paused-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(alreadyPaused));

@@ -22,7 +22,11 @@ import {
 	bulkUnstoppedStatus,
 } from "./workflow-bulk-control.js";
 import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import { classifyControlError, resumeFailureCode } from "./workflow-control-failure.js";
+import {
+	classifyControlError,
+	resumeFailureCode,
+	type WorkflowControlFailureCode,
+} from "./workflow-control-failure.js";
 import { resolveWorkflowResumeTarget, stageScopedDurableResumeMessage } from "./workflow-durable-resume-command.js";
 import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -61,7 +65,7 @@ async function foreignRunFailure(
 	try {
 		durable = await guard.getRuntime().inspectDurableWorkflow(target);
 	} catch (error) {
-		return controlFailure(action, target, error);
+		return controlFailure(action, target, error, "database_unavailable");
 	}
 	if (durable.kind !== "found") return undefined;
 	const runId = durable.detail.runId;
@@ -85,13 +89,18 @@ async function foreignRunFailure(
 		: undefined;
 }
 
-function controlFailure(action: "pause" | "quit" | "resume", runId: string, error: unknown): WorkflowToolResult {
+function controlFailure(
+	action: "pause" | "quit" | "resume",
+	runId: string,
+	error: unknown,
+	code: WorkflowControlFailureCode = classifyControlError(error),
+): WorkflowToolResult {
 	return {
 		action,
 		runId,
 		status: "noop",
 		message: `Failed to ${action} run ${runId}: ${error instanceof Error ? error.message : String(error)}`,
-		code: classifyControlError(error),
+		code,
 	};
 }
 
