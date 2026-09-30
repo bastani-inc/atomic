@@ -18,6 +18,7 @@ import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { classifyControlError, resumeFailureCode } from "./workflow-control-failure.js";
 import { resolveWorkflowResumeTarget, stageScopedDurableResumeMessage } from "./workflow-durable-resume-command.js";
+import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
@@ -40,6 +41,37 @@ export interface WorkflowControlActionDeps {
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
 	authorize?: (runId: string) => void;
+}
+
+export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
+
+async function foreignRunFailure(
+	action: "pause" | "quit",
+	target: string,
+	guard: WorkflowForeignRunGuard | undefined,
+): Promise<WorkflowToolResult | undefined> {
+	if (guard === undefined || target.length === 0) return undefined;
+	const durable = await guard.getRuntime().inspectDurableWorkflow(target);
+	if (durable.kind !== "found") return undefined;
+	const runId = durable.detail.runId;
+	const foreign = (message: string): WorkflowToolResult => ({
+		action,
+		runId,
+		status: "noop",
+		message,
+		code: "owned_elsewhere",
+	});
+	try {
+		guard.authorize?.(runId);
+	} catch (error) {
+		if (error instanceof WorkflowInstanceOwnershipError) return foreign(error.message);
+		throw error;
+	}
+	return durable.detail.ownerActiveElsewhere === true
+		? foreign(
+				`Workflow ${runId} is actively running in another Atomic session. Control it from that session; it can be ${action === "pause" ? "paused" : "quit"} only by its owner.`,
+			)
+		: undefined;
 }
 
 function controlFailure(action: "pause" | "quit" | "resume", runId: string, error: unknown): WorkflowToolResult {
@@ -189,6 +221,7 @@ async function quitToolNodeAction(
 export async function workflowQuitAction(
 	args: WorkflowToolArgs,
 	owner = captureWorkflowOwnerResources(),
+	guard?: WorkflowForeignRunGuard,
 ): Promise<WorkflowToolResult> {
 	const { store } = owner;
 	const target = resolveToolRunTarget(args, "No in-flight runs to quit.", store);
@@ -216,7 +249,10 @@ export async function workflowQuitAction(
 		};
 	}
 	if (target.kind === "malformed" || target.kind === "not_found") {
-		return { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
+		const foreign = target.kind === "not_found" ? await foreignRunFailure(action, target.target, guard) : undefined;
+		return (
+			foreign ?? { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" }
+		);
 	}
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
@@ -254,6 +290,7 @@ export async function workflowQuitAction(
 export async function workflowPauseAction(
 	args: WorkflowToolArgs,
 	owner = captureWorkflowOwnerResources(),
+	guard?: WorkflowForeignRunGuard,
 ): Promise<WorkflowToolResult> {
 	const { store } = owner;
 	const target = resolveToolRunTarget(args, "No in-flight runs to pause.", store);
@@ -278,8 +315,12 @@ export async function workflowPauseAction(
 			return controlFailure(action, "--all", error);
 		}
 	}
-	if (target.kind === "malformed" || target.kind === "not_found")
-		return { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
+	if (target.kind === "malformed" || target.kind === "not_found") {
+		const foreign = target.kind === "not_found" ? await foreignRunFailure(action, target.target, guard) : undefined;
+		return (
+			foreign ?? { action, runId: target.target, status: "noop", message: target.message, code: "run_not_found" }
+		);
+	}
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId, store);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action, owner);

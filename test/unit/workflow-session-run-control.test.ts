@@ -230,6 +230,55 @@ describe("session workflow run control", () => {
 		assert.match(error.message, /actively running in another Atomic session/);
 	});
 
+	test.sequential("rejects pause and quit of a run executing in another live process as WorkflowRunOwnershipError (#3377)", async () => {
+		const runId = testRunId("session-run-control-foreign-process-control");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 3,
+			ownerExecutorId: "atomic-other-process",
+		});
+		const { control } = setup();
+
+		for (const operation of [() => control.pause(runId), () => control.quit(runId)]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowRunOwnershipError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_OWNED_ELSEWHERE");
+			assert.equal(error.runId, runId);
+		}
+		assert.equal((await control.pause({ all: true })).status, "noop");
+		assert.equal((await control.quit({ all: true })).status, "noop");
+	});
+
+	test.sequential("rejects pause and quit of a durable run owned by another session as WorkflowRunOwnershipError (#3377)", async () => {
+		const runId = testRunId("session-run-control-foreign-session-durable");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 3,
+			modelOwner: "session-b",
+			origin: "agent",
+		});
+		const { control } = setup();
+
+		for (const operation of [() => control.pause(runId), () => control.quit(runId)]) {
+			const error = await rejection(operation());
+			assert.ok(error instanceof WorkflowRunOwnershipError, error.message);
+			assert.equal(error.code, "WORKFLOW_RUN_OWNED_ELSEWHERE");
+			assert.equal(error.runId, runId);
+		}
+	});
+
 	test.sequential("reports non-resumable runs as WorkflowRunNotResumableError (#3377)", async () => {
 		const completedId = testRunId("session-run-control-completed");
 		store.recordRunStart(run(completedId));

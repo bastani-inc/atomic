@@ -285,7 +285,13 @@ test(
 			assert.equal(error.code, "WORKFLOW_RUN_NOT_FOUND");
 		}
 
-		for (const operation of [() => other.workflows.getRun(runId), () => other.workflows.resume(runId)]) {
+		for (const operation of [
+			() => other.workflows.getRun(runId),
+			() => other.workflows.getStages(runId),
+			() => other.workflows.pause(runId),
+			() => other.workflows.quit(runId),
+			() => other.workflows.resume(runId),
+		]) {
 			const error = await rejection(operation());
 			assert.ok(error instanceof WorkflowRunOwnershipError, error.message);
 			assert.equal(error.code, "WORKFLOW_RUN_OWNED_ELSEWHERE");

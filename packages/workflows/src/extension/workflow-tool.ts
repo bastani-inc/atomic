@@ -230,11 +230,11 @@ export function makeExecuteWorkflowTool(
 			case "answer":
 				return awaitRequest(workflowAnswerAction(args, owner));
 			case "pause":
-				return awaitRequest(workflowPauseAction(args, owner));
+				return awaitRequest(workflowPauseAction(args, owner, { getRuntime, authorize }));
 			case "reload":
 				return awaitRequest(workflowReloadAction(args, { reloadWorkflowResources }));
 			case "quit":
-				return awaitRequest(workflowQuitAction(args, owner));
+				return awaitRequest(workflowQuitAction(args, owner, { getRuntime, authorize }));
 			case "resume":
 				return awaitRequest(
 					workflowResumeAction(args, {
