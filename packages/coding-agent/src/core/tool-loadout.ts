@@ -4,6 +4,9 @@ import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolLoadout } from "./extensions/tool-types.ts";
 
 const hiddenDeclarations = new WeakMap<AgentSession, ReadonlySet<string>>();
+export function isToolDeclarationHidden(session: AgentSession, name: string): boolean {
+	return hiddenDeclarations.get(session)?.has(name) ?? false;
+}
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
 	const tools = [...new Set(names)].flatMap((name) => {
 		const tool = session._toolRegistry.get(name);

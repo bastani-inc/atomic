@@ -15,6 +15,7 @@
 - Invalid extension commands now fail registration with a clear error instead of crashing slash-command completion ([#10054](https://github.com/earendil-works/pi/issues/10054)).
 - Codemode and tool-search descriptions now remain unchanged when deferred tools register, preserving prompt stability while discovery continues to find those tools ([#10212](https://github.com/earendil-works/pi/issues/10212)).
 - Collapsed codemode scripts and results now limit wrapped screen lines, so long single-line JSON no longer fills the transcript. Bash previews use the same cached visual-line component.
+- In `codemode.mode: "only"`, the system prompt's tool list no longer advertises tools whose direct declarations are hidden ([#10192](https://github.com/earendil-works/pi/issues/10192)).
 
 ## [0.9.25-alpha.2] - 2026-09-30
 

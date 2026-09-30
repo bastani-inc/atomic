@@ -12,7 +12,7 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
-import { applyToolLoadout } from "./tool-loadout.js";
+import { applyToolLoadout, isToolDeclarationHidden } from "./tool-loadout.js";
 
 export function getActiveToolNames(this: AgentSession): string[] {
 	return this.agent.state.tools.map((t) => t.name);
@@ -100,7 +100,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const toolSnippets: Record<string, string> = {};
 	for (const name of this._toolRegistry.keys()) {
 		const snippet = this._toolPromptSnippets.get(name);
-		if (snippet) {
+		if (snippet && !isToolDeclarationHidden(this, name)) {
 			toolSnippets[name] = snippet;
 		}
 	}
@@ -146,6 +146,9 @@ export function _preparePromptAndToolLoadout(
 	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
 	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];
 	options.selectedTools = applyToolLoadout(this, options.selectedTools).map((tool) => tool.name);
+	options.toolSnippets = Object.fromEntries(
+		Object.entries(options.toolSnippets).filter(([name]) => !isToolDeclarationHidden(this, name)),
+	);
 	const sections = diffSystemPromptSections(current?.sections ?? {}, buildSystemPromptSections(options));
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }

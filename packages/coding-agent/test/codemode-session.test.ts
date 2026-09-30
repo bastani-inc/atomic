@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { test } from "vitest";
@@ -207,7 +208,7 @@ test("codemode filters full nested output while direct calls retain the model-fa
 	}
 });
 
-test("codemode only hides direct declarations in requests without disabling nested access or branch activation", async () => {
+test("codemode only hides direct declarations and prompt snippets without disabling nested access (#10192)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension({ mode: "only" }),
@@ -216,6 +217,7 @@ test("codemode only hides direct declarations in requests without disabling nest
 					name: "echo",
 					label: "Echo",
 					description: "Echo",
+					promptSnippet: "Echo a value",
 					parameters: Type.Object({}),
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
@@ -229,6 +231,9 @@ test("codemode only hides direct declarations in requests without disabling nest
 				const names = getCurrentTools(context.messages).map((tool) => tool.name);
 				assert(names.includes("codemode"));
 				assert(!names.includes("echo"));
+				const prompt = getCurrentSystemPrompt(context.messages);
+				assert(!prompt.includes("\n- echo: "));
+				assert(prompt.includes("\n- codemode: "));
 				return fauxAssistantMessage([fauxToolCall("codemode", { code: "return await tools.echo({});" })], {
 					stopReason: "toolUse",
 				});
@@ -236,6 +241,7 @@ test("codemode only hides direct declarations in requests without disabling nest
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("call through script only");
+		assert(!harness.session.systemPrompt.includes("\n- echo: "));
 		assert(harness.session.getActiveToolNames().includes("echo"));
 		assert(harness.session.getCallableToolNames().includes("echo"));
 		assert(getCurrentTools(harness.session.messages).some((tool) => tool.name === "echo"));
