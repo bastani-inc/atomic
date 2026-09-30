@@ -72,6 +72,7 @@ export interface ToolAnnotations {
 export interface ToolNamespace {
 	name: string;
 	description?: string;
+	instructions?: string;
 }
 
 export interface ToolLoadout {

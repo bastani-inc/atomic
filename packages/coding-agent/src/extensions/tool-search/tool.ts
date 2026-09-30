@@ -73,7 +73,7 @@ export function createToolSearchDocument(
 ): ToolSearchDocument {
 	const parts = [tool.name, tool.name.replaceAll("_", " "), tool.description];
 	schemaText(tool.parameters, parts);
-	if (namespace) parts.push(namespace.name, namespace.description ?? "");
+	if (namespace) parts.push(namespace.name, namespace.description ?? "", namespace.instructions ?? "");
 	return { name: tool.name, text: parts.filter((part) => part.trim()).join(" ") };
 }
 export class Bm25Ranker implements ToolRanker {

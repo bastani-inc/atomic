@@ -247,3 +247,54 @@ test("codemode only hides direct declarations in requests without disabling nest
 		await harness.cleanup();
 	}
 });
+
+test("codemode describes namespace instructions on request without listing them inline (#10212)", async () => {
+	const namespace = {
+		name: "docs",
+		description: "Product docs",
+		instructions: "Search before reading private guidance",
+	};
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "docs-search",
+					label: "Search",
+					description: "Search docs",
+					exposure: "codemode",
+					namespace,
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: 'return { docs: await describeNamespace("docs"), missing: await describeNamespace("missing"), hits: await searchTools("private guidance") };',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("inspect namespace");
+		const description = harness.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description ?? "";
+		assert(!description.includes(namespace.instructions));
+		assert(description.includes("## docs"));
+		assert(!description.includes("(1 tools)"));
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult" && !result.isError);
+		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
+		assert.deepEqual(output.docs, { ...namespace, tools: ["docs_search"] });
+		assert.equal(output.missing, undefined);
+		assert.equal(output.hits[0].name, "docs_search");
+	} finally {
+		await harness.cleanup();
+	}
+});

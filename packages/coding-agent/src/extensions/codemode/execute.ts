@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-codemode";
 import { getCodemodeWorkerUrl, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
+import type { ToolNamespace } from "../../core/extensions/tool-types.js";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
 import { Bm25Ranker, createToolSearchDocument, DEFAULT_TOOL_SEARCH_LIMIT } from "../tool-search/tool.js";
@@ -137,6 +138,29 @@ function discoveryGlobals(
 				if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
 				const tool = tools.find((tool) => tool.name === name || toCodemodeIdentifier(tool.name) === name);
 				return tool ? samples.get(tool.name) : undefined;
+			},
+		},
+		{
+			name: "describeNamespace",
+			spread: true,
+			execute: (args) => {
+				const [name] = args as unknown[];
+				if (typeof name !== "string") throw new Error("describeNamespace() expects a namespace name");
+				let namespace: ToolNamespace | undefined;
+				const names: string[] = [];
+				for (const tool of tools) {
+					const toolNamespace = options.getToolNamespace?.(tool.name);
+					if (toolNamespace?.name !== name) continue;
+					namespace ??= toolNamespace;
+					names.push(toCodemodeIdentifier(tool.name));
+				}
+				if (!namespace) return undefined;
+				return {
+					name,
+					...(namespace.description ? { description: namespace.description } : {}),
+					...(namespace.instructions ? { instructions: namespace.instructions } : {}),
+					tools: names,
+				};
 			},
 		},
 	];

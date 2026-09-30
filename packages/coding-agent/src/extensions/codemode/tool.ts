@@ -71,7 +71,8 @@ const INTRO = `Run JavaScript that composes tool calls in a fresh QuickJS worker
 Top-level await and return work. Use tools.name(args), or tools["raw-name"](args). Tool names normalize to JavaScript identifiers.
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw. Scripts have a 256 MB memory limit.
-Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name).
+Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name), describeNamespace(name).
+describeNamespace(name) returns { name, description?, instructions?, tools } for a callable tool namespace, or undefined. Namespace instructions are available on request, not in tool listings.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
 Optional first line: // @options: {"max_output_tokens": 1000, "timeout_ms": 60000}. Output defaults to 10000 tokens; there is no default deadline.`;
 
@@ -125,14 +126,21 @@ export function createCodemodeDescription(
 	const count = getCodemodeCallableTools(tools).length;
 	sections.push(
 		shown.size === count
-			? `Nested tools: COMPLETE list (${count} tools).`
-			: `Nested tools: PARTIAL - ${shown.size} of ${count} shown. Use searchTools(), describeTool(), or ALL_TOOLS for omitted/deferred tools.`,
+			? "Nested tools: COMPLETE list."
+			: "Nested tools: PARTIAL list. Use searchTools(), describeTool(), or ALL_TOOLS for omitted/deferred tools.",
 	);
 	for (const group of ordered) {
-		if (group.namespace)
-			sections.push(
-				`## ${group.namespace.name} (${group.entries.length} tools)\n${group.namespace.description ?? ""}`,
-			);
+		if (group.namespace) {
+			const visible = group.entries.filter((entry) => shown.has(entry.name));
+			const listing =
+				visible.length === group.entries.length
+					? ""
+					: visible.length === 0
+						? " (tools not listed)"
+						: " (some tools not listed)";
+			const description = group.namespace.description?.trim();
+			sections.push(`## ${group.namespace.name}${listing}${description ? `\n${description}` : ""}`);
+		}
 		for (const entry of group.entries) if (shown.has(entry.name)) sections.push(entry.section);
 	}
 	return sections.join("\n\n");
