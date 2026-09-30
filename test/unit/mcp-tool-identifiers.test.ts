@@ -7,7 +7,7 @@ import { resolveDirectTools } from "../../packages/mcp/direct-tools.js";
 import { computeServerHash, type MetadataCache, reconstructToolMetadata } from "../../packages/mcp/metadata-cache.js";
 import { buildToolMetadata, findToolByName } from "../../packages/mcp/tool-metadata.js";
 import { assignToolNames } from "../../packages/mcp/tool-names.js";
-import type { McpConfig } from "../../packages/mcp/types.js";
+import { isToolExcluded, type McpConfig } from "../../packages/mcp/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 for (const reverse of [false, true])
@@ -97,4 +97,19 @@ test("MCP name assignment retains malformed metadata guards (#10239)", () => {
 		cached.map((tool) => tool.name),
 		["docs_valid"],
 	);
+});
+
+test("existing exclusions keep matching tools whose names contain punctuation (#10239)", () => {
+	for (const excluded of ["my_server_get.item", "my_server_get_item", "get.item", "my-server_get.item"]) {
+		assert.equal(isToolExcluded("get.item", "my-server", "server", [excluded]), true, excluded);
+	}
+	assert.equal(isToolExcluded("get.item", "my-server", "server", ["my_server_get_other"]), false);
+	const metadata = buildToolMetadata(
+		[{ name: "get.item", description: "punctuated" }],
+		[],
+		{ command: "fixture", excludeTools: ["my_server_get.item"] },
+		"my-server",
+		"server",
+	).metadata;
+	assert.deepEqual(metadata, []);
 });

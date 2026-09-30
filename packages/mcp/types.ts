@@ -423,7 +423,7 @@ export function formatToolName(
 }
 
 function normalizeToolName(value: string): string {
-  return value.replace(/-/g, "_");
+  return value.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
 export function isToolExcluded(
