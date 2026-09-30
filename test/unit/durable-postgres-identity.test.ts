@@ -18,6 +18,7 @@ import { createServer, type Server } from "node:net";
 import { dirname, join, sep } from "node:path";
 import { Client } from "pg";
 import { afterEach, test, vi } from "vitest";
+import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import {
 	embeddedDbosSystemDatabaseUrl,
 	embeddedPostgresHealth,
@@ -35,6 +36,7 @@ import {
 	managedPostgresLaunchExecutable,
 	managedPostgresRuntimeHealthy,
 	managedPostmaster,
+	POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	POSTGRES_IDENTITY_SQL,
 	postgresRuntimeFilesExist,
 	preferredPostgresPort,
@@ -1791,5 +1793,81 @@ test("borrowed connections prove their own SQL identity before caller queries", 
 	await assert.rejects(health.validate(client), /identity mismatch/);
 	assert.equal(invalidations, 1);
 	assert.equal(query.mock.calls.length, 1);
-	assert.deepEqual(query.mock.calls[0], [{ text: POSTGRES_IDENTITY_SQL, query_timeout: 1000 }]);
+	assert.deepEqual(query.mock.calls[0], [
+		{ text: POSTGRES_IDENTITY_SQL, query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS },
+	]);
+});
+
+async function healthyBorrowedConnection() {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	await hooks.ensureCluster(f.options);
+	const health = embeddedPostgresHealth()!;
+	await health.check();
+	const client = Object.assign(new Client(), { release() {} });
+	let invalidations = 0;
+	health.subscribe(() => invalidations++);
+	return { f, port, health, client, invalidations: () => invalidations };
+}
+
+// pg rejects a query that outlives its query_timeout, exactly as a starved host makes a healthy reply late.
+function delayedReply(replyMs: number, rows: unknown[]): Client["query"] {
+	return ((config: { query_timeout?: number }) =>
+		new Promise((resolve, reject) => {
+			if (config.query_timeout !== undefined && config.query_timeout < replyMs) {
+				setTimeout(() => reject(new Error("Query read timeout")), config.query_timeout);
+			} else {
+				setTimeout(() => resolve({ rows }), replyMs);
+			}
+		})) as Client["query"];
+}
+
+test("a loaded host that answers after the former one-second cap still proves a borrowed connection", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	const query = vi.spyOn(client, "query").mockImplementation(delayedReply(2_000, [f.row(port)]));
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outcome = health.validate(client).then(
+			() => "validated",
+			(error: Error) => error.message,
+		);
+		await vi.advanceTimersByTimeAsync(2_000);
+		assert.equal(await outcome, "validated");
+	} finally {
+		vi.useRealTimers();
+	}
+	assert.equal(query.mock.calls.length, 1);
+	assert.equal(invalidations(), 0);
+});
+
+test("a borrowed connection repeats its identity query once after a client-side read timeout", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	let calls = 0;
+	const query = vi.spyOn(client, "query").mockImplementation(async () => {
+		if (++calls === 1) throw new Error("Query read timeout");
+		return { rows: [f.row(port)] };
+	});
+	await health.validate(client);
+	assert.equal(query.mock.calls.length, 2);
+	assert.deepEqual(query.mock.calls[1], query.mock.calls[0]);
+	assert.equal(invalidations(), 0);
+	assert.equal(health.lastFailure, undefined);
+});
+
+test("a read timeout never lets a foreign identity through on the repeated query", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	let calls = 0;
+	const query = vi.spyOn(client, "query").mockImplementation(async () => {
+		if (++calls === 1) throw new Error("Query read timeout");
+		return { rows: [{ ...f.row(port), system_identifier: "foreign" }] };
+	});
+	const failure = await health.validate(client).then(
+		() => undefined,
+		(error: Error) => error,
+	);
+	assert.match(failure?.message ?? "", /identity mismatch/);
+	assert.equal(isDbosDependencyError(failure), false);
+	assert.equal(query.mock.calls.length, 2);
+	assert.equal(invalidations(), 1);
 });

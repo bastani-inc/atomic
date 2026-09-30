@@ -75,6 +75,7 @@ import {
 	managedPostgresLaunchExecutable,
 	managedPostgresRuntimeHealthy,
 	managedPostmaster,
+	POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	POSTGRES_IDENTITY_SQL,
 	POSTGRES_TIMEZONE_SQL,
 	type PostgresIdentityProbe,
@@ -576,13 +577,13 @@ async function ensureCluster(
 						// Bind SQL identity to this borrowed socket, not just a prior probe on the same port.
 						const identity = await inspect(async () => {
 							// pg supports per-query read timeouts; @types/pg omits this option from QueryConfig.
-							const query = { text: POSTGRES_IDENTITY_SQL, query_timeout: 1000 };
+							const query = { text: POSTGRES_IDENTITY_SQL, query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS };
 							const result = await client.query<PostgresIdentityRow>(query);
 							return result.rows[0];
 						});
 						if (!identity) throw new DbosDependencyError();
 						if (options.probeIdentity === undefined) {
-							const query = { text: POSTGRES_TIMEZONE_SQL, query_timeout: 1000 };
+							const query = { text: POSTGRES_TIMEZONE_SQL, query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS };
 							await client.query(query);
 						}
 					},

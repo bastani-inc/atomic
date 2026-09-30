@@ -145,6 +145,14 @@ export const POSTGRES_IDENTITY_SQL = `SELECT current_setting('data_directory') A
 /** Read-only transaction-local setting that reloads PostgreSQL's timezone-abbreviation file. */
 export const POSTGRES_TIMEZONE_SQL = "SELECT set_config('timezone_abbreviations', 'Default', true)";
 
+/**
+ * Client-side budget for each managed-PostgreSQL health query. pg's `query_timeout` is a Node timer that fires
+ * before buffered socket reads, so a starved host reports a timeout for a reply that has already arrived; the former
+ * 1 s left no headroom. The budget applies per query; a validation runs several queries and may retry once, so
+ * `DBOS_ADMISSION_TIMEOUT_MS` bounds the total (admission aborts with a `DbosDependencyError`).
+ */
+export const POSTGRES_HEALTH_QUERY_TIMEOUT_MS = 3_000;
+
 export async function probePostgresTimezoneData(port: number): Promise<void> {
 	const client = new Client({
 		host: "127.0.0.1",
@@ -154,8 +162,8 @@ export async function probePostgresTimezoneData(port: number): Promise<void> {
 		database: "postgres",
 		ssl: false,
 		connectionTimeoutMillis: 1000,
-		query_timeout: 1000,
-		statement_timeout: 1000,
+		query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
+		statement_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	});
 	client.on("error", () => {});
 	try {
@@ -175,8 +183,8 @@ export async function probePostgresIdentity(port: number): Promise<PostgresIdent
 		database: "postgres",
 		ssl: false,
 		connectionTimeoutMillis: 1000,
-		query_timeout: 1000,
-		statement_timeout: 1000,
+		query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
+		statement_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	});
 	client.on("error", () => {}); // Connection loss is reported by the pending connect/query.
 	try {

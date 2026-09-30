@@ -6,6 +6,10 @@
 
 - SDK hosts can now manage the workflow runs their session owns through `session.workflows`: `listRuns()`, `getRun()`, `getStages()`, `pause()`, `quit()` and `resume()` return the workflow tool's structured results, and failures reject with typed `WorkflowRunControlError` subclasses (`WorkflowRunNotFoundError`, `WorkflowRunOwnershipError`, `WorkflowRunNotResumableError`, `WorkflowRunDatabaseError`, `WorkflowStageNotFoundError`, `WorkflowStageAmbiguousError`, `WorkflowStageResumeUnsupportedError`) instead of strings. A batch `pause({ all: true })` or `quit({ all: true })` returns a `partial` outcome whose `failedRuns` names the runs still active only when that call stopped at least one run, and rejects with `WorkflowRunControlError` carrying `failedRuns` when active runs could not be stopped and the call stopped none, even if other runs were already paused. Already-paused and already-ended runs are not failures. A database outage while checking who owns a run rejects `pause()` and `quit()` with `WorkflowRunDatabaseError`. It uses the same ownership and durable-resume rules as the `workflow` tool, so runs owned by another session or live process stay read-only ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
 
+### Fixed
+
+- On a heavily loaded machine, a workflow run could fail with a bare `Query read timeout` while Atomic verified its managed PostgreSQL connection, even though the database was healthy. Health queries now get more time (3 s) on every path, and checks of a borrowed connection repeat once after a timeout. If the timeout persists, the run fails with a resumable database-unavailable error instead of `Query read timeout`, and other running workflows' database connections are not closed.
+
 ## [0.9.25-alpha.2] - 2026-09-30
 
 ### Fixed

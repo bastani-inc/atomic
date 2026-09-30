@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { Client, Pool, type PoolClient } from "pg";
 import { test, vi } from "vitest";
+import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
+import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 import { createRecoverablePostgresPool } from "../../packages/workflows/src/durable/dbos-recoverable-pool.js";
 
 const initialUrl = "postgresql://fixture:unused@127.0.0.1:1/isolated?connect_timeout=3&sslmode=disable";
@@ -354,5 +356,44 @@ test("socket errors during validation reject safely before the caller installs l
 	await assert.rejects(pool.connect(), (error) => error === failure);
 	assert.equal(f.physical[0].client.listenerCount("error"), 0);
 	assert.deepEqual(f.physical[0].release.mock.calls, [[true]]);
+	await pool.end();
+});
+
+test("a validation timeout destroys only the unanswered checkout and keeps concurrent ones", async () => {
+	const held = client();
+	const unanswered = client();
+	const borrowed = [held, unanswered];
+	const end = vi.fn(async () => {});
+	const health = new PostgresHealth({
+		probe: async () => ({ url: initialUrl, identity: "same" }),
+		recover: async () => {},
+		validate: async (candidate) => {
+			if (candidate === unanswered) throw new Error("Query read timeout");
+		},
+	});
+	const { pool, invalidate } = createRecoverablePostgresPool(initialUrl, {
+		afterConnect: (candidate) => health.validate(candidate),
+		createPool: (url) => {
+			const physical = new Pool({ connectionString: url });
+			physical.connect = vi.fn(async () => borrowed.shift()!) as Pool["connect"];
+			physical.end = end as Pool["end"];
+			return physical;
+		},
+	});
+	health.subscribe(invalidate);
+	const heldRelease = held.release;
+	const unansweredRelease = unanswered.release;
+	const active = await pool.connect();
+	const failure = await pool.connect().then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isDbosDependencyError(failure), true);
+	assert.deepEqual(unansweredRelease.mock.calls, [[true]]);
+	assert.equal(heldRelease.mock.calls.length, 0, "a healthy concurrent checkout must stay usable");
+	assert.equal(end.mock.calls.length, 0, "the physical pool must not be retired for a slow query");
+	active.release();
+	assert.deepEqual(heldRelease.mock.calls, [[undefined]]);
+	await health.stop();
 	await pool.end();
 });

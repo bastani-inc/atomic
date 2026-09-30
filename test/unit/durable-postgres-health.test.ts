@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import type { PoolClient } from "pg";
 import { test, vi } from "vitest";
+import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 
 test("transient monitoring connection timeout preserves live consumers (#3246)", async () => {
@@ -215,4 +217,29 @@ test("idle monitoring is serialized and stops with its owner", async () => {
 		await health.stop();
 		vi.useRealTimers();
 	}
+});
+
+test("a validation that never gets an answer is a bounded transient failure that spares other checkouts", async () => {
+	const timeout = new Error("Query read timeout");
+	const validate = vi.fn(async () => {
+		throw timeout;
+	});
+	let invalidations = 0;
+	const health = new PostgresHealth({
+		probe: async () => ({ url: "managed", identity: "same" }),
+		recover: async () => {
+			throw new Error("a slow query must not restart PostgreSQL");
+		},
+		validate,
+	});
+	health.subscribe(() => invalidations++);
+	const failure = await health.validate({} as PoolClient).then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isDbosDependencyError(failure), true);
+	assert.equal(validate.mock.calls.length, 2);
+	assert.equal(invalidations, 0);
+	assert.equal(health.lastFailure, timeout);
+	await health.stop();
 });

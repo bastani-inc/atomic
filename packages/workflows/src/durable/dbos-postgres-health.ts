@@ -27,6 +27,11 @@ function isMonitoringConnectionFailure(error: unknown): error is Error {
 	return error.message === "timeout expired" || error.message === "Connection terminated due to connection timeout";
 }
 
+/** pg stops waiting on a slow query but cannot cancel it, so this says nothing about the server's identity. */
+function isQueryReadTimeout(error: unknown): boolean {
+	return error instanceof Error && error.message === "Query read timeout";
+}
+
 /** One process-local observer. The recover operation must elect under the shared setup lock. */
 export class PostgresHealth {
 	private pending?: Promise<string>;
@@ -59,11 +64,23 @@ export class PostgresHealth {
 	async validate(client: PoolClient): Promise<void> {
 		try {
 			if (this.stopped) throw new DbosDependencyError();
-			await this.operations.validate?.(client);
+			try {
+				await this.operations.validate?.(client);
+			} catch (error) {
+				if (!isQueryReadTimeout(error) || this.stopped) throw error;
+				// The client-side timer can expire for a reply already buffered on a starved host. Ask the
+				// read-only identity check once more on this socket; a mismatch is never retried or accepted.
+				await this.operations.validate?.(client);
+			}
 		} catch (error) {
 			this.failure = error instanceof Error ? error : new Error(String(error));
-			this.invalidate();
-			throw error;
+			// An unanswered check is load, not evidence about the server: destroy only this unvalidated
+			// socket instead of every concurrent checkout, and let the caller retry admission.
+			if (!isQueryReadTimeout(error)) {
+				this.invalidate();
+				throw error;
+			}
+			throw new DbosDependencyError("Managed PostgreSQL did not answer a connection identity check in time.");
 		}
 	}
 
@@ -102,7 +119,7 @@ export class PostgresHealth {
 		} catch (error) {
 			if (!isMonitoringConnectionFailure(error) || this.stopped) throw error;
 			// A busy host can expire a monitoring connection while existing SQL sockets remain healthy.
-			// Retry only this read-only probe, never borrowed-client validation or application SQL.
+			// Retry only this read-only probe, never application SQL.
 			try {
 				identity = await this.operations.probe();
 			} catch (retryError) {
