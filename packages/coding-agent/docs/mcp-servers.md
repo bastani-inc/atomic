@@ -115,6 +115,14 @@ While sign-in waits for browser approval, Atomic displays the authorization URL 
 
 Automatic OAuth is opt-in through `settings.autoAuth`. Browser-based authorization requires an interactive session; authenticate before running unattended work.
 
+Atomic registers OAuth clients as `atomic`. If a server requires a known client name, configure it with `oauth.clientName`:
+
+```json
+{ "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp", "oauth": { "clientName": "Claude Code" } } } }
+```
+
+The name is sent only during dynamic client registration. Run `/mcp logout figma` before signing in again to register under a changed name.
+
 ## Troubleshooting
 
 - Run `/mcp` to check server status and `/mcp tools` to list available tools.

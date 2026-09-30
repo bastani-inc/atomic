@@ -114,6 +114,7 @@ export interface McpOAuthConfig {
   clientId?: string
   clientSecret?: string
   scope?: string
+  clientName?: string
 }
 
 /** Callbacks for OAuth flow interactions */
@@ -220,7 +221,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     if (this.usesClientCredentials) {
       return {
-        client_name: "Pi Coding Agent",
+        client_name: this.config.clientName ?? "atomic",
         redirect_uris: [],
         grant_types: ["client_credentials"],
         token_endpoint_auth_method: this.config.clientSecret ? "client_secret_post" : "none",
@@ -234,7 +235,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
     return {
       redirect_uris: [redirectUrl],
-      client_name: "Pi Coding Agent",
+      client_name: this.config.clientName ?? "atomic",
       client_uri: "https://github.com/nicobailon/pi-mcp-adapter",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

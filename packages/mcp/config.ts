@@ -194,7 +194,7 @@ function validateContributedServers(contributions: readonly McpServerContributio
   const servers: Record<string, ServerEntry> = {};
   for (const contribution of contributions) {
     try {
-      Object.assign(servers, validateMcpServerTimeouts({ [contribution.name]: contribution.config }));
+      Object.assign(servers, validateServerEntries({ [contribution.name]: contribution.config }));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const message = `Ignoring MCP server "${contribution.name}" from ${describeMcpContributionSource(contribution)}: ${reason}`;
@@ -338,10 +338,20 @@ export function validateMcpConfig(raw: unknown): McpConfig {
     return { mcpServers: {} };
   }
   return {
-    mcpServers: validateMcpServerTimeouts(servers as Record<string, unknown>),
+    mcpServers: validateServerEntries(servers as Record<string, unknown>),
     imports: Array.isArray(obj.imports) ? (obj.imports as ImportKind[]) : undefined,
     settings: obj.settings as McpSettings | undefined,
   };
+}
+function validateServerEntries(servers: Record<string, unknown>): Record<string, ServerEntry> {
+  for (const [name, entry] of Object.entries(servers)) {
+    const oauth = (entry as ServerEntry)?.oauth;
+    if (oauth && oauth.clientName !== undefined &&
+      (typeof oauth.clientName !== "string" || !oauth.clientName.trim())) {
+      throw new Error(`server "${name}": oauth.clientName must be a non-empty string`);
+    }
+  }
+  return validateMcpServerTimeouts(servers);
 }
 function extractServers(config: unknown, kind: ImportKind): Record<string, ServerEntry> {
   if (!config || typeof config !== "object") return {};
@@ -363,7 +373,7 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
     return {};
   }
-  return validateMcpServerTimeouts(servers as Record<string, unknown>);
+  return validateServerEntries(servers as Record<string, unknown>);
 }
 function isRepoPromptServer(name: string, entry: ServerEntry): boolean {
   const normalizedName = name.toLowerCase();

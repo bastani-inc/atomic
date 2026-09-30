@@ -271,6 +271,7 @@ export interface OAuthConfig {
   clientSecret?: string;
   /** Requested OAuth scopes */
   scope?: string;
+  clientName?: string;
 }
 
 // Server configuration

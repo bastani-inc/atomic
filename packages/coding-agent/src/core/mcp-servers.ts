@@ -5,6 +5,7 @@ export interface McpServerOAuthConfig {
 	clientId?: string;
 	clientSecret?: string;
 	scope?: string;
+	clientName?: string;
 }
 
 /** One MCP server definition; the same schema as an `mcpServers` entry in `mcp.json`. */
