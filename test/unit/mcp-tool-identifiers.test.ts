@@ -113,3 +113,22 @@ test("existing exclusions keep matching tools whose names contain punctuation (#
 	).metadata;
 	assert.deepEqual(metadata, []);
 });
+
+test("excluding a punctuated raw tool name keeps a distinct underscored tool (#10239)", () => {
+	assert.equal(isToolExcluded("get_item", "my-server", "server", ["get.item"]), false);
+	assert.equal(isToolExcluded("get.item", "my-server", "server", ["get.item"]), true);
+	const metadata = buildToolMetadata(
+		[
+			{ name: "get.item", description: "punctuated" },
+			{ name: "get_item", description: "underscored" },
+		],
+		[],
+		{ command: "fixture", excludeTools: ["get.item"] },
+		"my-server",
+		"server",
+	).metadata;
+	assert.deepEqual(
+		metadata.map((tool) => tool.originalName),
+		["get_item"],
+	);
+});

@@ -423,7 +423,12 @@ export function formatToolName(
 }
 
 function normalizeToolName(value: string): string {
-  return value.replace(/[^A-Za-z0-9_]/g, "_");
+  return value.replace(/-/g, "_");
+}
+
+function legacyToolName(toolName: string, serverName: string, prefix: "server" | "none" | "short"): string {
+  const p = getServerPrefix(serverName, prefix);
+  return p ? `${p}_${toolName}` : toolName;
 }
 
 export function isToolExcluded(
@@ -434,12 +439,12 @@ export function isToolExcluded(
 ): boolean {
   if (!Array.isArray(excludeTools) || excludeTools.length === 0) return false;
 
-  const candidates = new Set<string>([
-    normalizeToolName(toolName),
-    normalizeToolName(formatToolName(toolName, serverName, prefix)),
-    normalizeToolName(formatToolName(toolName, serverName, "server")),
-    normalizeToolName(formatToolName(toolName, serverName, "short")),
-  ]);
+  const modes = new Set([prefix, "server", "short"] as const);
+  const candidates = new Set<string>([normalizeToolName(toolName)]);
+  for (const mode of modes) {
+    candidates.add(normalizeToolName(formatToolName(toolName, serverName, mode)));
+    candidates.add(normalizeToolName(legacyToolName(toolName, serverName, mode)));
+  }
 
   for (const excluded of excludeTools) {
     if (typeof excluded !== "string") continue;
