@@ -33,6 +33,7 @@ import {
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
+import { getDefaultToolNames } from "./tools/index.js";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -583,6 +584,17 @@ async function reloadOwnedGeneration(
 	const oldRunner = this._extensionRunner;
 	const previousFlagValues = oldRunner.getExplicitFlagValues();
 	const activeToolNames = this.getActiveToolNames();
+	const previousDefaultTools = new Set(
+		this._usesDefaultTools ? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()) : [],
+	);
+	const activeToolsAfterReload = () => [
+		...activeToolNames,
+		...(this._usesDefaultTools
+			? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()).filter(
+					(name) => !previousDefaultTools.has(name),
+				)
+			: []),
+	];
 	const prepareResourceReload = this._resourceLoader.prepareReload?.bind(this._resourceLoader);
 	if (prepareResourceReload === undefined || this._resourceLoader.supportsTransactionalReload?.() === false) {
 		if (options?.failOnExtensionErrors) {
@@ -593,7 +605,11 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
-		this._buildRuntime({ activeToolNames, flagValues: previousFlagValues, includeAllExtensionTools: true });
+		this._buildRuntime({
+			activeToolNames: activeToolsAfterReload(),
+			flagValues: previousFlagValues,
+			includeAllExtensionTools: true,
+		});
 		retainedRuntimes.add(this._resourceLoader.getExtensions().runtime);
 		for (const extension of this._resourceLoader.getExtensions().extensions)
 			factoryAcquisitions.getStore()?.pending?.delete(extension);
@@ -716,7 +732,7 @@ async function reloadOwnedGeneration(
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
 		this._buildRuntime({
-			activeToolNames,
+			activeToolNames: activeToolsAfterReload(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 			preserveRunner: true,

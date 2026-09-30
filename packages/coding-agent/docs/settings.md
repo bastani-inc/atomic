@@ -476,6 +476,8 @@ A list containing only modifiers starts from Atomic's standard defaults. Modifie
 
 Plain names establish a replacement list before its modifiers apply. A project list of only modifiers layers over the global selection. A project list with plain names, or an empty list, replaces the global selection. For example, global `["read", "bash"]` plus project `["-bash", "+ls"]` resolves to `["read", "ls"]`.
 
+`/reload` enables tools newly added to `defaultTools`. It does not disable removed tools or re-enable unchanged tools you turned off during the session. Explicit `--tools`, `--no-tools`, and `--no-builtin-tools` choices override the setting on reload too; excluded tools remain excluded.
+
 `codemode` and `tool_search` are built-in extension tools registered inactive. Add `"+codemode"` or `"+tool_search"` to `defaultTools` to activate them alongside ordinary defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
 
 ### Sessions

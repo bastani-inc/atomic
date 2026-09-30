@@ -160,6 +160,7 @@ export interface AgentSessionConfig {
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	initialActiveToolNames?: string[];
+	usesDefaultTools?: boolean;
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	baseToolsOverride?: Record<string, AgentTool>;

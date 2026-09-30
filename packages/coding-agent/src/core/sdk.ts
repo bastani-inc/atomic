@@ -603,6 +603,7 @@ async function constructAgentSession(
 			modelRuntime,
 			cacheWarmer,
 			initialActiveToolNames,
+			usesDefaultTools: options.tools === undefined && !options.noTools,
 			allowedToolNames,
 			excludedToolNames: options.excludedTools,
 			extensionRunnerRef,
