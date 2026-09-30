@@ -136,6 +136,7 @@ function createStatsEngineClient(model?: Model<Api>) {
 	let generation = 1;
 	let messageEnds = 0;
 	let eventListener: ((event: RpcEvent) => void) | undefined;
+	let navigateTreeResult: { cancelled: boolean; aborted?: boolean } = { cancelled: false };
 	const statsRequests: StatsRequest[] = [];
 	const requestStats = (): Promise<SessionStats> => {
 		const deferred = Promise.withResolvers<SessionStats>();
@@ -167,6 +168,7 @@ function createStatsEngineClient(model?: Model<Api>) {
 				return Promise.resolve({ models: [], scopedModels: [] } as T);
 			}
 			if (command.type === "import_session") return Promise.resolve({ cancelled: false } as T);
+			if (command.type === "navigate_tree") return Promise.resolve(navigateTreeResult as T);
 			return Promise.resolve(undefined as T);
 		},
 		abort: async () => {},
@@ -185,6 +187,9 @@ function createStatsEngineClient(model?: Model<Api>) {
 		},
 		setGeneration(nextGeneration: number): void {
 			generation = nextGeneration;
+		},
+		setNavigateTreeResult(result: { cancelled: boolean; aborted?: boolean }): void {
+			navigateTreeResult = result;
 		},
 		get statsRequestCount(): number {
 			return statsRequests.length;
@@ -598,3 +603,53 @@ test("the in-process footer still counts only its own message entries (#3328)", 
 		await harness.cleanup();
 	}
 });
+
+test("a successful tree navigation drops the old position's stats and requests fresh ones (#3328)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createStatsEngineClient(harness.getModel());
+		const runtime = createRuntime(harness, probe);
+		await showStats(probe, runtime, P1, P1_LINE);
+		probe.emit({ type: "message_end", message: toolResultMessage() });
+		await vi.waitFor(() => {
+			assert.equal(probe.pendingStatsIndexes().length, 1);
+		});
+		const heldRequest = probe.pendingStatsIndexes()[0] ?? -1;
+		const requestsBeforeNavigation = probe.statsRequestCount;
+
+		await runtime.session.navigateTree("entry-1");
+		assert.doesNotMatch(usageLine(runtime), /\$0\.172|2\.1%\/1\.0M/);
+		assert.equal(probe.statsRequestCount, requestsBeforeNavigation + 1);
+
+		probe.resolveStats(heldRequest, P1);
+		await nextMacrotask();
+		assert.doesNotMatch(usageLine(runtime), /\$0\.172|2\.1%\/1\.0M/);
+
+		probe.resolveStats(requestsBeforeNavigation, P2);
+		await vi.waitFor(() => {
+			assert.equal(usageLine(runtime), P2_LINE);
+		});
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+for (const outcome of [{ cancelled: true }, { cancelled: false, aborted: true }]) {
+	test(`a tree navigation that is ${outcome.cancelled ? "cancelled" : "aborted"} keeps the footer stats (#3328)`, async () => {
+		const harness = await createHarness();
+		try {
+			const probe = createStatsEngineClient(harness.getModel());
+			const runtime = createRuntime(harness, probe);
+			await showStats(probe, runtime, P1, P1_LINE);
+			const requestsBeforeNavigation = probe.statsRequestCount;
+			probe.setNavigateTreeResult(outcome);
+
+			await runtime.session.navigateTree("entry-1");
+
+			assert.equal(usageLine(runtime), P1_LINE);
+			assert.equal(probe.statsRequestCount, requestsBeforeNavigation);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+}

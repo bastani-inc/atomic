@@ -665,12 +665,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			navigateTree: {
 				configurable: true,
-				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) =>
-					this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
+				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) => {
+					const result = await this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
 						type: "navigate_tree",
 						targetId,
 						options,
-					}),
+					});
+					if (!result.cancelled && !result.aborted) {
+						this.sessionStats.reset();
+						this.sessionStats.refresh();
+					}
+					return result;
+				},
 			},
 			reload: {
 				configurable: true,
