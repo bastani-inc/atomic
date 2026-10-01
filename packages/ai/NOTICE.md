@@ -6,7 +6,7 @@ monorepo at `packages/ai` and publishes at the same version as `@bastani/atomic`
 
 - Upstream package: [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai)
 - Original fork point: `v0.84.2` (`914cf1472e715297caa30db4b9535d534a9eb718`)
-- Applicable Pi AI fixes synced through audited upstream `main`: `earendil-works/pi@7a11fe1c723b942fa093edb8b00f051ddb9b6627`, with remaining registry Pi packages at `1.0.0`. Atomic retains its adaptations and does not enable upstream virtual models.
+- Applicable Pi AI fixes synced through audited upstream `main`: `earendil-works/pi@86dfceec402ad77e563bf4feab5f26c42d5f5db6`, with remaining registry Pi packages at `1.0.0`. Atomic retains its adaptations and does not enable upstream virtual models.
 - Catalog JSON under `src/providers/data/` is generated at build time from models.dev, matching upstream. It is not committed.
 
 Original work is Copyright (c) 2025 Mario Zechner and is licensed under the MIT License.
