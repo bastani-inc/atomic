@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/mcp login` now prints its sign-in URL as a clickable link in the terminal UI, even when the URL wraps ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+
 ## [0.9.25] - 2026-10-01
 
 ### Breaking Changes

@@ -27,7 +27,7 @@
  */
 
 import { join, resolve } from "node:path";
-import type { SelectItem } from "@earendil-works/pi-tui";
+import { hyperlink, type SelectItem } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { getAgentDir } from "../../config.js";
 import type {
@@ -990,7 +990,11 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			}
 			const failure = await signIn(server, {
 				showAuthorizationUrl: (url) => {
-					ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${url.href}`, "info");
+					const lines =
+						ctx.mode === "tui"
+							? `${hyperlink(url.href, url.href)}\n${hyperlink(process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open", url.href)}`
+							: url.href;
+					ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${lines}`, "info");
 					openUrl(url.href);
 				},
 				promptForRedirectUrl: (signal) =>
