@@ -11,6 +11,7 @@
 
 - MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)).
 - Cancelling a login started from a `/login` menu now returns to that menu.
+- The "Cloud Providers" section of the [Providers](docs/providers.md) docs page is now "Provider Specific Config".
 
 ### Fixed
 

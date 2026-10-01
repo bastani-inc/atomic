@@ -17,7 +17,7 @@ Looking to extend or embed Atomic? Go to [Build with Atomic](/build). Looking up
 2. [Configure Atomic](/guides/configuration) — write a settings file and override it per project.
 3. [Sessions](/sessions) — save, resume, name, and branch sessions.
 4. [Context and compaction](/compaction) — keep long sessions inside the context window.
-5. [Providers](/providers) — subscription logins, API keys, and cloud providers.
+5. [Providers](/providers) — subscription logins, API keys, and provider-specific setup.
 6. [Local models](/llama-cpp) — run models locally with llama.cpp.
 7. [Security](/security) — project trust and sandbox boundaries.
 8. [Containerization](/containerization) — run Atomic inside a container.

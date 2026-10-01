@@ -34,7 +34,7 @@ atomic
 
 You can also run `/login`, choose **Use an API key**, then select a provider to store the key in `~/.atomic/agent/auth.json`.
 
-See [Providers](/providers) for all supported providers, environment variables, and cloud-provider setup.
+See [Providers](/providers) for all supported providers, environment variables, and provider-specific setup.
 
 ## Verify authentication
 
