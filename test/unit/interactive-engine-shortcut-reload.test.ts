@@ -226,7 +226,7 @@ async function reloadThroughExtensionContext(
 	sessionStartFile: string,
 	expectedBinding: string,
 ): Promise<void> {
-await driver.waitFor(
+	await driver.waitFor(
 		(report) => report.type === "heartbeat" && report.inputHandlerReady === true,
 		ENGINE_REPORT_TIMEOUT_MS,
 		"interactive input handler readiness",

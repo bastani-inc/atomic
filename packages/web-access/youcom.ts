@@ -309,8 +309,8 @@ export async function searchWithYoucom(query: string, options: SearchOptions = {
 	try {
 		data = await response.json();
 	} catch (err) {
-		activityMonitor.logComplete(activityId, response.status);
 		const message = err instanceof Error ? err.message : String(err);
+		activityMonitor.logError(activityId, `You.com API returned invalid JSON: ${message}`);
 		throw new Error(`You.com API returned invalid JSON: ${message}`);
 	}
 

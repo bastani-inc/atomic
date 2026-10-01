@@ -752,7 +752,11 @@ describe("youcom error handling and activity tracking", () => {
 		vi.stubEnv("YDC_API_KEY", "ydc-test-key");
 		fetchResult = new Response("not json", { status: 200 });
 
-		await assert.rejects(() => searchWithYoucom("query"), /You.com API returned invalid JSON/);
+		await assert.rejects(() => searchWithYoucom("invalid-json-response"), /You.com API returned invalid JSON/);
+		const entry = activityMonitor.getEntries().find((e) => e.query === "invalid-json-response");
+		assert.ok(entry, "activity entry should exist");
+		assert.ok(entry.endTime !== undefined, "activity entry should be settled");
+		assert.match(entry.error ?? "", /You.com API returned invalid JSON/);
 	});
 
 	test("settles activity tracking with an error when response-shape validation fails", async () => {
