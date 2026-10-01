@@ -14,6 +14,8 @@
 - The "Cloud Providers" section of the [Providers](docs/providers.md) docs page is now "Provider Specific Config".
 - Codemode costs fewer prompt tokens. The `codemode` description points to the new [Codemode](docs/codemode.md) reference for the `models` API, which the model reads when it needs it, and declared tools say in one line how scripts call them and what the call resolves to instead of repeating their full declaration. The MCP server section of the system prompt only explains the ways of reaching tools that its servers use, and the system prompt points to the new reference.
 - Codemode errors now say how to recover: reading a tool or `models` member that does not exist names the close matches (`tools.Bash` suggests `tools.bash`), `models.classify()` and `models.generateImages()` reject malformed arguments with the expected shape, an unknown model points to `models.getAvailableOfType()`, an oversized `store()` value explains what the store is for, and a script that generates images without showing them gets a note. Scripts that probed for a tool with `typeof tools.name` must use `"name" in tools`.
+- `/login` and `/logout` now label providers without credentials as "not configured" instead of "unconfigured".
+- OAuth browser pages now show the Atomic logo in color instead of white.
 
 ### Fixed
 
@@ -22,9 +24,12 @@
 - MCP servers that ask for more scope (`insufficient_scope`) no longer trigger repeated sign-in requests. The new sign-in now keeps the scopes granted earlier instead of requesting only the missing ones.
 - User messages in the transcript now keep one copy of each rendered line instead of two full-width copies, with identical output.
 - Deferred MCP tools that `tool_search` loaded are no longer dropped on resume and `/reload` when their server reconnects before the next prompt; the session restored its tools before the MCP servers reconnected.
-- The `system` theme keeps pastel terminal palettes pastel instead of making their accent colors more saturated at the lightness the theme needs ([#10255](https://github.com/earendil-works/pi/issues/10255)).
+- The `system` theme keeps pastel terminal palettes pastel instead of making their accent colors more saturated at the lightness the theme needs ([#10255](https://github.com/earendil-works/pi/issues/10255), [#10293](https://github.com/earendil-works/pi/pull/10293) by [@dgtlntv](https://github.com/dgtlntv)).
 - `/login` and `/logout` no longer label every OAuth sign-in as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
 - The startup header logo no longer renders with gaps in Apple Terminal; it shows a text `∀ Atomic` wordmark with the version and session details instead.
+- Slash command autocompletion now triggers when the input starts with whitespace ([#10218](https://github.com/earendil-works/pi/pull/10218) by [@haoqixu](https://github.com/haoqixu)).
+- Color no longer bleeds past mouse selections and search highlights in fullscreen mode when a styled token ends at the highlight boundary ([#10169](https://github.com/earendil-works/pi/issues/10169)).
+- The transcript retains less memory per rendered message; a long assistant message keeps about a fifth of the heap it kept before.
 
 ## [0.9.25] - 2026-10-01
 
