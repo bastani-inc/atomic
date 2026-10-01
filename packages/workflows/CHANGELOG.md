@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Pausing a run whose only active stage is waiting for human input now marks the run paused instead of rejecting with `no_active_stages`. The pending question stays open, and hosts can hold its answer until they resume the run ([#3391](https://github.com/bastani-inc/atomic/issues/3391)).
+
 ## [0.9.25-alpha.3] - 2026-09-30
 
 ### Added

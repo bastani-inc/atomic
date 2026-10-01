@@ -12,6 +12,7 @@ import {
 } from "@bastani/atomic";
 import { Client, Pool } from "pg";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { WorkflowActivityHub } from "../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	type DurableWorkflowCatalogEntries,
@@ -21,8 +22,10 @@ import {
 import { DbosNotReadyError } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { createRecoverablePostgresPool } from "../../packages/workflows/src/durable/dbos-recoverable-pool.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createSessionRunControl } from "../../packages/workflows/src/extension/workflow-session-run-control.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import {
@@ -817,6 +820,77 @@ describe("session workflow run control", () => {
 		assert.equal("code" in raw, false);
 		assert.equal("failedRuns" in raw, false);
 	});
+
+	test.sequential.each([false, true])(
+		"pauses a host-question run with runtime control %s (#3391)",
+		async (liveRuntime) => {
+			const runId = testRunId("session-run-control-host-question");
+			store.recordRunStart(run(runId));
+			store.recordStageStart(runId, {
+				id: "question",
+				name: "question",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			store.recordStageAwaitingInput(runId, "question", true);
+			store.recordStageInputRequest(runId, "question", {
+				id: "host-question",
+				kind: "ask_user_question",
+				createdAt: 1,
+				questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }],
+			});
+			stageControlRegistry.register(
+				stageHandle({
+					runId,
+					stageId: "question",
+					status: () => "awaiting_input",
+					pause: async () => assert.fail("pausing must not cancel the pending question"),
+					resume: async () => assert.fail("the question must stay open until the host answers"),
+				}),
+			);
+			let runtimePaused = false;
+			let pauseCalls = 0;
+			const unregisterRuntime = liveRuntime
+				? toolControlRegistry.registerRun(runId, {
+						get paused() {
+							return runtimePaused;
+						},
+						async pause() {
+							pauseCalls++;
+							runtimePaused = true;
+						},
+						async resume() {
+							runtimePaused = false;
+						},
+						async quit() {},
+					})
+				: () => {};
+			const { control } = setup();
+			const hub = new WorkflowActivityHub();
+			const observation = createWorkflowObservation(store, hub.registerWorkflowActivityPublisher(), SESSION_ID);
+			try {
+				const question = (await control.getStages(runId))[0];
+				assert.equal((await control.pause({ all: true })).status, "paused");
+				assert.equal((await control.listRuns({ status: "paused" }))[0]?.runId, runId);
+				assert.equal(runtimePaused, liveRuntime);
+				assert.deepEqual((await control.getStages(runId))[0], question);
+				const frame = hub.getSnapshotFrame();
+				assert.ok(frame.availability === "ready");
+				assert.equal(frame.roots[0]?.state, "idle");
+				assert.equal(frame.roots[0]?.reason, "paused");
+				assert.equal((await control.pause({ all: true })).status, "noop");
+				assert.equal(pauseCalls, liveRuntime ? 1 : 0);
+				await control.resume(runId);
+				assert.equal((await control.getRun(runId)).status, "running");
+				assert.equal(runtimePaused, false);
+				assert.deepEqual((await control.getStages(runId))[0], question);
+			} finally {
+				observation.dispose();
+				unregisterRuntime();
+			}
+		},
+	);
 
 	test.sequential("resolves a batch pause of a paused run that still has a stage awaiting input as already paused (#3377)", async () => {
 		const runId = testRunId("session-run-control-batch-paused-awaiting-input");

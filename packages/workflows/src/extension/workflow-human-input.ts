@@ -65,7 +65,7 @@ export function bindWorkflowHumanInput(
 		if (disposed || ownerInput?.active() === false) return;
 		const pending = new Set<string>();
 		for (const run of store.runs()) {
-			if (run.status !== "running") continue;
+			if (run.status !== "running" && run.status !== "paused") continue;
 			for (const stage of run.stages) {
 				if (stage.status !== "awaiting_input") continue;
 				const prompt = stage.pendingPrompt;
@@ -81,7 +81,7 @@ export function bindWorkflowHumanInput(
 				const ownBinding = childInput?.usesOwnBinding() === true;
 				const input = ownBinding ? workflowInputBridge(childInput.ui) : ownerInput;
 				const available = ownBinding ? input?.available() : ctx.hasUI === false && ctx.hasHumanInput === true;
-				if (requests.has(key) || !available) continue;
+				if (requests.has(key) || run.status === "paused" || !available) continue;
 				const controller = new AbortController();
 				requests.set(key, { controller, ownBinding });
 				// Defer presentation until the publisher has installed its pending waiter.
