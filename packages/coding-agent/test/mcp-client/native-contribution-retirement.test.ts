@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { describe, expect, it, vi } from "vitest";
-import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
+import { describe, it, vi } from "vitest";
+import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.js";
 import { type JsonRpcMessage, LATEST_PROTOCOL_VERSION } from "../../src/extensions/mcp/client/index.js";
 import { TransportEvents } from "../../src/extensions/mcp/client/transports/transport.js";
-import { createMcpExtension } from "../../src/extensions/mcp/index.ts";
-import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
-import { createHarness } from "../suite/harness.ts";
+import { createMcpExtension } from "../../src/extensions/mcp/index.js";
+import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.js";
+import { createHarness } from "../suite/harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.js";
 
 describe("native MCP contribution retirement", () => {
@@ -60,13 +60,13 @@ describe("native MCP contribution retirement", () => {
 		try {
 			await harness.session.bindExtensions({});
 			await harness.session.prompt("/replace");
-			await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toContain("mcp__race__current"));
-			expect(harness.session.getActiveToolNames()).not.toContain("mcp__race__retired");
+			await vi.waitFor(() => assert.ok(harness.session.getActiveToolNames().includes("mcp__race__current")));
+			assert.equal(harness.session.getActiveToolNames().includes("mcp__race__retired"), false);
 		} finally {
 			await harness.cleanup();
 		}
-		expect(started).toContain("current");
-		expect([...live]).toEqual([]);
+		assert.ok(started.includes("current"));
+		assert.deepEqual([...live], []);
 	});
 
 	it("rejects package and extension namespace collisions with file config and earlier package contributions", async () => {

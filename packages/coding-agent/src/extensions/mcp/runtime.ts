@@ -243,7 +243,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	private initializingClient: McpClient | undefined;
 	private initializingTransport: McpTransport | undefined;
 	private closing: Promise<void> | undefined;
-	private readonly retiringClients = new Map<McpClient, Promise<void>>();
+	private readonly activeRequests = new Map<McpClient, number>();
+	private readonly retiringClients = new Map<McpClient, { promise: Promise<void>; close: () => Promise<void> }>();
 	private closed = false;
 	/** Stderr of the last stdio server that failed to connect. */
 	private stderrTail: string | undefined;
@@ -371,7 +372,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		for (let attempt = 1; ; attempt++) {
 			const client = await this.getClient();
 			try {
-				return await run(client);
+				return await this.runWithClient(client, run);
 			} catch (error) {
 				if (readOnly && attempt === 1 && error instanceof McpHttpError && isTransientError(error)) {
 					await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_DELAYS_MS[0]));
@@ -379,7 +380,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 				}
 				if (error instanceof McpSessionExpiredError && attempt === 1) {
 					if (this.closed) throw error;
-					await this.dropClient(client);
+					const retirement = this.dropClient(client, true);
+					if (!this.activeRequests.has(client)) await retirement;
 					if (this.closed) throw error;
 					continue;
 				}
@@ -387,6 +389,21 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 				await this.dropClient(client);
 				this.markNeedsAuth();
 				throw new Error(signInRequiredMessage(this.entry));
+			}
+		}
+	}
+
+	private async runWithClient<T>(client: McpClient, run: (client: McpClient) => Promise<T>): Promise<T> {
+		this.activeRequests.set(client, (this.activeRequests.get(client) ?? 0) + 1);
+		try {
+			return await run(client);
+		} finally {
+			const remaining = (this.activeRequests.get(client) ?? 1) - 1;
+			if (remaining > 0) {
+				this.activeRequests.set(client, remaining);
+			} else {
+				this.activeRequests.delete(client);
+				void this.retiringClients.get(client)?.close();
 			}
 		}
 	}
@@ -423,17 +440,31 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.onChange?.(this);
 	}
 
-	private async dropClient(client: McpClient): Promise<void> {
+	private dropClient(client: McpClient, drainRequests = false): Promise<void> {
 		if (this.client === client) this.client = undefined;
 		const pending = this.retiringClients.get(client);
-		if (pending) return pending;
-		const retirement = client.close().catch(() => undefined);
-		this.retiringClients.set(client, retirement);
-		try {
-			await retirement;
-		} finally {
-			if (this.retiringClients.get(client) === retirement) this.retiringClients.delete(client);
+		if (pending) {
+			if (!drainRequests) void pending.close();
+			return pending.promise;
 		}
+		let resolve!: () => void;
+		const promise = new Promise<void>((done) => {
+			resolve = done;
+		});
+		let closing: Promise<void> | undefined;
+		const close = () => {
+			closing ??= client
+				.close()
+				.catch(() => undefined)
+				.finally(() => {
+					this.retiringClients.delete(client);
+					resolve();
+				});
+			return closing;
+		};
+		this.retiringClients.set(client, { promise, close });
+		if (!drainRequests || !this.activeRequests.has(client)) void close();
+		return promise;
 	}
 
 	private async open(): Promise<McpClient> {
@@ -538,7 +569,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 
 	private async refreshTools(client: McpClient): Promise<void> {
 		try {
-			const tools = await client.listTools();
+			const tools = await this.runWithClient(client, (client) => client.listTools());
 			if (this.client !== client || this.closed) return;
 			this.tools = tools;
 			this.onTools(this);
@@ -549,7 +580,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	}
 
 	private async refreshResources(client: McpClient): Promise<void> {
-		const { resources, resourceTemplates } = await fetchResources(client);
+		const { resources, resourceTemplates } = await this.runWithClient(client, fetchResources);
 		if (this.client !== client || this.closed) return;
 		this.resources = resources;
 		this.resourceTemplates = resourceTemplates;
@@ -573,7 +604,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			initializingClient?.close(),
 			initializingTransport?.close(),
 			opening,
-			...this.retiringClients.values(),
+			...[...this.retiringClients.values()].map((retirement) => retirement.close()),
 		]);
 		this.closing = (async () => {
 			await boundedRetirement(retirement);
