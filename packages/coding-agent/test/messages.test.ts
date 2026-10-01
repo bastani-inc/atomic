@@ -35,6 +35,16 @@ function toolResult(toolCallId: string): ToolResultMessage {
 }
 
 describe("convertToLlm", () => {
+	test("keeps legacy compaction summaries out of active LLM context", () => {
+		const legacySummary = { role: "compactionSummary", summary: "older work", tokensBefore: 10, timestamp: 1 };
+		const converted = convertToLlm([
+			{ role: "user", content: "hello", timestamp: 1 } as AgentMessage,
+			legacySummary as unknown as AgentMessage,
+		]);
+
+		expect(converted.map((message) => message.role)).toEqual(["user"]);
+	});
+
 	test("keeps consecutive results paired with the previous assistant tool calls", () => {
 		const converted = convertToLlm([
 			assistantWithToolCalls(["call-a", "call-b"]),

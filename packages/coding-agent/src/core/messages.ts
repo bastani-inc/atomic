@@ -416,6 +416,8 @@ export function repairOrphanToolResults<TMessage extends AgentMessage>(
 	return changed ? repaired : messages;
 }
 
+const LEGACY_COMPACTION_SUMMARY_ROLE = "compactionSummary";
+
 /**
  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
  *
@@ -428,6 +430,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	const converted = messages
 		.map((rawMessage): Message | undefined => {
 			const m = normalizeRawRedactedThinking(normalizeMessageContent(rawMessage));
+			const role: string = m.role;
+			if (role === LEGACY_COMPACTION_SUMMARY_ROLE) return undefined;
 			switch (m.role) {
 				case "bashExecution":
 					if (!messageStartsLlmUserTurn(m)) return undefined;
@@ -461,9 +465,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "assistant":
 				case "toolResult":
 					return m;
-				case "compactionSummary":
-					// Legacy generated summaries remain archival and never enter active LLM context.
-					return undefined;
 				default: {
 					// Exhaustiveness guard: new AgentMessage roles must define provider conversion explicitly.
 					const _exhaustiveCheck: never = m;
