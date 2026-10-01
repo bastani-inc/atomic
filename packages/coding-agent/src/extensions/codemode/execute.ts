@@ -2,7 +2,16 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AnyModel, ClassifierContext, ImageContent, ModelType, TextContent, Usage } from "@bastani/pi-ai";
+import type {
+	AnyModel,
+	ClassifierContext,
+	ImageContent,
+	ImagesContext,
+	ModelType,
+	ModelTypeMap,
+	TextContent,
+	Usage,
+} from "@bastani/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type CodemodeResult,
@@ -88,6 +97,11 @@ function preview(args: unknown): string {
 	} catch {
 		return "";
 	}
+}
+interface ModelCallResult {
+	stopReason: "stop" | "error" | "aborted";
+	errorMessage?: string;
+	usage?: Usage;
 }
 function createLimiter(limit: number) {
 	let active = 0;
@@ -175,6 +189,37 @@ function modelGlobals(
 	const models = ctx.modelRegistry;
 	const limit = createLimiter(4);
 	let count = 0;
+	const runModelCall = async <TType extends "classifier" | "image", TResult extends ModelCallResult>(
+		name: string,
+		type: TType,
+		ref: unknown,
+		run: (model: ModelTypeMap[TType]) => Promise<TResult>,
+	): Promise<TResult> => {
+		const { provider: providerId, id: modelId } = (ref ?? {}) as { provider?: unknown; id?: unknown };
+		if (typeof providerId !== "string" || typeof modelId !== "string")
+			throw new Error(`${name}() expects a catalog model reference`);
+		const model = models.getModelOfType(type, providerId, modelId);
+		if (!model) throw new Error(`Unknown ${type} model ${providerId}/${modelId}`);
+		const record: CodemodeNestedCall = {
+			id: `${id}/${name}/${++count}`,
+			name,
+			args: `${model.provider}/${model.id}`,
+			status: "running",
+		};
+		calls.push(record);
+		publish();
+		const start = performance.now();
+		const result = await limit(() => run(model));
+		record.durationMs = performance.now() - start;
+		record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
+		if (result.errorMessage) record.error = result.errorMessage.slice(0, 500);
+		if (result.usage) {
+			record.cost = result.usage.cost.total;
+			addUsage(result.usage);
+		}
+		publish();
+		return result;
+	};
 	return [
 		{
 			name: "models.getModelsOfType",
@@ -208,32 +253,21 @@ function modelGlobals(
 		{
 			name: "models.classify",
 			spread: true,
-			execute: async (args, { signal }) => {
-				const [ref, context] = args as [{ provider?: string; id?: string } | null, unknown];
-				if (!ref || typeof ref.provider !== "string" || typeof ref.id !== "string")
-					throw new Error("models.classify() expects a catalog model reference");
-				const model = models.getModelOfType("classifier", ref.provider, ref.id);
-				if (!model) throw new Error(`Unknown classifier model ${ref.provider}/${ref.id}`);
-				const record: CodemodeNestedCall = {
-					id: `${id}/models.classify/${++count}`,
-					name: "models.classify",
-					args: `${model.provider}/${model.id}`,
-					status: "running",
-				};
-				calls.push(record);
-				publish();
-				const start = performance.now();
-				const result = await limit(() => models.classify(model, context as ClassifierContext, { signal }));
-				record.durationMs = performance.now() - start;
-				record.status =
-					result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
-				if (result.errorMessage) record.error = result.errorMessage.slice(0, 500);
-				if (result.usage) {
-					record.cost = result.usage.cost.total;
-					addUsage(result.usage);
-				}
-				publish();
-				return result;
+			execute: (args, { signal }) => {
+				const [ref, context] = args as [unknown, unknown];
+				return runModelCall("models.classify", "classifier", ref, (model) =>
+					models.classify(model, context as ClassifierContext, { signal }),
+				);
+			},
+		},
+		{
+			name: "models.generateImages",
+			spread: true,
+			execute: (args, { signal }) => {
+				const [ref, context] = args as [unknown, unknown];
+				return runModelCall("models.generateImages", "image", ref, (model) =>
+					models.generateImages(model, context as ImagesContext, { signal }),
+				);
 			},
 		},
 	];

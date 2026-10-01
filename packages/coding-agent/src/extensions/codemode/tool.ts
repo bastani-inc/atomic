@@ -18,7 +18,7 @@ export interface CodemodeStoreEntryData {
 }
 export type CodemodeModelRuntime = Pick<
 	ModelRegistry,
-	"getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify"
+	"getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify" | "generateImages"
 >;
 export interface CodemodeToolOptions {
 	getToolNamespace?: (name: string) => ToolNamespace | undefined;
@@ -124,7 +124,7 @@ export function createCodemodeDescription(
 	];
 	if (options.models)
 		sections.push(
-			"Model API: models.getModelsOfType(type, provider?), models.getAvailableOfType(type, provider?), models.getModelOfType(type, provider, id), models.classify(model, context). Types are chat, image, classifier. Catalog entries exclude headers; classifier calls resolve credentials on the host.",
+			'Model API: models.getModelsOfType(type, provider?), models.getAvailableOfType(type, provider?), models.getModelOfType(type, provider, id), models.classify(model, context), models.generateImages(model, { input: [{ type: "text", text }, ...imageBlocks] }). Types are chat, image, classifier. Catalog entries exclude headers; classifier and image calls resolve credentials on the host and do not throw on provider errors: check stopReason and errorMessage. generateImages resolves to { output, usage?, stopReason, errorMessage? } where output holds text blocks and base64 image blocks; show each image block with image(block), never print its data, and do not set a short timeout_ms because generation can take minutes.',
 		);
 	if (ordered.length === 0) return sections.join("\n\n");
 	sections.push("Nested tools:");

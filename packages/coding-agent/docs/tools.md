@@ -47,7 +47,18 @@ There is no default deadline. Text output defaults to 10,000 estimated tokens; l
 
 Tools with `outputSchema` return their `structuredContent` to scripts, including structured error results. Other tools return text and throw on errors. Completed `bash` calls provide structured output as described in the [SDK reference](/sdk/reference#bash-tool-behavior).
 
-`ALL_TOOLS`, `searchTools(query, { limit, namespace })`, and `describeTool(name)` discover the currently permitted tools. `store(key, value)` and `load(key)` preserve JSON values across successful calls on the current session branch, including after resume. Failed scripts discard store writes, not tool side effects. `models.getModelsOfType`, `getAvailableOfType`, and `getModelOfType` expose public catalog metadata; `models.classify(model, context)` calls a registered classifier with host-resolved credentials, at most four concurrently. Reported classifier usage contributes to the script's session cost.
+`ALL_TOOLS`, `searchTools(query, { limit, namespace })`, and `describeTool(name)` discover the currently permitted tools. `store(key, value)` and `load(key)` preserve JSON values across successful calls on the current session branch, including after resume. Failed scripts discard store writes, not tool side effects. `models.getModelsOfType`, `getAvailableOfType`, and `getModelOfType` expose public catalog metadata; `models.classify(model, context)` calls a registered classifier, and `models.generateImages(model, context)` runs an image model, both with host-resolved credentials and at most four such calls at once per script. Reported usage from both contributes to the script's session cost.
+
+Image models such as OpenRouter's `google/gemini-2.5-flash-image` use the same `OPENROUTER_API_KEY` or `/login` credential as the provider's chat models and never appear in `/model`. A script lists them with `models.getAvailableOfType("image")` and calls `models.generateImages(model, { input })`. `input` is a list of `{ type: "text", text }` blocks, optionally with `{ type: "image", data, mimeType }` blocks to edit or use as references. The call does not throw on provider errors: check `stopReason` and `errorMessage`. `output` holds base64 image blocks, which `image()` attaches to the `codemode` result. Generated images are not saved to disk, and generation can take minutes, so avoid a short `timeout_ms`.
+
+```js
+const painter = await models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
+const result = await models.generateImages(painter, {
+  input: [{ type: "text", text: "A red fox in the snow, watercolor" }],
+});
+if (result.stopReason !== "stop") return result.errorMessage;
+for (const block of result.output) if (block.type === "image") image(block);
+```
 
 Use `await describeNamespace(name)` to retrieve a callable tool namespace's `{ name, description?, instructions?, tools }`, or `undefined` when it is unavailable. Namespace instructions are returned on request rather than included in inline listings. `searchTools()` also searches those instructions; pass `{ namespace: name }` to restrict the search.
 
