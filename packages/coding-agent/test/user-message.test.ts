@@ -1,6 +1,7 @@
+import { Box, Markdown } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -22,6 +23,34 @@ describe("UserMessageComponent", () => {
 		expect(lines[1]).toContain("hello");
 		expect(lines[2].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
 		expect(lines[2].endsWith(BG_RESET)).toBe(true);
+	});
+
+	test.each([
+		{ text: "hello", width: 20, pad: 1 },
+		{ text: "first line\n\n- one\n- two\n\n`code` and **bold**", width: 40, pad: 1 },
+		{ text: "a wrapped message that is longer than the available width", width: 18, pad: 2 },
+		{ text: "wide 日本語 text", width: 30, pad: 0 },
+	])("renders the same lines as a padded background box around the Markdown ($text)", ({ text, width, pad }) => {
+		initTheme("dark");
+		const markdownTheme = getMarkdownTheme();
+		const reference = new Box(pad, 1, (content: string) => theme.bg("userMessageBg", content));
+		reference.addChild(
+			new Markdown(
+				text,
+				0,
+				0,
+				markdownTheme,
+				{ color: (content: string) => theme.fg("userMessageText", content) },
+				{ preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
+			),
+		);
+
+		const rendered = new UserMessageComponent(text, markdownTheme, pad).render(width);
+		const expected = reference.render(width);
+
+		expect(
+			rendered.map((line) => line.replace(OSC133_ZONE_START, "").replace(OSC133_ZONE_END + OSC133_ZONE_FINAL, "")),
+		).toEqual(expected);
 	});
 
 	test("chains Markdown transformers with user-message context", () => {
