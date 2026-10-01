@@ -9,6 +9,7 @@ describe("AgentSession prompt-start handshake", () => {
 		let streaming = false;
 		const session = {
 			_pendingCustomMessages: [],
+			_pendingToolNames: new Set<string>(),
 			_flushPendingCustomMessages() {},
 			agent: {
 				prompt() {
@@ -53,6 +54,7 @@ describe("AgentSession prompt-start handshake", () => {
 		let promptStarted = false;
 		const session = {
 			_pendingCustomMessages: [],
+			_pendingToolNames: new Set<string>(),
 			_flushPendingCustomMessages() {},
 			agent: {
 				prompt() {
@@ -81,6 +83,7 @@ describe("AgentSession prompt-start handshake", () => {
 		let promptStarted = false;
 		const session = {
 			_pendingCustomMessages: [],
+			_pendingToolNames: new Set<string>(),
 			_flushPendingCustomMessages() {},
 			agent: { prompt: () => Promise.reject(new Error("startup rejected")) },
 			isStreaming: false,
@@ -111,6 +114,7 @@ describe("AgentSession workflow delivery authorization", () => {
 		const delivered: string[] = [];
 		const session = {
 			_pendingCustomMessages: [],
+			_pendingToolNames: new Set<string>(),
 			_flushPendingCustomMessages() {},
 			isStreaming: false,
 			abortSessionSummary: () => {},

@@ -65,6 +65,7 @@ test("production prompt wiring holds idle admission until the first agent turn s
 		},
 		_flushPendingBashMessages() {},
 		_pendingCustomMessages: [],
+		_pendingToolNames: new Set<string>(),
 		_flushPendingCustomMessages() {},
 		model: { provider: "test", id: "test" },
 		_modelRuntime: { hasConfiguredAuth: () => true },
