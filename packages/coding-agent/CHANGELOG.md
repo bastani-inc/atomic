@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.25-alpha.4] - 2026-09-30
+
 ### Breaking Changes
 
 - Replaced the old MCP adapter with the native client. Only `~/.atomic/agent/mcp.json` and trusted `.atomic/mcp.json` are read, using the native configuration shape. Shared config layers, client imports, and old-field translations are no longer supported; old OAuth credentials are not imported.
