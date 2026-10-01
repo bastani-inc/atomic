@@ -120,7 +120,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `--provider <name>` | Provider, such as `anthropic`, `openai`, or `google` |
+| `--provider <name>` | Provider to search for `--model`, such as `anthropic`, `openai`, or `google`; requires `--model` |
 | `--model <pattern>` | Model pattern or ID; supports `provider/id` and optional `:<thinking>` |
 | `--api-key <key>` | API key, overriding environment variables |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model capability mapping still governs availability |
