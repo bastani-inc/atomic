@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.25-alpha.5] - 2026-09-30
+
 ### Fixed
 
 - `/session` now shows current message counts, token totals, cost, and the correct session ID during an interactive run instead of displaying the previous turn's statistics or zero counts on the first run ([#3383](https://github.com/bastani-inc/atomic/issues/3383)).
