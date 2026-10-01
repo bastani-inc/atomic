@@ -285,7 +285,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.authProvider = url
 			? createMcpAuthProvider({
 					serverUrl: url,
-					store: options.credentials.forServer(url),
+					store: options.credentials.forServer(this.entry.name, url),
 					settings: () => this.oauthSettings(),
 					onChallenge: (challenge) => {
 						this.challenge = challenge;

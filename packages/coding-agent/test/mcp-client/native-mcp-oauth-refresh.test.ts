@@ -27,7 +27,7 @@ describe("MCP OAuth refresh", () => {
 		// Stores sharing the credential file and lock directory stand in for separate pi processes.
 		const backend = new InMemoryAuthStorageBackend();
 		const process = () => {
-			const store = new McpOAuthCredentialStore(backend, lockDir).forServer(server.url);
+			const store = new McpOAuthCredentialStore(backend, lockDir).forServer("test", server.url);
 			const provider = createMcpAuthProvider({
 				serverUrl: server.url,
 				store,
@@ -95,7 +95,7 @@ describe("MCP OAuth sign-in", () => {
 		try {
 			await signInMcpServer({
 				serverUrl: server.url,
-				store: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer(server.url),
+				store: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer("test", server.url),
 				settings: settings(server.url),
 				prompt: {
 					showAuthorizationUrl: (url) => void fetch(url),
@@ -115,7 +115,7 @@ describe("MCP OAuth sign-in", () => {
 	it("keeps the granted scope when the server asks for more", async () => {
 		const server = await startOAuthMcpServer();
 		try {
-			const store = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer(server.url);
+			const store = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer("test", server.url);
 			const opened: URL[] = [];
 			const signInWith = (challenge: OAuthChallenge) =>
 				signInMcpServer({

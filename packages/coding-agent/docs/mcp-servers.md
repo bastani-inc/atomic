@@ -155,6 +155,8 @@ For a remote OAuth server, configure its URL and run `/mcp login my-server`, or 
 
 Atomic registers OAuth clients as `atomic`, stores credentials in `~/.atomic/agent/mcp-auth.json`, and refreshes tokens when they expire or are rejected. A successful sign-in reconnects the server. If additional scope is required, sign in again. `/mcp logout my-server` or `atomic mcp logout my-server` deletes stored credentials. Old adapter credential files are not imported; sign in through the native client.
 
+Credentials belong to a server name and URL. Servers with the same URL under different names, such as one per account, sign in separately; servers with the same name and URL in different `mcp.json` files share one sign-in.
+
 OAuth applies to HTTP servers without an `Authorization` header or provider-token configuration. For a pre-registered client:
 
 ```json

@@ -16,6 +16,7 @@ import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/pi-ai/utils/oauth-pag
 import lockfile from "proper-lockfile";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
+import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
 	authorizeMcp,
@@ -111,6 +112,19 @@ function parseStates(content: string | undefined): StoredStates {
 	return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as StoredStates) : {};
 }
 
+function serializeStates(states: StoredStates): string {
+	return `${JSON.stringify(states, null, 2)}\n`;
+}
+
+/**
+ * Keys of a server's state: by name and URL, so servers sharing a URL keep separate accounts, and the
+ * legacy key by URL alone, written by older versions.
+ */
+function storeKeys(name: string, serverUrl: string): { key: string; legacyKey: string } {
+	const legacyKey = String(new URL(serverUrl));
+	return { key: `${mcpNamespace(name)}|${legacyKey}`, legacyKey };
+}
+
 export interface McpOAuthServerStore extends McpOAuthStateStore {
 	/** Run `fn` while no other process refreshes the server's tokens. */
 	withRefreshLock<T>(fn: () => Promise<T>): Promise<T>;
@@ -129,16 +143,17 @@ export class McpOAuthCredentialStore {
 		this.lockDir = backend ? lockDir : getAgentDir();
 	}
 
-	forServer(serverUrl: string): McpOAuthServerStore {
-		const key = String(new URL(serverUrl));
+	forServer(name: string, serverUrl: string): McpOAuthServerStore {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
 		const scoped = (fenced: boolean): McpOAuthStateStore => {
-			const generation = this.read()[key]?.credentialGeneration;
+			const initial = this.read();
+			const generation = (initial[key] ?? initial[legacyKey])?.credentialGeneration;
 			const check = (state: StoredState | undefined) => {
 				if (fenced && state?.credentialGeneration !== generation) throw new McpSignInCancelledError();
 			};
 			return {
 				load: () => {
-					const state = this.read()[key];
+					const state = this.claimLegacy(key, legacyKey)[key];
 					check(state);
 					if (!state) return undefined;
 					const { credentialGeneration: _generation, ...value } = state;
@@ -201,27 +216,46 @@ export class McpOAuthCredentialStore {
 		}
 	}
 
-	/** The stored tokens of a server, for noticing sign-ins done by another process. */
-	tokens(serverUrl: string): McpOAuthState["tokens"] {
-		return this.read()[String(new URL(serverUrl))]?.tokens;
+	/** The first server to load legacy state takes it over; others with the same URL sign in again. */
+	private claimLegacy(key: string, legacyKey: string): StoredStates {
+		return this.backend.withLock((current) => {
+			const states = parseStates(current);
+			if (states[key] || !states[legacyKey]) return { result: states };
+			states[key] = states[legacyKey];
+			delete states[legacyKey];
+			return { result: states, next: serializeStates(states) };
+		});
+	}
+
+	/** The stored tokens of a server, for noticing sign-ins done by another process. Does not take over legacy state. */
+	tokens(name: string, serverUrl: string): McpOAuthState["tokens"] {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
+		const states = this.read();
+		return (states[key] ?? states[legacyKey])?.tokens;
 	}
 
 	/** Serialized logout: waits for rotated tokens to be saved before revoking the grant. */
-	removeAsync(serverUrl: string): Promise<boolean> {
-		const key = String(new URL(serverUrl));
-		return this.withRefreshLock(key, async () => this.remove(key));
+	removeAsync(name: string, serverUrl: string): Promise<boolean> {
+		const { key } = storeKeys(name, serverUrl);
+		return this.withRefreshLock(key, async () => this.remove(name, serverUrl));
 	}
 
-	/** Synchronous revocation also fences late writes; logout callers should prefer removeAsync. */
-	remove(serverUrl: string): boolean {
-		const key = String(new URL(serverUrl));
+	/**
+	 * Synchronous revocation also fences late writes; logout callers should prefer removeAsync. Also removes
+	 * legacy state the server would take over.
+	 */
+	remove(name: string, serverUrl: string): boolean {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
+		const hasCredentials = (state: StoredState | undefined) =>
+			state !== undefined &&
+			Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
 		let removed = false;
 		this.write((states) => {
-			const state = states[key];
-			removed =
-				state !== undefined &&
-				Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
-			states[key] = { serverUrl: key, credentialGeneration: randomUUID() };
+			const own = states[key];
+			const legacy = own === undefined ? states[legacyKey] : undefined;
+			removed = hasCredentials(own) || hasCredentials(legacy);
+			if (legacy) delete states[legacyKey];
+			states[key] = { serverUrl: legacyKey, credentialGeneration: randomUUID() };
 		});
 		return removed;
 	}
@@ -234,7 +268,7 @@ export class McpOAuthCredentialStore {
 		this.backend.withLock((current) => {
 			const states = parseStates(current);
 			update(states);
-			return { result: undefined, next: `${JSON.stringify(states, null, 2)}\n` };
+			return { result: undefined, next: serializeStates(states) };
 		});
 	}
 }

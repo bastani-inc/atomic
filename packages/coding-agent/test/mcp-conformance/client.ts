@@ -151,7 +151,7 @@ async function run(serverUrl: string, scenario: string): Promise<void> {
 				log(`sign-in ${signIns}${connection.challenge?.scope ? ` (scope: ${connection.challenge.scope})` : ""}`);
 				await signInMcpServer({
 					serverUrl: url,
-					store: credentials.forServer(url),
+					store: credentials.forServer(entry.name, url),
 					settings: connection.oauthSettings(),
 					challenge: connection.challenge,
 					prompt: simulatedBrowser(),
