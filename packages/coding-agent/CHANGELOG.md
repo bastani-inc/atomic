@@ -12,6 +12,8 @@
 - MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)).
 - Cancelling a login started from a `/login` menu now returns to that menu.
 - The "Cloud Providers" section of the [Providers](docs/providers.md) docs page is now "Provider Specific Config".
+- Codemode costs fewer prompt tokens. The `codemode` description points to the new [Codemode](docs/codemode.md) reference for the `models` API, which the model reads when it needs it, and declared tools say in one line how scripts call them and what the call resolves to instead of repeating their full declaration. The MCP server section of the system prompt only explains the ways of reaching tools that its servers use, and the system prompt points to the new reference.
+- Codemode errors now say how to recover: reading a tool or `models` member that does not exist names the close matches (`tools.Bash` suggests `tools.bash`), `models.classify()` and `models.generateImages()` reject malformed arguments with the expected shape, an unknown model points to `models.getAvailableOfType()`, an oversized `store()` value explains what the store is for, and a script that generates images without showing them gets a note. Scripts that probed for a tool with `typeof tools.name` must use `"name" in tools`.
 
 ### Fixed
 

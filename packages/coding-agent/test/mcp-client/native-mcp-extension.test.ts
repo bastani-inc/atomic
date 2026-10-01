@@ -781,6 +781,22 @@ describe("MCP servers section", () => {
 		assert.equal(renderServersSection([server("direct", "Declared.", "direct")]), undefined);
 	});
 
+	it("introduces only the ways of reaching tools that the listed servers use", () => {
+		const intro = (...servers: Parameters<typeof renderServersSection>[0]) =>
+			renderServersSection(servers)?.split("\n")[0] ?? "";
+
+		assert.equal(
+			intro(server("docs")),
+			"MCP servers whose tools are not declared to you. Call the tools of `codemode` servers from codemode scripts.",
+		);
+		assert.equal(
+			intro(server("later", undefined, "deferred")),
+			"MCP servers whose tools are not declared to you. Load the tools of `tool_search` servers with `tool_search`.",
+		);
+		const both = intro(server("docs"), server("later", undefined, "deferred"));
+		assert.match(both, /codemode scripts\. Load the tools of `tool_search` servers/);
+	});
+
 	it("shortens descriptions to fit the size limit", () => {
 		const servers = Array.from({ length: 40 }, (_, index) => server(`server${index}`, "x".repeat(400)));
 		const section = renderServersSection(servers) ?? "";

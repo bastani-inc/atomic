@@ -174,8 +174,13 @@ const MAX_SERVER_DESCRIPTION_CHARS = 250;
  */
 export const MAX_SERVERS_SECTION_CHARS = 4096;
 
-const SERVERS_SECTION_INTRO =
-	"MCP servers whose tools are not declared to you. Call the tools of `codemode` servers from codemode scripts: find them with `searchTools(query, { namespace })` and read a server's instructions and tool names with `describeNamespace(name)`. Load the tools of `tool_search` servers with `tool_search`.";
+/** The section's first line. It explains only the ways of reaching tools that the listed servers use. */
+function serversSectionIntro(reaches: ReadonlySet<string>): string {
+	let intro = "MCP servers whose tools are not declared to you.";
+	if (reaches.has("codemode")) intro += " Call the tools of `codemode` servers from codemode scripts.";
+	if (reaches.has("tool_search")) intro += " Load the tools of `tool_search` servers with `tool_search`.";
+	return intro;
+}
 
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
@@ -204,16 +209,15 @@ export function renderServersSection(servers: readonly McpServerListing[]): stri
 		.filter((server) => isEnabled(server) && hasIndirectTools(server.entry))
 		.sort((a, b) => a.entry.name.localeCompare(b.entry.name));
 	if (listed.length === 0) return undefined;
-	const heads = listed.map((server) => {
-		const exposures = configuredExposures(server.entry);
-		const reach = exposures.has("codemode") ? "codemode" : "tool_search";
-		return `- ${mcpNamespace(server.entry.name)} (${reach})`;
-	});
+	const reaches = listed.map((server) =>
+		configuredExposures(server.entry).has("codemode") ? "codemode" : "tool_search",
+	);
+	const intro = serversSectionIntro(new Set(reaches));
+	const heads = listed.map((server, index) => `- ${mcpNamespace(server.entry.name)} (${reaches[index]})`);
 	const omitted = (count: number) =>
 		count > 0 ? [`- … ${count} more server${count === 1 ? "" : "s"}; find their tools with searchTools()`] : [];
 	// Characters of the intro, the first `kept` server lines without descriptions, and the omission line.
-	const size = (kept: number) =>
-		[SERVERS_SECTION_INTRO, ...heads.slice(0, kept), ...omitted(listed.length - kept)].join("\n").length;
+	const size = (kept: number) => [intro, ...heads.slice(0, kept), ...omitted(listed.length - kept)].join("\n").length;
 	let kept = listed.length;
 	while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
 	// Each description also takes a ": " separator.
@@ -225,7 +229,7 @@ export function renderServersSection(servers: readonly McpServerListing[]): stri
 		const summary = perServer > 0 ? truncate(serverSummary(server), perServer) : "";
 		return summary ? `${heads[index]}: ${summary}` : heads[index];
 	});
-	return [SERVERS_SECTION_INTRO, ...lines, ...omitted(listed.length - kept)].join("\n");
+	return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");
 }
 
 /**
