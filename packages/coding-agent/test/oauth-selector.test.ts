@@ -113,7 +113,7 @@ describe("OAuthSelectorComponent", () => {
 		]);
 	});
 
-	it("renders an option without compiled auth status as unconfigured", () => {
+	it("renders an option without compiled auth status as not configured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",
 			fakeModelRuntime(),
@@ -123,7 +123,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("unconfigured");
+		expect(output).toContain("not configured");
 		expect(output).not.toContain("✓ configured");
 	});
 
@@ -169,7 +169,7 @@ describe("OAuthSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("✓ env: OPENAI_API_KEY");
-		expect(output).not.toContain("unconfigured");
+		expect(output).not.toContain("not configured");
 	});
 
 	it("shows models.json API key auth as configured", () => {

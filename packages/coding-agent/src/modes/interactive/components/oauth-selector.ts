@@ -158,7 +158,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const status = this.getAuthStatus(provider.id);
-		if (!status.configured) return theme.fg("muted", " • unconfigured");
+		if (!status.configured) return theme.fg("muted", " • not configured");
 		switch (status.source) {
 			case "environment":
 				return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
@@ -175,7 +175,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			case "models_json_command":
 				return theme.fg("success", " ✓ command in models.json");
 			default:
-				return theme.fg("muted", " • unconfigured");
+				return theme.fg("muted", " • not configured");
 		}
 	}
 
