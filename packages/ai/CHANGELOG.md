@@ -4,6 +4,32 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-10-01
+
+### Added
+
+- Added Anthropic workload identity federation from the Anthropic SDK environment variables `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` (plus optional `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID`). API keys and `ANTHROPIC_AUTH_TOKEN` take precedence ([#10177](https://github.com/earendil-works/pi/issues/10177), [#10242](https://github.com/earendil-works/pi/pull/10242) by [@philfreo](https://github.com/philfreo)).
+- Anthropic subscription login now offers a copy-code method for remote or headless machines, alongside the default browser callback method ([#10194](https://github.com/earendil-works/pi/pull/10194) by [@lucasmeijer](https://github.com/lucasmeijer)).
+- Added GPT-6.1 Sol for OpenAI and Codex with supported reasoning efforts, prompt-cache and tool capabilities, and long-context pricing metadata.
+- Added GPT-6.1 Sol to the GitHub Copilot catalog with Copilot's Responses endpoint, supported reasoning efforts, and provider-published context and output limits. Availability remains subject to the account's model policy.
+- Added **Sign in with ChatGPT** for the OpenAI Responses API alongside API-key authentication, separate from Codex subscription login.
+- Added Jev classifiers on Vercel AI Gateway and OpenCode Zen, and provider-reported classifier usage and costs, including billed responses with invalid answers.
+- Added the lightweight `@bastani/pi-ai/models` entry point for model catalog consumers.
+- Added `Model.serviceTiers` and `getServiceTierCost()` for the Fast and Ultrafast tiers a model advertises and their published rates. The OpenAI catalog follows OpenAI's Fast and Ultrafast pricing tables. The Codex catalog follows Codex's per-model tiers: Fast for every model except GPT-5.3 Codex Spark, and Ultrafast for GPT-6 Astra.
+- The OpenAI Responses adapter can send GPT-6 Astra's `ultrafast` tier.
+
+### Changed
+
+- The Codex Responses adapter sends `service_tier` only when the model advertises it, following Codex: `flex` always passes through, `default` sends no tier, and an unadvertised tier is left out instead of failing.
+- The OpenAI Responses adapter leaves out a Fast or Ultrafast tier the model doesn't advertise. It sends other tiers as requested.
+- Fast and Ultrafast usage is priced at the served tier's published rates. A model without tier metadata keeps the previous Fast multiplier.
+
+### Fixed
+
+- Fixed context overflow detection for Z.AI CN endpoint `Prompt exceeds max length` errors ([#10208](https://github.com/earendil-works/pi/issues/10208)).
+- Anthropic `strict: "prefer"` tools now fall back to non-strict mode for unsupported string formats and additional array/object constraints instead of rejecting the request. Supported string length and pattern constraints remain strict ([#9953](https://github.com/earendil-works/pi/issues/9953)).
+- Provider retries now use exponential backoff when `Retry-After` or `retry-after-ms` cannot be parsed as a finite delay ([#9571](https://github.com/earendil-works/pi/issues/9571)).
+
 ## [0.9.25-alpha.3] - 2026-09-30
 
 ### Added
