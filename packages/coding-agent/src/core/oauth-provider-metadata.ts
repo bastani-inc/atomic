@@ -36,6 +36,7 @@ export function collectOAuthProviderMetadata(
 				name: provider.name ?? provider.id,
 				...(loginLabel ? { loginLabel } : {}),
 				...(hasCallbackServerMetadata ? { usesCallbackServer } : {}),
+				...(extensionOAuth ? {} : { isSubscription: providerOAuth?.isSubscription === true }),
 			};
 		});
 }

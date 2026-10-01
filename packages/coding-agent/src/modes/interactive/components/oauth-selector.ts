@@ -16,7 +16,44 @@ export type AuthSelectorProvider = {
 	id: string;
 	name: string;
 	authType: "oauth" | "api_key";
+	subscription?: boolean;
 };
+
+export function formatAuthSelectorProviderType(
+	authType: AuthSelectorProvider["authType"],
+	subscription?: boolean,
+): string {
+	if (authType === "api_key") return "API key";
+	return subscription === false ? "account" : "subscription";
+}
+
+export function formatAuthSelectorProviderStatus(
+	provider: AuthSelectorProvider,
+	status: AuthStatus,
+	storedType: AuthSelectorProvider["authType"] | undefined,
+): string {
+	if (!status.configured) return theme.fg("muted", " • not configured");
+	switch (status.source) {
+		case "environment":
+			return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
+		case "runtime":
+			return theme.fg("success", " ✓ runtime API key");
+		case "stored": {
+			return theme.fg(
+				"success",
+				` ✓ ${formatAuthSelectorProviderType(storedType ?? "api_key", provider.subscription)} configured`,
+			);
+		}
+		case "fallback":
+			return theme.fg("success", " ✓ configured");
+		case "models_json_key":
+			return theme.fg("success", " ✓ key in models.json");
+		case "models_json_command":
+			return theme.fg("success", " ✓ command in models.json");
+		default:
+			return theme.fg("muted", " • not configured");
+	}
+}
 
 /**
  * Component that renders an auth provider selector
@@ -124,7 +161,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			const hasMultipleMethods = this.allProviders.some(
 				(other) => other.id === provider.id && other.authType !== provider.authType,
 			);
-			const methodLabel = provider.authType === "oauth" ? "subscription" : "API key";
+			const methodLabel = formatAuthSelectorProviderType(provider.authType, provider.subscription);
 			const providerLabel = hasMultipleMethods ? `${provider.name} · ${methodLabel}` : provider.name;
 			let line = "";
 			if (isSelected) {
@@ -158,25 +195,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const status = this.getAuthStatus(provider.id);
-		if (!status.configured) return theme.fg("muted", " • not configured");
-		switch (status.source) {
-			case "environment":
-				return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
-			case "runtime":
-				return theme.fg("success", " ✓ runtime API key");
-			case "stored": {
-				const storedType = this.modelRuntime.getStoredCredentialType(provider.id);
-				return theme.fg("success", ` ✓ ${storedType === "oauth" ? "subscription" : "API key"} configured`);
-			}
-			case "fallback":
-				return theme.fg("success", " ✓ configured");
-			case "models_json_key":
-				return theme.fg("success", " ✓ key in models.json");
-			case "models_json_command":
-				return theme.fg("success", " ✓ command in models.json");
-			default:
-				return theme.fg("muted", " • not configured");
-		}
+		const storedType =
+			status.configured && status.source === "stored"
+				? this.modelRuntime.getStoredCredentialType(provider.id)
+				: undefined;
+		return formatAuthSelectorProviderStatus(provider, status, storedType);
 	}
 
 	handleInput(keyData: string): boolean {

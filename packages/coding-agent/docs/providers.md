@@ -186,6 +186,8 @@ Run `/login meta`, then select **Sign in with Meta** to open the device authoriz
 
 Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
 
+`/login` also lists **Sign in with Radius** as the last option of **Select authentication method:**, with its configuration status. Radius is not a subscription, so its OAuth sign-in is labeled **account** in the login and logout pickers. After a Radius sign-in, Atomic offers to add the Radius MCP server to `~/.atomic/agent/mcp.json` with `"auth": { "provider": "radius" }` and then reloads. If a global server already points at the Radius MCP URL, Atomic offers to switch it to the Radius login instead, and asks nothing when it already uses it.
+
 ## API Keys
 
 ### Environment Variables or Auth File

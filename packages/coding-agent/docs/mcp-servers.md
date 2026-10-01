@@ -208,6 +208,8 @@ An HTTP server can use your current provider login token instead of MCP OAuth:
 
 Atomic reads the current token for every request and does not copy it into MCP credential storage. If the token is missing or rejected, run `/login <provider>` and retry the MCP call.
 
+After `/login radius`, Atomic offers to add this entry to the global `mcp.json` for you and reloads.
+
 Because the credential goes to the configured server, provider-token authentication has these limits:
 
 - It is accepted only from global configuration and extension registrations, not project configuration or package manifests.

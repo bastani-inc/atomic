@@ -36,6 +36,17 @@ describe("collectOAuthProviderMetadata", () => {
 		});
 	});
 
+	it("marks only subscription-backed builtin sign-ins as subscriptions and leaves extension sign-ins unlabeled", () => {
+		const metadata = collectOAuthProviderMetadata(builtinProviders(), new Map());
+
+		expect(metadata.find(({ id }) => id === "anthropic")).toMatchObject({ isSubscription: true });
+		expect(metadata.find(({ id }) => id === "radius")).toMatchObject({ isSubscription: false });
+
+		const extensions = new Map<string, ProviderConfigInput>([["corp", { oauth: { loginLabel: "Corporate SSO" } }]]);
+		const [corp] = collectOAuthProviderMetadata([oauthProvider("corp")], extensions);
+		expect(corp).not.toHaveProperty("isSubscription");
+	});
+
 	it("prefers explicit extension metadata over builtin defaults", () => {
 		const extensions = new Map<string, ProviderConfigInput>([
 			["anthropic", { oauth: { loginLabel: "Corporate Claude", usesCallbackServer: false } }],

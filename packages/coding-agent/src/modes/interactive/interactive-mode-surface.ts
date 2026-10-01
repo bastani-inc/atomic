@@ -358,7 +358,7 @@ declare module "./interactive-mode-base.ts" {
 		getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];
 		getLogoutProviderOptions(): AuthSelectorProvider[];
 		handleLoginCommand(providerRef?: string): Promise<void>;
-		startProviderLogin(providerOption: AuthSelectorProvider): Promise<void>;
+		startProviderLogin(providerOption: AuthSelectorProvider, onBack?: () => void): Promise<void>;
 		showLoginAuthTypeSelector(providerOptions?: AuthSelectorProvider[]): void;
 		showLoginProviderSelector(authType?: "oauth" | "api_key", initialSearchInput?: string): void;
 		showOAuthSelector(mode: "login" | "logout", initialSearchInput?: string): Promise<void>;
@@ -369,10 +369,15 @@ declare module "./interactive-mode-base.ts" {
 			previousModel: Model<Api> | undefined,
 			options?: { modelsRefreshed?: boolean },
 		): Promise<void>;
-		showBedrockSetupDialog(providerId: string, providerName: string): void;
-		showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void>;
-		showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined>;
-		showLoginDialog(providerId: string, providerName: string): Promise<void>;
+		showBedrockSetupDialog(providerId: string, providerName: string, onBack?: () => void): void;
+		showApiKeyLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void>;
+		showOAuthLoginSelect(
+			dialog: LoginDialogComponent,
+			prompt: OAuthSelectPrompt,
+			providerId?: string,
+		): Promise<string | undefined>;
+		showLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void>;
+		offerRadiusMcpServer(providerId: string, providerName: string): void;
 		handleReloadCommand(): Promise<void>;
 		handleExportCommand(text: string): Promise<void>;
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;

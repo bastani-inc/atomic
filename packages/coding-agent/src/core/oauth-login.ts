@@ -12,6 +12,7 @@ export interface OAuthProviderMetadata {
 	name: string;
 	loginLabel?: string;
 	usesCallbackServer?: boolean;
+	isSubscription?: boolean;
 }
 
 /** Marks failures after credential acquisition so presentation never mistakes nested AbortErrors for cancellation. */

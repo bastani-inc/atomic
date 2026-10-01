@@ -1,10 +1,13 @@
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
+import { RADIUS_MCP_URL, RADIUS_PROVIDER_ID } from "../../core/radius.ts";
+import { addMcpServerConfig, loadMcpConfig, type McpHttpServerConfig } from "../../extensions/mcp/config.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Api,
 	defaultModelPerProvider,
 	ExtensionSelectorComponent,
+	getAgentDir,
 	getAuthPath,
 	getDocsPath,
 	LoginDialogComponent,
@@ -14,6 +17,8 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { hasDefaultModelProvider, isUnknownModel } from "./interactive-mode-helpers.ts";
+
+const RADIUS_LOGIN_INTRO = "Radius is a hosted model gateway built by Earendil Works.";
 
 export function llamaCppPostLoginGuidance(actionLabel: string, loadedModelCount: number): string {
 	return loadedModelCount === 0
@@ -89,6 +94,7 @@ InteractiveModeBase.prototype.showBedrockSetupDialog = function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): void {
 	const restoreEditor = () => {
 		this.editorContainer.clear();
@@ -100,7 +106,10 @@ InteractiveModeBase.prototype.showBedrockSetupDialog = function (
 	const dialog = new LoginDialogComponent(
 		this.ui,
 		providerId,
-		() => restoreEditor(),
+		() => {
+			restoreEditor();
+			onBack?.();
+		},
 		providerName,
 		"Amazon Bedrock setup",
 	);
@@ -121,6 +130,7 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): Promise<void> {
 	const previousModel = this.session.model;
 
@@ -164,7 +174,9 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 			this.showError(
 				`Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 			);
-		} else if (!isOAuthLoginCancelled(error)) {
+		} else if (isOAuthLoginCancelled(error)) {
+			onBack?.();
+		} else {
 			this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
 		}
 	}
@@ -174,6 +186,7 @@ InteractiveModeBase.prototype.showOAuthLoginSelect = function (
 	this: InteractiveModeBase,
 	dialog: LoginDialogComponent,
 	prompt: OAuthSelectPrompt,
+	providerId?: string,
 ): Promise<string | undefined> {
 	return new Promise((resolve) => {
 		const restoreDialog = () => {
@@ -194,6 +207,7 @@ InteractiveModeBase.prototype.showOAuthLoginSelect = function (
 				restoreDialog();
 				resolve(undefined);
 			},
+			{ description: providerId === RADIUS_PROVIDER_ID ? RADIUS_LOGIN_INTRO : undefined },
 		);
 		this.editorContainer.clear();
 		this.editorContainer.addChild(selector);
@@ -206,6 +220,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): Promise<void> {
 	const previousModel = this.session.model;
 	const metadata = this.session.modelRuntime?.getOAuthProviderMetadata().find(({ id }) => id === providerId);
@@ -288,7 +303,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 				dialog.showInfo(message, links);
 			},
 
-			onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialog, prompt),
+			onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialog, prompt, providerId),
 
 			onManualCodeInput: () => manualCodePromise,
 
@@ -306,6 +321,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 		// Success
 		restoreEditor();
 		await this.completeProviderAuthentication(providerId, providerName, "oauth", previousModel, loginResult);
+		if (providerId === RADIUS_PROVIDER_ID) this.offerRadiusMcpServer(providerId, providerName);
 	} catch (error: unknown) {
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
@@ -313,6 +329,55 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 			this.showError(`Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`);
 		} else if (loginSucceeded || !isOAuthLoginCancelled(error)) {
 			this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
+		} else {
+			onBack?.();
 		}
 	}
+};
+
+InteractiveModeBase.prototype.offerRadiusMcpServer = function (
+	this: InteractiveModeBase,
+	providerId: string,
+	providerName: string,
+): void {
+	const agentDir = getAgentDir();
+	const mcpPath = path.join(agentDir, "mcp.json");
+	const normalizeUrl = (url: string) => url.replace(/\/+$/u, "");
+	const { servers } = loadMcpConfig({ agentDir, cwd: this.sessionManager.getCwd(), projectTrusted: false });
+	const existing = servers
+		.flatMap((server) => ("url" in server.config ? [{ name: server.name, config: server.config }] : []))
+		.find((server) => normalizeUrl(server.config.url) === normalizeUrl(RADIUS_MCP_URL));
+	if (existing?.config.auth?.provider === providerId) return;
+
+	let name = existing?.name ?? "radius";
+	if (!existing && servers.some((server) => server.name === name)) name = "radius-mcp";
+	const config: McpHttpServerConfig = {
+		...existing?.config,
+		url: existing?.config.url ?? RADIUS_MCP_URL,
+		auth: { provider: providerId },
+	};
+	delete config.oauth;
+
+	this.showSelector((done) => {
+		const selector = new ExtensionSelectorComponent(
+			`Configure ${providerName} MCP in ${mcpPath}?`,
+			["Yes", "No"],
+			(option) => {
+				done();
+				if (option !== "Yes") return;
+				try {
+					addMcpServerConfig(mcpPath, name, config);
+				} catch (error: unknown) {
+					this.showError(`Could not update ${mcpPath}: ${error instanceof Error ? error.message : String(error)}`);
+					return;
+				}
+				void this.handleReloadCommand();
+			},
+			() => {
+				done();
+				this.ui.requestRender();
+			},
+		);
+		return { component: selector, focus: selector };
+	});
 };

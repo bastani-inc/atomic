@@ -157,6 +157,44 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).not.toContain("subscription configured");
 	});
 
+	it("labels an OAuth sign-in without a subscription as an account", () => {
+		const providers = [
+			{ id: "radius", name: "Radius", authType: "oauth" as const, subscription: false },
+			{ id: "radius", name: "Radius", authType: "api_key" as const, subscription: false },
+		];
+		const selector = new OAuthSelectorComponent(
+			"login",
+			fakeModelRuntime({ getStoredCredentialType: () => "oauth" }),
+			providers,
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "stored", label: "OAuth" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("Radius · account");
+		expect(output).toContain("✓ account configured");
+		expect(output).not.toContain("subscription");
+	});
+
+	it("labels a subscription-backed sign-in as a subscription", () => {
+		const selector = new OAuthSelectorComponent(
+			"login",
+			fakeModelRuntime({ getStoredCredentialType: () => "oauth" }),
+			[
+				{ id: "anthropic", name: "Anthropic", authType: "oauth", subscription: true },
+				{ id: "anthropic", name: "Anthropic", authType: "api_key", subscription: true },
+			],
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "stored", label: "OAuth" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("Anthropic · subscription");
+		expect(output).toContain("✓ subscription configured");
+	});
+
 	it("shows environment API key auth as configured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",

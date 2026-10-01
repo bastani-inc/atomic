@@ -87,6 +87,13 @@ test("login autocomplete is fuzzy and deduplicates providers with two auth metho
 	assert.match(completions?.[0]?.description ?? "", /Subscription\/API key/);
 });
 
+test("login autocomplete describes an OAuth sign-in without a subscription as an account", () => {
+	const radius: AuthSelectorProvider[] = [{ id: "radius", name: "Radius", authType: "oauth", subscription: false }];
+	const completions = getLoginProviderCompletions([...providers, ...radius], "radius");
+
+	assert.deepEqual(completions, [{ value: "radius", label: "radius", description: "Radius · Account" }]);
+});
+
 test("login command advertises its provider argument", () => {
 	assert.equal(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "login")?.argumentHint, "<provider>");
 });
