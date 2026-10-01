@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import {
@@ -12,6 +12,7 @@ import {
 } from "../src/modes/interactive/components/atomic-banner.ts";
 import {
 	StartupIdentityComponent,
+	startupMotionEnabled,
 	startupStateAtElapsed,
 } from "../src/modes/interactive/components/startup-identity.ts";
 import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
@@ -171,6 +172,45 @@ describe("InteractiveMode startup banner", () => {
 			expect(rendered).toContain("Atomic v0.0.0");
 			expect(rendered).not.toContain("█");
 		}
+	});
+
+	describe("in Apple Terminal", () => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+
+		beforeEach(() => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
+			vi.stubEnv("TERM_PROGRAM", "Apple_Terminal");
+		});
+
+		afterEach(() => {
+			vi.unstubAllEnvs();
+			if (platform) Object.defineProperty(process, "platform", platform);
+		});
+
+		it("shows the ∀ wordmark with the identity text instead of the block logo", () => {
+			initTheme("dark");
+			for (const maxWidth of [120, 40]) {
+				const rendered = renderStartupIdentity({ reasoning: false, thinkingLevel: "off", maxWidth });
+
+				expect(rendered).not.toMatch(/[█▙▟▛▜░]/);
+				expect(rendered.split("\n")[0]).toBe("∀ Atomic v0.0.0");
+				expect(rendered).toContain("(openai) gpt-5.1-codex");
+				expect(rendered).toContain("/tmp/project");
+			}
+		});
+
+		it("shows the identity text from the first frame instead of animating the logo", () => {
+			const isTTY = process.stdout.isTTY;
+			process.stdout.isTTY = true;
+			try {
+				vi.stubEnv("TERM_PROGRAM", "iTerm.app");
+				expect(startupMotionEnabled()).toBe(true);
+				vi.stubEnv("TERM_PROGRAM", "Apple_Terminal");
+				expect(startupMotionEnabled()).toBe(false);
+			} finally {
+				process.stdout.isTTY = isTTY;
+			}
+		});
 	});
 
 	it("honors NO_COLOR across the complete startup identity", () => {

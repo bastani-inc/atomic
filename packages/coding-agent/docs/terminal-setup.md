@@ -29,6 +29,8 @@ Atomic enables enhanced key reporting when available. If Terminal.app still send
 
 This fallback only works when Atomic runs on the same Mac as Terminal.app. It cannot detect the local keyboard over remote SSH.
 
+Terminal.app draws gaps between rows of the block-character logo in the startup header. There, Atomic shows a text `∀ Atomic` wordmark with the version and session details instead of the logo.
+
 ## Ghostty
 
 Add to your Ghostty config (`~/Library/Application Support/com.mitchellh.ghostty/config` on macOS, `~/.config/ghostty/config` on Linux):

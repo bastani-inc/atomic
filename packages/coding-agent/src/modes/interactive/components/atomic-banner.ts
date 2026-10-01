@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { isAppleTerminalSession, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "../theme/theme.js";
 import { theme } from "../theme/theme.js";
 
@@ -15,6 +15,14 @@ const ATOMIC_FORALL_BANNER_LINES: readonly string[] = [
 	"          ██████▛  ▜██████          ",
 	"            ████████████            ",
 ];
+
+export function supportsAtomicBanner(): boolean {
+	return !isAppleTerminalSession();
+}
+
+export function atomicWordmark(): string {
+	return noColorRequested() ? "∀" : theme.bold(theme.fg("accent", "∀"));
+}
 
 export const STARTUP_ASSEMBLY_GAPS = [10, 8, 6, 4, 3, 2, 1, 1, 0] as const;
 export const STARTUP_FRAME_MS = 80;
@@ -91,6 +99,8 @@ export function composeStartupIdentity(
 	maxWidth?: number,
 	manifestoLines: readonly string[] = [],
 ): string {
+	if (markLines.length === 0)
+		return [...metaLines, ...(manifestoLines.length > 0 ? ["", ...manifestoLines] : [])].join("\n");
 	const markWidth = Math.max(...markLines.map((line) => visibleWidth(line)));
 	const asideWidth = Math.max(0, ...metaLines.map(visibleWidth), ...manifestoLines.map(visibleWidth));
 	const wide = maxWidth === undefined || (maxWidth >= 80 && maxWidth >= markWidth + 2 + asideWidth);

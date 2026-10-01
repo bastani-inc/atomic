@@ -11,7 +11,12 @@ import {
 	onInteractiveEngineSessionStatsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
-import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
+import {
+	atomicWordmark,
+	renderAtomicAssemblyBanner,
+	renderStartupManifesto,
+	supportsAtomicBanner,
+} from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
@@ -595,11 +600,13 @@ InteractiveModeBase.prototype.getStartupIdentityText = function (
 	const appLabel = APP_NAME.length > 0 ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}` : "Atomic";
 	const noColor = process.env.NO_COLOR !== undefined;
 	const fg = (role: "text" | "muted" | "dim", text: string): string => (noColor ? text : theme.fg(role, text));
-	const title = `${theme.bold(fg("text", appLabel))} ${fg("muted", `v${this.version}`)}`;
+	const showMark = supportsAtomicBanner();
+	const wordmark = showMark ? "" : `${atomicWordmark()} `;
+	const title = `${wordmark}${theme.bold(fg("text", appLabel))} ${fg("muted", `v${this.version}`)}`;
 	const model = this.session.state.model;
 	const provider = model ? fg("dim", `(${model.provider})`) : fg("dim", "(no-provider)");
 	const modelLine = `${provider} ${fg("muted", this.getStartupModelLabel())}`;
-	const markLines = this.getAtomicAnsiMarkLines(gap);
+	const markLines = showMark ? this.getAtomicAnsiMarkLines(gap) : [];
 	const markWidth = Math.max(0, ...markLines.map(visibleWidth));
 	const showMeta = gap === 0 || (maxWidth !== undefined && maxWidth < markWidth);
 	const metaLines = showMeta

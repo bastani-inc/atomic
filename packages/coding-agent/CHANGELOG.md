@@ -21,6 +21,7 @@
 - Deferred MCP tools that `tool_search` loaded are no longer dropped on resume and `/reload` when their server reconnects before the next prompt; the session restored its tools before the MCP servers reconnected.
 - The `system` theme keeps pastel terminal palettes pastel instead of making their accent colors more saturated at the lightness the theme needs ([#10255](https://github.com/earendil-works/pi/issues/10255)).
 - `/login` and `/logout` no longer label every OAuth sign-in as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
+- The startup header logo no longer renders with gaps in Apple Terminal; it shows a text `∀ Atomic` wordmark with the version and session details instead.
 
 ## [0.9.25] - 2026-10-01
 
