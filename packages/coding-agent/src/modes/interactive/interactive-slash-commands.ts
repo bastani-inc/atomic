@@ -1,6 +1,7 @@
 import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -346,8 +347,9 @@ InteractiveModeBase.prototype.handleNameCommand = function (this: InteractiveMod
 };
 
 InteractiveModeBase.prototype.handleSessionCommand = function (this: InteractiveModeBase): void {
-	const stats = this.session.getSessionStats();
-	const sessionName = this.sessionManager.getSessionName();
+	const engineStats = getEngineSessionStats(this.session);
+	const stats = engineStats ?? this.session.getSessionStats();
+	const sessionName = this.session.sessionName;
 
 	let info = `${theme.bold("Session Info")}\n\n`;
 	if (sessionName) {
@@ -371,21 +373,36 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 		info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
 	}
 	info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-	const entries = this.sessionManager.getEntries();
+	const mirrorStats = engineStats ? this.session.getSessionStats() : stats;
+	const mirrorMatchesEngine =
+		mirrorStats.sessionId === stats.sessionId &&
+		mirrorStats.totalMessages === stats.totalMessages &&
+		mirrorStats.cost === stats.cost &&
+		mirrorStats.tokens.input === stats.tokens.input &&
+		mirrorStats.tokens.output === stats.tokens.output &&
+		mirrorStats.tokens.cacheRead === stats.tokens.cacheRead &&
+		mirrorStats.tokens.cacheWrite === stats.tokens.cacheWrite;
+	const entries =
+		engineStats && (this.session.isStreaming || !mirrorMatchesEngine) ? [] : this.sessionManager.getEntries();
 	const assistantEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
-	const promptTokens = assistantEntries.reduce(
-		(sum, entry) =>
-			sum +
-			(entry.type === "message" && entry.message.role === "assistant"
-				? entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite
-				: 0),
-		0,
-	);
-	const cacheRead = assistantEntries.reduce(
-		(sum, entry) =>
-			sum + (entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.cacheRead : 0),
-		0,
-	);
+	const promptTokens = engineStats
+		? engineStats.tokens.input + engineStats.tokens.cacheRead + engineStats.tokens.cacheWrite
+		: assistantEntries.reduce(
+				(sum, entry) =>
+					sum +
+					(entry.type === "message" && entry.message.role === "assistant"
+						? entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite
+						: 0),
+				0,
+			);
+	const cacheRead = engineStats
+		? engineStats.tokens.cacheRead
+		: assistantEntries.reduce(
+				(sum, entry) =>
+					sum +
+					(entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.cacheRead : 0),
+				0,
+			);
 	if (promptTokens > 0)
 		info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
 	const waste = computeCacheWaste(entries, createCacheMissModelSource(this.session.modelRuntime));
