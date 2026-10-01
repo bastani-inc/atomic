@@ -754,7 +754,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	let admissionControlError: string | undefined;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
-	let controlAttempt: AbortController | undefined;
+	let controlSettlements: Promise<void> = Promise.resolve();
+	let latestControl = 0;
 	let pauseGeneration = 0;
 	const persistRunControl = async (status: "paused" | "running"): Promise<void> => {
 		ownController.signal.throwIfAborted();
@@ -767,15 +768,15 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			await durableBackend.settleWorkflowAdmission?.(runId);
 		}
 		if (durableBackend.getWorkflow(runId) === undefined) return;
-		controlAttempt?.abort(new Error("Workflow control superseded"));
-		const attempt = new AbortController();
-		controlAttempt = attempt;
+		const previous = controlSettlements;
+		const control = ++latestControl;
 		// Acknowledgement bounds local control latency, not the durable round trips.
 		const settlement = (async () => {
 			try {
 				await boundedAdmission(
-					(signal) =>
-						dbosAdmissionContext.run(signal, async () => {
+					async (signal) => {
+						await raceAbort(previous, signal);
+						await dbosAdmissionContext.run(signal, async () => {
 							if (
 								!(await transitionDurableWorkflowStatus(
 									durableBackend,
@@ -791,18 +792,19 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 							signal.throwIfAborted();
 							recordRunTimingCheckpoint(durableBackend, runSnapshot);
 							await durableBackend.flush(runId);
-						}),
-					AbortSignal.any([ownController.signal, attempt.signal]),
+						});
+					},
+					ownController.signal,
 					DBOS_ADMISSION_TIMEOUT_MS,
 				);
-				attempt.signal.throwIfAborted();
 				ownController.signal.throwIfAborted();
+				if (control !== latestControl) return;
 				activeStore.recordRunExecutionState(runId, {
 					controlPersistence: durableBackend.persistent ? "durable" : "observed",
 					...(durableRootAdmitted ? { phase: "executing" as const, dependencyError: undefined } : {}),
 				});
 			} catch (error) {
-				if (!attempt.signal.aborted && !ownController.signal.aborted && isDbosDependencyError(error)) {
+				if (control === latestControl && !ownController.signal.aborted && isDbosDependencyError(error)) {
 					activeStore.recordRunExecutionState(runId, {
 						phase: "blocked_dependency",
 						dependencyError: `Workflow database unavailable during ${status === "paused" ? "pause" : "resume"}; persistence not confirmed.`,
@@ -812,6 +814,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				throw error;
 			}
 		})();
+		controlSettlements = settlement.then(
+			() => undefined,
+			() => undefined,
+		);
 		if (status === "running") return settlement;
 		// Keep observing settlement after the local acknowledgement, including rejection.
 		let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
@@ -843,7 +849,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		pause: () => {
 			ownController.signal.throwIfAborted();
 			pauseGeneration++;
-			controlAttempt?.abort(new Error("Workflow control superseded by pause"));
 			scheduler.pauseRun();
 			activeStore.recordRunPaused(runId, undefined, { resumable: true });
 			pausePersistence = persistRunControl("paused");

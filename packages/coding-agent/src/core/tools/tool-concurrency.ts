@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 
 /**
@@ -31,16 +33,41 @@ export function resolveToolConcurrency<TArgs>(
 export class ToolExecutionScheduler {
 	#lastExclusive: Promise<void> | undefined;
 	readonly #sharedSinceExclusive = new Set<Promise<void>>();
+	readonly #scope = new AsyncLocalStorage<{
+		mode: ToolConcurrencyMode;
+		active: boolean;
+		children?: ToolExecutionScheduler;
+	}>();
 
 	/** Runs `run` synchronously when nothing earlier blocks it, so its abort listeners attach immediately. */
 	schedule<T>(mode: ToolConcurrencyMode, run: () => Promise<T>): Promise<T> {
+		const parent = this.#scope.getStore();
+		if (parent?.active) {
+			if (parent.mode === "shared" && mode === "exclusive") {
+				return Promise.reject(
+					new Error("Nested exclusive tools require the orchestrating tool to declare concurrency: 'exclusive'"),
+				);
+			}
+			parent.children ??= new ToolExecutionScheduler();
+			return parent.children.schedule(mode, run);
+		}
 		const blockers =
 			mode === "exclusive"
 				? [...(this.#lastExclusive ? [this.#lastExclusive] : []), ...this.#sharedSinceExclusive]
 				: this.#lastExclusive
 					? [this.#lastExclusive]
 					: [];
-		const task = blockers.length === 0 ? invoke(run) : Promise.all(blockers).then(run);
+		const execute = () => {
+			const scope = { mode, active: true };
+			return this.#scope.run(scope, async () => {
+				try {
+					return await run();
+				} finally {
+					scope.active = false;
+				}
+			});
+		};
+		const task = blockers.length === 0 ? invoke(execute) : Promise.all(blockers).then(execute);
 		const settled = task.then(
 			() => undefined,
 			() => undefined,
@@ -68,12 +95,17 @@ function invoke<T>(run: () => Promise<T>): Promise<T> {
 }
 
 /** Route a tool's executions through a session scheduler according to its declared concurrency. */
-export function scheduleToolExecution(tool: AgentTool, scheduler: ToolExecutionScheduler): AgentTool {
+export function scheduleToolExecution(
+	tool: AgentTool,
+	scheduler: ToolExecutionScheduler,
+	abortError?: () => Error,
+): AgentTool {
 	return {
 		...tool,
 		execute: (...args: Parameters<AgentTool["execute"]>) =>
-			scheduler.schedule(resolveToolConcurrency(tool.concurrency, args[1] as Record<string, unknown>), () =>
-				tool.execute(...args),
-			),
+			scheduler.schedule(resolveToolConcurrency(tool.concurrency, args[1] as Record<string, unknown>), () => {
+				if (args[2]?.aborted) throw abortError?.() ?? new Error("Operation aborted");
+				return tool.execute(...args);
+			}),
 	};
 }

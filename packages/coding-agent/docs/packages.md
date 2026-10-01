@@ -1,13 +1,13 @@
 ---
 title: "Atomic packages"
-description: "Install, manage, and share Atomic packages that bundle extensions, skills, prompt templates, themes, and workflows."
+description: "Install, manage, and share Atomic packages that bundle extensions, skills, prompt templates, themes, workflows, and MCP servers."
 ---
 
 > Atomic can help you create packages. Ask it to bundle your extensions, skills, prompt templates, or themes.
 
 # Atomic Packages
 
-Atomic packages bundle extensions, skills, prompt templates, themes, and workflow definitions so you can share them through npm or git. Declare resources in `package.json` under the `atomic` key, or use conventional directories.
+Atomic packages bundle extensions, skills, prompt templates, themes, workflow definitions, and MCP servers so you can share them through npm or git. Declare resources in `package.json` under the `atomic` key, or use conventional directories.
 
 ## Where to go next
 
@@ -27,6 +27,7 @@ Read this page to install and manage packages, then continue:
     - [Local Paths](#local-paths)
   - [Creating an Atomic Package](/packages/authoring#creating-an-atomic-package)
     - [Gallery Metadata](/packages/authoring#gallery-metadata)
+    - [MCP Servers](/packages/authoring#mcp-servers)
   - [Package Structure](/packages/authoring#package-structure)
     - [Convention Directories](/packages/authoring#convention-directories)
   - [Dependencies](/packages/authoring#dependencies)
@@ -167,6 +168,8 @@ Moved to [Package reference](/packages/reference#package-filtering).
 ## Enable and Disable Resources
 
 Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes. It starts in global settings (`~/.atomic/agent/settings.json`); press Tab to switch global/project scope. Use `atomic config -l` to start in project overrides (`.atomic/settings.json`) with inherited global resources dimmed. Workflow package filters can be configured with `workflows` patterns.
+
+For Atomic's inline llama.cpp, codemode, and tool-search extensions, use the symbolic `builtin:<name>` resources in extension settings rather than an installation path. See [built-in extension resources](/extensions#built-in-extension-resources) for exclusions, explicit loading, and replacement diagnostics. These are not npm/git package sources.
 
 When an uncaught exception or a fatal runtime error ends an interactive session, Atomic checks the crash stack for frames that belong to loaded extensions and names the matching extension packages or files in the exit message, suggesting `atomic config` to disable them or `atomic -ne` to confirm the crash reproduces without optional extensions.
 

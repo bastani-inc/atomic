@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DBOS_ADMISSION_TIMEOUT_MS } from "../../packages/workflows/src/durable/dbos-admission.js";
+import {
+	DBOS_ADMISSION_TIMEOUT_MS,
+	DbosDependencyError,
+	dbosAdmissionContext,
+} from "../../packages/workflows/src/durable/dbos-admission.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { classifyLatestMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -465,6 +469,176 @@ test.each([95, 100, 150, 200])("pause settles durably and resume confirms on a h
 		assert.equal(backend.getWorkflow(runId)?.status, "completed");
 		assert.deepEqual([...sdk.state.workflows.keys()], [runId]);
 		assert.deepEqual(sdk.state.cancels, []);
+	} finally {
+		controller.abort();
+		body.resolve();
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		await pending;
+	}
+});
+
+function createFencedCheckpointSdk(roundTripMs: number) {
+	const sdk = createMockSdk();
+	const rows = new Map<string, "PENDING" | "SUCCESS">();
+	const roundTrip = () => new Promise<void>((resolve) => setTimeout(resolve, roundTripMs));
+	const backend = new DbosDurableBackend({
+		...sdk,
+		startWorkflow: async (...args) => {
+			await roundTrip();
+			return sdk.startWorkflow(...args);
+		},
+		listStepRecords: async (...args) => {
+			await roundTrip();
+			return sdk.listStepRecords(...args);
+		},
+		resumeWorkflow: async (...args) => {
+			await roundTrip();
+			return sdk.resumeWorkflow(...args);
+		},
+		retrieveWorkflow: async (...args) => {
+			await roundTrip();
+			return sdk.retrieveWorkflow(...args);
+		},
+		recordStepOutput: async (workflowId, stepName, output) => {
+			const admission = dbosAdmissionContext.getStore();
+			const id = `${workflowId}:checkpoint:${stepName}`;
+			await roundTrip();
+			if (admission?.aborted) throw new DbosDependencyError();
+			if (rows.has(id)) {
+				while (rows.get(id) !== "SUCCESS") {
+					if (admission?.aborted) throw new DbosDependencyError();
+					await new Promise<void>((resolve) => setTimeout(resolve, 25));
+				}
+				return;
+			}
+			rows.set(id, "PENDING");
+			await roundTrip();
+			if (admission?.aborted) throw new DbosDependencyError();
+			rows.set(id, "SUCCESS");
+			await sdk.recordStepOutput(workflowId, stepName, output);
+		},
+	});
+	return { sdk, backend, abandonedCheckpoints: () => [...rows].filter(([, state]) => state === "PENDING") };
+}
+
+test("resume issued at the pause acknowledgement waits for the in-flight durable pause (#3377)", async () => {
+	vi.useFakeTimers();
+	const { sdk, backend, abandonedCheckpoints } = createFencedCheckpointSdk(200);
+	const store = createStore();
+	const toolControlRegistry = createToolControlRegistry();
+	const controller = new AbortController();
+	const entered = Promise.withResolvers<void>();
+	const body = Promise.withResolvers<void>();
+	const runId = "resume-after-ack";
+	let effects = 0;
+	const pending = run(
+		workflow({
+			name: runId,
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				entered.resolve();
+				await body.promise;
+				await ctx.tool("after", {}, async () => ++effects);
+				return {};
+			},
+		}),
+		{},
+		{ runId, store, toolControlRegistry, durableBackend: backend, signal: controller.signal },
+	);
+	try {
+		await vi.advanceTimersByTimeAsync(3_000);
+		await entered.promise;
+		const pause = pauseRun(runId, { store, toolControlRegistry });
+		await vi.advanceTimersByTimeAsync(500);
+		assert.equal((await pause).ok, true);
+		assert.equal(store.runs()[0]!.status, "paused");
+		const resume = resumeRun(runId, { store, toolControlRegistry });
+		const confirmed = resume.then(
+			(result) => ({ result }),
+			(error: Error) => ({ error: error.message }),
+		);
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		const outcome = await confirmed;
+		assert.ok(
+			!("error" in outcome),
+			`resume after the pause acknowledgement failed: ${"error" in outcome ? outcome.error : ""}`,
+		);
+		assert.equal(outcome.result.ok, true);
+		assert.equal(store.runs()[0]!.status, "running");
+		assert.equal(store.runs()[0]!.controlPersistence, "durable");
+		assert.equal(store.runs()[0]!.dependencyError, undefined);
+		assert.equal(backend.getWorkflow(runId)?.status, "running");
+		assert.deepEqual(abandonedCheckpoints(), [], "no durable write may be abandoned between its row and its outcome");
+		body.resolve();
+		await vi.advanceTimersByTimeAsync(3_000);
+		assert.equal((await pending).status, "completed");
+		assert.equal(effects, 1);
+		assert.equal(backend.getWorkflow(runId)?.status, "completed");
+		assert.deepEqual(sdk.state.cancels, []);
+	} finally {
+		controller.abort();
+		body.resolve();
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		await pending;
+	}
+});
+
+test("pause issued during an in-flight resume write waits for it instead of cancelling it (#3377)", async () => {
+	vi.useFakeTimers();
+	const { backend, abandonedCheckpoints } = createFencedCheckpointSdk(200);
+	const store = createStore();
+	const toolControlRegistry = createToolControlRegistry();
+	const controller = new AbortController();
+	const entered = Promise.withResolvers<void>();
+	const body = Promise.withResolvers<void>();
+	const runId = "pause-during-resume";
+	let effects = 0;
+	const pending = run(
+		workflow({
+			name: runId,
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				entered.resolve();
+				await body.promise;
+				await ctx.tool("after", {}, async () => ++effects);
+				return {};
+			},
+		}),
+		{},
+		{ runId, store, toolControlRegistry, durableBackend: backend, signal: controller.signal },
+	);
+	try {
+		await vi.advanceTimersByTimeAsync(3_000);
+		await entered.promise;
+		const firstPause = pauseRun(runId, { store, toolControlRegistry });
+		await vi.advanceTimersByTimeAsync(500);
+		assert.equal((await firstPause).ok, true);
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		const resume = resumeRun(runId, { store, toolControlRegistry });
+		const superseded = assert.rejects(resume, /superseded by pause/);
+		await vi.advanceTimersByTimeAsync(500);
+		const pause = pauseRun(runId, { store, toolControlRegistry });
+		await vi.advanceTimersByTimeAsync(500);
+		assert.equal((await pause).ok, true);
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		await superseded;
+		assert.equal(store.runs()[0]!.status, "paused");
+		assert.equal(store.runs()[0]!.dependencyError, undefined);
+		assert.notEqual(store.runs()[0]!.phase, "blocked_dependency");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		assert.deepEqual(abandonedCheckpoints(), [], "no durable write may be abandoned between its row and its outcome");
+		const resumed = resumeRun(runId, { store, toolControlRegistry });
+		await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		assert.equal((await resumed).ok, true);
+		body.resolve();
+		await vi.advanceTimersByTimeAsync(3_000);
+		assert.equal((await pending).status, "completed");
+		assert.equal(effects, 1);
 	} finally {
 		controller.abort();
 		body.resolve();

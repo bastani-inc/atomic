@@ -81,8 +81,10 @@ export type PauseResult =
 	| {
 			ok: false;
 			runId: string;
-			reason: "not_found" | "already_ended" | "no_active_stages" | "stage_not_found";
+			reason: "not_found" | "already_ended" | "already_paused" | "no_active_stages" | "stage_not_found";
 	  };
+
+export type PauseAllRunResult = PauseResult | { ok: false; runId: string; reason: "pause_failed"; message: string };
 
 export { type InspectRunResult, inspectRun, type RunDetail } from "./run-inspect.js";
 // ---------------------------------------------------------------------------
@@ -451,6 +453,17 @@ export async function resumeRun(
 	};
 }
 
+function isRunFullyPaused(activeStore: Store, runId: string, controlRunIds: readonly string[]): boolean {
+	const runs = activeStore.runs();
+	const hasLiveStage = controlRunIds.some(
+		(controlRunId) =>
+			runs
+				.find((candidate) => candidate.id === controlRunId)
+				?.stages.some((stage) => stage.status === "running" || stage.status === "pending") === true,
+	);
+	return !hasLiveStage && runs.find((candidate) => candidate.id === runId)?.status === "paused";
+}
+
 async function pauseRunWithAction(
 	runId: string,
 	opts?: {
@@ -502,9 +515,12 @@ async function pauseRunWithAction(
 		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
 		const runtimeControls = ownedRuntimeControls(activeStore, toolControls, runId);
 		const activeRunIds = new Set([...controlRunIds, ...runtimeControls.map(({ controlRunId }) => controlRunId)]);
+		const stageHandles = [...activeRunIds].flatMap((id) => registry.run(id).stages());
 		if (
 			runtimeControls.some(({ controlRunId }) => controlRunId === runId) &&
-			[...activeRunIds].every((id) => toolControls.active(id).length === 0 && registry.run(id).stages().length === 0)
+			[...activeRunIds].every((id) => toolControls.active(id).length === 0) &&
+			stageHandles.every((handle) => handle.status === "awaiting_input") &&
+			(stageHandles.length === 0 || !isRunFullyPaused(activeStore, runId, controlRunIds))
 		) {
 			// Install every barrier synchronously, before awaiting durable pause acknowledgement.
 			await Promise.all(runtimeControls.map(({ handle }) => handle.pause()));
@@ -516,7 +532,28 @@ async function pauseRunWithAction(
 				message: `Run ${runId} paused (${run.controlPersistence ?? "observed"}). ${run.controlPersistence === "durable" ? "Database persistence confirmed." : "Pause observed locally, not confirmed persisted."} Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
 			};
 		}
-		return { ok: false, runId, reason: "no_active_stages" };
+		const controlRuns = activeStore.runs().filter((candidate) => controlRunIds.includes(candidate.id));
+		const waitingRuns = controlRuns.filter((candidate) =>
+			candidate.stages.some((stage) => stage.status === "awaiting_input"),
+		);
+		if (
+			runtimeControls.length === 0 &&
+			waitingRuns.length > 0 &&
+			!isRunFullyPaused(activeStore, runId, controlRunIds) &&
+			controlRuns.every((candidate) =>
+				candidate.stages.every((stage) => stage.status !== "running" && stage.status !== "pending"),
+			) &&
+			[...activeRunIds].every((id) => toolControls.active(id).length === 0)
+		) {
+			for (const waitingRun of waitingRuns) activeStore.recordRunPaused(waitingRun.id);
+			activeStore.recordRunPaused(runId);
+			return { ok: true, runId, paused: [] };
+		}
+		return {
+			ok: false,
+			runId,
+			reason: isRunFullyPaused(activeStore, runId, controlRunIds) ? "already_paused" : "no_active_stages",
+		};
 	}
 
 	const paused: StageSnapshot[] = [];
@@ -583,10 +620,10 @@ export async function pauseAllRuns(opts?: {
 	stageControlRegistry?: StageControlRegistry;
 	toolControlRegistry?: ToolControlRegistry;
 	jobs?: JobTracker;
-}): Promise<PauseResult[]> {
+}): Promise<PauseAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
-	return Promise.all(
+	const settled = await Promise.allSettled(
 		inFlight.map((run) =>
 			pauseRun(run.id, {
 				store: activeStore,
@@ -596,4 +633,13 @@ export async function pauseAllRuns(opts?: {
 			}),
 		),
 	);
+	return settled.map((result, index): PauseAllRunResult => {
+		if (result.status === "fulfilled") return result.value;
+		return {
+			ok: false,
+			runId: inFlight[index]!.id,
+			reason: "pause_failed",
+			message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+		};
+	});
 }

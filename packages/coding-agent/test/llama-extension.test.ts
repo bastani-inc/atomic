@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -69,6 +70,56 @@ afterEach(async () => {
 		),
 	);
 	llamaUiProbe.connectionErrors.length = 0;
+});
+
+it("preserves cached llama.cpp context for unloaded presets (#10158)", async () => {
+	let stored: ModelsStoreEntry | undefined;
+	let loaded = true;
+	let args: string[] | undefined;
+	const { url } = await listen((request, response) => {
+		if (request.url === "/models") {
+			json(response, {
+				data: [
+					{
+						id: "qwen",
+						source: "preset",
+						status: { value: loaded ? "loaded" : "unloaded", args },
+						meta: loaded ? { n_ctx: 65536, n_ctx_train: 128000 } : { n_ctx_train: 128000 },
+					},
+				],
+			});
+		} else if (request.url === "/props") json(response, { role: "router", models_autoload: true });
+		else if (request.url === "/props?model=qwen&autoload=false") json(response, {});
+		else response.writeHead(404).end();
+	});
+	const publish = async (publication: ModelsPublication): Promise<boolean> => {
+		if (publication.persist) stored = structuredClone(publication.persist);
+		publication.update?.();
+		return true;
+	};
+	const refresh = async () => {
+		const controller = createLlamaProvider();
+		await controller.provider.refreshModels?.({
+			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
+			stored,
+			publish,
+			allowNetwork: true,
+			signal: new AbortController().signal,
+		});
+	};
+	await refresh();
+	loaded = false;
+	await refresh();
+	assert.deepEqual(
+		stored?.models.map((model) => model.contextWindow),
+		[65536, 65536],
+	);
+	args = ["llama-server", "--ctx-size", "32768"];
+	await refresh();
+	assert.deepEqual(
+		stored?.models.map((model) => model.contextWindow),
+		[32768, 32768],
+	);
 });
 
 describe("llama.cpp extension", () => {
@@ -244,7 +295,15 @@ describe("llama.cpp extension", () => {
 
 		await first.provider.refreshModels?.(refreshContext(true));
 		expect(first.provider.getModels().map((model) => model.id)).toEqual(["loaded", "sleeping"]);
-		expect(cachedEntry?.models.map((model) => model.id)).toEqual(["loaded", "sleeping"]);
+		assert.deepEqual(
+			cachedEntry?.models.map((model) => [model.id, model.api]),
+			[
+				["loaded", "openai-completions"],
+				["sleeping", "openai-completions"],
+				["loaded", "llama-cpp-classify"],
+				["sleeping", "llama-cpp-classify"],
+			],
+		);
 
 		const second = createLlamaProvider();
 		await second.provider.refreshModels?.(refreshContext(false));
@@ -252,6 +311,75 @@ describe("llama.cpp extension", () => {
 			expect.objectContaining({ id: "loaded", baseUrl: `${url}/v1`, contextWindow: 32768 }),
 			expect.objectContaining({ id: "sleeping", baseUrl: `${url}/v1`, contextWindow: 32768 }),
 		]);
+		const restoredClassifiers = (second.provider.getAllModels?.() ?? []).filter(
+			(model) => model.type === "classifier",
+		);
+		assert.deepEqual(
+			restoredClassifiers.map((model) => [model.id, model.api, model.baseUrl, model.contextWindow]),
+			[
+				["loaded", "llama-cpp-classify", url, 32768],
+				["sleeping", "llama-cpp-classify", url, 32768],
+			],
+		);
+	});
+
+	// Upstream #10119: every selectable chat model is also a classifier read from label probabilities.
+	it("classifies with selectable models through llama-server", async () => {
+		const paths: string[] = [];
+		const models: string[] = [];
+		const { url } = await listen((request, response) => {
+			let body = "";
+			request.on("data", (chunk) => {
+				body += chunk;
+			});
+			request.on("end", () => {
+				paths.push(request.url ?? "");
+				const payload = JSON.parse(body) as { model: string; content?: string };
+				models.push(payload.model);
+				if (request.url === "/tokenize") {
+					json(response, { tokens: [...(payload.content ?? "")].map((char) => char.codePointAt(0)) });
+				} else if (request.url === "/apply-template") {
+					json(response, { prompt: "<|im_start|>assistant\n" });
+				} else if (request.url === "/completion") {
+					json(response, {
+						completion_probabilities: [
+							{
+								top_logprobs: [
+									{ id: 66, token: "B", logprob: -0.1 },
+									{ id: 65, token: "A", logprob: -2.4 },
+								],
+							},
+						],
+					});
+				} else {
+					response.writeHead(404).end();
+				}
+			});
+		});
+
+		const controller = createLlamaProvider();
+		controller.setCatalog([{ id: "qwen", status: { value: "loaded" } }], url);
+		const classifier = controller.provider.getAllModels?.().find((model) => model.type === "classifier");
+		if (classifier?.type !== "classifier") throw new Error("missing classifier model");
+
+		// Provider auth resolves the OpenAI-compatible /v1 URL, which replaces the model's base URL.
+		const result = await controller.provider.classify!(
+			{ ...classifier, baseUrl: `${url}/v1` },
+			{
+				state: { message: "The build is red again." },
+				questions: {
+					kind: { type: "choice", instructions: "What is this about?", criteria: { billing: "", ci: "" } },
+				},
+			},
+			{ apiKey: "local" },
+		);
+
+		assert.equal(result.errorMessage, undefined);
+		assert.equal(result.stopReason, "stop");
+		const answer = result.answers.kind;
+		assert.equal(answer?.type === "choice" ? answer.choice : undefined, "ci");
+		assert.ok(paths.includes("/completion"));
+		assert.ok(models.every((model) => model === "qwen"));
 	});
 
 	it("stays dormant until configured and stores URL plus optional key", async () => {

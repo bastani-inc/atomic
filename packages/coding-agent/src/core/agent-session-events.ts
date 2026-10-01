@@ -3,6 +3,7 @@ import { cleanupSessionResources } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { abortBash } from "./agent-session-bash.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -61,6 +62,9 @@ const consumedQueuedMessageEvents = new WeakSet<object>();
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
 export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> | void {
+	if (event.type === "message_start" && event.message.role === "toolResult")
+		recordNestedToolCalls(this, event.message);
+	else if (event.type === "agent_end") clearNestedToolCalls(this);
 	// Create retry promise synchronously before queueing async processing.
 	// Agent.emit() calls this handler synchronously, and prompt() calls waitForRetry()
 	// as soon as agent.prompt() resolves. If _retryPromise is created only inside
@@ -612,7 +616,7 @@ export function closeAgentSession(
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
 		});
-		await attempt("session persistence", () => session.sessionManager.flush());
+		await attempt("session persistence", () => session.sessionManager.flushIfStarted());
 		if (ownedSettingsManagers.get(session.settingsManager) === session)
 			ownedSettingsManagers.delete(session.settingsManager);
 		await attempt("host subscriptions", () => beforeInvalidate?.());

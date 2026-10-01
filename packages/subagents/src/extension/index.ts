@@ -335,6 +335,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 			name: "subagent",
+			exposure: "model-only",
 			label: "Subagent",
 			description: SUBAGENT_TOOL_DESCRIPTION,
 			parameters: SubagentParams,

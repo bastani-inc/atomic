@@ -180,6 +180,214 @@ describe("/workflow run-control chat commands", () => {
 		assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
 	});
 
+	test.sequential("top-level /workflow pause --all reports a run whose pause throws alongside a paused run (#3377)", async () => {
+		const pausable = testRunId(`pause-slash-mixed-ok-${Date.now()}`);
+		const refusing = testRunId(`pause-slash-mixed-refusing-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(pausable));
+		store.recordRunStart(makeInflightRun(refusing));
+		registerTestStageHandle(pausable, "pause-stage");
+		registerTestStageHandle(refusing, "pause-stage", "running", {
+			pause: async () => {
+				throw new Error("stage refused to pause");
+			},
+		});
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /Paused 1 run\(s\)/);
+		assert.match(output, /failed to pause 1 run\(s\)/);
+		assert.match(output, new RegExp(`${refusing}: pause_failed \\(stage refused to pause\\)`));
+		assert.deepEqual(levels, ["info"]);
+	});
+
+	test.sequential("top-level /workflow pause --all reports an error naming the run when every pause throws (#3377)", async () => {
+		const refusing = testRunId(`pause-slash-refusing-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(refusing));
+		registerTestStageHandle(refusing, "pause-stage", "running", {
+			pause: async () => {
+				throw new Error("stage refused to pause");
+			},
+		});
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /failed to pause 1 run\(s\)/);
+		assert.match(output, new RegExp(`${refusing}: pause_failed \\(stage refused to pause\\)`));
+		assert.doesNotMatch(output, /No in-flight runs/);
+		assert.deepEqual(levels, ["error"]);
+	});
+
+	test.sequential("top-level /workflow pause --all does not report an already paused run as a failure (#3377)", async () => {
+		const alreadyPaused = testRunId(`pause-slash-already-paused-${Date.now()}`);
+		const pausable = testRunId(`pause-slash-newly-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		store.recordRunStart(makeInflightRun(pausable));
+		registerTestStageHandle(pausable, "pause-stage");
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		assert.doesNotMatch(messages.join("\n"), /failed to pause/);
+		assert.match(messages[0]!, /Paused 1 run\(s\)/);
+		assert.deepEqual(levels, ["info"]);
+	});
+
+	test.sequential("top-level /workflow pause --all reports an error when it stopped nothing beside an already paused run (#3377)", async () => {
+		const alreadyPaused = testRunId(`pause-slash-paused-beside-stuck-${Date.now()}`);
+		const noController = testRunId(`pause-slash-stuck-beside-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		store.recordRunStart(makeInflightRun(noController));
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /failed to pause 1 run\(s\)/);
+		assert.match(output, new RegExp(`${noController}: no_active_stages`));
+		assert.doesNotMatch(output, /Paused \d+ run\(s\)/);
+		assert.deepEqual(levels, ["error"]);
+		assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+	});
+
+	test.sequential("top-level /workflow quit --all reports info when it quits an already paused run beside a stuck run (#3377)", async () => {
+		const alreadyPaused = testRunId(`quit-slash-paused-beside-stuck-${Date.now()}`);
+		const noController = testRunId(`quit-slash-stuck-beside-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		store.recordRunStart(makeInflightRun(noController));
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("quit --all", ctx);
+
+		const output = messages.join("\n");
+		assert.match(output, /Quit 1 run\(s\)/);
+		assert.match(output, new RegExp(`${noController}: no_active_stages`));
+		assert.deepEqual(levels, ["info"]);
+		assert.equal(store.runs().find((run) => run.id === alreadyPaused)?.exitReason, "quit");
+		assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+	});
+
+	test.sequential("top-level /workflow pause --all treats only already paused runs as a benign no-op (#3377)", async () => {
+		const alreadyPaused = testRunId(`pause-slash-only-paused-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(alreadyPaused));
+		store.recordRunPaused(alreadyPaused);
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		assert.match(messages.join("\n"), /already paused/);
+		assert.doesNotMatch(messages.join("\n"), /failed to pause|No in-flight runs/);
+		assert.deepEqual(levels, ["info"]);
+	});
+
+	test.sequential("top-level /workflow pause --all treats a paused run with a stage awaiting input as already paused (#3377)", async () => {
+		const runId = testRunId(`pause-slash-paused-awaiting-input-${Date.now()}`);
+		store.recordRunStart(makeInflightRun(runId));
+		store.recordStageStart(runId, {
+			id: "pause-stage",
+			name: "worker",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		store.recordStageStart(runId, {
+			id: "prompt-stage",
+			name: "prompt",
+			status: "awaiting_input",
+			parentIds: [],
+			toolEvents: [],
+		});
+		registerTestStageHandle(runId, "pause-stage");
+		const { workflowCmd } = await registerWorkflowCommand();
+		const messages: string[] = [];
+		const levels: string[] = [];
+		const ctx = {
+			ui: {
+				notify(message: string, level: string) {
+					messages.push(message);
+					levels.push(level);
+				},
+			},
+		};
+		await workflowCmd.options.handler(`pause ${runId}`, ctx);
+		assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
+		registerTestStageHandle(runId, "pause-stage", "paused");
+		messages.length = 0;
+		levels.length = 0;
+
+		await workflowCmd.options.handler("pause --all", ctx);
+
+		assert.match(messages.join("\n"), /already paused/);
+		assert.doesNotMatch(messages.join("\n"), /failed to pause|no_active_stages/);
+		assert.deepEqual(levels, ["info"]);
+	});
+
 	test.sequential.each([
 		["-y <id>", "-y"],
 		["--yes <id>", "--yes"],

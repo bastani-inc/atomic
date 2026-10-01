@@ -13,12 +13,13 @@ import type {
 	ResponseStreamEvent,
 	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
-import { calculateCost } from "../models.ts";
+import { calculateCost, getServiceTierCost } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
 	ImageContent,
 	Model,
+	ModelServiceTierId,
 	StopReason,
 	StreamOptions,
 	SystemMessage,
@@ -123,14 +124,91 @@ function convertToolResultOutput<TApi extends Api>(
  * A normal model has no route, so an explicit `serviceTier` still applies there exactly as it did
  * before fast variants existed.
  */
+/** Codex accepts an additional tier not yet represented by the OpenAI API SDK. */
+export type ResponsesServiceTier = ResponseCreateParamsStreaming["service_tier"] | "ultrafast";
+
 export function resolveRequestedServiceTier(
 	model: Pick<Model<Api>, "fastRoute">,
-	optionsServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	optionsServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
 	return model.fastRoute ? model.fastRoute.serviceTier : optionsServiceTier;
 }
 
-type ServiceTier = NonNullable<ResponseCreateParamsStreaming["service_tier"]>;
+function advertisedServiceTierId(serviceTier: ResponsesServiceTier | undefined): ModelServiceTierId | undefined {
+	if (serviceTier === "priority" || serviceTier === "fast") return "priority";
+	return serviceTier === "ultrafast" ? "ultrafast" : undefined;
+}
+
+/**
+ * Whether the model offers a Fast or Ultrafast tier. A model without tier metadata keeps offering Fast
+ * but never Ultrafast. Other tiers (`flex`, `default`, `auto`, `scale`) need no advertisement.
+ */
+export function supportsServiceTier(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier,
+): boolean {
+	const advertisedId = advertisedServiceTierId(serviceTier);
+	if (advertisedId === undefined) return true;
+	if (model.serviceTiers === undefined) return advertisedId !== "ultrafast";
+	return getServiceTierCost(model, advertisedId) !== undefined;
+}
+
+/** OpenAI API: drop a Fast or Ultrafast tier the model does not advertise and send any other tier as asked. */
+export function openAIServiceTierForRequest(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	return serviceTier !== undefined && supportsServiceTier(model, serviceTier) ? serviceTier : undefined;
+}
+
+/**
+ * Codex's `service_tier_for_request`: send `flex` or an advertised tier, and omit `default` and every
+ * tier the model does not advertise.
+ */
+export function codexServiceTierForRequest(
+	model: Pick<Model<Api>, "serviceTiers">,
+	serviceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	if (serviceTier === "flex") return serviceTier;
+	return advertisedServiceTierId(serviceTier) !== undefined && supportsServiceTier(model, serviceTier)
+		? serviceTier
+		: undefined;
+}
+
+/**
+ * Reprice usage at the tier that actually served the request, using the advertised tier's published
+ * rates. A model without tier metadata keeps the documented Fast multiplier.
+ */
+export function applyServiceTierPricing(
+	usage: Usage,
+	serviceTier: ResponsesServiceTier | undefined,
+	model: Model<Api>,
+): void {
+	if (serviceTier === "flex") {
+		scaleUsageCost(usage, 0.5);
+		return;
+	}
+	const advertisedId = advertisedServiceTierId(serviceTier);
+	if (advertisedId === undefined) return;
+	const tierCost = getServiceTierCost(model, advertisedId);
+	if (tierCost) {
+		calculateCost({ ...model, cost: tierCost }, usage);
+		return;
+	}
+	if (advertisedId === "priority") {
+		scaleUsageCost(usage, (model.fastRoute?.baseModelId ?? model.id) === "gpt-5.5" ? 2.5 : 2);
+	}
+}
+
+function scaleUsageCost(usage: Usage, multiplier: number): void {
+	usage.cost.input *= multiplier;
+	usage.cost.output *= multiplier;
+	usage.cost.cacheRead *= multiplier;
+	usage.cost.cacheWrite *= multiplier;
+	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+}
+
+type ServiceTier = NonNullable<ResponsesServiceTier>;
 
 export function normalizeResponseServiceTier(serviceTier: string | null | undefined): ServiceTier | undefined {
 	if (serviceTier === null || serviceTier === undefined) return undefined;
@@ -150,7 +228,7 @@ export function normalizeResponseServiceTier(serviceTier: string | null | undefi
  * hook may still rewrite every other field, and a model without a route keeps unrestricted freedom.
  */
 export function assertPayloadPreservesFastRoute(
-	model: Pick<Model<Api>, "fastRoute" | "id" | "provider">,
+	model: Pick<Model<Api>, "fastRoute" | "id" | "provider" | "serviceTiers">,
 	payload: unknown,
 ): void {
 	const fastRoute = model.fastRoute;
@@ -169,9 +247,13 @@ export function assertPayloadPreservesFastRoute(
 	if (record.model !== fastRoute.upstreamModelId) {
 		conflicts.push(`model (expected "${fastRoute.upstreamModelId}", got ${JSON.stringify(record.model)})`);
 	}
-	if (record.service_tier !== fastRoute.serviceTier) {
+	const expectedServiceTier =
+		fastRoute.serviceTier !== undefined && supportsServiceTier(model, fastRoute.serviceTier)
+			? fastRoute.serviceTier
+			: undefined;
+	if (record.service_tier !== expectedServiceTier) {
 		conflicts.push(
-			`service_tier (expected ${JSON.stringify(fastRoute.serviceTier)}, got ${JSON.stringify(record.service_tier)})`,
+			`service_tier (expected ${JSON.stringify(expectedServiceTier)}, got ${JSON.stringify(record.service_tier)})`,
 		);
 	}
 	if (conflicts.length === 0) return;
@@ -185,16 +267,13 @@ export function assertPayloadPreservesFastRoute(
 
 export interface OpenAIResponsesStreamOptions {
 	onProviderStreamEvent?: StreamOptions["onProviderStreamEvent"];
-	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+	serviceTier?: ResponsesServiceTier;
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	resolveServiceTier?: (
-		responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-		requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	) => ResponseCreateParamsStreaming["service_tier"] | undefined;
-	applyServiceTierPricing?: (
-		usage: Usage,
-		serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	) => void;
+		responseServiceTier: ResponsesServiceTier | undefined,
+		requestServiceTier: ResponsesServiceTier | undefined,
+	) => ResponsesServiceTier | undefined;
+	applyServiceTierPricing?: (usage: Usage, serviceTier: ResponsesServiceTier | undefined) => void;
 }
 
 export interface ConvertResponsesMessagesOptions {
@@ -836,6 +915,20 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 	if (!sawTerminalResponseEvent) {
 		throw new Error("OpenAI Responses stream ended before a terminal response event");
+	}
+	// The agent runs every tool call in the final message. Refuse to hand over calls whose
+	// output_item.done never arrived: their arguments may be cut off or mixed up, e.g. when a
+	// non-compliant server omits output_index. Finished calls have their scratch buffers removed.
+	if (output.stopReason === "toolUse") {
+		for (const block of output.content) {
+			if (block.type !== "toolCall") continue;
+			const toolCall = block as StreamingToolCall;
+			if (toolCall.partialJson !== undefined || toolCall.customInput !== undefined) {
+				throw new Error(
+					`OpenAI Responses stream completed with an unfinished tool call: ${toolCall.name} (${toolCall.id})`,
+				);
+			}
+		}
 	}
 }
 

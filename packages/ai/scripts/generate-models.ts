@@ -25,6 +25,8 @@ import type {
 	Model,
 	ModelCost,
 	ModelPromptCache,
+	ModelServiceTier,
+	ModelServiceTierId,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "../src/types.ts";
@@ -216,6 +218,7 @@ interface NvidiaNimModelListItem {
 interface AiGatewayModel {
 	id: string;
 	name?: string;
+	type?: string;
 	context_window?: number;
 	max_tokens?: number;
 	tags?: string[];
@@ -298,6 +301,7 @@ const TOGETHER_TOGGLE_REASONING_LEVEL_MAP = {
 
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
+const AI_GATEWAY_TYPESAFE_BASE_URL = "https://ai-gateway.vercel.sh/typesafe/v1";
 const VERTEX_BASE_URL = "https://{location}-aiplatform.googleapis.com";
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_HEADERS = {
@@ -445,6 +449,7 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-6-astra",
 	"gpt-6-sol",
 	"gpt-6-luna",
+	"gpt-6.1-sol",
 ]);
 const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
 const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
@@ -455,6 +460,7 @@ const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 	"gpt-6-astra",
 	"gpt-6-sol",
 	"gpt-6-luna",
+	"gpt-6.1-sol",
 ]);
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272000;
 const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
@@ -466,6 +472,7 @@ const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-6-astra",
 	"gpt-6-sol",
 	"gpt-6-luna",
+	"gpt-6.1-sol",
 ]);
 const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.4",
@@ -478,6 +485,7 @@ const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-6-astra",
 	"gpt-6-sol",
 	"gpt-6-luna",
+	"gpt-6.1-sol",
 ]);
 
 // Keep the generated default no less restrictive than coding-agent's historical
@@ -515,7 +523,76 @@ const OPENAI_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-6-astra": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
 	"gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
 	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+	"gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
 };
+
+// Published Fast and Ultrafast rates per model. A model absent from a table does not offer that tier.
+// https://developers.openai.com/api/docs/pricing (Fast and Ultrafast tabs)
+const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6-astra": { input: 20, output: 100, cacheRead: 2, cacheWrite: 25 },
+	"gpt-6.1-sol": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+	"gpt-6-luna": { input: 0.2, output: 1, cacheRead: 0.02, cacheWrite: 0.25 },
+	"gpt-6-sol": { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+	"gpt-5.6-sol": { input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10 },
+	"gpt-5.6-terra": { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 5 },
+	"gpt-5.6-luna": { input: 0.4, output: 2.4, cacheRead: 0.04, cacheWrite: 0.5 },
+	"gpt-5.5": { input: 12.5, output: 75, cacheRead: 1.25, cacheWrite: 0 },
+	"gpt-5.4": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+	"gpt-5.4-mini": { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 },
+	"gpt-5.2": { input: 3.5, output: 28, cacheRead: 0.35, cacheWrite: 0 },
+	"gpt-5.1": { input: 2.5, output: 20, cacheRead: 0.25, cacheWrite: 0 },
+	"gpt-5": { input: 2.5, output: 20, cacheRead: 0.25, cacheWrite: 0 },
+	"gpt-5-mini": { input: 0.45, output: 3.6, cacheRead: 0.045, cacheWrite: 0 },
+	"gpt-4.1": { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
+	"gpt-4.1-mini": { input: 0.7, output: 2.8, cacheRead: 0.175, cacheWrite: 0 },
+	"gpt-4.1-nano": { input: 0.2, output: 0.8, cacheRead: 0.05, cacheWrite: 0 },
+	"gpt-4o": { input: 4.25, output: 17, cacheRead: 2.125, cacheWrite: 0 },
+	"gpt-4o-2024-05-13": { input: 8.75, output: 26.25, cacheRead: 0, cacheWrite: 0 },
+	"gpt-4o-mini": { input: 0.25, output: 1, cacheRead: 0.125, cacheWrite: 0 },
+	o3: { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
+	"o4-mini": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+};
+const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
+};
+
+function openAiServiceTierCost(modelId: string, cost: ModelCost): ModelCost {
+	return OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS.has(modelId) ? withOpenAiLongContextPricing(cost) : cost;
+}
+
+function openAiServiceTiers(modelId: string): ModelServiceTier[] {
+	const tiers: ModelServiceTier[] = [];
+	const fast = OPENAI_FAST_COSTS[modelId];
+	if (fast) tiers.push({ id: "priority", cost: openAiServiceTierCost(modelId, fast) });
+	const ultrafast = OPENAI_ULTRAFAST_COSTS[modelId];
+	if (ultrafast) tiers.push({ id: "ultrafast", cost: openAiServiceTierCost(modelId, ultrafast) });
+	return tiers;
+}
+
+// Mirrors the service_tiers each model advertises in openai/codex codex-rs/models-manager/models.json
+// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates.
+const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
+	"gpt-5.3-codex-spark": [],
+	"gpt-5.5": ["priority"],
+	"gpt-5.6-luna": ["priority"],
+	"gpt-5.6-sol": ["priority"],
+	"gpt-5.6-terra": ["priority"],
+	"gpt-6-astra": ["priority", "ultrafast"],
+	"gpt-6.1-sol": ["priority"],
+	"gpt-6-sol": ["priority"],
+	"gpt-6-luna": ["priority"],
+};
+
+function codexServiceTiers(modelId: string): ModelServiceTier[] {
+	const advertised = CODEX_SERVICE_TIER_IDS[modelId];
+	if (!advertised) throw new Error(`Codex model ${modelId} has no advertised service tiers`);
+	const priced = openAiServiceTiers(modelId);
+	return advertised.map((id) => {
+		const tier = priced.find((candidate) => candidate.id === id);
+		if (!tier) throw new Error(`Codex model ${modelId} advertises ${id} without published OpenAI rates`);
+		return tier;
+	});
+}
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
@@ -549,7 +626,6 @@ const OPENCODE_OPENAI_COMPLETIONS_LONG_CACHE_RETENTION_UNSUPPORTED_MODELS = new 
 	"opencode:kimi-k2.5",
 	"opencode:kimi-k2.6",
 	"opencode:minimax-m2.7",
-	"opencode-go:kimi-k2.6",
 ]);
 
 // GitHub's "Models with extended capabilities" table lists these Copilot models as supporting
@@ -652,7 +728,7 @@ function isOpenAiGpt6AstraModelId(modelId: string): boolean {
 }
 
 function isOpenAiGpt6ModelId(modelId: string): boolean {
-	return isOpenAiGpt6AstraModelId(modelId) || modelId === "gpt-6-sol" || modelId === "gpt-6-luna";
+	return isOpenAiGpt6AstraModelId(modelId) || modelId === "gpt-6-sol" || modelId === "gpt-6-luna" || modelId === "gpt-6.1-sol";
 }
 
 function supportsOpenAiXhigh(modelId: string): boolean {
@@ -688,6 +764,7 @@ function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "");
 	return (
 		/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/.test(id) ||
+		/^claude-sonnet-5[.-]5(?:-\d{8})?$/.test(id) ||
 		/^claude-(?:fable|mythos)-5(?:[.-]1)(?:-\d{8})?$/.test(id)
 	);
 }
@@ -695,6 +772,7 @@ function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
 	return (
 		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
+		/^claude-sonnet-5[.-]5(?:-\d{8})?$/.test(modelId) ||
 		/^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$/.test(modelId)
 	);
 }
@@ -731,6 +809,8 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("opus-4.8") ||
 		id.includes("opus-5") ||
 		id.includes("opus.5") ||
+		id.includes("sonnet-5-5") ||
+		id.includes("sonnet-5.5") ||
 		id.includes("fable-5")
 	);
 }
@@ -1205,7 +1285,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		(model.api === "bedrock-converse-stream" && isOpenAiGpt6AstraModelId(model.id))
 	) {
 		mergeThinkingLevelMap(model, {
-			off: isOpenAiGpt6AstraModelId(model.id) ? null : "none",
+			off: isOpenAiGpt6AstraModelId(model.id) || model.id === "gpt-6.1-sol" ? null : "none",
 			minimal: null,
 			low: "low",
 			medium: "medium",
@@ -1267,16 +1347,17 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	// Anthropic publishes exactly five efforts for Claude Fable 5.1 and Claude Opus 5.5 — low,
-	// medium, high, xhigh, max — and no `minimal`. `getSupportedThinkingLevels` includes any level
-	// the map leaves undefined, so on the sparse Anthropic-side maps `minimal` was offered as a
-	// sixth option. It is not an API error (`mapThinkingLevelToEffort` collapses it to `low`), but
-	// it is not a level the model publishes, so deny it explicitly. The OpenRouter entries already
-	// carry a full map with `minimal: null` from models.dev `reasoning_options`, so this is a no-op
-	// there.
+	// Anthropic publishes exactly five efforts for Claude Fable 5.1, Claude Opus 5.5, and Claude
+	// Sonnet 5.5 — low, medium, high, xhigh, max — and no `minimal`. `getSupportedThinkingLevels`
+	// includes any level the map leaves undefined, so on the sparse Anthropic-side maps `minimal` was
+	// offered as a sixth option. It is not an API error (`mapThinkingLevelToEffort` collapses it to
+	// `low`), but it is not a level the model publishes, so deny it explicitly. The OpenRouter entries
+	// already carry a full map with `minimal: null` from models.dev `reasoning_options`, so this is a
+	// no-op there.
 	// https://platform.claude.com/docs/en/models/fable-5-1/overview
 	// https://platform.claude.com/docs/en/models/opus-5-5/overview
-	if (/fable-5[-.]1|opus-5[-.]5/.test(model.id)) {
+	// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+	if (/fable-5[-.]1|opus-5[-.]5|sonnet-5[-.]5/.test(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: null });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
@@ -1367,10 +1448,6 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "opencode-go" && model.id === "glm-5.2") {
 		mergeThinkingLevelMap(model, OPENCODE_GO_GLM52_THINKING_LEVEL_MAP);
 	}
-	if (model.provider === "opencode-go" && model.id === "kimi-k2.6") {
-		// OpenCode Go exposes Kimi K2.6 thinking as on/off, not distinct effort tiers.
-		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null });
-	}
 	if (model.provider === "opencode" && model.id === "grok-build-0.1") {
 		// OpenCode Zen Grok Build reasons by default but rejects explicit reasoningEffort.
 		mergeThinkingLevelMap(model, { off: null, minimal: null, low: null, medium: null });
@@ -1409,6 +1486,10 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 		compat.supportsEagerToolInputStreaming = false;
 	}
 	if (provider === "xiaomi" || provider.startsWith("xiaomi-token-plan-")) {
+		compat.allowEmptySignature = true;
+	}
+	// OpenCode Qwen 3.8 Flash emits and accepts thinking blocks with empty signatures.
+	if ((provider === "opencode" || provider === "opencode-go") && modelId === "qwen3.8-flash") {
 		compat.allowEmptySignature = true;
 	}
 	return Object.keys(compat).length > 0 ? compat : undefined;
@@ -1579,16 +1660,31 @@ async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
 	}
 }
 
-async function fetchAiGatewayModels(): Promise<Model<any>[]> {
+async function fetchAiGatewayModels(): Promise<{ chat: Model<any>[]; classifiers: ClassifierModel<"typesafe-system-one">[] }> {
 	try {
 		console.log("Fetching models from Vercel AI Gateway API...");
 		const response = await fetchModelCatalog(`${AI_GATEWAY_MODELS_URL}/models`);
 		if (!response.ok) throw new Error(`Vercel AI Gateway API returned ${response.status}`);
 		const data = await response.json();
 		const models: Model<any>[] = [];
+		const classifiers: ClassifierModel<"typesafe-system-one">[] = [];
 
 		const items = Array.isArray(data.data) ? (data.data as AiGatewayModel[]) : [];
 		for (const model of items) {
+			if (model.type === "evaluation") {
+				classifiers.push({
+					type: "classifier",
+					id: model.id,
+					name: model.name || model.id,
+					api: "typesafe-system-one",
+					provider: "vercel-ai-gateway",
+					baseUrl: AI_GATEWAY_TYPESAFE_BASE_URL,
+					input: ["text"],
+					cost: getAiGatewayCost(model.pricing),
+					contextWindow: model.context_window || 4096,
+				});
+				continue;
+			}
 			const tags = Array.isArray(model.tags) ? model.tags : [];
 			// Only include models that support tools
 			if (!tags.includes("tool-use")) continue;
@@ -1615,12 +1711,12 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 			});
 		}
 
-		console.log(`Fetched ${models.length} tool-capable models from Vercel AI Gateway`);
-		return models;
+		console.log(`Fetched ${models.length} tool-capable and ${classifiers.length} classifier models from Vercel AI Gateway`);
+		return { chat: models, classifiers };
 	} catch (error) {
 		console.error("Failed to fetch Vercel AI Gateway models:", error);
 		if (generatorOptions.strict) throw error;
-		return [];
+		return { chat: [], classifiers: [] };
 	}
 }
 
@@ -2300,6 +2396,10 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
+				// Models with effort values use `reasoning_effort` with these levels.
+				// Reasoning models without them (Magistral) use `prompt_mode`.
+				const thinkingLevelMap = getEffortThinkingLevelMap(m.reasoning_options ?? []);
+
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -2307,6 +2407,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "mistral",
 					baseUrl: "https://api.mistral.ai",
 					reasoning: m.reasoning === true,
+					...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
@@ -2317,7 +2418,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 				});
-				recordModelsDevReasoningOptions("mistral", modelId, m);
 			}
 		}
 
@@ -2472,7 +2572,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat = { ...(compat ?? {}), supportsReasoningEffort: false };
 				}
 
-				if ((variant.provider === "opencode" || variant.provider === "opencode-go") && modelId === "kimi-k2.6") {
+				if (variant.provider === "opencode" && modelId === "kimi-k2.6") {
 					// OpenCode Kimi K2.6 accepts Anthropic-style thinking objects
 					// and rejects string thinking values or combined reasoning_effort.
 					compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
@@ -2906,6 +3006,32 @@ async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesaf
 	}
 }
 
+// OpenCode Zen serves Jev through its TypeSafe-compatible System One endpoint.
+const OPENCODE_CLASSIFIER_MODELS: ClassifierModel<"typesafe-system-one">[] = [
+	{
+		type: "classifier",
+		id: "jev-1.13",
+		name: "Jev 1.13",
+		api: "typesafe-system-one",
+		provider: "opencode",
+		baseUrl: "https://opencode.ai/zen/v1",
+		input: ["text"],
+		cost: { input: 0.042, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32000,
+	},
+	{
+		type: "classifier",
+		id: "jev-1.13-free",
+		name: "Jev 1.13 Free",
+		api: "typesafe-system-one",
+		provider: "opencode",
+		baseUrl: "https://opencode.ai/zen/v1",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32000,
+	},
+];
+
 // Workers AI has no unauthenticated catalog and models.dev does not list its
 // System One models yet. Cloudflare publishes pricing only in the dashboard.
 // https://developers.cloudflare.com/ai/models/typesafe/jev/
@@ -2932,11 +3058,11 @@ async function generateModels() {
 	const modelsDevModels = await loadModelsDevData();
 	const modelsDevClassifierModels = await loadModelsDevClassifierModels();
 	const openRouterCatalog = await fetchOpenRouterModels();
-	const aiGatewayModels = await fetchAiGatewayModels();
+	const aiGatewayCatalog = await fetchAiGatewayModels();
 	const radiusModels = await fetchRadiusModels();
 
 	// Combine chat models (models.dev has priority where sources overlap).
-	const allModels = [...modelsDevModels, ...openRouterCatalog.chat, ...aiGatewayModels, ...radiusModels].filter(
+	const allModels = [...modelsDevModels, ...openRouterCatalog.chat, ...aiGatewayCatalog.chat, ...radiusModels].filter(
 		(model) =>
 			!(model.provider === "xai" && XAI_BUILTIN_EXCLUDED_MODEL_IDS.has(model.id)) &&
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
@@ -2963,6 +3089,32 @@ async function generateModels() {
 			},
 			input: ["text", "image"],
 			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
+
+	// Add Claude Sonnet 5.5 until models.dev includes it.
+	// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+	if (!allModels.some((model) => model.provider === "anthropic" && model.id === "claude-sonnet-5-5")) {
+		allModels.push({
+			id: "claude-sonnet-5-5",
+			name: "Claude Sonnet 5.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			thinkingLevelMap: {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			},
+			input: ["text", "image"],
+			cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 			contextWindow: 1000000,
 			maxTokens: 128000,
 		});
@@ -3019,9 +3171,10 @@ async function generateModels() {
 			candidate.contextWindow = 1000000;
 		}
 
-		// models.dev may list Opus 5.5 before its effort metadata is complete.
+		// models.dev may list Opus 5.5 and Sonnet 5.5 before their effort metadata is complete.
 		if (
-			(candidate.provider === "anthropic" && candidate.id === "claude-opus-5-5") ||
+			(candidate.provider === "anthropic" &&
+				(candidate.id === "claude-opus-5-5" || candidate.id === "claude-sonnet-5-5")) ||
 			(candidate.provider === "github-copilot" && candidate.id === "claude-opus-5.5")
 		) {
 			mergeThinkingLevelMap(candidate, {
@@ -3134,6 +3287,18 @@ async function generateModels() {
 
 	const missingOpenAiModels: Model<"openai-responses">[] = [
 		gpt6AstraOpenAiModel,
+		{
+			id: "gpt-6.1-sol",
+			name: "GPT-6.1 Sol",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+			maxTokens: 128000,
+		},
 		{
 			id: "gpt-6-sol",
 			name: "GPT-6 Sol",
@@ -3455,6 +3620,18 @@ async function generateModels() {
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
+			id: "gpt-6.1-sol",
+			name: "GPT-6.1 Sol",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
 			id: "gpt-6-sol",
 			name: "GPT-6 Sol",
 			api: "openai-codex-responses",
@@ -3479,6 +3656,9 @@ async function generateModels() {
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 	];
+	for (const model of codexModels) {
+		model.serviceTiers = codexServiceTiers(model.id);
+	}
 	allModels.push(...codexModels);
 
 	// Add missing Mistral Medium 3.5 model until models.dev includes it
@@ -3490,6 +3670,7 @@ async function generateModels() {
 			provider: "mistral",
 			baseUrl: "https://api.mistral.ai",
 			reasoning: true,
+			thinkingLevelMap: getEffortThinkingLevelMap([{ type: "effort", values: ["none", "high"] }]),
 			input: ["text", "image"],
 			cost: {
 				input: 1.5,
@@ -3579,6 +3760,11 @@ async function generateModels() {
 			contextWindow: AZURE_CONTEXT_WINDOW_OVERRIDES[model.id] ?? model.contextWindow,
 		}));
 	allModels.push(...azureOpenAiModels);
+	for (const model of allModels) {
+		if (model.provider === "openai" && model.api === "openai-responses") {
+			model.serviceTiers = openAiServiceTiers(model.id);
+		}
+	}
 
 	for (const model of allModels) {
 		applyOpenAICompletionsCompatMetadata(model);
@@ -3620,6 +3806,8 @@ async function generateModels() {
 	const classifierModels: ClassifierModel<ClassifierApi>[] = [
 		...modelsDevClassifierModels,
 		...openRouterCatalog.classifiers,
+		...aiGatewayCatalog.classifiers,
+		...OPENCODE_CLASSIFIER_MODELS,
 		...CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS,
 	];
 	for (const model of classifierModels) {

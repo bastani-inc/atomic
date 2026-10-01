@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import {
 	candidateReleaseDate,
@@ -8,6 +9,7 @@ import {
 	modelEvidenceTokens,
 	parseEvalsCatalog,
 } from "../../packages/coding-agent/src/core/model-routing-evals.js";
+import { readText } from "../helpers/runtime.js";
 
 const slugs = [
 	"claude-opus-4-6",
@@ -78,7 +80,7 @@ test("Artificial Analysis version-first Claude slugs match catalog family-first 
 });
 
 test("deployment and snapshot suffixes fall back to the base model only when the exact model has no row", () => {
-	assert.deepEqual(rowsFor(["vercel-ai-gateway/openai/gpt-5.4-fast"]), ["gpt-5-4"]);
+	assert.deepEqual(rowsFor(["vercel-ai-gateway/openai/gpt-5.4-fast"]), []);
 	assert.deepEqual(rowsFor(["spacexai/grok-4.1-fast"]), ["grok-4-1-fast"]);
 	assert.deepEqual(rowsFor(["vercel-ai-gateway/alibaba/qwen3.8-max-0902"]), ["qwen3-8-max", "qwen3-8-max-0803"]);
 	assert.deepEqual(rowsFor(["google/gemini-3.1-flash-lite"]), ["gemini-3-1-flash-lite-preview"]);
@@ -180,4 +182,34 @@ test("an exact snapshot row in one section does not hide the base model's rows i
 	assert.match(evidence, /^\| deepseek-v4-pro \| DeepSeek V4 Pro \| 2026-08-13 \|$/mu);
 	assert.match(evidence, /^\| deepseek-v4-pro-0813 \| DeepSeek V4 Pro 0813 \| 40\.1 \|$/mu);
 	assert.equal(candidateReleaseDate(catalog, "deepseek/deepseek-v4-pro-0813"), "2026-08-13");
+});
+
+test("shipped Sol 6.1 evidence preserves measured efforts and isolates neighboring identities", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	for (const id of ["openai/gpt-6.1-sol", "openai-codex/gpt-6.1-sol", "openrouter/openai/gpt-6.1-sol"]) {
+		const evidence = catalogEvidence(catalog, [id]);
+		assert.equal(candidateReleaseDate(catalog, id), "2026-09-29");
+		for (const effort of ["low", "medium", "high", "xhigh", "max"])
+			assert.match(evidence, new RegExp(`GPT-6\\.1 Sol \\(${effort}\\)`));
+		assert.match(evidence, /GPT-6\.1 Sol \| medium \| 50\.2 \| 55\.8 \| 60\.4/u);
+		assert.doesNotMatch(evidence, /^\| (?:gpt-6-sol|gpt-5-6-sol|gpt-6-luna|gpt-6-mini)(?:[- |])/mu);
+		assert.doesNotMatch(evidence, /^\|[^\n]*(?:minimal|Sol-fast)/mu);
+		const bounded = filterModelSelectionEvals(document, [id]);
+		assert.match(bounded, /GPT-6\.1 Sol/u);
+		assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= MODEL_SELECTION_EVALS_JSON_BYTES);
+	}
+	for (const id of [
+		"openai/gpt-6-sol",
+		"openai/gpt-5.6-sol",
+		"openai/gpt-6-luna",
+		"openai/gpt-6-mini",
+		"user-proxy/gpt-6.1-sol-fast",
+		"openai-codex/gpt-6.1-sol-fast",
+	]) {
+		assert.doesNotMatch(catalogEvidence(catalog, [id]), /^\| gpt-6-1-sol/mu, id);
+		if (id.endsWith("-fast")) assert.equal(candidateReleaseDate(catalog, id), undefined, id);
+	}
 });

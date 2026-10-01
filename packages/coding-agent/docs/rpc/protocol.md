@@ -624,6 +624,14 @@ Response:
       "tokens": 60000,
       "contextWindow": 200000,
       "percent": 30
+    },
+    "latestAssistantUsage": {
+      "input": 200,
+      "output": 800,
+      "cacheRead": 59000,
+      "cacheWrite": 0,
+      "totalTokens": 60000,
+      "cost": {"input": 0.0006, "output": 0.012, "cacheRead": 0.0177, "cacheWrite": 0, "total": 0.0303}
     }
   }
 }
@@ -632,6 +640,8 @@ Response:
 `tokens` contains assistant usage totals for the current session state. `contextUsage` contains the actual current context-window estimate used for compaction and footer display.
 
 `contextUsage` is omitted when no model or context window is available. `contextUsage.tokens` and `contextUsage.percent` are `null` immediately after compaction until a fresh post-compaction assistant response provides valid usage data.
+
+`latestAssistantUsage` is the usage reported by the newest assistant message, including an aborted or failed one; the interactive footer reads its cache-hit rate from it. It is omitted until the session has an assistant message.
 
 #### export_html
 

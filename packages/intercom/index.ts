@@ -466,6 +466,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       typedContactSupervisorRegistered = true;
       pi.registerTool({
         name: "contact_supervisor",
+        exposure: "model-only",
         label: "Contact Supervisor",
         description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
         promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
@@ -720,6 +721,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	// Intercom tool, command, shortcut, or relay that needs it.
 	pi.registerTool({
 		name: "intercom",
+		exposure: "model-only",
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -770,6 +772,7 @@ Usage:
 	if (hasSubagentIntercomEnv()) {
 		pi.registerTool({
 			name: "contact_supervisor",
+			exposure: "model-only",
 			label: "Contact Supervisor",
 			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
 			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",

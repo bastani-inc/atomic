@@ -313,6 +313,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(exitCode);
 		return;
 	}
+	if (args[0] === "mcp") {
+		const { loadMcpCommand } = await import("./extensions/mcp/cli.lazy.js");
+		const { runMcpCommand } = await loadMcpCommand();
+		process.exitCode = await runMcpCommand(args.slice(1), { cwd, agentDir });
+		await drainProcessStdio();
+		return;
+	}
 	const parsed = parseArgs(args);
 	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {

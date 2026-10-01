@@ -60,7 +60,7 @@ async function captureOpenAIResponseHeaders(
 			systemPrompt: "sys",
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 		}),
-		{ apiKey: "test-key", ...options },
+		{ apiKey: "sk-test-key", ...options },
 	);
 
 	for await (const event of stream) {
@@ -93,7 +93,7 @@ describe("openai-responses provider defaults", () => {
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload;
 				},
@@ -139,7 +139,7 @@ describe("openai-responses provider defaults", () => {
 				],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				toolChoice: "required",
 				onPayload: (payload) => {
 					capturedPayload = payload;
@@ -190,7 +190,7 @@ describe("openai-responses provider defaults", () => {
 				],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload as CapturedResponsesPayload;
 				},
@@ -239,7 +239,7 @@ describe("openai-responses provider defaults", () => {
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				onPayload: (payload) => {
 					capturedPayload = payload;
 				},
@@ -275,7 +275,7 @@ describe("openai-responses provider defaults", () => {
 					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				}),
 				{
-					apiKey: "test-key",
+					apiKey: "sk-test-key",
 					onPayload: (payload) => {
 						capturedPayload = payload;
 					},
@@ -316,7 +316,7 @@ describe("openai-responses provider defaults", () => {
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				sessionId,
 				onPayload: (payload) => {
 					capturedPayload = payload as Pick<CapturedResponsesPayload, "prompt_cache_key">;
@@ -523,7 +523,7 @@ describe("openai-responses provider defaults", () => {
 					systemPrompt: "sys",
 					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				}),
-				{ apiKey: "test-key", serviceTier },
+				{ apiKey: "sk-test-key", serviceTier },
 			);
 
 			const result = await stream.result();
@@ -571,7 +571,7 @@ describe("openai-responses provider defaults", () => {
 		const stream = streamOpenAIResponses(
 			fast,
 			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
-			{ apiKey: "test-key" },
+			{ apiKey: "sk-test-key" },
 		);
 		const result = await stream.result();
 
@@ -617,8 +617,11 @@ describe("openai-responses provider defaults", () => {
 
 			const result = await streamOpenAIResponses(
 				fast,
-				normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
-				{ apiKey: "test-key" },
+				normalizeContext({
+					systemPrompt: "sys",
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				}),
+				{ apiKey: "sk-test-key" },
 			).result();
 
 			expect(capturedPayload?.model).toBe(modelId);
@@ -682,7 +685,7 @@ describe("openai-responses provider defaults", () => {
 					systemPrompt: "sys",
 					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				}),
-				{ apiKey: "test-key", serviceTier: requested },
+				{ apiKey: "sk-test-key", serviceTier: requested },
 			).result();
 
 			expect(capturedPayload?.model).toBe(`${modelId}-fast`);
@@ -708,12 +711,108 @@ describe("openai-responses provider defaults", () => {
 		const result = await streamOpenAIResponses(
 			fast,
 			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
-			{ apiKey: "test-key", onPayload: () => replacement as never },
+			{ apiKey: "sk-test-key", onPayload: () => replacement as never },
 		).result();
 
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain('A request hook changed payload for fast model "openai/gpt-5.5-fast"');
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("omits an unadvertised ultrafast tier instead of throwing", async () => {
+		const model = getModel("openai", "gpt-5.5");
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: 1,
+						output_tokens: 1,
+						total_tokens: 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+
+		const result = await streamOpenAIResponses(
+			model,
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", serviceTier: "ultrafast" },
+		).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(capturedPayload?.model).toBe("gpt-5.5");
+		expect(capturedPayload?.service_tier).toBeUndefined();
+	});
+
+	async function streamAstra(
+		model: Model<"openai-responses">,
+		options: { serviceTier?: "priority" | "ultrafast" },
+		responseServiceTier: string | undefined,
+	) {
+		let capturedPayload: { model?: string; service_tier?: string } | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
+			const sse = `data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					service_tier: responseServiceTier,
+					usage: {
+						input_tokens: 100_000,
+						output_tokens: 10_000,
+						total_tokens: 110_000,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}\n\n`;
+			return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+		});
+		const result = await streamOpenAIResponses(
+			model,
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", ...options },
+		).result();
+		return { result, payload: capturedPayload };
+	}
+
+	it("sends GPT-6 Astra's advertised ultrafast tier and prices it at the published Ultrafast rates", async () => {
+		const { result, payload } = await streamAstra(
+			getModel("openai", "gpt-6-astra"),
+			{ serviceTier: "ultrafast" },
+			"ultrafast",
+		);
+
+		expect(result.stopReason).toBe("stop");
+		expect(payload?.model).toBe("gpt-6-astra");
+		expect(payload?.service_tier).toBe("ultrafast");
+		expect(result.usage.cost.input).toBeCloseTo(6, 10);
+		expect(result.usage.cost.output).toBeCloseTo(3, 10);
+	});
+
+	it("omits a Fast tier the OpenAI API model does not advertise", async () => {
+		const { payload } = await streamAstra(getModel("openai", "gpt-5-nano"), { serviceTier: "priority" }, undefined);
+
+		expect(payload?.service_tier).toBeUndefined();
+	});
+
+	it("bills a Fast route that OpenAI served at Standard at the base rates", async () => {
+		const base = getModel("openai", "gpt-6-astra");
+		const fast: Model<"openai-responses"> = {
+			...base,
+			id: "gpt-6-astra-fast",
+			fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "priority" },
+		};
+		const { result, payload } = await streamAstra(fast, {}, "default");
+
+		expect(payload?.service_tier).toBe("priority");
+		expect(result.usage.cost.input).toBeCloseTo(1, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.5, 10);
 	});
 
 	it.each([
@@ -754,7 +853,7 @@ describe("openai-responses provider defaults", () => {
 		const result = await streamOpenAIResponses(
 			model,
 			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
-			{ apiKey: "test-key", serviceTier: requested },
+			{ apiKey: "sk-test-key", serviceTier: requested },
 		).result();
 
 		expect(capturedPayload?.service_tier).toBe(expectedTier);
@@ -785,7 +884,7 @@ describe("openai-responses max_output_tokens compat", () => {
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				maxTokens: 1024,
 				onPayload: (payload) => {
 					capturedPayload = payload as { max_output_tokens?: number };
@@ -822,7 +921,7 @@ describe("openai-responses max_output_tokens compat", () => {
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 			}),
 			{
-				apiKey: "test-key",
+				apiKey: "sk-test-key",
 				maxTokens: 1024,
 				onPayload: (payload) => {
 					capturedPayload = payload as { max_output_tokens?: number };

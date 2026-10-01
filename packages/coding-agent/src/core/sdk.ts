@@ -294,6 +294,17 @@ async function constructAgentSession(
 	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames =
 		options.noTools === "all" ? [] : options.tools === undefined ? undefined : [...options.tools];
+	const subagentPolicy =
+		options.subagentPolicy && (options.subagentPolicy.depth ?? 0) >= 1
+			? {
+					...options.subagentPolicy,
+					tools: allowedToolNames,
+					mcpDirectTools:
+						options.noTools === "all"
+							? []
+							: (options.subagentPolicy.mcpDirectTools ?? (allowedToolNames === undefined ? undefined : [])),
+				}
+			: options.subagentPolicy;
 	const initialActiveToolNames: string[] = allowedToolNames
 		? [...allowedToolNames]
 		: options.noTools
@@ -603,12 +614,13 @@ async function constructAgentSession(
 			modelRuntime,
 			cacheWarmer,
 			initialActiveToolNames,
+			usesDefaultTools: options.tools === undefined && !options.noTools,
 			allowedToolNames,
 			excludedToolNames: options.excludedTools,
 			extensionRunnerRef,
 			sessionStartEvent: options.sessionStartEvent,
 			orchestrationContext: options.orchestrationContext,
-			subagentPolicy: options.subagentPolicy,
+			subagentPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,

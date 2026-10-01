@@ -140,6 +140,8 @@ test("no overflow hides scrollbar; resize clamps state and unchanged requests do
 
 test("remote wire transports full content, requests and allocated scroll state across wheel, resize and stale frames", async () => {
 	const { context, tui, terminal } = await setup(24);
+	// Routing assertions use exact row offsets, independently of auto wheel acceleration.
+	tui.setWheelScrollLines(1);
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const messages: InteractiveEngineMessage[] = [];
 	const states: WidgetScrollState[] = [];

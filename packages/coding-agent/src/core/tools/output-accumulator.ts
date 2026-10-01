@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.js";
 import { PersistedOutputFile } from "./persisted-output-file.ts";
@@ -141,6 +142,34 @@ export class OutputAccumulator {
 			this.tempFilePath = undefined;
 			this.tempFileUnavailable = true;
 			throw error;
+		}
+	}
+
+	async readFullOutput(maxBytes: number): Promise<{ content: string; truncated: boolean }> {
+		if (!this.tempFilePath) {
+			if (this.tempFileUnavailable) return { content: this.snapshot().content, truncated: true };
+			return { content: new TextDecoder().decode(Buffer.concat(this.rawChunks)), truncated: false };
+		}
+		const file = await open(this.tempFilePath, "r");
+		try {
+			const size = (await file.stat()).size;
+			if (size <= maxBytes) return { content: new TextDecoder().decode(await file.readFile()), truncated: false };
+			const headBytes = Math.floor(maxBytes / 2);
+			const tailBytes = maxBytes - headBytes;
+			const head = Buffer.alloc(headBytes);
+			const tail = Buffer.alloc(tailBytes);
+			await file.read(head, 0, headBytes, 0);
+			await file.read(tail, 0, tailBytes, size - tailBytes);
+			const headText = new TextDecoder().decode(head, { stream: true });
+			let tailStart = 0;
+			while (tailStart < tail.length && (tail[tailStart] & 0xc0) === 0x80) tailStart++;
+			const tailText = new TextDecoder().decode(tail.subarray(tailStart));
+			return {
+				content: `${headText}\n\n[... ${size - headBytes - tailBytes} bytes omitted ...]\n\n${tailText}`,
+				truncated: true,
+			};
+		} finally {
+			await file.close();
 		}
 	}
 

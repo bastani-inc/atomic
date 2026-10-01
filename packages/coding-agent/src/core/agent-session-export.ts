@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -19,6 +19,7 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	let totalMessages = 0;
 	let toolCalls = 0;
 	const totals = createUsageTotals();
+	let latestAssistantUsage: Usage | undefined;
 	for (const entry of this.sessionManager.getEntries()) {
 		if (
 			(entry.type === "usage" ||
@@ -41,6 +42,7 @@ export function getSessionStats(this: AgentSession): SessionStats {
 			const assistant = message as AssistantMessage;
 			toolCalls += assistant.content.filter((content) => content.type === "toolCall").length;
 			addUsageToTotals(totals, assistant.usage);
+			latestAssistantUsage = assistant.usage;
 		}
 	}
 
@@ -61,6 +63,7 @@ export function getSessionStats(this: AgentSession): SessionStats {
 		},
 		cost: totals.cost,
 		contextUsage: this.getContextUsage(),
+		latestAssistantUsage,
 	};
 }
 

@@ -57,6 +57,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
+import { getDefaultToolNames } from "./tools/index.ts";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
@@ -187,6 +188,9 @@ class AgentSessionBase {
 	protected _cwd: string;
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
 	protected _initialActiveToolNames?: string[];
+	protected _usesDefaultTools: boolean;
+	/** Resolved defaults last applied here, independent of shared settings publication. */
+	protected _appliedDefaultTools: Set<string>;
 	protected _subagentPolicy?: SubagentChildPolicy;
 	protected _allowedToolNames?: Set<string>;
 	protected _excludedToolNames?: Set<string>;
@@ -253,6 +257,10 @@ class AgentSessionBase {
 		this._extensionProviderIds = new Set(config.resourceLoader.getExtensions().runtime.extensionProviderIds);
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
+		this._usesDefaultTools = config.usesDefaultTools ?? false;
+		this._appliedDefaultTools = new Set(
+			this._usesDefaultTools ? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()) : [],
+		);
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._childSessionOptions = config.childSessionOptions;

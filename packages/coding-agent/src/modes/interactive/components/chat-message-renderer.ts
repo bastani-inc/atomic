@@ -163,6 +163,7 @@ export interface LiveChatEventLike {
 	readonly message?: unknown;
 	readonly assistantMessageEvent?: StreamingAssistantDelta;
 	readonly toolCallId?: unknown;
+	readonly parentToolCallId?: unknown;
 	readonly toolName?: unknown;
 	readonly args?: unknown;
 	readonly partialResult?: unknown;
@@ -242,6 +243,7 @@ export class LiveChatEntriesController {
 	}
 	applyEvent(event: LiveChatEventLike): boolean {
 		const type = String(event.type ?? "");
+		if (typeof event.parentToolCallId === "string" && type.startsWith("tool_execution_")) return false;
 		switch (type) {
 			case "message_start":
 				return this.handleMessageStart(event.message);

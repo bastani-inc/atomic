@@ -331,6 +331,7 @@ describe("nested workflow stage target routing", () => {
 		assert.deepEqual(resolveStageTarget(toolRunId, "build"), {
 			ok: false,
 			message: `Stage not found in run ${toolRunId}: build`,
+			code: "stage_not_found",
 		});
 	});
 
@@ -348,6 +349,7 @@ describe("nested workflow stage target routing", () => {
 		assert.deepEqual(byPartialName, {
 			ok: false,
 			message: `Stage not found in run ${fixtureRunId("root-run")}: duplicate`,
+			code: "stage_not_found",
 		});
 	});
 

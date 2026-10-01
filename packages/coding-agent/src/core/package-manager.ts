@@ -62,6 +62,7 @@ export type {
 	PathMetadata,
 	ProgressCallback,
 	ProgressEvent,
+	ResolvedMcpServer,
 	ResolvedPaths,
 	ResolvedResource,
 	ResolveExtensionSourcesOptions,
@@ -76,6 +77,7 @@ export class DefaultPackageManager implements PackageManager {
 			cwd: resolveAbsolutePath(options.cwd),
 			agentDir: resolveAbsolutePath(options.agentDir),
 			settingsManager: options.settingsManager,
+			builtinExtensions: options.builtinExtensions,
 		};
 		this.context.driver = {
 			runCommand: (command, args, runOptions) => this.runCommand(command, args, runOptions),

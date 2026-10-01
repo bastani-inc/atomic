@@ -1,10 +1,14 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { Usage } from "@bastani/pi-ai/compat";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
+import type { SessionStats } from "../../../core/agent-session-types.js";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { renderTaskFooter } from "./task-list.js";
 
@@ -54,9 +58,32 @@ function rightAlign(line: string, width: number): string {
 	return `${" ".repeat(width - lineWidth)}${line}`;
 }
 
-function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
-	const state = session.state;
+type UsageSummary = { totals: UsageTotals; latestCacheHitRate: number | undefined };
 
+interface MirrorStats extends UsageSummary {
+	sessionId: string;
+	leafId: string | null;
+	entryCount: number;
+	limitsModel: AgentSession["model"];
+	contextUsage: ContextUsage | undefined;
+}
+
+const mirrorStats = new WeakMap<AgentSession, MirrorStats>();
+
+function getCacheHitRate(usage: Usage): number | undefined {
+	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+	return promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+}
+
+function summarizeEngineUsage(stats: SessionStats): UsageSummary {
+	const { input, output, cacheRead, cacheWrite } = stats.tokens;
+	return {
+		totals: { input, output, cacheRead, cacheWrite, cost: stats.cost },
+		latestCacheHitRate: stats.latestAssistantUsage ? getCacheHitRate(stats.latestAssistantUsage) : undefined,
+	};
+}
+
+function summarizeEntryUsage(session: AgentSession): UsageSummary {
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
 	let latestCacheHitRate: number | undefined;
@@ -64,11 +91,7 @@ function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width:
 	for (const entry of session.sessionManager.getEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			addUsageToTotals(totals, entry.message.usage);
-
-			const latestPromptTokens =
-				entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-			latestCacheHitRate =
-				latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+			latestCacheHitRate = getCacheHitRate(entry.message.usage);
 		} else if (
 			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
 			entry.usage
@@ -83,10 +106,39 @@ function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width:
 			addUsageToTotals(totals, entry.message.usage);
 		}
 	}
+	return { totals, latestCacheHitRate };
+}
 
-	// Calculate context usage from session (handles compaction correctly).
-	// After compaction, tokens are unknown until the next LLM response.
+function getMirrorStats(session: AgentSession): MirrorStats {
+	const manager = session.sessionManager;
+	const sessionId = manager.getSessionId();
+	const leafId = manager.getLeafId();
+	const entryCount = manager.getEntryCount();
+	const limitsModel = session.model;
+	const cached = mirrorStats.get(session);
+	if (
+		cached &&
+		cached.sessionId === sessionId &&
+		cached.leafId === leafId &&
+		cached.entryCount === entryCount &&
+		cached.limitsModel === limitsModel
+	)
+		return cached;
+
+	const { totals, latestCacheHitRate } = summarizeEntryUsage(session);
 	const contextUsage = session.getContextUsage();
+	const stats = { sessionId, leafId, entryCount, limitsModel, totals, latestCacheHitRate, contextUsage };
+	mirrorStats.set(session, stats);
+	return stats;
+}
+
+function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
+	const state = session.state;
+	// An isolated engine owns the live session; its stats replace the host's mirror entries.
+	const engineStats = getEngineSessionStats(session);
+	const { totals, latestCacheHitRate, contextUsage } = engineStats
+		? { ...summarizeEngineUsage(engineStats), contextUsage: engineStats.contextUsage }
+		: getMirrorStats(session);
 	const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 	const contextPercentValue = contextUsage?.percent ?? 0;
 	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";

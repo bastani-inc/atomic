@@ -8,7 +8,7 @@ import type { ToolConcurrency } from "../tools/tool-concurrency.ts";
 
 export type { ToolConcurrency, ToolConcurrencyMode } from "../tools/tool-concurrency.ts";
 
-import type { ExtensionContext } from "./context-types.ts";
+import type { ExtensionToolContext } from "./context-types.ts";
 
 /** Rendering options for tool results */
 export interface ToolRenderResultOptions {
@@ -59,6 +59,35 @@ type ToolRenderResult<TParams extends TSchema, TDetails, TState> = {
 	): Component;
 }["bivarianceHack"];
 
+/** How the model reaches a registered tool. */
+export type ToolExposure = "direct" | "model-only" | "codemode" | "deferred" | "hidden";
+
+export interface ToolAnnotations {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+}
+
+export interface ToolNamespace {
+	name: string;
+	description?: string;
+	instructions?: string;
+}
+
+export interface ToolLoadout {
+	readonly declared: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	readonly callable: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	readonly registered: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	getExposure(name: string): ToolExposure;
+	getNamespace(name: string): ToolNamespace | undefined;
+}
+
+export interface ToolLoadoutChanges {
+	descriptions?: Readonly<Record<string, string>>;
+	hiddenDeclarations?: readonly string[];
+}
+
 /**
  * Tool definition for registerTool().
  */
@@ -86,6 +115,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown) => Static<TParams>;
+	/** Schema of successful machine-readable results. */
+	outputSchema?: TSchema;
+	/** Direct and model-only tools activate by default; other exposures do not. */
+	exposure?: ToolExposure;
+	namespace?: ToolNamespace;
+	annotations?: ToolAnnotations;
+	defaultActive?: boolean;
+	prepareLoadout?: (loadout: ToolLoadout) => ToolLoadoutChanges | undefined;
 
 	/**
 	 * Per-tool execution mode override.
@@ -110,7 +147,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		params: Static<TParams>,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
-		ctx: ExtensionContext,
+		ctx: ExtensionToolContext,
 	): Promise<AgentToolResult<TDetails>>;
 
 	/** Custom rendering for tool call display */
@@ -141,7 +178,14 @@ export type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
 /** Tool info with name, description, parameter schema, constraint, and source metadata */
 export type ToolInfo = Pick<
 	ToolDefinition,
-	"name" | "description" | "parameters" | "constrainedSampling" | "promptGuidelines"
+	| "name"
+	| "description"
+	| "parameters"
+	| "constrainedSampling"
+	| "promptGuidelines"
+	| "exposure"
+	| "namespace"
+	| "annotations"
 > & {
 	sourceInfo: SourceInfo;
 };

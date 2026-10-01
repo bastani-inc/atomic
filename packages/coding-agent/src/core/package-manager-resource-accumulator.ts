@@ -9,6 +9,7 @@ import type {
 } from "./package-manager-types.ts";
 
 function resourcePrecedenceRank(m: PathMetadata): number {
+	if (m.source === "builtin") return 6;
 	if (m.origin === "package") return 4;
 	if (m.borrowedProjectLocal) return 5;
 	const scopeBase = m.scope === "project" ? 0 : 2;
@@ -46,6 +47,7 @@ export function createAccumulator(): ResourceAccumulator {
 		prompts: new Map(),
 		themes: new Map(),
 		workflows: new Map(),
+		mcpServers: new Map(),
 	};
 }
 
@@ -73,5 +75,6 @@ export function toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths
 		prompts: mapToResolved(accumulator.prompts),
 		themes: mapToResolved(accumulator.themes),
 		workflows: mapToResolved(accumulator.workflows),
+		mcpServers: [...accumulator.mcpServers.values()],
 	};
 }

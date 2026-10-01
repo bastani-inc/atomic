@@ -134,7 +134,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 		}
 	};
 
-	// Handle clipboard image paste (triggered on Ctrl+V)
+	// Handle clipboard paste (triggered on Ctrl+V). Copied files use their original paths,
+	// images are attached via temporary files, and plain text is the final fallback.
 	this.defaultEditor.onPasteImage = () => {
 		this.handleClipboardImagePaste();
 	};
@@ -143,6 +144,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 InteractiveModeBase.prototype.handleClipboardImagePaste = async function (this: InteractiveModeBase): Promise<void> {
 	await pasteClipboardImageToEditor(this.editor, () => this.ui.requestRender(), {
 		showWarning: (message) => this.showWarning(message),
+		isBashMode: this.isBashMode,
 	});
 };
 

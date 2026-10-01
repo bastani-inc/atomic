@@ -19,13 +19,14 @@ Filter what a package loads using the object form in settings:
       "skills": [],
       "prompts": ["prompts/review.md"],
       "themes": ["+themes/legacy.json"],
-      "workflows": ["workflows/*.ts"]
+      "workflows": ["workflows/*.ts"],
+      "mcpServers": ["acme-*", "!acme-legacy"]
     }
   ]
 }
 ```
 
-`+path` and `-path` are exact paths relative to the package root.
+`+path` and `-path` are exact paths relative to the package root. `mcpServers` patterns match server names from the package manifest instead of paths, and `+name`/`-name` match a name exactly.
 
 - Omit a key to load all of that type.
 - Use `[]` to load none of that type.

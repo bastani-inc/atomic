@@ -1,8 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	CacheWarmingAction,
 	CacheWarmingDecisionEvent,
 	CacheWarmingDecisionEventResult,
 } from "../cache-warmer.ts";
+import type { ExecuteToolOptions, ExtensionToolContext } from "./context-types.ts";
 import { snapshotEventHandlers } from "./runner-events.ts";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
@@ -124,6 +126,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
+import type { SessionWorkflows } from "./workflow-run-control.js";
 
 export type {
 	ExtensionErrorListener,
@@ -204,6 +207,10 @@ export class ExtensionRunner {
 	): void {
 		this.runtime.getChildSessionOptions = resolver;
 	}
+	/** The run-control implementation registered by the current extension generation, if any. */
+	getWorkflowRunControl(): SessionWorkflows | undefined {
+		return this.runtime.workflowRunControlHub.current();
+	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		return {
 			humanInput: this.humanInput === undefined ? this.presentationInput : this.humanInput,
@@ -227,6 +234,8 @@ export class ExtensionRunner {
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getRouterModelFn: ExtensionContextActions["getRouterModel"] = undefined;
 	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
+	private executeToolFn: ExtensionContextActions["executeTool"];
+	private getCallableToolsFn: NonNullable<ExtensionContextActions["getCallableTools"]> = () => [];
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -307,6 +316,9 @@ export class ExtensionRunner {
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getRouterModelFn = contextActions.getRouterModel;
 		this.getModelRoutingFn = contextActions.getModelRouting;
+		this.executeToolFn = contextActions.executeTool;
+		this.getCallableToolsFn = contextActions.getCallableTools ?? (() => []);
+		this.runtime.getSettings = contextActions.getSettings;
 
 		// Flush provider registrations queued during extension loading.
 		for (const registration of this.runtime.pendingProviderRegistrations) {
@@ -727,6 +739,35 @@ export class ExtensionRunner {
 
 	createContext(): ExtensionContext {
 		return createExtensionContext(this.createContextSource(), this.contextOwner);
+	}
+
+	/** Bound to the actual executing parent, not an extension-supplied caller identity. */
+	createToolContext(toolCallId: string, signal: AbortSignal | undefined): ExtensionToolContext {
+		const invoke = AsyncLocalStorage.bind(async (name: string, args: unknown, options: ExecuteToolOptions = {}) => {
+			this.assertActive();
+			if (signal?.aborted) throw new Error("Calling tool execution has ended");
+			if (!this.executeToolFn)
+				return {
+					toolCall: { type: "toolCall" as const, id: `${toolCallId}/0`, name, arguments: {} },
+					result: {
+						content: [{ type: "text" as const, text: "Nested tool calls are not available in this context" }],
+						details: {},
+					},
+					isError: true,
+				};
+			const callSignal =
+				signal && options.signal ? AbortSignal.any([signal, options.signal]) : (options.signal ?? signal);
+			return this.executeToolFn(toolCallId, name, args, { ...options, signal: callSignal });
+		});
+		return Object.defineProperties(this.createContext() as ExtensionToolContext, {
+			tools: {
+				get: () => {
+					this.assertActive();
+					return this.getCallableToolsFn();
+				},
+			},
+			executeTool: { value: invoke },
+		});
 	}
 
 	createCommandContext(): ExtensionCommandContext {

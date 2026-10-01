@@ -14,8 +14,7 @@
  * constants; nothing sleeps for a fixed "long enough" interval.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test, vi } from "vitest";
@@ -213,11 +212,32 @@ function failFirstConnectAttempt(reason: "background" | "tool"): {
 	};
 }
 
-function readBrokerPid(): number | undefined {
+/**
+ * A broker process, identified by its pid *and* when it wrote its pid file.
+ *
+ * A pid alone cannot tell a replacement from its predecessor: Windows recycles pids quickly, so a
+ * freshly spawned broker can be handed the pid of the one that was just killed. Every spawn
+ * rewrites `broker.pid` (a SIGKILLed broker never unlinks it), so a strictly newer write is what
+ * proves a new process came up.
+ */
+interface BrokerIdentity {
+	pid: number;
+	pidFileWrittenAtMs: number;
+}
+
+function readBrokerIdentity(): BrokerIdentity | undefined {
 	const pidPath = getBrokerPidPath(agentDir);
-	if (!existsSync(pidPath)) return undefined;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+	try {
+		const writtenBeforeRead = statSync(pidPath).mtimeMs;
+		const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+		if (!Number.isFinite(pid) || pid <= 0) return undefined;
+		const writtenAfterRead = statSync(pidPath).mtimeMs;
+		if (writtenAfterRead !== writtenBeforeRead) return undefined;
+		return { pid, pidFileWrittenAtMs: writtenAfterRead };
+	} catch {
+		// Missing, or caught between the broker truncating and rewriting the file.
+		return undefined;
+	}
 }
 
 function processIsAlive(pid: number): boolean {
@@ -229,108 +249,28 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-interface WindowsProcessGuard {
-	readonly status: "live" | "absent" | "mismatch";
-	exited(): boolean;
-	close(): void;
+/** A different pid proves a new broker; a recycled pid needs a strictly newer pid-file write. */
+function replacesBroker(current: BrokerIdentity, previous: BrokerIdentity): boolean {
+	return current.pid !== previous.pid || current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs;
 }
 
-const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as {
-	postgresProcessStartTime(pid: number): { found: boolean; startTime?: number };
-	guardWindowsPostgresProcess?: (pid: number, expectedStartTime: number) => WindowsProcessGuard;
-};
-
-/**
- * One broker process, not a pid number. Windows recycles a pid as soon as its process exits and
- * the last handle closes, so a pid-only probe can see an unrelated process, or a replacement broker
- * that happens to reuse the killed broker's pid. Windows pins the pid with an open handle, Linux
- * compares /proc starttime, and other platforms fall back to a pid-only probe.
- */
-interface BrokerInstance {
-	readonly pid: number;
-	/** Linux `/proc/<pid>/stat` starttime (field 22). */
-	readonly startTime?: string;
-	/** Windows: an open process handle pins the pid against reuse and observes real termination. */
-	readonly guard?: WindowsProcessGuard;
-}
-
-const capturedBrokers: BrokerInstance[] = [];
-
-function linuxStartTime(pid: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-		return fields[0] === "Z" || fields[0] === "X" ? undefined : fields[19];
-	} catch {
-		return undefined;
-	}
-}
-
-function identifyLiveProcess(pid: number): BrokerInstance | undefined {
-	if (process.platform === "win32") {
-		const { startTime } = natives.postgresProcessStartTime(pid);
-		if (startTime === undefined) return undefined;
-		if (natives.guardWindowsPostgresProcess === undefined) throw new Error("Windows process guard is unavailable");
-		const guard = natives.guardWindowsPostgresProcess(pid, startTime);
-		if (guard.status === "live") return { pid, guard };
-		guard.close();
-		return undefined;
-	}
-	if (process.platform === "linux") {
-		const startTime = linuxStartTime(pid);
-		return startTime === undefined ? undefined : { pid, startTime };
-	}
-	return processIsAlive(pid) ? { pid } : undefined;
-}
-
-function captureBroker(pid: number): BrokerInstance | undefined {
-	const broker = identifyLiveProcess(pid);
-	if (broker !== undefined) capturedBrokers.push(broker);
-	return broker;
-}
-
-function brokerIsAlive(broker: BrokerInstance): boolean {
-	if (broker.guard !== undefined) return !broker.guard.exited();
-	if (broker.startTime !== undefined) return linuxStartTime(broker.pid) === broker.startTime;
-	return processIsAlive(broker.pid);
-}
-
-/**
- * Whether a pid-file value still names `broker` rather than a successor that reused its pid. On
- * Windows the held guard reserves the pid, so an equal pid is the same process.
- */
-function isSameBroker(broker: BrokerInstance, pid: number): boolean {
-	if (pid !== broker.pid) return false;
-	if (broker.startTime === undefined) return true;
-	const current = linuxStartTime(pid);
-	return current === undefined || current === broker.startTime;
-}
-
-async function waitForBroker(previous?: BrokerInstance): Promise<BrokerInstance> {
+/** The live broker that replaced `previous`, or the first live broker when omitted. */
+async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity> {
 	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		const pid = readBrokerPid();
-		if (pid !== undefined && (previous === undefined || !isSameBroker(previous, pid))) {
-			const broker = captureBroker(pid);
-			if (broker !== undefined) return broker;
+		const current = readBrokerIdentity();
+		if (
+			current !== undefined &&
+			(previous === undefined || replacesBroker(current, previous)) &&
+			processIsAlive(current.pid)
+		) {
+			return current;
 		}
 		await sleep(RECOVERY_POLL_MS);
 	}
-	const previousState = previous === undefined ? "none" : brokerIsAlive(previous) ? "alive" : "exited";
 	throw new Error(
-		`No new broker replaced ${String(previous?.pid)} within ${RECOVERY_TIMEOUT_MS}ms ` +
-			`(pid file: ${String(readBrokerPid())}, previous broker: ${previousState})`,
+		`No new broker replaced pid ${String(previous?.pid)} within ${RECOVERY_TIMEOUT_MS}ms (pid file now: ${JSON.stringify(readBrokerIdentity())})`,
 	);
-}
-
-/** TerminateProcess is asynchronous, so wait (bounded) for this exact broker to finish exiting. */
-async function waitForBrokerExit(broker: BrokerInstance): Promise<boolean> {
-	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
-	while (brokerIsAlive(broker)) {
-		if (Date.now() >= deadline) return false;
-		await sleep(RECOVERY_POLL_MS);
-	}
-	return true;
 }
 
 /** Poll `probe` until it yields a value, without any Intercom tool call on the runtime under test. */
@@ -421,32 +361,34 @@ async function fanOutToSessionsNamed(
 	}
 }
 
-function killBroker(broker: BrokerInstance): void {
-	if (!brokerIsAlive(broker)) return;
+function killBroker({ pid }: BrokerIdentity): void {
 	try {
-		process.kill(broker.pid, "SIGKILL");
+		process.kill(pid, "SIGKILL");
 	} catch {
 		// Already gone.
 	}
 }
 
+/**
+ * Wait for a SIGKILLed broker to be gone. `process.kill` only requests termination, and on
+ * Windows the process stays signalable for a while afterwards, so "it was killed" is not yet
+ * "it is dead". A replacement that inherited the killed broker's pid is alive by definition, so
+ * only a different pid can prove the predecessor died.
+ */
+async function waitForKilledBrokerExit(killed: BrokerIdentity, replacement: BrokerIdentity): Promise<void> {
+	if (replacement.pid === killed.pid) return;
+	await waitFor(`killed broker ${killed.pid} to exit`, async () => (processIsAlive(killed.pid) ? undefined : true));
+}
+
 afterAll(() => {
 	setDurableBackend(undefined);
-	try {
-		const pid = readBrokerPid();
-		const current =
-			pid === undefined
-				? undefined
-				: (capturedBrokers.find((broker) => isSameBroker(broker, pid)) ?? captureBroker(pid));
-		if (current !== undefined) killBroker(current);
-	} finally {
-		for (const broker of capturedBrokers) broker.guard?.close();
-		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-		rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-	}
+	const broker = readBrokerIdentity();
+	if (broker !== undefined) killBroker(broker);
+	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
+	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 test("an ordinary host controls a second invocation after joining the first and re-registering", async () => {
@@ -645,13 +587,9 @@ test("a failed background reconnect still recovers the session with no intercom 
 		});
 
 		assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
-		assert.equal(await waitForBrokerExit(firstBroker), true, "the killed broker must exit, not be revived");
-		assert.equal(
-			isSameBroker(firstBroker, recoveredBroker.pid),
-			false,
-			"recovery must run against a freshly spawned broker",
-		);
-		assert.equal(brokerIsAlive(recoveredBroker), true, "the replacement broker must be live");
+		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+		assert.ok(replacesBroker(recoveredBroker, firstBroker), "recovery must run against a freshly spawned broker");
+		assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
 		assert.ok(names.includes("reconnect-recovery"));
 		assert.equal(
 			session.toolExecutions,
@@ -796,8 +734,8 @@ test("a running workflow stage regains list visibility and both route aliases af
 		// never be what respawned it. The owner's route client and the stage both recover on
 		// their own timers; whichever wins the spawn, only the stage can restore its live route.
 		const recoveredBroker = await waitForBroker(firstBroker);
-		assert.equal(await waitForBrokerExit(firstBroker), true, "the killed broker must exit, not be revived");
-		assert.equal(brokerIsAlive(recoveredBroker), true);
+		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+		assert.equal(processIsAlive(recoveredBroker.pid), true);
 		assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
 
 		const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
@@ -862,7 +800,7 @@ test("a reconnect that fails after the broker accepted it leaves no second regis
 		// The failing attempt spawns the replacement broker and registers on it before `restore`
 		// rejects, so a new pid appearing is the signal that the orphan window has opened.
 		const recoveredBroker = await waitForBroker(firstBroker);
-		assert.equal(brokerIsAlive(recoveredBroker), true);
+		assert.equal(processIsAlive(recoveredBroker.pid), true);
 
 		const receivedFor = (marker: string): number =>
 			session.injectedMessages.filter(({ content }) => (content ?? "").includes(marker)).length;

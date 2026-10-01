@@ -1,5 +1,6 @@
 import { getPGClientConfig } from "@dbos-inc/dbos-sdk/datasource";
 import { Pool, type PoolClient } from "pg";
+import { DbosDependencyError } from "./dbos-admission.js";
 
 interface RecoverablePostgresPoolOptions {
 	readonly beforeConnect?: () => Promise<string>;
@@ -45,7 +46,7 @@ export function createRecoverablePostgresPool(
 			for (const { client } of held) {
 				// An idle LISTEN client only emits end on destruction; DBOS needs error.
 				if (client.listenerCount("error") > 0) {
-					client.emit("error", new Error("Postgres dependency invalidated"));
+					client.emit("error", new DbosDependencyError("Postgres dependency invalidated"));
 				}
 			}
 		}

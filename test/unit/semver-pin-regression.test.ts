@@ -37,7 +37,7 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
  *
  * Check every locked semver node and resolve the installed CLI from its owning
  * workspace: npm may hoist or nest it without changing this contract. The CLI
- * surface below was re-measured against @napi-rs/cli 3.10.4 and semver 7.8.5.
+ * surface below was re-measured against @napi-rs/cli 3.10.5 and semver 7.8.5.
  * To re-record these tables after a future pin move, unpack upstream outside
  * this tree and replay the same calls against it:
  *
@@ -48,7 +48,7 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
 
 const PINNED_SEMVER_VERSION = "7.8.5";
 const BASELINE_SEMVER_VERSION = "7.8.5";
-const PINNED_NAPI_CLI_VERSION = "3.10.4";
+const PINNED_NAPI_CLI_VERSION = "3.10.5";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const codingAgentDir = join(root, "packages/coding-agent");
@@ -119,11 +119,11 @@ interface SemverApi {
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
 
 /**
- * @napi-rs/cli 3.10.4 declares semver@^7.8.2, satisfied by the shared 7.8.5 pin.
+ * @napi-rs/cli 3.10.5 declares semver@^7.8.2, satisfied by the shared 7.8.5 pin.
  * Its four semver imports feed restrictWasiNodeEngine and its helpers, which
  * intersect engines.node with the supported WASI Node.js lines.
  *
- * The floor and functions below are transcribed from the installed 3.10.4
+ * The floor and functions below are transcribed from the installed 3.10.5
  * dist/index.js: `restrictWasiNodeEngine`, `normalizeComparatorSet`, and
  * `stabilizePrereleaseComparator` are byte-for-byte unchanged from 3.9.0 (only
  * minified differently), and the declared semver range and WASI floor are
@@ -213,7 +213,7 @@ function restrictWasiNodeEngine(semverBuild: NapiSemverApi, nodeRange: string): 
 }
 
 /**
- * restrictWasiNodeEngine(range) from CLI 3.10.4 with semver 7.8.5, for the
+ * restrictWasiNodeEngine(range) from CLI 3.10.5 with semver 7.8.5, for the
  * repository's engines.node ranges plus the WASI minimum itself.
  */
 const BASELINE_NAPI_WASI_ENGINE = new Map<string, string>([
@@ -536,7 +536,7 @@ describe("semver pinned at 7.8.5", () => {
 		}
 	});
 
-	test("dependency ranges are satisfied except the recorded raise, and CLI 3.10.4 keeps its measured behavior", async () => {
+	test("dependency ranges are satisfied except the recorded raise, and CLI 3.10.5 keeps its measured behavior", async () => {
 		const napiManifest = await readJson<CliManifest>(napiCliManifestPath);
 		const napiSemverManifest = await readJson<Manifest>(requireFromNapiCli.resolve("semver/package.json"));
 		assert.equal(napiManifest.version, PINNED_NAPI_CLI_VERSION);

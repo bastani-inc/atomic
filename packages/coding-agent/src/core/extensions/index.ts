@@ -1,4 +1,5 @@
 export type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
+export type { ExecuteToolOptions, ExtensionToolContext } from "./context-types.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -8,6 +9,7 @@ export type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "./host-input.js";
+export type { ToolAnnotations, ToolExposure, ToolLoadout, ToolLoadoutChanges, ToolNamespace } from "./tool-types.ts";
 /**
  * Extension system for lifecycle events and custom tools.
  */
@@ -264,4 +266,16 @@ export {
 } from "./types.ts";
 export { OVERLAY_ACTIVE_ROW_MARKER } from "./ui-types.js";
 export type * from "./workflow-events.js";
+export type * from "./workflow-run-control.js";
+export {
+	WorkflowRunControlError,
+	WorkflowRunControlUnavailableError,
+	WorkflowRunDatabaseError,
+	WorkflowRunNotFoundError,
+	WorkflowRunNotResumableError,
+	WorkflowRunOwnershipError,
+	WorkflowStageAmbiguousError,
+	WorkflowStageNotFoundError,
+	WorkflowStageResumeUnsupportedError,
+} from "./workflow-run-control.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

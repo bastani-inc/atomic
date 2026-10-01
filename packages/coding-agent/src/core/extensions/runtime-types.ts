@@ -12,6 +12,7 @@ import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type { CompactOptions, ContextUsage, ExtensionContext, ReplacedSessionContext } from "./context-types.ts";
+import type { McpServerRegistry } from "./mcp-server-registry.ts";
 import type {
 	EntryRenderer,
 	MarkdownTransformer,
@@ -22,6 +23,7 @@ import type {
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 import type { WorkflowActivityHub } from "./workflow-activity-hub.js";
+import type { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 export interface RegisteredTool {
 	definition: ToolDefinition;
@@ -93,9 +95,14 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	getSettings?: () => import("../settings-types.ts").Settings;
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Shared by extension loading and its runner generation. */
 	workflowActivityHub: WorkflowActivityHub;
+	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
+	workflowRunControlHub: WorkflowRunControlHub;
+	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
+	mcpServerRegistry: McpServerRegistry;
 	flagValues: Map<string, boolean | string>;
 	explicitFlagNames?: Set<string>;
 	/** Extension path that owns each active flag registration. */
@@ -203,6 +210,14 @@ export interface ExtensionContextActions {
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getRouterModel?: () => string;
 	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
+	executeTool?: (
+		callerId: string,
+		name: string,
+		args: unknown,
+		options: import("./context-types.ts").ExecuteToolOptions,
+	) => Promise<import("@earendil-works/pi-agent-core").AgentToolCallOutcome>;
+	getCallableTools?: () => readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	getSettings?: () => import("../settings-types.ts").Settings;
 }
 
 /**
@@ -241,6 +256,7 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 export interface Extension {
 	path: string;
 	hidden?: boolean;
+	replaceable?: boolean;
 	resolvedPath: string;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;

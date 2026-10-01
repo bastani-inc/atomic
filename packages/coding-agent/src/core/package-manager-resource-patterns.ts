@@ -106,7 +106,24 @@ export function isEnabledByOverrides(filePath: string, patterns: string[], baseD
 	return enabled;
 }
 
-export function applyPatterns(allPaths: string[], patterns: string[], baseDir: string): Set<string> {
+interface PatternMatcher {
+	matches(item: string, patterns: string[]): boolean;
+	matchesExact(item: string, patterns: string[]): boolean;
+}
+
+function pathMatcher(baseDir: string): PatternMatcher {
+	return {
+		matches: (filePath, patterns) => matchesAnyPattern(filePath, patterns, baseDir),
+		matchesExact: (filePath, patterns) => matchesAnyExactPattern(filePath, patterns, baseDir),
+	};
+}
+
+const nameMatcher: PatternMatcher = {
+	matches: (name, patterns) => patterns.some((pattern) => minimatch(name, pattern)),
+	matchesExact: (name, patterns) => patterns.includes(name),
+};
+
+function selectByPatterns(items: string[], patterns: string[], matcher: PatternMatcher): Set<string> {
 	const includes: string[] = [];
 	const excludes: string[] = [];
 	const forceIncludes: string[] = [];
@@ -126,25 +143,45 @@ export function applyPatterns(allPaths: string[], patterns: string[], baseDir: s
 
 	let result: string[];
 	if (includes.length === 0) {
-		result = [...allPaths];
+		result = [...items];
 	} else {
-		result = allPaths.filter((filePath) => matchesAnyPattern(filePath, includes, baseDir));
+		result = items.filter((item) => matcher.matches(item, includes));
 	}
 	if (excludes.length > 0) {
-		result = result.filter((filePath) => !matchesAnyPattern(filePath, excludes, baseDir));
+		result = result.filter((item) => !matcher.matches(item, excludes));
 	}
 	if (forceIncludes.length > 0) {
-		for (const filePath of allPaths) {
-			if (!result.includes(filePath) && matchesAnyExactPattern(filePath, forceIncludes, baseDir)) {
-				result.push(filePath);
+		for (const item of items) {
+			if (!result.includes(item) && matcher.matchesExact(item, forceIncludes)) {
+				result.push(item);
 			}
 		}
 	}
 	if (forceExcludes.length > 0) {
-		result = result.filter((filePath) => !matchesAnyExactPattern(filePath, forceExcludes, baseDir));
+		result = result.filter((item) => !matcher.matchesExact(item, forceExcludes));
 	}
 
 	return new Set(result);
+}
+
+function selectExplicitPatterns(items: string[], patterns: string[], matcher: PatternMatcher): Map<string, boolean> {
+	const result = new Map<string, boolean>();
+	for (const pattern of patterns) {
+		const prefixed = pattern.startsWith("+") || pattern.startsWith("-") || pattern.startsWith("!");
+		const target = prefixed ? pattern.slice(1) : pattern;
+		const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
+		const exact = pattern.startsWith("+") || pattern.startsWith("-");
+		for (const item of items) {
+			if (exact ? matcher.matchesExact(item, [target]) : matcher.matches(item, [target])) {
+				result.set(item, enabled);
+			}
+		}
+	}
+	return result;
+}
+
+export function applyPatterns(allPaths: string[], patterns: string[], baseDir: string): Set<string> {
+	return selectByPatterns(allPaths, patterns, pathMatcher(baseDir));
 }
 
 export function applyAutoloadDisabledPatterns(
@@ -152,19 +189,15 @@ export function applyAutoloadDisabledPatterns(
 	patterns: string[],
 	baseDir: string,
 ): Map<string, boolean> {
-	const result = new Map<string, boolean>();
-	for (const pattern of patterns) {
-		const prefixed = pattern.startsWith("+") || pattern.startsWith("-") || pattern.startsWith("!");
-		const target = prefixed ? pattern.slice(1) : pattern;
-		const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
-		const exact = pattern.startsWith("+") || pattern.startsWith("-");
-		for (const filePath of allPaths) {
-			if (
-				exact ? matchesAnyExactPattern(filePath, [target], baseDir) : matchesAnyPattern(filePath, [target], baseDir)
-			) {
-				result.set(filePath, enabled);
-			}
-		}
-	}
-	return result;
+	return selectExplicitPatterns(allPaths, patterns, pathMatcher(baseDir));
+}
+
+/** `applyPatterns` for named resources such as MCP servers: globs match the name, `+`/`-` match it exactly. */
+export function applyNamePatterns(names: string[], patterns: string[]): Set<string> {
+	return selectByPatterns(names, patterns, nameMatcher);
+}
+
+/** `applyAutoloadDisabledPatterns` for named resources. */
+export function applyAutoloadDisabledNamePatterns(names: string[], patterns: string[]): Map<string, boolean> {
+	return selectExplicitPatterns(names, patterns, nameMatcher);
 }

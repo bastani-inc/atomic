@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -127,89 +127,6 @@ console.log(JSON.stringify(result));
 	}
 }
 
-function assertMcpColdStartupTools(options: { withCache: boolean; expectedTools: string[] }): void {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-mcp-startup-"));
-	const agentDir = join(tempDir, "agent");
-	try {
-		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(
-			join(agentDir, "mcp.json"),
-			JSON.stringify(
-				{
-					settings: { disableProxyTool: true },
-					mcpServers: {
-						demo: {
-							command: "bun",
-							args: ["--version"],
-							directTools: true,
-						},
-					},
-				},
-				null,
-				2,
-			),
-		);
-
-		const mcpUrl = pathToFileURL(resolve(repoRoot, "packages/mcp/index.ts")).href;
-		const metadataUrl = pathToFileURL(resolve(repoRoot, "packages/mcp/metadata-cache.ts")).href;
-		const script = `
-const { default: mcpAdapter } = await import(${JSON.stringify(mcpUrl)});
-const { computeServerHash } = await import(${JSON.stringify(metadataUrl)});
-const { writeFileSync } = await import("node:fs");
-const { join } = await import("node:path");
-const agentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-const server = { command: "bun", args: ["--version"], directTools: true };
-if (${JSON.stringify(options.withCache)}) {
-  writeFileSync(join(agentDir, "mcp-cache.json"), JSON.stringify({
-    version: 1,
-    servers: {
-      demo: {
-        configHash: computeServerHash(server),
-        tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } }],
-        resources: [],
-        cachedAt: Date.now()
-      }
-    }
-  }, null, 2));
-}
-const handlers = [];
-const tools = [];
-const pi = {
-  registerFlag() {},
-  registerCommand() {},
-  registerShortcut() {},
-  registerMessageRenderer() {},
-  registerTool(tool) { tools.push(tool.name); },
-  getAllTools() { return []; },
-  refreshTools() {},
-  on(event, handler) { if (event === "session_start") handlers.push(handler); },
-  events: { on() { return () => {}; }, emit() {} }
-};
-mcpAdapter(pi);
-for (const handler of handlers) {
-  await handler({ type: "session_start", reason: "new" }, { cwd: ${JSON.stringify(repoRoot)} });
-}
-console.log(JSON.stringify(tools));
-process.exit(0);
-`;
-		const childEnv = {
-			...process.env,
-			ATOMIC_CODING_AGENT_DIR: agentDir,
-			PI_CODING_AGENT_DIR: "",
-		};
-		const result = spawnSync("bun", ["--eval", script], {
-			cwd: repoRoot,
-			env: childEnv,
-			encoding: "utf-8",
-			timeout: subprocessTimeoutMs,
-		});
-		expect(result.status, result.stderr || result.stdout).toBe(0);
-		expect(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "[]")).toEqual(options.expectedTools);
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
 describe("regression #1223 lazy built-in startup imports", () => {
 	it("does not statically import heavy web-access provider modules from the registration surface", () => {
 		const source = readRepoFile("packages/web-access/index.ts");
@@ -284,10 +201,5 @@ describe("regression #1223 lazy built-in startup imports", () => {
 
 	it("allows concurrent web tools to retry one rejected initializer as a single flight", () => {
 		assertWebAccessRetriesRejectedInitializer();
-	});
-
-	it("keeps the MCP proxy fallback until cached direct tools are available", () => {
-		assertMcpColdStartupTools({ withCache: false, expectedTools: ["mcp"] });
-		assertMcpColdStartupTools({ withCache: true, expectedTools: ["demo_echo"] });
 	});
 });

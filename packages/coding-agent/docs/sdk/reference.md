@@ -184,7 +184,7 @@ Specify which tools to expose by name:
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
 - `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist. It does not remove package resources or authorize services.
 - `noTools: "builtin"` suppresses coding-tool defaults when `tools` is omitted, keeping extension/custom tools except exclusions. An explicit `tools` list still wins over this mode.
-- Configured `defaultTools` selects only initial coding tools when `tools` and `noTools` are omitted. It does not disable extension/custom tools.
+- Configured `defaultTools` selects initial coding tools when `tools` and `noTools` are omitted. Plain names replace the defaults; modifier-only lists such as `["-bash", "+ls"]` change the defaults, and project modifier-only lists layer over the global selection. Extension/custom tools retain their own activation behavior. See [defaultTools](/settings#tools).
 
 Workflow and subagent children inherit these restrictions. Child allowlists intersect with the parent selection, including during model fallback. A child cannot restore a parent-disabled package or excluded tool. See [child configuration](/sdk#workflow-and-subagent-children) for model/auth, host callback and working-directory inheritance.
 
@@ -216,6 +216,8 @@ const { session } = await createAgentSession({
 #### Bash tool behavior
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
+
+Completed `bash` commands also return `structuredContent` shaped as `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, including nonzero exits. Programmatic callers receive up to 1 MiB of captured output, plus an omission marker when truncated; larger output keeps its head and tail and supplies a path to the full output. This is a captured-output limit, not a strict serialized JSON size limit. Model-facing text keeps its ordinary truncation limits. Running/background observations keep their existing task lifecycle and result format.
 
 #### Waiting for existing shell tasks
 
@@ -374,6 +376,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 ```
 
 `createAgentSession()` preserves the resources from a supplied loader and adds Atomic's shipped builtin extensions and resources. Repeated references to a shipped builtin load it once. Your loader's arrays and discovery options are not rewritten. Existing tool selection and collision rules still apply.
+
+Named `extensionFactories` descriptors may set `builtin: true` to expose the factory as a synthetic `builtin:<name>` resource, and `replaceable: true` to omit it when another extension claims the same tool, command, or flag. Use `additionalExtensionPaths: ["builtin:codemode"]` for explicit built-in loading, including with `noExtensions: true`. These inline resource controls are separate from the companion-package `builtins` map. See [built-in extension resources](/extensions#built-in-extension-resources).
 
 Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler` or `onError` before startup hooks run. Creation awaits startup and resource discovery. A failed startup shuts down the partially created session before rejecting. Rebinding updates the host without replaying `session_start`; reload emits one start for its new generation. Remove manual post-creation startup calls from integrations that only used them to initialize extensions.
 
@@ -662,6 +666,12 @@ const themes = loader.getThemes();
 const contextFiles = loader.getAgentsFiles().agentsFiles;
 ```
 
+Package workflows returned by `DefaultResourceLoader` are available through the SDK session's `workflow` tool, even when the factory adds the shipped workflows extension. Use the tool's `reload` action to pick up added or removed package workflows without recreating the session. Project packages still require project trust; workflow reload does not grant it.
+
+Custom `ResourceLoader` implementations can optionally provide `getWorkflowResources()` returning `ResolvedResource[]` and `refreshWorkflowResources()` returning `Promise<ResolvedResource[]>`. Refresh should return the current trust-filtered resources. If refresh is omitted, workflow reload uses the getter's current snapshot. If both are omitted, shipped workflows and normal workflow-directory discovery remain available.
+
+Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
+
 ## Return Value
 
 `createAgentSession()` returns:
@@ -838,6 +848,22 @@ type EditDiffResult
 // Session management
 SessionManager
 SettingsManager
+
+// Workflow run control (session.workflows)
+type SessionWorkflows
+type WorkflowRunSummary
+type WorkflowRunDetail
+type WorkflowRunControlOutcome
+type WorkflowRunControlFailedRun
+WorkflowRunControlError
+WorkflowRunNotFoundError
+WorkflowRunOwnershipError
+WorkflowRunNotResumableError
+WorkflowStageNotFoundError
+WorkflowStageAmbiguousError
+WorkflowStageResumeUnsupportedError
+WorkflowRunDatabaseError
+WorkflowRunControlUnavailableError
 
 // Tool factories
 createCodingTools

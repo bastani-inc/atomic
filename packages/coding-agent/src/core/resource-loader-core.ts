@@ -4,6 +4,7 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
 import { createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
@@ -85,6 +86,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
 	private workflowResources: ResolvedResource[];
+	private mcpServerContributions: McpServerContribution[];
 	private trustedBorrowedProjectLocalSources?: Set<string>;
 	private lastSkillPaths: string[];
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
@@ -107,11 +109,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.settingsManager =
 			options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir, inheritedSettingsOptions);
 		this.eventBus = options.eventBus ?? createEventBus();
-		this.packageManager = new DefaultPackageManager({
-			cwd: this.cwd,
-			agentDir: this.agentDir,
-			settingsManager: this.settingsManager,
-		});
 		this.additionalExtensionPaths = mergeInheritedStrings(
 			inheritanceSnapshot?.additionalExtensionPaths,
 			options.additionalExtensionPaths,
@@ -136,6 +133,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			...(inheritanceSnapshot?.extensionFactories ?? []),
 			...(options.extensionFactories ?? []),
 		];
+		this.packageManager = new DefaultPackageManager({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsManager,
+			builtinExtensions: this.extensionFactories.flatMap((input) =>
+				typeof input !== "function" && input.builtin ? [input.name] : [],
+			),
+		});
 		this.noExtensions = options.noExtensions ?? inheritanceSnapshot?.noExtensions ?? false;
 		this.noSkills = options.noSkills ?? inheritanceSnapshot?.noSkills ?? false;
 		this.noPromptTemplates = options.noPromptTemplates ?? inheritanceSnapshot?.noPromptTemplates ?? false;
@@ -167,6 +172,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = [];
 		this.appendSystemPromptSourcePaths = [];
 		this.workflowResources = [];
+		this.mcpServerContributions = [];
 		this.trustedBorrowedProjectLocalSources =
 			inheritanceSnapshot?.trustedBorrowedProjectLocalSources === undefined
 				? undefined
@@ -228,6 +234,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getWorkflowResources(): ResolvedResource[] {
 		return [...this.workflowResources];
+	}
+
+	/** Enabled package-manifest MCP servers discovered by the last reload. */
+	getMcpServerContributions(): McpServerContribution[] {
+		return [...this.mcpServerContributions];
 	}
 
 	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot {
@@ -401,7 +412,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private replaceSettingsManager(settingsManager: SettingsManager): void {
 		this.settingsManager = settingsManager;
-		this.packageManager = new DefaultPackageManager({ cwd: this.cwd, agentDir: this.agentDir, settingsManager });
+		this.packageManager = new DefaultPackageManager({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+			builtinExtensions: this.extensionFactories.flatMap((input) =>
+				typeof input !== "function" && input.builtin ? [input.name] : [],
+			),
+		});
 	}
 
 	private publishCandidate(candidate: DefaultResourceLoader): void {
@@ -419,6 +437,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = candidate.appendSystemPrompt;
 		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
 		this.workflowResources = candidate.workflowResources;
+		this.mcpServerContributions = candidate.mcpServerContributions;
 		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;
 		this.lastSkillPaths = candidate.lastSkillPaths;
 		this.extensionSkillSourceInfos = candidate.extensionSkillSourceInfos;

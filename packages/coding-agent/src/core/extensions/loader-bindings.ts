@@ -52,6 +52,16 @@ export function invocationExtension(extension: Extension): Extension {
 	});
 }
 
+/** Rebuild a plain object, keeping each own key's enumerability (TypeBox hides `~kind` from JSON this way). */
+function mapOwnProperties(source: object, map: (key: string | symbol) => unknown): object {
+	const target = {};
+	for (const key of Reflect.ownKeys(source)) {
+		const { enumerable } = Reflect.getOwnPropertyDescriptor(source, key)!;
+		Object.defineProperty(target, key, { value: map(key), enumerable, writable: true, configurable: true });
+	}
+	return target;
+}
+
 /** Snapshot registration containers, retaining opaque values and function identities. */
 export function copyRegistrations<T>(value: T, functions?: (fn: Callback) => Callback): T {
 	if (typeof value === "function") return (functions ? functions(value as Callback) : value) as T;
@@ -59,9 +69,7 @@ export function copyRegistrations<T>(value: T, functions?: (fn: Callback) => Cal
 		return new Map([...value].map(([key, item]) => [key, copyRegistrations(item, functions)])) as T;
 	if (Array.isArray(value)) return value.map((item) => copyRegistrations(item, functions)) as T;
 	if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-		return Object.fromEntries(
-			Reflect.ownKeys(value).map((key) => [key, copyRegistrations(Reflect.get(value, key), functions)]),
-		) as T;
+		return mapOwnProperties(value, (key) => copyRegistrations(Reflect.get(value, key), functions)) as T;
 	}
 	return value;
 }
@@ -132,18 +140,15 @@ export function reconcileRegistration(
 		Object.getPrototypeOf(source) === Object.prototype &&
 		Object.getPrototypeOf(baseline) === Object.prototype
 	) {
-		return Object.fromEntries(
-			Reflect.ownKeys(source).map((key) => [
-				key,
-				Object.hasOwn(baseline, key)
-					? reconcileRegistration(
-							Reflect.get(source, key),
-							Reflect.get(baseline, key),
-							Reflect.get(fresh, key),
-							bindings,
-						)
-					: Reflect.get(source, key),
-			]),
+		return mapOwnProperties(source, (key) =>
+			Object.hasOwn(baseline, key)
+				? reconcileRegistration(
+						Reflect.get(source, key),
+						Reflect.get(baseline, key),
+						Reflect.get(fresh, key),
+						bindings,
+					)
+				: Reflect.get(source, key),
 		);
 	}
 	return source;

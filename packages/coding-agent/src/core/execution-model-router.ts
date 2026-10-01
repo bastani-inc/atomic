@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
 	type Api,
 	containsKnownEnvCredential,
+	getServiceTierCost,
 	getSupportedThinkingLevels,
 	isModelType,
 	type Model,
@@ -152,6 +153,14 @@ export async function routeExecutionModel(input: {
 		ctx.modelRegistry
 			.getAvailable()
 			.filter((model) => isModelType(model, "chat") && providerPermitted(model.provider))
+			// Ultrafast is billed above Standard and gated by account access. It is selectable
+			// manually, but auto must receive an exact caller allowance or restore an explicit decision.
+			.filter(
+				(model) =>
+					model.fastRoute?.serviceTier !== "ultrafast" ||
+					constraints.some((constraint) => constraint.allowedModels?.includes(`${model.provider}/${model.id}`)) ||
+					input.selection?.model === `${model.provider}/${model.id}`,
+			)
 			.map((model) => ({
 				model,
 				pairs: (model.reasoning ? getSupportedThinkingLevels(model) : [null])
@@ -333,13 +342,24 @@ export async function routeExecutionModel(input: {
 			: seeing;
 		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
-		const toCandidate = (model: Model<Api>): CandidateModel => ({
-			model: `${model.provider}/${model.id}`,
-			name: model.name,
-			cost: model.cost,
-			input: model.input,
-			...(model.fastRoute ? { fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}` } : {}),
-		});
+		const toCandidate = (model: Model<Api>): CandidateModel => {
+			const routeCost = model.fastRoute?.serviceTier
+				? getServiceTierCost(model, model.fastRoute.serviceTier)
+				: undefined;
+			return {
+				model: `${model.provider}/${model.id}`,
+				name: model.name,
+				cost: routeCost ?? model.cost,
+				input: model.input,
+				...(model.fastRoute
+					? {
+							fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
+							fastRouteServiceTier: model.fastRoute.serviceTier,
+							fastRoutePriced: routeCost !== undefined,
+						}
+					: {}),
+			};
+		};
 		// A caller that lists models (`allowedModels`) chooses the contenders itself,
 		// but price and recency still compare them with every model the user could route to.
 		const callerListed = constraints.some((constraint) => (constraint.allowedModels?.length ?? 0) > 0);

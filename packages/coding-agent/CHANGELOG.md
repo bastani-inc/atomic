@@ -2,6 +2,151 @@
 
 ## [Unreleased]
 
+## [0.9.25-alpha.5] - 2026-09-30
+
+### Fixed
+
+- `/session` now shows current message counts, token totals, cost, and the correct session ID during an interactive run instead of displaying the previous turn's statistics or zero counts on the first run ([#3383](https://github.com/bastani-inc/atomic/issues/3383)).
+
+## [0.9.25-alpha.4] - 2026-09-30
+
+### Breaking Changes
+
+- Replaced the old MCP adapter with the native client. Only `~/.atomic/agent/mcp.json` and trusted `.atomic/mcp.json` are read, using the native configuration shape. Shared config layers, client imports, and old-field translations are no longer supported; old OAuth credentials are not imported.
+- MCP tools now use `mcp__<server>__<tool>` names and default to `codemode` exposure. The old gateway, configurable prefixes, lazy/idle lifecycle settings, metadata cache, SSE transport, MCP Apps rendering, and setup command are removed. Enabled servers connect in the background; `/mcp reconnect` without a name selects one server rather than reconnecting every server.
+
+### Added
+
+- MCP servers can set `oauth.authServerMetadataUrl` to a trusted authorization server metadata document when discovery advertises the wrong server or none. See [MCP authentication](docs/mcp-servers.md#override-oauth-authorization-server-discovery) ([#10172](https://github.com/earendil-works/pi/issues/10172)).
+- Added `/mcp login [server]`, command completion, and server selection for login, logout, and reconnect. The manager offers per-server action menus for enabled state and tool exposure, and OAuth sign-in accepts a pasted redirect URL when the browser is on another machine.
+- MCP servers support `codemode`, `deferred`, `direct`, and `hidden` exposure with per-tool pattern overrides, standard resource list/read tools, and per-server OAuth callback ports and URLs. See [MCP servers](docs/mcp-servers.md).
+- Added shell commands `atomic mcp add`, `remove`, `list`, `login`, and `logout` to configure, check, and authenticate file-configured servers without starting a session.
+
+### Changed
+
+- MCP now uses pi's native client, tool exposure, resources, and server manager. Calls, including codemode calls, pass through Atomic's tool permission pipeline. Native OAuth credentials are stored in `mcp-auth.json`.
+
+### Fixed
+
+- MCP OAuth rejects authorization responses from another issuer, including a missing `iss` when the server promises it under RFC 9207.
+- MCP OAuth sign-in and refresh now tolerate empty or null optional token and registration fields, and empty requested scopes use the next scope source ([#10266](https://github.com/earendil-works/pi/issues/10266)).
+- MCP sign-out no longer lets an in-progress OAuth refresh restore deleted credentials.
+- Session shutdown now closes MCP connections that are still opening instead of leaving them running after the session ends.
+- Replacing an extension-contributed MCP server now retires pending connections, and reloading with active servers no longer fails during connection cleanup.
+- Malformed MCP configuration errors no longer quote file contents that may contain credentials.
+- MCP OAuth refreshes authorization-server discovery when a server advertises a changed metadata URL.
+
+## [0.9.25-alpha.3] - 2026-09-30
+
+### Added
+
+- SDK hosts can now manage the workflow runs their session owns through `session.workflows`: `listRuns()`, `getRun()`, `getStages()`, `pause()`, `quit()` and `resume()` return the workflow tool's structured results, and failures reject with typed `WorkflowRunControlError` subclasses (`WorkflowRunNotFoundError`, `WorkflowRunOwnershipError`, `WorkflowRunNotResumableError`, `WorkflowRunDatabaseError`, `WorkflowStageNotFoundError`, `WorkflowStageAmbiguousError`, `WorkflowStageResumeUnsupportedError`) instead of strings. A batch `pause({ all: true })` or `quit({ all: true })` returns a `partial` outcome whose `failedRuns` names the runs still active only when that call stopped at least one run, and rejects with `WorkflowRunControlError` carrying `failedRuns` when active runs could not be stopped and the call stopped none, even if other runs were already paused. Already-paused and already-ended runs are not failures. A database outage while checking who owns a run rejects `pause()` and `quit()` with `WorkflowRunDatabaseError`. It uses the same ownership and durable-resume rules as the `workflow` tool, so runs owned by another session or live process stay read-only ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+- Codemode scripts can retrieve namespace summaries, instructions, and callable tool names with `describeNamespace(name)`. Tool search indexes namespace instructions without including them in inline tool listings, and codemode listings no longer include tool counts ([#10212](https://github.com/earendil-works/pi/issues/10212)).
+- `/reload` enables tools newly added to `defaultTools`, while preserving session-disabled tools, tools removed from the setting, and explicit CLI tool restrictions ([#10245](https://github.com/earendil-works/pi/issues/10245)).
+- Added Anthropic workload identity federation from the `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` environment variables, with optional `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID`. See [Providers](docs/providers.md#anthropic-workload-identity-federation) ([#10177](https://github.com/earendil-works/pi/issues/10177), [#10242](https://github.com/earendil-works/pi/pull/10242) by [@philfreo](https://github.com/philfreo)).
+- MCP servers can set `oauth.clientName` for dynamic OAuth registration, or use `"auth": { "provider": "<provider>" }` to send the current provider login token. Provider-token authentication is restricted to global configuration and extension registrations, with HTTPS required except on loopback hosts. See [MCP authentication](docs/mcp-servers.md#authentication) ([#10226](https://github.com/earendil-works/pi/issues/10226)).
+- `/login anthropic` now offers **Copy code login (headless)** when the browser is on another machine and cannot reach Atomic's local callback ([#10194](https://github.com/earendil-works/pi/pull/10194) by [@lucasmeijer](https://github.com/lucasmeijer)).
+
+### Fixed
+
+- On a heavily loaded machine, a workflow run could fail with a bare `Query read timeout` while Atomic verified its managed PostgreSQL connection, even though the database was healthy. Health queries now get more time (3 s) on every path, and both the check of a borrowed connection and Atomic's periodic background health check repeat once after a timeout. If the timeout persists, the run fails with a resumable database-unavailable error instead of `Query read timeout`, and other running workflows' database connections are not closed and PostgreSQL is not restarted. A refused or terminated connection, a server shutdown, or a changed database identity is still treated as an outage.
+- Renderer examples now retain the built-in tools' prompt guidance and execution behavior when customizing their display ([#10072](https://github.com/earendil-works/pi/issues/10072)).
+- Reduced model lookup overhead when merging large remote provider catalogs.
+- Invalid extension commands now fail registration with a clear error instead of crashing slash-command completion ([#10054](https://github.com/earendil-works/pi/issues/10054)).
+- Codemode and tool-search descriptions now remain unchanged when deferred tools register, preserving prompt stability while discovery continues to find those tools ([#10212](https://github.com/earendil-works/pi/issues/10212)).
+- Collapsed codemode scripts and results now limit wrapped screen lines, so long single-line JSON no longer fills the transcript. Bash previews use the same cached visual-line component.
+- In `codemode.mode: "only"`, the system prompt's tool list no longer advertises tools whose direct declarations are hidden ([#10192](https://github.com/earendil-works/pi/issues/10192)).
+- Fixed context overflow detection for Z.AI CN endpoint `Prompt exceeds max length` errors ([#10208](https://github.com/earendil-works/pi/issues/10208)).
+- Anthropic tools with strict-schema constraints the provider rejects now fall back to non-strict mode when strict sampling is preferred ([#9953](https://github.com/earendil-works/pi/issues/9953)).
+- Provider retries now use exponential backoff when `Retry-After` contains an unparseable date ([#9571](https://github.com/earendil-works/pi/issues/9571)).
+- MCP sign-in URLs remain clickable when they wrap, including inside the `/mcp` panel ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+- MCP tool names now use JavaScript-safe identifiers with deterministic suffixes for collisions and long names, consistently across direct tools, gateway discovery, and codemode ([#10239](https://github.com/earendil-works/pi/issues/10239)).
+- Codemode `image()` now rejects malformed base64 and unsupported image types before saving a tool result, and detects the MIME type from the image data instead of trusting the supplied type ([#10215](https://github.com/earendil-works/pi/issues/10215)).
+
+## [0.9.25-alpha.2] - 2026-09-30
+
+### Fixed
+
+- OpenAI's **Sign in with ChatGPT** login now shows a redirect-URL paste input, allowing authentication from remote machines without a reachable local browser callback.
+- SDK-created sessions now discover package-provided workflows from their resource loader, including after workflow reload, while preserving project trust and custom loaders without workflow resources ([#3372](https://github.com/bastani-inc/atomic/issues/3372)).
+- SDK-created sessions now retain package-contributed MCP servers when adding the shipped MCP extension to a custom resource loader ([#3372](https://github.com/bastani-inc/atomic/issues/3372)).
+- Structured decisions and schema-backed workflow results now accept strict-provider null placeholders for omitted optional fields instead of exhausting output repairs. Explicitly nullable fields keep their null values, and required fields still enforce the original schema.
+
+## [0.9.25-alpha.1] - 2026-09-29
+
+### Added
+
+- Added GPT-6.1 Sol and its first-party Fast variants for OpenAI API keys and ChatGPT Codex subscriptions.
+- Added **Sign in with ChatGPT** for the OpenAI provider, independently of Codex backend login.
+- Added Jev decision models on Vercel AI Gateway and OpenCode Zen.
+- Added configurable fullscreen mouse-wheel scrolling with terminal-aware automatic behavior or a fixed line count.
+- Extension tools can declare exposure, namespaces, annotations and output schemas, and invoke permitted nested tools through the ordinary validation and permission hooks.
+- Added a selectable system theme based on the terminal's palette and contrast, and OKHSL colors for custom themes.
+- Added opt-in `codemode` scripts for composing permitted tools, filtering output, branch-local JSON storage, and classifier calls, plus `tool_search` for activating deferred tools. Interactive and orchestration tools remain unavailable from scripts.
+- Added `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` extension resources for explicit loading and settings-based enable/disable controls, with diagnostics when an extension replaces codemode or tool search.
+- Added Ultrafast for GPT-6 Astra as `openai/gpt-6-astra-ultrafast` and `openai-codex/gpt-6-astra-ultrafast`, priced at OpenAI's published Ultrafast rates. GPT-6 Astra is the only model with an Ultrafast choice. If the provider rejects an Ultrafast choice you selected, the request fails.
+
+### Changed
+
+- `defaultTools` now accepts `+name` and `-name` modifiers. Project modifier-only lists adjust the global selection instead of replacing it.
+- Automatic model routing now includes GPT-6.1 Sol results from Artificial Analysis, FrontierCode, and OpenAI's published external benchmarks, preserving measured efforts and independent reporters. Metadata-backed Fast variants use base-model evidence without inventing separate Fast scores; independently registered Fast IDs require their own evidence.
+- Completed `bash` commands now return bounded structured output for programmatic callers, including nonzero exits, without increasing model-facing output limits.
+- Codex's automatic provider default is now GPT-6.1 Sol. Explicit saved model selections remain unchanged.
+- Reduced transcript/footer and shell-preview rendering work in long sessions.
+- Tool previews without custom renderers now show their arguments in collapsed and expanded views.
+- `-fast` and `-ultrafast` choices for OpenAI and Codex models now follow the tiers each model advertises in Codex's catalog and on OpenAI's pricing page. Models without Fast, such as `gpt-5.3-codex-spark`, `openai/gpt-5-nano`, `openai/gpt-5-pro`, and `openai/o1`, no longer list a `-fast` choice. A tier the model doesn't advertise is left out of the request, which runs at standard processing.
+- OpenAI and Codex Fast usage is priced at each model's published Fast rates instead of a flat 2x, for example 1.7x for GPT-4o. A Fast request that OpenAI serves at Standard is priced at Standard.
+
+### Fixed
+
+- Theme-colored notices now refresh after theme changes and late terminal color replies.
+- llama.cpp unloaded autoload presets now retain their cached effective context size instead of falling back to the model's training limit.
+- Native extension providers with stored credentials become available immediately after registration without exposing unrelated unauthenticated models.
+- Cancelled tools no longer start queued native or nested sequential calls after cancellation.
+- The interactive footer's context percentage, token, cost and cache-hit (`CH`) segments update after every message again, instead of only when a run ends. A new session no longer shows `0.0%` with no token or cost segments for its whole first run, and steered or long runs keep the footer current. The footer totals now include cache-warming requests, which `/session` already counts, and RPC `get_session_stats` responses report the newest reply's usage as `latestAssistantUsage` ([#3328](https://github.com/bastani-inc/atomic/issues/3328); [#3364](https://github.com/bastani-inc/atomic/pull/3364) by [@dairefagan](https://github.com/dairefagan)).
+
+## [0.9.24] - 2026-09-29
+
+### Added
+
+- Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.
+- llama.cpp models are now also listed as classifier models with the same ID, so a local model can make `model: "auto"` routing decisions the way TypeSafe Jev does. Because an explicit `routerModel` resolves a classifier before a chat model, `routerModel: "llama.cpp/<id>"` now routes with the classifier instead of the chat model ([#10119](https://github.com/earendil-works/pi/pull/10119)).
+- Packages can contribute MCP servers with `"atomic": { "mcpServers": "./mcp.json" }` or an inline `mcpServers` object, and extensions can add runtime-computed servers with `pi.registerMcpServer(name, config)` from the factory or `session_start`. Contributed servers are the lowest-precedence MCP layer, so a same-named server in any user or project MCP config replaces them. Package filters accept `mcpServers` name patterns, project packages contribute servers only in trusted projects, and workflow stages see the same servers ([#3355](https://github.com/bastani-inc/atomic/issues/3355)).
+
+### Changed
+
+- Recorded Claude Sonnet 5.5 results in the evals snapshot used by automatic model routing: Artificial Analysis Intelligence Index rows for max, xhigh, high, medium and low effort, Cognition FrontierCode 1.1, and Anthropic's published OSWorld, AutomationBench, BenchCAD, Humanity's Last Exam (with tools) and Terminal-Bench-Science scores.
+
+### Fixed
+
+- OpenCode Go now defaults to Kimi K3 (`kimi-k3`). models.dev deprecated Kimi K2.6 for OpenCode Go, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Together now defaults to Kimi K3 (`moonshotai/Kimi-K3`). models.dev removed Kimi K2.6 from Together, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Fixed extension tool schemas leaking TypeBox `~kind`/`~optional` metadata into provider requests, which made Fireworks reject every request with `JSON Schema not supported` ([#3330](https://github.com/bastani-inc/atomic/issues/3330)).
+- Resuming a session no longer appends a spurious system-prompt `tools` update when only the order of the active tools changed, so the resumed session keeps its prompt cache and the model is no longer told that unchanged tools were removed ([#3346](https://github.com/bastani-inc/atomic/issues/3346)).
+- Switching sessions with `/resume` or closing a session before sending a message no longer leaves a header-only session file behind ([#3347](https://github.com/bastani-inc/atomic/issues/3347)).
+- Fixed pasting files copied in Finder with `Ctrl+V` inserting the file icon as an image instead of the file paths. Copied files now paste as their paths, shell-quoted in bash mode, and clipboard read errors are reported instead of pasting the icon ([#10136](https://github.com/earendil-works/pi/pull/10136)).
+
+## [0.9.24-alpha.1] - 2026-09-28
+
+### Added
+
+- Added inherited Claude Sonnet 5.5 support for Anthropic with adaptive thinking, mid-conversation effort, and a 1M context window.
+- llama.cpp models are now also listed as classifier models with the same ID, so a local model can make `model: "auto"` routing decisions the way TypeSafe Jev does. Because an explicit `routerModel` resolves a classifier before a chat model, `routerModel: "llama.cpp/<id>"` now routes with the classifier instead of the chat model ([#10119](https://github.com/earendil-works/pi/pull/10119)).
+- Packages can contribute MCP servers with `"atomic": { "mcpServers": "./mcp.json" }` or an inline `mcpServers` object, and extensions can add runtime-computed servers with `pi.registerMcpServer(name, config)` from the factory or `session_start`. Contributed servers are the lowest-precedence MCP layer, so a same-named server in any user or project MCP config replaces them. Package filters accept `mcpServers` name patterns, project packages contribute servers only in trusted projects, and workflow stages see the same servers ([#3355](https://github.com/bastani-inc/atomic/issues/3355)).
+
+### Changed
+
+- Recorded Claude Sonnet 5.5 results in the evals snapshot used by automatic model routing: Artificial Analysis Intelligence Index rows for max, xhigh, high, medium and low effort, Cognition FrontierCode 1.1, and Anthropic's published OSWorld, AutomationBench, BenchCAD, Humanity's Last Exam (with tools) and Terminal-Bench-Science scores.
+
+### Fixed
+
+- OpenCode Go now defaults to Kimi K3 (`kimi-k3`). models.dev deprecated Kimi K2.6 for OpenCode Go, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Together now defaults to Kimi K3 (`moonshotai/Kimi-K3`). models.dev removed Kimi K2.6 from Together, which removed it from the built-in catalog, so the previous default no longer resolved.
+- Fixed extension tool schemas leaking TypeBox `~kind`/`~optional` metadata into provider requests, which made Fireworks reject every request with `JSON Schema not supported` ([#3330](https://github.com/bastani-inc/atomic/issues/3330)).
+- Resuming a session no longer appends a spurious system-prompt `tools` update when only the order of the active tools changed, so the resumed session keeps its prompt cache and the model is no longer told that unchanged tools were removed ([#3346](https://github.com/bastani-inc/atomic/issues/3346)).
+- Switching sessions with `/resume` or closing a session before sending a message no longer leaves a header-only session file behind ([#3347](https://github.com/bastani-inc/atomic/issues/3347)).
+- Fixed pasting files copied in Finder with `Ctrl+V` inserting the file icon as an image instead of the file paths. Copied files now paste as their paths, shell-quoted in bash mode, and clipboard read errors are reported instead of pasting the icon ([#10136](https://github.com/earendil-works/pi/pull/10136)).
+
 ## [0.9.23] - 2026-09-27
 
 ### Fixed

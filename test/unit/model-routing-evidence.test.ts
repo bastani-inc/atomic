@@ -48,13 +48,22 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	);
 	assert.match(
 		evals,
+		/^\| claude-sonnet-5-5 \| Claude Sonnet 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 2026-09-28 \| 56 \| 65\.5 \| 67\.2 \| 71\.3 \| 63\.6 \|/mu,
+	);
+	assert.match(
+		evals,
 		/^\| gpt-6-luna \| GPT-6 Luna \(max\) \| 2026-09-22 \| 37\.3 \| 40 \| 43\.4 \| 53\.2 \| 12\.6 \|/mu,
 	);
 	const lines = evals.split("\n");
 	const aaStart = lines.findIndex((line) => line.startsWith("| slug |")) + 2;
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
-	assert.equal(aaRows.length, Number(/all (\d+) models on the Artificial Analysis leaderboard/u.exec(evals)?.[1]));
+	const caption =
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28 and (\d+) GPT-6\.1 Sol rows accessed 2026-09-29\.$/mu.exec(
+			evals,
+		);
+	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
+	assert.equal(aaRows.length, Number(caption[1]) + Number(caption[2]) + Number(caption[3]));
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
 	for (const row of aaRows) assert.equal(row.split("|").length, aaHeaderCells, row);
@@ -98,7 +107,16 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 	assert.match(evals, /\[DeepSWE leaderboard\]\(https:\/\/deepswe\.datacurve\.ai\/\)/u);
 
 	const frontierCode = sectionTable(evals, "## FrontierCode 1.1");
-	assert.equal(frontierCode.rows.length, 40);
+	assert.equal(frontierCode.rows.length, 42);
+	assert.deepEqual(frontierCode.rows.find((row) => row[0] === "claude-sonnet-5-5")?.slice(2), [
+		"xhigh",
+		"52.1",
+		"57.2",
+		"64.4",
+		"69.9",
+		"0.0",
+		"$1.59",
+	]);
 	assert.deepEqual(frontierCode.rows.find((row) => row[0] === "gpt-6-astra")?.slice(2, 6), [
 		"max",
 		"53.3",
@@ -108,7 +126,15 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 	assert.match(evals, /\[FrontierCode leaderboard\]\(https:\/\/cognition\.com\/frontiercode\)/u);
 
 	const published = sectionTable(evals, "## Published benchmark results");
-	const sources = new Set(["OpenAI", "Anthropic", "Google", "ARC Prize", "TB-Science leaderboard", "Zapier"]);
+	const sources = new Set([
+		"OpenAI",
+		"Anthropic",
+		"Google",
+		"ARC Prize",
+		"TB-Science leaderboard",
+		"Zapier",
+		"Artificial Analysis",
+	]);
 	for (const row of published.rows) {
 		assert.ok(sources.has(row[5]!), `unknown source in ${row.join(" | ")}`);
 		const description = evals.split("\n").find((line) => line.includes(`\`${row[2]}\``) && line.startsWith("- "));
@@ -121,5 +147,11 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 	assert.ok(
 		published.rows.some((row) => row[0] === "gemini-3-8-flash" && row[2] === "TBSci" && row[3] === "12.4"),
 		"missing cells are filled from primary sources",
+	);
+	assert.ok(
+		published.rows.some(
+			(row) => row[0] === "claude-sonnet-5-5" && row[2] === "TBSci" && row[3] === "59.9" && row[5] === "Anthropic",
+		),
+		"Claude Sonnet 5.5 results come from Anthropic's launch materials",
 	);
 });

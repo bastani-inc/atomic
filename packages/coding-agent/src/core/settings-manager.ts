@@ -10,6 +10,7 @@ export { SettingsManager } from "./settings-manager-core.ts";
 export { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 export type {
 	BranchSummarySettings,
+	CodemodeMode,
 	CompactionModelOverride,
 	CompactionSettings,
 	DefaultProjectTrust,

@@ -22,7 +22,7 @@ This page covers selecting a theme and authoring your first one. The theme file 
 
 Atomic loads themes from:
 
-- Built-in: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, `catppuccin-mocha`
+- Built-in: `system`, `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, `catppuccin-mocha`
 - Global: `~/.atomic/agent/themes/*.json` (legacy `~/.pi/agent/themes/*.json`)
 - Project: `.atomic/themes/*.json` (legacy `.pi/themes/*.json`, only after the project is trusted)
 - Packages: `themes/` directories, `atomic.themes`, or legacy `pi.themes` entries in `package.json`
@@ -41,7 +41,9 @@ Select a theme via `/settings` or in `settings.json`:
 }
 ```
 
-Use `"theme": "light-theme/dark-theme"` for automatic mode. Atomic chooses the first theme when the terminal reports a light color scheme and the second theme for dark terminals, and it follows terminal color-scheme changes when supported.
+Use `"theme": "system"` to derive colors from your terminal's foreground, background, and ANSI palette. It follows terminal appearance changes where supported. If the terminal does not report colors, it uses ANSI palette colors and faint secondary text. Atomic's existing `dark`, `light`, and Catppuccin palettes remain available.
+
+Use `"theme": "light-theme/dark-theme"` for automatic mode. The reported background decides which theme is selected, followed by the terminal's appearance notification, `COLORFGBG`, then dark. Atomic follows terminal appearance changes when supported.
 
 On first run, Atomic detects your terminal background and defaults to `dark` or `light`.
 

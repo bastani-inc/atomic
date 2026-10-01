@@ -21,6 +21,7 @@ import type { RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
+import type { WorkflowControlFailureCode } from "./workflow-control-failure.js";
 
 export function formatAlreadyEndedRetainedMessage(runId: string): string {
 	return `Run ${runId} already ended; retained for inspection.`;
@@ -32,6 +33,8 @@ export function stageFailureMessage(runId: string, resultReason: string, action:
 			return `Run not found: ${runId}`;
 		case "already_ended":
 			return `Run already ended: ${runId}`;
+		case "already_paused":
+			return `Run ${runId} is already paused.`;
 		case "stage_not_found":
 			return `Stage not found for run: ${runId}`;
 		default:
@@ -122,7 +125,11 @@ export function resolveToolRunTarget(
 	return { kind: "not_found", target, message: `Run not found: ${target}` };
 }
 
-export type ToolStageTarget = { ok: true; runId?: string; stageId?: string } | { ok: false; message: string };
+export type StageTargetFailureCode = Extract<WorkflowControlFailureCode, "stage_not_found" | "stage_ambiguous">;
+
+export type ToolStageTarget =
+	| { ok: true; runId?: string; stageId?: string }
+	| { ok: false; message: string; code: StageTargetFailureCode };
 
 export function resolveStageTarget(runId: string, stageTarget?: string, activeStore: Store = store): ToolStageTarget {
 	const target = stageTarget?.trim();
@@ -141,7 +148,8 @@ export function resolveStageTarget(runId: string, stageTarget?: string, activeSt
 	if (uuidMatches.length === 1) return resolvedStageTarget(uuidMatches[0]!);
 	if (uuidMatches.length > 1) return ambiguousUuidStageTarget(target, uuidMatches);
 	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
-	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
+	if (matches.length === 0)
+		return { ok: false, message: `Stage not found in run ${runId}: ${target}`, code: "stage_not_found" };
 	if (matches.length > 1) return ambiguousStageTarget(target, matches);
 	return resolvedStageTarget(matches[0]!);
 }
@@ -165,9 +173,10 @@ function matchingUuidStages(stages: readonly ExpandedWorkflowStage[], target: st
 function ambiguousUuidStageTarget(
 	target: string,
 	stages: readonly ExpandedWorkflowStage[],
-): { ok: false; message: string } {
+): { ok: false; message: string; code: "stage_ambiguous" } {
 	return {
 		ok: false,
+		code: "stage_ambiguous",
 		message: `Ambiguous stage UUID prefix "${target}" matches: ${stages.map((stage) => stage.workflowGraphTarget.stageId).join(", ")}. Use the full 36-character UUID.`,
 	};
 }
@@ -175,6 +184,7 @@ function ambiguousUuidStageTarget(
 function ambiguousStageTarget(target: string, stages: readonly ExpandedWorkflowStage[]): ToolStageTarget {
 	return {
 		ok: false,
+		code: "stage_ambiguous",
 		message: `Ambiguous stage identifier "${target}" matches: ${stages.map(expandedStageLabel).join(", ")}`,
 	};
 }
@@ -198,7 +208,7 @@ export type ControlNodeTarget =
 	| { ok: true; kind: "run" }
 	| { ok: true; kind: "stage"; runId: string; stageId: string }
 	| { ok: true; kind: "tool"; runId: string; nodeId: string; name: string }
-	| { ok: false; message: string };
+	| { ok: false; message: string; code: StageTargetFailureCode };
 
 export function resolveControlNodeTarget(
 	runId: string,
@@ -221,10 +231,11 @@ export function resolveControlNodeTarget(
 		if (matches.length > 1)
 			return {
 				ok: false,
+				code: "stage_ambiguous",
 				message: `Ambiguous stage identifier "${target}" matches: ${matches.map(expandedStageLabel).join(", ")}`,
 			};
 	}
-	return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
+	return { ok: false, message: `Stage not found in run ${runId}: ${target}`, code: "stage_not_found" };
 }
 
 function resolvedControlNodeTarget(node: ExpandedWorkflowStage): ControlNodeTarget {

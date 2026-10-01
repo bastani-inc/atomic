@@ -4,6 +4,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
+import { resolveDefaultTools } from "./settings-merge.ts";
 import type {
 	CompactionModelOverride,
 	CompactionSettings,
@@ -79,6 +80,7 @@ interface SettingsManagerBasicAccessors {
 	getEnableAnalytics(): boolean | undefined;
 	setEnableAnalytics(enabled: boolean): void;
 	getTrackingId(): string | undefined;
+	getOrCreateDeviceId(): string;
 	getShowCacheMissNotices(): boolean;
 	setShowCacheMissNotices(enabled: boolean): void;
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
@@ -95,6 +97,9 @@ interface SettingsManagerBasicAccessors {
 	): void;
 	removeModelThinkingLevel(provider: string, modelId: string): void;
 	getDefaultTools(): string[] | undefined;
+	getCodemodeMode(): "on" | "only" | undefined;
+	setCodemodeMode(mode: "on" | "only" | undefined): void;
+	getCodemodeInlineBudget(): number;
 	getFallbackModels(): string[];
 	getTransport(): TransportSetting;
 	setTransport(transport: TransportSetting): void;
@@ -306,6 +311,16 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return settingsInternals(this).settings.trackingId;
 	},
 
+	getOrCreateDeviceId() {
+		const state = settingsInternals(this);
+		if (!state.globalSettings.deviceId) {
+			state.globalSettings.deviceId = randomUUID();
+			state.markModified("deviceId");
+			state.save();
+		}
+		return state.globalSettings.deviceId;
+	},
+
 	getShowCacheMissNotices() {
 		return settingsInternals(this).settings.showCacheMissNotices ?? false;
 	},
@@ -354,13 +369,30 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
+	getCodemodeMode() {
+		const mode = settingsInternals(this).settings.codemode?.mode;
+		return mode === "on" || mode === "only" ? mode : undefined;
+	},
+	setCodemodeMode(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.codemode = { ...state.globalSettings.codemode, mode };
+		state.markModified("codemode", "mode");
+		state.save();
+	},
+	getCodemodeInlineBudget() {
+		const budget = settingsInternals(this).settings.codemode?.inlineBudget;
+		return typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? Math.floor(budget) : 3000;
+	},
+
 	getDefaultTools() {
 		// Settings load unvalidated from disk, so guard the shape here the same
 		// way getFallbackModels() does: a non-array (or null) reads as unset,
 		// and non-string entries are dropped rather than passed through to the
 		// initial tool selection.
 		const tools = settingsInternals(this).settings.defaultTools;
-		return Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === "string") : undefined;
+		return Array.isArray(tools)
+			? resolveDefaultTools(tools.filter((tool): tool is string => typeof tool === "string"))
+			: undefined;
 	},
 
 	getFallbackModels() {

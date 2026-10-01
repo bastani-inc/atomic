@@ -182,7 +182,14 @@ describe("tool run-control actions", () => {
 		assert.equal(result.action, "quit");
 		const quit = result as { status: string; message: string };
 		assert.equal(quit.status, "partial");
-		assert.deepEqual(Object.keys(result).sort(), ["action", "message", "runId", "status"]);
+		assert.deepEqual(Object.keys(result).sort(), ["action", "failedRuns", "message", "runId", "status"]);
+		assert.deepEqual(
+			(result as { failedRuns: readonly { runId: string; reason: string }[] }).failedRuns.map((failed) => [
+				failed.runId,
+				failed.reason,
+			]),
+			[[noController, "no_active_stages"]],
+		);
 		assert.match(quit.message, /Quit 1 run\(s\)/);
 		assert.ok(quit.message.indexOf(controllable) < quit.message.indexOf(noController));
 		assert.match(quit.message, new RegExp(noController));

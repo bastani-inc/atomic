@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { resolvePackageDirFrom } from "./config-package-identity.ts";
@@ -125,6 +127,19 @@ function getModuleAssetRoot(): string {
 	}
 	const packageDir = getPackageDir();
 	return join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+}
+
+/** Codemode workers and wasm live beside Atomic's split/development bundle. */
+export function getCodemodeWorkerUrl(): URL | undefined {
+	if (isBunBinary) return pathToFileURL(join(getPackageDir(), "codemode-worker.js"));
+	if (isBundledBuild) return pathToFileURL(join(dirname(resolve(process.argv[1])), "codemode-worker.js"));
+	return undefined;
+}
+
+export function getQuickJSWasmPath(): string {
+	if (isBunBinary) return join(getPackageDir(), "quickjs.wasm");
+	if (isBundledBuild) return join(dirname(resolve(process.argv[1])), "quickjs.wasm");
+	return createRequire(__filename).resolve("quickjs-wasi/quickjs.wasm");
 }
 
 /**

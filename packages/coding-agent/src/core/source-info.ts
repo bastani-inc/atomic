@@ -12,6 +12,18 @@ export interface SourceInfo {
 	configurationOrigin?: ResourceConfigurationOrigin;
 }
 
+export const BUILTIN_PATH_PREFIX = "builtin:";
+
+export function getSyntheticPathSource(path: string): string | undefined {
+	if (path.startsWith(BUILTIN_PATH_PREFIX)) return "builtin";
+	if (path.startsWith("<") && path.endsWith(">")) return path.slice(1, -1).split(":")[0] || "temporary";
+	return undefined;
+}
+
+export function isSyntheticPath(path: string): boolean {
+	return path.startsWith(BUILTIN_PATH_PREFIX) || path.startsWith("<");
+}
+
 export function createSourceInfo(path: string, metadata: PathMetadata): SourceInfo {
 	return {
 		path,

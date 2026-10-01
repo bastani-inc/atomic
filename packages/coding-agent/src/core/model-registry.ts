@@ -15,6 +15,8 @@ import type {
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
 	ModelsSimpleStreamOptions,
+	ModelType,
+	ModelTypeMap,
 	Provider,
 	ProviderHeaders,
 } from "@bastani/pi-ai";
@@ -67,6 +69,20 @@ export class ModelRegistry {
 
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		return this.runtime.getModel(provider, modelId);
+	}
+
+	getModelsOfType<T extends ModelType>(type: T, provider?: string): readonly ModelTypeMap[T][] {
+		return this.runtime.getModelsOfType(type, provider);
+	}
+	getAvailableOfType<T extends ModelType>(
+		type: T,
+		provider?: string,
+		options?: AuthOperationOptions,
+	): Promise<readonly ModelTypeMap[T][]> {
+		return this.runtime.getAvailableOfType(type, provider, options);
+	}
+	getModelOfType<T extends ModelType>(type: T, provider: string, id: string): ModelTypeMap[T] | undefined {
+		return this.runtime.getModelOfType(type, provider, id);
 	}
 
 	getClassifierModel(provider: string, modelId: string): ClassifierModel<ClassifierApi> | undefined {

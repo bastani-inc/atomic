@@ -56,6 +56,17 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
 	});
 
+	it("maps the llama.cpp classifier API before the broad pi-ai compat alias", () => {
+		// The llama.cpp provider imports this subpath, and jiti re-evaluates host sources when a
+		// workflow imports `@bastani/atomic`; without its own key it resolves as compat.js/api/...
+		const aliases = extensionLoaderTestHooks.getAliases();
+		const target = aliases["@bastani/pi-ai/api/llama-cpp-classify.lazy"];
+
+		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]llama-cpp-classify\.lazy\.js$/);
+		expect(fs.existsSync(target!)).toBe(true);
+		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
+	});
+
 	it("registers provider environment helpers for binary extension imports", async () => {
 		// #3129: binaries use virtual modules instead of the filesystem aliases.
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();
@@ -82,6 +93,36 @@ export default function extension() {}
 				);
 				const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(extensionPath);
 				assert.equal(typeof factory, "function");
+			} finally {
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"loads the lightweight models entry through transformed extension imports",
+		async () => {
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-models-entry-extension-"));
+			try {
+				for (const [index, specifier] of [
+					"@bastani/pi-ai/models",
+					"@earendil-works/pi-ai/models",
+					"@mariozechner/pi-ai/models",
+				].entries()) {
+					const extensionPath = path.join(directory, `extension-${index}.ts`);
+					fs.writeFileSync(
+						extensionPath,
+						`
+import { createModels } from ${JSON.stringify(specifier)};
+const models = createModels();
+if (models.getProviders().length !== 0) throw new Error("models entry loaded implicit providers");
+export default function extension() {}
+`,
+					);
+					const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(extensionPath);
+					assert.equal(typeof factory, "function");
+				}
 			} finally {
 				fs.rmSync(directory, { recursive: true, force: true });
 			}

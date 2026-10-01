@@ -58,6 +58,7 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "./extensions/index.js";
+import type { SessionWorkflows } from "./extensions/workflow-run-control.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -148,6 +149,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly isBashRunning: boolean;
 	readonly hasPendingBashMessages: boolean;
 	readonly extensionRunner: ExtensionRunner;
+	/** Typed management of the workflow runs this session owns. */
+	readonly workflows: SessionWorkflows;
 
 	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
 	_getRequiredRequestAuth(
@@ -202,6 +205,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	resumeTasks(): void;
 
 	getActiveToolNames(): string[];
+	getCallableToolNames(): string[];
 	getAllTools(): ToolInfo[];
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	setActiveToolsByName(toolNames: string[]): void;
@@ -427,12 +431,14 @@ export interface AgentSessionPublicSurface
 		| "isBashRunning"
 		| "hasPendingBashMessages"
 		| "extensionRunner"
+		| "workflows"
 		| "queuedMessagesPaused"
 		| "pauseQueuedMessages"
 		| "resumeQueuedMessages"
 		| "subscribe"
 		| "dispose"
 		| "getActiveToolNames"
+		| "getCallableToolNames"
 		| "getAllTools"
 		| "getToolDefinition"
 		| "setActiveToolsByName"
@@ -546,6 +552,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
 	_extensionRunner: ExtensionRunner;
+	_workflows?: SessionWorkflows;
 	_turnIndex: number;
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
@@ -563,6 +570,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_cwd: string;
 	_extensionRunnerRef?: { current?: ExtensionRunner };
 	_initialActiveToolNames?: string[];
+	_usesDefaultTools: boolean;
+	_appliedDefaultTools: Set<string>;
 	_allowedToolNames?: Set<string>;
 	_excludedToolNames?: Set<string>;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;

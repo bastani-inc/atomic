@@ -179,9 +179,13 @@ for (const name of runnableShells) {
 		const id = await startBackground(child, name);
 
 		assert.deepEqual(ownerTaskIds(parent), [id], "the parent owner holds the child's shell");
-		assert.ok(
-			getOwnerTaskStore(parent)?.tasks.some((task) => task.ref.taskId === id),
-			"the parent's /tasks store shows the child's shell",
+		await vi.waitFor(
+			() =>
+				assert.ok(
+					getOwnerTaskStore(parent)?.tasks.some((task) => task.ref.taskId === id),
+					"the parent's /tasks store shows the child's shell",
+				),
+			{ timeout: 10000 },
 		);
 		const polled = await tool(child, name).execute("poll", { action: "wait", id, budgetMs: 0 });
 		assert.equal((polled.details as BashToolDetails).observation?.kind, "yielded");

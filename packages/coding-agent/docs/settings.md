@@ -82,7 +82,7 @@ Normal automatic selection of an available authenticated model remains enabled i
 
 Use `/settings` → **Router model** to change the effective selection. If the project already defines `routerModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
 
-An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Gateway classifier IDs are not registered automatically; configure their classifier models and operations before selecting them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
+An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Built-in gateway classifiers include `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free`; authenticate their provider before choosing them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
 
 A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Routing has no built-in wall-clock deadline; cancel the request to stop waiting. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
@@ -182,10 +182,11 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
+| `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, `"system"`, a Catppuccin built-in, or custom). `"system"` derives its palette from the terminal; see [Themes](/themes) |
 | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. |
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
 | `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, selection only highlights text. Ctrl+X does not copy; `/copy` copies the last assistant message. Settable from `/settings` |
+| `fullscreenWheelScrollLines` | `"auto"` or number | `"auto"` | Lines per mouse-wheel tick in fullscreen views. `"auto"` uses terminal-aware scrolling; numeric values are clamped to 1–100. Settable from `/settings` |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
@@ -194,6 +195,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `onboardedVersion` | string | - | Managed onboarding completion state; leave unchanged |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics during first-run setup |
 | `trackingId` | string | - | Locally generated analytics identifier when analytics is enabled |
+| `deviceId` | string | - | Managed global installation identity, created only when a provider sign-in needs it. Project values are ignored |
 | `doubleEscapeAction` | string | `"tree"` | Action for double-escape: `"tree"`, `"fork"`, or `"none"` |
 | `treeFilterMode` | string | `"default"` | Default filter for `/tree`: `"default"`, `"no-tools"`, `"user-only"`, `"labeled-only"`, `"all"` |
 | `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
@@ -444,9 +446,11 @@ On Windows, JSON paths must use forward slashes or escaped backslashes:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `defaultTools` | string[] | - | Built-in tools enabled at startup. When omitted, Atomic uses its standard defaults |
+| `defaultTools` | string[] | - | Initial built-in tools. Plain names replace the defaults; `+name` and `-name` add or remove tools |
+| `codemode.mode` | `"on"` or `"only"` | `"on"` | While codemode is active, `"on"` keeps direct tool declarations visible with script-call information; `"only"` hides ordinary direct callable declarations so the model uses scripts. Model-only tools remain directly available |
+| `codemode.inlineBudget` | number | `3000` | Estimated token budget for inline script-tool declarations. Omitted tools remain discoverable with `searchTools()`. `0` lists namespaces without inline declarations |
 
-`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools stay enabled regardless. Available built-ins are `read`, `bash`, `powershell`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, and `ls`:
+`defaultTools` selects the built-in tools a session starts with. Extension and SDK custom tools retain their own activation behavior. Available built-ins include `read`, `bash`, `powershell`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, and `ls`:
 
 ```json
 {
@@ -462,7 +466,19 @@ On Windows, select `powershell` instead of `bash`, or include both:
 }
 ```
 
-An empty array starts with no coding tools while preserving extension/custom tools. `--tools` replaces this behavior with an allowlist including Intercom; `--no-tools` disables every tool even with an allowlist. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--exclude-tools` filters the result, including Intercom. A project `defaultTools` array replaces the global array.
+An empty array starts with no coding tools while preserving extension/custom tools. `--tools` replaces this behavior with an allowlist including Intercom; `--no-tools` disables every tool even with an allowlist. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--exclude-tools` filters the result, including Intercom.
+
+A list containing only modifiers starts from Atomic's standard defaults. Modifiers are applied in order; adding an existing name or removing an absent one has no effect:
+
+```json
+{ "defaultTools": ["-bash", "+ls"] }
+```
+
+Plain names establish a replacement list before its modifiers apply. A project list of only modifiers layers over the global selection. A project list with plain names, or an empty list, replaces the global selection. For example, global `["read", "bash"]` plus project `["-bash", "+ls"]` resolves to `["read", "ls"]`.
+
+`/reload` enables tools newly added to `defaultTools`. It does not disable removed tools or re-enable unchanged tools you turned off during the session. Explicit `--tools`, `--no-tools`, and `--no-builtin-tools` choices override the setting on reload too; excluded tools remain excluded.
+
+`codemode` and `tool_search` are built-in extension tools registered inactive. Add `"+codemode"` or `"+tool_search"` to `defaultTools` to activate them alongside ordinary defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
 
 ### Sessions
 

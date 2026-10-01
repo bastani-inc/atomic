@@ -32,7 +32,9 @@ export async function loginRuntimeOAuthProvider(
 async function login(session: AgentSession, provider: string, callbacks: AtomicOAuthLoginCallbacks): Promise<void> {
 	const runtime = session.modelRuntime;
 	try {
-		await runtime.login(provider, "oauth", createAuthInteraction(callbacks));
+		await runtime.login(provider, "oauth", createAuthInteraction(callbacks), {
+			getDeviceId: () => session.settingsManager.getOrCreateDeviceId(),
+		});
 	} catch (error) {
 		if (error instanceof CredentialSynchronizationError) throw error;
 		if (

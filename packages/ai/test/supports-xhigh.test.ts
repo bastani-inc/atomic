@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getModel, getModels, getProviders, getSupportedThinkingLevels } from "../src/compat.ts";
+import type { Api, Model } from "../src/types.ts";
 
 describe("retired provider models", () => {
 	// Regressions for upstream #9423 and #9394: retired aliases must not remain selectable.
@@ -51,6 +52,55 @@ describe("getSupportedThinkingLevels", () => {
 			},
 		});
 		expect(getSupportedThinkingLevels(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+	});
+
+	it("includes Claude Sonnet 5.5 with managed effort levels and official pricing", () => {
+		const model = getModel("anthropic", "claude-sonnet-5-5");
+		expect(model).toMatchObject({
+			cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+			compat: {
+				forceAdaptiveThinking: true,
+				supportsMidConvoEffort: true,
+				supportsMidConvoSystemMessages: true,
+				supportsMidConvoToolChanges: true,
+				supportsTemperature: false,
+			},
+		});
+		expect(getSupportedThinkingLevels(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+	});
+
+	it("applies Claude Sonnet 5.5 metadata to the OpenRouter dotted id and never offers minimal", () => {
+		const openrouter = getModel("openrouter", "anthropic/claude-sonnet-5.5");
+		expect(openrouter.compat).toMatchObject({
+			forceAdaptiveThinking: true,
+			supportsMidConvoEffort: true,
+			supportsTemperature: false,
+		});
+		expect(getSupportedThinkingLevels(openrouter)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+		const sonnet55 = getProviders()
+			.flatMap((provider) => getModels(provider) as Model<Api>[])
+			.filter((model) => /sonnet-5[.-]5/.test(model.id));
+		expect(sonnet55.length).toBeGreaterThan(1);
+		for (const model of sonnet55) {
+			expect(getSupportedThinkingLevels(model), `${model.provider}/${model.id}`).not.toContain("minimal");
+		}
+	});
+
+	it("supports GPT-6.1 Sol efforts without sending none", () => {
+		for (const provider of ["openai", "azure-openai-responses", "openai-codex"] as const) {
+			const model = getModel(provider, "gpt-6.1-sol");
+			expect(model).toBeDefined();
+			expect(getSupportedThinkingLevels(model!)).toEqual(
+				provider === "openai-codex"
+					? ["minimal", "low", "medium", "high", "xhigh", "max"]
+					: ["low", "medium", "high", "xhigh", "max"],
+			);
+			expect(model!.thinkingLevelMap?.off).toBeNull();
+			expect(model!.cost.cacheRead).toBe(0.1);
+		}
 	});
 
 	it("includes max but not xhigh for Anthropic Sonnet 4.6 on anthropic-messages API", () => {
@@ -221,12 +271,6 @@ describe("getSupportedThinkingLevels", () => {
 		const model = getModel("opencode-go", "deepseek-v4.1-flash");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["low", "high", "max"]);
-	});
-
-	it("includes only high plus off for OpenCode Go Kimi K2.6", () => {
-		const model = getModel("opencode-go", "kimi-k2.6");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high"]);
 	});
 
 	it("excludes thinking off for Moonshot Kimi K2.7 Code models", () => {

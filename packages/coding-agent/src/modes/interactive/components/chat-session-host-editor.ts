@@ -68,6 +68,7 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 		previousPasteImage?.();
 		void pasteClipboardImageToEditor(chatSessionEditorAccess(state), () => state.requestRender?.(), {
 			showWarning: (message) => notifyChatSessionWarning(state, message),
+			isBashMode: state.isBashMode,
 		});
 	};
 	const previousEscape = actionEditor.onEscape;
@@ -188,13 +189,22 @@ function createInheritedEditor<TExtraEntry extends ChatTranscriptEntryLike>(
 	}
 }
 
-function chatSessionEditorAccess<TExtraEntry extends ChatTranscriptEntryLike>(
+type EditorCursor = { line: number; col: number };
+type CursorAwareEditor = EditorComponent & { getCursor(): EditorCursor };
+
+function hasCursor(editor: EditorComponent | undefined): editor is CursorAwareEditor {
+	return typeof (editor as Partial<CursorAwareEditor> | undefined)?.getCursor === "function";
+}
+
+export function chatSessionEditorAccess<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): {
 	insertTextAtCursor: (text: string) => void;
 	getText: () => string;
 	setText: (text: string) => void;
+	getCursor?: () => EditorCursor;
 } {
+	const editor = state.editor;
 	return {
 		insertTextAtCursor: (text: string) => {
 			if (state.editor?.insertTextAtCursor) {
@@ -205,6 +215,7 @@ function chatSessionEditorAccess<TExtraEntry extends ChatTranscriptEntryLike>(
 		},
 		getText: () => state.inputBuffer,
 		setText: (text: string) => setChatSessionEditorText(state, text),
+		...(hasCursor(editor) ? { getCursor: () => editor.getCursor() } : {}),
 	};
 }
 

@@ -603,6 +603,8 @@ Before `tool_call` runs, Atomic waits for previously emitted Agent events to fin
 
 In the default parallel tool execution mode, sibling tool calls from the same assistant message are preflighted sequentially, then executed concurrently. `tool_call` is not guaranteed to see sibling tool results from that same assistant message in `ctx.sessionManager`.
 
+Nested calls made inside a tool through `ctx.executeTool()` run the same hooks and execution events. Their events include `parentToolCallId`; use that field to distinguish them from model-issued calls. Nested calls do not add standalone transcript messages. See [nested tools](/extensions/authoring#structured-results-and-nested-tools).
+
 `event.input` is mutable. Mutate it in place to patch tool arguments before execution.
 
 Behavior guarantees:
@@ -678,7 +680,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 `tool_result` handlers chain like middleware:
 - Handlers run in extension load order
 - Each handler sees the latest result after previous handler changes
-- Handlers can return partial patches (`content`, `details`, or `isError`); omitted fields keep their current values
+- Handlers can return partial patches (`content`, `structuredContent`, `details`, `usage`, or `isError`); omitted fields keep their current values, except replacing `content` without replacing `structuredContent` drops the structured value
 
 After all handlers finish, Atomic normalizes image blocks returned by the tool or inserted by a handler according to `images.autoResize` before saving the result to history. If image processing fails, the original image remains in the result.
 
@@ -848,6 +850,8 @@ export default function (pi: ExtensionAPI) {
 ```
 
 Frames are ordinary objects with a `{ epoch: string, revision: number }` cursor. Revisions increase within an epoch; lifecycle publication may leave gaps between activity revisions. A new publisher starts a new epoch and an `unavailable` snapshot. Never compare revision numbers across epochs. A `ready` snapshot has a `roots` array, including an empty array when known empty. `recovering` and `unavailable` snapshots omit `roots`. Subsequent snapshots replace all prior knowledge. Changes replace a complete root, not increment counters. Removals contain `rootRunId`. Root summaries include `state`, `reason`, execution/wait counts, and `needsAttention`.
+
+The workflows extension also calls `pi.registerWorkflowRunControl(control)` to back `session.workflows`, the typed pause, quit, and resume API for SDK hosts (see [Workflow run control](/sdk#workflow-run-control)). The registration is released with the extension generation, and only the most recent registration is active.
 
 Providers call `pi.registerWorkflowActivityPublisher()` and retain its returned `WorkflowActivityPublisher`. Its methods are `publishSnapshot({ availability: "ready", roots })`, `publishSnapshot({ availability: "recovering" | "unavailable" })`, `publishChanged(root)`, `publishRemoved(rootRunId)`, `publishLifecycle(event)`, `publishHeartbeat(event)`, and `dispose()`. Lifecycle input includes `type: "workflow_lifecycle"` and the envelope except `cursor`, which the host supplies. Heartbeat input includes `type: "workflow_heartbeat"`. IDs, names, timestamps, zero counts and optional attribution are preserved. Roots are keyed by `rootRunId`; duplicate snapshot IDs use the last value at the first insertion position. Removing an absent ID is permitted. Changes do not turn an unknown source into `ready`; publish a snapshot to establish readiness.
 

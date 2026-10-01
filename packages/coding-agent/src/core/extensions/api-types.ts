@@ -6,6 +6,7 @@ import type { TSchema } from "typebox";
 import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 import type { EventBus } from "../event-bus.js";
 import type { ExecOptions, ExecResult } from "../exec.ts";
+import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
@@ -87,6 +88,7 @@ import type {
 	WorkflowLifecycleEvent,
 	WorkflowStageCompletedEvent,
 } from "./workflow-events.js";
+import type { SessionWorkflows, WorkflowRunControlRegistration } from "./workflow-run-control.js";
 
 /** Handler function type for events */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
@@ -96,9 +98,13 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	/** Snapshot of effective settings. Available after the session runtime is bound. */
+	getSettings(): import("../settings-types.ts").Settings;
 	/** @internal Owning runtime identity, retained across generation replacement. */
 	lifecycleScope?: object;
 	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;
+	/** Register the implementation behind `session.workflows`; disposed with this extension generation. */
+	registerWorkflowRunControl(control: SessionWorkflows): WorkflowRunControlRegistration;
 	on(
 		event: "cache_warming_decision",
 		handler: ExtensionHandler<CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult>,
@@ -221,6 +227,20 @@ export interface ExtensionAPI {
 	 * Does not reload extensions, skills, prompts, themes, or context files.
 	 */
 	refreshWorkflowResources?: () => Promise<ResolvedResource[]>;
+
+	/**
+	 * Contribute an MCP server to this session, using the same schema as an `mcpServers` entry in `mcp.json`.
+	 * Call it from the factory or from `session_start`; registering a name again replaces the earlier entry.
+	 * Contributed servers are the lowest-precedence MCP layer: a same-named server in a user or project MCP
+	 * config replaces this one, and `{ "disabled": true }` there turns it off.
+	 */
+	registerMcpServer(name: string, config: McpServerConfig): void;
+
+	/** Package-manifest and registered MCP servers for this session, one entry per server name. */
+	getMcpServerContributions?: () => McpServerContribution[];
+
+	/** Subscribe to `registerMcpServer()` changes after startup; returns an unsubscribe function. */
+	onMcpServerContributionsChanged?: (listener: () => void) => () => void;
 
 	/**
 	 * Return the resource-loader options that child Atomic sessions should inherit without sharing this loader instance.

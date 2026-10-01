@@ -88,6 +88,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 InteractiveModeBase.prototype.applyRuntimeSettings = function (this: InteractiveModeBase): void {
 	setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
 	this.setFullscreenCopyOnSelect(this.settingsManager.getFullscreenCopyOnSelect());
+	this.setFullscreenWheelScrollLines(this.settingsManager.getFullscreenWheelScrollLines());
 	this.transcriptScrollView?.setScrollbar(this.settingsManager.getFullscreenScrollbar());
 	this.footer.setSession(this.session);
 	this.usageMeter.setSession(this.session);

@@ -32,7 +32,7 @@ const MAX_MISTRAL_ERROR_BODY_CHARS = 4000;
 /**
  * Provider-specific options for the Mistral API.
  */
-type MistralReasoningEffort = "none" | "high";
+type MistralReasoningEffort = "none" | "low" | "medium" | "high" | "max";
 
 export interface MistralOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "any" | "required" | { type: "function"; function: { name: string } };
@@ -209,13 +209,18 @@ export const streamSimple: StreamFunction<"mistral-conversations", SimpleStreamO
 	} satisfies MistralOptions;
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoning = clampedReasoning === "off" ? undefined : clampedReasoning;
-	const shouldUseReasoning = model.reasoning && reasoning !== undefined;
+	// Models with a thinking level map use `reasoning_effort`; other reasoning models use `prompt_mode`.
+	const effortMap = model.reasoning ? model.thinkingLevelMap : undefined;
+	const reasoningEffort = effortMap
+		? reasoning
+			? (effortMap[reasoning] ?? "high")
+			: (effortMap.off ?? undefined)
+		: undefined;
 
 	return stream(model, context, {
 		...base,
-		promptMode: shouldUseReasoning && usesPromptModeReasoning(model) ? "reasoning" : undefined,
-		reasoningEffort:
-			shouldUseReasoning && usesReasoningEffort(model) ? mapReasoningEffort(model, reasoning) : undefined,
+		promptMode: model.reasoning && !effortMap && reasoning ? "reasoning" : undefined,
+		reasoningEffort: reasoningEffort as MistralReasoningEffort | undefined,
 	} satisfies MistralOptions);
 };
 
@@ -915,26 +920,6 @@ function buildToolResultText(text: string, hasImages: boolean, supportsImages: b
 	}
 
 	return isError ? "[tool error] (no tool output)" : "(no tool output)";
-}
-
-function usesReasoningEffort(model: Model<"mistral-conversations">): boolean {
-	return (
-		model.id === "mistral-small-2603" ||
-		model.id === "mistral-small-latest" ||
-		model.id.startsWith("mistral-medium-") ||
-		model.id === "zai-glm-5-2"
-	);
-}
-
-function usesPromptModeReasoning(model: Model<"mistral-conversations">): boolean {
-	return model.reasoning && !usesReasoningEffort(model);
-}
-
-function mapReasoningEffort(
-	model: Model<"mistral-conversations">,
-	level: Exclude<SimpleStreamOptions["reasoning"], undefined>,
-): MistralReasoningEffort {
-	return (model.thinkingLevelMap?.[level] ?? "high") as MistralReasoningEffort;
 }
 
 function mapToolChoice(

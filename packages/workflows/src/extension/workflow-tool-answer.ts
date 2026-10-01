@@ -86,7 +86,7 @@ function inferPromptStageTarget(
 	runId: string,
 	promptId: string | undefined,
 	owner: WorkflowOwnerResources,
-): ToolStageTarget {
+): Extract<ToolStageTarget, { ok: true }> | { ok: false; message: string } {
 	const pending = expandWorkflowGraph(readGraphStoreSnapshot(owner.store), runId).stages.filter((stage) => {
 		const ids = answerablePromptIds(stage, owner);
 		return promptId === undefined ? ids.length > 0 : ids.includes(promptId);

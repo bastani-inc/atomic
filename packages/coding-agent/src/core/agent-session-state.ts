@@ -1,7 +1,8 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
@@ -11,9 +12,14 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
+import { applyToolLoadout, isToolDeclarationHidden } from "./tool-loadout.js";
 
 export function getActiveToolNames(this: AgentSession): string[] {
 	return this.agent.state.tools.map((t) => t.name);
+}
+
+export function getCallableToolNames(this: AgentSession): string[] {
+	return getCallableTools(this).map((tool) => tool.name);
 }
 
 /**
@@ -29,6 +35,9 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 			? { constrainedSampling: definition.constrainedSampling }
 			: {}),
 		promptGuidelines: definition.promptGuidelines,
+		exposure: definition.exposure ?? "direct",
+		namespace: definition.namespace,
+		annotations: definition.annotations,
 		sourceInfo,
 	}));
 }
@@ -45,13 +54,8 @@ export function getToolDefinition(this: AgentSession, name: string): ToolDefinit
  */
 
 export function setActiveToolsByName(this: AgentSession, toolNames: string[]): void {
-	const tools: AgentTool[] = [];
-	for (const name of toolNames) {
-		const tool = this._toolRegistry.get(name);
-		if (tool) tools.push(tool);
-	}
+	const tools = applyToolLoadout(this, toolNames);
 	const validToolNames = tools.map((tool) => tool.name);
-	this.agent.state.tools = tools;
 
 	this._rebuildSystemPrompt(validToolNames);
 }
@@ -96,7 +100,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const toolSnippets: Record<string, string> = {};
 	for (const name of this._toolRegistry.keys()) {
 		const snippet = this._toolPromptSnippets.get(name);
-		if (snippet) {
+		if (snippet && !isToolDeclarationHidden(this, name)) {
 			toolSnippets[name] = snippet;
 		}
 	}
@@ -137,15 +141,15 @@ export function _preparePromptAndToolLoadout(
 	options: NormalizedBuildSystemPromptOptions,
 	messages: AgentMessage[] = this.agent.state.messages,
 ): SystemMessage | undefined {
-	options.selectedTools = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
-	this.agent.state.tools = options.selectedTools.flatMap((name) => {
-		const tool = this._toolRegistry.get(name);
-		return tool ? [tool] : [];
-	});
-	const sections = diffSystemPromptSections(
-		getCurrentSystemMessage(messages)?.sections ?? {},
-		buildSystemPromptSections(options),
+	const current = getCurrentSystemMessage(messages);
+	const selected = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
+	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
+	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];
+	options.selectedTools = applyToolLoadout(this, options.selectedTools).map((tool) => tool.name);
+	options.toolSnippets = Object.fromEntries(
+		Object.entries(options.toolSnippets).filter(([name]) => !isToolDeclarationHidden(this, name)),
 	);
+	const sections = diffSystemPromptSections(current?.sections ?? {}, buildSystemPromptSections(options));
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }
 
@@ -173,6 +177,7 @@ export function _restoreToolsFromTranscript(this: AgentSession): void {
 
 export const agentSessionStateMethods = {
 	getActiveToolNames,
+	getCallableToolNames,
 	getAllTools,
 	getToolDefinition,
 	setActiveToolsByName,

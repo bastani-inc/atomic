@@ -229,6 +229,10 @@ pi.on("session_start", (_event, ctx) => {
 
 `pi.getCommands()` already includes the same advertised `/skill:name` and `/skill:name@source` names. See [Skill Commands](/skills#skill-commands).
 
+## ExtensionToolContext
+
+Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools` and `executeTool(name, args, options?)`. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.
@@ -842,7 +846,7 @@ pi.setActiveTools([...new Set([...active, "my_custom_tool"])]); // Keep current 
 pi.setActiveTools(["read", "bash"]); // Switch to read-only
 ```
 
-`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
+`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, `exposure`, `namespace`, `annotations`, and `sourceInfo`. See [tool exposure](/extensions/authoring#tool-exposure) before changing activation for script-callable tools.
 
 Typical `sourceInfo.source` values:
 - `builtin` for built-in tools
@@ -999,6 +1003,25 @@ pi.registerCommand("my-setup-teardown", {
   },
 });
 ```
+
+### pi.registerMcpServer(name, config)
+
+Contribute an MCP server whose configuration is only known at runtime, such as the URL of a local service the extension starts. `config` uses the same schema as an entry in [`mcp.json`](/mcp-servers#configure-servers), including `url`, `command`/`args`/`env`/`cwd`, `headers`, OAuth settings, `exposure`, and per-request `timeout` in seconds. URLs support `${VAR}` and `$env:VAR` interpolation.
+
+```typescript
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", async () => {
+    const port = await startLocalService();
+    pi.registerMcpServer("local-service", { url: `http://127.0.0.1:${port}/mcp`, exposure: "direct" });
+  });
+}
+```
+
+Call it from the extension factory or from `session_start`. Load order does not matter: registrations made after the MCP adapter has started are picked up without a reload. Registering the same name again replaces the earlier registration.
+
+Registered servers are the lowest-precedence MCP layer. They replace a same-named server from a package manifest, but a user or trusted-project MCP config entry replaces them. Set `"enabled": false` on a complete file-configured entry to keep it without connecting. `/mcp` shows the registering extension next to the server name.
+
+`pi.getMcpServerContributions()` returns the package-manifest and registered servers for the session, each with its `name`, `config`, `origin` (`"package"` or `"extension"`), and `sourceInfo`.
 
 ## Error Handling
 

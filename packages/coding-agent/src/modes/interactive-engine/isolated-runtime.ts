@@ -22,6 +22,7 @@ import type {
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
 import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
+import { EngineSessionStats } from "./engine-session-stats.js";
 import {
 	type AtomicOAuthLoginCallbacks,
 	loginIsolatedApiKeyProvider,
@@ -96,6 +97,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private pendingQueueClear: PendingQueueClear | undefined;
 	private engineCallbackActive = false;
 	private readonly queuePause: RemoteQueuePause;
+	private readonly sessionStats: EngineSessionStats;
 	private autoCompactionEnabled = true;
 	private autoRetryEnabled = true;
 	private remoteSessionName: string | undefined;
@@ -129,6 +131,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);
 		this.queuePause = new RemoteQueuePause(client);
+		this.sessionStats = new EngineSessionStats(client);
 		this.health = new EngineHealthController({
 			stop: () => this.client.stop(),
 			restart: async () => {
@@ -202,6 +205,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
+			this.sessionStats.reset();
 			const state = await this.client.getState();
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
@@ -271,6 +275,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	onDiagnostic(listener: EngineDiagnosticListener): () => void {
 		return this.health.onDiagnostic(listener);
+	}
+
+	/** Fires when fresh engine session stats arrive, so the host can repaint its footer. */
+	onSessionStatsChanged(listener: () => void): () => void {
+		return this.sessionStats.onChange(listener);
 	}
 
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
@@ -575,6 +584,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.patchedSessions.has(session)) return;
 		this.patchedSessions.add(session);
 		this.patchSessionManager(session.sessionManager);
+		this.sessionStats.track(session);
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
@@ -655,12 +665,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			navigateTree: {
 				configurable: true,
-				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) =>
-					this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
+				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) => {
+					const result = await this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
 						type: "navigate_tree",
 						targetId,
 						options,
-					}),
+					});
+					if (!result.cancelled && !result.aborted) {
+						this.sessionStats.reset();
+						this.sessionStats.refresh();
+					}
+					return result;
+				},
 			},
 			reload: {
 				configurable: true,
@@ -931,6 +947,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			case "compaction_end":
 				this.compacting = false;
 				this.compactionReason = undefined;
+				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
+				break;
+			case "message_end":
+				this.sessionStats.refresh();
 				break;
 			case "queue_update":
 				this.queueUpdateGeneration += 1;
@@ -940,6 +960,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "model_changed":
 				session.agent.state.model = event.model;
+				this.sessionStats.refresh();
 				break;
 			case "thinking_level_changed":
 				this.thinkingEpoch += 1;

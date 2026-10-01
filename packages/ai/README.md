@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); upstream Pi AI fixes and the unified model catalog are synced through [`a328aa89ad6e6dc5c5628ff896769532ed3d29df`](https://github.com/earendil-works/pi/commit/a328aa89ad6e6dc5c5628ff896769532ed3d29df). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`1b347794e2a630e4359f2584f4eea388145d0ddf`](https://github.com/earendil-works/pi/commit/1b347794e2a630e4359f2584f4eea388145d0ddf). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 
@@ -63,10 +63,10 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 
 ## Supported Providers
 
-- **OpenAI**
+- **OpenAI** (API key or Sign in with ChatGPT)
 - **Ant Ling**
 - **Azure OpenAI (Responses)**
-- **OpenAI Codex** (ChatGPT Plus/Pro subscription, requires OAuth, see below)
+- **OpenAI Codex (legacy)** (ChatGPT subscription, requires OAuth, see below)
 - **Radius** (API key or OAuth, with a dynamically refreshed gateway catalog)
 - **TypeSafe** (System One classifier API)
 - **DeepSeek**
@@ -260,6 +260,8 @@ models.setProvider(openrouterProvider());
 ```
 
 Provider factories import their model catalog and a lazy API wrapper. They do not import other providers. With bundler code splitting, SDK implementations (`@anthropic-ai/sdk`, `openai`, `@google/genai`, etc.) stay in lazy chunks loaded on the first request to a model of that API.
+
+For a collection without TypeBox, built-in catalogs or provider SDKs, import `createModels` and `createProvider` from `@bastani/pi-ai/models`. Import the provider factories you need separately.
 
 ### All Built-in Providers
 
@@ -878,6 +880,8 @@ Classifier models consume structured JSON state and answer one or more typed que
 | `typesafe` | `jev-latest` | `TYPESAFE_API_KEY` |
 | `openrouter` | `typesafe/jev-1.13`, `~typesafe/jev-latest` | `OPENROUTER_API_KEY` or OpenRouter OAuth |
 | `cloudflare-workers-ai` | `typesafe/jev` | `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID` |
+| `vercel-ai-gateway` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
+| `opencode` | `jev-1.13`, `jev-1.13-free` | `OPENCODE_API_KEY` |
 
 ```typescript
 import { builtinModels } from '@bastani/pi-ai/providers/all';
@@ -912,6 +916,38 @@ console.log(result.answers);
 ```
 
 The public contract uses `bool` questions and `{ type: "bool", probability }` answers. The TypeSafe adapter translates those to and from its `noul` wire representation. Like image generation, `classify()` resolves to a result with `stopReason: "error"` instead of rejecting for provider, authentication, or response errors.
+
+System One results include `usage` when the service reports input or output token counts. Costs use the model's catalog pricing. A billed response can retain usage even when its answers are malformed; absent usage means unknown, not zero.
+
+`ClassifierOptions.temperature` divides the answer logits by the given value before they are normalized; values above 1 soften the distribution. APIs that cannot apply it, such as System One, ignore it.
+
+### Chat models on llama.cpp
+
+The `llama-cpp-classify` API turns a chat model served by llama.cpp's `llama-server` into a classifier. Each question becomes one chat prompt: the state, every question of the request, the state again, and the question with its answers under single-token labels (letters for a choice, `Yes`/`No` for a bool, digits for a score). The prompt up to the final question is shared by all questions of a request, so the server's prompt cache evaluates the state once per request. The server returns the log-probabilities of the next token, and the answer is the softmax over the label tokens. Choices support up to 62 options and scores up to 10 levels. The model's `baseUrl` is the server URL; a trailing `/v1` is ignored. In router mode, the model ID selects the model.
+
+```typescript
+import { createProvider } from '@bastani/pi-ai';
+import { llamaCppClassifyApi } from '@bastani/pi-ai/api/llama-cpp-classify.lazy';
+
+const provider = createProvider({
+  id: 'local-llama',
+  auth: { apiKey: { name: 'llama.cpp', resolve: async () => ({ auth: {} }) } },
+  models: [{
+    type: 'classifier',
+    id: 'qwen3-4b',
+    name: 'Qwen3 4B',
+    api: 'llama-cpp-classify',
+    provider: 'local-llama',
+    baseUrl: 'http://127.0.0.1:8080',
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 32768
+  }],
+  classifiers: { 'llama-cpp-classify': llamaCppClassifyApi() }
+});
+```
+
+Raw label probabilities are usually overconfident; pass `temperature` above 1 to soften them.
 
 Custom providers register classifier models and implementations by API ID:
 
@@ -962,6 +998,8 @@ for (const block of response.content) {
 ```
 
 `xhigh` and `max` are model-specific, opt-in levels. Use `getSupportedThinkingLevels(model)` to determine whether a concrete model exposes either level; models such as GPT-5.6 can expose both.
+
+GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh` and `max` on OpenAI and Azure Responses. It does not support `off`. The Codex provider also exposes a `minimal` UI alias that sends `low` to the API.
 
 ### Provider-Specific Options (stream/complete)
 
@@ -1590,7 +1628,7 @@ Browser compatibility notes:
 For small bundles, import only the providers you need:
 
 ```typescript
-import { createModels } from '@bastani/pi-ai';
+import { createModels } from '@bastani/pi-ai/models';
 import { openaiProvider } from '@bastani/pi-ai/providers/openai';
 
 const models = createModels();
@@ -1663,7 +1701,8 @@ Use this when one process needs different provider settings per request, or when
 Several providers support OAuth authentication instead of static API keys:
 
 - **Anthropic** (Claude Pro/Max subscription)
-- **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
+- **OpenAI** (Sign in with ChatGPT, direct Responses API access)
+- **OpenAI Codex (legacy)** (ChatGPT subscription, Codex Responses access)
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
 
@@ -1702,6 +1741,8 @@ await models.complete(model, context);
 // Logout
 await models.logout('anthropic');
 ```
+
+For OpenAI Sign in with ChatGPT, pass a fourth `LoginOptions` argument with `getDeviceId: () => installationUuid`. Persist this UUID and return the same value on later logins. The login registers a user-owned client and stores its issued client ID and granted scopes with the credential. Direct ChatGPT access omits unsupported temperature, output-token limits and cache-retention fields. If its shared subscription limit is exhausted, check [ChatGPT usage](https://chatgpt.com/settings/usage).
 
 ### Vertex AI
 
@@ -1743,7 +1784,7 @@ Built-in login and refresh flows are private provider implementations. Use provi
 
 Provider notes:
 
-**OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options unless `cacheRetention` is `"none"`. You can set `transport` in stream options to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. When using WebSocket with a `sessionId` and cache retention enabled, connections are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex (legacy)**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
 
 Call `cleanupSessionResources(sessionId)` when finished with a Codex session so its pooled WebSocket connection does not keep the process alive. Import it from `@bastani/pi-ai`.
 

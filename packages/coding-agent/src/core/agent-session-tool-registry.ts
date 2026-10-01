@@ -1,8 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
+import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.js";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
+import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
@@ -34,6 +36,12 @@ export function _refreshToolRegistry(
 	const registeredTools = this._extensionRunner
 		.getAllRegisteredTools()
 		.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
+	const selectedMcpTools = new Set(
+		registeredTools.filter(
+			(tool) => !excludedToolNames?.has(tool.definition.name) && isSelectedNativeMcpTool(tool, this._subagentPolicy),
+		),
+	);
+	const selectedMcpNames = new Set([...selectedMcpTools].map((tool) => tool.definition.name));
 	const allCustomTools = [
 		...registeredTools,
 		...this._customTools
@@ -42,7 +50,7 @@ export function _refreshToolRegistry(
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
-	].filter((tool) => isExposedTool(tool.definition.name));
+	].filter((tool) => isExposedTool(tool.definition.name) || selectedMcpTools.has(tool));
 	const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 		Array.from(this._baseToolDefinitions.entries())
 			.filter(([name]) => isExposedTool(name))
@@ -91,27 +99,39 @@ export function _refreshToolRegistry(
 
 	const toolRegistry = new Map<string, AgentTool>();
 	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
-		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler));
+		const abortError =
+			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool)
+				? () =>
+						runner.createContext().hasHumanInput
+							? hostInputError("HumanInputCancelled")
+							: new Error("Operation aborted")
+				: undefined;
+		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler, abortError));
 	}
 	this._toolRegistry = toolRegistry;
 
 	const nextActiveToolNames = (
 		options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
-	).filter((name) => isExposedTool(name));
+	).filter((name) => isExposedTool(name) || selectedMcpNames.has(name));
 
+	const activatesOnRegistration = (name: string): boolean => {
+		const definition = this._toolDefinitions.get(name)?.definition;
+		const exposure = definition?.exposure ?? "direct";
+		return definition?.defaultActive !== false && (exposure === "direct" || exposure === "model-only");
+	};
 	if (allowedToolNames) {
 		for (const toolName of this._toolRegistry.keys()) {
-			if (allowedToolNames.has(toolName)) {
+			if (allowedToolNames.has(toolName) || (selectedMcpNames.has(toolName) && activatesOnRegistration(toolName))) {
 				nextActiveToolNames.push(toolName);
 			}
 		}
 	} else if (options?.includeAllExtensionTools) {
 		for (const tool of wrappedExtensionTools) {
-			nextActiveToolNames.push(tool.name);
+			if (activatesOnRegistration(tool.name)) nextActiveToolNames.push(tool.name);
 		}
 	} else if (!options?.activeToolNames) {
 		for (const toolName of this._toolRegistry.keys()) {
-			if (!previousRegistryNames.has(toolName)) {
+			if (!previousRegistryNames.has(toolName) && activatesOnRegistration(toolName)) {
 				nextActiveToolNames.push(toolName);
 			}
 		}

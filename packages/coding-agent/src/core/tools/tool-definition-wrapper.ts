@@ -29,13 +29,14 @@ type ContextualAgentExecute<TParams extends TSchema, TDetails> = (
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 	definition: ToolDefinition<TParams, TDetails>,
-	ctxFactory?: () => ExtensionContext,
+	ctxFactory?: (toolCallId: string, signal: AbortSignal | undefined) => ExtensionContext,
 ): AgentTool<TParams, TDetails> {
 	return {
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
 		parameters: definition.parameters,
+		outputSchema: definition.outputSchema,
 		...(Object.hasOwn(definition, "constrainedSampling")
 			? { constrainedSampling: definition.constrainedSampling }
 			: {}),
@@ -58,7 +59,8 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 					params as Static<TParams>,
 					signal,
 					onUpdate,
-					context ?? (ctxFactory?.() as ExtensionContext),
+					(context ??
+						ctxFactory?.(toolCallId, signal)) as import("../extensions/context-types.ts").ExtensionToolContext,
 				),
 			),
 	};
@@ -86,6 +88,7 @@ export function createToolDefinitionFromAgentTool<TParams extends TSchema = TSch
 		label: tool.label,
 		description: tool.description,
 		parameters: tool.parameters,
+		outputSchema: tool.outputSchema,
 		...(Object.hasOwn(tool, "constrainedSampling") ? { constrainedSampling: tool.constrainedSampling } : {}),
 		promptSnippet: tool.promptSnippet,
 		promptGuidelines: tool.promptGuidelines,

@@ -7,6 +7,8 @@ export type ClipboardModule = {
 	getText: () => Promise<string>;
 	hasImage: () => boolean;
 	getImageBinary: () => Promise<Array<number>>;
+	/** Pasteboard types on the clipboard, such as `public.file-url`. Absent from older module versions. */
+	availableFormats?: () => string[];
 };
 
 type ClipboardRequire = (id: string) => unknown;

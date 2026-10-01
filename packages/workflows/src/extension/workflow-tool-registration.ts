@@ -103,6 +103,7 @@ export function registerWorkflowTool(
 	if (typeof pi.registerTool !== "function") return undefined;
 	const tool: PiToolOpts<WorkflowToolArgs, WorkflowRegisteredToolResult> = {
 		name: "workflow",
+		exposure: "model-only",
 		label: "workflow",
 		description: WORKFLOW_TOOL_DESCRIPTION,
 		parameters: WorkflowParametersSchema,

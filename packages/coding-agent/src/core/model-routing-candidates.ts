@@ -15,6 +15,10 @@ export interface CandidateModel {
 	readonly input: readonly string[];
 	/** `provider/id` of the base model when this entry is its derived fast route (`fastRoute` metadata). */
 	readonly fastRouteOf?: string;
+	/** Explicit provider tier, used to avoid claiming measured latency for ultrafast. */
+	readonly fastRouteServiceTier?: "priority" | "ultrafast";
+	/** True when `cost` already holds the route tier's published rates rather than the base model's. */
+	readonly fastRoutePriced?: boolean;
 }
 
 interface Metric {
@@ -39,6 +43,7 @@ const WORK_METRICS: Record<WorkKind, readonly Metric[]> = {
 	coding: [
 		percent("aa:TB4", "Terminal-Bench 4.0"),
 		percent("dswe:Pass@1", "DeepSWE"),
+		percent("pub:DSWE", "DeepSWE"),
 		percent("fc:Main", "FrontierCode"),
 		percent("aa:TB21", "Terminal-Bench 2.1"),
 	],
@@ -257,7 +262,7 @@ export function rankCandidates(
 	const measured = candidates.map((candidate) => ({
 		candidate,
 		base: baseKey(candidate),
-		...measure(catalog, candidate.model),
+		...measure(catalog, candidate.fastRouteOf ?? candidate.model),
 	}));
 	const rankOf = (key: string, value: number, own: ReadonlySet<string>): number | undefined => {
 		const cohort = cohorts.get(key);
@@ -301,7 +306,9 @@ export function rankCandidates(
 					qualityWeight * quality +
 					priceWeight * cheapness +
 					0.1 * recency +
-					(needs.latencySensitive && candidate.fastRouteOf ? FAST_ROUTE_BONUS : 0),
+					(needs.latencySensitive && candidate.fastRouteOf && candidate.fastRouteServiceTier !== "ultrafast"
+						? FAST_ROUTE_BONUS
+						: 0),
 				values,
 				conditions,
 				...(released ? { released } : {}),
@@ -396,7 +403,10 @@ export function describeOption(
 		overall: quote([OVERALL], option.overallStanding),
 		...(option.fastRouteOf
 			? {
-					route: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; billed above the listed prices`,
+					route:
+						option.fastRouteServiceTier === "ultrafast"
+							? `ultrafast request for ${fastBase?.name ?? option.fastRouteOf}; base-model evidence only, no separate latency or benchmark score; account access required`
+							: `faster route of ${fastBase?.name ?? option.fastRouteOf} with the same results; ${option.fastRoutePriced ? "the listed prices are its Fast rates" : "billed above the listed prices"}`,
 				}
 			: {}),
 	});

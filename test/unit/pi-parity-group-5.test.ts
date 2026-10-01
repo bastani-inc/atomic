@@ -66,7 +66,7 @@ const prices = { getModel: () => ({ cost: { cacheRead: 0.1 } }) };
 
 describe("Group 5 parity", () => {
 	test("paste fallback keybinding is registered", () => {
-		assert.match(KEYBINDINGS["app.clipboard.pasteImage"].description, /text fallback/);
+		assert.match(KEYBINDINGS["app.clipboard.pasteImage"].description, /images, or text from clipboard/);
 	});
 
 	test("clipboard text reads never throw", async () => {

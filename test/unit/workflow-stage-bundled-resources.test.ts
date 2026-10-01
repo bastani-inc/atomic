@@ -32,6 +32,7 @@ import {
 	prepareAtomicStageSessionOptions,
 } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 const REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS = 120_000;
 const tempDirs: string[] = [];
@@ -359,7 +360,7 @@ describe("workflow stage bundled resources", () => {
 					} as never,
 					undefined,
 					undefined,
-					session.extensionRunner.createContext(),
+					toolContext(session.extensionRunner.createContext()),
 				);
 				const details = result.details as Details;
 				const response = details.taskResponse;

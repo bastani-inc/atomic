@@ -32,7 +32,7 @@ export type KnownImageApi = "openrouter-images";
 
 export type ImageApi = KnownImageApi | (string & {});
 
-export type KnownClassifierApi = "typesafe-system-one" | "cloudflare-workers-ai-system-one";
+export type KnownClassifierApi = "typesafe-system-one" | "cloudflare-workers-ai-system-one" | "llama-cpp-classify";
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
@@ -334,7 +334,14 @@ export interface ProviderClassifier {
 	): Promise<ClassifierResult>;
 }
 
-export interface ClassifierOptions extends ProviderRequestOptions<ClassifierModel<ClassifierApi>> {}
+export interface ClassifierOptions extends ProviderRequestOptions<ClassifierModel<ClassifierApi>> {
+	/**
+	 * Divides the answer logits by this value before they are normalized into probabilities.
+	 * Values above 1 soften the distribution; values below 1 sharpen it. Must be positive.
+	 * APIs that cannot apply it ignore it.
+	 */
+	temperature?: number;
+}
 
 export interface ImagesOptions extends ProviderRequestOptions<ImageModel<ImageApi>> {
 	/**
@@ -627,6 +634,25 @@ export interface AssistantMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+/** A tool call made by another tool, such as a codemode script. */
+export interface NestedToolCallRecord {
+	id: string;
+	name: string;
+	/** Omitted when over the size limits. */
+	arguments?: JsonObject;
+	/** UTF-8 JSON size when arguments are omitted. */
+	argumentsBytes?: number;
+	status: "ok" | "error" | "unfinished";
+	durationMs?: number;
+	error?: string;
+}
+
+/** Bounded nested-call record. Results are not recorded. */
+export interface NestedToolCalls {
+	calls: NestedToolCallRecord[];
+	complete: boolean;
+}
+
 export type ToolResultMessage<TDetails = JsonValue> =
 	IsJsonCompatible<TDetails> extends true
 		? {
@@ -637,6 +663,8 @@ export type ToolResultMessage<TDetails = JsonValue> =
 				details?: JsonRepresentation<TDetails>;
 				/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 				usage?: Usage;
+				/** Nested calls retained in the session, not sent to the model. */
+				nestedCalls?: NestedToolCalls;
 				isError: boolean;
 				timestamp: number; // Unix timestamp in milliseconds
 			}
@@ -716,6 +744,8 @@ export interface ClassifierResult {
 	provider: ProviderId;
 	model: string;
 	answers: Record<string, ClassifierAnswer>;
+	/** Token usage and cost at the model's catalog price, when reported. */
+	usage?: Usage;
 	stopReason: ClassifierStopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
@@ -1188,6 +1218,21 @@ export interface ModelInputLimits {
 	images?: ModelImageInputLimits;
 }
 
+/** Service tiers a model can advertise beyond standard processing. */
+export type ModelServiceTierId = "priority" | "ultrafast";
+
+/**
+ * A service tier a model advertises, following Codex's `ModelInfo.service_tiers`, with the provider's
+ * published per-million-token rates for that tier.
+ *
+ * Adapters send a tier only when the model advertises it. `flex` is an API request option and needs
+ * no advertisement.
+ */
+export interface ModelServiceTier {
+	id: ModelServiceTierId;
+	cost: ModelCost;
+}
+
 /**
  * Explicit routing metadata that marks a model as the fast-inference variant of another model.
  *
@@ -1201,7 +1246,7 @@ export interface ModelFastRoute {
 	/** Model ID to send upstream. OpenAI-style routing keeps the base ID; a provider with real fast siblings sends its own ID. */
 	upstreamModelId: string;
 	/** Service tier to send with the request. Set only for providers that route fast traffic through an OpenAI-style tier. */
-	serviceTier?: "priority";
+	serviceTier?: ModelServiceTierId;
 	/** Anthropic inference speed to send with the request. Set only for Claude models that support fast mode. */
 	speed?: "fast";
 }
@@ -1245,6 +1290,11 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	 * upstream routing it needs. Absent on every normal model.
 	 */
 	fastRoute?: ModelFastRoute;
+	/**
+	 * Service tiers this model advertises. When set, the Codex adapter sends only advertised tiers.
+	 * When unset, the model carries no tier metadata and only Ultrafast is withheld.
+	 */
+	serviceTiers?: ModelServiceTier[];
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

@@ -634,6 +634,7 @@ export class StageSessionController {
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
+		newSessionText?: string,
 	): Promise<void> {
 		if (this.effectiveStageOptions?.model === "auto") await this.preparePrompt(text);
 		if (
@@ -702,6 +703,11 @@ export class StageSessionController {
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
 		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates)) return;
+		// A follow-up written for the conversation it continues (a structured-output
+		// correction) cannot stand alone in a session that never saw the stage
+		// prompt, so every session the walk prompts from here receives the caller's
+		// self-contained text instead (issue #3323).
+		if (resumedText === undefined && newSessionText !== undefined) promptText = newSessionText;
 		let index = this.activeCandidateIndex ?? 0;
 		while (index < candidates.length) {
 			// Attachment may have acquired the creation walk while shutdown drained.

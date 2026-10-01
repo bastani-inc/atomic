@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -22,6 +23,20 @@ describe("SettingsManager", () => {
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true });
 		}
+	});
+
+	it("creates a global device ID and ignores project device IDs", async () => {
+		const settingsPath = join(agentDir, "settings.json");
+		writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+		mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+		writeFileSync(join(projectDir, ".atomic", "settings.json"), JSON.stringify({ deviceId: "project-device" }));
+		const first = SettingsManager.create(projectDir, agentDir);
+		const deviceId = first.getOrCreateDeviceId();
+		await first.flush();
+		assert.match(deviceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		assert.equal(first.getOrCreateDeviceId(), deviceId);
+		assert.equal(SettingsManager.create(projectDir, agentDir).getOrCreateDeviceId(), deviceId);
+		assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf-8")), { theme: "dark", deviceId });
 	});
 
 	describe("compaction settings", () => {
@@ -480,6 +495,21 @@ describe("SettingsManager", () => {
 			);
 
 			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read"]);
+		});
+
+		it("drops invalid project entries before inheriting modifier-only tool selections", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", null] }));
+			mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+			writeFileSync(
+				join(projectDir, ".atomic", "settings.json"),
+				JSON.stringify({ defaultTools: ["-bash", null, 42, { name: "write" }] }),
+			);
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read"]);
+			for (const defaultTools of [[], [null]]) {
+				writeFileSync(join(projectDir, ".atomic", "settings.json"), JSON.stringify({ defaultTools }));
+				expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual([]);
+			}
 		});
 
 		it("returns a copy, not the stored array", () => {

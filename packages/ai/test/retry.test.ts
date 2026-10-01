@@ -85,6 +85,14 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
+	it.each([
+		["subscription_sharing_usage_limit_exceeded", false],
+		["subscription_sharing_usage_unavailable", true],
+		["subscription_sharing_user_unavailable", true],
+	] as const)("classifies ChatGPT shared-subscription error %s", (errorMessage, expected) => {
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(expected);
+	});
+
 	it("classifies assistant error messages", () => {
 		expect(
 			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })),

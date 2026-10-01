@@ -1,11 +1,11 @@
-import { execFileSync, execSync, spawn } from "child_process";
+import { execFile, execFileSync, execSync, spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { unlinkSync, writeFileSync } from "fs";
 import { platform, tmpdir } from "os";
 import { join } from "path";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
-import { clipboard } from "./clipboard-native.ts";
+import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
 import { isWSL } from "./wsl.ts";
 
 type NativeClipboardExecOptions = {
@@ -83,6 +83,50 @@ export async function readClipboardText(
 	} catch {
 		return null;
 	}
+}
+
+/** Pasteboard type that Finder and other macOS apps publish for copied files. */
+const FILE_URL_PASTEBOARD_TYPE = "public.file-url";
+
+/** Prints the POSIX paths of the file URLs on the general pasteboard as a JSON array. */
+const READ_FILE_URLS_SCRIPT = `ObjC.import("AppKit");
+const urls = $.NSPasteboard.generalPasteboard.readObjectsForClassesOptions(
+	$.NSArray.arrayWithObject($.NSURL),
+	$.NSDictionary.dictionaryWithObjectForKey($.NSNumber.numberWithBool(true), $.NSPasteboardURLReadingFileURLsOnlyKey)
+);
+const paths = [];
+for (let i = 0; i < urls.count; i++) paths.push(ObjC.unwrap(urls.objectAtIndex(i).path));
+JSON.stringify(paths);`;
+
+/**
+ * Read file paths, such as Finder file copies, from the macOS clipboard. The native clipboard
+ * module reports whether file URLs are present; AppKit is read through JavaScript for Automation
+ * only then, because the module cannot read file URLs itself.
+ */
+export async function readClipboardFilePaths(
+	source: Pick<ClipboardModule, "availableFormats"> | null = clipboard,
+	currentPlatform: NodeJS.Platform = process.platform,
+): Promise<string[] | null> {
+	if (currentPlatform !== "darwin" || !source?.availableFormats?.().includes(FILE_URL_PASTEBOARD_TYPE)) return null;
+	const stdout = await new Promise<string>((resolve, reject) => {
+		execFile(
+			"osascript",
+			["-l", "JavaScript", "-e", READ_FILE_URLS_SCRIPT],
+			{ timeout: 5000, env: createChildProcessEnvironment() },
+			(error, output, stderr) => {
+				if (error) {
+					// The default error message repeats the whole script; report what osascript printed instead.
+					const detail = stderr.trim();
+					reject(new Error(`osascript could not read the copied files${detail ? `: ${detail}` : ""}`));
+				} else resolve(output);
+			},
+		);
+	});
+	const paths = JSON.parse(stdout) as string[] | null;
+	if (!Array.isArray(paths) || paths.some((path) => typeof path !== "string")) {
+		throw new Error("Unexpected clipboard file path output");
+	}
+	return paths.length > 0 ? paths : null;
 }
 
 export async function copyToClipboard(text: string): Promise<void> {

@@ -1,4 +1,4 @@
-import type { RgbColor } from "@earendil-works/pi-tui";
+import type { TerminalColors } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import {
 	detectTerminalBackgroundFromEnv,
@@ -43,9 +43,9 @@ describe("detectTerminalBackgroundTheme", () => {
 			env: { COLORFGBG: "15;0" },
 			timeoutMs: 250,
 			ui: {
-				async queryTerminalBackgroundColor({ timeoutMs }: { timeoutMs: number }): Promise<RgbColor | undefined> {
+				async queryTerminalColors({ timeoutMs }: { timeoutMs: number }): Promise<TerminalColors> {
 					queriedTimeoutMs = timeoutMs;
-					return { r: 250, g: 250, b: 250 };
+					return { background: { r: 250, g: 250, b: 250 } };
 				},
 			},
 		});
@@ -63,8 +63,8 @@ describe("detectTerminalBackgroundTheme", () => {
 			env: { COLORFGBG: "15;0" },
 			timeoutMs: 250,
 			ui: {
-				async queryTerminalBackgroundColor(): Promise<RgbColor | undefined> {
-					return undefined;
+				async queryTerminalColors(): Promise<TerminalColors> {
+					return {};
 				},
 			},
 		});
@@ -81,7 +81,7 @@ describe("detectTerminalBackgroundTheme", () => {
 			env: { COLORFGBG: "0;15" },
 			timeoutMs: 250,
 			ui: {
-				async queryTerminalBackgroundColor(): Promise<RgbColor | undefined> {
+				async queryTerminalColors(): Promise<TerminalColors> {
 					throw new Error("terminal write failed");
 				},
 			},
@@ -96,42 +96,20 @@ describe("detectTerminalBackgroundTheme", () => {
 });
 
 describe("detectTerminalThemeForAuto", () => {
-	it("starts both terminal queries before the color-scheme query settles", async () => {
-		let resolveColorScheme!: (theme: "dark" | "light" | undefined) => void;
-		let backgroundQueryStarted = false;
-		const detection = detectTerminalThemeForAuto({
-			timeoutMs: 100,
-			ui: {
-				queryTerminalColorScheme: () =>
-					new Promise((resolve) => {
-						resolveColorScheme = resolve;
-					}),
-				queryTerminalBackgroundColor: () => {
-					backgroundQueryStarted = true;
-					return new Promise<RgbColor | undefined>(() => {});
-				},
-			},
-		});
-
-		expect(backgroundQueryStarted).toBe(true);
-		resolveColorScheme("dark");
-		await expect(detection).resolves.toBe("dark");
-	});
-
-	it("uses the background result when the color-scheme query fails", async () => {
+	it("uses one terminal color query for automatic theme detection", async () => {
+		let calls = 0;
 		await expect(
 			detectTerminalThemeForAuto({
 				timeoutMs: 100,
 				ui: {
-					async queryTerminalColorScheme(): Promise<undefined> {
-						throw new Error("color-scheme query failed");
-					},
-					async queryTerminalBackgroundColor(): Promise<RgbColor> {
-						return { r: 250, g: 250, b: 250 };
+					async queryTerminalColors() {
+						calls++;
+						return { background: { r: 255, g: 255, b: 255 } };
 					},
 				},
 			}),
 		).resolves.toBe("light");
+		expect(calls).toBe(1);
 	});
 });
 

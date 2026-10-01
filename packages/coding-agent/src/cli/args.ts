@@ -279,7 +279,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
+  ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)

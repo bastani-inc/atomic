@@ -231,10 +231,19 @@ export async function runToolResultHandlers(
 				if (!handlerResult) continue;
 				if (handlerResult.content !== undefined) {
 					currentEvent.content = handlerResult.content;
+					currentEvent.structuredContent = handlerResult.structuredContent;
 					modified = true;
 				}
 				if (handlerResult.details !== undefined) {
 					currentEvent.details = handlerResult.details;
+					modified = true;
+				}
+				if (handlerResult.structuredContent !== undefined) {
+					currentEvent.structuredContent = handlerResult.structuredContent;
+					modified = true;
+				}
+				if (handlerResult.usage !== undefined) {
+					currentEvent.usage = handlerResult.usage;
 					modified = true;
 				}
 				if (handlerResult.isError !== undefined) {
@@ -248,7 +257,13 @@ export async function runToolResultHandlers(
 	}
 
 	return modified
-		? { content: currentEvent.content, details: currentEvent.details, isError: currentEvent.isError }
+		? {
+				content: currentEvent.content,
+				details: currentEvent.details,
+				isError: currentEvent.isError,
+				structuredContent: currentEvent.structuredContent,
+				usage: currentEvent.usage,
+			}
 		: undefined;
 }
 

@@ -38,14 +38,14 @@
     "@biomejs/biome": "2.5.8",
     "@j178/prek": "0.4.11",
     "@types/bun": "1.4.1",
-    "@types/pg": "8.20.0",
+    "@types/pg": "8.23.1",
     "@types/tar-stream": "3.1.4",
     "@xterm/headless": "6.0.0",
     "acorn": "8.18.0",
-    "acorn-walk": "8.3.4",
+    "acorn-walk": "8.3.5",
     "esbuild": "0.28.2",
-    "jszip": "3.10.1",
-    "pg": "8.22.0",
+    "jszip": "3.10.2",
+    "pg": "8.23.0",
     "superjson": "2.2.6",
     "tar-stream": "3.2.0",
     "tinyglobby": "0.2.17",
@@ -56,11 +56,11 @@
   "overrides": {
     "@types/node": "24.12.4",
     "protobufjs": "7.6.6",
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
     "typebox": "1.3.27",
     "semver": "7.8.5",
     "hono": "4.13.7",
-    "ip-address": "10.3.1",
+    "ip-address": "10.7.2",
     "@napi-rs/cli": {
       "semver": "7.8.5"
     }

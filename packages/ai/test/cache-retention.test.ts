@@ -310,7 +310,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const s = streamOpenAIResponses(proxyModel, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					onPayload: stopAfterPayload((payload) => {
 						capturedPayload = payload;
 					}),
@@ -338,7 +338,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 			try {
 				const response = streamOpenAIResponses(configuredModel, context, {
-					apiKey: "fake-key",
+					apiKey: "sk-fake-key",
 					cacheRetention,
 					sessionId: "session-cache-test",
 					onPayload: stopAfterPayload<OpenAIResponsesCachePayload>((payload) => {
@@ -468,7 +468,6 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			MODELS.opencode["kimi-k2.5"],
 			MODELS.opencode["kimi-k2.6"],
 			MODELS.opencode["minimax-m2.7"],
-			MODELS["opencode-go"]["kimi-k2.6"],
 		] as const)("should omit long cache retention for $provider/$id", async (metadata) => {
 			const model = metadata as Model<"openai-completions">;
 			let capturedPayload: OpenAICompletionsCachePayload | undefined;

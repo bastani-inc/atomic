@@ -5,6 +5,7 @@ export {
 	type CacheWarmingDecisionEventResult,
 	type CacheWarmingStatus,
 } from "./core/cache-warmer.ts";
+export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -14,6 +15,13 @@ export type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "./core/extensions/host-input.js";
+export type {
+	ToolAnnotations,
+	ToolExposure,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
+} from "./core/extensions/tool-types.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 // Internal trusted-host task integration (not model authority).
@@ -21,6 +29,17 @@ export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory }
 export type { AgentIntent, OperationId, TaskId, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./core/tasks/owner-store.js";
+export { formatToolCallWithArgs } from "./core/tools/render-utils.ts";
+export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
+export {
+	type CodemodeToolDetails,
+	type CodemodeToolOptions,
+	createCodemodeDescription,
+	createCodemodeTool,
+	createCodemodeToolDefinition,
+} from "./extensions/codemode/tool.js";
+export { createToolSearchExtension } from "./extensions/tool-search/index.js";
+export { createToolSearchToolDefinition, type ToolSearchToolOptions } from "./extensions/tool-search/tool.js";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
@@ -189,6 +208,15 @@ export {
 	runtimeIntercomGroupEnvKey,
 } from "./core/intercom-runtime-group.ts";
 export { keybindingIdentity } from "./core/keybinding-identity.js";
+export { matchesMcpDirectToolSelection } from "./core/mcp-child-policy.ts";
+export {
+	type McpExposure,
+	type McpOAuthConfig,
+	type McpServerConfig,
+	type McpServerContribution,
+	mcpNamespace,
+	validateMcpServerConfig,
+} from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
@@ -240,6 +268,7 @@ export type {
 	PathMetadata,
 	ProgressCallback,
 	ProgressEvent,
+	ResolvedMcpServer,
 	ResolvedPaths,
 	ResolvedResource,
 } from "./core/package-manager.ts";
@@ -455,6 +484,14 @@ export {
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export {
+	type LoadedMcpConfig,
+	type McpServerConfigPatch,
+	type McpServerEntry,
+	updateMcpServerConfig,
+} from "./extensions/mcp/config.ts";
+export { createMcpExtension, type McpExtensionOptions } from "./extensions/mcp/index.js";
+export { McpOAuthCredentialStore } from "./extensions/mcp/oauth.ts";
 export * from "./index-extensions.js";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

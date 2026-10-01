@@ -18,13 +18,13 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 import {
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createSearchToolDefinition,
+	createWriteToolDefinition,
 } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { homedir } from "os";
@@ -40,45 +40,26 @@ function shortenPath(path: string): string {
 	return path;
 }
 
-// Cache for built-in tools by cwd
-const toolCache = new Map<string, ReturnType<typeof createBuiltInTools>>();
-
 function createBuiltInTools(cwd: string) {
 	return {
-		read: createReadTool(cwd),
-		bash: createBashTool(cwd),
-		edit: createEditTool(cwd),
-		write: createWriteTool(cwd),
-		find: createFindTool(cwd),
-		grep: createGrepTool(cwd),
-		ls: createLsTool(cwd),
+		read: createReadToolDefinition(cwd),
+		bash: createBashToolDefinition(cwd),
+		edit: createEditToolDefinition(cwd),
+		write: createWriteToolDefinition(cwd),
+		find: createFindToolDefinition(cwd),
+		search: createSearchToolDefinition(cwd),
+		ls: createLsToolDefinition(cwd),
 	};
 }
 
-function getBuiltInTools(cwd: string) {
-	let tools = toolCache.get(cwd);
-	if (!tools) {
-		tools = createBuiltInTools(cwd);
-		toolCache.set(cwd, tools);
-	}
-	return tools;
-}
-
 export default function (pi: ExtensionAPI) {
+	const tools = createBuiltInTools(process.cwd());
+
 	// =========================================================================
 	// Read Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "read",
-		label: "read",
-		description:
-			"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files.",
-		parameters: getBuiltInTools(process.cwd()).read.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.read.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.read,
 
 		renderCall(args, theme, _context) {
 			const path = shortenPath(args.path || "");
@@ -116,16 +97,7 @@ export default function (pi: ExtensionAPI) {
 	// Bash Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "bash",
-		label: "bash",
-		description:
-			"Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first).",
-		parameters: getBuiltInTools(process.cwd()).bash.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.bash.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.bash,
 
 		renderCall(args, theme, _context) {
 			const command = args.command || "...";
@@ -165,16 +137,7 @@ export default function (pi: ExtensionAPI) {
 	// Write Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "write",
-		label: "write",
-		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-		parameters: getBuiltInTools(process.cwd()).write.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.write.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.write,
 
 		renderCall(args, theme, _context) {
 			const path = shortenPath(args.path || "");
@@ -207,16 +170,8 @@ export default function (pi: ExtensionAPI) {
 	// Edit Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "edit",
-		label: "edit",
-		description:
-			"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
-		parameters: getBuiltInTools(process.cwd()).edit.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.edit.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.edit,
+		renderShell: "default",
 
 		renderCall(args, theme, _context) {
 			const path = shortenPath(args.path || "");
@@ -252,16 +207,7 @@ export default function (pi: ExtensionAPI) {
 	// Find Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "find",
-		label: "find",
-		description:
-			"Find files by name pattern (glob). Searches recursively from the specified path. Output limited to 200 results.",
-		parameters: getBuiltInTools(process.cwd()).find.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.find.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.find,
 
 		renderCall(args, theme, _context) {
 			const pattern = args.pattern || "";
@@ -307,34 +253,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// =========================================================================
-	// Grep Tool
+	// Search Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "grep",
-		label: "grep",
-		description:
-			"Search file contents by regex pattern. Uses ripgrep for fast searching. Output limited to 200 matches.",
-		parameters: getBuiltInTools(process.cwd()).grep.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.grep.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.search,
 
 		renderCall(args, theme, _context) {
 			const pattern = args.pattern || "";
-			const path = shortenPath(args.path || ".");
-			const glob = args.glob;
-			const limit = args.limit;
+			const paths = typeof args.paths === "string" ? args.paths : args.paths?.join(", ") || ".";
 
-			let text = `${theme.fg("toolTitle", theme.bold("grep"))} ${theme.fg("accent", `/${pattern}/`)}`;
-			text += theme.fg("toolOutput", ` in ${path}`);
-			if (glob) {
-				text += theme.fg("toolOutput", ` (${glob})`);
-			}
-			if (limit !== undefined) {
-				text += theme.fg("toolOutput", ` limit ${limit}`);
-			}
+			let text = `${theme.fg("toolTitle", theme.bold("search"))} ${theme.fg("accent", `/${pattern}/`)}`;
+			text += theme.fg("toolOutput", ` in ${shortenPath(paths)}`);
 
 			return new Text(text, 0, 0);
 		},
@@ -372,16 +301,7 @@ export default function (pi: ExtensionAPI) {
 	// Ls Tool
 	// =========================================================================
 	pi.registerTool({
-		name: "ls",
-		label: "ls",
-		description:
-			"List directory contents with file sizes. Shows files and directories with their sizes. Output limited to 500 entries.",
-		parameters: getBuiltInTools(process.cwd()).ls.parameters,
-
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const tools = getBuiltInTools(ctx.cwd);
-			return tools.ls.execute(toolCallId, params, signal, onUpdate);
-		},
+		...tools.ls,
 
 		renderCall(args, theme, _context) {
 			const path = shortenPath(args.path || ".");

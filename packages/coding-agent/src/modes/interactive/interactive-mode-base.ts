@@ -8,6 +8,7 @@ import {
 	type ScrollView,
 	setCapabilityOverrides,
 	type TuiInputListener,
+	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -237,6 +238,10 @@ export class InteractiveModeBase {
 
 	setFullscreenCopyOnSelect(enabled: boolean): void {
 		if (this.renderer.mode === "fullscreen") this.renderer.setCopyOnSelect(enabled);
+	}
+
+	setFullscreenWheelScrollLines(lines: WheelScrollLines): void {
+		if (this.renderer.mode === "fullscreen") this.renderer.setWheelScrollLines(lines);
 	}
 
 	private readonly onRightClickPaste = (): void => {
@@ -616,6 +621,7 @@ export class InteractiveModeBase {
 			logDirectory: runtimeHost.services.agentDir,
 			terminal: options.terminal,
 			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
+			wheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createModels, createProvider, InMemoryModelsStore, type Model, type ModelsStore } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
@@ -42,6 +43,35 @@ function testProvider(localGeneratedAt?: number) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("remote catalog provider", () => {
+	it("merges remote overrides by model type and ID while preserving catalog order", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+			Response.json([
+				{ ...model("static"), name: "Remote static" },
+				model("new"),
+				{ ...model("new"), name: "Latest new" },
+				{ ...model("static"), type: "classifier", name: "Static classifier" },
+			]),
+		);
+		const provider = testProvider();
+		const store = new InMemoryModelsStore();
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
+		assert.deepEqual(
+			provider.getModels().map((entry) => [entry.id, entry.name]),
+			[
+				["static", "Remote static"],
+				["new", "Latest new"],
+			],
+		);
+		assert.deepEqual(
+			provider.getAllModels?.().map((entry) => [entry.id, entry.name]),
+			[
+				["static", "Remote static"],
+				["new", "Latest new"],
+				["static", "Static classifier"],
+			],
+		);
+	});
+
 	it("parses keyed catalogs, sends version headers, observes the refresh TTL, and supports forced refreshes", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 			async () =>

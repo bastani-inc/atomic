@@ -2,6 +2,7 @@ import type { JsonObject, TranscriptContext } from "@bastani/pi-ai";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/context-types.js";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { decisionMessage, decisionModel, inferenceUserContent, messageStream } from "../helpers/structured-output.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 export function workflowDecisionArgs(value: JsonObject) {
 	return {
@@ -28,5 +29,11 @@ export const workflowDecisionContext = {
 } as ExtensionContext;
 
 export function executeWorkflowDecision(tool: ToolDefinition, toolCallId: string, value: JsonObject) {
-	return tool.execute(toolCallId, workflowDecisionArgs(value), undefined, undefined, workflowDecisionContext);
+	return tool.execute(
+		toolCallId,
+		workflowDecisionArgs(value),
+		undefined,
+		undefined,
+		toolContext(workflowDecisionContext),
+	);
 }

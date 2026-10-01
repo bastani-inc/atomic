@@ -15,6 +15,10 @@ import { arg, fakeHerdr } from "./helpers/herdr.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
+// Real SDK creation and reload each load the workflows builtin and mandatory Intercom.
+// Two full loader passes need structural headroom under default-parallel suite load.
+const REAL_SDK_BUILTIN_RELOAD_TIMEOUT_MS = 120_000;
+
 test.each([
 	{ availability: "recovering" as const, shutdownFirst: false },
 	{ availability: "unavailable" as const, shutdownFirst: false },
@@ -65,144 +69,149 @@ test.each([
 );
 
 // PR #2925: a supplied transactional loader may retain the loaded reporter closure.
-test("SDK transactional reload retains the new reporter through retiring shutdown and final quit", async () => {
-	const fake = await fakeHerdr();
-	try {
-		let loaded = await createTestExtensionsResult(
-			[createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 })],
-			fake.dir,
-		);
-		loaded.runtime.workflowActivityHub
-			.registerWorkflowActivityPublisher()
-			.publishSnapshot({ availability: "ready", roots: [] });
-		let committed = false;
-		const resourceLoader = {
-			...createTestResourceLoader(),
-			getExtensions: () => loaded,
-			prepareReload: async () => {
-				const candidate = { ...loaded, runtime: createExtensionRuntime() };
-				candidate.runtime.workflowActivityHub
-					.registerWorkflowActivityPublisher()
-					.publishSnapshot({ availability: "ready", roots: [] });
-				return {
-					loader: createTestResourceLoader({ extensionsResult: candidate }),
-					activate: () => {},
-					commit: () => {
-						loaded = candidate;
-						committed = true;
-					},
-				};
-			},
-		};
-		const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(fake.dir, "auth.json") });
-		const faux = createFauxStreamFn([
-			{
-				text: "Continued after reload",
-				beforeEmit: async () => {
-					await fake.waitFor(3);
-				},
-			},
-		]);
-		modelRuntime.registerProvider(fauxModel.provider, {
-			baseUrl: fauxModel.baseUrl,
-			apiKey: "faux-key",
-			api: fauxModel.api,
-			models: [fauxModel],
-			streamSimple: faux.streamFn,
-		});
-		const sessionManager = SessionManager.create(fake.dir, fake.dir);
-		const { session } = await createAgentSession({
-			// #3105: startup observers receive the host at factory creation, not by replaying startup.
-			extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
-			cwd: fake.dir,
-			agentDir: fake.dir,
-			resourceLoader,
-			modelRuntime,
-			sessionManager,
-			settingsManager: SettingsManager.inMemory({
-				compaction: { enabled: false },
-				sessionSummary: { enabled: false },
-			}),
-			model: fauxModel,
-			noTools: "all",
-		});
+test(
+	"SDK transactional reload retains the new reporter through retiring shutdown and final quit",
+	async () => {
+		const fake = await fakeHerdr();
 		try {
-			await session.bindExtensions({ mode: "tui", uiContext: { ...noOpUIContext } });
-			await fake.waitFor(1);
-			const retiring = session.extensionRunner;
-			const sessionId = sessionManager.getSessionId();
-			const retiringContext = retiring.createContext();
-			const retiringHost = session.getAgentTaskHost();
-			await session.reload({ failOnExtensionErrors: true });
-			assert.equal(committed, true, "the real SDK transaction committed");
-			assert.notEqual(session.extensionRunner, retiring);
-			assert.equal(session.extensionRunner.createContext().sessionManager, sessionManager);
-			assert.equal(sessionManager.getSessionId(), sessionId, "reload preserves the public session identity");
-			assert.notEqual(session.getAgentTaskHost(), retiringHost, "reload installs a fresh task owner");
-			assert.throws(() => retiringContext.getAgentTaskHost!(), /stale|closed|invalid/i);
-			await assert.rejects(
-				retiringHost.startAgentTask(
-					{ kind: "agent", agent: "retired", task: "must not launch" },
-					"retired-reload-owner",
-					() => {
-						throw new Error("Retired owner dispatched work");
+			let loaded = await createTestExtensionsResult(
+				[createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 })],
+				fake.dir,
+			);
+			loaded.runtime.workflowActivityHub
+				.registerWorkflowActivityPublisher()
+				.publishSnapshot({ availability: "ready", roots: [] });
+			let committed = false;
+			const resourceLoader = {
+				...createTestResourceLoader(),
+				getExtensions: () => loaded,
+				prepareReload: async () => {
+					const candidate = { ...loaded, runtime: createExtensionRuntime() };
+					candidate.runtime.workflowActivityHub
+						.registerWorkflowActivityPublisher()
+						.publishSnapshot({ availability: "ready", roots: [] });
+					return {
+						loader: createTestResourceLoader({ extensionsResult: candidate }),
+						activate: () => {},
+						commit: () => {
+							loaded = candidate;
+							committed = true;
+						},
+					};
+				},
+			};
+			const modelRuntime = await ModelRuntime.create({ modelsPath: null, authPath: join(fake.dir, "auth.json") });
+			const faux = createFauxStreamFn([
+				{
+					text: "Continued after reload",
+					beforeEmit: async () => {
+						await fake.waitFor(3);
 					},
-				),
-				/Task owner is closed/,
-			);
-			await fake.waitFor(2);
-			assert.deepEqual(
-				(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
-				["report-agent", "report-agent"],
-				"retiring runner shutdown must not release the candidate's claim",
-			);
-			await session.prompt("Continue working after reload");
-			await fake.waitFor(4);
-			assert.equal(session.agent.state.errorMessage, undefined);
-			assert.deepEqual(session.messages.at(-1)?.content, [{ type: "text", text: "Continued after reload" }]);
-			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-			await session.extensionRunner.emit({ type: "agent_start" });
-			const records = await fake.calls();
-			assert.deepEqual(
-				records.map((call) => call.phase),
-				Array.from({ length: 5 }, () => ["start", "end"]).flat(),
-			);
-			const states = ["idle", "idle", "working", "idle", undefined];
-			const calls = records.filter((call) => call.phase === "start");
-			for (const [index, call] of calls.entries()) {
-				const seq = arg(call.args, "--seq")!;
-				if (index) assert.ok(Number(seq) > Number(arg(calls[index - 1].args, "--seq")));
-				assert.deepEqual(call.args, [
-					"pane",
-					states[index] ? "report-agent" : "release-agent",
-					fake.environment.paneId,
-					"--source",
-					"custom:atomic",
-					"--agent",
-					"atomic",
-					"--seq",
-					seq,
-					...(states[index] ? ["--state", states[index]] : []),
-					...(index === 0 || index === 1
-						? [
-								"--agent-session-id",
-								sessionManager.getSessionId(),
-								"--agent-session-path",
-								sessionManager.getSessionFile()!,
-							]
-						: []),
-				]);
-				assert.equal(call.socket, fake.environment.socketPath);
+				},
+			]);
+			modelRuntime.registerProvider(fauxModel.provider, {
+				baseUrl: fauxModel.baseUrl,
+				apiKey: "faux-key",
+				api: fauxModel.api,
+				models: [fauxModel],
+				streamSimple: faux.streamFn,
+			});
+			const sessionManager = SessionManager.create(fake.dir, fake.dir);
+			const { session } = await createAgentSession({
+				builtins: { subagents: false, mcp: false, "web-access": false },
+				// #3105: startup observers receive the host at factory creation, not by replaying startup.
+				extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
+				cwd: fake.dir,
+				agentDir: fake.dir,
+				resourceLoader,
+				modelRuntime,
+				sessionManager,
+				settingsManager: SettingsManager.inMemory({
+					compaction: { enabled: false },
+					sessionSummary: { enabled: false },
+				}),
+				model: fauxModel,
+				noTools: "all",
+			});
+			try {
+				await session.bindExtensions({ mode: "tui", uiContext: { ...noOpUIContext } });
+				await fake.waitFor(1);
+				const retiring = session.extensionRunner;
+				const sessionId = sessionManager.getSessionId();
+				const retiringContext = retiring.createContext();
+				const retiringHost = session.getAgentTaskHost();
+				await session.reload({ failOnExtensionErrors: true });
+				assert.equal(committed, true, "the real SDK transaction committed");
+				assert.notEqual(session.extensionRunner, retiring);
+				assert.equal(session.extensionRunner.createContext().sessionManager, sessionManager);
+				assert.equal(sessionManager.getSessionId(), sessionId, "reload preserves the public session identity");
+				assert.notEqual(session.getAgentTaskHost(), retiringHost, "reload installs a fresh task owner");
+				assert.throws(() => retiringContext.getAgentTaskHost!(), /stale|closed|invalid/i);
+				await assert.rejects(
+					retiringHost.startAgentTask(
+						{ kind: "agent", agent: "retired", task: "must not launch" },
+						"retired-reload-owner",
+						() => {
+							throw new Error("Retired owner dispatched work");
+						},
+					),
+					/Task owner is closed/,
+				);
+				await fake.waitFor(2);
+				assert.deepEqual(
+					(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
+					["report-agent", "report-agent"],
+					"retiring runner shutdown must not release the candidate's claim",
+				);
+				await session.prompt("Continue working after reload");
+				await fake.waitFor(4);
+				assert.equal(session.agent.state.errorMessage, undefined);
+				assert.deepEqual(session.messages.at(-1)?.content, [{ type: "text", text: "Continued after reload" }]);
+				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+				await session.extensionRunner.emit({ type: "agent_start" });
+				const records = await fake.calls();
+				assert.deepEqual(
+					records.map((call) => call.phase),
+					Array.from({ length: 5 }, () => ["start", "end"]).flat(),
+				);
+				const states = ["idle", "idle", "working", "idle", undefined];
+				const calls = records.filter((call) => call.phase === "start");
+				for (const [index, call] of calls.entries()) {
+					const seq = arg(call.args, "--seq")!;
+					if (index) assert.ok(Number(seq) > Number(arg(calls[index - 1].args, "--seq")));
+					assert.deepEqual(call.args, [
+						"pane",
+						states[index] ? "report-agent" : "release-agent",
+						fake.environment.paneId,
+						"--source",
+						"custom:atomic",
+						"--agent",
+						"atomic",
+						"--seq",
+						seq,
+						...(states[index] ? ["--state", states[index]] : []),
+						...(index === 0 || index === 1
+							? [
+									"--agent-session-id",
+									sessionManager.getSessionId(),
+									"--agent-session-path",
+									sessionManager.getSessionFile()!,
+								]
+							: []),
+					]);
+					assert.equal(call.socket, fake.environment.socketPath);
+				}
+			} finally {
+				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+				await session.dispose();
 			}
 		} finally {
-			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-			session.dispose();
+			await fake.dispose();
 		}
-	} finally {
-		await fake.dispose();
-	}
-});
+	},
+	REAL_SDK_BUILTIN_RELOAD_TIMEOUT_MS,
+);
 
 // PR #2925: exercise stale events before runner invalidation can reject their contexts.
 test("same-session retiring runner cannot cancel a pending claim or reclaim the active successor", async () => {
@@ -380,6 +389,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 			});
 			const sessionManager = SessionManager.create(fake.dir, fake.dir);
 			const { session } = await createAgentSession({
+				builtins: { subagents: false, mcp: false, "web-access": false },
 				extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
 				cwd: fake.dir,
 				agentDir: fake.dir,
@@ -491,11 +501,15 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 				}
 			} finally {
 				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-				session.dispose();
-				providerFailure?.mockRestore();
+				try {
+					await session.dispose();
+				} finally {
+					providerFailure?.mockRestore();
+				}
 			}
 		} finally {
 			await fake.dispose();
 		}
 	},
+	REAL_SDK_BUILTIN_RELOAD_TIMEOUT_MS,
 );

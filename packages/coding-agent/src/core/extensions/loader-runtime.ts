@@ -1,5 +1,6 @@
 import { extensionWorkOpen, trackExtensionWork } from "./extension-work.ts";
 import { hostInputError } from "./host-input.js";
+import { McpServerRegistry } from "./mcp-server-registry.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
 import type {
 	Extension,
@@ -10,6 +11,7 @@ import type {
 	RegisteredTool,
 } from "./types.ts";
 import { WorkflowActivityHub } from "./workflow-activity-hub.js";
+import { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 /** Prepared generations do not own session event delivery until bound by a runner. */
 export const boundExtensionRuntimes = new WeakSet<ExtensionRuntime>();
@@ -62,6 +64,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		workflowActivityHub: new WorkflowActivityHub((operation) =>
 			extensionWorkOpen(runtime) ? trackExtensionWork(runtime, operation) : Promise.resolve(),
 		),
+		workflowRunControlHub: new WorkflowRunControlHub(),
+		mcpServerRegistry: new McpServerRegistry(),
 		sendMessages: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
@@ -181,6 +185,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
 						? { constrainedSampling: definition.constrainedSampling }
 						: {}),
 					promptGuidelines: definition.promptGuidelines,
+					exposure: definition.exposure ?? "direct",
+					namespace: definition.namespace,
+					annotations: definition.annotations,
 					sourceInfo,
 				});
 				names.add(pending.name);
@@ -238,6 +245,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			} catch (error) {
 				failures.push(error);
 			}
+			runtime.workflowRunControlHub.dispose();
 			for (const unsubscribe of eventBusUnsubscribers) {
 				try {
 					unsubscribe();

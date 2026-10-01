@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import { resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
@@ -13,7 +14,9 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { bindExtensionContextPublication } from "./extensions/runner-context.ts";
-import type { ExtensionRuntime } from "./extensions/types.ts";
+import type { ExtensionRuntime, RegisteredTool } from "./extensions/types.ts";
+import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
+import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -32,6 +35,8 @@ import {
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
+import { createSyntheticSourceInfo } from "./source-info.ts";
+import { getDefaultToolNames } from "./tools/index.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -311,6 +316,60 @@ export function _bindExtensionCore(
 	runner.bindWorkOwner(this);
 	bindExtensionContextPublication(runner.createContext(), publication && ((effect) => publication.stageStart(effect)));
 	runner.bindTaskHost(() => this.getAgentTaskHost());
+	// A transactional successor starts before it is published. Its callbacks must inspect and
+	// activate its own definitions, never the retiring session's registry. Keep this view local;
+	// only accepted candidates release the deferred activation into the live session.
+	const candidateDefinitions = () => {
+		const definitions = new Map<string, RegisteredTool>();
+		const permitted = (name: string) =>
+			(!this._allowedToolNames || this._allowedToolNames.has(name)) && !this._excludedToolNames?.has(name);
+		for (const [name, definition] of this._baseToolDefinitions) {
+			if (permitted(name))
+				definitions.set(name, {
+					definition,
+					sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
+				});
+		}
+		const registered = runner
+			.getAllRegisteredTools()
+			.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
+		for (const tool of registered) {
+			const name = tool.definition.name;
+			if (
+				permitted(name) ||
+				(!this._excludedToolNames?.has(name) && isSelectedNativeMcpTool(tool, this._subagentPolicy))
+			)
+				definitions.set(name, tool);
+		}
+		for (const definition of this._customTools) {
+			if (!isMandatoryRuntimeTool(definition.name) && permitted(definition.name))
+				definitions.set(definition.name, {
+					definition,
+					sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
+				});
+		}
+		return definitions;
+	};
+	let candidateActiveTools = this.getActiveToolNames();
+	const candidateRegistryNames = new Set(this._baseToolDefinitions.keys());
+	const refreshCandidateTools = () => {
+		const definitions = candidateDefinitions();
+		for (const [name, { definition }] of definitions) {
+			const exposure = definition.exposure ?? "direct";
+			if (
+				!candidateRegistryNames.has(name) &&
+				definition.defaultActive !== false &&
+				(exposure === "direct" || exposure === "model-only")
+			)
+				candidateActiveTools.push(name);
+			candidateRegistryNames.add(name);
+		}
+		candidateActiveTools = [...new Set(candidateActiveTools)].filter((name) => {
+			const tool = definitions.get(name);
+			return tool && tool.definition.exposure !== "hidden";
+		});
+		return definitions;
+	};
 	const getCommands = (): SlashCommandInfo[] => {
 		const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
 			name: command.invocationName,
@@ -405,14 +464,41 @@ export function _bindExtensionCore(
 					});
 				} else this.sessionManager.appendLabelChange(entryId, label);
 			},
-			getActiveTools: () => this.getActiveToolNames(),
-			getAllTools: () => this.getAllTools(),
+			getActiveTools: () => {
+				if (!publication) return this.getActiveToolNames();
+				refreshCandidateTools();
+				return [...candidateActiveTools];
+			},
+			getAllTools: () => {
+				if (!publication) return this.getAllTools();
+				return [...refreshCandidateTools().values()].map(({ definition, sourceInfo }) => ({
+					name: definition.name,
+					description: definition.description,
+					parameters: definition.parameters,
+					...(Object.hasOwn(definition, "constrainedSampling")
+						? { constrainedSampling: definition.constrainedSampling }
+						: {}),
+					promptGuidelines: definition.promptGuidelines,
+					exposure: definition.exposure ?? "direct",
+					namespace: definition.namespace,
+					annotations: definition.annotations,
+					sourceInfo,
+				}));
+			},
 			setActiveTools: (toolNames) => {
-				if (publication) publication.defer(() => this.setActiveToolsByName(toolNames));
-				else this.setActiveToolsByName(toolNames);
+				if (publication) {
+					const definitions = refreshCandidateTools();
+					candidateActiveTools = [...new Set(toolNames)].filter((name) => {
+						const tool = definitions.get(name);
+						return tool && tool.definition.exposure !== "hidden";
+					});
+					const accepted = [...candidateActiveTools];
+					publication.defer(() => this.setActiveToolsByName(accepted));
+				} else this.setActiveToolsByName(toolNames);
 			},
 			refreshTools: () => {
-				if (!publication) this._refreshToolRegistry();
+				if (publication) refreshCandidateTools();
+				else this._refreshToolRegistry();
 			},
 			getCommands,
 			setModel: async (model) => {
@@ -432,6 +518,9 @@ export function _bindExtensionCore(
 		},
 		{
 			getModel: () => this.model,
+			executeTool: (callerId, name, args, options) => executeNestedToolCall(this, callerId, name, args, options),
+			getCallableTools: () => getCallableTools(this),
+			getSettings: () => this.settingsManager.getSettings(),
 			// Read through the public accessor, not `_scopedModels`: in the isolated
 			// engine the host-side facade session has `scopedModels` redefined by
 			// RemoteModelCatalog to the engine's catalogue, and the private field it
@@ -579,6 +668,11 @@ async function reloadOwnedGeneration(
 	const oldRunner = this._extensionRunner;
 	const previousFlagValues = oldRunner.getExplicitFlagValues();
 	const activeToolNames = this.getActiveToolNames();
+	const previousDefaultTools = this._appliedDefaultTools;
+	const activeToolsAfterReload = (defaultTools: readonly string[]) => [
+		...activeToolNames,
+		...(this._usesDefaultTools ? defaultTools.filter((name) => !previousDefaultTools.has(name)) : []),
+	];
 	const prepareResourceReload = this._resourceLoader.prepareReload?.bind(this._resourceLoader);
 	if (prepareResourceReload === undefined || this._resourceLoader.supportsTransactionalReload?.() === false) {
 		if (options?.failOnExtensionErrors) {
@@ -589,7 +683,13 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
-		this._buildRuntime({ activeToolNames, flagValues: previousFlagValues, includeAllExtensionTools: true });
+		const defaultTools = this.settingsManager.getDefaultTools() ?? getDefaultToolNames();
+		this._buildRuntime({
+			activeToolNames: activeToolsAfterReload(defaultTools),
+			flagValues: previousFlagValues,
+			includeAllExtensionTools: true,
+		});
+		this._appliedDefaultTools = new Set(defaultTools);
 		retainedRuntimes.add(this._resourceLoader.getExtensions().runtime);
 		for (const extension of this._resourceLoader.getExtensions().extensions)
 			factoryAcquisitions.getStore()?.pending?.delete(extension);
@@ -612,6 +712,7 @@ async function reloadOwnedGeneration(
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
+	const defaultTools = settingsTransaction.settingsManager.getDefaultTools() ?? getDefaultToolNames();
 	const errors = resourceTransaction.loader.getExtensions().errors;
 	const extensionsResult = resourceTransaction.loader.getExtensions();
 	for (const [name, value] of previousFlagValues) {
@@ -712,11 +813,12 @@ async function reloadOwnedGeneration(
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
 		this._buildRuntime({
-			activeToolNames,
+			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 			preserveRunner: true,
 		});
+		this._appliedDefaultTools = new Set(defaultTools);
 	} catch (error) {
 		failures.push(error);
 	}

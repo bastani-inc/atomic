@@ -217,7 +217,7 @@ export function getLatestSessionSummary(entries: FileEntry[]): SessionSummaryEnt
 	return undefined;
 }
 
-export function getLatestSessionName(entries: SessionEntry[]): SessionNameState {
+export function getLatestSessionName(entries: readonly FileEntry[]): SessionNameState {
 	// Walk entries in reverse to find the latest session_info entry. An existing entry
 	// with an empty name is an explicit clear, not a never-named session: the fact that
 	// a session was named is separate from the name it currently holds (upstream 7bdb16c2).

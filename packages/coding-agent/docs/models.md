@@ -29,6 +29,7 @@ For choosing which model to use rather than how to declare one, see [Model selec
 - [Provider Configuration](/models/reference#provider-configuration)
 - [Model Configuration](/models/reference#model-configuration)
 - [GPT-6-Astra Built-in Models](/models/reference#gpt-6-astra-built-in-models)
+- [GPT-6.1 Sol](/models/reference#gpt-6-1-sol)
 - [Request-wide Cost Tiers](/models/reference#request-wide-cost-tiers)
 - [Overriding Built-in Providers](/models/reference#overriding-built-in-providers)
 - [Per-model Overrides](/models/reference#per-model-overrides)

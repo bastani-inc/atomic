@@ -57,6 +57,12 @@ Run `atomic auth check --provider <provider>` to verify the effective credential
 
 Checks refresh expired OAuth credentials by default through the ordinary locked `auth.json` path. Use `--no-refresh` for a read-only probe: it neither creates nor mutates an auth file and reads Atomic's primary `~/.atomic/agent/auth.json` plus legacy `~/.pi/agent/auth.json` paths with the normal precedence. Readiness output contains no credential material unless you explicitly ask for `--credentials` with `--provider` or an exact `--model` target. That opt-in treats stdout or the JSON `credentials` field as a credential export; it refuses an OAuth token with less than 30 minutes of life when `--no-refresh` prevents a refresh.
 
+### OpenAI API or ChatGPT sign-in
+
+Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. The ChatGPT option authenticates the `openai` provider for requests to OpenAI's Responses API; it is separate from `/login openai-codex`, which uses the Codex backend. Choose the provider/model identity appropriate to the account and endpoint you intend to use.
+
+Complete the browser callback, or paste the full callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the final URL from its address bar, including `code`, `state`, and `client_id`, and paste it into Atomic. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
+
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription
@@ -64,11 +70,28 @@ Checks refresh expired OAuth credentials by default through the ordinary locked 
 
 If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
 
-GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Codex currently marks Astra as hidden in its bundled catalog, so access can depend on the account, rollout, and minimum client policy even though Atomic lists the model.
+GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Access can still depend on the account, rollout, and minimum client policy even though Atomic lists the model.
 
-GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`. Each has a derived `-fast` choice, such as `openai-codex/gpt-6-sol-fast`, that sends the base upstream model with `service_tier: priority`. GitHub Copilot does not list Sol or Luna yet, so there is no Copilot fast choice for them.
+GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`. Each has a derived `-fast` choice, such as `openai-codex/gpt-6-sol-fast`, that sends the base upstream model with `service_tier: priority`. Copilot's bundled catalog and account policy determine which Sol models are available; fast siblings require an exact advertised ID.
 
-Codex describes Astra Fast as "2x speed, increased usage." OpenAI prices Fast at twice the applicable API token rates. Pick the fast identity only when the latency reduction is worth the higher usage and price.
+GPT-6.1 Sol is selectable as `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol`, with derived `-fast` siblings. For example, `atomic --model openai-codex/gpt-6.1-sol-fast:high` selects priority routing at high effort. Sol 6.1 supports `low`, `medium`, `high`, `xhigh`, and `max`; Codex's `minimal` UI alias also sends `low`. `off` is unavailable. See [Sol 6.1 limits and pricing](/models/reference#gpt-6-1-sol).
+
+GPT-6.1 Sol supports Standard and Fast only, so it has no `-ultrafast` choice yet.
+
+#### Fast and Ultrafast tiers
+
+Atomic offers a tier only for the models that advertise it, following Codex's per-model catalog and OpenAI's published API pricing:
+
+- **Fast** (`service_tier: priority`): every Codex model except `gpt-5.3-codex-spark`, and the `openai/*` models listed on OpenAI's [Fast pricing](https://developers.openai.com/api/docs/pricing) tab. For example, `openai/gpt-5-nano`, `openai/gpt-5-pro`, and `openai/o1` have no `-fast` choice.
+- **Ultrafast** (`service_tier: "ultrafast"`): GPT-6 Astra only, as `openai/gpt-6-astra-ultrafast` and `openai-codex/gpt-6-astra-ultrafast`. For example, `atomic --model openai-codex/gpt-6-astra-ultrafast:high`. Each keeps the base upstream model, following [Codex's tier-switching protocol](https://github.com/openai/codex/blob/17a9df60e420b58e3edc55efb1bb052e39492bbc/codex-rs/core/tests/suite/agent_websocket.rs#L518-L605). GPT-5.6 Sol Ultrafast is an API-only limited preview without published rates, so Atomic does not offer it.
+
+Listing a choice does not establish that your account has access. Ultrafast needs an eligible plan: Pro $500 or an eligible Enterprise or Edu workspace with ChatGPT sign-in. With an API key, it is available at low default rate limits. If the provider rejects a Fast or Ultrafast choice you selected, the request fails; Atomic does not retry it at a lower tier.
+
+A tier the model does not advertise is left out of the request, which then runs at standard processing instead of failing. `flex` is always passed through. With Codex, an explicit `default` sends no tier, as in Codex. With the OpenAI API, `default` is sent as requested.
+
+Usage is priced at the tier that served the request, using OpenAI's published per-model rates. Fast is usually twice Standard but varies by model: GPT-5.5 is 2.5x and GPT-4o is 1.7x. GPT-6 Astra Ultrafast is six times Standard: $60 input, $6 cached input, $75 cache write, and $300 output per million tokens up to 272,000 input tokens, and $120, $12, $150, and $450 above that ([OpenAI API pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast)). If OpenAI serves a Fast request at Standard, the usage is priced at Standard. With ChatGPT sign-in, [Codex](https://developers.openai.com/codex/speed) counts Fast against included limits at 2.5x and Astra Ultrafast at 8x, and bills purchased credits at 2x and 6x. Atomic's displayed cost uses the API rates.
+
+Auto routing excludes Ultrafast unless `modelConstraints.allowedModels` explicitly lists its exact provider/model ID. When explicitly allowed, it uses base-model benchmark evidence without an additional latency bonus. Normal and Fast choices keep their existing automatic selection behavior. Pick a fast identity only when the latency reduction is worth the higher usage and price.
 
 ### Fast models
 
@@ -76,7 +99,7 @@ Fast inference is a model choice, not a mode. Where a provider supports it, Atom
 
 Four provider paths produce these variants:
 
-- Only first-party OpenAI `openai/*` and OpenAI Codex `openai-codex/*` models send the **base** upstream model ID plus the fixed `service_tier: priority`. A renamed provider, proxy, Azure OpenAI, OpenRouter, or generic OpenAI-compatible provider does not receive a synthetic fast variant.
+- First-party OpenAI `openai/*` and OpenAI Codex `openai-codex/*` models that advertise Fast (see [Fast and Ultrafast tiers](#fast-and-ultrafast-tiers)) send the **base** upstream model ID plus the fixed `service_tier: priority`. A renamed provider, proxy, Azure OpenAI, OpenRouter, or generic OpenAI-compatible provider does not receive a synthetic fast variant.
 - First-party xAI `xai/*` models get a fast variant for every Grok model, such as `xai/grok-4.7-fast`. It sends the **base** upstream model ID with xAI's [Priority Processing](https://docs.x.ai/developers/advanced-api-usage/priority-processing) `service_tier: priority`. xAI has no separate `-fast` model IDs for current Grok models. OpenRouter, Vercel AI Gateway, and renamed or proxied xAI-compatible providers do not receive a synthetic fast variant.
 - First-party Anthropic `anthropic/*` exposes [fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8: `anthropic/claude-opus-5-5-fast`, `anthropic/claude-opus-5-fast`, and `anthropic/claude-opus-4-8-fast`. Each sends the **base** upstream model ID with `speed: "fast"` and the `fast-mode-2026-02-01` beta header. It works with API keys and Claude subscription logins. Amazon Bedrock, Google Vertex, GitHub Copilot, OpenRouter, and renamed or proxied Anthropic-compatible providers do not receive a synthetic fast variant.
 - GitHub Copilot exposes only the real fast sibling IDs the OAuth model catalog advertises for the signed-in account, and only when the corresponding base model exists in Atomic's Copilot catalog. It sends those suffixed IDs verbatim with no OpenAI service-tier field. Copilot fast models require the account catalog metadata obtained through `/login`; a raw `COPILOT_GITHUB_TOKEN` does not provide that metadata.
@@ -87,11 +110,11 @@ A fast variant's route owns two request fields: the upstream model ID and the se
 
 Models served by an extension's own stream function, including native provider registrations, do not get automatic fast variants. Their normal models and custom transport remain available.
 
-Fast behavior comes from explicit route metadata attached when the variant is derived — never from the `-fast` suffix. If a provider, a `models.json` custom model, or an extension already defines that exact `-fast` ID, that model wins: it routes exactly as it is declared, Atomic suppresses the derived duplicate, and interactive startup and `--list-models` print a warning naming the model to rename or remove. Fast variants are not derived for Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers.
+Fast behavior comes from explicit route metadata attached when the variant is derived, never from the `-fast` or `-ultrafast` suffix. If a provider, a `models.json` custom model, or an extension already defines that exact variant ID, that model wins: it routes exactly as declared, Atomic suppresses the derived duplicate, and startup and `--list-models` name the collision. No synthetic variant is derived for Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers. Ultrafast derivation is restricted to first-party OpenAI and Codex models that advertise the tier; an extension-owned transport does not get it.
 
 Provider-owned names ending in `-fast` remain ordinary exact IDs. Vercel AI Gateway advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`; OpenRouter advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`. Their catalog prices and routing apply, not Atomic's first-party fast routing. Check the live catalog before selecting one.
 
-First-party Codex fast models keep their priority routing across retries and transport changes. Renaming a provider or setting `serviceTier: priority` on a normal model does not grant fast-model identity.
+First-party Codex variants keep their exact priority or ultrafast routing across retries and transport changes. Renaming a provider or setting a service tier on a normal model does not grant variant identity.
 
 Pick fast variants deliberately in workflows: parallel fan-out multiplies provider usage, and priority-tier requests are billed at a higher rate.
 
@@ -101,11 +124,19 @@ Anthropic fast mode delivers up to 2.5x higher output tokens per second at twice
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
 
+Run `/login anthropic` and choose subscription authentication. **Browser login (default)** uses a local callback and still accepts a pasted redirect URL. Choose **Copy code login (headless)** when your browser runs on another machine: complete sign-in in that browser, then paste the `code#state` value Anthropic displays into Atomic. This method does not need a reachable local callback.
+
 For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. A populated bearer token counts as configured Anthropic authentication, so `/model`, saved/default selection, cycling, RPC catalogs, and isolated model pickers keep Anthropic models available. Atomic sends it as `Authorization: Bearer …` for normal turns, branch summaries, and Verbatim Compaction without replacing caller-supplied custom headers.
 
 Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select the exact `anthropic/claude-opus-5-*` entry through `/model`; Bedrock uses its catalog-advertised inference profile. `xhigh` appears only when the chosen entry advertises it. Bedrock requests retain adaptive thinking, prompt caching, and AWS validation/error details from the provider runtime.
 
 `ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
+
+### Anthropic workload identity federation
+
+With no Anthropic key, bearer token, or login configured, Atomic uses workload identity federation when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` are all set. The Anthropic SDK exchanges the identity token for a short-lived access token and refreshes it, re-reading the token file each time, so keep that file fresh in long sessions. `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are sent when set.
+
+Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. Federation applies only to the `anthropic` provider, not to other Anthropic-compatible providers.
 
 ### GitHub Copilot
 
@@ -113,6 +144,10 @@ Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock
 - `COPILOT_GITHUB_TOKEN` is read as an API key when you prefer an environment variable over `/login`
 - Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+GPT-6.1 Sol is included as `github-copilot/gpt-6.1-sol`. Select it with `atomic --model github-copilot/gpt-6.1-sol:high`. It uses Copilot's Responses endpoint and supports `low`, `medium`, `high`, `xhigh`, and `max`, not `off` or `minimal`.
+
+Copilot metadata lists a 1,050,000-token context, 922,000-token input limit, and 128,000-token output limit; account policy still controls availability. Copilot Fast choices require exact account advertisement. Codex's Ultrafast service tier does not apply to Copilot.
 
 Atomic includes a provisional `github-copilot/gpt-6-astra` entry routed through Copilot's Responses endpoint. Until Copilot publishes metadata, it uses Astra's known text/image capabilities, 272,000 default context, 128,000 output limit, and `low` through `max` reasoning. Zero catalog costs mean Copilot pricing is unknown, not free. Copilot metadata takes precedence when present, and the OAuth account catalog still controls availability. This entry does not guarantee that Copilot has enabled Astra for your account.
 
@@ -506,7 +541,7 @@ For router-mode discovery, load/unload management, and Hugging Face downloads wi
 
 Use `/login typesafe` to save an API key under `typesafe` in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key. `/logout typesafe` removes the saved TypeSafe credential; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
 
-`openrouter/~typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` are not registered classifiers and no longer resolve. Use `typesafe/jev-latest` or another classifier the current registry lists, or use a chat model.
+Atomic also registers `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` as classifiers. Use the corresponding gateway's credentials (`AI_GATEWAY_API_KEY` or `/login vercel-ai-gateway`; `/login opencode` for Zen) and name the exact ID. They do not appear in the chat model selector. Gateway Jev uses its TypeSafe endpoint, not Chat Completions. The old `openrouter/~typesafe/jev-latest` ID remains unregistered.
 
 An explicit `routerModel` other than `auto` selects that exact registered chat or classifier model for workflow-stage and subagent `model: "auto"` routing. An unset or `auto` router uses the current chat model. General `generateStructuredOutput()` calls and the `structured_output` tool select their own model: an optional exact `model`, then `fallbackModels`, then the current chat model. Those calls resolve the ID through the current model registry and use the generic classify operation for a registered classifier, including `typesafe/jev-latest`. They do not inherit `routerModel`. A catalog entry does not prove that classify is available or entitled. User-issued `/workflow` commands launch directly.
 

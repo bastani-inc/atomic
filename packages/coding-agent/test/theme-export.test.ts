@@ -1,8 +1,10 @@
+import assert from "node:assert/strict";
+import { colorToHex, parseColor } from "@earendil-works/pi-tui";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getThemeExportColors } from "../src/modes/interactive/theme/theme.ts";
+import { getResolvedThemeColors, getThemeByName, getThemeExportColors } from "../src/modes/interactive/theme/theme.js";
 
 type ThemeFile = {
 	name: string;
@@ -100,5 +102,21 @@ describe("getThemeExportColors", () => {
 			cardBg: "#005f87",
 			infoBg: undefined,
 		});
+	});
+	it("renders and exports OKHSL values in existing custom themes", () => {
+		const darkTheme = JSON.parse(
+			readFileSync(new URL("../src/modes/interactive/theme/dark.json", import.meta.url), "utf-8"),
+		) as ThemeFile;
+		const color = "okhsl(295 0.6 0.5)";
+		const custom = {
+			...darkTheme,
+			name: "custom-okhsl",
+			colors: { ...darkTheme.colors, accent: color },
+			export: { pageBg: color },
+		};
+		writeFileSync(join(process.env.ATOMIC_CODING_AGENT_DIR!, "themes", "custom-okhsl.json"), JSON.stringify(custom));
+		assert.ok(getThemeByName("custom-okhsl")?.getFgAnsi("accent"));
+		assert.equal(getResolvedThemeColors("custom-okhsl").accent, colorToHex(parseColor(color)));
+		assert.equal(getThemeExportColors("custom-okhsl").pageBg, colorToHex(parseColor(color)));
 	});
 });

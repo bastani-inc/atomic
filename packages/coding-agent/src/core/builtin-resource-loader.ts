@@ -120,11 +120,25 @@ class BuiltinResourceLoader implements ResourceLoader {
 						canonical(resource.path).startsWith(`${canonical(location.packageDir)}${sep}`),
 				),
 		);
+		const mergeWorkflows = (caller: ResolvedResource[]) => {
+			const workflows = new Map<string, ResolvedResource>();
+			for (const resource of [...resources.workflows, ...caller]) {
+				if (!this.isDisabledPath(resource.path)) workflows.set(canonical(resource.path), resource);
+			}
+			return [...workflows.values()];
+		};
 		const loaded = await loadExtensions(
 			paths.map((resource) => resource.path),
 			this.cwd,
 			getExtensionRuntimeEventBus(target.runtime),
-			{ get: () => resources.workflows, refresh: async () => resources.workflows },
+			{
+				get: () => mergeWorkflows(this.delegate.getWorkflowResources?.() ?? []),
+				refresh: async () =>
+					mergeWorkflows(
+						(await this.delegate.refreshWorkflowResources?.()) ?? this.delegate.getWorkflowResources?.() ?? [],
+					),
+				getMcpServers: () => this.delegate.getMcpServerContributions?.() ?? [],
+			},
 			target.runtime,
 		);
 		for (const extension of loaded.extensions) markTrustedMandatoryRuntimeExtension(extension);

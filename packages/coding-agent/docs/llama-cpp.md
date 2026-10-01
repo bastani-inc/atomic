@@ -68,6 +68,19 @@ If the router disconnects, choose **Retry** to reconnect and refresh state witho
 
 Each llama model uses the router-reported loaded context (`meta.n_ctx`, then training context, otherwise Atomic's fallback) for both `contextWindow` and `maxTokens`; Atomic no longer applies a separate 16K output cap. The server remains authoritative and may impose a smaller practical generation limit.
 
+## Classification
+
+Every model listed for chat is also listed as a classifier model with the same ID and the `llama-cpp-classify` API. Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can make `model: "auto"` routing decisions. Classifier models never appear in `/model`.
+
+The model does not generate an answer. Each question becomes one chat prompt: the state, every question of the request, the state again, and then the question with its answers under single-token labels. Labels are letters for a choice (up to 62 options), `Yes`/`No` for a bool, and digits for a score (up to 10 levels). Atomic reads the probabilities of the labels as the next token and normalizes them. A choice returns every option's probability and a confidence of `(n * peak - 1) / (n - 1)`; a score returns the expected level.
+
+- An explicit [`routerModel`](/settings#routermodel) resolves a classifier before a chat model, so `routerModel: "llama.cpp/<id>"` routes with the classifier, not the chat model. A routing shortlist with more than 62 models fails on the classifier, and routing switches to the current chat model. The **Router model** picker lists each llama.cpp model twice, once as a classifier and once as a chat model; both rows save the same ID.
+- The `structured_output` tool and `generateStructuredOutput()` resolve the chat model first when a chat and a classifier model share an ID, so naming `llama.cpp/<id>` there keeps using the chat model.
+- Raw label probabilities are usually overconfident. The `temperature` option of SDK `classify()` calls divides the label logits before normalizing; values above 1 soften the distribution. It changes no answer.
+- Questions run one after another. Everything before the final question is the same for all questions of a request, so the server's prompt cache evaluates it once. The state appears twice, so it needs twice its size in context.
+- Small models may follow instructions written inside the state. The prompt tells the model to judge the state as data, but that is not a guarantee.
+- Hybrid models such as Qwen3.5 cannot rewind a partially cached prompt without context checkpoints. If each question reprocesses the whole state, start the router with `--ctx-checkpoints 32 --checkpoint-min-step 0`.
+
 ## Troubleshooting
 
 ```bash

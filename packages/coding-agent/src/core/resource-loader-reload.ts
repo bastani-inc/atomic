@@ -4,7 +4,7 @@ import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
-import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
+import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
@@ -25,11 +25,13 @@ import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./reso
 import { collectExtensionPackageWarnings, mergeExtensionWarnings } from "./resource-loader-extension-warnings.ts";
 import {
 	loadExtensionFactories,
+	loadExtensionPaths,
 	loadFinalExtensionSet,
 	resolveInheritedExtensionOverlaps,
 } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import {
+	collectMcpServerContributions,
 	collectWorkflowResources,
 	createInheritanceSnapshotProvider,
 	createWorkflowResourceProvider,
@@ -40,6 +42,7 @@ import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths
 import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 import { buildSkillCatalog } from "./skill-catalog.ts";
+import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
 function getEnabledResources(
@@ -127,6 +130,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	);
 	const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	state.workflowResources = workflowResources;
+	state.mcpServerContributions = collectMcpServerContributions(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
@@ -137,14 +141,12 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 			cliEnabledExtensions,
 			state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
 		),
-	);
+	).filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX));
 	const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
-	const extensionsResult = await loadExtensionsCached(
+	const extensionsResult = await loadExtensionPaths(
+		loader,
 		extensionPaths,
-		state.cwd,
-		state.eventBus,
 		workflowResourceProvider,
-		undefined,
 		inheritanceSnapshotProvider,
 	);
 	mergeExtensionWarnings(extensionsResult, packageWarnings);
@@ -218,6 +220,7 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
 			state.workflowResources = [];
+			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
 			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
@@ -301,6 +304,11 @@ export async function prepareDefaultResourceLoaderReload(
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes, metadataByPath);
 		const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 		state.workflowResources = workflowResources;
+		state.mcpServerContributions = collectMcpServerContributions(
+			resolvedPaths,
+			cliExtensionPaths,
+			builtinPackagePaths,
+		);
 		const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
 		// The builtin Herdr reporter supersedes the installed file integration in a

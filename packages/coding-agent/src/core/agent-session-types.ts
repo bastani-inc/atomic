@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, ImageContent, Model, TextContent, Usage } from "@bastani/pi-ai/compat";
 import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
@@ -23,7 +23,7 @@ import type { SourceInfo } from "./source-info.ts";
 export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSummary";
 
 export type AgentSessionEvent =
-	| AgentEvent
+	| (AgentEvent & { parentToolCallId?: string })
 	| { type: "agent_settled" }
 	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
 	| {
@@ -160,6 +160,7 @@ export interface AgentSessionConfig {
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	initialActiveToolNames?: string[];
+	usesDefaultTools?: boolean;
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	baseToolsOverride?: Record<string, AgentTool>;
@@ -236,6 +237,8 @@ export interface SessionStats {
 	};
 	cost: number;
 	contextUsage?: ContextUsage;
+	/** Usage of the newest assistant message, which the footer's cache-hit rate reads. */
+	latestAssistantUsage?: Usage;
 }
 
 export interface ToolDefinitionEntry {

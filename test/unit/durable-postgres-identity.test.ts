@@ -18,6 +18,7 @@ import { createServer, type Server } from "node:net";
 import { dirname, join, sep } from "node:path";
 import { Client } from "pg";
 import { afterEach, test, vi } from "vitest";
+import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import {
 	embeddedDbosSystemDatabaseUrl,
 	embeddedPostgresHealth,
@@ -35,6 +36,7 @@ import {
 	managedPostgresLaunchExecutable,
 	managedPostgresRuntimeHealthy,
 	managedPostmaster,
+	POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	POSTGRES_IDENTITY_SQL,
 	postgresRuntimeFilesExist,
 	preferredPostgresPort,
@@ -1312,6 +1314,82 @@ test("a non-PostgreSQL listener cannot satisfy the bounded SQL probe", async () 
 	assert.equal(foreign.server.listening, true);
 });
 
+test("a query read timeout is not reported as lost connectivity by the identity probe", async () => {
+	const timeout = new Error("Query read timeout");
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+	vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
+	const query = vi.spyOn(Client.prototype, "query") as unknown as { mockRejectedValue(error: Error): void };
+	query.mockRejectedValue(timeout);
+	await assert.rejects(probePostgresIdentity(1), (error) => error === timeout);
+});
+
+test.each([
+	Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+	Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+	Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+	Object.assign(new Error("terminating connection due to administrator command"), { code: "57P01" }),
+	Object.assign(new Error("terminating connection"), { code: "57P02" }),
+	Object.assign(new Error("the database system is starting up"), { code: "57P03" }),
+	new Error("Connection terminated unexpectedly"),
+	new Error("timeout expired"),
+	new Error("Connection terminated due to connection timeout"),
+])("the identity probe still reports lost connectivity as unavailable: %s", async (failure) => {
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+	vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
+	const query = vi.spyOn(Client.prototype, "query") as unknown as { mockRejectedValue(error: Error): void };
+	query.mockRejectedValue(failure);
+	assert.equal(await probePostgresIdentity(1), undefined);
+});
+
+test("startup readiness retries an existing server whose identity query read-times-out", async () => {
+	const f = fixture();
+	f.pidfile(await availablePostgresPort(0));
+	let probes = 0;
+	await hooks.ensureCluster({
+		...f.options,
+		probeIdentity: async (port) => {
+			if (++probes === 1) throw new Error("Query read timeout");
+			return f.row(port);
+		},
+	});
+	assert.ok(probes >= 2);
+	assert.ok(embeddedPostgresHealth());
+});
+
+test("a monitoring probe read timeout is a dependency failure that keeps consumers and never recovers", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	let slow = false;
+	let starts = 0;
+	await hooks.ensureCluster({
+		...f.options,
+		probeIdentity: async (candidate) => {
+			if (slow) throw new Error("Query read timeout");
+			return f.row(candidate);
+		},
+	});
+	hooks.setRetainedPostgresSpawner(() => {
+		starts++;
+		throw new Error("a slow health query must not start PostgreSQL");
+	});
+	const health = embeddedPostgresHealth()!;
+	await health.check();
+	let invalidations = 0;
+	health.subscribe(() => invalidations++);
+	slow = true;
+	const failure = await health.check().then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isDbosDependencyError(failure), true);
+	assert.equal(invalidations, 0);
+	assert.equal(starts, 0);
+	slow = false;
+	assert.equal(await health.check(), embeddedDbosSystemDatabaseUrl());
+	assert.equal(invalidations, 0);
+});
+
 test("unregistered existing data is never adopted or initialized", async () => {
 	const f = fixture();
 	removeTempDirectory(join(f.root, "v18.shared"));
@@ -1791,5 +1869,81 @@ test("borrowed connections prove their own SQL identity before caller queries", 
 	await assert.rejects(health.validate(client), /identity mismatch/);
 	assert.equal(invalidations, 1);
 	assert.equal(query.mock.calls.length, 1);
-	assert.deepEqual(query.mock.calls[0], [{ text: POSTGRES_IDENTITY_SQL, query_timeout: 1000 }]);
+	assert.deepEqual(query.mock.calls[0], [
+		{ text: POSTGRES_IDENTITY_SQL, query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS },
+	]);
+});
+
+async function healthyBorrowedConnection() {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	await hooks.ensureCluster(f.options);
+	const health = embeddedPostgresHealth()!;
+	await health.check();
+	const client = Object.assign(new Client(), { release() {} });
+	let invalidations = 0;
+	health.subscribe(() => invalidations++);
+	return { f, port, health, client, invalidations: () => invalidations };
+}
+
+// pg rejects a query that outlives its query_timeout, exactly as a starved host makes a healthy reply late.
+function delayedReply(replyMs: number, rows: unknown[]): Client["query"] {
+	return ((config: { query_timeout?: number }) =>
+		new Promise((resolve, reject) => {
+			if (config.query_timeout !== undefined && config.query_timeout < replyMs) {
+				setTimeout(() => reject(new Error("Query read timeout")), config.query_timeout);
+			} else {
+				setTimeout(() => resolve({ rows }), replyMs);
+			}
+		})) as Client["query"];
+}
+
+test("a loaded host that answers after the former one-second cap still proves a borrowed connection", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	const query = vi.spyOn(client, "query").mockImplementation(delayedReply(2_000, [f.row(port)]));
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outcome = health.validate(client).then(
+			() => "validated",
+			(error: Error) => error.message,
+		);
+		await vi.advanceTimersByTimeAsync(2_000);
+		assert.equal(await outcome, "validated");
+	} finally {
+		vi.useRealTimers();
+	}
+	assert.equal(query.mock.calls.length, 1);
+	assert.equal(invalidations(), 0);
+});
+
+test("a borrowed connection repeats its identity query once after a client-side read timeout", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	let calls = 0;
+	const query = vi.spyOn(client, "query").mockImplementation(async () => {
+		if (++calls === 1) throw new Error("Query read timeout");
+		return { rows: [f.row(port)] };
+	});
+	await health.validate(client);
+	assert.equal(query.mock.calls.length, 2);
+	assert.deepEqual(query.mock.calls[1], query.mock.calls[0]);
+	assert.equal(invalidations(), 0);
+	assert.equal(health.lastFailure, undefined);
+});
+
+test("a read timeout never lets a foreign identity through on the repeated query", async () => {
+	const { f, port, health, client, invalidations } = await healthyBorrowedConnection();
+	let calls = 0;
+	const query = vi.spyOn(client, "query").mockImplementation(async () => {
+		if (++calls === 1) throw new Error("Query read timeout");
+		return { rows: [{ ...f.row(port), system_identifier: "foreign" }] };
+	});
+	const failure = await health.validate(client).then(
+		() => undefined,
+		(error: Error) => error,
+	);
+	assert.match(failure?.message ?? "", /identity mismatch/);
+	assert.equal(isDbosDependencyError(failure), false);
+	assert.equal(query.mock.calls.length, 2);
+	assert.equal(invalidations(), 1);
 });

@@ -179,3 +179,8 @@ export function onInteractiveEngineRemoteCommandsChanged(
 ): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onRemoteCommandsChanged(listener) : () => {};
 }
+
+/** Subscribe to fresh engine session stats, so the footer can repaint. No-op when not isolated. */
+export function onInteractiveEngineSessionStatsChanged(runtime: AgentSessionRuntime, listener: () => void): () => void {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onSessionStatsChanged(listener) : () => {};
+}

@@ -198,6 +198,12 @@ export interface ApiKeyAuth {
 	}): Promise<AuthResult | undefined>;
 }
 
+/** App context supplied to provider login flows. */
+export interface LoginOptions {
+	/** Stable UUID for this installation, created lazily by the app. */
+	getDeviceId?: () => string;
+}
+
 /**
  * OAuth auth. The `refresh`/`toAuth` split lets `Models` own the locked
  * refresh pattern: `refresh` produces a credential, `toAuth` derives request
@@ -213,7 +219,7 @@ export interface OAuthAuth {
 	/** Selector label for the OAuth login option, e.g. "Sign in with SuperGrok or X Premium". */
 	loginLabel?: string;
 
-	login(interaction: ProviderAuthInteraction): Promise<OAuthCredential>;
+	login(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential>;
 
 	/**
 	 * Exchange the refresh token. Network call; throws on failure

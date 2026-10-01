@@ -853,6 +853,88 @@ test("without a caller list, one model's fast route and other providers share a 
 	assert.ok(offered[0]?.includes("openai-codex/gpt-6-luna"));
 });
 
+test("Sol 6.1 Fast reaches bounded auto-routing criteria with base evidence and one shortlist slot", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+		catalogModel("openai-codex", "gpt-6.1-sol"),
+		catalogModel("openai-codex", "gpt-6.1-sol-fast", {
+			fastRoute: {
+				baseModelId: "gpt-6.1-sol",
+				upstreamModelId: "gpt-6.1-sol",
+				speed: "fast",
+				serviceTier: "priority",
+			},
+		}),
+		catalogModel("openai-codex", "gpt-6-astra-ultrafast", {
+			fastRoute: { baseModelId: "gpt-6-astra", upstreamModelId: "gpt-6-astra", serviceTier: "ultrafast" },
+		}),
+		catalogModel("openai", "gpt-6.1-sol"),
+		catalogModel("openai-codex", "gpt-6-sol"),
+		catalogModel("user-proxy", "gpt-6.1-sol-fast"),
+		catalogModel("xai", "grok-4-fast"),
+	]);
+	const requests: ClassifierContext[] = [];
+	mockClassifier(f, (keys, _id, context) => {
+		requests.push(context);
+		return keys.find((key) => classifierOptions(context)[key] === "openai-codex/gpt-6.1-sol-fast")!;
+	});
+	const route = await routeTask(f, { taskNeeds: { ...STATED_CODING_NEEDS, latencySensitive: true } });
+	assert.equal(requests.length, 1);
+	const request = requests[0]!;
+	const question = request.questions.model;
+	assert.ok(question?.type === "choice");
+	const options = Object.values(question.criteria).map((value) => JSON.parse(value) as Record<string, string>);
+	assert.equal(options.length, 4);
+	const sol = options.find((option) => option.id === "openai-codex/gpt-6.1-sol-fast")!;
+	assert.ok(sol);
+	assert.match(sol.coding!, /Terminal-Bench 4\.0 56\.1% measured with max effort/u);
+	assert.match(sol.coding!, /DeepSWE 75\.2% measured with high effort.*reported by OpenAI/u);
+	assert.match(sol.overall!, /AA Intelligence Index 51\.8 measured with max effort/u);
+	assert.match(sol.released!, /2026-09-29/u);
+	assert.match(sol.route!, /same results/u);
+	const owned = options.find((option) => option.id === "user-proxy/gpt-6.1-sol-fast")!;
+	assert.ok(owned);
+	assert.equal(owned.released, "unknown");
+	assert.equal(owned.coding, "no published results");
+	assert.equal(owned.overall, "no published results");
+	assert.equal(owned.route, undefined);
+	const exact = options.find((option) => option.id === "xai/grok-4-fast")!;
+	assert.ok(exact);
+	assert.match(exact.overall!, /AA Intelligence Index 17\.9/u);
+	assert.equal(exact.route, undefined);
+	assert.ok(Buffer.byteLength(JSON.stringify(request), "utf8") <= ROUTING_REQUEST_BYTES);
+	assert.equal(route.routerSelection.model, "openai-codex/gpt-6.1-sol-fast");
+	assert.equal(
+		route.routerSelection.effort,
+		"low",
+		"latency-sensitive execution effort is not the measured max effort",
+	);
+});
+
+test.each(["gpt-6-astra", "gpt-5.6-sol"])(
+	"an explicitly listed %s ultrafast route remains selectable without measured tier claims",
+	async (baseModelId) => {
+		const f = await fixture();
+		const ultrafastId = `${baseModelId}-ultrafast`;
+		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
+			catalogModel("openai-codex", ultrafastId, {
+				fastRoute: { baseModelId, upstreamModelId: baseModelId, serviceTier: "ultrafast" },
+			}),
+		]);
+		await assert.rejects(
+			routeTask(f, { taskNeeds: STATED_CODING_NEEDS }),
+			/no eligible model\/effort pairs/,
+			"an account-gated tier alone must not enter unconstrained auto routing",
+		);
+		const route = await routeTask(f, {
+			taskNeeds: { ...STATED_CODING_NEEDS, latencySensitive: true },
+			constraints: [{ allowedModels: [`openai-codex/${ultrafastId}`] }],
+		});
+		assert.equal(route.routerSelection.model, `openai-codex/${ultrafastId}`);
+		assert.equal(f.infer.mock.calls.length, 0, "one explicitly eligible model requires no choice inference");
+	},
+);
+
 test("caller task needs are validated before any inference", async () => {
 	const f = await fixture();
 	await assert.rejects(

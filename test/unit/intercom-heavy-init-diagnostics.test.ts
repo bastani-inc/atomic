@@ -10,6 +10,7 @@ import {
 } from "../../packages/coding-agent/src/core/extensions/runner-context.js";
 import intercom from "../../packages/intercom/index.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
 type ConsoleErrorCall = [message?: unknown, ...optionalParams: unknown[]];
@@ -99,7 +100,13 @@ function fixture(importResults: ImportResult[], hasUI = false, mode: ExtensionCo
 		) {
 			const tool = tools.get("intercom");
 			assert.ok(tool, "intercom tool should be registered");
-			return tool.execute("tool-call", params, new AbortController().signal, undefined, context as ExtensionContext);
+			return tool.execute(
+				"tool-call",
+				params,
+				new AbortController().signal,
+				undefined,
+				toolContext(context as ExtensionContext),
+			);
 		},
 	};
 }

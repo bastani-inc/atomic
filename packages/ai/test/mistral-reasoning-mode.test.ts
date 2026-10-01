@@ -1,12 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
-import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
+import { streamSimple } from "../src/api/mistral-conversations.ts";
+import { getModel, getSupportedThinkingLevels } from "../src/compat.ts";
+import type { Context, Model, SimpleStreamOptions, ThinkingLevelMap } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 interface MistralPayload {
 	promptMode?: "reasoning";
-	reasoningEffort?: "none" | "high";
+	reasoningEffort?: string;
 	promptCacheKey?: string;
+}
+
+const NONE_HIGH_LEVELS: ThinkingLevelMap = {
+	off: "none",
+	minimal: null,
+	low: null,
+	medium: null,
+	high: "high",
+	xhigh: null,
+	max: null,
+};
+const GLM_5_2_LEVELS: ThinkingLevelMap = { ...NONE_HIGH_LEVELS, max: "max" };
+const GLM_5_3_LEVELS: ThinkingLevelMap = { ...NONE_HIGH_LEVELS, off: null, low: "low", max: "max" };
+
+function makeModel(
+	id: string,
+	reasoning: boolean,
+	thinkingLevelMap?: ThinkingLevelMap,
+): Model<"mistral-conversations"> {
+	return {
+		id,
+		name: id,
+		api: "mistral-conversations",
+		provider: "mistral",
+		baseUrl: "http://127.0.0.1:9",
+		reasoning,
+		...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 16384,
+	};
 }
 
 function makeContext(): Context {
@@ -20,12 +53,7 @@ async function capturePayload(
 	options?: SimpleStreamOptions,
 ): Promise<MistralPayload> {
 	let capturedPayload: MistralPayload | undefined;
-	const payloadCaptureModel: Model<"mistral-conversations"> = {
-		...model,
-		baseUrl: "http://127.0.0.1:9",
-	};
-
-	const stream = streamSimple(payloadCaptureModel, normalizeContext(makeContext()), {
+	const stream = streamSimple(model, normalizeContext(makeContext()), {
 		...options,
 		apiKey: "fake-key",
 		onPayload: (payload) => {
@@ -44,82 +72,94 @@ async function capturePayload(
 }
 
 describe("Mistral reasoning mode selection", () => {
-	it("uses reasoning_effort for Mistral Small 4", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-small-2603"), { reasoning: "medium" });
-
-		expect(payload.reasoningEffort).toBe("high");
-		expect(payload.promptMode).toBeUndefined();
-	});
-
-	it("omits reasoning controls for Mistral Small 4 when thinking is off", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-small-2603"));
-
-		expect(payload.reasoningEffort).toBeUndefined();
-		expect(payload.promptMode).toBeUndefined();
-	});
-
-	it("uses prompt_mode for Magistral reasoning models", async () => {
-		const payload = await capturePayload(getModel("mistral", "magistral-medium-latest"), { reasoning: "medium" });
+	it("uses prompt_mode for reasoning models without a thinking level map (Magistral)", async () => {
+		const payload = await capturePayload(makeModel("magistral-medium-latest", true), { reasoning: "medium" });
 
 		expect(payload.promptMode).toBe("reasoning");
 		expect(payload.reasoningEffort).toBeUndefined();
 	});
 
-	it("uses reasoning_effort for Mistral Medium 3.5", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-medium-3.5"), { reasoning: "medium" });
+	it("omits reasoning controls for Magistral when thinking is off", async () => {
+		const payload = await capturePayload(makeModel("magistral-medium-latest", true));
 
-		expect(payload.reasoningEffort).toBe("high");
 		expect(payload.promptMode).toBeUndefined();
+		expect(payload.reasoningEffort).toBeUndefined();
 	});
 
-	it("omits reasoning controls for Mistral Medium 3.5 when thinking is off", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-medium-3.5"));
+	// Regression for #8700 and #9375: Medium and GLM-5.2 ignore Magistral's prompt_mode.
+	describe.each(["mistral-small-2603", "mistral-medium-latest", "zai-glm-5-2"] as const)("%s", (modelId) => {
+		const map = modelId === "zai-glm-5-2" ? GLM_5_2_LEVELS : NONE_HIGH_LEVELS;
+
+		it("uses reasoning_effort when thinking is enabled", async () => {
+			const payload = await capturePayload(makeModel(modelId, true, map), { reasoning: "high" });
+
+			expect(payload.reasoningEffort).toBe("high");
+			expect(payload.promptMode).toBeUndefined();
+		});
+
+		it("clamps unsupported levels to a supported effort", async () => {
+			const payload = await capturePayload(makeModel(modelId, true, map), { reasoning: "low" });
+
+			expect(payload.reasoningEffort).toBe("high");
+		});
+
+		it("sends reasoning_effort none when thinking is off", async () => {
+			const payload = await capturePayload(makeModel(modelId, true, map));
+
+			expect(payload.reasoningEffort).toBe("none");
+			expect(payload.promptMode).toBeUndefined();
+		});
+	});
+
+	// Regression for #9678: requested levels must reach Mistral-hosted GLM models.
+	it("sends max for GLM-5.2", async () => {
+		const payload = await capturePayload(makeModel("zai-glm-5-2", true, GLM_5_2_LEVELS), { reasoning: "max" });
+
+		expect(payload.reasoningEffort).toBe("max");
+	});
+
+	describe("zai-glm-5-3", () => {
+		it.each(["low", "high", "max"] as const)("sends reasoning_effort %s", async (level) => {
+			const payload = await capturePayload(makeModel("zai-glm-5-3", true, GLM_5_3_LEVELS), { reasoning: level });
+
+			expect(payload.reasoningEffort).toBe(level);
+			expect(payload.promptMode).toBeUndefined();
+		});
+
+		it("maps medium to high", async () => {
+			const payload = await capturePayload(makeModel("zai-glm-5-3", true, GLM_5_3_LEVELS), { reasoning: "medium" });
+
+			expect(payload.reasoningEffort).toBe("high");
+		});
+	});
+
+	// Regression for #8700: reasoning controls must respect the model's reasoning capability.
+	it("omits reasoning controls for non-reasoning models", async () => {
+		const payload = await capturePayload(makeModel("mistral-medium-2505", false), { reasoning: "medium" });
 
 		expect(payload.reasoningEffort).toBeUndefined();
 		expect(payload.promptMode).toBeUndefined();
 	});
 
-	// Regression for upstream #9375: Mistral-hosted GLM-5.2 ignores prompt_mode.
-	describe("zai-glm-5-2", () => {
-		const model = { ...getModel("mistral", "mistral-small-2603"), id: "zai-glm-5-2", reasoning: true };
-		it("uses reasoning_effort when thinking is enabled", async () => {
-			const payload = await capturePayload(model, { reasoning: "medium" });
-			expect(payload.reasoningEffort).toBe("high");
-			expect(payload.promptMode).toBeUndefined();
-		});
-		it("omits reasoning controls when thinking is off", async () => {
-			const payload = await capturePayload(model);
-			expect(payload.reasoningEffort).toBeUndefined();
-			expect(payload.promptMode).toBeUndefined();
-		});
+	// Regression for upstream #9678: the generated catalog carries the effort levels models.dev lists.
+	it.each([
+		["mistral-small-2603", NONE_HIGH_LEVELS, ["off", "high"]],
+		["mistral-medium-3.5", NONE_HIGH_LEVELS, ["off", "high"]],
+		["zai-glm-5-2", GLM_5_2_LEVELS, ["off", "high", "max"]],
+		["zai-glm-5-3", GLM_5_3_LEVELS, ["low", "high", "max"]],
+	] as const)("offers only the API's effort levels for %s", (modelId, map, levels) => {
+		const model = getModel("mistral", modelId);
+
+		expect(model.thinkingLevelMap).toEqual(map);
+		expect(getSupportedThinkingLevels(model)).toEqual(levels);
 	});
 
-	// Regression for upstream #8700: Medium aliases use reasoning_effort, not prompt_mode.
-	describe.each(["mistral-medium-2604", "mistral-medium-latest"])("%s", (id) => {
-		it("uses reasoning_effort when thinking is enabled", async () => {
-			const model = { ...getModel("mistral", "mistral-small-2603"), id, reasoning: true };
-			const payload = await capturePayload(model, { reasoning: "medium" });
-			expect(payload.reasoningEffort).toBe("high");
-			expect(payload.promptMode).toBeUndefined();
-		});
-		it("omits reasoning controls when thinking is off", async () => {
-			const model = { ...getModel("mistral", "mistral-small-2603"), id, reasoning: true };
-			const payload = await capturePayload(model);
-			expect(payload.reasoningEffort).toBeUndefined();
-			expect(payload.promptMode).toBeUndefined();
-		});
-	});
-
-	// Regression for upstream #8700: respect the reasoning capability, not just the prefix.
-	it("omits reasoning controls for non-reasoning Medium models", async () => {
-		const model = { ...getModel("mistral", "mistral-small-2603"), id: "mistral-medium-2505", reasoning: false };
-		const payload = await capturePayload(model, { reasoning: "medium" });
-		expect(payload.reasoningEffort).toBeUndefined();
-		expect(payload.promptMode).toBeUndefined();
+	it("keeps Magistral on prompt_mode without a thinking level map", () => {
+		expect(getModel("mistral", "magistral-medium-latest").thinkingLevelMap).toBeUndefined();
 	});
 
 	it("uses the session id as prompt cache key", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-large-latest"), {
+		const payload = await capturePayload(makeModel("mistral-large-latest", false), {
 			sessionId: "session-123",
 		});
 
@@ -127,7 +167,7 @@ describe("Mistral reasoning mode selection", () => {
 	});
 
 	it("omits prompt cache key when cache retention is disabled", async () => {
-		const payload = await capturePayload(getModel("mistral", "mistral-large-latest"), {
+		const payload = await capturePayload(makeModel("mistral-large-latest", false), {
 			sessionId: "session-123",
 			cacheRetention: "none",
 		});

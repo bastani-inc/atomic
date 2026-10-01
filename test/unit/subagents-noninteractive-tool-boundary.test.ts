@@ -20,6 +20,7 @@ import {
 	type SubagentToolResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
+import { toolContext } from "../helpers/tool-context.js";
 
 type EventHandler = (data: unknown) => void;
 
@@ -264,7 +265,7 @@ describe("programmatic subagent tool boundary", () => {
 				{ action },
 				new AbortController().signal,
 				undefined,
-				ctx,
+				toolContext(ctx),
 			)) as SubagentToolResult;
 			assert.equal(result.isError, true);
 			assert.match(
@@ -340,10 +341,12 @@ describe("programmatic subagent tool boundary", () => {
 			{ tasks: [{ agent: "debugger", task: "inspect" }] },
 			new AbortController().signal,
 			undefined,
-			makeContext(process.cwd(), () => {
-				customCalls += 1;
-				throw new Error("unexpected UI prompt");
-			}),
+			toolContext(
+				makeContext(process.cwd(), () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
+			),
 		);
 		assert.equal(customCalls, 0);
 		assert.equal((result as { details?: { mode?: string } }).details?.mode, "parallel");

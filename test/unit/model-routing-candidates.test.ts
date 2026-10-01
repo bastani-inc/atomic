@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import {
 	type CandidateModel,
@@ -8,6 +9,7 @@ import {
 } from "../../packages/coding-agent/src/core/model-routing-candidates.js";
 import { parseEvalsCatalog } from "../../packages/coding-agent/src/core/model-routing-evals.js";
 import type { ResolvedTaskNeeds } from "../../packages/coding-agent/src/core/model-routing-needs.js";
+import { readText } from "../helpers/runtime.js";
 
 const catalog = parseEvalsCatalog(
 	[
@@ -66,17 +68,88 @@ test("the shortlist keeps one slot per base model across derived fast routes and
 	);
 });
 
-test("a model whose own ID ends in -fast is its own model unless its fastRoute metadata says otherwise", () => {
-	const ranked = rankCandidates(
-		catalog,
-		[model("strong", 10), { ...model("strong-fast", 10), model: "vercel/strong-fast" }],
-		needs("hard", "high"),
+test("ultrafast inherits measured base evidence only through route metadata, without displacing Fast", () => {
+	const sol = parseEvalsCatalog(
+		[
+			"## Artificial Analysis Intelligence Index v4.3.2",
+			"| slug | Model | Release date | idx | TB4 |",
+			"| --- | --- | --- | ---: | ---: |",
+			"| gpt-6-1-sol-high | GPT-6.1 Sol high | 2026-09-29 | 50.2 | 48.6 |",
+		].join("\n"),
 	);
+	const base = { ...model("gpt-6.1-sol", 2), model: "openai-codex/gpt-6.1-sol" };
+	const fast = {
+		...base,
+		model: `${base.model}-fast`,
+		fastRouteOf: base.model,
+		fastRouteServiceTier: "priority" as const,
+	};
+	const ultra = {
+		...base,
+		model: `${base.model}-ultrafast`,
+		fastRouteOf: base.model,
+		fastRouteServiceTier: "ultrafast" as const,
+	};
+	const latencyNeeds = { ...needs("moderate", "high"), latencySensitive: true };
+	const ranked = rankCandidates(sol, [base, fast, ultra], latencyNeeds);
+	assert.equal(distinctTop(ranked, 3).length, 1);
+	assert.equal(distinctTop(ranked, 3)[0]?.model, fast.model);
+	const selected = rankCandidates(sol, [ultra], latencyNeeds)[0]!;
+	const description = JSON.parse(describeOption(selected, latencyNeeds, [selected]));
+	assert.match(description.coding, /Terminal-Bench 4\.0 48\.6%/);
+	assert.match(description.route, /base-model evidence/);
+	assert.match(description.route, /account access/);
+	assert.doesNotMatch(description.route, /pricing/);
+	assert.doesNotMatch(description.price, /provisional|not published/);
+	const owned = rankCandidates(sol, [{ ...base, model: "proxy/gpt-6.1-sol-ultrafast" }], latencyNeeds)[0]!;
+	assert.equal(owned.values.size, 0);
+});
+
+test("a Fast route priced at its published Fast rates says the listed price is that rate", () => {
+	const base = { ...model("gpt-6.1-sol", 4), model: "openai/gpt-6.1-sol" };
+	const route = {
+		...base,
+		model: `${base.model}-fast`,
+		fastRouteOf: base.model,
+		fastRouteServiceTier: "priority" as const,
+	};
+	const task = needs("moderate", "high");
+	const describe = (candidate: typeof route & { fastRoutePriced?: boolean }) => {
+		const selected = rankCandidates(catalog, [candidate], task)[0]!;
+		return JSON.parse(describeOption(selected, task, [selected])).route as string;
+	};
+	assert.match(describe({ ...route, fastRoutePriced: true }), /the listed prices are its Fast rates/);
+	assert.match(describe(route), /billed above the listed prices/);
+});
+
+test("an owned Sol Fast ID has no base metrics or ranking credit without route metadata", async () => {
+	const sol = parseEvalsCatalog(
+		await readText(fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url))),
+	);
+	const base = { ...model("gpt-6.1-sol", 2), model: "openai-codex/gpt-6.1-sol" };
+	const derived = { ...base, model: `${base.model}-fast`, fastRouteOf: base.model };
+	const independent = { ...base, model: "user-proxy/gpt-6.1-sol-fast" };
+	const task = needs("hard", "high");
+	const ranked = rankCandidates(sol, [base, derived, independent], task);
+	const owned = ranked.find((candidate) => candidate.model === independent.model)!;
+	const standard = ranked.find((candidate) => candidate.model === base.model)!;
+	const fast = ranked.find((candidate) => candidate.model === derived.model)!;
+	assert.equal(owned.values.size, 0);
+	assert.equal(owned.conditions.size, 0);
+	assert.equal(owned.released, undefined);
+	assert.equal(owned.workStanding, undefined);
+	assert.equal(owned.overallStanding, undefined);
+	assert.ok(owned.score < standard.score);
+	assert.equal(standard.values.get("aa:idx"), 51.8);
+	assert.deepEqual(fast.values, standard.values);
+	assert.deepEqual(fast.conditions, standard.conditions);
+	assert.equal(fast.score, standard.score);
 	assert.equal(distinctTop(ranked, 6).length, 2);
-	const owned = JSON.parse(
-		describeOption(ranked.find((c) => c.model === "vercel/strong-fast")!, needs("hard", "high"), ranked),
-	);
-	assert.equal(owned.route, undefined);
+	const exact = rankCandidates(sol, [model("grok-4-fast", 2), model("grok-4", 2)], task);
+	assert.equal(exact.find((candidate) => candidate.model === "p/grok-4-fast")!.values.get("aa:idx"), 17.9);
+	assert.equal(exact.find((candidate) => candidate.model === "p/grok-4")!.values.get("aa:idx"), 22.5);
+	const description = JSON.parse(describeOption(owned, task, ranked));
+	assert.equal(description.route, undefined);
 });
 
 test("each option describes itself with this kind of work's results, standings among benchmarked models, price and release", () => {
@@ -265,4 +338,51 @@ test("published results are ranked only against results from the same source", (
 	assert.equal(a.workStanding, 0, "A's 60% from another setup does not lift it above the vendor-harness results");
 	const d = JSON.parse(describeOption(ranked.find((candidate) => candidate.model === "p/d")!, science, ranked));
 	assert.match(d.math_science, /^top 10% of models with the same benchmark and source \(/u);
+});
+
+test("vendor DeepSWE evidence informs coding choices without borrowing another reporter's standing", () => {
+	const measured = parseEvalsCatalog(
+		[
+			"# Evals",
+			"",
+			"## Published benchmark results",
+			"",
+			"| slug | Model | Benchmark | Score | Setting | Source |",
+			"| --- | --- | --- | ---: | --- | --- |",
+			"| gpt-6-1-sol-high | GPT-6.1 Sol | DSWE | 75.2 | high effort; v1.1; harness not stated | OpenAI |",
+			...["a", "b", "c", "d"].map(
+				(id, index) => `| ${id} | ${id} | DSWE | ${80 + index} | independent harness | Datacurve |`,
+			),
+		].join("\n"),
+	);
+	const ranked = rankCandidates(measured, [model("gpt-6.1-sol", 2)], needs("hard", "high"));
+	const option = JSON.parse(describeOption(ranked[0]!, needs("hard", "high"), ranked));
+	assert.equal(
+		option.coding,
+		"measured (DeepSWE 75.2% measured with high effort, v1.1, harness not stated, reported by OpenAI)",
+	);
+	assert.equal(ranked[0]!.workStanding, undefined);
+});
+
+test("shipped Sol 6.1 rankings retain effort, unknown metrics and independent science reporters", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const ranked = rankCandidates(parseEvalsCatalog(document), [model("gpt-6.1-sol", 2)], needs("hard", "high"));
+	const sol = ranked[0]!;
+	assert.equal(sol.values.get("aa:idx"), 51.8);
+	assert.equal(sol.conditions.get("aa:idx"), "max effort");
+	assert.equal(sol.values.get("fc:Main"), 50.2);
+	assert.equal(sol.conditions.get("fc:Main"), "medium effort");
+	assert.equal(sol.values.get("pub:DSWE@OpenAI"), 75.2);
+	assert.match(sol.conditions.get("pub:DSWE@OpenAI")!, /high effort.*reported by OpenAI/u);
+	assert.equal(sol.values.get("pub:TBSci@Artificial Analysis"), 58.1);
+	assert.match(
+		sol.conditions.get("pub:TBSci@Artificial Analysis")!,
+		/mini-swe-agent.*reported by Artificial Analysis/u,
+	);
+	assert.equal(sol.values.get("pub:TBSci@OpenAI"), 57);
+	assert.equal(sol.values.has("aa:GPQA"), false);
+	assert.equal(sol.values.has("dswe:Pass@1"), false);
+	assert.equal(sol.values.has("pub:ARC3@ARC Prize"), false);
 });

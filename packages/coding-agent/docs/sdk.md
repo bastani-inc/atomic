@@ -210,7 +210,7 @@ To continue a saved run in another session:
 
 1. Keep its definition and durable storage available.
 2. Bind the new host.
-3. Use `/workflow resume <run-id>` or the workflow tool's `resume` action.
+3. Use `session.workflows.resume(runId)` ([Workflow run control](#workflow-run-control)), `/workflow resume <run-id>`, or the workflow tool's `resume` action.
 
 Rebinding alone does not reopen a saved run. See [workflow operations](/workflows/operations) for inspection, graceful quit, and resume.
 
@@ -225,6 +225,69 @@ Only an actual `true` confirms a primitive approval. Choosing to stay on a quest
 Rebinding host callbacks preserves pending MCP OAuth ownership. Authorization state and PKCE verifiers stay in memory for that SDK session; restart authorization after disposing it. Durable MCP tokens and client registrations still use server-name credential files. Separate sessions are not separate credential stores.
 
 Web provider configuration caches are session-local. Configuration discovery and environment keys are unchanged; create a new session to pick up changed cached settings. GitHub extraction returns the owned clone path for use with file tools, so callers need not predict its directory.
+
+### Workflow run control
+
+`session.workflows` manages the workflow runs that this session owns, without slash commands or the model-facing `workflow` tool. It uses the same run-control service as the tool, so ownership and durability rules are identical: a run owned by another session, or executing in another live Atomic process, stays read-only here.
+
+```typescript
+interface SessionWorkflows {
+  listRuns(filter?: { status?: WorkflowRunFilterStatus }): Promise<readonly WorkflowRunSummary[]>;
+  getRun(runId: string): Promise<WorkflowRunDetail>;
+  getStages(runId: string, filter?: { status?: WorkflowStageStatus }): Promise<readonly WorkflowRunStageSummary[]>;
+  pause(runId: string, options?: { stageId?: string }): Promise<WorkflowRunControlOutcome>;
+  pause(target: { all: true }): Promise<WorkflowRunControlOutcome>;
+  quit(target: string | { all: true }): Promise<WorkflowRunControlOutcome>;
+  resume(runId: string, options?: { stageId?: string; message?: string }): Promise<WorkflowRunControlOutcome>;
+}
+```
+
+`listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `getRun()`, `getStages()`, `pause()` and `quit()` resolve a prefix against the runs this session holds and reject it at once when none matches, so pass the full UUID for a run recorded by an earlier process. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect. For `pause({ all: true })` and `quit({ all: true })`, `partial` means this call stopped at least one run and others are still active: `failedRuns` lists each run that is still active with its `runId`, a `reason` (for example `pause_failed` or `no_active_stages`) and a `message`, so check `outcome.status === "partial"` before treating a batch stop as complete. If active runs could not be stopped and this call stopped none, the call rejects with `WorkflowRunControlError` (`WORKFLOW_RUN_CONTROL_FAILED`) whose `failedRuns` carries the same list, even when other runs were already paused. Runs that are already paused or already ended are not failures, and a batch with no active run left to stop resolves as a `noop`. Call `getRun()` before retrying.
+
+Pausing a run doesn't park a stage that is waiting on a prompt, including an `ask_user_question` delivered through `HostInput.questionnaire`. If no other work is active, `pause(runId)` and `pause({ all: true })` mark the run `paused` without cancelling its question. Questions not yet shown wait until the run resumes. A later pause counts it as already paused. If your host then answers an already-open prompt, the stage can continue its turn before you call `resume`. To keep a paused run fully stopped, hold prompt answers until you resume it.
+
+Requests that cannot be carried out reject with a subclass of `WorkflowRunControlError`. Branch on `code` or use `instanceof`:
+
+| Class | `code` | Meaning |
+| --- | --- | --- |
+| `WorkflowRunNotFoundError` | `WORKFLOW_RUN_NOT_FOUND` | The run ID is unknown or malformed, or a prefix is ambiguous or matches no run in this session. |
+| `WorkflowRunOwnershipError` | `WORKFLOW_RUN_OWNED_ELSEWHERE` | The run belongs to another session, or is running in another live Atomic process. Control it from its owner. |
+| `WorkflowRunNotResumableError` | `WORKFLOW_RUN_NOT_RESUMABLE` | The run completed, was killed, or has no durable progress to resume. |
+| `WorkflowStageNotFoundError` | `WORKFLOW_STAGE_NOT_FOUND` | `stageId` matches no stage of the run, or the stage has no control to pause. |
+| `WorkflowStageAmbiguousError` | `WORKFLOW_STAGE_AMBIGUOUS` | `stageId` matches more than one stage; pass a more specific identifier. |
+| `WorkflowStageResumeUnsupportedError` | `WORKFLOW_STAGE_RESUME_UNSUPPORTED` | A durable run resumes as a whole; call `resume()` without `stageId`. |
+| `WorkflowRunDatabaseError` | `WORKFLOW_RUN_DATABASE` | Workflow durability is unavailable, including when the database cannot be inspected to check a run's owner during `pause()` or `quit()`. Restore the database, then inspect the run before retrying. |
+| `WorkflowRunControlError` | `WORKFLOW_RUN_CONTROL_FAILED` | Another failure; `message` explains it. |
+| `WorkflowRunControlUnavailableError` | `WORKFLOW_RUN_CONTROL_UNAVAILABLE` | The workflows package is disabled, or the session was disposed. |
+
+Each error carries the `runId` when one applies. A refused batch also carries `failedRuns`.
+
+A host with a stop button can pause its session's runs and resume the same runs later:
+
+```typescript
+import { createAgentSession, WorkflowRunControlError } from "@bastani/atomic";
+
+const { session } = await createAgentSession();
+
+async function onStopClicked() {
+  const outcome = await session.workflows.pause({ all: true });
+  showStatus(outcome.message);
+}
+
+async function onResumeClicked() {
+  for (const run of await session.workflows.listRuns({ status: "paused" })) {
+    try {
+      const outcome = await session.workflows.resume(run.runId);
+      showStatus(`${run.name}: ${outcome.message}`);
+    } catch (error) {
+      if (!(error instanceof WorkflowRunControlError)) throw error;
+      showStatus(`${run.name}: ${error.code}: ${error.message}`);
+    }
+  }
+}
+```
+
+`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available. See [pausing, quitting, and resuming](/workflows/operations#pausing-quitting-and-resuming) for what each action guarantees. To watch runs change instead of polling `listRuns()`, use the observation contract in [Workflow activity and lifecycle hooks](/extensions/events#workflow-activity-and-lifecycle-hooks).
 
 ### Workflow and subagent children
 
@@ -274,6 +337,9 @@ interface AgentSession {
   // Session info
   sessionFile: string | undefined;
   sessionId: string;
+
+  // Typed control of the workflow runs this session owns
+  readonly workflows: SessionWorkflows;
 
   // Model and thinking control
   setModel(model: Model): Promise<void>;

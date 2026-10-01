@@ -1326,6 +1326,58 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		assert.equal(primaryPrompts[2], primaryPrompts[1]);
 		assert.equal(promptsByModel.has("openai/fallback"), false);
 	});
+
+	test("a provider failure during a corrective prompt re-sends the original stage prompt to the new session (#3323)", async () => {
+		const promptsBySession: string[][] = [];
+		let createOptions: StageSessionCreateOptions | undefined;
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				createOptions = options;
+				const prompts: string[] = [];
+				const sessionIndex = promptsBySession.push(prompts) - 1;
+				const messages = [] as AgentSession["messages"];
+				return makeMockSession({
+					messages,
+					settingsManager: { getRetrySettings: () => ({ ...retrySettings, maxRetries: 1 }) },
+					async prompt(promptText) {
+						prompts.push(promptText);
+						if (sessionIndex === 0) {
+							// The pinned model fails the contract with an empty-text turn,
+							// then the provider rate-limits every corrective request.
+							if (prompts.length === 1) {
+								messages.push(assistantMessageWithContent([{ type: "text", text: "" }]));
+								return;
+							}
+							throw new Error("429 status code (no body)");
+						}
+						// The replacement session answers whatever it was sent, exactly
+						// as the context-free model in the report did.
+						await callStructuredOutput(createOptions, "structured-call-new-session");
+					},
+				}).session;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: { model: "anthropic/primary", schema: SCHEMA },
+			}),
+		) as InternalStageContext;
+
+		assert.deepEqual(await ctx.prompt("Write a 500+ character essay about X"), { ok: true });
+		assert.equal(promptsBySession.length, 2);
+		assert.equal(promptsBySession[0]?.[0], "Write a 500+ character essay about X");
+		assert.match(promptsBySession[0]?.[1] ?? "", /^The previous response failed/);
+		// The new session never saw the task, so its first user message must carry
+		// the original stage prompt, followed by the pending corrective request.
+		const firstNewSessionPrompt = promptsBySession[1]?.[0] ?? "";
+		assert.ok(
+			firstNewSessionPrompt.startsWith("Write a 500+ character essay about X"),
+			`new session prompt lacks the stage prompt: ${firstNewSessionPrompt}`,
+		);
+		assert.match(firstNewSessionPrompt, /Corrective attempt 1\/3/);
+		assert.match(firstNewSessionPrompt, /empty text/);
+	});
 });
 
 // A github-copilot opus catalog entry whose Model object advertises a tiered

@@ -8,10 +8,12 @@ import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-
 import {
 	onInteractiveEngineRemoteCommandsChanged,
 	onInteractiveEngineResourceExtensionsChanged,
+	onInteractiveEngineSessionStatsChanged,
 	waitForInteractiveEngineBound,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
+import { ThemedText } from "./components/themed-text.js";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import {
@@ -119,7 +121,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 			const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
 			targetContainer.addChild(new Text(condensedText, 1, 0));
 		} else {
-			targetContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+			targetContainer.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
 			targetContainer.addChild(new Spacer(1));
 			targetContainer.addChild(new Markdown(changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()));
 			targetContainer.addChild(new Spacer(1));
@@ -174,7 +176,7 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	}
 	const message = status.type === "warning" ? `Warning: ${status.message}` : status.message;
 	const color = status.type === "warning" ? "warning" : "dim";
-	this.chatContainer.addChild(new Text(theme.fg(color, message), 1, 0));
+	this.chatContainer.addChild(new ThemedText(() => theme.fg(color, message), 1, 0));
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
 	this.ui.requestRender();
@@ -244,6 +246,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
+	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
+	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
+		this.ui.requestRender();
+	});
 
 	seedStartupInput(
 		this.pendingUserInputs,

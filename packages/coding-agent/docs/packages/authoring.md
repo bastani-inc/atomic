@@ -25,6 +25,33 @@ Add an app manifest to `package.json` or use conventional directories. The manif
 
 Paths are relative to the package root. Arrays support glob patterns and `!exclusions`.
 
+### MCP Servers
+
+A package can contribute [MCP servers](/mcp-servers) with `mcpServers`. Point it at a JSON file in the standard `{ "mcpServers": { ... } }` shape, relative to the package root, or declare the servers inline:
+
+```json
+{
+  "atomic": {
+    "mcpServers": "./mcp.json"
+  }
+}
+```
+
+```json
+{
+  "atomic": {
+    "mcpServers": {
+      "acme-search": { "url": "https://mcp.acme.dev", "headers": { "Authorization": "Bearer ${ACME_TOKEN}" } },
+      "acme-local": { "command": "node", "args": ["./dist/server.js"], "cwd": "." }
+    }
+  }
+}
+```
+
+Entries use the same schema as `mcp.json`, including URL environment-variable interpolation, tool `exposure`, per-tool `toolExposure`, and request `timeout` in seconds. A relative `cwd` is resolved against the package root, so `"cwd": "."` lets a stdio server run files shipped in the package. MCP servers are only read from the manifest, never from a convention directory. Package manifests cannot select provider login credentials with `auth.provider`.
+
+Contributed servers have the lowest precedence: users can replace or disable one by name in their own MCP configuration, and filter them with `mcpServers` patterns in settings. Project packages contribute servers only in trusted projects. For a server whose configuration is computed at runtime, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
+
 ### Gallery Metadata
 
 The package gallery currently recognizes legacy `pi-package` metadata, while new Atomic packages should also include `atomic-package`. Add `video` or `image` fields to show a preview:

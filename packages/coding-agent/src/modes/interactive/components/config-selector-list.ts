@@ -11,6 +11,7 @@ import {
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "../../../core/source-info.ts";
 import { theme } from "../theme/theme.js";
 import { toggleProjectResource } from "./config-selector-project-scope.ts";
 
@@ -66,6 +67,7 @@ function formatBaseDir(baseDir: string): string {
 }
 
 function getGroupLabel(metadata: PathMetadata, agentDir: string): string {
+	if (metadata.source === "builtin") return "Built-in extensions";
 	if (metadata.origin === "package") {
 		return `${metadata.source} (${metadata.scope})`;
 	}
@@ -115,7 +117,9 @@ export function buildGroups(resolved: ResolvedPaths, agentDir: string): Resource
 			const fileName = basename(path);
 			const parentFolder = basename(dirname(path));
 			let displayName: string;
-			if (resourceType === "extensions" && parentFolder !== "extensions") {
+			if (path.startsWith(BUILTIN_PATH_PREFIX)) {
+				displayName = path;
+			} else if (resourceType === "extensions" && parentFolder !== "extensions") {
 				displayName = `${parentFolder}/${fileName}`;
 			} else if (resourceType === "skills" && fileName === "SKILL.md") {
 				displayName = parentFolder;
@@ -441,6 +445,7 @@ export class ResourceList implements Component, Focusable {
 		return scope === "project" ? join(this.cwd, CONFIG_DIR_NAME) : this.agentDir;
 	}
 	private getResourcePattern(item: ResourceItem): string {
+		if (item.path.startsWith(BUILTIN_PATH_PREFIX)) return item.path;
 		const scope = item.metadata.scope as "user" | "project";
 		const baseDir = item.metadata.baseDir ?? this.getTopLevelBaseDir(scope);
 		return relative(baseDir, item.path);

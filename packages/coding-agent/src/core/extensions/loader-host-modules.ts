@@ -40,8 +40,10 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		piTuiLayoutNode,
 		piAi,
 		piAiOauth,
+		piAiModels,
 		piAiCloudflareGatewayBinding,
 		piAiProviderEnv,
+		piAiOauthPage,
 		properLockfile,
 		piCodingAgent,
 	] = await Promise.all([
@@ -56,8 +58,10 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		// `/compat` (a strict superset). Extensions still use the root specifier.
 		import("@bastani/pi-ai/compat"),
 		import("@bastani/pi-ai/oauth"),
+		import("@bastani/pi-ai/models"),
 		import("@bastani/pi-ai/api/cloudflare-gateway-binding"),
 		import("@bastani/pi-ai/utils/provider-env"),
+		import("@bastani/pi-ai/utils/oauth-page"),
 		// Keep proper-lockfile in the compiled host so extensions share its live
 		// CommonJS module state instead of evaluating it through jiti.
 		import("proper-lockfile"),
@@ -79,11 +83,14 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@bastani/pi-ai": piAi,
 		"@bastani/pi-ai/compat": piAi,
 		"@bastani/pi-ai/oauth": piAiOauth,
+		"@bastani/pi-ai/models": piAiModels,
 		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"@bastani/pi-ai/utils/provider-env": piAiProviderEnv,
+		"@bastani/pi-ai/utils/oauth-page": piAiOauthPage,
 		"@earendil-works/pi-ai": piAi,
 		"@earendil-works/pi-ai/compat": piAi,
 		"@earendil-works/pi-ai/oauth": piAiOauth,
+		"@earendil-works/pi-ai/models": piAiModels,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 		"proper-lockfile": properLockfile,
 		...(atomicNatives ? { "@bastani/atomic-natives": atomicNatives } : {}),
@@ -95,6 +102,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@mariozechner/pi-ai": piAi,
 		"@mariozechner/pi-ai/compat": piAi,
 		"@mariozechner/pi-ai/oauth": piAiOauth,
+		"@mariozechner/pi-ai/models": piAiModels,
 		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
 	};
 }
