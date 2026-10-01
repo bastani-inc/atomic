@@ -54,10 +54,16 @@ export function getToolDefinition(this: AgentSession, name: string): ToolDefinit
  */
 
 export function setActiveToolsByName(this: AgentSession, toolNames: string[]): void {
-	const tools = applyToolLoadout(this, toolNames);
-	const validToolNames = tools.map((tool) => tool.name);
+	const previous = this.getActiveToolNames();
+	this._setActiveTools(toolNames);
+	const active = new Set(this.getActiveToolNames());
+	if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+}
 
-	this._rebuildSystemPrompt(validToolNames);
+export function _setActiveTools(this: AgentSession, toolNames: string[]): void {
+	const tools = applyToolLoadout(this, toolNames);
+	for (const tool of tools) this._pendingToolNames.delete(tool.name);
+	this._rebuildSystemPrompt(tools.map((tool) => tool.name));
 }
 
 /** Whether compaction or branch summarization is currently running */
@@ -155,10 +161,12 @@ export function _preparePromptAndToolLoadout(
 
 /** Restore registered tools from the selected transcript, not another branch's live state. */
 export function _restoreToolsFromTranscript(this: AgentSession): void {
+	this._pendingToolNames.clear();
 	const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 	if (!current) return;
-	const names = (current.toolsAdded ?? []).map((tool) => tool.name).filter((name) => this._toolRegistry.has(name));
-	this.setActiveToolsByName(names);
+	const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+	this._pendingToolNames = new Set(names);
+	this._setActiveTools(names);
 }
 
 // =========================================================================
@@ -181,6 +189,7 @@ export const agentSessionStateMethods = {
 	getAllTools,
 	getToolDefinition,
 	setActiveToolsByName,
+	_setActiveTools,
 	setScopedModels,
 	_normalizePromptSnippet,
 	_normalizePromptGuidelines,

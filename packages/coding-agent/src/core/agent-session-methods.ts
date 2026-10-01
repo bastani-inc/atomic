@@ -209,6 +209,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getAllTools(): ToolInfo[];
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	setActiveToolsByName(toolNames: string[]): void;
+	_setActiveTools(toolNames: string[]): void;
 	setScopedModels(scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void;
 	_normalizePromptSnippet(text: string | undefined): string | undefined;
 	_normalizePromptGuidelines(guidelines: string[] | undefined): string[];
@@ -570,6 +571,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_cwd: string;
 	_extensionRunnerRef?: { current?: ExtensionRunner };
 	_initialActiveToolNames?: string[];
+	_pendingToolNames: Set<string>;
 	_usesDefaultTools: boolean;
 	_appliedDefaultTools: Set<string>;
 	_allowedToolNames?: Set<string>;

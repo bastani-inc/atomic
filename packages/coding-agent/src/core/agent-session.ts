@@ -188,6 +188,7 @@ class AgentSessionBase {
 	protected _cwd: string;
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
 	protected _initialActiveToolNames?: string[];
+	protected _pendingToolNames = new Set<string>();
 	protected _usesDefaultTools: boolean;
 	/** Resolved defaults last applied here, independent of shared settings publication. */
 	protected _appliedDefaultTools: Set<string>;

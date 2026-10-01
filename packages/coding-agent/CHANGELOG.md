@@ -12,6 +12,7 @@
 - `--provider` without `--model` now fails with an error instead of being silently ignored while the default model from another provider runs ([#10236](https://github.com/earendil-works/pi/issues/10236)).
 - MCP servers that ask for more scope (`insufficient_scope`) no longer trigger repeated sign-in requests. The new sign-in now keeps the scopes granted earlier instead of requesting only the missing ones.
 - User messages in the transcript now keep one copy of each rendered line instead of two full-width copies, with identical output.
+- Deferred MCP tools that `tool_search` loaded are no longer dropped on resume and `/reload` when their server reconnects before the next prompt; the session restored its tools before the MCP servers reconnected.
 
 ## [0.9.25] - 2026-10-01
 

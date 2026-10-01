@@ -380,6 +380,7 @@ export async function _runAgentPrompt(
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
+		this._pendingToolNames.clear();
 		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);
 		if (this.isStreaming) promptStarted?.();
