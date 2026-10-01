@@ -320,6 +320,16 @@ test("/session uses engine counts and identity during the first run (#3383)", as
 		assert.match(updated, /Output: 300/);
 		assert.match(updated, /Total: 0.2660/);
 		assert.doesNotMatch(updated, /anthropic\/claude-test/);
+		probe.emit({ type: "agent_end", messages: [] });
+		assert.equal(runtime.session.isStreaming, false);
+		const idle = sessionInfo(runtime.session);
+		assert.match(idle, /Total: 0.2660/);
+		assert.doesNotMatch(idle, /anthropic\/claude-test/);
+		probe.emit({ type: "message_end", message: toolResultMessage() });
+		probe.resolvePendingStats(runtime.session.getSessionStats());
+		await vi.waitFor(() => {
+			assert.match(sessionInfo(runtime.session), /anthropic\/claude-test: \$0.0010/);
+		});
 	} finally {
 		await harness.cleanup();
 	}
@@ -336,6 +346,7 @@ test("/session keeps local stats when no isolated engine cache exists (#3383)", 
 		assert.match(output, /Output: 10/);
 		assert.match(output, /Total: 210/);
 		assert.match(output, /Cache Hit Rate: 25.0%/);
+		assert.match(output, /anthropic\/claude-test: \$0.0010/);
 	} finally {
 		await harness.cleanup();
 	}

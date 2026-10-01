@@ -373,7 +373,17 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 		info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
 	}
 	info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-	const entries = engineStats && this.session.isStreaming ? [] : this.sessionManager.getEntries();
+	const mirrorStats = engineStats ? this.session.getSessionStats() : stats;
+	const mirrorMatchesEngine =
+		mirrorStats.sessionId === stats.sessionId &&
+		mirrorStats.totalMessages === stats.totalMessages &&
+		mirrorStats.cost === stats.cost &&
+		mirrorStats.tokens.input === stats.tokens.input &&
+		mirrorStats.tokens.output === stats.tokens.output &&
+		mirrorStats.tokens.cacheRead === stats.tokens.cacheRead &&
+		mirrorStats.tokens.cacheWrite === stats.tokens.cacheWrite;
+	const entries =
+		engineStats && (this.session.isStreaming || !mirrorMatchesEngine) ? [] : this.sessionManager.getEntries();
 	const assistantEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
 	const promptTokens = engineStats
 		? engineStats.tokens.input + engineStats.tokens.cacheRead + engineStats.tokens.cacheWrite
