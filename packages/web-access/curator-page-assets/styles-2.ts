@@ -68,6 +68,11 @@ export const CURATOR_PAGE_STYLES_2 = `}
   background: rgba(245, 194, 123, 0.14);
   border-color: rgba(245, 194, 123, 0.3);
 }
+.provider-tag.provider-youcom {
+  color: #a6e3a1;
+  background: rgba(166, 227, 161, 0.14);
+  border-color: rgba(166, 227, 161, 0.3);
+}
 .provider-tag.provider-unknown {
   color: var(--fg-muted);
   background: var(--bg-elevated);

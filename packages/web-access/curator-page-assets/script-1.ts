@@ -3,7 +3,7 @@ export const CURATOR_PAGE_SCRIPT_1 = `(function() {
   var token = DATA.sessionToken;
   var timeoutSec = DATA.timeout;
   var queries = Array.isArray(DATA.queries) ? DATA.queries : [];
-  var providers = ["perplexity", "exa", "gemini"];
+  var providers = ["perplexity", "exa", "gemini", "youcom"];
   var availProviders = DATA.availableProviders && typeof DATA.availableProviders === "object" ? DATA.availableProviders : {};
   var workflow = "summary-review";
   var initialDefaultProvider = typeof DATA.defaultProvider === "string" ? DATA.defaultProvider : "exa";
@@ -203,6 +203,7 @@ export const CURATOR_PAGE_SCRIPT_1 = `(function() {
     if (provider === "perplexity") return "Perplexity";
     if (provider === "exa") return "Exa";
     if (provider === "gemini") return "Gemini";
+    if (provider === "youcom") return "You.com";
     return "Unknown";
   }
 

@@ -15,6 +15,7 @@ import {
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 const PREFIX = "@@ATOMIC_TEST@@";
+const RELOAD_COMMAND_DRAFT = "/reload-keybindings-fixture";
 const ENGINE_BIND_SCENARIO_TIMEOUT_MS = 30_000;
 const ENGINE_REPORT_TIMEOUT_MS = 30_000;
 /**
@@ -230,12 +231,27 @@ async function reloadThroughExtensionContext(
 		ENGINE_REPORT_TIMEOUT_MS,
 		"interactive input handler readiness",
 	);
-	const from = driver.reports.length;
+	let from = driver.reports.length;
 	driver.send({ type: "input", data: "/reload-keybindings-fixture" });
 	await driver.waitForNext(
 		from,
 		(report) => report.type === "heartbeat" && report.editorText === "/reload-keybindings-fixture",
 	);
+	from = driver.reports.length;
+	driver.send({ type: "input", data: RELOAD_COMMAND_DRAFT });
+	const draft = await driver.waitForNext(
+		from,
+		(report) => report.type === "heartbeat" && report.editorText === RELOAD_COMMAND_DRAFT,
+		ENGINE_REPORT_TIMEOUT_MS,
+		"reload command draft in the editor",
+	);
+	const listening = await driver.waitForNext(
+		driver.reports.indexOf(draft),
+		(report) => report.type === "heartbeat" && report.inputHandlerReady === true,
+		ENGINE_REPORT_TIMEOUT_MS,
+		"input handler readiness after the draft",
+	);
+	assert.equal(listening.editorText, RELOAD_COMMAND_DRAFT, "the reload draft must not be submitted before Enter");
 	driver.send({ type: "input", data: "\r" });
 	const deadline = performance.now() + 12_000;
 	while (performance.now() < deadline) {
