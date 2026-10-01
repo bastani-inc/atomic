@@ -1,6 +1,6 @@
 This directory vendors packages/mcp/src from earendil-works/pi at commit
-8ce69e9d2b171d173fe4b6b2b6256f1f4411e69d:
-https://github.com/earendil-works/pi/tree/8ce69e9d2b171d173fe4b6b2b6256f1f4411e69d/packages/mcp
+e529a82c98fad679c6e20c03ffbb0bc7896fecb9:
+https://github.com/earendil-works/pi/tree/e529a82c98fad679c6e20c03ffbb0bc7896fecb9/packages/mcp
 
 Relative TypeScript imports use .js extensions for Atomic's compiled package.
 Atomic patches OAuth discovery to refresh changed authorization-server metadata.

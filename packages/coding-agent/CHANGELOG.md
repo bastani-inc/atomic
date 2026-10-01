@@ -6,6 +6,7 @@
 
 - `/mcp login` now prints its sign-in URL as a clickable link in the terminal UI, even when the URL wraps ([#10186](https://github.com/earendil-works/pi/issues/10186)).
 - `--provider` without `--model` now fails with an error instead of being silently ignored while the default model from another provider runs ([#10236](https://github.com/earendil-works/pi/issues/10236)).
+- MCP servers that ask for more scope (`insufficient_scope`) no longer trigger repeated sign-in requests. The new sign-in now keeps the scopes granted earlier instead of requesting only the missing ones.
 
 ## [0.9.25] - 2026-10-01
 
