@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
+import { colorToOklch, colorToRgb, parseColor, rgbColor } from "@earendil-works/pi-tui";
 import { afterEach, test } from "vitest";
 import { generateSystemThemeColors, wcagContrast } from "../src/modes/interactive/theme/system-theme.js";
 import { detectTerminalTheme, setTerminalColors } from "../src/modes/interactive/theme/terminal-colors.js";
@@ -35,4 +35,21 @@ test("terminal appearance uses background before scheme and only the last COLORF
 	assert.equal(detectTerminalTheme({ background: rgb("#ffffff") }, "dark", {}), "light");
 	assert.equal(detectTerminalTheme({}, undefined, { COLORFGBG: "15;default" }), "dark");
 	assert.equal(detectTerminalTheme({}, undefined, { COLORFGBG: "0;7" }), "light");
+});
+test("system theme keeps pastel palette colors pastel at other lightnesses (#10255)", () => {
+	const palette = ["#51576d", "#e78284", "#a6d189", "#e5c890", "#8caaee", "#f4b8e4", "#81c8be", "#b5bfe2"]
+		.concat(["#626880", "#e67172", "#8ec772", "#d9ba73", "#7b9ef0", "#f2a4db", "#5abfb5", "#a5adce"])
+		.map(rgb);
+	const frappe = { background: rgb("#303446"), foreground: rgb("#c6d0f5"), palette };
+	const oklch = ({ r, g, b }: { r: number; g: number; b: number }) => colorToOklch(rgbColor(r, g, b));
+	const { colors } = generateSystemThemeColors(frappe);
+	const resolved = (token: "accent" | "userMessageBg" | "customMessageBg") => rgb(colors[token] as string);
+
+	const pink = oklch(palette[5]);
+	const accent = oklch(resolved("accent"));
+	assert.ok(accent.l < pink.l - 0.05);
+	assert.ok(accent.c <= pink.c * 1.03);
+	for (const panel of ["userMessageBg", "customMessageBg"] as const) {
+		assert.ok(oklch(resolved(panel)).c <= 0.1, panel);
+	}
 });
