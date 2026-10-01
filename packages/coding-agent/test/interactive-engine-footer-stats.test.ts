@@ -3,11 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
+import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import "../src/modes/interactive/interactive-slash-commands.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
@@ -274,6 +277,69 @@ async function showStats(
 		assert.equal(usageLine(runtime), line);
 	});
 }
+
+function sessionInfo(session: Harness["session"]): string {
+	const chatContainer = new Container();
+	InteractiveModeBase.prototype.handleSessionCommand.call({
+		session,
+		sessionManager: session.sessionManager,
+		chatContainer,
+		ui: { requestRender() {} },
+	} as never);
+	return stripAnsi(chatContainer.render(120).join("\n"));
+}
+
+test("/session uses engine counts and identity during the first run (#3383)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createStatsEngineClient();
+		const runtime = createRuntime(harness, probe);
+		probe.emit({ type: "agent_start" });
+		await showStats(probe, runtime, { ...P1, sessionFile: "/engine/session.jsonl" }, P1_LINE);
+		assert.equal(runtime.session.isStreaming, true);
+		assert.equal(harness.sessionManager.getEntries().length, 0);
+		const requestsBefore = probe.statsRequestCount;
+		const output = sessionInfo(runtime.session);
+		assert.equal(probe.statsRequestCount, requestsBefore);
+		assert.match(output, /File: \/engine\/session.jsonl/);
+		assert.match(output, /ID: engine-session/);
+		assert.match(output, /User: 1/);
+		assert.match(output, /Assistant: 1/);
+		assert.match(output, /Tool Calls: 1/);
+		assert.match(output, /Input: 10/);
+		assert.match(output, /Output: 102/);
+		assert.match(output, /Cache Read: 19,900/);
+		assert.match(output, /Cache Write: 21,000/);
+		assert.match(output, /Total: 41,012/);
+		assert.match(output, /Cache Hit Rate: 48.6%/);
+		assert.match(output, /Total: 0.1720/);
+		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await showStats(probe, runtime, P2, P2_LINE);
+		const updated = sessionInfo(runtime.session);
+		assert.match(updated, /ID: engine-session/);
+		assert.match(updated, /Output: 300/);
+		assert.match(updated, /Total: 0.2660/);
+		assert.doesNotMatch(updated, /anthropic\/claude-test/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("/session keeps local stats when no isolated engine cache exists (#3383)", async () => {
+	const harness = await createHarness();
+	try {
+		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		const output = sessionInfo(harness.session);
+		assert.ok(output.includes(`ID: ${harness.session.sessionId}`));
+		assert.match(output, /Assistant: 1/);
+		assert.match(output, /Input: 100/);
+		assert.match(output, /Output: 10/);
+		assert.match(output, /Total: 210/);
+		assert.match(output, /Cache Hit Rate: 25.0%/);
+	} finally {
+		await harness.cleanup();
+	}
+});
 
 test("footer follows engine stats after each message_end before agent_end (#3328)", async () => {
 	const harness = await createHarness();
