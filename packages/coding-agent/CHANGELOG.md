@@ -10,7 +10,7 @@
 ### Changed
 
 - MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)).
-- `/login` now offers **Sign in with Radius** as the last option of the authentication-method menu, with its status and an animated Radius highlight. After a Radius sign-in, `/login` offers to configure the Radius MCP server in the global `mcp.json` with `"auth": { "provider": "radius" }` and reloads. Cancelling a sign-in returns to the menu it was started from.
+- Cancelling a login started from a `/login` menu now returns to that menu.
 
 ### Fixed
 
@@ -20,7 +20,7 @@
 - User messages in the transcript now keep one copy of each rendered line instead of two full-width copies, with identical output.
 - Deferred MCP tools that `tool_search` loaded are no longer dropped on resume and `/reload` when their server reconnects before the next prompt; the session restored its tools before the MCP servers reconnected.
 - The `system` theme keeps pastel terminal palettes pastel instead of making their accent colors more saturated at the lightness the theme needs ([#10255](https://github.com/earendil-works/pi/issues/10255)).
-- `/login` and `/logout` no longer label every OAuth sign-in, including Radius, as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
+- `/login` and `/logout` no longer label every OAuth sign-in as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
 
 ## [0.9.25] - 2026-10-01
 

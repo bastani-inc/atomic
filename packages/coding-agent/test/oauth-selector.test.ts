@@ -159,8 +159,8 @@ describe("OAuthSelectorComponent", () => {
 
 	it("labels an OAuth sign-in without a subscription as an account", () => {
 		const providers = [
-			{ id: "radius", name: "Radius", authType: "oauth" as const, subscription: false },
-			{ id: "radius", name: "Radius", authType: "api_key" as const, subscription: false },
+			{ id: "corp-sso", name: "Corporate SSO", authType: "oauth" as const, subscription: false },
+			{ id: "corp-sso", name: "Corporate SSO", authType: "api_key" as const, subscription: false },
 		];
 		const selector = new OAuthSelectorComponent(
 			"login",
@@ -172,7 +172,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("Radius · account");
+		expect(output).toContain("Corporate SSO · account");
 		expect(output).toContain("✓ account configured");
 		expect(output).not.toContain("subscription");
 	});

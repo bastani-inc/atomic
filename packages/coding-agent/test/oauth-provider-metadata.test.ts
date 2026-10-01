@@ -40,7 +40,7 @@ describe("collectOAuthProviderMetadata", () => {
 		const metadata = collectOAuthProviderMetadata(builtinProviders(), new Map());
 
 		expect(metadata.find(({ id }) => id === "anthropic")).toMatchObject({ isSubscription: true });
-		expect(metadata.find(({ id }) => id === "radius")).toMatchObject({ isSubscription: false });
+		expect(metadata.find(({ id }) => id === "openrouter")).toMatchObject({ isSubscription: false });
 
 		const extensions = new Map<string, ProviderConfigInput>([["corp", { oauth: { loginLabel: "Corporate SSO" } }]]);
 		const [corp] = collectOAuthProviderMetadata([oauthProvider("corp")], extensions);

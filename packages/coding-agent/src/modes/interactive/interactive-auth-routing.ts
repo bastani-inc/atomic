@@ -1,9 +1,6 @@
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { AuthStatus } from "../../core/provider-composer.ts";
-import { RADIUS_PROVIDER_ID } from "../../core/radius.ts";
-import { formatAuthSelectorProviderStatus } from "./components/oauth-selector.ts";
-import { createLoginMenuSelector } from "./components/radius-login-selector.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AuthSelectorProvider,
@@ -118,59 +115,34 @@ InteractiveModeBase.prototype.showLoginAuthTypeSelector = function (
 	this: InteractiveModeBase,
 	providerOptions?: AuthSelectorProvider[],
 ): void {
-	const runtime = this.session.modelRuntime;
-	const radiusOption = providerOptions
-		? undefined
-		: this.getLoginProviderOptions("oauth").find((provider) => provider.id === RADIUS_PROVIDER_ID);
-	const radiusText = radiusOption ? `Sign in with ${radiusOption.name}` : undefined;
-	const radiusLabel =
-		radiusOption && radiusText
-			? `${radiusText}${formatAuthSelectorProviderStatus(
-					radiusOption,
-					runtime.getProviderAuthStatus(radiusOption.id),
-					runtime.getStoredCredentialType(radiusOption.id),
-				)}`
-			: undefined;
 	const subscriptionLabel =
 		providerOptions?.find((provider) => provider.authType === "oauth")?.subscription === false
 			? "Use an account"
 			: "Use a subscription";
 	const apiKeyLabel = "Use an API key";
-	const choices: string[] = providerOptions
+	const choices = providerOptions
 		? providerOptions.map((provider) => (provider.authType === "oauth" ? subscriptionLabel : apiKeyLabel))
 		: [subscriptionLabel, apiKeyLabel];
-	if (radiusLabel) choices.push(radiusLabel);
 	this.showSelector((done) => {
-		const onSelect = (option: string) => {
-			done();
-			if (radiusOption && option === radiusLabel) {
-				void this.startProviderLogin(radiusOption, () => this.showLoginAuthTypeSelector());
-				return;
-			}
-			const authType = option === subscriptionLabel ? "oauth" : "api_key";
-			const directOption = providerOptions?.find((provider) => provider.authType === authType);
-			if (directOption) {
-				void this.startProviderLogin(directOption, () => this.showLoginAuthTypeSelector(providerOptions));
-			} else {
-				this.showLoginProviderSelector(authType);
-			}
-		};
-		const onCancel = () => {
-			done();
-			this.ui.requestRender();
-		};
-		const selector =
-			radiusLabel && radiusText
-				? createLoginMenuSelector(
-						this.ui,
-						"Select authentication method:",
-						choices,
-						{ label: radiusLabel, text: radiusText },
-						onSelect,
-						onCancel,
-					)
-				: new ExtensionSelectorComponent("Select authentication method:", choices, onSelect, onCancel);
-		return { component: selector, focus: selector, dispose: () => selector.dispose() };
+		const selector = new ExtensionSelectorComponent(
+			"Select authentication method:",
+			choices,
+			(option) => {
+				done();
+				const authType = option === subscriptionLabel ? "oauth" : "api_key";
+				const directOption = providerOptions?.find((provider) => provider.authType === authType);
+				if (directOption) {
+					void this.startProviderLogin(directOption, () => this.showLoginAuthTypeSelector(providerOptions));
+				} else {
+					this.showLoginProviderSelector(authType);
+				}
+			},
+			() => {
+				done();
+				this.ui.requestRender();
+			},
+		);
+		return { component: selector, focus: selector };
 	});
 };
 

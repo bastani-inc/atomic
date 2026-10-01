@@ -371,13 +371,8 @@ declare module "./interactive-mode-base.ts" {
 		): Promise<void>;
 		showBedrockSetupDialog(providerId: string, providerName: string, onBack?: () => void): void;
 		showApiKeyLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void>;
-		showOAuthLoginSelect(
-			dialog: LoginDialogComponent,
-			prompt: OAuthSelectPrompt,
-			providerId?: string,
-		): Promise<string | undefined>;
+		showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined>;
 		showLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void>;
-		offerRadiusMcpServer(providerId: string, providerName: string): void;
 		handleReloadCommand(): Promise<void>;
 		handleExportCommand(text: string): Promise<void>;
 		getPathCommandArgument(text: string, command: "/export" | "/import"): string | undefined;
