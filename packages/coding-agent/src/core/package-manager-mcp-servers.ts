@@ -41,7 +41,7 @@ function selectMcpServers(names: string[], filter: PackageFilter | undefined): M
 
 /** A package cannot know the user's project directory, so a relative `cwd` names a directory in the package. */
 function resolvePackageCwd(config: McpServerConfig, packageRoot: string): McpServerConfig {
-	const { cwd } = config;
+	const cwd = "cwd" in config ? config.cwd : undefined;
 	if (typeof cwd !== "string" || isAbsolute(cwd) || cwd.startsWith("~") || cwd.startsWith("$")) return config;
 	return { ...config, cwd: resolve(packageRoot, cwd) };
 }

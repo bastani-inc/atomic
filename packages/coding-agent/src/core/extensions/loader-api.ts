@@ -4,6 +4,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { getNativeMcpToolIdentity, markNativeMcpToolDefinition } from "../mcp-child-policy.ts";
 import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import { lifecycleScopeForOwner } from "../session-lifecycle-scope.ts";
 import { drainSessionWork, hasCallingSessionWork, trackSessionWork } from "../session-lifecycle-work.ts";
@@ -224,6 +225,8 @@ export function createExtensionAPI(
 				);
 			}
 			const registration = { definition: captureRegistrationInvocation(tool), sourceInfo: extension.sourceInfo };
+			const nativeMcpIdentity = getNativeMcpToolIdentity(tool);
+			if (nativeMcpIdentity) markNativeMcpToolDefinition(registration.definition, nativeMcpIdentity);
 			if (runtime.stageToolRegistration?.(extension, tool.name, registration)) return;
 			extension.tools.set(tool.name, registration);
 			if (runtime.refreshToolsAfterRegistration) runtime.refreshToolsAfterRegistration();

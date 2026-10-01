@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, test } from "vitest";
-import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir } from "../helpers/runtime.js";
 
 const root = resolve(moduleDir(import.meta.url), "../..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -57,46 +55,6 @@ describe("removed provider active surfaces", () => {
 			/responds to the cursor/u,
 			"ordinary pointer-cursor design guidance must remain intact",
 		);
-	});
-	test("MCP discovery ignores the removed home-level import while keeping supported imports", () => {
-		const tempRoot = mkdtempSync(join(tmpdir(), "atomic-mcp-import-removal-"));
-		const home = join(tempRoot, "home");
-		const cwd = join(tempRoot, "project");
-		const removedKind = ["cur", "sor"].join("");
-		const supportedPath = join(home, ".claude", "mcp.json");
-		const removedPath = join(home, `.${removedKind}`, "mcp.json");
-		try {
-			mkdirSync(cwd, { recursive: true });
-			mkdirSync(join(home, ".claude"), { recursive: true });
-			mkdirSync(join(home, `.${removedKind}`), { recursive: true });
-			writeFileSync(supportedPath, '{"mcpServers":{"supported":{}}}\n');
-			writeFileSync(removedPath, '{"mcpServers":{"removed":{}}}\n');
-
-			const configUrl = pathToFileURL(join(root, "packages/mcp/config.ts")).href;
-			const child = spawnSyncCollect({
-				cmd: [
-					bunExecutable(),
-					"-e",
-					`const { findAvailableImportConfigs } = await import(${JSON.stringify(configUrl)}); console.log(JSON.stringify(findAvailableImportConfigs(${JSON.stringify(cwd)})));`,
-				],
-				cwd,
-				env: { ...process.env, HOME: home, USERPROFILE: home },
-			});
-			assert.equal(child.exitCode, 0, child.stderr.toString());
-			const discovered = JSON.parse(child.stdout.toString()) as Array<{ kind: string; path: string }>;
-			assert.ok(discovered.some((entry) => entry.kind === "claude-code" && entry.path === supportedPath));
-			assert.equal(
-				discovered.some((entry) => entry.path === removedPath),
-				false,
-			);
-			assert.equal(
-				discovered.some((entry) => entry.kind === removedKind),
-				false,
-			);
-			assert.notEqual(cwd, home);
-		} finally {
-			rmSync(tempRoot, { recursive: true, force: true });
-		}
 	});
 
 	test("published Atomic dependency metadata omits the removed provider's protobuf runtime", () => {

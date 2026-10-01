@@ -16,9 +16,7 @@ test("builtin configuration diagnostics are quiet, redacted and routed to each o
 	const directory = makeTempDirectory("builtin-diagnostics-");
 	config.path = join(directory, "secret-config.json");
 	await writeFileEnsuringDir(config.path, "secret-supervisor-capability");
-	await writeFileEnsuringDir(join(directory, "secret-server", "tokens.json"), "secret-credential");
 	await writeFileEnsuringDir(join(directory, "intercom", "config.json"), "secret-intercom-token");
-	vi.stubEnv("MCP_OAUTH_DIR", directory);
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", directory);
 	const key = Symbol.for("atomic.builtin-diagnostic-context.v1");
 	type Reporter = (diagnostic: Omit<HostDiagnostic, "sessionId">) => void;
@@ -28,7 +26,6 @@ test("builtin configuration diagnostics are quiet, redacted and routed to each o
 	host[key] = context;
 	const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 	try {
-		const { getAuthEntry } = await import("../../packages/mcp/mcp-auth.js");
 		const { loadConfigForExtensionInit } = await import("../../packages/web-access/web-search-config.js");
 		const { loadConfig } = await import("../../packages/intercom/config.js");
 		for (let index = 0; index < 2; index++) {
@@ -36,14 +33,13 @@ test("builtin configuration diagnostics are quiet, redacted and routed to each o
 			context.run(
 				(entry) => diagnostics.push(entry),
 				() => {
-					getAuthEntry("secret-server");
 					loadConfigForExtensionInit();
 					loadConfig();
 				},
 			);
 			assert.deepEqual(
 				diagnostics.map((entry) => entry.source),
-				["mcp", "web-access", "intercom"],
+				["web-access", "intercom"],
 			);
 			assert.doesNotMatch(JSON.stringify(diagnostics), /secret|capability|credential|token/);
 		}

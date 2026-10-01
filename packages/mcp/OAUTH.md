@@ -1,61 +1,36 @@
-# OAuth 2.1 Authentication for MCP
+# MCP OAuth authentication
 
-This document describes the OAuth 2.1 + PKCE authentication implementation for the Pi MCP Adapter using the official MCP SDK.
-
-## Overview
-
-The Pi MCP Adapter uses the official MCP SDK's built-in OAuth implementation, which provides:
-
-- **Automatic OAuth endpoint discovery** (RFC 9728) - No manual configuration needed
-- **Dynamic client registration** (RFC 7591) - No clientId needed for most servers
-- **Automatic callback handling** - Built-in HTTP server handles callbacks automatically
-- **Automatic token refresh** - SDK handles token refresh transparently
-
-## Features
-
-- ✅ **PKCE (S256)** - Mandatory code challenge method for OAuth 2.1
-- ✅ **Automatic Callback Server** - No URL copying needed, browser redirects automatically
-- ✅ **Dynamic Client Registration** - Automatically registers with OAuth servers
-- ✅ **Auto-Discovery** - Discovers OAuth endpoints from server metadata
-- ✅ **Automatic Token Refresh** - SDK handles expired tokens automatically
-- ✅ **State Parameter Validation** - CSRF protection
-- ✅ **Secure Token Storage** - Stored in `~/.pi/agent/mcp-oauth/<server>/tokens.json`
-
-## Configuration
-
-### Minimal Configuration (Recommended)
-
-For most MCP servers, you only need the URL:
+Atomic supports OAuth authorization-code login with PKCE, authorization server discovery, dynamic client registration, and token refresh for HTTP MCP servers. Most servers need only a URL:
 
 ```json
-{
-  "mcpServers": {
-    "my-oauth-server": {
-      "url": "https://api.example.com/mcp"
-    }
-  }
-}
+{ "mcpServers": { "sentry": { "url": "https://mcp.sentry.dev/mcp" } } }
 ```
 
-OAuth is automatically enabled for HTTP servers. The SDK will:
-- Auto-detect if the server requires OAuth
-- Discover OAuth endpoints from the server
-- Register a dynamic client (if supported by the server)
-- Handle the entire OAuth flow including callback
+OAuth applies when the server has no static `Authorization` header or provider-token configuration. Keep personal credentials in user-global configuration, not shared project files.
 
-### Optional Configuration
+## Sign in and out
 
-You can optionally provide a pre-registered client:
+Run `/mcp login sentry`, select the server in `/mcp` and choose **Sign in**, or run `atomic mcp login sentry` from a shell. Session commands without a name choose an eligible server when unambiguous or ask you to select one; shell commands require a server name.
+
+Atomic opens the browser and displays a clickable authorization URL. Approve access in the browser. If it runs on another machine, such as an SSH client, paste the complete URL it was redirected to into Atomic's waiting sign-in prompt. Atomic validates the state and issuer before exchanging the code. Treat both authorization and redirect URLs as sensitive.
+
+Successful login reconnects the server. Session login requires an interactive UI; shell login opens the browser without starting a session. Sign in before unattended work. Shell login waits up to 300 seconds by default; use `--timeout <seconds>` to change that budget. A running session uses new credentials on its next turn. If a server requests additional scope later, sign in again.
+
+Run `/mcp logout sentry` or `atomic mcp logout sentry` to delete its stored credentials. Signing out is also available in the manager.
+
+## Pre-registered clients
+
+For servers without dynamic client registration:
 
 ```json
 {
   "mcpServers": {
-    "my-oauth-server": {
-      "url": "https://api.example.com/mcp",
-      "auth": "oauth",
+    "example": {
+      "url": "https://mcp.example.com/mcp",
       "oauth": {
-        "clientId": "your-client-id",
-        "clientSecret": "your-client-secret",
+        "clientId": "registered-client",
+        "clientSecret": "${EXAMPLE_SECRET}",
+        "callbackPort": 8765,
         "scope": "read write"
       }
     }
@@ -63,263 +38,78 @@ You can optionally provide a pre-registered client:
 }
 ```
 
+`clientSecret` is optional. It can reference an environment variable or use a whole-value `!command` expression. The redirect URI must match the client's registration.
 
+| Option | Meaning |
+| --- | --- |
+| `clientId` | Pre-registered client ID. Omit it for dynamic registration. |
+| `clientSecret` | Optional secret for a confidential client. |
+| `scope` | Space-separated scopes when the server does not advertise them. Later requests are added to this value. |
+| `clientName` | Dynamic registration name, default `atomic`. Sign out before registering under a changed name. |
+| `callbackPort` | Port for `http://127.0.0.1:<port>/callback`. |
+| `callbackUrl` | Another registered loopback redirect URI. |
+| `authServerMetadataUrl` | Trusted authorization server metadata document to use instead of discovery. |
 
-### Configuration Options
+`callbackUrl` must use HTTP on `localhost`, `127.0.0.1`, or `[::1]`, without query or fragment. Atomic sends it as written. If it omits a port, Atomic adds `callbackPort` or a free port, as allowed for loopback redirects by RFC 8252. Use a fixed port when the client registration requires an exact URI.
 
-- `url` - The MCP server URL (required)
-- `auth` - Set to `"oauth"` to force OAuth, `false` to disable, or omit to auto-detect
-- `oauth.grantType` - `"authorization_code"` (default, browser flow) or `"client_credentials"` (non-interactive)
-- `oauth.clientId` - Pre-registered client ID (optional, SDK tries dynamic registration if not provided)
-- `oauth.clientSecret` - Client secret for confidential clients (optional)
-- `oauth.scope` - Requested OAuth scopes (optional)
+## Override authorization server discovery
 
-### Non-Interactive `client_credentials`
-
-For machine-to-machine OAuth, configure `grantType: "client_credentials"`.
+Atomic normally finds the authorization server through protected resource metadata and checks its metadata issuer. If a server advertises the wrong authorization server or none, configure the correct metadata document:
 
 ```json
 {
   "mcpServers": {
-    "my-service": {
-      "url": "https://api.example.com/mcp",
-      "auth": "oauth",
+    "example": {
+      "url": "https://mcp.example.com/mcp",
       "oauth": {
-        "grantType": "client_credentials",
-        "clientId": "service-client-id",
-        "clientSecret": "service-client-secret",
-        "scope": "read write"
+        "authServerMetadataUrl": "https://example.okta.com/.well-known/openid-configuration"
       }
     }
   }
 }
 ```
 
-This flow does not open a browser or use callback handling.
+The document may use RFC 8414 or OpenID Connect discovery. Atomic trusts it as configured, including its issuer, so only point it at a document you trust. The URL must use HTTPS except for HTTP on `localhost`, `127.0.0.1`, or `[::1]`.
 
-## Usage
+An authorization response's `iss` must name the flow's authorization server. If the metadata promises `authorization_response_iss_parameter_supported`, the response must include `iss`. Mismatched or required-but-missing issuers are rejected before code exchange under RFC 9207. Pasted redirect URLs have the same checks as browser callbacks.
 
-### Step 1: Authenticate
+## Tokens and refresh
 
-Run the `/mcp-auth` command with the server name:
+Credentials are stored in `~/.atomic/agent/mcp-auth.json`, keyed by server URL. `ATOMIC_CODING_AGENT_DIR` relocates the agent directory. Tokens refresh when expired or rejected, and signing out removes the stored credentials.
 
-```
-/mcp-auth my-oauth-server
-```
+Optional OAuth response fields that are empty or null count as absent, including `scope`, `refresh_token`, `id_token`, and `client_secret`. A refresh response with no new refresh token keeps the previous one. `expires_in: null` does not immediately expire an access token. Empty scope values fall through to the next scope source.
 
-Manual `/mcp-auth` is the default flow. If you set `settings.autoAuth: true`, proxy/direct tool execution will trigger OAuth automatically when a server returns `needs-auth`, then retry the original operation once.
+Old adapter credential files are not imported. Sign in through `/mcp login <server>` or `atomic mcp login <server>` to authorize the native client.
 
-This will:
-1. Start the callback server (configured port, default `19876`)
-2. Discover OAuth endpoints automatically
-3. Register a dynamic client (if no clientId provided)
-4. Open your browser for authentication
-5. Wait for the automatic callback
-6. Complete the OAuth flow
-7. Store tokens securely
+## Use a provider login instead
 
-### Step 2: Use the Server
-
-Once authenticated, use the server normally:
-
-```
-mcp({ server: "my-oauth-server" })
-mcp({ tool: "my-tool", args: '{"key": "value"}' })
-```
-
-The SDK automatically:
-- Adds the access token to requests
-- Refreshes expired tokens automatically
-- Re-authenticates if tokens are invalid
-
-To clear stored OAuth credentials and force a fresh authorization:
-
-```
-/mcp logout my-oauth-server
-```
-
-## How It Works
-
-### Authentication Flow
-
-```
-┌─────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Pi    │────▶│  MCP Server  │────▶│  OAuth Server   │
-│         │     │              │     │                 │
-│ 1. Init │     │ 2. Discovery │     │ 3. Register     │
-│         │     │              │     │                 │
-│         │◀────│              │◀────│ 4. Auth URL     │
-│         │     │              │     │                 │
-│         │────▶│  Callback    │◀────│ 5. Browser      │
-│         │     │  Server      │     │    Redirect     │
-│         │     │              │     │                 │
-│         │◀────│              │◀────│ 6. Code         │
-│         │     │              │     │                 │
-│         │────▶│              │────▶│ 7. Exchange     │
-│         │     │              │     │                 │
-│         │◀────│              │◀────│ 8. Tokens       │
-└─────────┘     └──────────────┘     └─────────────────┘
-```
-
-### Auto-Discovery
-
-The SDK attempts to discover OAuth endpoints using:
-
-1. **RFC 9728 Metadata** - Fetches `/.well-known/oauth-protected-resource`
-2. **WWW-Authenticate Header** - Parses `resource_metadata` from 401 responses
-
-### Dynamic Client Registration
-
-If no `clientId` is provided, the SDK:
-
-1. Discovers the registration endpoint from OAuth metadata
-2. Registers a new client with:
-   - `client_name`: "Pi Coding Agent"
-   - `redirect_uris`: `["http://localhost:<active-callback-port>/callback"]`
-   - `grant_types`: `["authorization_code", "refresh_token"]`
-3. Stores the registered client credentials
-
-### Callback Server
-
-A Node.js HTTP server runs on `localhost` at path `/callback`:
-
-- Preferred callback port is `19876` (or `MCP_OAUTH_CALLBACK_PORT` if set)
-- For dynamic registration, if the preferred port is busy, the adapter scans forward for a free local port
-- For pre-registered clients (`oauth.clientId`), the adapter requires the exact configured callback port
-
-- Handles `code`, `state`, and `error` parameters
-- Displays success/error HTML pages
-- Validates state parameter for CSRF protection
-- Has a 5-minute timeout for pending authorizations
-- Rejects and removes pending authorization waiters during session restart/shutdown before replacement-session startup continues
-
-## Token Storage
-
-Tokens are stored per-server in `~/.pi/agent/mcp-oauth/<server>/tokens.json`:
+A server can use a provider token instead of MCP OAuth:
 
 ```json
-{
-  "tokens": {
-    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refreshToken": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
-    "expiresAt": 1709769600,
-    "scope": "read write"
-  },
-  "clientInfo": {
-    "clientId": "auto-registered-client-id",
-    "clientSecret": "auto-generated-secret"
-  },
-  "serverUrl": "https://api.example.com/mcp"
-}
+{ "mcpServers": { "radius": { "url": "https://radius.example/mcp", "auth": { "provider": "radius" } } } }
 ```
 
-Example directory structure:
-```
-~/.pi/agent/mcp-oauth/
-├── linear/
-│   └── tokens.json
-├── github/
-│   └── tokens.json
-└── ...
-```
+Run `/login radius`, then retry the MCP call. Atomic reads the current token for every request and does not copy it into MCP credential storage.
 
-The `serverUrl` field ensures credentials are invalidated if the server URL changes.
-
-## Security Considerations
-
-### PKCE
-
-All OAuth flows use PKCE with the S256 method, preventing authorization code interception attacks.
-
-### State Parameter
-
-A cryptographically secure random state parameter is generated for each flow and validated on callback.
-
-### File Permissions
-
-Token files (`tokens.json`) are created with `0o600` permissions and stored in per-server directories with `0o700` permissions (readable only by owner).
-
-### URL Validation
-
-Credentials are tied to a specific server URL. If the URL changes, the credentials are invalidated and re-authentication is required.
+This setting is accepted only in global configuration and extension registrations, not project files or package manifests. HTTPS is required except on exact loopback hosts. Tokens go only to the server's configured origin; only same-origin `307` and `308` redirects are followed.
 
 ## Troubleshooting
 
-### "No OAuth tokens found"
+- **Sign-in required:** run `/mcp login <server>` before unattended calls.
+- **Dynamic registration unavailable:** obtain a client ID from the provider and configure `oauth.clientId`.
+- **Redirect mismatch or callback port busy:** compare `callbackPort` and `callbackUrl` with the registered URI. Free its port or update the registration.
+- **Browser cannot reach Atomic:** paste the complete redirected URL into the waiting sign-in prompt.
+- **Wrong authorization page:** check server metadata, then use `authServerMetadataUrl` only if you know the correct trusted document.
+- **Issuer mismatch:** check the authorization server's metadata and callback behavior. Do not accept an unexpected issuer to bypass the failure.
+- **Provider token missing or rejected:** run `/login <provider>` and retry.
 
-Run `/mcp-auth <server>` to authenticate.
-
-### "Failed to discover OAuth endpoints"
-
-The SDK automatically discovers OAuth endpoints from the MCP server. If discovery fails, the server may require a pre-registered client ID:
-
-```json
-{
-  "mcpServers": {
-    "server": {
-      "url": "https://api.example.com/mcp",
-      "auth": "oauth",
-      "oauth": {
-        "clientId": "your-client-id",
-        "scope": "read"
-      }
-    }
-  }
-}
-```
-
-### "Dynamic client registration not supported"
-
-Some servers require pre-registered clients. Obtain a client ID from your OAuth provider and add it to the config.
-
-### Callback server already in use
-
-For dynamic registration, if the preferred callback port is busy, the adapter scans for the next available local port.
-
-For pre-registered OAuth clients (`oauth.clientId`), the callback redirect URI must match exactly. In that case, free the configured port or set `MCP_OAUTH_CALLBACK_PORT` to the registered port. For clients registered like Slack MCP's Claude-compatible `http://localhost:3118/callback`, set `MCP_OAUTH_CALLBACK_PORT=3118`.
-
-### Browser doesn't open
-
-If the browser fails to open (e.g., in SSH sessions), Atomic displays the exact complete authorization URL for manual login, including all paths and parameters (state, callback, PKCE, resource, and any credentials). These intentional login instructions are not diagnostic logs; transport and RPC error diagnostics remain redacted. Treat the displayed URL as sensitive and do not share it. Browser-launch failure still cancels the pending attempt, so its callback cannot complete authentication; configure a working browser opener and retry `/mcp-auth <server-name>`.
-
-## Architecture
-
-The OAuth implementation uses the following modules:
-
-- `mcp-auth.ts` - Auth storage and retrieval (per-server `tokens.json` files)
-- `mcp-oauth-provider.ts` - SDK OAuthClientProvider implementation
-- `mcp-callback-server.ts` - Node.js HTTP callback server
-- `mcp-auth-flow.ts` - High-level auth flow using SDK transport
-
-## SDK Integration
-
-The implementation uses these SDK exports:
-
-```typescript
-import {
-  auth,
-  UnauthorizedError,
-  OAuthClientProvider,
-} from "@modelcontextprotocol/sdk/client/auth.js"
-
-import {
-  StreamableHTTPClientTransport,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-```
-
-The `McpOAuthProvider` class implements `OAuthClientProvider` and is passed to `StreamableHTTPClientTransport`:
-
-```typescript
-const transport = new StreamableHTTPClientTransport(url, {
-  authProvider: new McpOAuthProvider(serverName, serverUrl, config, callbacks),
-})
-```
+For configuration, tool exposure, and connection diagnostics, see [MCP servers](../coding-agent/docs/mcp-servers.md).
 
 ## References
 
-- [MCP SDK Documentation](https://github.com/modelcontextprotocol/typescript-sdk)
-- [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
-- [OAuth 2.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-11)
-- [PKCE (RFC 7636)](https://datatracker.ietf.org/doc/html/rfc7636)
-- [Dynamic Client Registration (RFC 7591)](https://datatracker.ietf.org/doc/html/rfc7591)
-- [OAuth Protected Resource Metadata (RFC 9728)](https://datatracker.ietf.org/doc/html/rfc9728)
+- [MCP authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
+- [PKCE, RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636)
+- [Dynamic client registration, RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591)
+- [Authorization server metadata, RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414)
+- [Authorization response issuer, RFC 9207](https://datatracker.ietf.org/doc/html/rfc9207)
+- [Protected resource metadata, RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728)

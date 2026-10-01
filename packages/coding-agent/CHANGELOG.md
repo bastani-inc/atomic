@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the old MCP adapter with the native client. Only `~/.atomic/agent/mcp.json` and trusted `.atomic/mcp.json` are read, using the native configuration shape. Shared config layers, client imports, and old-field translations are no longer supported; old OAuth credentials are not imported.
+- MCP tools now use `mcp__<server>__<tool>` names and default to `codemode` exposure. The old gateway, configurable prefixes, lazy/idle lifecycle settings, metadata cache, SSE transport, MCP Apps rendering, and setup command are removed. Enabled servers connect in the background; `/mcp reconnect` without a name selects one server rather than reconnecting every server.
+
+### Added
+
+- MCP servers can set `oauth.authServerMetadataUrl` to a trusted authorization server metadata document when discovery advertises the wrong server or none. See [MCP authentication](docs/mcp-servers.md#override-oauth-authorization-server-discovery) ([#10172](https://github.com/earendil-works/pi/issues/10172)).
+- Added `/mcp login [server]`, command completion, and server selection for login, logout, and reconnect. The manager offers per-server action menus for enabled state and tool exposure, and OAuth sign-in accepts a pasted redirect URL when the browser is on another machine.
+- MCP servers support `codemode`, `deferred`, `direct`, and `hidden` exposure with per-tool pattern overrides, standard resource list/read tools, and per-server OAuth callback ports and URLs. See [MCP servers](docs/mcp-servers.md).
+- Added shell commands `atomic mcp add`, `remove`, `list`, `login`, and `logout` to configure, check, and authenticate file-configured servers without starting a session.
+
+### Changed
+
+- MCP now uses pi's native client, tool exposure, resources, and server manager. Calls, including codemode calls, pass through Atomic's tool permission pipeline. Native OAuth credentials are stored in `mcp-auth.json`.
+
+### Fixed
+
+- MCP OAuth rejects authorization responses from another issuer, including a missing `iss` when the server promises it under RFC 9207.
+- MCP OAuth sign-in and refresh now tolerate empty or null optional token and registration fields, and empty requested scopes use the next scope source ([#10266](https://github.com/earendil-works/pi/issues/10266)).
+- MCP sign-out no longer lets an in-progress OAuth refresh restore deleted credentials.
+- Session shutdown now closes MCP connections that are still opening instead of leaving them running after the session ends.
+- Replacing an extension-contributed MCP server now retires pending connections, and reloading with active servers no longer fails during connection cleanup.
+- Malformed MCP configuration errors no longer quote file contents that may contain credentials.
+
 ## [0.9.25-alpha.3] - 2026-09-30
 
 ### Added

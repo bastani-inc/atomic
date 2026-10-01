@@ -1006,20 +1006,20 @@ pi.registerCommand("my-setup-teardown", {
 
 ### pi.registerMcpServer(name, config)
 
-Contribute an MCP server whose configuration is only known at runtime, such as the URL of a local service the extension starts. `config` uses the same schema as an entry in [`mcp.json`](/mcp-servers#configure-a-server), including `url`, `command`/`args`/`env`/`cwd`, `auth: "bearer"` with `bearerTokenEnv`, `lifecycle`, `timeoutMs`, and `${VAR}` interpolation.
+Contribute an MCP server whose configuration is only known at runtime, such as the URL of a local service the extension starts. `config` uses the same schema as an entry in [`mcp.json`](/mcp-servers#configure-servers), including `url`, `command`/`args`/`env`/`cwd`, `headers`, OAuth settings, `exposure`, and per-request `timeout` in seconds. URLs support `${VAR}` and `$env:VAR` interpolation.
 
 ```typescript
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async () => {
     const port = await startLocalService();
-    pi.registerMcpServer("local-service", { url: `http://127.0.0.1:${port}/mcp`, lifecycle: "eager" });
+    pi.registerMcpServer("local-service", { url: `http://127.0.0.1:${port}/mcp`, exposure: "direct" });
   });
 }
 ```
 
 Call it from the extension factory or from `session_start`. Load order does not matter: registrations made after the MCP adapter has started are picked up without a reload. Registering the same name again replaces the earlier registration.
 
-Registered servers are the lowest-precedence MCP layer. They replace a same-named server from a package manifest, but any user or project MCP config file replaces them, and `{ "disabled": true }` there turns them off. `/mcp` shows the registering extension next to the server name.
+Registered servers are the lowest-precedence MCP layer. They replace a same-named server from a package manifest, but a user or trusted-project MCP config entry replaces them. Set `"enabled": false` on a complete file-configured entry to keep it without connecting. `/mcp` shows the registering extension next to the server name.
 
 `pi.getMcpServerContributions()` returns the package-manifest and registered servers for the session, each with its `name`, `config`, `origin` (`"package"` or `"extension"`), and `sourceInfo`.
 

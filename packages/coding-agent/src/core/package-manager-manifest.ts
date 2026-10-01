@@ -16,7 +16,7 @@ export function sanitizeMcpServers(value: unknown): Record<string, McpServerConf
 	if (!isRecord(value)) return undefined;
 	const servers: Record<string, McpServerConfig> = {};
 	for (const [name, entry] of Object.entries(value)) {
-		if (isRecord(entry)) servers[name] = entry as McpServerConfig;
+		if (isRecord(entry)) servers[name] = entry as unknown as McpServerConfig;
 	}
 	return servers;
 }

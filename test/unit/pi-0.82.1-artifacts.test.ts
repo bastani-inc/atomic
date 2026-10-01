@@ -118,7 +118,7 @@ const declarations = new Map([
 		],
 	],
 	["packages/intercom", ["@earendil-works/pi-tui"]],
-	["packages/mcp", ["@bastani/pi-ai", "@earendil-works/pi-tui"]],
+	["packages/mcp", []],
 	["packages/subagents", ["@earendil-works/pi-agent-core", "@bastani/pi-ai", "@earendil-works/pi-tui"]],
 	["packages/web-access", ["@earendil-works/pi-tui"]],
 	["packages/workflows", ["@earendil-works/pi-tui"]],
@@ -162,8 +162,8 @@ test("Pi v0.99.2 source declarations and lockfiles stay synchronized", async () 
 	const piAiManifest = await readJson<Manifest>(join(root, "packages/ai/package.json"));
 	assert.equal(piAiManifest.dependencies?.["@earendil-works/pi-telemetry"], piVersion);
 	externalDeclarationCount++;
-	assert.equal(declarationCount, 14);
-	assert.equal(externalDeclarationCount, 12);
+	assert.equal(declarationCount, 12);
+	assert.equal(externalDeclarationCount, 11);
 	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
 	for (const workspace of [...workspacePaths, "packages/ai"]) {
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));

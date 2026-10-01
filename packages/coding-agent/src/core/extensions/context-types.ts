@@ -170,7 +170,9 @@ export interface SubagentChildPolicy {
 	};
 	/** Current admitted in-process nesting depth; absent for top-level sessions. */
 	readonly depth?: number;
-	/** Undefined preserves MCP configuration defaults; [] explicitly disables direct tools. */
+	/** SDK-resolved exact child tool allowlist; undefined leaves ordinary tools unrestricted. */
+	readonly tools?: readonly string[];
+	/** Server or server/tool selections. Undefined preserves MCP defaults; [] disables selector-based access. */
 	readonly mcpDirectTools?: readonly string[];
 	/** Admission-issued identity/capability; never inherited through process environment. */
 	readonly intercom?: SubagentIntercomIdentity;

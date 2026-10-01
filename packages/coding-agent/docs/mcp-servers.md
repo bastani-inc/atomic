@@ -1,158 +1,232 @@
 ---
 title: "MCP Servers"
-description: "Configure MCP servers, discover tools, and authenticate connections."
+description: "Configure MCP servers, discover tools and resources, and authenticate connections."
 ---
 
 # MCP Servers
 
-Atomic includes MCP support in both npm and binary installations. No separate extension install is needed. Use `/mcp` to inspect servers or `/mcp setup` to configure them.
+Atomic includes [Model Context Protocol](https://modelcontextprotocol.io) support in npm and binary installations. It connects to servers over stdio or streamable HTTP. No separate extension install is needed.
 
 ## Quick setup
 
-Run `atomic`, then use `/mcp setup` to create configuration or preview imports from another client. For manual setup, add a local server's `command` and `args`, or a remote server's `url`, to one of the configuration files below. Restart Atomic after editing a file manually.
+Add a local server, check the connection, then start Atomic:
 
-Use `/mcp` to inspect connections and `/mcp tools` to list tools. Servers connect lazily by default; discovery or a tool call can establish the connection. Use `/mcp reconnect my-server` to reconnect a configured server. For a server that requires OAuth, run `/mcp-auth my-server` before unattended work.
+```sh
+atomic mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .
+atomic mcp list
+atomic
+```
 
-## Configure a server
+For a remote server:
 
-Put shared project configuration in `.mcp.json` at your project root:
+```sh
+atomic mcp add docs --url https://example.com/mcp --bearer-token-env-var DOCS_TOKEN
+```
+
+Commands write user-level configuration by default. Add `--local` or `-l` to write `.atomic/mcp.json` in the current project instead. Start Atomic and grant project trust before using project servers.
+
+Use `/mcp` to inspect connections and manage servers. After changing configuration outside the session, run `/reload` or restart Atomic.
+
+## Configure servers
+
+Atomic reads user-level servers from `~/.atomic/agent/mcp.json` and project servers from `.atomic/mcp.json`. Project configuration is read only after [project trust](/security) is granted. A project entry replaces a user-level entry with the same name.
+
+Both files use a top-level `mcpServers` object. Keep personal servers and credentials in the user-level file. `ATOMIC_CODING_AGENT_DIR` relocates the Atomic agent directory.
+
+Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. Relative `cwd` values resolve against the session directory.
+
+HTTP servers use `url`, optional `headers`, and optional `oauth`. For bearer authentication:
 
 ```json
 {
   "mcpServers": {
-    "my-server": {
-      "command": "path/to/mcp-server",
-      "args": []
+    "docs": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" },
+      "description": "Search and read the product documentation"
     }
   }
 }
 ```
 
-Replace `command` and `args` with your server's launch instructions. For a remote HTTP server, use `url` instead:
+URLs support `${NAME}` and `$env:NAME` environment references. Atomic resolves them in memory before validating the URL, without rewriting configuration files. `env`, `headers`, and `oauth.clientSecret` support `${NAME}` environment references and whole-value `!command` expressions, for example `"Authorization": "!echo Bearer $(gh auth token)"`. Only use commands from configuration you trust.
 
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "url": "https://example.com/mcp"
-    }
-  }
-}
+Both transports support:
+
+- `timeout`: per-request inactivity timeout in seconds, default 60. Progress notifications reset it; it is not a total execution deadline.
+- `enabled: false`: keep a server listed without connecting to it.
+- `exposure` and `toolExposure`: control how tools reach the model.
+- `description`: a short server summary for the system prompt, tool search, and `describeNamespace()`. Without it, Atomic uses the first line of server instructions once connected.
+
+Server names may contain letters, digits, `_`, and `-`. Names that differ only in `-` and `_` identify the same namespace. Invalid entries are reported and skipped without preventing other servers from connecting.
+
+`type` is optional: `command` selects stdio and `url` selects streamable HTTP. If present, it must be `stdio`, `http`, or `streamable-http`. SSE is not supported; use the server's streamable HTTP endpoint, commonly `/mcp` rather than `/sse`.
+
+### Servers from packages and extensions
+
+Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute servers with the same configuration shape. File-configured servers take precedence over contributions with the same normalized name. Project packages load only after the project is trusted.
+
+`/mcp` shows each server's source. Enabled-state and exposure changes for file-configured servers are saved without replacing unrelated configuration. Changes to extension-contributed servers apply to the current session.
+
+## Manage servers
+
+`/mcp` opens a server manager with connection state, tool count, exposure, and source. Select a server to inspect tools and connection details, sign in or out, reconnect, enable or disable it, or change exposure. Servers that need attention appear first.
+
+| Command | Action |
+| --- | --- |
+| `/mcp` | Open the manager in the TUI, or show status outside it. |
+| `/mcp login [server]` | Sign in with OAuth. |
+| `/mcp logout [server]` | Remove stored OAuth credentials. |
+| `/mcp reconnect [server]` | Reconnect a server and refresh its tools. |
+
+Command completion suggests actions and eligible server names. When a server name is omitted, Atomic selects an eligible server when the choice is unambiguous; otherwise it asks you to choose. Session login requires an interactive UI. Shell login opens the browser without starting a session; authenticate before unattended work.
+
+Enabled servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with `direct` tools. Codemode, tool search, and resource calls wait for the servers they need. A dropped connection reconnects on the next call. Changes announced by a server update the available tools; withdrawn tools become unreachable.
+
+### Shell commands
+
+Shell commands use file-configured servers and do not load extensions:
+
+```sh
+atomic mcp add <server> [options] -- <command> [args...]
+atomic mcp add <server> [options] --url <url>
+atomic mcp remove <server> [-l]
+atomic mcp list [--json]
+atomic mcp login <server> [--timeout <seconds>]
+atomic mcp logout <server>
 ```
 
-Remote `url` values support `${VAR}` and `$env:VAR` environment variable interpolation in both project and user configuration. For example, commit this server entry and set `MY_SERVICE_URL` and `MY_SERVICE_TOKEN` in the environment that launches Atomic:
+`add` replaces an existing entry of the same name. `add` and `remove` accept `--local` (`-l`) for the project file. For stdio, use repeatable `--env KEY=VALUE` and `--cwd`. For HTTP, use repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Run `atomic mcp --help` for usage.
 
-```json
-{ "url": "${MY_SERVICE_URL}/mcp", "auth": "bearer", "bearerTokenEnv": "MY_SERVICE_TOKEN" }
-```
-
-With `MY_SERVICE_URL=https://example.com`, the endpoint is `https://example.com/mcp`. Unset variables become empty strings.
-
-The resolved endpoint must be a non-empty HTTP(S) URL. If Atomic reports a configuration error before connecting, check the variables in its environment and the URL suffix. Restart Atomic after changing its environment.
-
-Atomic reads configuration in this order, with later files overriding earlier settings:
-
-1. `~/.config/mcp/mcp.json`, shared user-global configuration.
-2. `~/.atomic/agent/mcp.json`, Atomic user-global overrides.
-3. `.mcp.json`, shared project configuration.
-4. `.atomic/mcp.json`, Atomic project overrides.
-
-The Atomic agent directory can be relocated with `ATOMIC_CODING_AGENT_DIR`. Use `/mcp setup` to inspect detected configuration and preview imports from other hosts before writing changes.
-
-Servers connect lazily by default. Adding a server does not require an immediate connection at startup.
-
-### Configuration rules
-
-- `command` is one executable and `args` contains its arguments, not one shell command string. Use `cwd` for the server's working directory and `env` for its environment.
-- Remote servers use `url` and optional `headers`. Keep credentials out of shared files; use environment variable references or `bearerTokenEnv` for bearer authentication.
-- Put personal servers and credentials in user-level configuration. Use project configuration only for servers the project requires, in trusted projects.
-- Use `timeoutMs` for the per-request inactivity timeout. Progress notifications reset it.
-
-### Import configuration from another client
-
-Clients that use a top-level `mcpServers` object can share the same server entries. Copy compatible entries into `.mcp.json`, or use `/mcp setup` to preview detected imports before saving. Check executable paths, working directories, and required environment variables on the current machine. Restart Atomic after manual changes, then use `/mcp` to diagnose connection errors.
-
-## Servers from packages and extensions
-
-Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute MCP servers. Contributed servers sit below all four configuration files: a server with the same name in any of them replaces the contributed entry completely. To turn a contributed server off, give its name an entry with only `disabled`:
-
-```json
-{
-  "mcpServers": {
-    "acme-search": { "disabled": true }
-  }
-}
-```
-
-`"disabled": true` removes any server from the effective configuration, contributed or not.
-
-`/mcp` shows where each contributed server came from next to its name: `(package npm:@acme/tools)` for a package manifest, `(extension from package npm:@acme/tools)` for a package's extension, or `(extension /path/to/extension.ts)` for a local extension. Connection errors name the same source. Turning on direct tools for a contributed server in `/mcp` copies its definition into `~/.atomic/agent/mcp.json`, where it then overrides the contributed version.
-
-To choose which servers one package contributes, add `mcpServers` patterns to its [package filter](/packages/reference#package-filtering). Project packages contribute servers only after the project is trusted. Workflow stages see the same contributed servers as the session that starts them.
+`list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login waits up to 300 seconds by default; `--timeout` changes that browser-login budget, not the server request timeout. A running session uses new credentials on its next turn.
 
 ## Find and call tools
 
-The `mcp` gateway discovers tools without adding every server's full tool definitions to the session:
+Tools are named `mcp__<server>__<tool>`, with punctuation replaced by `_`. Names that collide after normalization receive deterministic hash suffixes. Use names returned by discovery rather than constructing them yourself.
 
-```js
-mcp({ server: "my-server" })
-mcp({ search: "search" })
-mcp({ describe: "my_server_search" })
-mcp({ tool: "my_server_search", args: '{"query":"example"}' })
+### Control tool exposure
+
+| Exposure | Behavior |
+| --- | --- |
+| `codemode`, the default | Callable from codemode scripts, but not declared to the model or listed in the codemode description. Discover with `searchTools()`, `describeTool()`, or `ALL_TOOLS`. |
+| `deferred` | Not declared until `tool_search` loads a matching tool for the next model call. |
+| `direct` | Declared like a built-in tool and also callable from codemode. |
+| `hidden` | Unreachable. |
+
+`codemode-deferred` is accepted as an alias for `codemode`. Atomic activates `codemode` for codemode servers and `tool_search` for deferred servers. Set `"autoEnableCodemode": false` beside `mcpServers` to prevent automatic codemode activation. A project value overrides a user-level value.
+
+`toolExposure` overrides individual tools. Keys are original server tool names or patterns where `*` matches any characters. Exact names win; among patterns, the first match wins:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "exposure": "deferred",
+      "toolExposure": {
+        "search_code": "direct",
+        "get_*": "codemode",
+        "delete_*": "hidden"
+      }
+    }
+  }
+}
 ```
 
-Use the tool names returned by discovery. `args` is a JSON string, not an object. Search may connect configured servers when their metadata has not yet been cached.
+Codemode and deferred tools can be reached through either indirect mechanism. Server summaries appear in the `mcp_servers` system prompt section. Scripts can read instructions and tool names with `describeNamespace("mcp__github")`.
 
-Tool names replace punctuation with `_` and receive a leading `_` if they start with a digit. Names longer than 64 characters and tools whose names collide after this conversion receive a deterministic hash suffix. Both gateway discovery and direct tools use these names; call the returned name rather than constructing one yourself. Server names that differ only in `-` and `_` are rejected within one configuration file. A higher-precedence file replaces a contributed or lower-precedence server with the same normalized name.
+Codemode receives the complete MCP result, including `content`, `structuredContent`, and `isError`. Text over 20 KB is shortened for the model, with the complete text saved to a temporary file named in the result. Every MCP call passes through Atomic's tool pipeline, including permission hooks.
 
-To expose a server's tools directly in the agent's tool list, add `"directTools": true` to that server's configuration. To expose only selected tools, set `directTools` to an array of the original MCP tool names. The default is gateway-only access.
+## Use resources
 
-In a headless SDK session, cached direct tools are available at startup, but discovery does not connect uncached lazy servers. Call the `mcp` gateway when you need them. Set the server's `lifecycle` to `"eager"` or `"keep-alive"` if it must connect during startup.
+When a connected server offers resources, Atomic registers:
+
+- `list_mcp_resources`, to list resources. Use `server` for one server and `cursor` for its next page; without `server`, it lists resources across servers.
+- `list_mcp_resource_templates`, to list URI templates.
+- `read_mcp_resource`, to read by `server` and `uri`. Text and images reach the model directly; other binary content is saved to a temporary file.
+
+These tools reach enabled, non-hidden resource servers. Their exposure is the widest exposure among those servers. Resource links in tool results identify the server and `read_mcp_resource`.
+
+MCP Apps resources (`ui://` URIs or `text/html;profile=mcp-app`) are omitted because Atomic does not render them.
 
 ## Authentication
 
-For an OAuth server, run `/mcp-auth my-server` in an interactive session. You can also select the server in `/mcp` and press Enter or `Ctrl+A`. Run `/mcp logout my-server` to remove stored OAuth credentials and disconnect.
+For a remote OAuth server, configure its URL and run `/mcp login my-server`, or select **Sign in** in `/mcp`. Atomic opens the authorization page and displays a clickable URL. If the browser runs on another machine, paste the complete URL it was redirected to into the sign-in prompt. Treat authorization and redirect URLs as sensitive.
 
-While sign-in waits for browser approval, Atomic displays the authorization URL as a terminal hyperlink with a Cmd/Ctrl+click hint. You can use it if the browser did not open automatically.
+Atomic registers OAuth clients as `atomic`, stores credentials in `~/.atomic/agent/mcp-auth.json`, and refreshes tokens when they expire or are rejected. A successful sign-in reconnects the server. If additional scope is required, sign in again. `/mcp logout my-server` or `atomic mcp logout my-server` deletes stored credentials. Old adapter credential files are not imported; sign in through the native client.
 
-Automatic OAuth is opt-in through `settings.autoAuth`. Browser-based authorization requires an interactive session; authenticate before running unattended work.
-
-Atomic registers OAuth clients as `atomic`. If a server requires a known client name, configure it with `oauth.clientName`:
+OAuth applies to HTTP servers without an `Authorization` header or provider-token configuration. For a pre-registered client:
 
 ```json
-{ "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp", "oauth": { "clientName": "Claude Code" } } } }
+{
+  "mcpServers": {
+    "example": {
+      "url": "https://mcp.example.com/mcp",
+      "oauth": {
+        "clientId": "my-client",
+        "clientSecret": "${EXAMPLE_SECRET}",
+        "callbackPort": 8765,
+        "scope": "read write"
+      }
+    }
+  }
+}
 ```
 
-The name is sent only during dynamic client registration. Run `/mcp logout figma` before signing in again to register under a changed name.
+`clientSecret` is optional. `callbackPort` uses `http://127.0.0.1:<port>/callback`. For another registered redirect URI, set `callbackUrl`; it must use HTTP on `localhost`, `127.0.0.1`, or `[::1]`. Atomic sends it as written. If it has no port, Atomic adds `callbackPort` or a free port. The URI must match the client's registration.
+
+Use `oauth.clientName` when a server requires a known registration name. Sign out before signing in again to register with a changed name. Use `oauth.scope` for servers that do not advertise their required scopes; later scope requests are added to it.
+
+### Override OAuth authorization server discovery
+
+If a server advertises the wrong authorization server or none, set `oauth.authServerMetadataUrl` to a trusted RFC 8414 or OpenID Connect metadata document:
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "url": "https://mcp.example.com/mcp",
+      "oauth": { "authServerMetadataUrl": "https://example.okta.com/.well-known/openid-configuration" }
+    }
+  }
+}
+```
+
+Atomic uses the document instead of authorization server discovery and trusts its issuer as configured. Point it only at a document you trust. The URL must use HTTPS, except for HTTP on `localhost`, `127.0.0.1`, or `[::1]`.
+
+Atomic rejects authorization responses whose `iss` names another issuer, before exchanging the code. If the server promises the RFC 9207 issuer parameter, the response must include it. Empty or null optional token and registration fields count as absent. An empty refresh token does not replace a previously stored one, and `expires_in: null` does not immediately expire the access token.
 
 ### Authenticate with a provider login
 
-An HTTP server can use the token of a provider you have signed in to instead of MCP OAuth:
+An HTTP server can use your current provider login token instead of MCP OAuth:
 
 ```json
 { "mcpServers": { "radius": { "url": "https://radius.example/mcp", "auth": { "provider": "radius" } } } }
 ```
 
-Atomic reads the provider's current token for each request, so refreshes apply. MCP does not copy or store the token. If the server rejects it or the provider has no token, the connection fails with a message to run `/login <provider>`.
+Atomic reads the current token for every request and does not copy it into MCP credential storage. If the token is missing or rejected, run `/login <provider>` and retry the MCP call.
 
-After signing in with `/login <provider>`, retry the MCP gateway call. Atomic reconnects with the current token, including for servers with cached tools; you do not need to run `/mcp reconnect`.
+Because the credential goes to the configured server, provider-token authentication has these limits:
 
-Because the token goes to the server's `url`, `auth.provider` has limits:
+- It is accepted only from global configuration and extension registrations, not project configuration or package manifests.
+- The URL must use HTTPS, except for HTTP on `localhost`, `127.0.0.1`, or `[::1]`.
+- Tokens are sent only to the server's origin. Only same-origin `307` and `308` redirects are followed.
 
-- It is accepted in the global `mcp.json` files and in servers registered by extensions. It is ignored, with a warning, in project `.mcp.json` and `.atomic/mcp.json`, in project-relative imports such as `.vscode/mcp.json`, and in package manifest servers.
-- The URL must use `https`, or `http` on `localhost`, `127.0.0.1`, or `[::1]`.
-- Atomic sends the token only to the server's origin. It follows `307` and `308` redirects within that origin and refuses every other redirect.
+## Native configuration only
+
+The old adapter has been replaced by the native client. Only `~/.atomic/agent/mcp.json` and trusted `.atomic/mcp.json` files are read; shared configuration files and client imports are not supported. Use the native fields documented above. Old adapter fields are not translated, and old OAuth credential files are not imported.
+
+Tools use `mcp__<server>__<tool>` names and default to `codemode` exposure. The old gateway tool, configurable prefixes, lazy/idle lifecycle settings, metadata cache, SSE transport, MCP Apps rendering, and setup command are not available. All enabled servers connect in the background.
 
 ## Troubleshooting
 
-- Run `/mcp` to check server status and `/mcp tools` to list available tools.
-- After editing configuration manually, restart Atomic to load it. Use `/mcp reconnect my-server` to reconnect a configured server and refresh its tools.
-- If Atomic cannot open the authorization browser, use the complete URL it displays for manual login. **Treat it as sensitive**: it includes all paths, parameters, and any credentials. Login instructions are not redacted; transport and RPC error diagnostics are.
-  Browser-launch failure cancels the pending attempt, so its callback cannot complete authentication. Check your default browser and retry `/mcp-auth my-server`.
-- If a local server cannot start, check its executable, arguments, working directory, and required environment variables. Server configuration supports `cwd` and `env`.
-- If authorization fails, run `/mcp-auth my-server` again. Check the remote server's URL and authentication requirements.
-- For slow tools, a server's `timeoutMs` controls the inactivity timeout. Progress notifications reset it; it is not a total execution deadline.
+- Run `/mcp` to inspect connection errors, server tools, and the tail of a failed stdio server's stderr.
+- After editing configuration, run `/reload` or restart Atomic. Use `/mcp reconnect my-server` to retry a connection and refresh tools.
+- For a missing tool, check server and per-tool exposure. `hidden` tools cannot be called; codemode or deferred tools need an active discovery tool.
+- For OAuth redirect failures, check `callbackPort` and `callbackUrl` against the registered URI. Over SSH, paste the complete redirected URL into the waiting sign-in prompt.
+- For an issuer mismatch, check the authorization server's metadata and callback configuration before retrying. Do not disable issuer checks to accept an unexpected response.
+- For slow calls, adjust `timeout` in seconds. Progress resets this inactivity timer.
 
 ## Local documentation
 
-This guide is available at `docs/mcp-servers.md` under Atomic's installation root in both npm and binary installations. The session's documentation instructions provide the absolute docs directory. Read this guide there rather than looking inside the bundled extension directory.
+This guide is available at `docs/mcp-servers.md` under Atomic's installation root in npm and binary installations. The session's documentation instructions provide the absolute docs directory.

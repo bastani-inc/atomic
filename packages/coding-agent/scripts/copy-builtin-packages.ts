@@ -25,7 +25,6 @@ import {
 
 const require = createRequire(import.meta.url);
 const linkedomWorkerEntry = join(dirname(require.resolve("linkedom/package.json")), "worker.js");
-const openXdgOpenEntry = join(dirname(require.resolve("open")), "xdg-open");
 interface BuiltinCopy {
 	label: string;
 	destinationName: BuiltinPackageDirName;
@@ -150,8 +149,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"CHANGELOG.md",
 		"LICENSE",
 		INSTALLED_EXTENSION_ENTRIES.mcp,
-		"app-bridge.bundle.js",
-		"xdg-open",
+		"native-client-licenses/",
 	],
 	"web-access": [
 		"package.json",
@@ -429,6 +427,11 @@ for (const copy of getCopyPlan()) {
 	installedImportClosures.set(copy.destinationName, deriveImportClosure(copy.sourceDir, closureRoots));
 	console.log(`Copied builtin ${copy.label} -> ${join("dist", "builtin", basename(destinationDir))}`);
 }
+const nativeMcpClientDir = join(packageRoot, "src", "extensions", "mcp", "client");
+const nativeMcpNoticeDir = join(distBuiltinDir, "mcp", "native-client-licenses");
+mkdirSync(nativeMcpNoticeDir, { recursive: true });
+cpSync(join(nativeMcpClientDir, "NOTICE"), join(nativeMcpNoticeDir, "NOTICE"));
+cpSync(join(nativeMcpClientDir, "LICENSES"), join(nativeMcpNoticeDir, "LICENSES"), { recursive: true });
 
 // Issue #2716: derive the published @bastani/atomic/workflows types from source.
 emitWorkflowAuthoringTypes();
@@ -456,9 +459,6 @@ await bundleEntrypoint(
 	join(distBuiltinDir, "mcp", INSTALLED_EXTENSION_ENTRIES.mcp),
 	"@bastani/mcp extension",
 );
-const installedXdgOpen = join(distBuiltinDir, "mcp", "xdg-open");
-cpSync(openXdgOpenEntry, installedXdgOpen);
-chmodSync(installedXdgOpen, 0o755);
 await bundleEntrypoint(
 	join(distBuiltinDir, "web-access", "index.ts"),
 	join(distBuiltinDir, "web-access", INSTALLED_EXTENSION_ENTRIES["web-access"]),

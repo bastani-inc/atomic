@@ -137,11 +137,13 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			"fetch_content",
 			"get_search_content",
 			"intercom",
-			"mcp",
 			"subagent",
 			"web_search",
 			"workflow",
 		]);
+		// Native MCP contributes a manager command; tools appear only for configured servers.
+		expect(session.extensionRunner?.getCommand("mcp")).toBeDefined();
+		expect(session.getToolDefinition("mcp")).toBeUndefined();
 		expect(session.systemPrompt).toContain("- intercom:");
 		expect(session.systemPrompt).not.toContain("- read:");
 		await session.dispose();

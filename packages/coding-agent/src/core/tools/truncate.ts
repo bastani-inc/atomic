@@ -274,3 +274,34 @@ export function truncateLine(
 	}
 	return { text: `${line.slice(0, maxChars)}... [truncated]`, wasTruncated: true };
 }
+
+export interface MiddleTruncationResult {
+	content: string;
+	truncated: boolean;
+	removedChars: number;
+	totalBytes: number;
+	totalLines: number;
+}
+
+export function truncateMiddle(content: string, maxBytes: number): MiddleTruncationResult {
+	const buf = Buffer.from(content, "utf-8");
+	const totalLines = splitLinesForCounting(content).length;
+	if (buf.length <= maxBytes) {
+		return { content, truncated: false, removedChars: 0, totalBytes: buf.length, totalLines };
+	}
+	const isBoundary = (index: number) => index >= buf.length || (buf[index] & 0xc0) !== 0x80;
+	let headEnd = Math.floor(maxBytes / 2);
+	while (headEnd > 0 && !isBoundary(headEnd)) headEnd--;
+	let tailStart = buf.length - (maxBytes - Math.floor(maxBytes / 2));
+	while (tailStart < buf.length && !isBoundary(tailStart)) tailStart++;
+	const head = buf.subarray(0, headEnd).toString("utf-8");
+	const tail = buf.subarray(tailStart).toString("utf-8");
+	const removedChars = Array.from(buf.subarray(headEnd, tailStart).toString("utf-8")).length;
+	return {
+		content: `${head}…${removedChars} chars truncated…${tail}`,
+		truncated: true,
+		removedChars,
+		totalBytes: buf.length,
+		totalLines,
+	};
+}

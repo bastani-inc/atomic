@@ -418,6 +418,7 @@ function getAliases(): Record<string, string> {
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
 	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
 	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/pi-ai");
+	const piAiOauthPageEntry = resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/pi-ai");
 	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/cloudflare-gateway-binding.js",
 		"@bastani/pi-ai",
@@ -437,6 +438,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
 		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
 		"@bastani/pi-ai/utils/provider-env": piAiProviderEnvEntry,
+		"@bastani/pi-ai/utils/oauth-page": piAiOauthPageEntry,
 		"@bastani/pi-ai/compat": piAiEntry,
 		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
 		"@bastani/pi-ai": piAiEntry,
@@ -446,6 +448,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiEntry,
 		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
+		"@earendil-works/pi-ai/utils/oauth-page": piAiOauthPageEntry,
 		"@earendil-works/pi-ai": piAiEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui/dist/layout.js": piTuiLayoutEntry,

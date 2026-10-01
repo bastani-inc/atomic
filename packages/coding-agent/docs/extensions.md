@@ -76,19 +76,19 @@ If an extension is heavier than you need, compare the lighter mechanisms on [Bui
 
 Built-in MCP, workflow, subagent, web-access, and Intercom commands are available at startup. Their first use may wait for discovery or connection.
 
-Commands still wait for the resources they need before returning results. These include `/workflow list`, named workflow runs/inputs, failed or durable workflow resume, `/mcp`, direct MCP tool calls, `mcp({ search })`, `mcp({ describe })`, `mcp({ server })`, and explicit reload/setup flows.
+Commands still wait for the resources they need before returning results. These include `/workflow list`, named workflow runs/inputs, failed or durable workflow resume, MCP tool calls, and explicit reload flows.
 
 Discovery scope depends on the operation:
 
-- Cold-cache MCP proxy `describe` loads metadata only for prefix-matched or explicitly requested servers. A prefix-directed miss does not start unrelated servers.
-- Cold-cache unscoped MCP proxy `search` loads metadata from all uncached lazy servers to search the full configured tool set.
-- Env-selected MCP direct tools warm only their selected servers and refresh live tool registration when ready.
+- Enabled MCP servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with direct tools.
+- Codemode waits for the MCP namespaces a script names; `searchTools()` and `ALL_TOOLS` require all enabled servers. Tool search and resource tools also wait for discovery.
+- `/mcp` provides server management; `/mcp login`, `/mcp logout`, and `/mcp reconnect` accept an optional server name. Completion lists actions and eligible servers.
 - Paused live-workflow resume and pickers bypass full workflow discovery.
 - Autocomplete falls back to current/admin completions when lazy discovery fails.
 
-Failed first-use initialization can be retried. Cancelling one caller does not cancel initialization needed by others. Web-access batches with no successful items report a tool error; partial successes retain their completed items.
+Failed connections can be retried with `/mcp reconnect`; dropped MCP connections reconnect on the next call. Web-access batches with no successful items report a tool error; partial successes retain their completed items.
 
-MCP tool `timeoutMs` is an inactivity limit, not a total deadline: progress resets it. Omit it to use the MCP SDK default.
+MCP `timeout` is an inactivity limit in seconds, not a total deadline: progress resets it. The default is 60 seconds. See [MCP servers](/mcp-servers) for native configuration, exposure, resources, OAuth, and shell commands.
 
 ## Interactive callback isolation
 
@@ -103,7 +103,7 @@ The first is a remote custom UI. While an engine-owned `ctx.ui.custom()` compone
 - A component mounted with `handlesCtrlC: true` receives the press and keeps its own Skip, Close, or cancel binding. If that same component is still holding input on the next press, that press closes it, so a declared component cannot trap the keyboard either.
 - A component that did not declare it is closed by the first press, through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the child is told the component closed, the editor comes back, and the engine keeps running — including any other component that generation has mounted below or above this one.
 
-Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. The bundled workflow surfaces and the `/mcp`, `/mcp setup`, and MCP OAuth panels declare it. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
+Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. The bundled workflow surfaces declare it. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
 
 ```typescript
 await ctx.ui.custom<string | undefined>(
@@ -614,7 +614,7 @@ Moved to [Extension API reference](/extensions/api-reference#pi-unregisterprovid
 
 ### pi.registerMcpServer(name, config)
 
-Contribute an MCP server computed at runtime from the factory or `session_start`. See [Extension API reference](/extensions/api-reference#pi-registermcpserver-name-config).
+Contribute an MCP server computed at runtime from the factory or `session_start`, using the native `mcpServers` entry shape. Registered servers connect like file-configured servers and appear in `/mcp` with the extension as their source. File-configured servers take precedence; enabled-state and exposure changes to registered servers apply only to the session. Shell `atomic mcp` commands do not load extensions. Provider-token authentication is allowed for extension registrations and global configuration, but not project configuration or package manifests. See [MCP servers](/mcp-servers) and [Extension API reference](/extensions/api-reference#pi-registermcpserver-name-config).
 
 ## State Management
 

@@ -573,13 +573,37 @@ export default workflow({ name: "children", description: "children", inputs: {},
 		assert.ok(released.includes("first") && released.includes("second"));
 	} else if (mode === "prompt") {
 		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
+		const mcpReceipt = join(root, "mcp-receipt.json");
+		const mcpFixture = join(root, "native-mcp-fixture.mjs");
+		writeFileSync(
+			mcpFixture,
+			`import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+for await (const line of createInterface({ input: process.stdin })) {
+ const message = JSON.parse(line);
+ if (message.id === undefined) continue;
+ let result;
+ if (message.method === "initialize") result = { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "packed", version: "1" } };
+ else if (message.method === "tools/list") result = { tools: [{ name: "echo", description: "Packed native MCP echo", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } }] };
+ else if (message.method === "tools/call") {
+  writeFileSync(${JSON.stringify(mcpReceipt)}, JSON.stringify({ name: message.params.name, arguments: message.params.arguments }));
+  result = { content: [{ type: "text", text: "packed native MCP result" }] };
+ } else result = {};
+ process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");
+}\n`,
+		);
+		mkdirSync(join(root, "agent"), { recursive: true });
+		writeFileSync(
+			join(root, "agent", "mcp.json"),
+			JSON.stringify({ mcpServers: { packed: { command: process.execPath, args: [mcpFixture], exposure: "direct" } } }),
+		);
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-fixture" };
 		const invocations = [
 			["write", { path: "receipt.txt", content: "packed coding tool" }],
 			["read", { path: "receipt.txt" }],
 			["workflow", { action: "status" }],
 			["subagent", { action: "list" }],
-			["mcp", { list: true }],
+			["mcp__packed__echo", { text: "packed SDK dispatch" }],
 			["web_search", { query: "fixture", provider: "gemini" }],
 			["intercom", { action: "list" }],
 		];
@@ -623,11 +647,23 @@ export default workflow({ name: "children", description: "children", inputs: {},
 		const events = [];
 		session.subscribe((event) => events.push(event));
 		try {
+			const deadline = Date.now() + 10_000;
+			while (!session.getActiveToolNames().includes("mcp__packed__echo")) {
+				assert.ok(Date.now() < deadline, "packed SDK must discover the native stdio MCP tool");
+				await delay(25);
+			}
 			for (const name of invocations.map((entry) => entry[0]))
 				assert.ok(session.getActiveToolNames().includes(name), name);
 			assert.ok(session.resourceLoader.getSkills().skills.length > 0);
 			await session.prompt("Exercise the installed builtin families.");
 			assert.equal(readFileSync(join(root, "receipt.txt"), "utf8"), "packed coding tool");
+			assert.deepEqual(JSON.parse(readFileSync(mcpReceipt, "utf8")), {
+				name: "echo",
+				arguments: { text: "packed SDK dispatch" },
+			});
+			const mcpResult = session.messages.find((message) => message.role === "toolResult" && message.toolName === "mcp__packed__echo");
+			assert.ok(mcpResult);
+			assert.deepEqual(mcpResult.content, [{ type: "text", text: "packed native MCP result" }]);
 			assert.deepEqual(
 				events.filter((event) => event.type === "tool_execution_end").map((event) => event.toolName),
 				invocations.map((entry) => entry[0]),

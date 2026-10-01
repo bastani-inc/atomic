@@ -4,6 +4,7 @@ import type { ToolDefinitionEntry } from "./agent-session-types.js";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.js";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
+import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
@@ -35,6 +36,12 @@ export function _refreshToolRegistry(
 	const registeredTools = this._extensionRunner
 		.getAllRegisteredTools()
 		.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
+	const selectedMcpTools = new Set(
+		registeredTools.filter(
+			(tool) => !excludedToolNames?.has(tool.definition.name) && isSelectedNativeMcpTool(tool, this._subagentPolicy),
+		),
+	);
+	const selectedMcpNames = new Set([...selectedMcpTools].map((tool) => tool.definition.name));
 	const allCustomTools = [
 		...registeredTools,
 		...this._customTools
@@ -43,7 +50,7 @@ export function _refreshToolRegistry(
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
-	].filter((tool) => isExposedTool(tool.definition.name));
+	].filter((tool) => isExposedTool(tool.definition.name) || selectedMcpTools.has(tool));
 	const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 		Array.from(this._baseToolDefinitions.entries())
 			.filter(([name]) => isExposedTool(name))
@@ -105,7 +112,7 @@ export function _refreshToolRegistry(
 
 	const nextActiveToolNames = (
 		options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
-	).filter((name) => isExposedTool(name));
+	).filter((name) => isExposedTool(name) || selectedMcpNames.has(name));
 
 	const activatesOnRegistration = (name: string): boolean => {
 		const definition = this._toolDefinitions.get(name)?.definition;
@@ -114,7 +121,7 @@ export function _refreshToolRegistry(
 	};
 	if (allowedToolNames) {
 		for (const toolName of this._toolRegistry.keys()) {
-			if (allowedToolNames.has(toolName)) {
+			if (allowedToolNames.has(toolName) || (selectedMcpNames.has(toolName) && activatesOnRegistration(toolName))) {
 				nextActiveToolNames.push(toolName);
 			}
 		}

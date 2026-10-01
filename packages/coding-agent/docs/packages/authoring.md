@@ -41,14 +41,14 @@ A package can contribute [MCP servers](/mcp-servers) with `mcpServers`. Point it
 {
   "atomic": {
     "mcpServers": {
-      "acme-search": { "url": "https://mcp.acme.dev", "auth": "bearer", "bearerTokenEnv": "ACME_TOKEN" },
+      "acme-search": { "url": "https://mcp.acme.dev", "headers": { "Authorization": "Bearer ${ACME_TOKEN}" } },
       "acme-local": { "command": "node", "args": ["./dist/server.js"], "cwd": "." }
     }
   }
 }
 ```
 
-Entries use the same schema as `mcp.json`, including `${VAR}` interpolation, `lifecycle`, and `timeoutMs`. A relative `cwd` is resolved against the package root, so `"cwd": "."` lets a stdio server run files shipped in the package. MCP servers are only read from the manifest, never from a convention directory.
+Entries use the same schema as `mcp.json`, including URL environment-variable interpolation, tool `exposure`, per-tool `toolExposure`, and request `timeout` in seconds. A relative `cwd` is resolved against the package root, so `"cwd": "."` lets a stdio server run files shipped in the package. MCP servers are only read from the manifest, never from a convention directory. Package manifests cannot select provider login credentials with `auth.provider`.
 
 Contributed servers have the lowest precedence: users can replace or disable one by name in their own MCP configuration, and filter them with `mcpServers` patterns in settings. Project packages contribute servers only in trusted projects. For a server whose configuration is computed at runtime, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
 

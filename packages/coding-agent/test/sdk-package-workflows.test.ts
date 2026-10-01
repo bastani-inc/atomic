@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getModel } from "@bastani/pi-ai/compat";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { withMandatoryResourceLoader } from "../src/core/mandatory-resource-loader.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
@@ -76,7 +76,7 @@ test(
 		const packageDir = join(root, "package");
 		const workflowsDir = join(packageDir, "workflows");
 		const resultPath = join(root, "workflow-result.txt");
-		let toolCalls = 0;
+		const toolCalls: Array<{ name: string; arguments: unknown }> = [];
 		const server = createServer(async (request, response) => {
 			if (request.method !== "POST") {
 				response.writeHead(405).end();
@@ -84,12 +84,18 @@ test(
 			}
 			let body = "";
 			for await (const chunk of request) body += chunk;
-			const message = JSON.parse(body) as { id?: number; method: string };
+			const message = JSON.parse(body) as {
+				id?: number;
+				method: string;
+				params?: { name: string; arguments: unknown };
+			};
 			if (message.id === undefined) {
 				response.writeHead(202).end();
 				return;
 			}
-			if (message.method === "tools/call") toolCalls++;
+			if (message.method === "tools/call") {
+				toolCalls.push({ name: message.params!.name, arguments: message.params!.arguments });
+			}
 			const result =
 				message.method === "initialize"
 					? {
@@ -104,7 +110,11 @@ test(
 									{
 										name: "echo",
 										description: "Local fixture echo",
-										inputSchema: { type: "object", properties: {} },
+										inputSchema: {
+											type: "object",
+											properties: { text: { type: "string" } },
+											required: ["text"],
+										},
 									},
 								],
 							};
@@ -124,9 +134,11 @@ test(
 			JSON.stringify({
 				name: "sdk-workflow-package",
 				type: "module",
-				atomic: {
+				pi: {
 					workflows: ["./workflows/*.ts"],
-					mcpServers: { "sdk-package-fixture": { url: `http://127.0.0.1:${address.port}/mcp` } },
+					mcpServers: {
+						"sdk-package-fixture": { url: `http://127.0.0.1:${address.port}/mcp`, exposure: "direct" },
+					},
 				},
 			}),
 		);
@@ -149,23 +161,14 @@ test(
 				assert.match(await workflowText(session, "reload"), /workflow\(s\)/);
 				assert.match(await workflowText(session, "list"), /sdk-package-hello/);
 				await executePackageWorkflow(session, "sdk-package-hello", resultPath);
-				const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp");
-				assert.ok(gateway, "SDK session must expose the MCP gateway");
-				const connected = await gateway.execute(
-					"fixture-connect",
-					{ connect: "sdk-package-fixture" },
-					new AbortController().signal,
-				);
-				assert.equal(connected.details?.error, undefined, JSON.stringify(connected));
-				assert.match(JSON.stringify(connected), /echo/);
-				const invoked = await gateway.execute(
-					"fixture-echo",
-					{ server: "sdk-package-fixture", tool: "sdk-package-fixture_echo", args: "{}" },
-					new AbortController().signal,
-				);
-				assert.equal(invoked.details?.error, undefined, JSON.stringify(invoked));
-				assert.match(JSON.stringify(invoked.content), /local package MCP result/);
-				assert.equal(toolCalls, 1);
+				await vi.waitFor(() => assert.ok(session.getActiveToolNames().includes("mcp__sdk_package_fixture__echo")), {
+					timeout: 10_000,
+				});
+				const echo = session.agent.state.tools.find((tool) => tool.name === "mcp__sdk_package_fixture__echo");
+				assert.ok(echo, "SDK session must expose the native package MCP tool");
+				const invoked = await echo.execute("fixture-echo", { text: "before reload" }, new AbortController().signal);
+				assert.deepEqual(invoked.content, [{ type: "text", text: "local package MCP result" }]);
+				assert.deepEqual(toolCalls, [{ name: "echo", arguments: { text: "before reload" } }]);
 				rmSync(resultPath);
 				writeWorkflow(join(workflowsDir, "added.ts"), "sdk-package-added", resultPath);
 				rmSync(workflowPath);
@@ -178,16 +181,23 @@ test(
 				await workflowText(session, "reload");
 				assert.match(await workflowText(session, "list"), /sdk-package-added/);
 				await executePackageWorkflow(session, "sdk-package-added", resultPath);
-				const reloadedGateway = session.agent.state.tools.find((tool) => tool.name === "mcp");
-				assert.ok(reloadedGateway);
-				const reloadedInvocation = await reloadedGateway.execute(
+				await vi.waitFor(() => assert.ok(session.getActiveToolNames().includes("mcp__sdk_package_fixture__echo")), {
+					timeout: 10_000,
+				});
+				const reloadedEcho = session.agent.state.tools.find(
+					(tool) => tool.name === "mcp__sdk_package_fixture__echo",
+				);
+				assert.ok(reloadedEcho, "reload must rediscover the native package MCP tool");
+				const reloadedInvocation = await reloadedEcho.execute(
 					"reloaded-echo",
-					{ server: "sdk-package-fixture", tool: "sdk-package-fixture_echo", args: "{}" },
+					{ text: "after reload" },
 					new AbortController().signal,
 				);
-				assert.equal(reloadedInvocation.details?.error, undefined, JSON.stringify(reloadedInvocation));
-				assert.match(JSON.stringify(reloadedInvocation.content), /local package MCP result/);
-				assert.equal(toolCalls, 2);
+				assert.deepEqual(reloadedInvocation.content, [{ type: "text", text: "local package MCP result" }]);
+				assert.deepEqual(toolCalls, [
+					{ name: "echo", arguments: { text: "before reload" } },
+					{ name: "echo", arguments: { text: "after reload" } },
+				]);
 			} finally {
 				await session.dispose();
 			}
@@ -292,6 +302,14 @@ test(
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
 		const packageDir = join(root, "package");
+		let requests = 0;
+		const server = createServer((_request, response) => {
+			requests++;
+			response.writeHead(500).end("Untrusted MCP server must not be contacted");
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		assert.ok(address && typeof address === "object");
 		mkdirSync(join(cwd, ".atomic"), { recursive: true });
 		mkdirSync(packageDir);
 		writeWorkflow(join(packageDir, "untrusted.ts"), "sdk-untrusted-workflow");
@@ -299,9 +317,9 @@ test(
 			join(packageDir, "package.json"),
 			JSON.stringify({
 				name: "untrusted",
-				atomic: {
+				pi: {
 					workflows: ["./untrusted.ts"],
-					mcpServers: { "sdk-untrusted-mcp": { url: "http://127.0.0.1:1/mcp" } },
+					mcpServers: { "sdk-untrusted-mcp": { url: `http://127.0.0.1:${address.port}/mcp`, exposure: "direct" } },
 				},
 			}),
 		);
@@ -311,6 +329,7 @@ test(
 		try {
 			await loader.reload();
 			assert.deepEqual(await loader.refreshWorkflowResources(), []);
+			assert.deepEqual(loader.getMcpServerContributions(), []);
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
@@ -323,18 +342,23 @@ test(
 				assert.doesNotMatch(await workflowText(session, "list"), /sdk-untrusted-workflow/);
 				await workflowText(session, "reload");
 				assert.doesNotMatch(await workflowText(session, "list"), /sdk-untrusted-workflow/);
-				const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp");
-				assert.ok(gateway);
-				const hidden = await gateway.execute(
-					"untrusted-connect",
-					{ connect: "sdk-untrusted-mcp" },
-					new AbortController().signal,
+				assert.equal(
+					session.getAllTools().some((tool) => tool.name.startsWith("mcp__sdk_untrusted_mcp__")),
+					false,
 				);
-				assert.equal(hidden.details?.error, "not_found", JSON.stringify(hidden));
+				await session.reload({ failOnExtensionErrors: true });
+				assert.doesNotMatch(await workflowText(session, "list"), /sdk-untrusted-workflow/);
+				assert.deepEqual(loader.getMcpServerContributions(), []);
+				assert.equal(
+					session.getAllTools().some((tool) => tool.name.startsWith("mcp__sdk_untrusted_mcp__")),
+					false,
+				);
 			} finally {
 				await session.dispose();
 			}
+			assert.equal(requests, 0, "untrusted MCP contributions must never connect, including after reload");
 		} finally {
+			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 			rmSync(root, { recursive: true, force: true });
 		}
 	},

@@ -2,60 +2,16 @@
   "name": "@bastani/mcp",
   "version": "0.0.0",
   "private": true,
-  "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent. Fork of: https://github.com/nicobailon/pi-mcp-adapter",
-  "contributors": [
-    "Norin Lavaee",
-    "Alex Lavaee"
-  ],
+  "description": "Atomic's pi-compatible MCP integration for server connections, OAuth, tools, resources, and terminal management.",
+  "contributors": ["Norin Lavaee", "Alex Lavaee"],
   "license": "MIT",
   "type": "module",
-  "engines": {
-    "bun": ">=1.4.2"
-  },
+  "engines": { "bun": ">=1.4.2" },
   "main": "./index.ts",
   "types": "./index.ts",
-  "exports": {
-    ".": "./index.ts"
-  },
-  "files": [
-    "*.ts",
-    "app-bridge.bundle.js",
-    "README.md",
-    "OAUTH.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@bastani/atomic": "*",
-    "@bastani/pi-ai": "*",
-    "@earendil-works/pi-tui": "^0.99.2",
-    "zod": "^3.25.0 || ^4.0.0",
-    "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "@bastani/atomic": {
-      "optional": true
-    },
-    "@bastani/pi-ai": {
-      "optional": true
-    },
-    "@earendil-works/pi-tui": {
-      "optional": true
-    }
-  },
-  "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "open": "^11.0.1",
-    "proper-lockfile": "4.1.2",
-    "zod": "^3.25.0 || ^4.0.0"
-  },
-  "devDependencies": {
-    "@types/proper-lockfile": "4.1.4"
-  }
+  "exports": { ".": "./index.ts" },
+  "files": ["index.ts", "README.md", "OAUTH.md", "CHANGELOG.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": { "@bastani/atomic": "*" },
+  "peerDependenciesMeta": { "@bastani/atomic": { "optional": true } }
 }

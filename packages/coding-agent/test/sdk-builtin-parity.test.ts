@@ -32,6 +32,7 @@ import type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "../src/index.js";
+import { startOAuthMcpServer } from "./mcp-client/native-oauth-server.js";
 
 // #3105: the ordinary SDK factory, not CLI setup, supplies Atomic's shipped capabilities.
 test("default SDK creation returns an Atomic AgentSession with builtin tools and resources", async () => {
@@ -45,13 +46,15 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 		});
 		try {
 			assert.ok(session instanceof AgentSession);
-			for (const name of ["workflow", "subagent", "mcp", "intercom", "web_search", "fetch_content"]) {
+			for (const name of ["workflow", "subagent", "intercom", "web_search", "fetch_content"]) {
 				assert.ok(
 					session.getAllTools().some((tool) => tool.name === name),
 					`missing builtin ${name}`,
 				);
 				assert.ok(session.getActiveToolNames().includes(name), `inactive builtin ${name}`);
 			}
+			assert.ok(session.extensionRunner?.getCommand("mcp"), "missing native MCP manager command");
+			assert.equal(session.getToolDefinition("mcp"), undefined, "native MCP has no gateway tool");
 			assert.equal(extensionsResult.errors.length, 0);
 			assert.ok(session.systemPrompt.includes("<available_skills>"));
 		} finally {
@@ -146,8 +149,9 @@ test("CLI service creation supplies the same default builtin families", async ()
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
-			for (const name of ["workflow", "subagent", "mcp", "intercom", "web_search"])
+			for (const name of ["workflow", "subagent", "intercom", "web_search"])
 				assert.ok(session.getActiveToolNames().includes(name), name);
+			assert.ok(session.extensionRunner?.getCommand("mcp"));
 		} finally {
 			await session.dispose();
 		}
@@ -623,7 +627,6 @@ test.each(["preferred", "dist"])(
 const extensionToolNames = [
 	"workflow",
 	"subagent",
-	"mcp",
 	"web_search",
 	"code_search",
 	"fetch_content",
@@ -738,12 +741,12 @@ test.each<Partial<Record<AtomicBuiltin, boolean>>>([
 				for (const [family, tool] of [
 					["workflows", "workflow"],
 					["subagents", "subagent"],
-					["mcp", "mcp"],
 					["web-access", "web_search"],
 					["intercom", "intercom"],
 				] as const) {
 					assert.equal(session.getActiveToolNames().includes(tool), builtins[family] !== false, family);
 				}
+				assert.equal(Boolean(session.extensionRunner?.getCommand("mcp")), builtins.mcp !== false, "mcp");
 				if (generation === 0) await session.reload();
 			}
 		} finally {
@@ -4891,19 +4894,23 @@ test.each(["dispose", "reload", "control", "error", "replay", "replay-error"])(
 	},
 );
 
-// #3105: discovering uncached direct tools must not connect a lazy MCP server.
-test("SDK MCP discovery stays lazy until an owned gateway call", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-lazy-mcp-"));
-	let requests = 0;
+// #3105: exercise the builtin native transport through SDK configuration and contributions.
+async function startSdkMcpServer() {
+	const messages: Array<{ path: string; method: string; arguments?: { text?: string } }> = [];
 	const server = createServer(async (request, response) => {
-		requests++;
 		if (request.method !== "POST") {
 			response.writeHead(405).end();
 			return;
 		}
 		let body = "";
 		for await (const chunk of request) body += chunk;
-		const message = JSON.parse(body) as { id?: number; method: string };
+		const message = JSON.parse(body) as {
+			id?: number;
+			method: string;
+			params?: { arguments?: { text?: string } };
+		};
+		const path = request.url ?? "/";
+		messages.push({ path, method: message.method, arguments: message.params?.arguments });
 		if (message.id === undefined) {
 			response.writeHead(202).end();
 			return;
@@ -4913,9 +4920,23 @@ test("SDK MCP discovery stays lazy until an owned gateway call", async () => {
 				? {
 						protocolVersion: "2024-11-05",
 						capabilities: { tools: {} },
-						serverInfo: { name: "fixture", version: "1" },
+						serverInfo: { name: "sdk-fixture", version: "1" },
 					}
-				: { tools: [] };
+				: message.method === "tools/call"
+					? { content: [{ type: "text", text: `${path}: ${message.params?.arguments?.text}` }] }
+					: {
+							tools: [
+								{
+									name: "echo",
+									description: "Echo from the session's server",
+									inputSchema: {
+										type: "object",
+										properties: { text: { type: "string" } },
+										required: ["text"],
+									},
+								},
+							],
+						};
 		response
 			.writeHead(200, { "Content-Type": "application/json" })
 			.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
@@ -4923,149 +4944,181 @@ test("SDK MCP discovery stays lazy until an owned gateway call", async () => {
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
-	writeFileSync(
-		join(cwd, ".mcp.json"),
-		JSON.stringify({
-			mcpServers: {
-				fixture: { url: `http://127.0.0.1:${address.port}/mcp`, directTools: true },
-			},
-		}),
-	);
-	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(cwd, "agent"));
-	let session: AgentSession | undefined;
-	try {
-		({ session } = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, "agent"),
-			sessionManager: SessionManager.inMemory(cwd),
-			settingsManager: SettingsManager.inMemory(),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-		}));
-		await new Promise((resolve) => setTimeout(resolve, 2_000));
-		assert.equal(requests, 0, "startup connected an uncached lazy server");
-		const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp")!;
-		const result = await gateway.execute("connect", { connect: "fixture" }, new AbortController().signal);
-		assert.ok(requests > 0, "first owned use did not connect");
-		assert.equal(result.details?.error, undefined, JSON.stringify(result));
-	} finally {
-		await session?.dispose();
-		vi.unstubAllEnvs();
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+	return {
+		url: `http://127.0.0.1:${address.port}`,
+		messages,
+		close: () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+	};
+}
 
-// #3105: an eager/keep-alive sibling must not bootstrap uncached lazy direct tools.
-test.each(["eager", "keep-alive"] as const)("SDK mixed %s MCP startup preserves lazy discovery", async (lifecycle) => {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-mixed-mcp-"));
-	const requests = { eager: 0, lazy: 0 };
-	const server = createServer(async (request, response) => {
-		const name = request.url === "/lazy" ? "lazy" : "eager";
-		requests[name]++;
-		if (request.method !== "POST") {
-			response.writeHead(405).end();
-			return;
-		}
-		let body = "";
-		for await (const chunk of request) body += chunk;
-		const message = JSON.parse(body) as { id?: number; method: string };
-		if (message.id === undefined) {
-			response.writeHead(202).end();
-			return;
-		}
-		const result =
-			message.method === "initialize"
-				? { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name, version: "1" } }
-				: { tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } }] };
-		response
-			.writeHead(200, { "Content-Type": "application/json" })
-			.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
-	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	assert.ok(address && typeof address === "object");
-	writeFileSync(
-		join(cwd, ".mcp.json"),
-		JSON.stringify({
-			mcpServers: {
-				eager: { url: `http://127.0.0.1:${address.port}/eager`, lifecycle },
-				lazy: { url: `http://127.0.0.1:${address.port}/lazy`, directTools: true },
-			},
-		}),
-	);
-	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(cwd, "agent"));
-	let session: AgentSession | undefined;
-	try {
-		({ session } = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, "agent"),
-			sessionManager: SessionManager.inMemory(cwd),
-			settingsManager: SettingsManager.inMemory(),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-		}));
-		await new Promise((resolve) => setTimeout(resolve, 2_000));
-		assert.ok(requests.eager > 0, "startup did not connect the eager/keep-alive sibling");
-		assert.equal(requests.lazy, 0, "mixed startup connected an uncached lazy server");
-		assert.ok(!session.agent.state.tools.some((tool) => tool.name === "lazy_echo"), "startup registered lazy_echo");
-		const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp")!;
-		const result = await gateway.execute("connect", { connect: "lazy" }, new AbortController().signal);
-		assert.ok(requests.lazy > 0, "first owned lazy use did not connect");
-		assert.equal(result.details?.error, undefined, JSON.stringify(result));
-	} finally {
-		await session?.dispose();
-		vi.unstubAllEnvs();
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
+const mcpOnlyBuiltins = { workflows: false, subagents: false, intercom: false, "web-access": false };
 
-// #3105: startup failures are operational diagnostics, not remote text printed by the SDK.
-test("MCP startup diagnostics are quiet, redacted and owner attributed", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-sdk-mcp-diagnostics-"));
-	const diagnostics: HostDiagnostic[][] = [[], []];
-	const sessions: AgentSession[] = [];
-	const errorOutput = vi.spyOn(console, "error").mockImplementation(() => {});
-	try {
-		for (let index = 0; index < 2; index++) {
-			const cwd = join(root, String(index));
-			mkdirSync(cwd);
-			writeFileSync(
-				join(cwd, ".mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						[`secret-supervisor-token-${index}`]: {
-							command: join(cwd, "missing-secret-credential"),
-							lifecycle: "eager",
-						},
-					},
-				}),
-			);
-			const { session } = await createAgentSession({
+test(
+	"SDK native MCP discovers enabled configured tools, calls them and reconnects on reload",
+	async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-native-mcp-"));
+		const agentDir = join(cwd, "agent");
+		const server = await startSdkMcpServer();
+		mkdirSync(agentDir);
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					fixture: { url: `${server.url}/configured`, exposure: "direct" },
+					disabled: { url: `${server.url}/disabled`, exposure: "direct", enabled: false },
+				},
+			}),
+		);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		let session: AgentSession | undefined;
+		try {
+			({ session } = await createAgentSession({
 				cwd,
-				agentDir: join(cwd, "agent"),
+				agentDir,
 				sessionManager: SessionManager.inMemory(cwd),
 				settingsManager: SettingsManager.inMemory(),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
-				builtins: { workflows: false, subagents: false, intercom: false, "web-access": false },
-				extensionBindings: { onDiagnostic: (entry) => diagnostics[index]!.push(entry) },
-			});
-			sessions.push(session);
-			const gateway = session.agent.state.tools.find((tool) => tool.name === "mcp")!;
-			await gateway.execute("status", {}, new AbortController().signal);
+				noTools: "builtin",
+				builtins: mcpOnlyBuiltins,
+			}));
+			for (let generation = 0; generation < 2; generation++) {
+				// /mcp waits for native background discovery without making a model request or rendering a TUI.
+				await session.prompt("/mcp");
+				assert.ok(session.getActiveToolNames().includes("mcp__fixture__echo"));
+				const tool = session.agent.state.tools.find((entry) => entry.name === "mcp__fixture__echo");
+				assert.ok(tool);
+				const result = await tool.execute("echo", { text: `generation-${generation}` });
+				assert.match(JSON.stringify(result.content), new RegExp(`/configured: generation-${generation}`));
+				assert.equal(session.getToolDefinition("mcp"), undefined);
+				assert.equal(session.getToolDefinition("mcp__disabled__echo"), undefined);
+				if (generation === 0) await session.reload();
+			}
+			assert.equal(server.messages.filter((entry) => entry.method === "initialize").length, 2);
+			assert.equal(server.messages.filter((entry) => entry.method === "tools/call").length, 2);
+			assert.ok(server.messages.every((entry) => entry.path === "/configured"));
+		} finally {
+			await session?.dispose();
+			vi.unstubAllEnvs();
+			await server.close();
+			rmSync(cwd, { recursive: true, force: true });
 		}
-		assert.equal(errorOutput.mock.calls.length, 0, "MCP startup wrote unsolicited console output");
-		for (let index = 0; index < 2; index++) {
-			assert.ok(diagnostics[index]!.length > 0);
-			assert.ok(diagnostics[index]!.every((entry) => entry.sessionId === sessions[index]!.sessionId));
-			assert.doesNotMatch(JSON.stringify(diagnostics[index]), /secret|missing|supervisor-token/);
-			assert.equal(diagnostics[index]![0]!.source, "mcp");
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
+
+test.each(["factory", "session_start"] as const)(
+	"SDK native MCP %s contributions retain their owner after rebind and sibling close",
+	async (registration) => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-mcp-owners-"));
+		const server = await startSdkMcpServer();
+		const sessions: AgentSession[] = [];
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
+		try {
+			for (let index = 0; index < 2; index++) {
+				const cwd = join(root, String(index));
+				mkdirSync(cwd);
+				const settingsManager = SettingsManager.inMemory();
+				const resourceLoader = new DefaultResourceLoader({
+					cwd,
+					agentDir: join(root, "agent"),
+					settingsManager,
+					noExtensions: true,
+					extensionFactories: [
+						(pi) => {
+							const contribute = () =>
+								pi.registerMcpServer("same", { url: `${server.url}/owner-${index}`, exposure: "direct" });
+							if (registration === "factory") contribute();
+							else pi.on("session_start", contribute);
+						},
+					],
+				});
+				await resourceLoader.reload();
+				const { session } = await createAgentSession({
+					cwd,
+					agentDir: join(root, "agent"),
+					resourceLoader,
+					settingsManager,
+					sessionManager: SessionManager.inMemory(cwd),
+					builtins: mcpOnlyBuiltins,
+				});
+				sessions.push(session);
+				await session.prompt("/mcp");
+			}
+			const call = async (index: number, text: string) => {
+				const tool = sessions[index]!.agent.state.tools.find((entry) => entry.name === "mcp__same__echo");
+				assert.ok(tool);
+				const result = await tool.execute("echo", { text });
+				assert.match(JSON.stringify(result.content), new RegExp(`/owner-${index}: ${text}`));
+			};
+			await call(0, "first-private-result");
+			await call(1, "second-private-result");
+			await sessions[0]!.bindExtensions({ onDiagnostic: () => {} });
+			await call(0, "after-rebind");
+			await Promise.all([sessions[1]!.dispose(), sessions[1]!.dispose()]);
+			await call(0, "after-sibling-close");
+			const calls = server.messages.filter((entry) => entry.method === "tools/call");
+			assert.deepEqual(
+				calls.map((entry) => entry.path),
+				["/owner-0", "/owner-1", "/owner-0", "/owner-0"],
+			);
+		} finally {
+			await Promise.all(sessions.map((session) => session.dispose()));
+			vi.unstubAllEnvs();
+			await server.close();
+			rmSync(root, { recursive: true, force: true });
 		}
-	} finally {
-		await Promise.all(sessions.map((session) => session.dispose()));
-		errorOutput.mockRestore();
-		rmSync(root, { recursive: true, force: true });
-	}
-});
+	},
+);
+
+// Native configuration errors are safe owner-local UI notifications, not adapter diagnostics.
+test(
+	"MCP configuration diagnostics are quiet, redacted and isolated across SDK reload",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-sdk-mcp-diagnostics-"));
+		const notifications: string[][] = [[], []];
+		const sessions: AgentSession[] = [];
+		const errorOutput = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
+		try {
+			for (let index = 0; index < 2; index++) {
+				const cwd = join(root, String(index));
+				mkdirSync(join(cwd, ".atomic"), { recursive: true });
+				writeFileSync(join(cwd, ".atomic", "mcp.json"), `secret-supervisor-token-${index}`);
+				const { session } = await createAgentSession({
+					cwd,
+					agentDir: join(root, "agent"),
+					sessionManager: SessionManager.inMemory(cwd),
+					settingsManager: SettingsManager.create(cwd, join(root, "agent"), { projectTrusted: true }),
+					builtins: mcpOnlyBuiltins,
+					extensionBindings: { uiContext: { notify: (message) => notifications[index]!.push(message) } },
+				});
+				sessions.push(session);
+				assert.equal(notifications[index]!.length, 1);
+				assert.match(notifications[index]![0]!, /MCP servers need attention/);
+			}
+			await sessions[1]!.dispose();
+			await sessions[0]!.reload();
+			assert.deepEqual(
+				notifications.map((entries) => entries.length),
+				[2, 1],
+			);
+			for (let index = 0; index < 2; index++) {
+				assert.ok(
+					notifications[index]!.every((message) =>
+						message.includes(join(root, String(index), ".atomic", "mcp.json")),
+					),
+				);
+			}
+			assert.doesNotMatch(JSON.stringify(notifications), /secret|supervisor-token/);
+			assert.equal(errorOutput.mock.calls.length, 0, "MCP wrote unsolicited console output");
+		} finally {
+			await Promise.all(sessions.map((session) => session.dispose()));
+			errorOutput.mockRestore();
+			vi.unstubAllEnvs();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
+);
 
 // #3105: local HTTP content and stored results belong to the session that fetched them.
 test("web results survive sibling initialization and overlapping close", async () => {
@@ -5128,62 +5181,50 @@ test("web results survive sibling initialization and overlapping close", async (
 	}
 });
 
-// #3105: the actual runner bridge preserves OAuth ownership when host bindings replace reporters.
-test("OAuth transient ownership survives public SDK rebind and sibling close", async () => {
-	const root = mkdtempSync(join(tmpdir(), "sdk-oauth-rebind-"));
-	const sessions: AgentSession[] = [];
-	const { getOAuthState, updateOAuthState } = await import("../../mcp/mcp-auth.js");
-	const { shutdownOAuth } = await import("../../mcp/mcp-auth-flow.js");
+// #3105: public SDK login must never launch browser authorization without an interactive host.
+test("SDK native MCP login without a TTY does not authorize before or after callback-host rebind", async () => {
+	const root = mkdtempSync(join(tmpdir(), "sdk-native-oauth-no-tty-"));
+	const server = await startOAuthMcpServer();
+	let inputRequests = 0;
+	const settingsManager = SettingsManager.inMemory();
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		settingsManager,
+		noExtensions: true,
+		extensionFactories: [(pi) => pi.registerMcpServer("issues", { url: server.url, exposure: "direct" })],
+	});
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
+	let session: AgentSession | undefined;
 	try {
-		for (let index = 0; index < 2; index++) {
-			const resourceLoader = new DefaultResourceLoader({
-				cwd: root,
-				agentDir: join(root, "agent"),
-				settingsManager: SettingsManager.inMemory(),
-				extensionFactories: [
-					(pi) => {
-						pi.registerTool({
-							name: "oauth_probe",
-							label: "OAuth probe",
-							description: "Exercise builtin OAuth storage",
-							parameters: Type.Object({ value: Type.Optional(Type.String()) }),
-							execute: async (_id, params) => {
-								if (params.value) updateOAuthState("same", params.value, "https://example.invalid/mcp");
-								return { content: [{ type: "text", text: getOAuthState("same") ?? "absent" }], details: {} };
-							},
-						});
-						pi.on("session_shutdown", () => shutdownOAuth());
-					},
-				],
-			});
-			await resourceLoader.reload();
-			const { session } = await createAgentSession({
-				cwd: root,
-				agentDir: join(root, "agent"),
-				resourceLoader,
-				sessionManager: SessionManager.inMemory(root),
-				settingsManager: SettingsManager.inMemory(),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
-				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
-			});
-			sessions.push(session);
-		}
-		const call = (index: number, value?: string) =>
-			sessions[index]!.agent.state.tools.find((tool) => tool.name === "oauth_probe")!.execute(
-				"probe",
-				{ value },
-				new AbortController().signal,
-			);
-		await call(0, "first-private-state");
-		await call(1, "second-private-state");
-		await sessions[0]!.bindExtensions({ onDiagnostic: () => {} });
-		assert.match(JSON.stringify((await call(0)).content), /first-private-state/);
-		assert.match(JSON.stringify((await call(1)).content), /second-private-state/);
-		await Promise.all([sessions[1]!.dispose(), sessions[1]!.dispose()]);
-		assert.match(JSON.stringify((await call(0)).content), /first-private-state/);
-		assert.equal(existsSync(join(root, "agent", "mcp-oauth", "same", "tokens.json")), false);
+		await resourceLoader.reload();
+		({ session } = await createAgentSession({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			resourceLoader,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(root),
+			builtins: mcpOnlyBuiltins,
+		}));
+		await session.prompt("/mcp login issues");
+		assert.deepEqual(server.log, ["401 none"], "non-interactive SDK initiated authorization");
+		await session.bindExtensions({
+			humanInput: callbackHost({
+				input: async () => {
+					inputRequests++;
+					return "";
+				},
+			}),
+			onDiagnostic: () => {},
+		});
+		await session.prompt("/mcp login issues");
+		assert.equal(inputRequests, 0, "callback-only host was treated as an interactive presentation UI");
+		assert.deepEqual(server.log, ["401 none"], "callback-host SDK initiated authorization");
+		assert.equal(existsSync(join(root, "agent", "mcp-auth.json")), false);
 	} finally {
-		await Promise.all(sessions.map((session) => session.dispose()));
+		await session?.dispose();
+		vi.unstubAllEnvs();
+		await server.close();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

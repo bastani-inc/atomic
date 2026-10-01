@@ -208,7 +208,15 @@ export {
 	runtimeIntercomGroupEnvKey,
 } from "./core/intercom-runtime-group.ts";
 export { keybindingIdentity } from "./core/keybinding-identity.js";
-export type { McpServerConfig, McpServerContribution, McpServerOAuthConfig } from "./core/mcp-servers.ts";
+export { matchesMcpDirectToolSelection } from "./core/mcp-child-policy.ts";
+export {
+	type McpExposure,
+	type McpOAuthConfig,
+	type McpServerConfig,
+	type McpServerContribution,
+	mcpNamespace,
+	validateMcpServerConfig,
+} from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
@@ -476,6 +484,14 @@ export {
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export {
+	type LoadedMcpConfig,
+	type McpServerConfigPatch,
+	type McpServerEntry,
+	updateMcpServerConfig,
+} from "./extensions/mcp/config.ts";
+export { createMcpExtension, type McpExtensionOptions } from "./extensions/mcp/index.js";
+export { McpOAuthCredentialStore } from "./extensions/mcp/oauth.ts";
 export * from "./index-extensions.js";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

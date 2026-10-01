@@ -66,7 +66,6 @@ const BUILTIN_EXTENSION_TOOLS = [
 	"workflow",
 	"subagent",
 	"intercom",
-	"mcp",
 	"web_search",
 	"code_search",
 	"fetch_content",

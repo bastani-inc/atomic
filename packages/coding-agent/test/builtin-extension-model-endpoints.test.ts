@@ -7,18 +7,11 @@ import {
 	type ProviderHeaders,
 } from "@bastani/pi-ai";
 import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@bastani/pi-ai/compat";
-import type { CreateMessageRequest } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
-import { handleSamplingRequest } from "../../mcp/sampling-handler.js";
 import { generateSummaryDraft, type SummaryGenerationContext } from "../../web-access/summary-review.js";
 import { rewriteSearchQuery } from "../../web-access/web-search-summary.js";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
-
-/**
- * MCP dispatches direct pi-ai calls; web-access dispatches through ModelRuntime.
- * Both retain resolved auth, while Intercom has no model-request path.
- */
 
 const INDIVIDUAL_ENDPOINT = "https://api.individual.githubcopilot.com";
 const ENTERPRISE_ENDPOINT = "https://api.enterprise.githubcopilot.com";
@@ -97,44 +90,6 @@ const queryResult = {
 	results: [],
 	error: null,
 };
-
-test("MCP sampling applies credential endpoints without dropping null headers", async () => {
-	const api = "mcp-sampling-endpoint-probe" as Api;
-	const requestModel = model(api, "github-copilot", "mcp-endpoint-probe");
-	const registry = registryFor(requestModel);
-	const captured: CapturedRequest[] = [];
-	const source = "mcp-sampling-endpoint-probe";
-	const stream = (dispatchedModel: Model<Api>, _context: object, options?: { headers?: ProviderHeaders }) => {
-		captured.push({ baseUrl: dispatchedModel.baseUrl, headers: options?.headers });
-		return responseStream(dispatchedModel, "MCP response");
-	};
-	registerApiProvider({ api, stream, streamSimple: stream }, source);
-	try {
-		const request: CreateMessageRequest = {
-			method: "sampling/createMessage",
-			params: {
-				messages: [{ role: "user", content: { type: "text", text: "Summarize the endpoint." } }],
-				maxTokens: 1_024,
-			},
-		};
-		const result = await handleSamplingRequest(
-			{
-				serverName: "endpoint-probe",
-				autoApprove: true,
-				modelRegistry: registry,
-				getCurrentModel: () => undefined,
-				getSignal: () => undefined,
-			},
-			request,
-		);
-
-		assert.equal(result.content.type, "text");
-		assert.equal(result.content.text, "MCP response");
-	} finally {
-		unregisterApiProviders(source);
-	}
-	assertCredentialRequest(captured[0]);
-});
 
 test("web summary model overrides apply credential endpoints without dropping null headers", async () => {
 	const api = "web-summary-endpoint-probe" as Api;
