@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { loadMcpConfig } from "../../src/extensions/mcp/config.ts";
+import { loadMcpConfig } from "../../src/extensions/mcp/config.js";
 
 test("malformed MCP configuration diagnostics never quote credential contents", () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-mcp-diagnostic-"));

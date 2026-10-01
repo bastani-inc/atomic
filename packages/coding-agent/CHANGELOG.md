@@ -26,6 +26,7 @@
 - Session shutdown now closes MCP connections that are still opening instead of leaving them running after the session ends.
 - Replacing an extension-contributed MCP server now retires pending connections, and reloading with active servers no longer fails during connection cleanup.
 - Malformed MCP configuration errors no longer quote file contents that may contain credentials.
+- MCP OAuth refreshes authorization-server discovery when a server advertises a changed metadata URL.
 
 ## [0.9.25-alpha.3] - 2026-09-30
 

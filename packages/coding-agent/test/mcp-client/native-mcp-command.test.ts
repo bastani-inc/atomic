@@ -41,9 +41,17 @@ describe("pi mcp", () => {
 		expect(exitCode).toBe(1);
 		expect(output).toContain("fixture: connected, 1 tool (codemode, global)\n");
 		expect(output).toContain("  tools: echo");
+		const missingCommandError =
+			process.platform === "win32" ? "MCP connection closed" : "spawn pi-test-missing-mcp-server ENOENT";
 		expect(output).toContain(
-			"broken: failed (codemode, global)\n  pi-test-missing-mcp-server\n  spawn pi-test-missing-mcp-server ENOENT",
+			`broken: failed (codemode, global)\n  pi-test-missing-mcp-server\n  ${missingCommandError}`,
 		);
+		if (process.platform === "win32") {
+			// cross-spawn runs unresolved Windows commands through cmd.exe, which reports
+			// the lookup failure on stderr rather than emitting POSIX's spawn ENOENT.
+			expect(output).toContain("'pi-test-missing-mcp-server' is not recognized as an internal or external command,");
+			expect(output).toContain("operable program or batch file.");
+		}
 		expect(output).toContain("parked: disabled (codemode, global)");
 		expect(output).toContain("config error: ");
 		expect(output).toContain('server "bad" needs either "command"');

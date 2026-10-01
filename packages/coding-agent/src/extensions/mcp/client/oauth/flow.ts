@@ -266,7 +266,9 @@ export async function refreshAuthorization(
 async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions): Promise<OAuthFlowResult> {
 	const metadataUrl = options.authorizationServerMetadataUrl && secureEndpoint(options.authorizationServerMetadataUrl);
 	// With a configured metadata URL, discovery is not cached, so changing the URL applies at once.
-	const cached = metadataUrl ? undefined : await provider.discoveryState?.();
+	let cached = metadataUrl ? undefined : await provider.discoveryState?.();
+	if (options.resourceMetadataUrl && options.resourceMetadataUrl.href !== cached?.resourceMetadataUrl)
+		cached = undefined;
 	const discovered = cached?.authorizationServerUrl
 		? {
 				authorizationServerUrl: cached.authorizationServerUrl,
@@ -287,7 +289,9 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 	if (!metadataUrl) {
 		await provider.saveDiscoveryState?.({
 			...discovered,
-			...(options.resourceMetadataUrl ? { resourceMetadataUrl: options.resourceMetadataUrl.href } : {}),
+			...(options.resourceMetadataUrl || cached?.resourceMetadataUrl
+				? { resourceMetadataUrl: options.resourceMetadataUrl?.href ?? cached?.resourceMetadataUrl }
+				: {}),
 		});
 	}
 	const metadata = discovered.authorizationServerMetadata;

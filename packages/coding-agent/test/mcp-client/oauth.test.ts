@@ -283,6 +283,69 @@ describe("MCP OAuth", () => {
 		},
 	);
 
+	it("refreshes discovery when a later 401 advertises a different metadata URL", async () => {
+		const requests: string[] = [];
+		let advertised = "a";
+		const origin = await listen(async (request, response, serverOrigin) => {
+			const path = new URL(request.url ?? "/", serverOrigin).pathname;
+			requests.push(path);
+			if (path === "/mcp") {
+				response
+					.writeHead(401, {
+						"www-authenticate": `Bearer resource_metadata="${serverOrigin}/metadata/${advertised}"`,
+					})
+					.end();
+				return;
+			}
+			response.setHeader("content-type", "application/json");
+			if (path === "/metadata/a" || path === "/metadata/b") {
+				response.end(
+					JSON.stringify({
+						resource: `${serverOrigin}/mcp`,
+						authorization_servers: [`${serverOrigin}/${path.endsWith("a") ? "a" : "b"}`],
+					}),
+				);
+			} else {
+				const name = path.endsWith("/a") ? "a" : "b";
+				response.end(
+					JSON.stringify({
+						issuer: `${serverOrigin}/${name}`,
+						authorization_endpoint: `${serverOrigin}/${name}/authorize`,
+						token_endpoint: `${serverOrigin}/${name}/token`,
+						response_types_supported: ["code"],
+					}),
+				);
+			}
+		});
+		const provider = new TestOAuthProvider("http://127.0.0.1/callback");
+		provider.client = { client_id: "client" };
+		const auth = adaptOAuthProvider(provider);
+		assert.ok(auth.onUnauthorized);
+		for (const name of ["a", "b"]) {
+			advertised = name;
+			await assert.rejects(
+				auth.onUnauthorized({
+					serverUrl: new URL(`${origin}/mcp`),
+					response: await fetch(`${origin}/mcp`),
+					fetch,
+				}),
+				McpOAuthAuthorizationRequiredError,
+			);
+			assert.equal(provider.authorizationUrl?.pathname, `/${name}/authorize`);
+			assert.equal(provider.discovery?.authorizationServerUrl, `${origin}/${name}`);
+			assert.equal(provider.discovery?.resourceMetadataUrl, `${origin}/metadata/${name}`);
+		}
+		assert.deepEqual(
+			requests.filter((path) => path !== "/mcp"),
+			[
+				"/metadata/a",
+				"/.well-known/oauth-authorization-server/a",
+				"/metadata/b",
+				"/.well-known/oauth-authorization-server/b",
+			],
+		);
+	});
+
 	it("shares one refresh between concurrent 401s when refresh tokens rotate", async () => {
 		const grants: string[] = [];
 		const origin = await listen(async (request, response, serverOrigin) => {

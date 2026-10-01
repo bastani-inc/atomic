@@ -334,6 +334,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const registeredServers = (): { servers: McpServer[]; overridden: string[] } => {
 			const registered: McpServer[] = [];
 			const overriddenNames: string[] = [];
+			const namespaceOwners = new Map<string, { name: string; origin: string }>();
 			for (const contribution of pi.getMcpServerContributions?.() ?? []) {
 				const { name, config, sourceInfo } = contribution;
 				const source = sourceInfo.path;
@@ -352,6 +353,15 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					);
 					continue;
 				}
+				const namespace = mcpNamespace(name);
+				const owner = namespaceOwners.get(namespace);
+				if (owner) {
+					overriddenNames.push(
+						`"${name}" from ${contribution.origin} is ignored because its MCP namespace conflicts with "${owner.name}" from ${owner.origin}`,
+					);
+					continue;
+				}
+				namespaceOwners.set(namespace, { name, origin: contribution.origin });
 				registered.push({
 					entry: { name, config, source, scope: "extension" },
 					registeredConfig: JSON.stringify(config),

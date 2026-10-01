@@ -19,7 +19,9 @@ export function getNativeMcpToolIdentity(definition: ToolDefinition): NativeMcpT
 
 export function matchesMcpDirectToolSelection(selections: readonly string[], server: string, tool: string): boolean {
 	return selections.some((selection) => {
-		const value = selection.replace(/\/+$/, "");
+		let end = selection.length;
+		while (end > 0 && selection[end - 1] === "/") end--;
+		const value = selection.slice(0, end);
 		return value === server || value === `${server}/${tool}`;
 	});
 }

@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session shutdown now closes MCP connections that are still opening instead of leaving them running after the session ends.
 - Replacing or unregistering an extension-contributed server now retires its pending connection without leaving a detached transport running.
 - Reloading a session with active MCP servers no longer fails during cleanup of the old connections.
+- OAuth refreshes discovery when a server advertises a changed metadata URL instead of retaining the previous authorization server.
 
 ## [0.9.25-alpha.3] - 2026-09-30
 

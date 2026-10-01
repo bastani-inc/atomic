@@ -35,8 +35,17 @@ test.each(["persist", "prepare", "prepare-cleanup", "summary", "summary-supersed
 );
 
 // #3105: candidate ownership includes publication and retired initialization failures.
-test.each(["activate", "commit", "settings", "activate-cleanup", "control", "mcp-failure", "mcp-control"])(
-	"built Node publication and MCP cleanup (%s)",
+test.each(["activate", "commit", "settings", "activate-cleanup", "control"])(
+	"built Node publication and candidate cleanup (%s)",
+	(mode) => {
+		expectVerifiedFixture("sdk-host-publication-cleanup.mjs", [mode]);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
+// Native transport retirement and SDK cleanup-failure retention are independent contracts.
+test.each(["mcp-failure", "mcp-control"])(
+	"built Node native MCP retirement and SDK cleanup retention (%s)",
 	(mode) => {
 		expectVerifiedFixture("sdk-host-publication-cleanup.mjs", [mode]);
 	},

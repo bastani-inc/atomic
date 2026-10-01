@@ -1,11 +1,12 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
-import { truncateMiddle } from "../../src/core/tools/truncate.ts";
+import { afterEach, describe, it } from "vitest";
+import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.js";
+import { truncateMiddle } from "../../src/core/tools/truncate.js";
 import {
 	type JsonRpcMessage,
 	LATEST_PROTOCOL_VERSION,
@@ -14,15 +15,15 @@ import {
 	McpSessionExpiredError,
 } from "../../src/extensions/mcp/client/index.js";
 import { createInMemoryTransportPair, type InMemoryTransport } from "../../src/extensions/mcp/client/testing/index.js";
-import { getMcpToolExposure, loadMcpConfig, type McpServerEntry } from "../../src/extensions/mcp/config.ts";
-import { MAX_SERVERS_SECTION_CHARS, renderServersSection } from "../../src/extensions/mcp/index.ts";
+import { getMcpToolExposure, loadMcpConfig, type McpServerEntry } from "../../src/extensions/mcp/config.js";
+import { MAX_SERVERS_SECTION_CHARS, renderServersSection } from "../../src/extensions/mcp/index.js";
 import {
 	createDefaultTransport,
 	McpOAuthCredentialStore,
 	McpServerConnection,
 	McpServerLog,
-} from "../../src/extensions/mcp/runtime.ts";
-import { convertMcpResult, createMcpToolName } from "../../src/extensions/mcp/tools.ts";
+} from "../../src/extensions/mcp/runtime.js";
+import { convertMcpResult, createMcpToolName } from "../../src/extensions/mcp/tools.js";
 
 // Config values are resolved at connect time, so the literal reference must survive loading.
 // biome-ignore lint/suspicious/noTemplateCurlyInString: literal config value reference
@@ -64,28 +65,34 @@ describe("MCP config", () => {
 
 		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
 		// Disabled servers are kept so /mcp can enable them again.
-		expect(trusted.servers.map((server) => [server.name, server.scope, server.config])).toEqual([
-			["shared", "project", { command: "project-cmd", exposure: "direct" }],
-			["remote", "global", { url: "https://example.com/mcp", headers: { Authorization: TOKEN_HEADER } }],
-			["off", "global", { command: "x", enabled: false }],
-		]);
-		expect(trusted.errors).toHaveLength(4);
-		expect(trusted.errors[0]).toContain('server "bad" needs either "command"');
-		expect(trusted.errors[1]).toContain("legacy SSE transport is not supported");
-		expect(trusted.errors[2]).toContain('server "badUrl": url must be an http or https URL');
-		expect(trusted.errors[3]).toContain('invalid server name "bad name"');
+		assert.deepEqual(
+			trusted.servers.map((server) => [server.name, server.scope, server.config]),
+			[
+				["shared", "project", { command: "project-cmd", exposure: "direct" }],
+				["remote", "global", { url: "https://example.com/mcp", headers: { Authorization: TOKEN_HEADER } }],
+				["off", "global", { command: "x", enabled: false }],
+			],
+		);
+		assert.equal(trusted.errors.length, 4);
+		assert.ok(trusted.errors[0].includes('server "bad" needs either "command"'));
+		assert.ok(trusted.errors[1].includes("legacy SSE transport is not supported"));
+		assert.ok(trusted.errors[2].includes('server "badUrl": url must be an http or https URL'));
+		assert.ok(trusted.errors[3].includes('invalid server name "bad name"'));
 
 		// Untrusted projects cannot add or override servers, since stdio servers run commands.
 		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(untrusted.servers.find((server) => server.name === "shared")?.config).toEqual({ command: "global-cmd" });
+		assert.deepEqual(untrusted.servers.find((server) => server.name === "shared")?.config, { command: "global-cmd" });
 	});
 
 	// Regression: #10239.
 	it("rejects server names that differ only in - and _", () => {
 		const paths = setup({ mcpServers: { "work-files": { command: "a" }, work_files: { command: "b" } } }, {});
 		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(servers.map((server) => server.name)).toEqual(["work-files"]);
-		expect(errors).toEqual([expect.stringContaining('server "work_files" conflicts with "work-files"')]);
+		assert.deepEqual(
+			servers.map((server) => server.name),
+			["work-files"],
+		);
+		assert.match(errors[0], /server "work_files" conflicts with "work-files"/);
 	});
 
 	it("validates exposure and reads autoEnableCodemode with project precedence", () => {
@@ -106,23 +113,24 @@ describe("MCP config", () => {
 		);
 
 		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(untrusted.autoEnableCodemode).toBe(false);
-		expect(untrusted.servers.map((server) => [server.name, server.config.exposure])).toEqual([
-			["later", "deferred"],
-			["scripts", "codemode"],
-			["off", "hidden"],
-			["described", undefined],
-		]);
-		expect(untrusted.servers[1].config.toolExposure).toEqual({ a: "codemode" });
-		expect(untrusted.servers[3].config.description).toBe("Docs search");
-		expect(untrusted.errors).toEqual([
-			expect.stringContaining('server "wrong": exposure must be one of'),
-			expect.stringContaining('server "badDescription": description must be a string'),
-		]);
+		assert.equal(untrusted.autoEnableCodemode, false);
+		assert.deepEqual(
+			untrusted.servers.map((server) => [server.name, server.config.exposure]),
+			[
+				["later", "deferred"],
+				["scripts", "codemode"],
+				["off", "hidden"],
+				["described", undefined],
+			],
+		);
+		assert.deepEqual(untrusted.servers[1].config.toolExposure, { a: "codemode" });
+		assert.equal(untrusted.servers[3].config.description, "Docs search");
+		assert.match(untrusted.errors[0], /server "wrong": exposure must be one of/);
+		assert.match(untrusted.errors[1], /server "badDescription": description must be a string/);
 
 		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
-		expect(trusted.autoEnableCodemode).toBe(false);
-		expect(trusted.errors).toContainEqual(expect.stringContaining("autoEnableCodemode must be a boolean"));
+		assert.equal(trusted.autoEnableCodemode, false);
+		assert.ok(trusted.errors.some((error) => error.includes("autoEnableCodemode must be a boolean")));
 	});
 
 	it("validates the OAuth callback URL, scope, and client name", () => {
@@ -150,14 +158,15 @@ describe("MCP config", () => {
 			{},
 		);
 		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(servers.map((server) => server.name)).toEqual(["ok", "ipv6", "same", "named", "metadata"]);
-		expect(errors).toEqual([
-			expect.stringContaining('server "remote": oauth.callbackUrl must be an http URI on localhost'),
-			expect.stringContaining('server "both": oauth.callbackUrl and oauth.callbackPort name different ports'),
-			expect.stringContaining('server "scope": oauth.scope must be a string'),
-			expect.stringContaining('server "unnamed": oauth.clientName must be a non-empty string'),
-			expect.stringContaining('server "plainMetadata": oauth.authServerMetadataUrl must be an https URL'),
-		]);
+		assert.deepEqual(
+			servers.map((server) => server.name),
+			["ok", "ipv6", "same", "named", "metadata"],
+		);
+		assert.match(errors[0], /server "remote": oauth\.callbackUrl must be an http URI on localhost/);
+		assert.match(errors[1], /server "both": oauth\.callbackUrl and oauth\.callbackPort name different ports/);
+		assert.match(errors[2], /server "scope": oauth\.scope must be a string/);
+		assert.match(errors[3], /server "unnamed": oauth\.clientName must be a non-empty string/);
+		assert.match(errors[4], /server "plainMetadata": oauth\.authServerMetadataUrl must be an https URL/);
 	});
 
 	it("resolves per-tool exposure from exact names, then patterns in order", () => {
@@ -175,15 +184,16 @@ describe("MCP config", () => {
 			{},
 		);
 		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(errors).toEqual([expect.stringContaining('server "bad": toolExposure "a" must be one of')]);
+		assert.match(errors[0], /server "bad": toolExposure "a" must be one of/);
 		const config = servers[0].config;
-		expect(getMcpToolExposure(config, "get_me")).toBe("direct");
-		expect(getMcpToolExposure(config, "get_issue")).toBe("codemode");
-		expect(getMcpToolExposure(config, "get_delete_hint")).toBe("codemode");
-		expect(getMcpToolExposure(config, "delete_repo")).toBe("hidden");
-		expect(getMcpToolExposure(config, "list_issues")).toBe("deferred");
+		assert.equal(getMcpToolExposure(config, "get_me"), "direct");
+		assert.equal(getMcpToolExposure(config, "get_issue"), "codemode");
+		assert.equal(getMcpToolExposure(config, "get_delete_hint"), "codemode");
+		assert.equal(getMcpToolExposure(config, "delete_repo"), "hidden");
+		assert.equal(getMcpToolExposure(config, "list_issues"), "deferred");
 		// Only `*` is special.
-		expect(getMcpToolExposure({ command: "x", toolExposure: { "get_file.*": "direct" } }, "get_file_x")).toBe(
+		assert.equal(
+			getMcpToolExposure({ command: "x", toolExposure: { "get_file.*": "direct" } }, "get_file_x"),
 			"codemode",
 		);
 	});
@@ -202,32 +212,31 @@ describe("MCP config", () => {
 		);
 		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
 		// The project entry cannot replace the global one: it would send the credential to its own URL.
-		expect(servers.map((server) => [server.name, server.scope, "url" in server.config && server.config.url])).toEqual(
+		assert.deepEqual(
+			servers.map((server) => [server.name, server.scope, "url" in server.config && server.config.url]),
 			[
 				["radius", "global", "https://radius.example/mcp"],
 				["local", "global", "http://localhost:8788/mcp"],
 			],
 		);
-		expect(errors).toEqual([
-			expect.stringContaining('server "plain": auth requires an https URL'),
-			expect.stringContaining('server "empty": auth.provider must be a provider name'),
-			expect.stringContaining('server "radius": auth is only allowed in the global mcp.json'),
-		]);
+		assert.match(errors[0], /server "plain": auth requires an https URL/);
+		assert.match(errors[1], /server "empty": auth\.provider must be a provider name/);
+		assert.match(errors[2], /server "radius": auth is only allowed in the global mcp\.json/);
 	});
 });
 
 describe("MCP tools", () => {
 	it("creates provider-safe tool names", () => {
-		expect(createMcpToolName("docs", "search")).toBe("mcp__docs__search");
-		expect(createMcpToolName("my-server", "get.item/v2")).toBe("mcp__my_server__get_item_v2");
+		assert.equal(createMcpToolName("docs", "search"), "mcp__docs__search");
+		assert.equal(createMcpToolName("my-server", "get.item/v2"), "mcp__my_server__get_item_v2");
 		const long = createMcpToolName("server", "x".repeat(100));
-		expect(long).toHaveLength(64);
-		expect(long).toMatch(/^mcp__server__x+_[0-9a-f]{8}$/);
-		expect(createMcpToolName("server", `${"x".repeat(100)}y`)).not.toBe(long);
+		assert.equal(long.length, 64);
+		assert.match(long, /^mcp__server__x+_[0-9a-f]{8}$/);
+		assert.notEqual(createMcpToolName("server", `${"x".repeat(100)}y`), long);
 		// Names that sanitize to one already taken by another tool get a hash suffix.
 		const taken = createMcpToolName("s", "a_b");
 		const second = createMcpToolName("s", "a-b", (name) => name === taken);
-		expect(second).toMatch(/^mcp__s__a_b_[0-9a-f]{8}$/);
+		assert.match(second, /^mcp__s__a_b_[0-9a-f]{8}$/);
 	});
 
 	it("converts results, passing the CallToolResult to scripts and flagging errors", async () => {
@@ -236,26 +245,28 @@ describe("MCP tools", () => {
 			{ type: "resource" as const, resource: { uri: "file:///b", text: "b text" } },
 			{ type: "audio" as const, data: "", mimeType: "audio/wav" },
 		];
-		expect(
+		assert.deepEqual(
 			await convertMcpResult("docs", "t", {
 				content: blocks,
 				structuredContent: { ok: true },
 				_meta: { trace: "x" },
 			}),
-		).toEqual({
-			content: [
-				{ type: "text", text: '[Resource file:///a "a"]' },
-				{ type: "text", text: "b text" },
-				{ type: "text", text: "[audio audio/wav omitted]" },
-			],
-			details: { server: "docs", tool: "t" },
-			// Scripts get the server's blocks as sent, without `_meta`.
-			structuredContent: { content: blocks, structuredContent: { ok: true } },
-		});
-		expect((await convertMcpResult("docs", "t", { content: [], structuredContent: { n: 1 } })).content).toEqual([
+			{
+				content: [
+					{ type: "text", text: '[Resource file:///a "a"]' },
+					{ type: "text", text: "b text" },
+					{ type: "text", text: "[audio audio/wav omitted]" },
+				],
+				details: { server: "docs", tool: "t" },
+				// Scripts get the server's blocks as sent, without `_meta`.
+				structuredContent: { content: blocks, structuredContent: { ok: true } },
+			},
+		);
+		assert.deepEqual((await convertMcpResult("docs", "t", { content: [], structuredContent: { n: 1 } })).content, [
 			{ type: "text", text: '{\n  "n": 1\n}' },
 		]);
-		expect(await convertMcpResult("docs", "t", { content: [{ type: "text", text: "nope" }], isError: true })).toEqual(
+		assert.deepEqual(
+			await convertMcpResult("docs", "t", { content: [{ type: "text", text: "nope" }], isError: true }),
 			{
 				content: [{ type: "text", text: "nope" }],
 				details: { server: "docs", tool: "t" },
@@ -263,7 +274,7 @@ describe("MCP tools", () => {
 				isError: true,
 			},
 		);
-		expect((await convertMcpResult("docs", "t", { content: [], isError: true })).content).toEqual([
+		assert.deepEqual((await convertMcpResult("docs", "t", { content: [], isError: true })).content, [
 			{ type: "text", text: "MCP tool docs/t returned an error" },
 		]);
 	});
@@ -297,7 +308,7 @@ describe("MCP tools", () => {
 			},
 			{ saveOutput, readableResources: true },
 		);
-		expect(converted.content).toEqual([
+		assert.deepEqual(converted.content, [
 			{
 				type: "text",
 				text: '[Resource docs://guide "The Guide" (text/markdown, 2.0KB): How to use it. Read it with read_mcp_resource (server "docs")]',
@@ -305,7 +316,7 @@ describe("MCP tools", () => {
 			{ type: "text", text: "[Binary resource file:///r/report.pdf (application/pdf, 4B) saved to /tmp/saved.pdf]" },
 			{ type: "image", data: "AAAA", mimeType: "image/png" },
 		]);
-		expect(saved).toEqual([[Buffer.from("%PDF"), ".pdf"]]);
+		assert.deepEqual(saved, [[Buffer.from("%PDF"), ".pdf"]]);
 	});
 
 	it("cuts the middle of model-facing text over 20KB and keeps the full result for scripts", async () => {
@@ -319,37 +330,38 @@ describe("MCP tools", () => {
 		const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
 		const result = { content: [{ type: "text" as const, text: full }, image] };
 		const converted = await convertMcpResult("docs", "snapshot", result, { saveOutput });
-		expect(converted.content).toHaveLength(2);
+		assert.equal(converted.content.length, 2);
 		const text = (converted.content[0] as { text: string }).text;
 		// Codex's format: a header, the start and end of the text, then the file with the full text.
-		expect(text).toMatch(
+		assert.match(
+			text,
 			new RegExp(
 				`^Warning: truncated output \\(original token count: ${Math.ceil(full.length / 4)}\\)\nTotal output lines: 3000\n\nline 1\nline 2\n`,
 			),
 		);
-		expect(text).toMatch(/…\d+ chars truncated…/);
-		expect(text.endsWith("line 3000\n\n[Full output: /tmp/full.txt (read it with offset/limit)]")).toBe(true);
-		expect(Buffer.byteLength(text)).toBeLessThan(21 * 1024);
-		expect(converted.content[1]).toEqual(image);
-		expect(converted.details).toEqual({ server: "docs", tool: "snapshot", fullOutputPath: "/tmp/full.txt" });
-		expect(saved).toEqual([full]);
-		expect(converted.structuredContent).toEqual(result);
+		assert.match(text, /…\d+ chars truncated…/);
+		assert.ok(text.endsWith("line 3000\n\n[Full output: /tmp/full.txt (read it with offset/limit)]"));
+		assert.ok(Buffer.byteLength(text) < 21 * 1024);
+		assert.deepEqual(converted.content[1], image);
+		assert.deepEqual(converted.details, { server: "docs", tool: "snapshot", fullOutputPath: "/tmp/full.txt" });
+		assert.deepEqual(saved, [full]);
+		assert.deepEqual(converted.structuredContent, result);
 
 		// Text within the limit is not saved.
 		await convertMcpResult("docs", "small", { content: [{ type: "text", text: "ok" }] }, { saveOutput });
-		expect(saved).toHaveLength(1);
+		assert.equal(saved.length, 1);
 	});
 
 	it("cuts multi-byte text only at character boundaries", () => {
 		const text = `${"é".repeat(20_000)}end`;
 		const result = truncateMiddle(text, 1001);
-		expect(result.truncated).toBe(true);
-		expect(result.content).not.toContain("\uFFFD");
-		expect(result.content.endsWith("end")).toBe(true);
+		assert.equal(result.truncated, true);
+		assert.ok(!result.content.includes("\uFFFD"));
+		assert.ok(result.content.endsWith("end"));
 		const [head, tail] = result.content.split(/…\d+ chars truncated…/);
-		expect(Buffer.byteLength(head)).toBeLessThanOrEqual(500);
-		expect(Buffer.byteLength(tail)).toBeLessThanOrEqual(501);
-		expect(Array.from(head).length + Array.from(tail).length + result.removedChars).toBe(Array.from(text).length);
+		assert.ok(Buffer.byteLength(head) <= 500);
+		assert.ok(Buffer.byteLength(tail) <= 501);
+		assert.equal(Array.from(head).length + Array.from(tail).length + result.removedChars, Array.from(text).length);
 	});
 });
 
@@ -418,12 +430,105 @@ describe("MCP connections", () => {
 			() => createTransport(),
 		]);
 		const results = await Promise.all([connection.callTool("echo", {}, {}), connection.callTool("echo", {}, {})]);
-		expect(results).toEqual([
+		assert.deepEqual(results, [
 			{ content: [{ type: "text", text: "ok" }] },
 			{ content: [{ type: "text", text: "ok" }] },
 		]);
-		expect(opened()).toBe(2);
+		assert.equal(opened(), 2);
 		await connection.close();
+	});
+
+	it("shutdown waits for an expired client's pending transport retirement", async () => {
+		let startClose!: () => void;
+		let releaseClose!: () => void;
+		const closeStarted = new Promise<void>((resolve) => (startClose = resolve));
+		const closeGate = new Promise<void>((resolve) => (releaseClose = resolve));
+		const transport = createTransport();
+		const send = transport.send.bind(transport);
+		transport.send = async (message) => {
+			if ("method" in message && message.method === "tools/call") throw new McpSessionExpiredError("gone");
+			return send(message);
+		};
+		const close = transport.close.bind(transport);
+		transport.close = async () => {
+			startClose();
+			await closeGate;
+			await close();
+		};
+		const { connection, opened } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [
+			() => transport,
+			() => createTransport(),
+		]);
+		await connection.getClient();
+		const request = connection.callTool("echo", {}, {});
+		await closeStarted;
+		let shutdownDone = false;
+		const shutdown = connection.close().then(() => {
+			shutdownDone = true;
+		});
+		await Promise.resolve();
+		assert.equal(shutdownDone, false);
+		releaseClose();
+		await shutdown;
+		await assert.rejects(request, McpSessionExpiredError);
+		assert.equal(opened(), 1);
+	});
+
+	it("closes every expired session before retrying on a new session", async () => {
+		const closed: boolean[] = [];
+		let current = 0;
+		const { connection } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [
+			() => {
+				const transport = createTransport();
+				const send = transport.send.bind(transport);
+				transport.send = async (message) => {
+					if ("method" in message && message.method === "tools/call") throw new McpSessionExpiredError("gone");
+					return send(message);
+				};
+				const close = transport.close.bind(transport);
+				closed.push(false);
+				const index = current++;
+				transport.close = async () => {
+					closed[index] = true;
+					await close();
+				};
+				return transport;
+			},
+			() => {
+				const transport = createTransport();
+				const send = transport.send.bind(transport);
+				let calls = 0;
+				transport.send = async (message) => {
+					if ("method" in message && message.method === "tools/call" && ++calls === 2)
+						throw new McpSessionExpiredError("gone");
+					return send(message);
+				};
+				const close = transport.close.bind(transport);
+				closed.push(false);
+				const index = current++;
+				transport.close = async () => {
+					closed[index] = true;
+					await close();
+				};
+				return transport;
+			},
+			() => {
+				const transport = createTransport();
+				const close = transport.close.bind(transport);
+				closed.push(false);
+				const index = current++;
+				transport.close = async () => {
+					closed[index] = true;
+					await close();
+				};
+				return transport;
+			},
+		]);
+		await connection.callTool("echo", {}, {});
+		await connection.callTool("echo", {}, {});
+		assert.deepEqual(closed, [true, true, false]);
+		await connection.close();
+		assert.deepEqual(closed, [true, true, true]);
 	});
 
 	it("expands ~ in the command, arguments, and cwd of stdio servers", async () => {
@@ -461,7 +566,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 		});
 		try {
 			const result = await connection.callTool("cwd", {}, {});
-			expect(realpathSync((result.content[0] as { text: string }).text)).toBe(realpathSync(join(home, "work")));
+			assert.equal(realpathSync((result.content[0] as { text: string }).text), realpathSync(join(home, "work")));
 		} finally {
 			await connection.close();
 			if (previousHome === undefined) delete process.env.HOME;
@@ -478,9 +583,9 @@ for await (const line of createInterface({ input: process.stdin })) {
 			() => createTransport({ noTools: true, methods }),
 		]);
 		await connection.getClient();
-		expect(connection.state).toBe("connected");
-		expect(connection.tools).toEqual([]);
-		expect(methods).toEqual(["initialize"]);
+		assert.equal(connection.state, "connected");
+		assert.deepEqual(connection.tools, []);
+		assert.deepEqual(methods, ["initialize"]);
 		await connection.close();
 	});
 
@@ -492,11 +597,11 @@ for await (const line of createInterface({ input: process.stdin })) {
 		await connection.getClient();
 		await servers.at(-1)?.close();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(connection.state).toBe("disconnected");
-		expect(connection.error).toBe("Connection closed");
-		expect(await connection.callTool("echo", {}, {})).toEqual({ content: [{ type: "text", text: "ok" }] });
-		expect(connection.state).toBe("connected");
-		expect(opened()).toBe(2);
+		assert.equal(connection.state, "disconnected");
+		assert.equal(connection.error, "Connection closed");
+		assert.deepEqual(await connection.callTool("echo", {}, {}), { content: [{ type: "text", text: "ok" }] });
+		assert.equal(connection.state, "connected");
+		assert.equal(opened(), 2);
 		await connection.close();
 	});
 
@@ -515,8 +620,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 			],
 		);
 		await connection.getClient();
-		expect(connection.state).toBe("connected");
-		expect(opened()).toBe(2);
+		assert.equal(connection.state, "connected");
+		assert.equal(opened(), 2);
 		await connection.close();
 
 		const failing = connect(
@@ -531,9 +636,9 @@ for await (const line of createInterface({ input: process.stdin })) {
 				},
 			],
 		);
-		await expect(failing.connection.getClient()).rejects.toThrow("status 400: bad");
-		expect(failing.connection.state).toBe("failed");
-		expect(failing.opened()).toBe(1);
+		await assert.rejects(failing.connection.getClient(), /status 400: bad/);
+		assert.equal(failing.connection.state, "failed");
+		assert.equal(failing.opened(), 1);
 	});
 
 	it("retries resource reads, but not tool calls, after a transient HTTP error", async () => {
@@ -552,8 +657,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 		const { connection } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [
 			() => transport,
 		]);
-		expect(await connection.readResource("docs://a", {})).toEqual({ contents: [{ uri: "docs://a", text: "ok" }] });
-		await expect(connection.callTool("echo", {}, {})).rejects.toThrow("status 502");
+		assert.deepEqual(await connection.readResource("docs://a", {}), { contents: [{ uri: "docs://a", text: "ok" }] });
+		await assert.rejects(connection.callTool("echo", {}, {}), /status 502/);
 		await connection.close();
 	});
 
@@ -567,8 +672,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 				return transport;
 			},
 		]);
-		await expect(connection.getClient()).rejects.toThrow('MCP server "fake" requires sign-in. Run /mcp to sign in.');
-		expect(connection.state).toBe("needs-auth");
+		await assert.rejects(connection.getClient(), /MCP server "fake" requires sign-in\. Run \/mcp to sign in\./);
+		assert.equal(connection.state, "needs-auth");
 		await connection.close();
 	});
 
@@ -594,12 +699,13 @@ for await (const line of createInterface({ input: process.stdin })) {
 			onTools: () => {},
 		});
 		try {
-			expect(connection.oauthUrl).toBeUndefined();
-			await expect(connection.getClient()).rejects.toThrow(
-				'MCP server "radius" requires sign-in. Run /login radius to sign in.',
+			assert.equal(connection.oauthUrl, undefined);
+			await assert.rejects(
+				connection.getClient(),
+				/MCP server "radius" requires sign-in\. Run \/login radius to sign in\./,
 			);
-			expect(connection.state).toBe("needs-auth");
-			expect(authorizations).toEqual(["Bearer tok"]);
+			assert.equal(connection.state, "needs-auth");
+			assert.deepEqual(authorizations, ["Bearer tok"]);
 		} finally {
 			await connection.close();
 			await new Promise((resolve) => server.close(resolve));
@@ -629,7 +735,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 			});
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			const lines = readFileSync(path, "utf8").replace(/^\S+ /gm, "");
-			expect(lines).toBe('[fake] warning db: slow\n    query\n[fake] error {"code":7}\n');
+			assert.equal(lines, '[fake] warning db: slow\n    query\n[fake] error {"code":7}\n');
 			await connection.close();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -645,8 +751,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 			},
 			[() => createTransport()],
 		);
-		expect(await connection.callTool("echo", {}, {})).toEqual({ content: [{ type: "text", text: "ok" }] });
-		expect(() => connection.oauthSettings()).toThrow("oauth.clientSecret");
+		assert.deepEqual(await connection.callTool("echo", {}, {}), { content: [{ type: "text", text: "ok" }] });
+		assert.throws(() => connection.oauthSettings(), /oauth\.clientSecret/);
 		await connection.close();
 	});
 });
@@ -667,29 +773,29 @@ describe("MCP servers section", () => {
 			server("direct", "Declared.", "direct"),
 			{ entry: server("plain").entry, connection: { instructions: "From instructions." } },
 		]);
-		expect(section?.split("\n").slice(1)).toEqual([
+		assert.deepEqual(section?.split("\n").slice(1), [
 			"- mcp__docs (codemode): Docs search.",
 			"- mcp__later (tool_search)",
 			"- mcp__plain (codemode): From instructions.",
 		]);
-		expect(renderServersSection([server("direct", "Declared.", "direct")])).toBeUndefined();
+		assert.equal(renderServersSection([server("direct", "Declared.", "direct")]), undefined);
 	});
 
 	it("shortens descriptions to fit the size limit", () => {
 		const servers = Array.from({ length: 40 }, (_, index) => server(`server${index}`, "x".repeat(400)));
 		const section = renderServersSection(servers) ?? "";
-		expect(section.length).toBeLessThanOrEqual(MAX_SERVERS_SECTION_CHARS);
-		expect(section.split("\n")).toHaveLength(41);
-		expect(section).toContain("- mcp__server39 (codemode): x");
+		assert.ok(section.length <= MAX_SERVERS_SECTION_CHARS);
+		assert.equal(section.split("\n").length, 41);
+		assert.ok(section.includes("- mcp__server39 (codemode): x"));
 	});
 
 	it("leaves out the last servers when their names alone do not fit", () => {
 		const servers = Array.from({ length: 200 }, (_, index) => server(`server-with-a-long-name-${index}`, "desc"));
 		const section = renderServersSection(servers) ?? "";
-		expect(section.length).toBeLessThanOrEqual(MAX_SERVERS_SECTION_CHARS);
+		assert.ok(section.length <= MAX_SERVERS_SECTION_CHARS);
 		const lines = section.split("\n");
-		expect(lines.at(-1)).toMatch(/^- … \d+ more servers; find their tools with searchTools\(\)$/);
+		assert.match(lines.at(-1) ?? "", /^- … \d+ more servers; find their tools with searchTools\(\)$/);
 		const omitted = Number(/(\d+) more/.exec(lines.at(-1) ?? "")?.[1]);
-		expect(lines.length - 2 + omitted).toBe(200);
+		assert.equal(lines.length - 2 + omitted, 200);
 	});
 });

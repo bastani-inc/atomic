@@ -243,6 +243,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	private initializingClient: McpClient | undefined;
 	private initializingTransport: McpTransport | undefined;
 	private closing: Promise<void> | undefined;
+	private readonly retiringClients = new Map<McpClient, Promise<void>>();
 	private closed = false;
 	/** Stderr of the last stdio server that failed to connect. */
 	private stderrTail: string | undefined;
@@ -377,10 +378,9 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 					continue;
 				}
 				if (error instanceof McpSessionExpiredError && attempt === 1) {
-					// The server no longer knows the session (restart, deploy), so it did not run the request.
-					// Retry once on a new session. The old client is detached but not closed: closing would
-					// fail its other in-flight calls, which instead get the same 404 and retry the same way.
-					if (this.client === client) this.client = undefined;
+					if (this.closed) throw error;
+					await this.dropClient(client);
+					if (this.closed) throw error;
 					continue;
 				}
 				if (!this.needsSignIn(error)) throw error;
@@ -425,7 +425,15 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 
 	private async dropClient(client: McpClient): Promise<void> {
 		if (this.client === client) this.client = undefined;
-		await client.close().catch(() => undefined);
+		const pending = this.retiringClients.get(client);
+		if (pending) return pending;
+		const retirement = client.close().catch(() => undefined);
+		this.retiringClients.set(client, retirement);
+		try {
+			await retirement;
+		} finally {
+			if (this.retiringClients.get(client) === retirement) this.retiringClients.delete(client);
+		}
 	}
 
 	private async open(): Promise<McpClient> {
@@ -565,6 +573,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			initializingClient?.close(),
 			initializingTransport?.close(),
 			opening,
+			...this.retiringClients.values(),
 		]);
 		this.closing = (async () => {
 			await boundedRetirement(retirement);
