@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `quietStartup: "header"`, which keeps the startup header but hides the model scope line and loaded-resource listing. `/settings` offers it alongside `true` and `false`.
+- Added `quietStartup: "header"`, which keeps the startup header but hides the model scope line. `/settings` offers it alongside `true` and `false`.
 - Added `models.generateImages()` to codemode scripts. It runs image models such as OpenRouter's with the session's credentials and returns base64 image blocks that `image()` attaches to the result; usage counts toward the session cost like `models.classify()`. Extensions can call `ctx.modelRegistry.generateImages()`. See [Built-in tools](docs/tools.md#codemode).
 
 ### Changed

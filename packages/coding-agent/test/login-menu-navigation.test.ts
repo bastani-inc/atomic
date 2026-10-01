@@ -159,3 +159,13 @@ describe("cancelled sign-in", () => {
 		expect(harness.showError).toHaveBeenCalledWith("Failed to login to Corporate SSO: denied by provider");
 	});
 });
+
+describe("empty login provider picker", () => {
+	it("reports that no account providers are available for OAuth", () => {
+		const harness = { getLoginProviderOptions: () => [], showStatus: vi.fn() };
+
+		Base.prototype.showLoginProviderSelector.call(harness as unknown as InteractiveModeBase, "oauth");
+
+		expect(harness.showStatus).toHaveBeenCalledWith("No account providers available.");
+	});
+});

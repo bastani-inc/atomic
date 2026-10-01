@@ -83,6 +83,14 @@ function renderStartupIdentity(options: {
 }
 
 describe("InteractiveMode startup banner", () => {
+	beforeEach(() => {
+		vi.stubEnv("TERM_PROGRAM", "xterm");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("renders the selected model ID and reasoning level with no separate fast badge", () => {
 		initTheme("dark");
 		const rendered = renderStartupIdentity({
@@ -203,6 +211,7 @@ describe("InteractiveMode startup banner", () => {
 			const isTTY = process.stdout.isTTY;
 			process.stdout.isTTY = true;
 			try {
+				vi.stubEnv("ATOMIC_REDUCED_MOTION", "0");
 				vi.stubEnv("TERM_PROGRAM", "iTerm.app");
 				expect(startupMotionEnabled()).toBe(true);
 				vi.stubEnv("TERM_PROGRAM", "Apple_Terminal");

@@ -155,7 +155,7 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function (
 	if (providerOptions.length === 0) {
 		const message =
 			authType === "oauth"
-				? "No subscription providers available."
+				? "No account providers available."
 				: authType === "api_key"
 					? "No API key providers available."
 					: "No login providers available.";

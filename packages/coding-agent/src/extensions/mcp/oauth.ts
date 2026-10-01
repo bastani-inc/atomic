@@ -6,7 +6,7 @@
  * `McpOAuthAuthorizationRequiredError`, and the user signs in through `/mcp`, which runs
  * the authorization code flow (PKCE, dynamic client registration) against a loopback callback.
  *
- * Credentials live in `<agent-dir>/mcp-auth.json`, keyed by server URL.
+ * Credentials live in `<agent-dir>/mcp-auth.json`, keyed by server name and URL.
  */
 
 import { createHash, randomUUID } from "node:crypto";
