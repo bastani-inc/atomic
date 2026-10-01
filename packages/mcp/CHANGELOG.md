@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-10-01
+
+### Breaking Changes
+
+- Replaced the old adapter with the native client. Only `~/.atomic/agent/mcp.json` and trusted `.atomic/mcp.json` are read, using the native configuration shape. Shared config layers, client imports, and old-field translations are no longer supported; old OAuth credentials are not imported.
+- Tools now use `mcp__<server>__<tool>` names and default to `codemode` exposure. The old gateway, configurable prefixes, lazy/idle lifecycle settings, metadata cache, SSE transport, MCP Apps rendering, and setup command are removed. Enabled servers connect in the background; `/mcp reconnect` without a name selects one server rather than reconnecting all servers.
+
+### Added
+
+- Set `oauth.authServerMetadataUrl` to use a trusted authorization server metadata document instead of discovery when an MCP server advertises the wrong authorization server or none ([#10172](https://github.com/earendil-works/pi/issues/10172)).
+- Added `/mcp login [server]`, completion and optional server selection for login/logout/reconnect, and a server manager with enabled-state and exposure menus. Sign-in accepts pasted remote-browser redirect URLs.
+- Added native tool exposure modes and per-tool patterns, standard resource list/read tools, and per-server OAuth `callbackPort` and `callbackUrl`.
+- Added shell commands `atomic mcp add`, `remove`, `list`, `login`, and `logout` to configure, check, and authenticate file-configured servers without starting a session.
+- Set `oauth.clientName` to choose the client name sent during dynamic OAuth registration. The default is `atomic` ([#10226](https://github.com/earendil-works/pi/issues/10226)).
+- HTTP MCP servers can set `"auth": { "provider": "<provider>" }` to send the current `/login` token of a provider as the bearer token instead of using MCP OAuth. The token is read for every request and is never stored by MCP. It is accepted only from the global `mcp.json` and extension registrations, requires `https` except on `localhost`, `127.0.0.1`, and `[::1]`, and is sent only to the server's origin.
+
+### Changed
+
+- Adopted pi's native MCP client, tool exposure, resources, and server manager. Calls, including codemode calls, use Atomic's permission pipeline. Native OAuth credentials are stored in `mcp-auth.json`.
+- MCP tool previews now show arguments in collapsed and expanded views while redacting sensitive argument fields.
+
+### Fixed
+
+- OAuth authorization codes are rejected before exchange when the response's `iss` names another issuer, or is missing when the authorization server promises it under RFC 9207.
+- Empty or null optional OAuth token and client registration fields now count as absent. Refresh responses retain the previous refresh token when the new one is empty, and `expires_in: null` no longer immediately expires a token ([#10266](https://github.com/earendil-works/pi/issues/10266)).
+- Empty OAuth scopes fall through to the configured scope instead of overriding it.
+- Tool and resource listing now accepts an empty or null final pagination cursor ([#10266](https://github.com/earendil-works/pi/issues/10266)).
+- Sign-out no longer lets an in-progress OAuth refresh restore deleted credentials.
+- Session shutdown now closes MCP connections that are still opening instead of leaving them running after the session ends.
+- Replacing or unregistering an extension-contributed server now retires its pending connection without leaving a detached transport running.
+- Reloading a session with active MCP servers no longer fails during cleanup of the old connections.
+- OAuth refreshes discovery when a server advertises a changed metadata URL instead of retaining the previous authorization server.
+- MCP sign-in now displays a clickable terminal hyperlink and a Cmd/Ctrl+click hint, including when the authorization URL wraps across lines ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+- MCP tool names now use JavaScript-safe identifiers. Tools whose names sanitize to the same identifier all receive deterministic hash suffixes, preventing codemode calls from reaching the wrong tool. Server names that differ only in `-` and `_` conflict ([#10239](https://github.com/earendil-works/pi/issues/10239)).
+- Cached MCP tools now reconnect after `/login <provider>` when a provider-authenticated server needs sign-in, without requiring `/mcp reconnect`.
+- Concurrent Atomic processes now coordinate rotating OAuth refresh tokens, reusing the refreshed credential rather than independently rotating the same token.
+- Stalled OAuth refresh requests now time out after 15 seconds, including response-body reads, so connection shutdown can finish and release the refresh lock.
+
 ## [0.9.25-alpha.4] - 2026-09-30
 
 ### Breaking Changes

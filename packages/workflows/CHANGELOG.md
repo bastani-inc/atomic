@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-10-01
+
+### Added
+
+- `pause`, `quit` and `resume` results from the `workflow` tool now carry a machine-readable `code` (`run_not_found`, `not_resumable`, `owned_elsewhere`, `database_unavailable`, `stage_not_found`, `stage_ambiguous`, `stage_resume_unsupported` or `control_failed`) when the request could not be carried out, so SDK hosts using `session.workflows` receive typed errors. Resuming a run that is executing in another live Atomic process now reports `owned_elsewhere` instead of `not_resumable`. Pausing or quitting, by full run id, a run owned by another session or executing in another live Atomic process now reports `owned_elsewhere` instead of `Run not found`. Pausing or resuming a stage that does not exist or matches several stages, and resuming a single stage of a durable run, now report `stage_not_found`, `stage_ambiguous` or `stage_resume_unsupported` instead of an uncoded no-op ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+- Added an official-source GPT-6.1 Sol reference to the prompt-engineering skill, with supported-effort migration guidance and selective use of shared templates whose behavior was observed on Astra.
+
+### Fixed
+
+- Pausing a run whose only active stage is waiting for human input now marks the run paused instead of rejecting with `no_active_stages`. An already-open question stays open, questions not yet shown wait until resume, and hosts can hold answers until they resume the run ([#3391](https://github.com/bastani-inc/atomic/issues/3391)).
+- `pause` and `quit` with `all: true` no longer report success when some runs could not be stopped. The result is `partial` only when that call stopped at least one run and others are still active, and a `noop` with `control_failed` when active runs could not be stopped and the call stopped none, even if other runs were already paused. Either result lists each failed run id and reason in the message and in a `failedRuns` list. Runs that are already paused or already ended are not failures, and a batch with nothing left to stop is a benign `noop`. `/workflow pause --all` now names runs that failed to pause instead of reporting them as paused or as "No in-flight runs to pause", and reports an error when it stopped no run. Any failure while inspecting the database to pause or quit an unknown full run id now returns a structured `database_unavailable` result instead of throwing or a generic `control_failed` ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+- On a heavily loaded machine, a workflow run could fail with a bare `Query read timeout` while Atomic verified its managed PostgreSQL connection, even though the database was healthy. Health queries now get more time (3 s) on every path, and both the check of a borrowed connection and Atomic's periodic background health check repeat once after a timeout. If the timeout persists, the run fails with a resumable database-unavailable error instead of `Query read timeout`, and other running workflows' database connections are not closed and PostgreSQL is not restarted. A refused or terminated connection, a server shutdown, or a changed database identity is still treated as an outage.
+- Fixed a workflow run resumed right after it was paused failing with `Workflow database admission timed out`. A pause or resume now waits for the control write already in flight instead of cancelling it mid-write, which could leave the run's database claim stuck and stall every later pause, resume, or quit on that run until the admission timeout ([#3377](https://github.com/bastani-inc/atomic/issues/3377)).
+
 ## [0.9.25-alpha.5] - 2026-09-30
 
 ### Fixed
