@@ -8,7 +8,7 @@ import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui
 import { adoptStore } from "../../packages/workflows/src/shared/store-factory.js";
 
 // #3111: adopting a sibling owner must not redirect an existing questionnaire subscription.
-test.each(["answer", "withdraw", "pause"])("workflow owners keep their own questions on %s (#3391)", async (mode) => {
+test.each(["answer", "withdraw", "pause", "pause-queued"])("owners retain questions on %s (#3391)", async (mode) => {
 	const params = {
 		questions: [{ question: "Choose", header: "Choice", options: [{ label: "A" }, { label: "B" }] }],
 	};
@@ -69,6 +69,7 @@ test.each(["answer", "withdraw", "pause"])("workflow owners keep their own quest
 			unbind,
 			ask,
 			pause: () => store.recordRunPaused("run"),
+			resume: () => store.recordRunResumed("run"),
 			withdraw: () => {
 				active = false;
 				for (const listener of listeners) listener();
@@ -84,7 +85,14 @@ test.each(["answer", "withdraw", "pause"])("workflow owners keep their own quest
 	try {
 		const pendingA = a.ask();
 		const pendingB = b.ask();
+		if (mode === "pause-queued") a.pause();
 		await Promise.resolve();
+		if (mode === "pause-queued") {
+			assert.equal(a.replies.length, 0, "a queued questionnaire must not open after pause");
+			assert.ok(a.broker.peekStageQuestionnaire("run", "stage"));
+			a.resume();
+			await Promise.resolve();
+		}
 		assert.equal(a.replies.length, 1);
 		assert.equal(b.replies.length, 1);
 		if (mode === "withdraw") a.withdraw();

@@ -87,6 +87,11 @@ export function bindWorkflowHumanInput(
 				// Defer presentation until the publisher has installed its pending waiter.
 				void Promise.resolve().then(async () => {
 					if (controller.signal.aborted) return;
+					if (store.runs().find((candidate) => candidate.id === run.id)?.status !== "running") {
+						if (requests.get(key)?.controller === controller) requests.delete(key);
+						controller.abort();
+						return;
+					}
 					try {
 						const scoped = input?.scope(run.id, stage.id, questionnaire?.sessionId);
 						if (questionnaire) {
