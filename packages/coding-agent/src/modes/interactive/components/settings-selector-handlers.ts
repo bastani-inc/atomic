@@ -64,7 +64,7 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 				callbacks.onCollapseChangelogChange(newValue === "true");
 				break;
 			case "quiet-startup":
-				callbacks.onQuietStartupChange(newValue === "true");
+				callbacks.onQuietStartupChange(newValue === "header" ? "header" : newValue === "true");
 				break;
 			case "install-telemetry":
 				callbacks.onEnableInstallTelemetryChange(newValue === "true");

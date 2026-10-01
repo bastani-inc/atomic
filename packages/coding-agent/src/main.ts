@@ -873,7 +873,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime, { deferInteractiveEngineResources: deferredExtensionLoad });
 	} else if (appMode === "interactive") {
-		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
+		if (scopedModels.length > 0 && (parsed.verbose || settingsManager.getQuietStartup() === false)) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 

@@ -80,6 +80,7 @@ export interface WarningSettings {
 }
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
+export type QuietStartup = boolean | "header";
 
 export type TransportSetting = Transport;
 
@@ -145,7 +146,7 @@ export interface Settings {
 	hideThinkingBlock?: boolean;
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
-	quietStartup?: boolean;
+	quietStartup?: QuietStartup; // default: false; true hides all startup output, "header" keeps only the startup header
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
 	bashInterceptor?: BashInterceptorSettings; // default: disabled; when enabled, user_bash handlers can intercept bash tool execution

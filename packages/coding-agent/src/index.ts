@@ -372,7 +372,7 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
-export type { DefaultProjectTrust } from "./core/settings-manager.ts";
+export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
 	type CompactionModelOverride,
 	type CompactionSettings,

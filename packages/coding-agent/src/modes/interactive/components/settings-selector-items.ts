@@ -234,9 +234,9 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "quiet-startup",
 			label: "Quiet startup",
-			description: "Disable verbose printing at startup",
-			currentValue: config.quietStartup ? "true" : "false",
-			values: ["true", "false"],
+			description: "Disable verbose printing at startup (header: keep only the startup header)",
+			currentValue: String(config.quietStartup),
+			values: ["true", "header", "false"],
 		},
 		{
 			id: "install-telemetry",

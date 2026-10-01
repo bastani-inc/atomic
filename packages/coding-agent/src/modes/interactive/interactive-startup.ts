@@ -277,7 +277,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	await this.themeController.applyFromSettings();
 
 	// Add the quiet startup identity unless silenced.
-	if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+	if (this.shouldShowStartupHeader()) {
 		this.builtInHeader = new StartupIdentityComponent(this.ui, (width, state) =>
 			this.getStartupIdentityText(width, state.gap, state.manifestoPhase),
 		);
@@ -619,4 +619,12 @@ InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function (this: Interacti
 
 InteractiveModeBase.prototype.getStartupExpansionState = function (this: InteractiveModeBase): boolean {
 	return this.options.verbose || this.toolOutputExpanded;
+};
+
+InteractiveModeBase.prototype.shouldShowStartupHeader = function (this: InteractiveModeBase): boolean {
+	return this.options.verbose === true || this.settingsManager.getQuietStartup() !== true;
+};
+
+InteractiveModeBase.prototype.shouldShowStartupDetails = function (this: InteractiveModeBase): boolean {
+	return this.options.verbose === true || this.settingsManager.getQuietStartup() === false;
 };

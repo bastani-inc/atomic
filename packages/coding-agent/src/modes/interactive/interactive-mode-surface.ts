@@ -89,6 +89,8 @@ declare module "./interactive-mode-base.ts" {
 		getStartupIdentityText(maxWidth?: number, gap?: number, manifestoPhase?: number): string;
 		getAtomicAnsiMarkLines(gap?: number): string[];
 		getStartupExpansionState(): boolean;
+		shouldShowStartupHeader(): boolean;
+		shouldShowStartupDetails(): boolean;
 		getShortPath(fullPath: string, sourceInfo?: SourceInfo): string;
 		getCompactPathLabel(resourcePath: string, sourceInfo?: SourceInfo): string;
 		getCompactPackageSourceLabel(sourceInfo?: SourceInfo): string;

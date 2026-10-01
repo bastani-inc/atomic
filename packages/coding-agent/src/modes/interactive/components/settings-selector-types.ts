@@ -6,6 +6,7 @@ import type {
 	DefaultProjectTrust,
 	FullscreenExitOutput,
 	MermaidRenderingMode,
+	QuietStartup,
 	WarningSettings,
 } from "../../../core/settings-manager.ts";
 import type { TerminalTheme } from "../theme/theme.js";
@@ -53,7 +54,7 @@ export interface SettingsConfig {
 	outputPad: 0 | 1;
 	showCacheMissNotices: boolean;
 	autocompleteMaxVisible: number;
-	quietStartup: boolean;
+	quietStartup: QuietStartup;
 	defaultProjectTrust: DefaultProjectTrust;
 	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
@@ -95,7 +96,7 @@ export interface SettingsCallbacks {
 	onOutputPadChange: (padding: 0 | 1) => void;
 	onShowCacheMissNoticesChange: (enabled: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
-	onQuietStartupChange: (enabled: boolean) => void;
+	onQuietStartupChange: (quiet: QuietStartup) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;

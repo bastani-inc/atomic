@@ -201,6 +201,29 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("  commit");
 	});
 
+	test("hides resource listing but keeps the startup header with header-only quiet startup", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: "header",
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+		});
+
+		expect(fakeThis.chatContainer.children).toHaveLength(0);
+		expect((InteractiveMode as any).prototype.shouldShowStartupHeader.call(fakeThis)).toBe(true);
+		expect((InteractiveMode as any).prototype.shouldShowStartupDetails.call(fakeThis)).toBe(false);
+	});
+
+	test("hides the startup header with full quiet startup unless verbose", () => {
+		const quiet = createShowLoadedResourcesThis({ quietStartup: true });
+		expect((InteractiveMode as any).prototype.shouldShowStartupHeader.call(quiet)).toBe(false);
+		const verbose = createShowLoadedResourcesThis({ quietStartup: "header", verbose: true });
+		expect((InteractiveMode as any).prototype.shouldShowStartupHeader.call(verbose)).toBe(true);
+		expect((InteractiveMode as any).prototype.shouldShowStartupDetails.call(verbose)).toBe(true);
+	});
+
 	test("shows full resource listing on verbose startup even when tool output is collapsed", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: true,

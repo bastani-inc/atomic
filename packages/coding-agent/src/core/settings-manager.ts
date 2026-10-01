@@ -21,6 +21,7 @@ export type {
 	ModelRoutingSettings,
 	PackageSource,
 	ProviderRetrySettings,
+	QuietStartup,
 	RetrySettings,
 	SessionSummarySettings,
 	Settings,

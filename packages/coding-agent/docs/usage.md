@@ -26,7 +26,7 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 ### Startup and Working Identity
 
-The startup animation shows Atomic's identity. Press any key, including Ctrl+C, to finish it immediately and continue normal input. Quiet startup suppresses it; non-TTY sessions and `ATOMIC_REDUCED_MOTION=1` show the settled identity without animation. `NO_COLOR` removes foreground colors while retaining weight emphasis.
+The startup animation shows Atomic's identity. Press any key, including Ctrl+C, to finish it immediately and continue normal input. Setting `quietStartup` to `true` suppresses it, while `"header"` keeps it; non-TTY sessions and `ATOMIC_REDUCED_MOTION=1` show the settled identity without animation. `NO_COLOR` removes foreground colors while retaining weight emphasis.
 
 Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
 

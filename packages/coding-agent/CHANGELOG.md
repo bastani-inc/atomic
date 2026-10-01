@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `quietStartup: "header"`, which keeps the startup header but hides the model scope line and loaded-resource listing. `/settings` offers it alongside `true` and `false`.
+
 ### Changed
 
 - MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)).

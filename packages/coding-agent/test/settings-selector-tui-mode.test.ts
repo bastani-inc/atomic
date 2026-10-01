@@ -96,3 +96,16 @@ test("settings offers cache warming modes and dispatches them", () => {
 	createSettingsChangeHandler(callbacks)("cache-warming", "idle");
 	expect(onCacheWarmingChange).toHaveBeenCalledWith("idle");
 });
+
+test("quiet startup offers a header-only choice and dispatches each value", () => {
+	const item = buildSettingsItems(createSettingsConfig(), {} as SettingsCallbacks).find(
+		({ id }) => id === "quiet-startup",
+	);
+	expect(item).toMatchObject({ currentValue: "false", values: ["true", "header", "false"] });
+
+	const onQuietStartupChange = vi.fn();
+	const callbacks = { onQuietStartupChange } as unknown as SettingsCallbacks;
+	for (const value of ["true", "header", "false"]) createSettingsChangeHandler(callbacks)("quiet-startup", value);
+
+	expect(onQuietStartupChange.mock.calls).toEqual([[true], ["header"], [false]]);
+});

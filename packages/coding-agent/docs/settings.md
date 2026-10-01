@@ -187,7 +187,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
 | `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, selection only highlights text. Ctrl+X does not copy; `/copy` copies the last assistant message. Settable from `/settings` |
 | `fullscreenWheelScrollLines` | `"auto"` or number | `"auto"` | Lines per mouse-wheel tick in fullscreen views. `"auto"` uses terminal-aware scrolling; numeric values are clamped to 1–100. Settable from `/settings` |
-| `quietStartup` | boolean | `false` | Hide startup header |
+| `quietStartup` | boolean or `"header"` | `false` | `true` hides the startup header and loaded-resource listing. `"header"` keeps the startup header but hides the model scope line and loaded-resource listing |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
 | `enableInstallTelemetry` | boolean | `true` | Send a version-adoption ping on the first interactive launch with fresh settings, and on the first interactive launch after an update whose version has changelog entries. This does not control update checks |

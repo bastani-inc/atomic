@@ -183,8 +183,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				onEnableInstallTelemetryChange: (enabled) => {
 					this.settingsManager.setEnableInstallTelemetry(enabled);
 				},
-				onQuietStartupChange: (enabled) => {
-					this.settingsManager.setQuietStartup(enabled);
+				onQuietStartupChange: (quiet) => {
+					this.settingsManager.setQuietStartup(quiet);
 				},
 				onDefaultProjectTrustChange: (defaultProjectTrust) => {
 					this.settingsManager.setDefaultProjectTrust(defaultProjectTrust);
