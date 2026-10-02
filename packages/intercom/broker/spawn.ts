@@ -406,6 +406,8 @@ function checkSocketConnectable(): Promise<boolean> {
       resolve(isConnected);
     };
     const onConnect = () => {
+      // end() starts a half-close; a reset can still arrive before close. Keep a handler until then.
+      socket.on("error", () => {});
       socket.end();
       finish(true);
     };
