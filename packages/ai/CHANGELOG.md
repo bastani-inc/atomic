@@ -17,6 +17,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Provider errors containing "Selected model is at capacity" are now retried.
 - Cloudflare AI Gateway now uses dashed Claude model IDs accepted by its Anthropic endpoint.
 - Fixed Sign in with ChatGPT continuing when its callback port is taken by another login, which made the browser show "OAuth state mismatch"; it now fails with a port-in-use error before opening the browser ([#10265](https://github.com/earendil-works/pi/issues/10265)).
+- Amazon Bedrock OpenAI models are no longer costed at the short-context rate above 272k input tokens; Bedrock models now include the pricing tiers listed on models.dev ([#10326](https://github.com/earendil-works/pi/issues/10326)).
 
 ## [0.9.26-alpha.2] - 2026-10-02
 

@@ -2080,12 +2080,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl: getBedrockBaseUrl(id),
 					reasoning: m.reasoning === true,
 					input: resolveDocumentCapableInput(m) as ("text" | "image" | "pdf")[],
-					cost: {
-						input: m.cost?.input || 0,
-						output: m.cost?.output || 0,
-						cacheRead: m.cost?.cache_read || 0,
-						cacheWrite: m.cost?.cache_write || 0,
-					},
+					// Includes models.dev pricing tiers, e.g. the long-context tier for OpenAI models.
+					cost: getModelsDevCost(m.cost),
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 					...(m.structured_output === true && { compat: { supportsStrictMode: true } }),
