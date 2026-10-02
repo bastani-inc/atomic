@@ -74,7 +74,6 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function (
 	if (selectedModel) {
 		this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
-		this.checkDaxnutsEasterEgg(selectedModel);
 	} else {
 		this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
 		if (selectionError) {

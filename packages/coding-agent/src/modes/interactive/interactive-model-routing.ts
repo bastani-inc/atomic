@@ -67,7 +67,6 @@ InteractiveModeBase.prototype.handleModelCommand = async function (
 			this.updateEditorBorderColor();
 			this.showStatus(`Model: ${model.id}`);
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-			this.checkDaxnutsEasterEgg(model);
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
@@ -179,7 +178,6 @@ InteractiveModeBase.prototype.showModelSelector = function (
 					this.updateEditorBorderColor();
 					done();
 					void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-					this.checkDaxnutsEasterEgg(model);
 					this.showStatus(`Model: ${model.id}`);
 				} catch (error) {
 					done();

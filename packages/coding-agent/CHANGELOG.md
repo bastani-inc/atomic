@@ -13,6 +13,10 @@
 - Pinned `brace-expansion` to 5.0.12 so installations use the patched dependency ([#10288](https://github.com/earendil-works/pi/issues/10288)).
 - MCP OAuth sign-in now rejects pasted redirect URLs whose origin or path differs from the current sign-in's redirect URI.
 
+### Removed
+
+- Removed the daxnuts easter egg shown when selecting `opencode/kimi-k2.5`.
+
 ## [0.9.26-alpha.2] - 2026-10-02
 
 ### Added

@@ -2,7 +2,6 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AppKeybinding,
 	ArminComponent,
-	DaxnutsComponent,
 	DynamicBorder,
 	EarendilAnnouncementComponent,
 	formatKeyText,
@@ -204,19 +203,4 @@ InteractiveModeBase.prototype.handleDementedDelves = function (this: Interactive
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new EarendilAnnouncementComponent());
 	this.ui.requestRender();
-};
-
-InteractiveModeBase.prototype.handleDaxnuts = function (this: InteractiveModeBase): void {
-	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(new DaxnutsComponent(this.ui));
-	this.ui.requestRender();
-};
-
-InteractiveModeBase.prototype.checkDaxnutsEasterEgg = function (
-	this: InteractiveModeBase,
-	model: { provider: string; id: string },
-): void {
-	if (model.provider === "opencode" && model.id.toLowerCase().includes("kimi-k2.5")) {
-		this.handleDaxnuts();
-	}
 };

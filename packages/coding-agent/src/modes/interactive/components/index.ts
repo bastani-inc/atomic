@@ -36,7 +36,6 @@ export { CompactionBoundaryMessageComponent } from "./compaction-boundary-messag
 export { CustomEditor, type CustomEditorOptions } from "./custom-editor.ts";
 export { CustomEntryComponent } from "./custom-entry.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
-export { DaxnutsComponent } from "./daxnuts.ts";
 export { type RenderDiffOptions, renderDiff } from "./diff.ts";
 export { DynamicBorder } from "./dynamic-border.ts";
 export { ExtensionEditorComponent } from "./extension-editor.ts";
