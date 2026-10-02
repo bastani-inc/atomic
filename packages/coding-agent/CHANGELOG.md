@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `/login` hiding the redirect-URL paste field for native extension providers that declare `auth.oauth.usesCallbackServer`, including built-in OAuth flows cloned under custom provider IDs ([#3400](https://github.com/bastani-inc/atomic/issues/3400)).
+
 ## [0.9.26-alpha.1] - 2026-10-01
 
 ### Breaking Changes

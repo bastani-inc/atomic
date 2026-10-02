@@ -21,6 +21,39 @@ function oauthProvider(id: string, loginLabel?: string): Provider {
 }
 
 describe("collectOAuthProviderMetadata", () => {
+	it.each(["anthropic", "openai", "openai-codex", "openrouter"])(
+		"preserves callback metadata when native %s is registered under a new ID (#3400)",
+		(id) => {
+			const builtin = builtinProviders().find((provider) => provider.id === id)!;
+			const clone = { ...builtin, id: `${id}-3` };
+			const [metadata] = collectOAuthProviderMetadata([clone], new Map());
+			expect(metadata).toMatchObject({
+				id: `${id}-3`,
+				usesCallbackServer: true,
+				isSubscription: builtin.auth.oauth?.isSubscription === true,
+			});
+		},
+	);
+
+	it.each(["anthropic", "corp"])("honors native callback opt-out for %s (#3400)", (id) => {
+		const provider = oauthProvider(id);
+		provider.auth.oauth!.usesCallbackServer = false;
+		expect(collectOAuthProviderMetadata([provider], new Map())[0]).toMatchObject({ usesCallbackServer: false });
+	});
+
+	it("keeps legacy overrides ahead of native callback metadata (#3400)", () => {
+		const provider = oauthProvider("corp");
+		provider.auth.oauth!.usesCallbackServer = true;
+		const extensions = new Map<string, ProviderConfigInput>([["corp", { oauth: { usesCallbackServer: false } }]]);
+		expect(collectOAuthProviderMetadata([provider], extensions)[0]).toMatchObject({ usesCallbackServer: false });
+	});
+
+	it("leaves callback metadata absent for undeclared custom flows (#3400)", () => {
+		expect(collectOAuthProviderMetadata([oauthProvider("corp")], new Map())[0]).not.toHaveProperty(
+			"usesCallbackServer",
+		);
+	});
+
 	it("preserves builtin callback-server and login-label metadata", () => {
 		const metadata = collectOAuthProviderMetadata(builtinProviders(), new Map());
 

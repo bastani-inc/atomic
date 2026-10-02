@@ -219,6 +219,8 @@ export interface OAuthAuth {
 	/** Selector label for the OAuth login option, e.g. "Sign in with SuperGrok or X Premium". */
 	loginLabel?: string;
 
+	usesCallbackServer?: boolean;
+
 	login(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential>;
 
 	/**

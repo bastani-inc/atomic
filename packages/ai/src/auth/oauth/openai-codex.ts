@@ -405,6 +405,7 @@ async function refreshOpenAICodexToken(refreshToken: string, signal: AbortSignal
 
 export const openaiCodexOAuth: OAuthAuth = {
 	name: "OpenAI (ChatGPT Plus/Pro)",
+	usesCallbackServer: true,
 	isSubscription: true,
 
 	async login(interaction) {

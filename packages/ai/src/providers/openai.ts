@@ -13,6 +13,7 @@ export function openaiProvider(): Provider<"openai-responses"> {
 			apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]),
 			oauth: lazyOAuth({
 				name: "OpenAI (ChatGPT subscription)",
+				usesCallbackServer: true,
 				isSubscription: true,
 				loginLabel: "Sign in with ChatGPT",
 				load: loadOpenAIChatGPTOAuth,

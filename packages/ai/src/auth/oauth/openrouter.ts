@@ -158,6 +158,7 @@ async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OA
 
 export const openRouterOAuth: OAuthAuth = {
 	name: "OpenRouter OAuth",
+	usesCallbackServer: true,
 	loginLabel: "Sign in with OpenRouter",
 	login: loginOpenRouter,
 	async refresh(credential, _signal) {
