@@ -26,7 +26,13 @@ export class AuthUrlComponent extends Container {
 
 	async copy(): Promise<void> {
 		try {
-			await copyToClipboard(this.url);
+			const remoteCopy = (
+				this.tui.terminal as
+					| (typeof this.tui.terminal & { copyTextToHost?: (text: string) => Promise<void> })
+					| undefined
+			)?.copyTextToHost;
+			if (remoteCopy) await remoteCopy.call(this.tui.terminal, this.url);
+			else await copyToClipboard(this.url);
 			this.setHint(theme.fg("success", "Copied URL to clipboard"));
 		} catch (error) {
 			this.setHint(theme.fg("error", error instanceof Error ? error.message : String(error)));

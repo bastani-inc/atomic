@@ -100,6 +100,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
 	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
+	| { type: "engine_custom_copy"; componentId: string; requestId: number; text: string }
 	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" }
 	| {
 			type: "engine_session_picker_open";
@@ -124,6 +125,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_project_trust_end"; componentId: string }
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
+	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| {
@@ -448,6 +450,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return typeof value.componentId === "string"
 				? { type: value.type, componentId: value.componentId, result: value.result }
 				: undefined;
+		case "engine_custom_copy":
+			return typeof value.componentId === "string" &&
+				typeof value.requestId === "number" &&
+				typeof value.text === "string"
+				? { type: value.type, componentId: value.componentId, requestId: value.requestId, text: value.text }
+				: undefined;
 		case "engine_custom_terminal": {
 			const control = parseEngineTerminalControl(value.control);
 			return typeof value.componentId === "string" && control
@@ -553,6 +561,12 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
+	if (
+		value.type === "engine_custom_copy_result" &&
+		typeof value.requestId === "number" &&
+		(value.error === undefined || typeof value.error === "string")
+	)
+		return { type: value.type, componentId: value.componentId, requestId: value.requestId, error: value.error };
 	if (value.type === "engine_custom_dispose" || value.type === "engine_render_dispose")
 		return { type: value.type, componentId: value.componentId };
 	if (

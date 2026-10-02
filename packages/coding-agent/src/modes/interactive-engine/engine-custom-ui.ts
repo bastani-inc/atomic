@@ -62,9 +62,43 @@ class RemoteTerminal implements Terminal {
 	kittyProtocolActive = false;
 	private readonly invalidate: () => void;
 	private readonly control: ((control: EngineTerminalControl) => void) | undefined;
-	constructor(invalidate: () => void, control?: (control: EngineTerminalControl) => void) {
+	private readonly copy: ((requestId: number, text: string) => void) | undefined;
+	private nextCopyId = 0;
+	private readonly pendingCopies = new Map<
+		number,
+		{ resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+	>();
+	constructor(
+		invalidate: () => void,
+		control?: (control: EngineTerminalControl) => void,
+		copy?: (requestId: number, text: string) => void,
+	) {
 		this.invalidate = invalidate;
 		this.control = control;
+		this.copy = copy;
+	}
+	copyTextToHost(text: string): Promise<void> {
+		if (!this.copy) return Promise.reject(new Error("Host clipboard unavailable"));
+		return new Promise((resolve, reject) => {
+			const requestId = ++this.nextCopyId;
+			const timer = setTimeout(() => {
+				this.pendingCopies.delete(requestId);
+				reject(new Error("Host clipboard did not respond"));
+			}, 15_000);
+			this.pendingCopies.set(requestId, { resolve, reject, timer });
+			this.copy?.(requestId, text);
+		});
+	}
+	resolveCopy(requestId: number, error?: string): void {
+		const pending = this.pendingCopies.get(requestId);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		this.pendingCopies.delete(requestId);
+		if (error) pending.reject(new Error(error));
+		else pending.resolve();
+	}
+	close(): void {
+		for (const requestId of this.pendingCopies.keys()) this.resolveCopy(requestId, "Sign-in screen closed");
 	}
 	start(): void {}
 	stop(): void {}
@@ -195,6 +229,7 @@ export class EngineCustomUiService {
 		const terminal = new RemoteTerminal(
 			() => this.send({ type: "engine_custom_invalidate", componentId }),
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
+			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
 		);
 		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 		const component = await factory(tui, theme, this.keybindings, done);
@@ -336,6 +371,9 @@ export class EngineCustomUiService {
 						}),
 					);
 				break;
+			case "engine_custom_copy_result":
+				record.terminal.resolveCopy(command.requestId, command.error);
+				break;
 			case "engine_custom_dispose":
 				this.disposeComponent(command.componentId, true);
 				break;
@@ -350,6 +388,7 @@ export class EngineCustomUiService {
 		const record = this.active.get(componentId);
 		if (!record) return;
 		this.active.delete(componentId);
+		record.terminal.close();
 		// Claim cancellation before user disposal code can call done() reentrantly.
 		if (resolve) record.resolve(undefined);
 		record.component.dispose?.();

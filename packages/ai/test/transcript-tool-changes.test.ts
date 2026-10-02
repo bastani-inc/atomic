@@ -75,17 +75,17 @@ const anthropicNativeModel: Model<"anthropic-messages"> = {
 interface AnthropicPayload {
 	betas?: string[];
 	system?: Array<{ text: string }>;
-	tools?: Array<{ name: string; description?: string; defer_loading?: boolean; cache_control?: unknown }>;
+	tools?: Array<{ name: string; description?: string; defer_loading?: boolean; cache_control?: { type: "ephemeral" } }>;
 	messages: Array<{
 		role: string;
 		content: Array<{
 			type: string;
 			text?: string;
-			cache_control?: unknown;
+			cache_control?: { type: "ephemeral" };
 			tool?: {
 				type?: string;
 				name?: string;
-				definition?: { name: string; description?: string; cache_control?: unknown; defer_loading?: boolean };
+				definition?: { name: string; description?: string; cache_control?: { type: "ephemeral" }; defer_loading?: boolean };
 			};
 		}>;
 	}>;
