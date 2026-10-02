@@ -47,6 +47,7 @@ export interface AnswerStagePromptOptions {
 }
 
 export type StagePromptResolvedListener = (event: StagePromptResolvedEvent) => void;
+export type StageRequestRegisteredListener = () => void;
 
 function key(runId: string, stageId: string): string {
 	return `${runId}\0${stageId}`;
@@ -67,6 +68,7 @@ export class StageUiBroker {
 	private readonly adapters = new Map<string, StagePromptAdapter>();
 	private readonly resolvedPromptIds = new Map<string, string>();
 	private readonly resolvedListeners = new Set<StagePromptResolvedListener>();
+	private readonly registeredListeners = new Set<StageRequestRegisteredListener>();
 
 	constructor(store: Store = currentWorkflowStore()) {
 		this.store = store;
@@ -171,6 +173,27 @@ export class StageUiBroker {
 		};
 	}
 
+	/**
+	 * Fires after a stage's custom UI request becomes pending. The store cannot
+	 * announce it: a stage that already reported awaiting input publishes no change.
+	 */
+	onStageRequestRegistered(listener: StageRequestRegisteredListener): () => void {
+		this.registeredListeners.add(listener);
+		return () => {
+			this.registeredListeners.delete(listener);
+		};
+	}
+
+	private notifyStageRequestRegistered(): void {
+		for (const listener of this.registeredListeners) {
+			try {
+				listener();
+			} catch {
+				// Listener failures must not prevent the request from being registered.
+			}
+		}
+	}
+
 	private notifyStagePromptAnswered(event: StagePromptResolvedEvent): void {
 		for (const listener of this.resolvedListeners) {
 			try {
@@ -266,6 +289,7 @@ export class StageUiBroker {
 		this.store.recordStageAwaitingInput(runId, stageId, true, request.createdAt);
 		const host = this.hosts.get(hostKey);
 		if (host) this.showHostOrReject(host, request);
+		this.notifyStageRequestRegistered();
 		// Re-check after listener registration and host display; AbortSignal does
 		// not replay an already-fired abort event for listeners added later.
 		if (signal?.aborted) onAbort();

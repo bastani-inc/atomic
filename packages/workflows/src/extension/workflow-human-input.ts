@@ -131,11 +131,13 @@ export function bindWorkflowHumanInput(
 		}
 	};
 	const unsubscribe = store.subscribeInvalidation(refresh);
+	const unsubscribeRegistered = stageUiBroker.onStageRequestRegistered(refresh);
 	const unsubscribeBinding = ownerInput?.subscribe(bindingChanged);
 	refresh();
 	return () => {
 		disposed = true;
 		unsubscribe();
+		unsubscribeRegistered();
 		unsubscribeBinding?.();
 		for (const unsubscribe of childSubscriptions.values()) unsubscribe();
 		childSubscriptions.clear();

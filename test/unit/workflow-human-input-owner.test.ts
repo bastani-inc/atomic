@@ -114,3 +114,68 @@ test.each(["answer", "withdraw", "pause", "pause-queued"])("owners retain questi
 		b.broker.cancelStagePrompt("run", "stage", new Error("cleanup"));
 	}
 });
+
+test.each(["running", "paused"])(
+	"relays a questionnaire requested after the stage is already awaiting input in a %s run (#3396)",
+	async (runState) => {
+		const params = {
+			questions: [{ question: "Choose", header: "Choice", options: [{ label: "A" }, { label: "B" }] }],
+		};
+		const scope = {};
+		const store = adoptStore(scope);
+		const broker = adoptStageUiBroker(scope);
+		store.recordRunStart({ id: "run", name: "wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+		store.recordStageStart("run", { id: "stage", name: "ask", status: "running", parentIds: [], toolEvents: [] });
+		const replies: ReturnType<typeof Promise.withResolvers<QuestionnaireResult>>[] = [];
+		const asked: unknown[] = [];
+		const ui = {
+			[Symbol.for("atomic-coding-agent/workflow-input@1")]: {
+				active: () => true,
+				available: () => true,
+				bindingRevision: () => 0,
+				subscribe: () => () => {},
+				scope: () => ({
+					ui: {},
+					questionnaire: (asking: unknown) => {
+						asked.push(asking);
+						const reply = Promise.withResolvers<QuestionnaireResult>();
+						replies.push(reply);
+						return reply.promise;
+					},
+				}),
+			},
+		} as PiUISurface;
+		const unbind = bindWorkflowHumanInput(store, { hasUI: false, hasHumanInput: true, ui });
+		const answer: QuestionnaireResult = {
+			cancelled: false,
+			answers: [{ questionIndex: 0, question: "Choose", kind: "option", answer: "A" }],
+		};
+		const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+		try {
+			broker.provideStagePrompt(
+				"run",
+				"stage",
+				buildStagePromptAdapter("prompt", "ask_user_question", params, Date.now())!,
+			);
+			store.recordStageAwaitingInput("run", "stage", true);
+			if (runState === "paused") store.recordRunPaused("run");
+			const pending = broker.requestCustomUi<QuestionnaireResult>("run", "stage", () => ({ render: () => [] }));
+			void pending.catch(() => {});
+			await flush();
+			if (runState === "paused") {
+				assert.equal(replies.length, 0, "a paused run must not present a newly registered question");
+				store.recordRunResumed("run");
+				await flush();
+			}
+			assert.equal(replies.length, 1);
+			assert.deepEqual(asked, [params]);
+			replies[0]!.resolve(answer);
+			assert.deepEqual(await pending, answer);
+			await flush();
+			assert.equal(replies.length, 1, "an answered question must not be presented again");
+		} finally {
+			unbind();
+			broker.cancelStagePrompt("run", "stage", new Error("cleanup"));
+		}
+	},
+);
