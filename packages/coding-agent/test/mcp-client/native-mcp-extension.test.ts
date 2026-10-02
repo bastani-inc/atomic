@@ -15,7 +15,12 @@ import {
 	McpSessionExpiredError,
 } from "../../src/extensions/mcp/client/index.js";
 import { createInMemoryTransportPair, type InMemoryTransport } from "../../src/extensions/mcp/client/testing/index.js";
-import { getMcpToolExposure, loadMcpConfig, type McpServerEntry } from "../../src/extensions/mcp/config.js";
+import {
+	getMcpToolExposure,
+	loadMcpConfig,
+	type McpServerEntry,
+	updateMcpServerConfig,
+} from "../../src/extensions/mcp/config.js";
 import { MAX_SERVERS_SECTION_CHARS, renderServersSection } from "../../src/extensions/mcp/index.js";
 import {
 	createDefaultTransport,
@@ -82,6 +87,34 @@ describe("MCP config", () => {
 		// Untrusted projects cannot add or override servers, since stdio servers run commands.
 		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(untrusted.servers.find((server) => server.name === "shared")?.config, { command: "global-cmd" });
+	});
+
+	it("lets project entries override enabled and exposure of global servers (upstream #10277)", () => {
+		const paths = setup(
+			{ mcpServers: { tools: { command: "x", env: { TOKEN: "secret" } } } },
+			// An override cannot change the command, which would run with the global env.
+			{ mcpServers: { tools: { enabled: false, args: ["y"] }, missing: { enabled: false } } },
+		);
+		const project = join(paths.cwd, ".atomic", "mcp.json");
+		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
+		assert.deepEqual(
+			servers.map((server) => [server.name, server.override, server.config]),
+			[["tools", undefined, { command: "x", env: { TOKEN: "secret" } }]],
+		);
+		assert.equal(errors.length, 2);
+		assert.ok(errors[0].includes('server "tools": an override can only set enabled, exposure, toolExposure'));
+		assert.ok(errors[1].includes('server "missing" needs "command" or "url", or a global server to override'));
+
+		writeFileSync(project, JSON.stringify({ mcpServers: { tools: { enabled: false } } }));
+		const [tools] = loadMcpConfig({ ...paths, projectTrusted: true }).servers;
+		assert.deepEqual(
+			[tools.override, tools.config],
+			[project, { command: "x", env: { TOKEN: "secret" }, enabled: false }],
+		);
+
+		// Overrides keep `enabled: true`, since it replaces the global value.
+		updateMcpServerConfig(project, "tools", { enabled: true });
+		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers.tools, { enabled: true });
 	});
 
 	// Regression: #10239.

@@ -5,6 +5,7 @@
 ### Added
 
 - OAuth sign-in screens now show a copy shortcut for the sign-in URL, including `/mcp login`. Use Ctrl+X or configure `app.auth.copyUrl`; existing message and workflow shortcuts are unchanged.
+- Added project overrides for user-level MCP servers: a `.atomic/mcp.json` entry without `command`, `url`, or `type` sets only `enabled`, `exposure`, and `toolExposure` of the user-level server, and `/mcp` can enable or disable a server for the current project ([#10277](https://github.com/earendil-works/pi/issues/10277)).
 
 ### Fixed
 
