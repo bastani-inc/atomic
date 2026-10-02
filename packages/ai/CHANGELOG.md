@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.26-alpha.2] - 2026-10-02
+
 ### Added
 
 - Added `OAuthAuth.usesCallbackServer` so native providers can declare callback-server login flows with a manual-paste fallback. Built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth definitions carry this metadata through lazy loading ([#3400](https://github.com/bastani-inc/atomic/issues/3400)).
