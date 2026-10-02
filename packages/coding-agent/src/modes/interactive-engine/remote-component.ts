@@ -1,6 +1,7 @@
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
+import { copyToClipboard } from "../../utils/clipboard.js";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -196,10 +197,17 @@ export class RemoteComponentController {
 
 	private readonly runtime: RemoteComponentRuntime;
 	private readonly ui: RemoteComponentUI;
+	private readonly copyText: (text: string) => Promise<void>;
 
-	constructor(runtime: RemoteComponentRuntime, ui: RemoteComponentUI, tuiRendererLifecycle: TuiRendererLifecycle) {
+	constructor(
+		runtime: RemoteComponentRuntime,
+		ui: RemoteComponentUI,
+		tuiRendererLifecycle: TuiRendererLifecycle,
+		copyText: (text: string) => Promise<void> = copyToClipboard,
+	) {
 		this.runtime = runtime;
 		this.ui = ui;
+		this.copyText = copyText;
 		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle.isFullscreen());
 		this.unsubscribeTuiRendererReplaced = tuiRendererLifecycle.onRendererReplaced(() =>
 			this.terminalModes.rebindTui(),
@@ -342,6 +350,23 @@ export class RemoteComponentController {
 				break;
 			case "engine_custom_invalidate":
 				this.mounted.get(message.componentId)?.component.requestRemoteRender();
+				break;
+			case "engine_custom_copy":
+				void (async () => {
+					let error: string | undefined;
+					try {
+						if (!this.mounted.has(message.componentId)) throw new Error("Sign-in screen is no longer open");
+						await this.copyText(message.text);
+					} catch (cause) {
+						error = cause instanceof Error ? cause.message : String(cause);
+					}
+					this.runtime.sendEngineCommand({
+						type: "engine_custom_copy_result",
+						componentId: message.componentId,
+						requestId: message.requestId,
+						error,
+					});
+				})();
 				break;
 			case "engine_custom_terminal":
 				this.terminalModes.applyControl(message.componentId, message.control);

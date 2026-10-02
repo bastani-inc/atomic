@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 
@@ -149,6 +150,11 @@ describe("parseArgs", () => {
 		test("parses --models as comma-separated list", () => {
 			const result = parseArgs(["--models", "gpt-4o,claude-sonnet,gemini-pro"]);
 			expect(result.models).toEqual(["gpt-4o", "claude-sonnet", "gemini-pro"]);
+		});
+
+		test("ignores empty entries in --models (pi #10334)", () => {
+			assert.deepEqual(parseArgs(["--models", "gpt-4o, ,claude-sonnet,"]).models, ["gpt-4o", "claude-sonnet"]);
+			assert.deepEqual(parseArgs(["--models", ", ,"]).models, []);
 		});
 	});
 

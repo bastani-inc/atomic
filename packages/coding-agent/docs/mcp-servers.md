@@ -177,6 +177,8 @@ OAuth applies to HTTP servers without an `Authorization` header or provider-toke
 
 `clientSecret` is optional. `callbackPort` uses `http://127.0.0.1:<port>/callback`. For another registered redirect URI, set `callbackUrl`; it must use HTTP on `localhost`, `127.0.0.1`, or `[::1]`. Atomic sends it as written. If it has no port, Atomic adds `callbackPort` or a free port. The URI must match the client's registration.
 
+When pasting a redirect URL, keep its scheme, host, port, and path unchanged. Atomic rejects a URL that does not match the redirect URI for the current sign-in, even if its authorization code and state are present.
+
 Use `oauth.clientName` when a server requires a known registration name. Sign out before signing in again to register with a changed name. Use `oauth.scope` for servers that do not advertise their required scopes; later scope requests are added to it.
 
 ### Override OAuth authorization server discovery

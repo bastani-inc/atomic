@@ -4,6 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Changed
+
+- Native Anthropic tool changes now define added and redefined tools inline, keeping the initial tool list stable for prompt caching. `hasToolRedefinitions()` is deprecated.
+
+### Fixed
+
+- Provider errors containing "Selected model is at capacity" are now retried.
+- Cloudflare AI Gateway now uses dashed Claude model IDs accepted by its Anthropic endpoint.
+
 ## [0.9.26-alpha.2] - 2026-10-02
 
 ### Added

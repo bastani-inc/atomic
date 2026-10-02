@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { copyToClipboard } from "../../utils/clipboard.ts";
+import { copyToClipboard } from "../../utils/clipboard.js";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";

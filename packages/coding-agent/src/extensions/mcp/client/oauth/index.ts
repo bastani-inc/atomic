@@ -25,6 +25,7 @@ export {
 	adaptOAuthProvider,
 	authorizeMcp,
 	exchangeAuthorizationCode,
+	type OAuthClientMetadataDocument,
 	type OAuthClientProvider,
 	type OAuthFlowOptions,
 	type OAuthFlowResult,

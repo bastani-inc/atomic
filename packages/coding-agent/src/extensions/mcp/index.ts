@@ -27,7 +27,7 @@
  */
 
 import { join, resolve } from "node:path";
-import { hyperlink, type SelectItem } from "@earendil-works/pi-tui";
+import type { SelectItem } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { getAgentDir } from "../../config.js";
 import type {
@@ -863,27 +863,30 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			return setExposure(server, choice as McpExposure);
 		};
 
+		const signInWithUi = (ui: McpUi, server: McpServer): Promise<string | undefined> => {
+			const title = `Sign in to ${server.entry.name}`;
+			let authorizationUrl = "";
+			ui.status(title, "Contacting the authorization server…");
+			return signIn(server, {
+				showAuthorizationUrl: (url) => {
+					authorizationUrl = url.href;
+					openUrl(url.href);
+				},
+				promptForRedirectUrl: async (signal) => {
+					const value = await ui.redirectUrl(title, authorizationUrl, signal);
+					ui.status(title, "Connecting…");
+					return value;
+				},
+			});
+		};
+
 		const runAction = async (ui: McpUi, ctx: ExtensionContext, server: McpServer, action: string) => {
 			const { name } = server.entry;
 			let message: string | undefined;
 			switch (action) {
-				case "signin": {
-					const title = `Sign in to ${name}`;
-					let authorizationUrl = "";
-					ui.status(title, "Contacting the authorization server…");
-					message = await signIn(server, {
-						showAuthorizationUrl: (url) => {
-							authorizationUrl = url.href;
-							openUrl(url.href);
-						},
-						promptForRedirectUrl: async (signal) => {
-							const value = await ui.redirectUrl(title, authorizationUrl, signal);
-							ui.status(title, "Connecting…");
-							return value;
-						},
-					});
+				case "signin":
+					message = await signInWithUi(ui, server);
 					break;
-				}
 				case "reconnect":
 					// A failure shows as the connection's state and error.
 					ui.status(`MCP server ${name}`, "Reconnecting…");
@@ -992,22 +995,28 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				ctx.ui.notify(`Signing in to MCP server "${name}" requires interactive mode.`, "error");
 				return;
 			}
-			const failure = await signIn(server, {
-				showAuthorizationUrl: (url) => {
-					const lines =
-						ctx.mode === "tui"
-							? `${hyperlink(url.href, url.href)}\n${hyperlink(process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open", url.href)}`
-							: url.href;
-					ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${lines}`, "info");
-					openUrl(url.href);
-				},
-				promptForRedirectUrl: (signal) =>
-					ctx.ui.input(
-						`Waiting for sign-in to "${name}". If the browser cannot reach this machine, paste the URL it was redirected to.`,
-						"http://127.0.0.1:.../callback?code=...",
-						{ signal },
-					),
-			});
+			let failure: string | undefined;
+			if (ctx.mode === "tui") {
+				let completed = false;
+				await showMcpManager(ctx, async (ui) => {
+					failure = await signInWithUi(ui, server);
+					completed = true;
+				});
+				if (!completed) return;
+			} else {
+				failure = await signIn(server, {
+					showAuthorizationUrl: (url) => {
+						ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${url.href}`, "info");
+						openUrl(url.href);
+					},
+					promptForRedirectUrl: (signal) =>
+						ctx.ui.input(
+							`Waiting for sign-in to "${name}". If the browser cannot reach this machine, paste the URL it was redirected to.`,
+							"http://127.0.0.1:.../callback?code=...",
+							{ signal },
+						),
+				});
+			}
 			if (failure) {
 				ctx.ui.notify(failure, failure === "Sign-in cancelled." ? "info" : "error");
 				return;

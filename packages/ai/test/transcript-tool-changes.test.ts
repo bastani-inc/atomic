@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
 import { streamSimple } from "../src/compat.ts";
@@ -74,37 +75,54 @@ const anthropicNativeModel: Model<"anthropic-messages"> = {
 interface AnthropicPayload {
 	betas?: string[];
 	system?: Array<{ text: string }>;
-	tools?: Array<{ name: string; defer_loading?: boolean; cache_control?: unknown }>;
-	messages: Array<{ role: string; content: Array<{ type: string; text?: string; tool?: { name: string } }> }>;
+	tools?: Array<{ name: string; description?: string; defer_loading?: boolean; cache_control?: { type: "ephemeral" } }>;
+	messages: Array<{
+		role: string;
+		content: Array<{
+			type: string;
+			text?: string;
+			cache_control?: { type: "ephemeral" };
+			tool?: {
+				type?: string;
+				name?: string;
+				definition?: { name: string; description?: string; cache_control?: { type: "ephemeral" }; defer_loading?: boolean };
+			};
+		}>;
+	}>;
 }
 
 describe("transcript system messages", () => {
 	test("sends Anthropic updates and tool changes in native system messages", async () => {
 		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, context);
 
-		expect(payload.betas).toContain("mid-conversation-tool-changes-2026-07-01");
+		assert.ok(payload.betas?.includes("inline-tools-2026-09-15"));
+		assert.ok(!payload.betas?.includes("mid-conversation-tool-changes-2026-07-01"));
 		expect(payload.system?.map((block) => block.text)).toEqual([
 			"base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>",
 		]);
-		// Initial tools stay active and carry the cache breakpoint; the placeholder and every
-		// later declaration are deferred; the removed tool stays declared.
-		expect(payload.tools).toMatchObject([
-			{ name: "base_tool", cache_control: { type: "ephemeral" } },
-			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-			{ name: "late_tool", defer_loading: true },
-		]);
-		expect(payload.tools?.[0]?.defer_loading).toBeUndefined();
-		expect(payload.tools?.[1]?.cache_control).toBeUndefined();
-		expect(payload.tools?.[2]?.cache_control).toBeUndefined();
+		assert.deepEqual(
+			payload.tools?.map((tool) => tool.name),
+			["base_tool", "__pi_deferred_placeholder__"],
+		);
+		assert.deepEqual(payload.tools?.[0]?.cache_control, { type: "ephemeral" });
+		assert.equal(payload.tools?.[0]?.defer_loading, undefined);
+		assert.equal(payload.tools?.[1]?.defer_loading, true);
+		assert.equal(payload.tools?.[1]?.cache_control, undefined);
 		const update = payload.messages.at(-1);
 		expect(update).toMatchObject({
 			role: "system",
 			content: [
 				{ type: "text" },
-				{ type: "tool_removal", tool: { name: "base_tool" } },
-				{ type: "tool_addition", tool: { name: "late_tool" } },
+				{ type: "tool_removal", tool: { type: "tool_reference", name: "base_tool" } },
+				{
+					type: "tool_addition",
+					tool: { type: "tool_definition", definition: { name: "late_tool", description: "late_tool tool" } },
+					cache_control: { type: "ephemeral" },
+				},
 			],
 		});
+		assert.equal(update?.content[2]?.tool?.definition?.cache_control, undefined);
+		assert.equal(update?.content[2]?.tool?.definition?.defer_loading, undefined);
 		expect(update?.content[0]?.text).toContain("updated guidance");
 		expect(update?.content[0]?.text).toContain("<rules>\nnew rules\n</rules>");
 		expect(update?.content[0]?.text).toContain('Removed system prompt section "docs"');
@@ -116,39 +134,56 @@ describe("transcript system messages", () => {
 		expect(initial.tools?.map((tool) => tool.name)).toEqual(["base_tool", "__pi_deferred_placeholder__"]);
 	});
 
-	test("sends the current Anthropic tool list when native tool changes cannot express the history", async () => {
-		const redefinedTool = { ...baseTool, description: "changed" };
-		const fallbackContexts: Context[] = [
-			// Same-name redefinition: blocks reference tools by name only.
-			{
-				messages: [
-					{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
-					{
-						role: "system",
-						content: "updated guidance",
-						toolsRemoved: [{ name: "base_tool" }],
-						toolsAdded: [redefinedTool],
-						timestamp: 2,
-					},
-				],
-			},
-			// No initial tool: Anthropic rejects an all-deferred tool list.
-			{
-				messages: [
-					{ role: "system", content: "base prompt", timestamp: 0 },
-					{ role: "system", content: "updated guidance", toolsAdded: [redefinedTool], timestamp: 2 },
-				],
-			},
-		];
-		for (const fallbackContext of fallbackContexts) {
-			const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, fallbackContext);
-			expect(payload.betas ?? []).not.toContain("mid-conversation-tool-changes-2026-07-01");
-			expect(payload.tools).toMatchObject([
-				{ name: "base_tool", description: "changed", cache_control: { type: "ephemeral" } },
-			]);
-			expect(payload.tools?.[0]?.defer_loading).toBeUndefined();
-			expect(payload.messages.at(-1)?.content.map((block) => block.type)).toEqual(["text"]);
-		}
+	test("redefines an Anthropic tool by value under the same name", async () => {
+		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{
+					role: "system",
+					content: "",
+					toolsRemoved: [{ name: "base_tool" }],
+					toolsAdded: [{ ...baseTool, description: "changed" }],
+					timestamp: 2,
+				},
+			],
+		});
+		assert.ok(payload.betas?.includes("inline-tools-2026-09-15"));
+		assert.deepEqual(
+			payload.tools?.map((tool) => tool.name),
+			["base_tool", "__pi_deferred_placeholder__"],
+		);
+		assert.equal(payload.tools?.[0]?.description, "base_tool tool");
+		const update = payload.messages.at(-1);
+		assert.equal(update?.role, "system");
+		assert.deepEqual(
+			update?.content.map((block) => block.type),
+			["tool_addition"],
+		);
+		assert.equal(update?.content[0]?.tool?.type, "tool_definition");
+		assert.equal(update?.content[0]?.tool?.definition?.name, "base_tool");
+		assert.equal(update?.content[0]?.tool?.definition?.description, "changed");
+	});
+
+	test("sends the current Anthropic tool list without an initial tool", async () => {
+		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, {
+			messages: [
+				{ role: "system", content: "base prompt", timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{ role: "system", content: "updated guidance", toolsAdded: [lateTool], timestamp: 2 },
+			],
+		});
+		assert.ok(!payload.betas?.includes("inline-tools-2026-09-15"));
+		assert.deepEqual(
+			payload.tools?.map((tool) => tool.name),
+			["late_tool"],
+		);
+		assert.deepEqual(payload.tools?.[0]?.cache_control, { type: "ephemeral" });
+		assert.equal(payload.tools?.[0]?.defer_loading, undefined);
+		assert.deepEqual(
+			payload.messages.at(-1)?.content.map((block) => block.type),
+			["text"],
+		);
 	});
 
 	test("folds Anthropic updates into the system prompt without native support", async () => {
@@ -166,7 +201,7 @@ describe("transcript system messages", () => {
 			messages: Array<{ role: string }>;
 		}>(model, context);
 
-		expect(payload.betas ?? []).not.toContain("mid-conversation-tool-changes-2026-07-01");
+		assert.ok(!payload.betas?.includes("inline-tools-2026-09-15"));
 		expect(payload.system?.map((block) => block.text)).toEqual([
 			"base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>",
 		]);
@@ -189,7 +224,7 @@ describe("transcript system messages", () => {
 			messages: Array<{ role: string }>;
 		}>(model, context);
 
-		expect(payload.betas ?? []).not.toContain("mid-conversation-tool-changes-2026-07-01");
+		assert.ok(!payload.betas?.includes("inline-tools-2026-09-15"));
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
 		expect(payload.messages.map((message) => message.role)).toEqual(["user"]);
 	});

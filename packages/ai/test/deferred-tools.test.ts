@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
@@ -17,7 +18,7 @@ interface AnthropicContentBlock {
 	text?: string;
 	tool_use_id?: string;
 	content?: string | Array<{ type: string; tool_name?: string }>;
-	tool?: { type: string; name: string };
+	tool?: { type: "tool_reference"; name: string } | { type: "tool_definition"; definition: AnthropicToolPayload };
 	source?: {
 		type: string;
 		media_type: string;
@@ -212,15 +213,27 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const payload = await capturePayload<AnthropicPayload>(nativeAnthropic(), context);
 
-		expect(payload.tools).toMatchObject([
-			{ name: "base_tool" },
+		const initial = await capturePayload<AnthropicPayload>(nativeAnthropic(), {
+			...context,
+			messages: context.messages.slice(0, 1),
+		});
+		assert.deepEqual(payload.tools, initial.tools);
+		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
+			{ name: "base_tool", defer_loading: undefined },
 			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-			{ name: "late_tool", defer_loading: true },
 		]);
-		expect(toolAdditions(payload)).toEqual([
+		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
-				tool: { type: "tool_reference", name: "late_tool" },
+				tool: {
+					type: "tool_definition",
+					definition: {
+						name: "late_tool",
+						description: "The late_tool tool",
+						input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+						eager_input_streaming: true,
+					},
+				},
 				cache_control: { type: "ephemeral" },
 			},
 		]);
@@ -268,15 +281,22 @@ describe("deferred tools", () => {
 
 		const payload = await capturePayload<AnthropicPayload>(nativeAnthropic(), context);
 
-		expect(payload.tools).toMatchObject([
-			{ name: "base_tool" },
+		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
+			{ name: "base_tool", defer_loading: undefined },
 			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-			{ name: "late_tool", defer_loading: true },
 		]);
-		expect(toolAdditions(payload)).toEqual([
+		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
-				tool: { type: "tool_reference", name: "late_tool" },
+				tool: {
+					type: "tool_definition",
+					definition: {
+						name: "late_tool",
+						description: "The late_tool tool",
+						input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+						eager_input_streaming: true,
+					},
+				},
 				cache_control: { type: "ephemeral" },
 			},
 		]);
@@ -321,15 +341,22 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("read")], ["Read"]);
 		const payload = await capturePayload<AnthropicPayload>(nativeAnthropic(), context, "sk-ant-oat-fake");
 
-		expect(payload.tools).toMatchObject([
-			{ name: "base_tool" },
+		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
+			{ name: "base_tool", defer_loading: undefined },
 			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-			{ name: "Read", defer_loading: true },
 		]);
-		expect(toolAdditions(payload)).toEqual([
+		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
-				tool: { type: "tool_reference", name: "Read" },
+				tool: {
+					type: "tool_definition",
+					definition: {
+						name: "Read",
+						description: "The read tool",
+						input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+						eager_input_streaming: true,
+					},
+				},
 				cache_control: { type: "ephemeral" },
 			},
 		]);
@@ -382,7 +409,25 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const payload = await capturePayload<AnthropicPayload>(model, context);
 
-		expect(payload.tools?.find((tool) => tool.name === "late_tool")?.defer_loading).toBe(true);
+		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
+			{ name: "base_tool", defer_loading: undefined },
+			{ name: "__pi_deferred_placeholder__", defer_loading: true },
+		]);
+		assert.deepEqual(toolAdditions(payload), [
+			{
+				type: "tool_addition",
+				tool: {
+					type: "tool_definition",
+					definition: {
+						name: "late_tool",
+						description: "The late_tool tool",
+						input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+						eager_input_streaming: true,
+					},
+				},
+				cache_control: { type: "ephemeral" },
+			},
+		]);
 	});
 
 	it("serializes Kimi deferred tools as system tool definitions", async () => {
