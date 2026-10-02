@@ -115,8 +115,6 @@ test.each(["answer", "withdraw", "pause", "pause-queued"])("owners retain questi
 	}
 });
 
-// #3396: the stage tool announces awaiting-input before it registers its request, so the
-// registration itself must wake the relay; the store has nothing further to publish.
 test.each(["running", "paused"])(
 	"relays a questionnaire requested after the stage is already awaiting input in a %s run (#3396)",
 	async (runState) => {
@@ -154,7 +152,6 @@ test.each(["running", "paused"])(
 		};
 		const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 		try {
-			// Executor ordering at tool start: publish the adapter, mark the stage awaiting input...
 			broker.provideStagePrompt(
 				"run",
 				"stage",
@@ -162,7 +159,6 @@ test.each(["running", "paused"])(
 			);
 			store.recordStageAwaitingInput("run", "stage", true);
 			if (runState === "paused") store.recordRunPaused("run");
-			// ...then the tool registers its request, which the store no longer reports as a change.
 			const pending = broker.requestCustomUi<QuestionnaireResult>("run", "stage", () => ({ render: () => [] }));
 			void pending.catch(() => {});
 			await flush();
