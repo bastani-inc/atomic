@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.26-alpha.1] - 2026-10-01
+
 ### Breaking Changes
 
 - MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)). SDK consumers of the exported `McpOAuthCredentialStore` must now pass the server name to `forServer`, `tokens`, `remove` and `removeAsync`.
