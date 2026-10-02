@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.26-alpha.1] - 2026-10-01
+
 ### Changed
 
 - OAuth browser pages now show the Atomic logo in color instead of white.
