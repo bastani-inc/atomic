@@ -17,6 +17,7 @@ Extensions can register custom model providers via `pi.registerProvider()`. This
 This page gets you to a first working provider extension. Each part of the job has its own page:
 
 - [Override an existing provider](/custom-provider/override) — change a provider Atomic already ships.
+- [Multiple accounts for one provider](/custom-provider/registration#multiple-accounts-for-one-provider) — inherit provider behavior with separate logins.
 - [Register a provider](/custom-provider/registration) — register and unregister a provider, and the API types it implements.
 - [Provider OAuth](/custom-provider/oauth) — login callbacks, credential storage, and dynamic catalog refresh.
 - [Provider streaming API](/custom-provider/streaming) — events, content blocks, tool calls, stop reasons, and usage.

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { Provider } from "@bastani/pi-ai";
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
@@ -21,6 +22,38 @@ function oauthProvider(id: string, loginLabel?: string): Provider {
 }
 
 describe("collectOAuthProviderMetadata", () => {
+	it.each(["anthropic", "openai", "openai-codex", "openrouter"])(
+		"preserves callback metadata when native %s is registered under a new ID (#3400)",
+		(id) => {
+			const builtin = builtinProviders().find((provider) => provider.id === id)!;
+			const clone = { ...builtin, id: `${id}-3` };
+			const [metadata] = collectOAuthProviderMetadata([clone], new Map());
+			assert.equal(metadata.id, `${id}-3`);
+			assert.equal(metadata.usesCallbackServer, true);
+			assert.equal(metadata.isSubscription, builtin.auth.oauth?.isSubscription === true);
+		},
+	);
+
+	it.each(["anthropic", "corp"])("honors native callback opt-out for %s (#3400)", (id) => {
+		const provider = oauthProvider(id);
+		provider.auth.oauth!.usesCallbackServer = false;
+		assert.equal(collectOAuthProviderMetadata([provider], new Map())[0].usesCallbackServer, false);
+	});
+
+	it("keeps legacy overrides ahead of native callback metadata (#3400)", () => {
+		const provider = oauthProvider("corp");
+		provider.auth.oauth!.usesCallbackServer = true;
+		const extensions = new Map<string, ProviderConfigInput>([["corp", { oauth: { usesCallbackServer: false } }]]);
+		assert.equal(collectOAuthProviderMetadata([provider], extensions)[0].usesCallbackServer, false);
+	});
+
+	it("leaves callback metadata absent for undeclared custom flows (#3400)", () => {
+		assert.equal(
+			Object.hasOwn(collectOAuthProviderMetadata([oauthProvider("corp")], new Map())[0], "usesCallbackServer"),
+			false,
+		);
+	});
+
 	it("preserves builtin callback-server and login-label metadata", () => {
 		const metadata = collectOAuthProviderMetadata(builtinProviders(), new Map());
 

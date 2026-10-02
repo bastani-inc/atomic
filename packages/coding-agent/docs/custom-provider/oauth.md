@@ -79,6 +79,8 @@ OAuth callbacks run in the engine in isolated interactive mode. Use the provided
 
 `loginLabel` sets the dialog title. `usesCallbackServer: true` offers a redirect-URL paste field alongside the browser callback.
 
+For the native `pi.registerProvider(provider)` form, set `provider.auth.oauth.usesCallbackServer: true` when the flow races a callback server against `interaction.prompt({ type: "manual_code", message: "Paste redirect URL:" })`. This shows the paste field even under a custom provider ID. The built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth objects already carry this flag; preserve it when cloning or wrapping them. Set it explicitly to `false` for a replacement flow that does not use a callback server. Legacy `pi.registerProvider(id, config)` registrations continue to use `config.oauth.usesCallbackServer`.
+
 Successful login persists credentials before refreshing the catalog. Logout removes stored credentials without calling `refreshModels`. Escape or Ctrl+C cancels the matching login and preserves the previous credentials and catalog. Later registrations still override earlier providers by ID.
 
 Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, and storage failures remain visible. Catalog-refresh failures are reported by `/model` while cached models remain selectable; they do not turn a persisted login into a failed transaction.

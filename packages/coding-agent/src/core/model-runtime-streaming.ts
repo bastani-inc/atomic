@@ -67,10 +67,17 @@ export class ModelRuntimeStreaming {
 	private readonly models: MutableModels;
 	private readonly resolveAuth: ResolveAuth;
 	private readonly ownsExtensionTransport: OwnsExtensionTransport;
-	constructor(models: MutableModels, resolveAuth: ResolveAuth, ownsExtensionTransport: OwnsExtensionTransport) {
+	private readonly transportModel: (model: Model<Api>) => Model<Api>;
+	constructor(
+		models: MutableModels,
+		resolveAuth: ResolveAuth,
+		ownsExtensionTransport: OwnsExtensionTransport,
+		transportModel: (model: Model<Api>) => Model<Api> = (model) => model,
+	) {
 		this.models = models;
 		this.resolveAuth = resolveAuth;
 		this.ownsExtensionTransport = ownsExtensionTransport;
+		this.transportModel = transportModel;
 	}
 
 	/**
@@ -83,6 +90,7 @@ export class ModelRuntimeStreaming {
 	 * with `originator: pi` and no routing hint.
 	 */
 	private withCodexRouting<TOptions extends StreamOptions>(model: Model<Api>, options: TOptions): TOptions {
+		model = this.transportModel(model);
 		if (!usesChatGptCodexTransport(model) || this.ownsExtensionTransport(model)) return options;
 		// The WebSocket handshake builds its headers inside pi-ai and the constructor can be cached, so
 		// the identity is repaired through the global constructor rather than per-request options. CLI

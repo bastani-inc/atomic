@@ -48,6 +48,15 @@ export function validateExtensionProvider(
 	modelsConfig: ModelsJsonProvider | undefined,
 	extension: ProviderConfigInput,
 ): void {
+	if (extension.aliasOf !== undefined) {
+		if (!providerId.trim() || !extension.aliasOf.trim() || providerId === extension.aliasOf) {
+			throw new Error("A provider alias needs distinct, non-empty alias and source IDs.");
+		}
+		if (Object.keys(extension).some((key) => !["aliasOf", "name"].includes(key))) {
+			throw new Error("Provider aliases accept only aliasOf and name; configure the source provider instead.");
+		}
+		return;
+	}
 	if (extension.streamSimple && !extension.api) {
 		throw new Error(`Provider ${providerId}: "api" is required when registering streamSimple.`);
 	}

@@ -5,6 +5,38 @@ description: Register and unregister a provider, and the API types a provider im
 
 # Register a provider
 
+## Multiple accounts for one provider
+
+Use `pi.registerProviderAlias()` instead of copying a provider's models, OAuth methods, and transport. Register aliases in the extension factory so they are available at startup:
+
+```typescript
+import type { ExtensionAPI } from "@bastani/atomic";
+
+export default function (pi: ExtensionAPI) {
+  for (let account = 1; account <= 7; account++) {
+    pi.registerProviderAlias({
+      id: `openai-${account}`,
+      name: `OpenAI account ${account}`,
+      provider: "openai",
+    });
+  }
+}
+```
+
+Run `/login openai-1` and choose **Sign in with ChatGPT**, then select an `openai-1` model with `/model`. Repeat for each account. The source `openai` uses the new OpenAI ChatGPT login, not the separate `openai-codex` login.
+
+Each alias stores and refreshes its own credentials. An alias does not borrow the source's stored login or ambient API key. Keeping an existing alias ID, such as `openai-1`, preserves credentials already saved under that ID. Confirm the intended account in the browser when logging into each alias; an alias name does not select a browser account or provide extra quota.
+
+Aliases support OAuth credentials and non-empty stored API keys. For ambient-only authentication, such as an AWS profile or environment-based service account, use the original provider or a full custom registration instead.
+
+Source endpoint and header configuration is shared too. Do not hard-code account credentials in source headers when using aliases; supply each account through `/login`.
+
+Aliases inherit the source's current models, Fast variants, OAuth callback support, and request handling. Callbacks and saved messages retain the alias ID. Source catalog updates are shared, while availability filters receive each alias's own credential. Aliases do not run account-specific catalog discovery with their credentials; use a full provider registration if each account requires a separately discovered catalog.
+
+The source must already be registered and cannot itself be an alias. Alias IDs must not replace an existing provider. Configure endpoints and models on the source rather than on the alias. Use `pi.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials. Aliases follow normal extension reload and rollback behavior.
+
+This API requires an Atomic version that includes provider aliases. Older versions report `registerProviderAlias is not a function`; upgrade Atomic before loading an alias extension.
+
 ## Register New Provider
 
 To add a completely new provider, specify `models` along with the required configuration.

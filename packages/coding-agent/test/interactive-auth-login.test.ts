@@ -226,6 +226,12 @@ describe("interactive OAuth cancellation", () => {
 			authUrl: "https://auth.openai.com/api/accounts/authorize",
 			redirectUrl: "http://127.0.0.1:1455/auth/callback?code=pasted&state=state&client_id=issued",
 		},
+		{
+			id: "openai-3",
+			name: "Native OpenAI clone (#3400)",
+			authUrl: "https://auth.openai.com/api/accounts/authorize",
+			redirectUrl: "http://127.0.0.1:1455/auth/callback?code=pasted&state=state&client_id=issued",
+		},
 	]) {
 		it(`offers redirect paste for ${provider.name} login on a remote host`, async () => {
 			const showManualInput = vi
@@ -252,7 +258,11 @@ describe("interactive OAuth cancellation", () => {
 					modelRuntime: {
 						// The shipped metadata, not a hand-written stub: this asserts the
 						// provider set the terminal actually reads.
-						getOAuthProviderMetadata: () => collectOAuthProviderMetadata(builtinProviders(), new Map()),
+						getOAuthProviderMetadata: () => {
+							const providers = builtinProviders();
+							const openai = providers.find(({ id }) => id === "openai")!;
+							return collectOAuthProviderMetadata([...providers, { ...openai, id: "openai-3" }], new Map());
+						},
 					},
 				},
 				runtimeHost: { loginOAuthProvider },

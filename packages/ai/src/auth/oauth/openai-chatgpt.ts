@@ -267,6 +267,7 @@ async function loginOpenAIChatGPT(
 
 export const openaiChatGPTOAuth: OAuthAuth = {
 	name: "OpenAI (ChatGPT subscription)",
+	usesCallbackServer: true,
 	isSubscription: true,
 	loginLabel: "Sign in with ChatGPT",
 	login: loginOpenAIChatGPT,

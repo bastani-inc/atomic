@@ -179,6 +179,68 @@ describe("createAgentSession fast model routing", () => {
 		}
 	});
 
+	it.each(["fast", "ultrafast"] as const)(
+		"routes OpenAI account aliases through native ChatGPT handling at %s tier",
+		async (tier) => {
+			const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+			await authStorage.modify("openai-1", async () => ({
+				type: "oauth",
+				access: "fake-alias-token",
+				refresh: "fake-refresh",
+				expires: Number.MAX_SAFE_INTEGER,
+			}));
+			const modelRuntime = await ModelRuntime.create({
+				credentials: authStorage,
+				modelsPath: null,
+				allowModelNetwork: false,
+			});
+			modelRuntime.registerProvider("openai-1", { aliasOf: "openai" });
+			const model = modelRuntime.getModel("openai-1", `gpt-6-astra-${tier}`);
+			assert.ok(model);
+			const sessionManager = SessionManager.inMemory(cwd);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				model,
+				authStorage,
+				modelRuntime,
+				sessionManager,
+				settingsManager: SettingsManager.inMemory({ cacheWarming: "off" }),
+			});
+			let body:
+				| {
+						model?: string;
+						service_tier?: string;
+						max_output_tokens?: number;
+						prompt_cache_retention?: string;
+						prompt_cache_options?: object;
+				  }
+				| undefined;
+			let authorization: string | null = null;
+			vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+				body = JSON.parse(await bodyToText(init?.body));
+				authorization = new Headers(init?.headers).get("authorization");
+				return copilotResponse("openai-responses", "gpt-6-astra");
+			});
+			try {
+				await session.prompt("hello");
+				assert.ok(body);
+				assert.equal(body.model, "gpt-6-astra");
+				assert.equal(body.service_tier, tier === "fast" ? "priority" : "ultrafast");
+				assert.equal(body.max_output_tokens, undefined);
+				assert.equal(body.prompt_cache_retention, undefined);
+				assert.equal(body.prompt_cache_options, undefined);
+				assert.equal(authorization, "Bearer fake-alias-token");
+				const result = sessionManager
+					.buildSessionContext()
+					.messages.findLast((entry) => entry.role === "assistant");
+				assert.equal(result?.role === "assistant" && result.provider, "openai-1");
+			} finally {
+				session.dispose();
+			}
+		},
+	);
+
 	async function captureFastRouteRequest(options: {
 		provider: string;
 		api?: Api;

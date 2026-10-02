@@ -86,6 +86,7 @@ export type {
 	ProjectTrustEventDecision,
 	ProjectTrustEventResult,
 	ProjectTrustHandler,
+	ProviderAliasConfig,
 	ProviderConfig,
 	ProviderModelConfig,
 	ProviderStreamEvent,

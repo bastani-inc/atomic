@@ -475,6 +475,14 @@ export function createExtensionAPI(
 			runtime.setThinkingLevel(level);
 		},
 
+		registerProviderAlias({ id, name, provider }) {
+			assertActive();
+			applyRuntimeChange({
+				apply: () => runtime.registerProvider(id, { aliasOf: provider, name }, extension.path),
+				rollback: () => runtime.unregisterProvider(id, extension.path),
+			});
+		},
+
 		registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig) {
 			assertActive();
 			if (typeof nameOrProvider === "string") {

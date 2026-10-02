@@ -41,6 +41,7 @@ export function lazyOAuth(input: {
 	name: string;
 	isSubscription?: boolean;
 	loginLabel?: string;
+	usesCallbackServer?: boolean;
 	load: () => Promise<OAuthAuth>;
 }): OAuthAuth {
 	let promise: Promise<OAuthAuth> | undefined;
@@ -52,6 +53,7 @@ export function lazyOAuth(input: {
 		name: input.name,
 		isSubscription: input.isSubscription,
 		loginLabel: input.loginLabel,
+		usesCallbackServer: input.usesCallbackServer,
 		login: async (interaction, options) => (await loaded()).login(interaction, options),
 		refresh: async (credential, signal) => (await loaded()).refresh(credential, signal),
 		toAuth: async (credential) => (await loaded()).toAuth(credential),

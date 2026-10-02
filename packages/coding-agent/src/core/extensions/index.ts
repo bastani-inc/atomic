@@ -170,6 +170,7 @@ export type {
 	ProjectTrustEventResult,
 	ProjectTrustHandler,
 	// Provider Registration
+	ProviderAliasConfig,
 	ProviderConfig,
 	ProviderModelConfig,
 	ProviderStreamEvent,

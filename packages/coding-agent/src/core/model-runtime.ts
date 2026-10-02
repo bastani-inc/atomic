@@ -72,6 +72,7 @@ import {
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { createProviderAlias } from "./provider-alias.js";
 import {
 	type AuthStatus,
 	type CompatibilityRequestConfig,
@@ -191,6 +192,10 @@ export class ModelRuntime implements Models {
 			this.models,
 			(model, overrides) => this.getRequestAuth(model, overrides),
 			(model) => this.ownsExtensionTransport(model),
+			(model) => {
+				const source = this.extensionProviders.get(model.provider)?.aliasOf;
+				return source ? { ...model, provider: source } : model;
+			},
 		);
 		this.rebuildProviders();
 	}
@@ -295,8 +300,40 @@ export class ModelRuntime implements Models {
 		this.models.setProvider(this.withDerivedFastModels(provider));
 	}
 	private recomposeProvider(providerId: string): void {
+		this.composeProvider(providerId);
+		for (const [id, config] of this.extensionProviders) {
+			if (config.aliasOf === providerId) this.composeProvider(id);
+		}
+	}
+	private composeProvider(providerId: string): void {
 		const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
 		const extension = this.extensionProviders.get(providerId);
+		if (extension?.aliasOf !== undefined) {
+			try {
+				if (this.config.getProvider(providerId)) {
+					throw new Error(
+						`Provider alias ${providerId}: configure models.json on source ${extension.aliasOf}, not the alias.`,
+					);
+				}
+				const sourceId = extension.aliasOf;
+				this.publishProvider(
+					createProviderAlias({ id: providerId, name: extension.name, provider: sourceId }, () => {
+						if (this.extensionProviders.get(sourceId)?.aliasOf !== undefined) {
+							throw new Error("Provider aliases must refer directly to a source provider, not another alias.");
+						}
+						const source = this.models.getProvider(sourceId);
+						if (!source)
+							throw new Error(`Provider alias ${providerId}: source provider ${sourceId} is unavailable.`);
+						return source;
+					}),
+				);
+				this.compositionErrors.delete(providerId);
+			} catch (error) {
+				this.compositionErrors.set(providerId, error instanceof Error ? error.message : String(error));
+				this.models.deleteProvider(providerId);
+			}
+			return;
+		}
 		if (!base && !this.config.getProvider(providerId) && !extension) {
 			this.models.deleteProvider(providerId);
 			this.compositionErrors.delete(providerId);
@@ -322,7 +359,13 @@ export class ModelRuntime implements Models {
 		this.models.clearProviders();
 		this.compositionErrors.clear();
 		this.fastModelVariantDiagnostics.clear();
-		for (const providerId of this.providerIds()) this.recomposeProvider(providerId);
+		const ids = [...this.providerIds()];
+		for (const providerId of ids.filter((id) => this.extensionProviders.get(id)?.aliasOf === undefined)) {
+			this.recomposeProvider(providerId);
+		}
+		for (const providerId of ids.filter((id) => this.extensionProviders.get(id)?.aliasOf !== undefined)) {
+			this.recomposeProvider(providerId);
+		}
 		this.updateModelSnapshot();
 	}
 	private updateModelSnapshot(): void {
@@ -1061,6 +1104,35 @@ export class ModelRuntime implements Models {
 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
 	}
 
+	private validateAliasRegistration(
+		id: string,
+		config: ProviderConfigInput,
+		providers: ReadonlyMap<string, ProviderConfigInput>,
+		nativeProviders: ReadonlyMap<string, Provider>,
+	): void {
+		const source = config.aliasOf;
+		if (source === undefined) return;
+		if (
+			this.builtins.has(id) ||
+			nativeProviders.has(id) ||
+			this.config.getProvider(id) ||
+			(providers.has(id) && providers.get(id)?.aliasOf === undefined)
+		) {
+			throw new Error(`Provider alias ${id} cannot replace an existing provider.`);
+		}
+		if (providers.get(source)?.aliasOf !== undefined) {
+			throw new Error("Provider aliases must refer directly to a source provider, not another alias.");
+		}
+		if (
+			!this.builtins.has(source) &&
+			!nativeProviders.has(source) &&
+			!providers.has(source) &&
+			!this.config.getProvider(source)
+		) {
+			throw new Error(`Provider alias ${id}: source provider ${source} is unavailable.`);
+		}
+	}
+
 	createExtensionProviderTransaction(replacedProviderIds: Iterable<string> = []): ExtensionProviderTransaction {
 		const nativeProviders = new Map(this.nativeExtensionProviders);
 		const providers = new Map(this.extensionProviders);
@@ -1084,8 +1156,11 @@ export class ModelRuntime implements Models {
 					this.config.getProvider(providerId),
 					config,
 				);
+				this.validateAliasRegistration(providerId, config, providers, nativeProviders);
 				nativeProviders.delete(providerId);
-				const effective: ProviderConfigInput = { ...providers.get(providerId) };
+				const previous = providers.get(providerId);
+				const effective: ProviderConfigInput =
+					config.aliasOf !== undefined || previous?.aliasOf !== undefined ? {} : { ...previous };
 				for (const [key, value] of Object.entries(config)) {
 					if (value !== undefined) (effective as Record<string, unknown>)[key] = value;
 				}
@@ -1160,11 +1235,13 @@ export class ModelRuntime implements Models {
 		// Validate the incoming registration on its own, like the legacy registry:
 		// a broken re-registration must throw without touching the stored config.
 		validateExtensionProvider(providerId, this.builtins.get(providerId), this.config.getProvider(providerId), config);
+		this.validateAliasRegistration(providerId, config, this.extensionProviders, this.nativeExtensionProviders);
 		this.nativeExtensionProviders.delete(providerId);
 		// Re-registration merges defined values over the previous registration and
 		// preserves undefined ones, matching the legacy ModelRegistry contract.
 		const previous = this.extensionProviders.get(providerId);
-		const effective: ProviderConfigInput = { ...previous };
+		const effective: ProviderConfigInput =
+			config.aliasOf !== undefined || previous?.aliasOf !== undefined ? {} : { ...previous };
 		for (const [key, value] of Object.entries(config)) {
 			if (value !== undefined) (effective as Record<string, unknown>)[key] = value;
 		}
@@ -1174,7 +1251,9 @@ export class ModelRuntime implements Models {
 		this.markProvisionallyConfigured(
 			providerId,
 			configuredRequestAuthStatus(this.config.getProvider(providerId), effective),
-			effective.oauth && !effective.apiKey ? "oauth" : "api_key",
+			this.models.getProvider(providerId)?.auth.oauth && !this.models.getProvider(providerId)?.auth.apiKey
+				? "oauth"
+				: "api_key",
 		);
 		this.scheduleRegistrationRefresh();
 	}

@@ -268,6 +268,7 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 
 export const anthropicOAuth: OAuthAuth = {
 	name: "Anthropic (Claude Pro/Max)",
+	usesCallbackServer: true,
 	isSubscription: true,
 
 	async login(interaction) {
