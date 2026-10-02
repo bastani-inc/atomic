@@ -2,7 +2,7 @@
  * MCP server configuration.
  *
  * Servers are read from `mcp.json` in the agent directory and, for trusted projects, from
- * `<project>/.pi/mcp.json`. Both use the `mcpServers` shape shared by other MCP clients, so
+ * `<project>/.atomic/mcp.json`. Both use the `mcpServers` shape shared by other MCP clients, so
  * existing configurations can be copied over. Project entries replace global entries with the
  * same name.
  *
