@@ -3036,6 +3036,32 @@ const OPENCODE_CLASSIFIER_MODELS: ClassifierModel<"typesafe-system-one">[] = [
 // System One models yet. Cloudflare publishes pricing only in the dashboard.
 // https://developers.cloudflare.com/ai/models/typesafe/jev/
 const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-workers-ai-system-one">[] = [
+	// Cloudflare-hosted Clef decision models. They accept images, but classifier
+	// contexts carry text or JSON state only, so the catalog advertises text.
+	// Pricing: https://developers.cloudflare.com/workers-ai/models/clef/
+	// and https://developers.cloudflare.com/workers-ai/models/clef-flash/
+	{
+		type: "classifier",
+		id: "@cf/cloudflare/clef",
+		name: "Clef",
+		api: "cloudflare-workers-ai-system-one",
+		provider: "cloudflare-workers-ai",
+		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
+		input: ["text"],
+		cost: { input: 0.24, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 65536,
+	},
+	{
+		type: "classifier",
+		id: "@cf/cloudflare/clef-flash",
+		name: "Clef Flash",
+		api: "cloudflare-workers-ai-system-one",
+		provider: "cloudflare-workers-ai",
+		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
+		input: ["text"],
+		cost: { input: 0.09, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 65536,
+	},
 	{
 		type: "classifier",
 		id: "typesafe/jev",
