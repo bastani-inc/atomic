@@ -188,6 +188,7 @@ class AgentSessionBase {
 	protected _cwd: string;
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
 	protected _initialActiveToolNames?: string[];
+	protected _pendingToolNames = new Set<string>();
 	protected _usesDefaultTools: boolean;
 	/** Resolved defaults last applied here, independent of shared settings publication. */
 	protected _appliedDefaultTools: Set<string>;
@@ -355,7 +356,7 @@ class AgentSessionBase {
 				activeToolNames: this._initialActiveToolNames,
 				includeAllExtensionTools: true,
 			});
-			if (this._initialActiveToolNames === undefined) internals._restoreToolsFromTranscript();
+			internals._restoreToolsFromTranscript({ keepLoadout: this._initialActiveToolNames !== undefined });
 			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))
 				internals.getAgentTaskHost();
 		} catch (error) {

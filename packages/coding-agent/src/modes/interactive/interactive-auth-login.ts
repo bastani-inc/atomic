@@ -89,6 +89,7 @@ InteractiveModeBase.prototype.showBedrockSetupDialog = function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): void {
 	const restoreEditor = () => {
 		this.editorContainer.clear();
@@ -100,7 +101,10 @@ InteractiveModeBase.prototype.showBedrockSetupDialog = function (
 	const dialog = new LoginDialogComponent(
 		this.ui,
 		providerId,
-		() => restoreEditor(),
+		() => {
+			restoreEditor();
+			onBack?.();
+		},
 		providerName,
 		"Amazon Bedrock setup",
 	);
@@ -121,6 +125,7 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): Promise<void> {
 	const previousModel = this.session.model;
 
@@ -164,7 +169,9 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 			this.showError(
 				`Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 			);
-		} else if (!isOAuthLoginCancelled(error)) {
+		} else if (isOAuthLoginCancelled(error)) {
+			onBack?.();
+		} else {
 			this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
 		}
 	}
@@ -206,6 +213,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 	this: InteractiveModeBase,
 	providerId: string,
 	providerName: string,
+	onBack?: () => void,
 ): Promise<void> {
 	const previousModel = this.session.model;
 	const metadata = this.session.modelRuntime?.getOAuthProviderMetadata().find(({ id }) => id === providerId);
@@ -313,6 +321,8 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 			this.showError(`Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`);
 		} else if (loginSucceeded || !isOAuthLoginCancelled(error)) {
 			this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
+		} else {
+			onBack?.();
 		}
 	}
 };

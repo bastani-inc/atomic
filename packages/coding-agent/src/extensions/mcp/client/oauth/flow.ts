@@ -263,6 +263,21 @@ export async function refreshAuthorization(
 	return { refresh_token: options.refreshToken, ...tokens };
 }
 
+function withScope(tokens: OAuthTokens, scope: string | undefined): OAuthTokens {
+	return tokens.scope === undefined && scope ? { ...tokens, scope } : tokens;
+}
+
+/**
+ * Scopes for a step-up authorization: the challenged scopes plus the ones granted so far, since a
+ * challenge may list only the missing scopes and a token with just those would lose access the old
+ * one had (SEP-2350). Without challenged scopes, `undefined` lets the flow pick its default.
+ */
+export function stepUpScope(granted: string | undefined, challenged: string | undefined): string | undefined {
+	if (!challenged) return undefined;
+	const scopes = [granted, challenged].flatMap((scope) => scope?.split(/\s+/).filter(Boolean) ?? []);
+	return [...new Set(scopes)].join(" ");
+}
+
 async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions): Promise<OAuthFlowResult> {
 	const metadataUrl = options.authorizationServerMetadataUrl && secureEndpoint(options.authorizationServerMetadataUrl);
 	// With a configured metadata URL, discovery is not cached, so changing the URL applies at once.
@@ -337,7 +352,9 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			codeVerifier: await provider.codeVerifier(),
 			redirectUrl: provider.redirectUrl,
 		});
-		await provider.saveTokens(tokens);
+		// A response without `scope` grants the requested scope (RFC 6749 §5.1). Recorded so a step-up can
+		// keep it. Callers pass the options of the authorization request, so `scope` is what was requested.
+		await provider.saveTokens(withScope(tokens, scope));
 		return "AUTHORIZED";
 	}
 	const existing = options.skipRefresh ? undefined : await provider.tokens();
@@ -347,7 +364,8 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 				...tokenOptions,
 				refreshToken: existing.refresh_token,
 			});
-			await provider.saveTokens(tokens);
+			// A refresh without `scope` keeps the scope of the grant (RFC 6749 §6).
+			await provider.saveTokens(withScope(tokens, existing.scope));
 			return "AUTHORIZED";
 		} catch (error) {
 			if (error instanceof OAuthInsecureEndpointError) throw error;
@@ -401,13 +419,16 @@ export function adaptOAuthProvider(provider: OAuthClientProvider): AuthProvider 
 				const current = (await provider.tokens())?.access_token;
 				if (current !== undefined && current !== context.token) return;
 			}
-			inFlight ??= authorizeMcp(provider, {
-				serverUrl: context.serverUrl,
-				resourceMetadataUrl: challenge.resourceMetadataUrl,
-				scope: challenge.scope,
-				fetch: context.fetch,
-				skipRefresh: insufficientScope,
-			})
+			inFlight ??= Promise.resolve(insufficientScope ? provider.tokens() : undefined)
+				.then((granted) =>
+					authorizeMcp(provider, {
+						serverUrl: context.serverUrl,
+						resourceMetadataUrl: challenge.resourceMetadataUrl,
+						scope: insufficientScope ? stepUpScope(granted?.scope, challenge.scope) : challenge.scope,
+						fetch: context.fetch,
+						skipRefresh: insufficientScope,
+					}),
+				)
 				.then((result) => {
 					if (result === "REDIRECT") throw new McpOAuthAuthorizationRequiredError();
 				})

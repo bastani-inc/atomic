@@ -431,6 +431,30 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("quietStartup", () => {
+		it.each([
+			[true, true],
+			["header", "header"],
+			[false, false],
+			["verbose", false],
+		])("reads %j from settings as %j", (stored, expected) => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ quietStartup: stored }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getQuietStartup()).toBe(expected);
+		});
+
+		it("defaults to false and persists header-only quiet startup", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getQuietStartup()).toBe(false);
+
+			manager.setQuietStartup("header");
+			await manager.flush();
+
+			expect(manager.getQuietStartup()).toBe("header");
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).quietStartup).toBe("header");
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

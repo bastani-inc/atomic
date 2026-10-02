@@ -47,9 +47,7 @@ There is no default deadline. Text output defaults to 10,000 estimated tokens; l
 
 Tools with `outputSchema` return their `structuredContent` to scripts, including structured error results. Other tools return text and throw on errors. Completed `bash` calls provide structured output as described in the [SDK reference](/sdk/reference#bash-tool-behavior).
 
-`ALL_TOOLS`, `searchTools(query, { limit, namespace })`, and `describeTool(name)` discover the currently permitted tools. `store(key, value)` and `load(key)` preserve JSON values across successful calls on the current session branch, including after resume. Failed scripts discard store writes, not tool side effects. `models.getModelsOfType`, `getAvailableOfType`, and `getModelOfType` expose public catalog metadata; `models.classify(model, context)` calls a registered classifier with host-resolved credentials, at most four concurrently. Reported classifier usage contributes to the script's session cost.
-
-Use `await describeNamespace(name)` to retrieve a callable tool namespace's `{ name, description?, instructions?, tools }`, or `undefined` when it is unavailable. Namespace instructions are returned on request rather than included in inline listings. `searchTools()` also searches those instructions; pass `{ namespace: name }` to restrict the search.
+The [Codemode reference](/codemode) covers the other script globals (`ALL_TOOLS`, `searchTools()`, `describeTool()`, `describeNamespace()`, and `store()`/`load()` for values kept across calls on the session branch), what each tool call resolves to, and the `models` API, including `models.classify()` and `models.generateImages()` with their types and examples.
 
 Set [codemode settings](/settings#tools) to control inline declaration size and whether ordinary direct tool declarations remain visible. Atomic's existing [MCP host](/mcp-servers) remains the only MCP connection/configuration owner: codemode calls the permitted gateway or direct tools, not a second MCP host. Use MCP discovery for server tools not yet registered in the session.
 

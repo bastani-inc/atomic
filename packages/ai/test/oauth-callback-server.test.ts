@@ -18,6 +18,18 @@ test("shared OAuth callback rejects wrong state without claiming the sign-in", a
 	}
 });
 
+test("shared OAuth callback pages show the Atomic logo in the accent color", async () => {
+	const callback = await startOAuthCallbackServer({ ...options, complete: async (code) => code });
+	try {
+		const body = await (await fetch(`${callback.redirectUri}?code=good&state=expected`)).text();
+		assert.match(body, /<text[^>]*fill="#89b4fa"[^>]*>∀<\/text>/);
+		assert.doesNotMatch(body, /fill="#fff"/);
+		await callback.wait();
+	} finally {
+		callback.close();
+	}
+});
+
 test("shared OAuth callback surfaces token-exchange failure in the browser and login", async () => {
 	const callback = await startOAuthCallbackServer({
 		...options,

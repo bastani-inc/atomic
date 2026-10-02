@@ -75,7 +75,7 @@ An authorization response's `iss` must name the flow's authorization server. If 
 
 ## Tokens and refresh
 
-Credentials are stored in `~/.atomic/agent/mcp-auth.json`, keyed by server URL. `ATOMIC_CODING_AGENT_DIR` relocates the agent directory. Tokens refresh when expired or rejected, and signing out removes the stored credentials.
+Credentials are stored in `~/.atomic/agent/mcp-auth.json`, keyed by server name and URL. A URL-only entry from an older version moves to the first server that loads it. `ATOMIC_CODING_AGENT_DIR` relocates the agent directory. Tokens refresh when expired or rejected, and signing out removes the stored credentials.
 
 Optional OAuth response fields that are empty or null count as absent, including `scope`, `refresh_token`, `id_token`, and `client_secret`. A refresh response with no new refresh token keeps the previous one. `expires_in: null` does not immediately expire an access token. Empty scope values fall through to the next scope source.
 

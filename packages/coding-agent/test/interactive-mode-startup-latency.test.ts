@@ -271,6 +271,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			themeController: { applyFromSettings: vi.fn(async () => {}) },
 			settingsManager: { getFullscreenScrollbar: () => "auto", getQuietStartup: () => false },
 			getStartupIdentityText: () => "Atomic v0.0.0",
+			shouldShowStartupHeader: () => true,
 			isShuttingDown: false,
 			deferredStartupPending: false,
 			ensureManagedToolsReady: vi.fn(async () => {}),

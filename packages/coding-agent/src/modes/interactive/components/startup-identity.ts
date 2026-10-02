@@ -1,6 +1,6 @@
 import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
 import { markLifecycleTiming } from "../../../core/lifecycle-timings.ts";
-import { STARTUP_ASSEMBLY_GAPS, STARTUP_FRAME_MS } from "./atomic-banner.ts";
+import { STARTUP_ASSEMBLY_GAPS, STARTUP_FRAME_MS, supportsAtomicBanner } from "./atomic-banner.ts";
 
 export interface StartupAnimationState {
 	gap: number;
@@ -19,7 +19,7 @@ export function startupStateAtElapsed(elapsedMs: number): StartupAnimationState 
 }
 
 export function startupMotionEnabled(): boolean {
-	return process.stdout.isTTY === true && process.env.ATOMIC_REDUCED_MOTION !== "1";
+	return process.stdout.isTTY === true && process.env.ATOMIC_REDUCED_MOTION !== "1" && supportsAtomicBanner();
 }
 
 export class StartupIdentityComponent implements Component {

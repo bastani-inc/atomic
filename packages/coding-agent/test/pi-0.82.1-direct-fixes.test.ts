@@ -1,18 +1,12 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	AgentHarness,
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
-} from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MessageRenderer, MessageRenderOptions } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { loadProjectContextFiles } from "../src/core/resource-loader-context-files.ts";
+import { createBashTool, createEditTool, createReadTool, createWriteTool } from "../src/core/sdk-exports.ts";
 import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import type { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
@@ -112,9 +106,7 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 		);
 		expect(value).toBe("../sibling-package/index.ts");
 	});
-	it("inherits the AgentHarness execution-tool surface from pi-agent-core 0.85.0", () => {
-		expect(typeof AgentHarness).toBe("object");
-		expect(typeof AgentHarness.create).toBe("function");
+	it("exposes Atomic's own execution-tool factories now that pi-agent-core 1.0.0 no longer ships them", () => {
 		for (const factory of [createBashTool, createEditTool, createReadTool, createWriteTool]) {
 			expect(typeof factory).toBe("function");
 		}

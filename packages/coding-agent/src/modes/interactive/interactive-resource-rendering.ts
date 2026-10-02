@@ -143,7 +143,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	},
 ): void {
 	const targetContainer = options?.targetContainer ?? this.chatContainer;
-	const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+	const showListing = options?.force || this.shouldShowStartupDetails();
 	const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 	if (!showListing && !showDiagnostics) {
 		return;

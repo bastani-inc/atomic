@@ -2,7 +2,16 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AnyModel, ClassifierContext, ImageContent, ModelType, TextContent, Usage } from "@bastani/pi-ai";
+import type {
+	AnyModel,
+	ClassifierContext,
+	ImageContent,
+	ImagesContext,
+	ModelType,
+	ModelTypeMap,
+	TextContent,
+	Usage,
+} from "@bastani/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type CodemodeResult,
@@ -20,6 +29,7 @@ import type { SessionEntry } from "../../core/session-manager.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
 import { Bm25Ranker, createToolSearchDocument, DEFAULT_TOOL_SEARCH_LIMIT } from "../tool-search/tool.js";
 import {
+	CODEMODE_DOCS_PATH,
 	CODEMODE_STORE_ENTRY_TYPE,
 	type CodemodeNestedCall,
 	type CodemodeToolDetails,
@@ -73,9 +83,81 @@ export function toCodemodeModelInfo(model: AnyModel): Record<string, unknown> {
 		cost: model.cost,
 	};
 }
+const MODEL_TYPES = ["chat", "image", "classifier"] as const;
 function modelType(value: unknown): ModelType {
 	if (value === "chat" || value === "image" || value === "classifier") return value;
 	throw new Error('Model type must be "chat", "image", or "classifier"');
+}
+function withArticle(word: string): string {
+	return `${/^[aeiou]/.test(word) ? "an" : "a"} ${word}`;
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function describeValue(value: unknown): string {
+	if (value === undefined || value === null) return String(value);
+	if (Array.isArray(value)) return value.length === 0 ? "an empty array" : "an array";
+	if (typeof value === "object") {
+		const keys = Object.keys(value);
+		if (keys.length === 0) return "{}";
+		return `{ ${keys.slice(0, 6).join(", ")}${keys.length > 6 ? ", ..." : ""} }`;
+	}
+	return typeof value === "string" ? "a string" : `a ${typeof value}`;
+}
+const CLASSIFIER_CONTEXT_SHAPE =
+	'{ state: { ... }, questions: { <id>: { type: "choice", instructions, criteria: { <label>: <meaning> } } | { type: "score", instructions, criteria: [<lowest level>, ..., <highest level>] } | { type: "bool", instructions, criteria: { true: <meaning>, false: <meaning> } } } }';
+function checkClassifierContext(context: unknown): ClassifierContext {
+	const fail = (problem: string) =>
+		new Error(
+			`models.classify() ${problem}. Expected context: ${CLASSIFIER_CONTEXT_SHAPE}. See "Classify" in ${CODEMODE_DOCS_PATH}.`,
+		);
+	if (!isRecord(context)) throw fail(`expects a context object as its second argument, got ${describeValue(context)}`);
+	if (!isRecord(context.state)) throw fail(`context.state must be an object, got ${describeValue(context.state)}`);
+	const { questions } = context;
+	if (!isRecord(questions) || Object.keys(questions).length === 0)
+		throw fail(`context.questions must map question IDs to questions, got ${describeValue(questions)}`);
+	const isStrings = (values: unknown[]) => values.length > 0 && values.every((value) => typeof value === "string");
+	for (const [questionId, question] of Object.entries(questions)) {
+		const at = `context.questions.${questionId}`;
+		if (!isRecord(question)) throw fail(`${at} must be a question object, got ${describeValue(question)}`);
+		if (typeof question.instructions !== "string") throw fail(`${at}.instructions must be a string`);
+		const { criteria } = question;
+		if (question.type === "choice") {
+			if (!isRecord(criteria) || !isStrings(Object.values(criteria)))
+				throw fail(`${at} is a "choice" question, so criteria must map each label to its meaning`);
+		} else if (question.type === "score") {
+			if (!Array.isArray(criteria) || !isStrings(criteria))
+				throw fail(`${at} is a "score" question, so criteria must list the levels as strings, lowest first`);
+		} else if (question.type === "bool") {
+			if (!isRecord(criteria) || typeof criteria.true !== "string" || typeof criteria.false !== "string")
+				throw fail(`${at} is a "bool" question, so criteria must be { true: string, false: string }`);
+		} else {
+			throw fail(`${at}.type must be "choice", "score", or "bool", got ${JSON.stringify(question.type)}`);
+		}
+	}
+	return context as unknown as ClassifierContext;
+}
+function checkImagesContext(context: unknown): ImagesContext {
+	const fail = (problem: string) =>
+		new Error(
+			`models.generateImages() ${problem}. Expected context: { input: [{ type: "text", text: <prompt> }, ...optional { type: "image", data: <base64>, mimeType } references] }. See "Generate images" in ${CODEMODE_DOCS_PATH}.`,
+		);
+	if (!isRecord(context)) throw fail(`expects a context object as its second argument, got ${describeValue(context)}`);
+	const { input } = context;
+	if (!Array.isArray(input) || input.length === 0)
+		throw fail(`context.input must be a non-empty array of blocks, got ${describeValue(input)}`);
+	input.forEach((block: unknown, index) => {
+		if (isRecord(block) && block.type === "text" && typeof block.text === "string") return;
+		if (
+			isRecord(block) &&
+			block.type === "image" &&
+			typeof block.data === "string" &&
+			typeof block.mimeType === "string"
+		)
+			return;
+		throw fail(`context.input[${index}] must be a text or image block, got ${describeValue(block)}`);
+	});
+	return context as unknown as ImagesContext;
 }
 function provider(value: unknown): string | undefined {
 	if (value === undefined || value === null) return undefined;
@@ -88,6 +170,11 @@ function preview(args: unknown): string {
 	} catch {
 		return "";
 	}
+}
+interface ModelCallResult {
+	stopReason: "stop" | "error" | "aborted";
+	errorMessage?: string;
+	usage?: Usage;
 }
 function createLimiter(limit: number) {
 	let active = 0;
@@ -171,10 +258,61 @@ function modelGlobals(
 	calls: CodemodeNestedCall[],
 	publish: () => void,
 	addUsage: (usage: Usage) => void,
+	addGeneratedImages: (count: number) => void,
 ): CodemodeTool[] {
 	const models = ctx.modelRegistry;
 	const limit = createLimiter(4);
 	let count = 0;
+	const runModelCall = async <TType extends "classifier" | "image", TContext, TResult extends ModelCallResult>(
+		name: string,
+		type: TType,
+		[ref, context]: unknown[],
+		checkContext: (context: unknown) => TContext,
+		run: (model: ModelTypeMap[TType], context: TContext) => Promise<TResult>,
+	): Promise<TResult> => {
+		const listHint = `List the ${type} models you can use with models.getAvailableOfType("${type}").`;
+		if (!isRecord(ref) || typeof ref.provider !== "string" || typeof ref.id !== "string") {
+			const undefinedHint =
+				ref === undefined || ref === null
+					? " models.getModelOfType() returns undefined for an unknown provider or id."
+					: "";
+			throw new Error(
+				`${name}() expects ${withArticle(type)} model as its first argument, got ${describeValue(ref)}.${undefinedHint} ${listHint}`,
+			);
+		}
+		const { provider: providerId, id: modelId } = ref;
+		const model = models.getModelOfType(type, providerId, modelId);
+		if (!model) {
+			const actualType = MODEL_TYPES.find(
+				(other) => other !== type && models.getModelOfType(other, providerId, modelId) !== undefined,
+			);
+			throw new Error(
+				actualType
+					? `"${providerId}/${modelId}" is ${withArticle(actualType)} model, not ${withArticle(type)} model. ${listHint}`
+					: `Unknown ${type} model "${providerId}/${modelId}". ${listHint}`,
+			);
+		}
+		const checked = checkContext(context);
+		const record: CodemodeNestedCall = {
+			id: `${id}/${name}/${++count}`,
+			name,
+			args: `${model.provider}/${model.id}`,
+			status: "running",
+		};
+		calls.push(record);
+		publish();
+		const start = performance.now();
+		const result = await limit(() => run(model, checked));
+		record.durationMs = performance.now() - start;
+		record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
+		if (result.errorMessage) record.error = result.errorMessage.slice(0, 500);
+		if (result.usage) {
+			record.cost = result.usage.cost.total;
+			addUsage(result.usage);
+		}
+		publish();
+		return result;
+	};
 	return [
 		{
 			name: "models.getModelsOfType",
@@ -200,7 +338,9 @@ function modelGlobals(
 			execute: (args) => {
 				const [type, source, modelId] = args as unknown[];
 				if (typeof source !== "string" || typeof modelId !== "string")
-					throw new Error("models.getModelOfType() expects type, provider, and id");
+					throw new Error(
+						`models.getModelOfType(type, provider, id) expects three strings, got (${(args as unknown[]).map(describeValue).join(", ")}). The provider and the id are separate arguments, for example models.getModelOfType("classifier", "typesafe", "jev-latest").`,
+					);
 				const model = models.getModelOfType(modelType(type), source, modelId);
 				return model ? toCodemodeModelInfo(model) : undefined;
 			},
@@ -208,33 +348,26 @@ function modelGlobals(
 		{
 			name: "models.classify",
 			spread: true,
-			execute: async (args, { signal }) => {
-				const [ref, context] = args as [{ provider?: string; id?: string } | null, unknown];
-				if (!ref || typeof ref.provider !== "string" || typeof ref.id !== "string")
-					throw new Error("models.classify() expects a catalog model reference");
-				const model = models.getModelOfType("classifier", ref.provider, ref.id);
-				if (!model) throw new Error(`Unknown classifier model ${ref.provider}/${ref.id}`);
-				const record: CodemodeNestedCall = {
-					id: `${id}/models.classify/${++count}`,
-					name: "models.classify",
-					args: `${model.provider}/${model.id}`,
-					status: "running",
-				};
-				calls.push(record);
-				publish();
-				const start = performance.now();
-				const result = await limit(() => models.classify(model, context as ClassifierContext, { signal }));
-				record.durationMs = performance.now() - start;
-				record.status =
-					result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
-				if (result.errorMessage) record.error = result.errorMessage.slice(0, 500);
-				if (result.usage) {
-					record.cost = result.usage.cost.total;
-					addUsage(result.usage);
-				}
-				publish();
-				return result;
-			},
+			execute: (args, { signal }) =>
+				runModelCall("models.classify", "classifier", args as unknown[], checkClassifierContext, (model, context) =>
+					models.classify(model, context, { signal }),
+				),
+		},
+		{
+			name: "models.generateImages",
+			spread: true,
+			execute: (args, { signal }) =>
+				runModelCall(
+					"models.generateImages",
+					"image",
+					args as unknown[],
+					checkImagesContext,
+					async (model, context) => {
+						const result = await models.generateImages(model, context, { signal });
+						addGeneratedImages(result.output.filter((block) => block.type === "image").length);
+						return result;
+					},
+				),
 		},
 	];
 }
@@ -251,6 +384,7 @@ export async function executeCodemode(
 	const { code, options: source } = parseCodemodeSource(input.code);
 	const calls: CodemodeNestedCall[] = [];
 	let usage: Usage | undefined;
+	let generatedImages = 0;
 	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
 	const publish = () => update?.({ content: [], details: snapshot() });
 	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
@@ -286,9 +420,18 @@ export async function executeCodemode(
 		globals: [
 			...discoveryGlobals(callable, samples, options),
 			...(options.models && ctx
-				? modelGlobals(ctx, id, calls, publish, (extra) => {
-						usage = usage ? combineUsage(usage, extra) : extra;
-					})
+				? modelGlobals(
+						ctx,
+						id,
+						calls,
+						publish,
+						(extra) => {
+							usage = usage ? combineUsage(usage, extra) : extra;
+						},
+						(count) => {
+							generatedImages += count;
+						},
+					)
 				: []),
 		],
 		timeoutMs: source.timeoutMs ?? Number.POSITIVE_INFINITY,
@@ -320,6 +463,11 @@ export async function executeCodemode(
 		content.push({
 			type: "text",
 			text: `Script error:\n${result.error.stack ?? result.error.message}\n\nTool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ") || "none"}`,
+		});
+	if (generatedImages > 0 && !content.some((block) => block.type === "image"))
+		content.push({
+			type: "text",
+			text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
 		});
 	const text = content
 		.filter((block): block is TextContent => block.type === "text")

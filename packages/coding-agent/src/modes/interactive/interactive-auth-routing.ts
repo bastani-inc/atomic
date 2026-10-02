@@ -31,16 +31,30 @@ export function getBuiltinApiKeyLoginOptions(getDisplayName: (providerId: string
 		}));
 }
 
+function subscriptionFlag(isSubscription: boolean | undefined): { subscription?: boolean } {
+	return isSubscription === undefined ? {} : { subscription: isSubscription };
+}
+
 InteractiveModeBase.prototype.getLoginProviderOptions = function (
 	this: InteractiveModeBase,
 	authType?: "oauth" | "api_key",
 ): AuthSelectorProvider[] {
-	const options: AuthSelectorProvider[] = this.session.modelRuntime
-		.getOAuthProviderMetadata()
-		.map((provider) => ({ id: provider.id, name: provider.name, authType: "oauth" as const }));
+	const oauthProviders = this.session.modelRuntime.getOAuthProviderMetadata();
+	const subscriptions = new Map(oauthProviders.map((provider) => [provider.id, provider.isSubscription]));
+	const options: AuthSelectorProvider[] = oauthProviders.map((provider) => ({
+		id: provider.id,
+		name: provider.name,
+		authType: "oauth" as const,
+		...subscriptionFlag(provider.isSubscription),
+	}));
 	for (const provider of this.session.modelRuntime.getProviders()) {
 		if (provider.auth.apiKey)
-			options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
+			options.push({
+				id: provider.id,
+				name: provider.name ?? provider.id,
+				authType: "api_key",
+				...subscriptionFlag(subscriptions.get(provider.id)),
+			});
 	}
 	return (authType ? options.filter((option) => option.authType === authType) : options).sort((a, b) =>
 		a.name.localeCompare(b.name),
@@ -50,12 +64,17 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function (this: Interac
 	const runtime = this.session.modelRuntime;
 	const providers = runtime.getProviders();
 	const providerNames = new Map(providers.map((provider) => [provider.id, provider.name ?? provider.id]));
-	for (const provider of runtime.getOAuthProviderMetadata()) providerNames.set(provider.id, provider.name);
+	const subscriptions = new Map<string, boolean | undefined>();
+	for (const provider of runtime.getOAuthProviderMetadata()) {
+		providerNames.set(provider.id, provider.name);
+		subscriptions.set(provider.id, provider.isSubscription);
+	}
 	const options: AuthSelectorProvider[] = [];
 	for (const [providerId, name] of providerNames) {
 		if (runtime.getProviderAuthStatus(providerId).source !== "stored") continue;
 		const authType = runtime.getStoredCredentialType(providerId);
-		if (authType) options.push({ id: providerId, name, authType });
+		if (authType)
+			options.push({ id: providerId, name, authType, ...subscriptionFlag(subscriptions.get(providerId)) });
 	}
 	return options.sort((a, b) => a.name.localeCompare(b.name));
 };
@@ -63,13 +82,14 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function (this: Interac
 InteractiveModeBase.prototype.startProviderLogin = async function (
 	this: InteractiveModeBase,
 	providerOption: AuthSelectorProvider,
+	onBack?: () => void,
 ): Promise<void> {
 	if (providerOption.authType === "oauth") {
-		await this.showLoginDialog(providerOption.id, providerOption.name);
+		await this.showLoginDialog(providerOption.id, providerOption.name, onBack);
 	} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
-		this.showBedrockSetupDialog(providerOption.id, providerOption.name);
+		this.showBedrockSetupDialog(providerOption.id, providerOption.name, onBack);
 	} else {
-		await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
+		await this.showApiKeyLoginDialog(providerOption.id, providerOption.name, onBack);
 	}
 };
 
@@ -95,7 +115,10 @@ InteractiveModeBase.prototype.showLoginAuthTypeSelector = function (
 	this: InteractiveModeBase,
 	providerOptions?: AuthSelectorProvider[],
 ): void {
-	const subscriptionLabel = "Use a subscription";
+	const subscriptionLabel =
+		providerOptions?.find((provider) => provider.authType === "oauth")?.subscription === false
+			? "Use an account"
+			: "Use a subscription";
 	const apiKeyLabel = "Use an API key";
 	const choices = providerOptions
 		? providerOptions.map((provider) => (provider.authType === "oauth" ? subscriptionLabel : apiKeyLabel))
@@ -108,8 +131,11 @@ InteractiveModeBase.prototype.showLoginAuthTypeSelector = function (
 				done();
 				const authType = option === subscriptionLabel ? "oauth" : "api_key";
 				const directOption = providerOptions?.find((provider) => provider.authType === authType);
-				if (directOption) void this.startProviderLogin(directOption);
-				else this.showLoginProviderSelector(authType);
+				if (directOption) {
+					void this.startProviderLogin(directOption, () => this.showLoginAuthTypeSelector(providerOptions));
+				} else {
+					this.showLoginProviderSelector(authType);
+				}
 			},
 			() => {
 				done();
@@ -129,7 +155,7 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function (
 	if (providerOptions.length === 0) {
 		const message =
 			authType === "oauth"
-				? "No subscription providers available."
+				? "No account providers available."
 				: authType === "api_key"
 					? "No API key providers available."
 					: "No login providers available.";
@@ -147,7 +173,11 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function (
 				const providerOption = providerOptions.find(
 					(provider) => provider.id === providerId && provider.authType === selectedAuthType,
 				);
-				if (providerOption) await this.startProviderLogin(providerOption);
+				if (providerOption) {
+					await this.startProviderLogin(providerOption, () =>
+						this.showLoginProviderSelector(authType, initialSearchInput),
+					);
+				}
 			},
 			() => {
 				done();

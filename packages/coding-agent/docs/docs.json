@@ -182,6 +182,7 @@
               "environment-variables",
               "keybindings",
               "tools",
+              "codemode",
               "mcp-servers",
               "web-access",
               "session-format"

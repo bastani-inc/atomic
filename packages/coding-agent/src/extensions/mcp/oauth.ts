@@ -6,7 +6,7 @@
  * `McpOAuthAuthorizationRequiredError`, and the user signs in through `/mcp`, which runs
  * the authorization code flow (PKCE, dynamic client registration) against a loopback callback.
  *
- * Credentials live in `<agent-dir>/mcp-auth.json`, keyed by server URL.
+ * Credentials live in `<agent-dir>/mcp-auth.json`, keyed by server name and URL.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -16,6 +16,7 @@ import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/pi-ai/utils/oauth-pag
 import lockfile from "proper-lockfile";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
+import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
 	authorizeMcp,
@@ -29,6 +30,7 @@ import {
 	type OAuthChallenge,
 	type OAuthClientInformationMixed,
 	parseWwwAuthenticate,
+	stepUpScope,
 } from "./client/oauth/index.js";
 
 const CALLBACK_HOST = "127.0.0.1";
@@ -110,6 +112,19 @@ function parseStates(content: string | undefined): StoredStates {
 	return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as StoredStates) : {};
 }
 
+function serializeStates(states: StoredStates): string {
+	return `${JSON.stringify(states, null, 2)}\n`;
+}
+
+/**
+ * Keys of a server's state: by name and URL, so servers sharing a URL keep separate accounts, and the
+ * legacy key by URL alone, written by older versions.
+ */
+function storeKeys(name: string, serverUrl: string): { key: string; legacyKey: string } {
+	const legacyKey = String(new URL(serverUrl));
+	return { key: `${mcpNamespace(name)}|${legacyKey}`, legacyKey };
+}
+
 export interface McpOAuthServerStore extends McpOAuthStateStore {
 	/** Run `fn` while no other process refreshes the server's tokens. */
 	withRefreshLock<T>(fn: () => Promise<T>): Promise<T>;
@@ -128,16 +143,17 @@ export class McpOAuthCredentialStore {
 		this.lockDir = backend ? lockDir : getAgentDir();
 	}
 
-	forServer(serverUrl: string): McpOAuthServerStore {
-		const key = String(new URL(serverUrl));
+	forServer(name: string, serverUrl: string): McpOAuthServerStore {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
 		const scoped = (fenced: boolean): McpOAuthStateStore => {
-			const generation = this.read()[key]?.credentialGeneration;
+			const initial = this.read();
+			const generation = (initial[key] ?? initial[legacyKey])?.credentialGeneration;
 			const check = (state: StoredState | undefined) => {
 				if (fenced && state?.credentialGeneration !== generation) throw new McpSignInCancelledError();
 			};
 			return {
 				load: () => {
-					const state = this.read()[key];
+					const state = this.claimLegacy(key, legacyKey)[key];
 					check(state);
 					if (!state) return undefined;
 					const { credentialGeneration: _generation, ...value } = state;
@@ -200,27 +216,46 @@ export class McpOAuthCredentialStore {
 		}
 	}
 
-	/** The stored tokens of a server, for noticing sign-ins done by another process. */
-	tokens(serverUrl: string): McpOAuthState["tokens"] {
-		return this.read()[String(new URL(serverUrl))]?.tokens;
+	/** The first server to load legacy state takes it over; others with the same URL sign in again. */
+	private claimLegacy(key: string, legacyKey: string): StoredStates {
+		return this.backend.withLock((current) => {
+			const states = parseStates(current);
+			if (states[key] || !states[legacyKey]) return { result: states };
+			states[key] = states[legacyKey];
+			delete states[legacyKey];
+			return { result: states, next: serializeStates(states) };
+		});
+	}
+
+	/** The stored tokens of a server, for noticing sign-ins done by another process. Does not take over legacy state. */
+	tokens(name: string, serverUrl: string): McpOAuthState["tokens"] {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
+		const states = this.read();
+		return (states[key] ?? states[legacyKey])?.tokens;
 	}
 
 	/** Serialized logout: waits for rotated tokens to be saved before revoking the grant. */
-	removeAsync(serverUrl: string): Promise<boolean> {
-		const key = String(new URL(serverUrl));
-		return this.withRefreshLock(key, async () => this.remove(key));
+	removeAsync(name: string, serverUrl: string): Promise<boolean> {
+		const { key } = storeKeys(name, serverUrl);
+		return this.withRefreshLock(key, async () => this.remove(name, serverUrl));
 	}
 
-	/** Synchronous revocation also fences late writes; logout callers should prefer removeAsync. */
-	remove(serverUrl: string): boolean {
-		const key = String(new URL(serverUrl));
+	/**
+	 * Synchronous revocation also fences late writes; logout callers should prefer removeAsync. Also removes
+	 * legacy state the server would take over.
+	 */
+	remove(name: string, serverUrl: string): boolean {
+		const { key, legacyKey } = storeKeys(name, serverUrl);
+		const hasCredentials = (state: StoredState | undefined) =>
+			state !== undefined &&
+			Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
 		let removed = false;
 		this.write((states) => {
-			const state = states[key];
-			removed =
-				state !== undefined &&
-				Object.keys(state).some((field) => field !== "serverUrl" && field !== "credentialGeneration");
-			states[key] = { serverUrl: key, credentialGeneration: randomUUID() };
+			const own = states[key];
+			const legacy = own === undefined ? states[legacyKey] : undefined;
+			removed = hasCredentials(own) || hasCredentials(legacy);
+			if (legacy) delete states[legacyKey];
+			states[key] = { serverUrl: legacyKey, credentialGeneration: randomUUID() };
 		});
 		return removed;
 	}
@@ -233,7 +268,7 @@ export class McpOAuthCredentialStore {
 		this.backend.withLock((current) => {
 			const states = parseStates(current);
 			update(states);
-			return { result: undefined, next: `${JSON.stringify(states, null, 2)}\n` };
+			return { result: undefined, next: serializeStates(states) };
 		});
 	}
 }
@@ -436,6 +471,7 @@ export async function signInMcpServer(options: {
 	const { serverUrl, settings } = options;
 	const store = options.store.fenced();
 	const stored = await store.load();
+	const stepUp = options.challenge?.error === "insufficient_scope";
 	const callbackOptions = callbackSettings(settings);
 	// Reuse the port of the registered redirect URI so the registered client stays valid.
 	const registered = registeredRedirectUrls(stored?.clientInformation)[0];
@@ -465,11 +501,15 @@ export async function signInMcpServer(options: {
 			serverUrl,
 			resourceMetadataUrl: options.challenge?.resourceMetadataUrl,
 			authorizationServerMetadataUrl: settings.authServerMetadataUrl,
-			// A server asking for more scope gets it on top of the configured scope.
-			scope: mergeScopes(settings.scope, options.challenge?.scope),
+			// A server asking for more scope gets it on top of the configured scope and, since the challenge
+			// may list only the missing scopes, on top of the scope granted so far.
+			scope: mergeScopes(
+				settings.scope,
+				stepUp ? stepUpScope(stored?.tokens?.scope, options.challenge?.scope) : options.challenge?.scope,
+			),
 		};
 		// A refresh keeps the granted scope; a server asking for more needs the browser flow.
-		const skipRefresh = options.challenge?.error === "insufficient_scope";
+		const skipRefresh = stepUp;
 		if ((await authorizeMcp(provider, { ...flow, skipRefresh })) === "AUTHORIZED") return;
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 

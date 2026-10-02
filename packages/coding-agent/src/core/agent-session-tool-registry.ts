@@ -137,7 +137,11 @@ export function _refreshToolRegistry(
 		}
 	}
 
-	this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+	for (const name of this._pendingToolNames) {
+		if (isExposedTool(name) || selectedMcpNames.has(name)) nextActiveToolNames.push(name);
+	}
+
+	this._setActiveTools([...new Set(nextActiveToolNames)]);
 }
 
 export function _buildRuntime(

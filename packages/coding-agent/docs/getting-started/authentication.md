@@ -34,7 +34,7 @@ atomic
 
 You can also run `/login`, choose **Use an API key**, then select a provider to store the key in `~/.atomic/agent/auth.json`.
 
-See [Providers](/providers) for all supported providers, environment variables, and cloud-provider setup.
+See [Providers](/providers) for all supported providers, environment variables, and provider-specific setup.
 
 ## Verify authentication
 
@@ -49,7 +49,7 @@ The model picker should list selectable models for the provider you configured, 
 - Re-run `/login`.
 - If using an API key, confirm its environment variable is exported in the shell that launched Atomic.
 
-`/login` opens **Select authentication method:**. Choose **Use a subscription** or **Use an API key** to see the corresponding provider picker and credential-configuration status. That status can reflect stored, environment, runtime, or configuration credentials; it does not test connectivity or prove that a provider will accept a request.
+`/login` opens **Select authentication method:**. Choose **Use a subscription** or **Use an API key** to see the corresponding provider picker and credential-configuration status. That status can reflect stored, environment, runtime, or configuration credentials; it does not test connectivity or prove that a provider will accept a request. OAuth sign-ins that are not backed by a subscription are labeled **account** in the provider pickers and status. Cancelling a sign-in returns to the menu you started it from.
 
 Select a model with `/model`, then send a short prompt such as `Reply with hello.` A successful response confirms access for that request. If it fails, check the reported authentication, quota, model-access, or network error before retrying. A configured credential or a listed model alone does not prove access.
 

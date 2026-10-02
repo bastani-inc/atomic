@@ -1,11 +1,12 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
-import type { AuthSelectorProvider } from "./components/oauth-selector.ts";
+import { type AuthSelectorProvider, formatAuthSelectorProviderType } from "./components/oauth-selector.ts";
 
 export type LoginProviderOption = {
 	id: string;
 	name: string;
 	authTypes: AuthSelectorProvider["authType"][];
+	subscription?: boolean;
 };
 
 export type LoginProviderResolution =
@@ -30,6 +31,7 @@ export function mergeLoginProviderOptions(providerOptions: readonly AuthSelector
 			id: provider.id,
 			name: provider.name,
 			authTypes: [provider.authType],
+			...(provider.subscription === undefined ? {} : { subscription: provider.subscription }),
 		});
 	}
 	return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -50,12 +52,18 @@ export function resolveLoginProviderReference(
 	return { kind: "search", initialSearch: providerRef };
 }
 
-function authTypeLabel(authType: AuthSelectorProvider["authType"]): string {
-	return authType === "oauth" ? "Subscription" : "API key";
+function authTypeLabel(authType: AuthSelectorProvider["authType"], subscription?: boolean): string {
+	const label = formatAuthSelectorProviderType(authType, subscription);
+	return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 function searchText(provider: LoginProviderOption): string {
-	return `${provider.id} ${provider.name} ${provider.authTypes.map(authTypeLabel).join(" ")}`;
+	return `${provider.id} ${provider.name} ${provider.authTypes.map((authType) => authTypeLabel(authType, provider.subscription)).join(" ")}`;
+}
+
+function formatDescription(provider: LoginProviderOption): string {
+	const authTypes = provider.authTypes.map((authType) => authTypeLabel(authType, provider.subscription)).join("/");
+	return provider.name === provider.id ? authTypes : `${provider.name} · ${authTypes}`;
 }
 
 export function getLoginProviderCompletions(
@@ -67,9 +75,6 @@ export function getLoginProviderCompletions(
 	return filtered.map((provider) => ({
 		value: provider.id,
 		label: provider.id,
-		description:
-			provider.name === provider.id
-				? provider.authTypes.map(authTypeLabel).join("/")
-				: `${provider.name} · ${provider.authTypes.map(authTypeLabel).join("/")}`,
+		description: formatDescription(provider),
 	}));
 }

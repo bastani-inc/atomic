@@ -1,8 +1,15 @@
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
-import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
+import {
+	mcpStructuredContentSchema,
+	renderToolOutputType,
+	renderToolSample,
+	toCodemodeIdentifier,
+} from "@earendil-works/pi-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
 import { type Static, Type } from "typebox";
+import { getDocsPath } from "../../config.js";
 import type { ToolDefinition, ToolInfo, ToolLoadout, ToolNamespace } from "../../core/extensions/types.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
@@ -10,6 +17,7 @@ import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts"
 import { codemodeRenderers } from "./renderer.js";
 
 export const CODEMODE_TOOL_NAME = "codemode";
+export const CODEMODE_DOCS_PATH = join(getDocsPath(), "codemode.md");
 export const CODEMODE_STORE_ENTRY_TYPE = "codemode-store";
 export const DEFAULT_CODEMODE_INLINE_BUDGET = 3000;
 export interface CodemodeStoreEntryData {
@@ -18,7 +26,7 @@ export interface CodemodeStoreEntryData {
 }
 export type CodemodeModelRuntime = Pick<
 	ModelRegistry,
-	"getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify"
+	"getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify" | "generateImages"
 >;
 export interface CodemodeToolOptions {
 	getToolNamespace?: (name: string) => ToolNamespace | undefined;
@@ -72,7 +80,6 @@ Top-level await and return work. Use tools.name(args), or tools["raw-name"](args
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw. Scripts have a 256 MB memory limit.
 Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name), describeNamespace(name).
-describeNamespace(name) returns { name, description?, instructions?, tools } for a callable tool namespace, or undefined. Namespace instructions are available on request, not in tool listings.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
 Optional first line: // @options: {"max_output_tokens": 1000, "timeout_ms": 60000}. Output defaults to 10000 tokens; there is no default deadline.`;
 
@@ -124,7 +131,7 @@ export function createCodemodeDescription(
 	];
 	if (options.models)
 		sections.push(
-			"Model API: models.getModelsOfType(type, provider?), models.getAvailableOfType(type, provider?), models.getModelOfType(type, provider, id), models.classify(model, context). Types are chat, image, classifier. Catalog entries exclude headers; classifier calls resolve credentials on the host.",
+			`Model API: \`models\` lists and runs classifier and image models with the session's credentials. Read ${CODEMODE_DOCS_PATH} before using it.`,
 		);
 	if (ordered.length === 0) return sections.join("\n\n");
 	sections.push("Nested tools:");
@@ -144,6 +151,26 @@ export function createCodemodeDescription(
 	}
 	return sections.join("\n\n");
 }
+function describeOutput(schema: CodemodeJsonSchema | undefined): string {
+	const type = renderToolOutputType(schema);
+	if (type === "string") return "a string";
+	const object = typeof schema === "object" ? schema : undefined;
+	const properties = object?.properties;
+	if (
+		object?.type === "object" &&
+		typeof properties === "object" &&
+		properties !== null &&
+		mcpStructuredContentSchema(schema) === undefined
+	) {
+		const required = new Set(Array.isArray(object.required) ? object.required : []);
+		const fields = Object.keys(properties).map((name) => (required.has(name) ? name : `${name}?`));
+		return `\`{ ${fields.join(", ")} }\``;
+	}
+	return `\`${type.replace(/\s+/g, " ")}\``;
+}
+function describeScriptCall(tool: AgentTool): string {
+	return `${tool.description.trim()}\n\nCodemode: \`tools.${toCodemodeIdentifier(tool.name)}(args)\` resolves to ${describeOutput(toCodemodeDeclaration(tool).outputSchema)}.`;
+}
 function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 	const only = options.getMode?.() === "only";
 	const callable = getCodemodeCallableTools(loadout.callable);
@@ -151,7 +178,7 @@ function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 	if (!only)
 		for (const tool of loadout.declared)
 			if (callable.some((candidate) => candidate.name === tool.name))
-				descriptions[tool.name] = renderToolSample(toCodemodeDeclaration(tool));
+				descriptions[tool.name] = describeScriptCall(tool);
 	const listed = only ? callable : callable.filter((tool) => loadout.getExposure(tool.name) !== "direct");
 	const namespaces = new Map(
 		listed.flatMap((tool) => {

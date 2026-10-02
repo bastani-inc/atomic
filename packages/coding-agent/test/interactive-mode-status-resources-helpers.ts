@@ -1,11 +1,12 @@
 import { Container } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../src/core/diagnostics.ts";
+import type { QuietStartup } from "../src/core/settings-manager.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import type { ExtensionFixture } from "./interactive-mode-status-helpers.ts";
 export function createShowLoadedResourcesThis(options: {
-	quietStartup: boolean;
+	quietStartup: QuietStartup;
 	verbose?: boolean;
 	toolOutputExpanded?: boolean;
 	cwd?: string;
@@ -63,6 +64,7 @@ export function createShowLoadedResourcesThis(options: {
 			(InteractiveMode as any).prototype.formatExtensionDisplayPath.call(fakeThis, p),
 		formatContextPath: (p: string) => (InteractiveMode as any).prototype.formatContextPath.call(fakeThis, p),
 		getStartupExpansionState: () => (InteractiveMode as any).prototype.getStartupExpansionState.call(fakeThis),
+		shouldShowStartupDetails: () => (InteractiveMode as any).prototype.shouldShowStartupDetails.call(fakeThis),
 		buildScopeGroups: () => [],
 		formatScopeGroups: () => "resource-list",
 		isPackageSource: (sourceInfo?: SourceInfo) =>

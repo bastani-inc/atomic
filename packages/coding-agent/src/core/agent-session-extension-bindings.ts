@@ -684,6 +684,7 @@ async function reloadOwnedGeneration(
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		const defaultTools = this.settingsManager.getDefaultTools() ?? getDefaultToolNames();
+		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
 		this._buildRuntime({
 			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
@@ -812,6 +813,7 @@ async function reloadOwnedGeneration(
 		if (this._extensionRunnerRef) this._extensionRunnerRef.current = candidateRunner;
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
+		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
 		this._buildRuntime({
 			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,

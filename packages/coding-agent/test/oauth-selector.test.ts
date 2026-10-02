@@ -113,7 +113,7 @@ describe("OAuthSelectorComponent", () => {
 		]);
 	});
 
-	it("renders an option without compiled auth status as unconfigured", () => {
+	it("renders an option without compiled auth status as not configured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",
 			fakeModelRuntime(),
@@ -123,7 +123,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("unconfigured");
+		expect(output).toContain("not configured");
 		expect(output).not.toContain("✓ configured");
 	});
 
@@ -157,6 +157,44 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).not.toContain("subscription configured");
 	});
 
+	it("labels an OAuth sign-in without a subscription as an account", () => {
+		const providers = [
+			{ id: "corp-sso", name: "Corporate SSO", authType: "oauth" as const, subscription: false },
+			{ id: "corp-sso", name: "Corporate SSO", authType: "api_key" as const, subscription: false },
+		];
+		const selector = new OAuthSelectorComponent(
+			"login",
+			fakeModelRuntime({ getStoredCredentialType: () => "oauth" }),
+			providers,
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "stored", label: "OAuth" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("Corporate SSO · account");
+		expect(output).toContain("✓ account configured");
+		expect(output).not.toContain("subscription");
+	});
+
+	it("labels a subscription-backed sign-in as a subscription", () => {
+		const selector = new OAuthSelectorComponent(
+			"login",
+			fakeModelRuntime({ getStoredCredentialType: () => "oauth" }),
+			[
+				{ id: "anthropic", name: "Anthropic", authType: "oauth", subscription: true },
+				{ id: "anthropic", name: "Anthropic", authType: "api_key", subscription: true },
+			],
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "stored", label: "OAuth" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("Anthropic · subscription");
+		expect(output).toContain("✓ subscription configured");
+	});
+
 	it("shows environment API key auth as configured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",
@@ -169,7 +207,7 @@ describe("OAuthSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("✓ env: OPENAI_API_KEY");
-		expect(output).not.toContain("unconfigured");
+		expect(output).not.toContain("not configured");
 	});
 
 	it("shows models.json API key auth as configured", () => {

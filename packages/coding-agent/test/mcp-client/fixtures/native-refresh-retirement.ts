@@ -5,7 +5,7 @@ import { McpOAuthCredentialStore } from "../../../src/extensions/mcp/oauth.ts";
 const [path, lockDir, url] = process.argv.slice(2);
 if (!path || !lockDir || !url) throw new Error("Expected credential path, lock directory, and synthetic server URL");
 const credentials = new McpOAuthCredentialStore(new FileAuthStorageBackend(path), lockDir);
-const store = credentials.forServer(url);
+const store = credentials.forServer("test", url);
 const flow = store.fenced();
 await store.withRefreshLock(async () => {
 	console.log("locked");

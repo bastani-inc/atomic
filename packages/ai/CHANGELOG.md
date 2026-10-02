@@ -4,6 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Changed
+
+- OAuth browser pages now show the Atomic logo in color instead of white.
+
+### Fixed
+
+- Fixed OpenAI Responses requests failing with `Expected an ID that begins with 'ctc'` when replaying grammar tool calls, such as `codemode`, from another provider or a gateway.
+- Fixed Together's `deepseek-ai/DeepSeek-V4-Pro-0813` (the renamed DeepSeek V4 Pro) losing its `high` reasoning control after the model catalog refreshed.
+
 ## [0.9.25] - 2026-10-01
 
 ### Added

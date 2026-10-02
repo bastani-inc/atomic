@@ -1,9 +1,11 @@
 import {
 	colorToOkhsl,
 	colorToOklch,
+	colorToRgb,
 	type OkhslChannels,
 	okhslColor,
 	oklabToOkhslLightness,
+	oklchColor,
 	type RgbColor,
 	rgbColor,
 } from "@earendil-works/pi-tui";
@@ -359,7 +361,7 @@ export function generateSystemThemeColors(input: SystemThemeInput): SystemThemeC
 	const saturation = clamp(input.saturation ?? 1, 0, 1);
 	const { background, foreground } = input;
 	if (!background) return indexedColors(saturation, input.appearanceHint);
-	const palette = input.palette?.length === 16 ? input.palette.map(okhslOf) : undefined;
+	const palette = input.palette?.length === 16 ? input.palette.map(sourceOf) : undefined;
 	const appearance = terminalAppearance(background, foreground);
 	const lighter = appearance === "dark";
 	const extreme = lighter ? 1 : 0;
@@ -447,7 +449,7 @@ export function generateSystemThemeColors(input: SystemThemeInput): SystemThemeC
 					result[token] = "";
 					continue;
 				}
-				text = anchored(okhslOf(foreground), FAMILIES.neutral, oklabToOkhslLightness(needed), saturation);
+				text = anchored(sourceOf(foreground), FAMILIES.neutral, oklabToOkhslLightness(needed), saturation);
 			}
 		}
 		if (text) result[token] = hexOf(withTextContrast(text, surfaces, lighter));
@@ -457,10 +459,19 @@ export function generateSystemThemeColors(input: SystemThemeInput): SystemThemeC
 function okhslOf({ r, g, b }: RgbColor): OkhslChannels {
 	return colorToOkhsl(rgbColor(r, g, b));
 }
-function anchored(source: OkhslChannels, family: Family, lightness: number, saturation: number): RgbColor {
+interface SourceColor extends OkhslChannels {
+	chroma: number;
+}
+function sourceOf(color: RgbColor): SourceColor {
+	return { ...okhslOf(color), chroma: colorToOklch(rgbColor(color.r, color.g, color.b)).c };
+}
+function anchored(source: SourceColor, family: Family, lightness: number, saturation: number): RgbColor {
 	const anchor = saturationCurve(family, source.l);
 	const falloff = anchor > 0 ? Math.min(1, saturationCurve(family, lightness) / anchor) : 1;
-	return okhslColor(source.h, source.s * falloff * saturation, lightness);
+	const color = okhslColor(source.h, source.s * falloff * saturation, lightness);
+	const cap = source.chroma * falloff * saturation;
+	const { l, c } = colorToOklch(color);
+	return c <= cap ? color : colorToRgb(oklchColor(l, cap, source.h));
 }
 function withTextContrast(color: RgbColor, surfaces: RgbColor[], lighter: boolean): RgbColor {
 	const meets = (candidate: RgbColor) =>

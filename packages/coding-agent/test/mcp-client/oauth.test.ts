@@ -276,6 +276,7 @@ describe("MCP OAuth", () => {
 				access_token: "refreshed-token",
 				refresh_token: "refresh-token",
 				token_type: "Bearer",
+				scope: "org:read",
 			});
 			assert.equal(refreshes, 1);
 			await refreshedClient.close();
@@ -418,7 +419,7 @@ describe("MCP OAuth", () => {
 	it("asks for authorization instead of refreshing when the server needs more scope", async () => {
 		const provider = new TestOAuthProvider("http://127.0.0.1/callback");
 		provider.client = { client_id: "client" };
-		provider.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer" };
+		provider.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer", scope: "repo read:org" };
 		const origin = await listen(async (request, response, serverOrigin) => {
 			const url = new URL(request.url ?? "/", serverOrigin);
 			if (url.pathname === "/.well-known/oauth-authorization-server") {
@@ -450,7 +451,7 @@ describe("MCP OAuth", () => {
 			}),
 			McpOAuthAuthorizationRequiredError,
 		);
-		assert.equal(provider.authorizationUrl?.searchParams.get("scope"), "repo admin");
+		assert.equal(provider.authorizationUrl?.searchParams.get("scope"), "repo read:org admin");
 		// The working grant is kept until the user authorizes the new scope.
 		assert.equal(provider.tokenSet?.access_token, "a1");
 	});

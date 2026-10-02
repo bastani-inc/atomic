@@ -1,6 +1,6 @@
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { DefaultProjectTrust, PackageSource, ThinkingBudgetsSettings } from "./settings-types.ts";
+import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
 
 interface SettingsManagerResourceAccessors {
 	getHideThinkingBlock(): boolean;
@@ -10,8 +10,8 @@ interface SettingsManagerResourceAccessors {
 	setShellPath(path: string | undefined): void;
 	getDefaultProjectTrust(): DefaultProjectTrust;
 	setDefaultProjectTrust(defaultProjectTrust: DefaultProjectTrust): void;
-	getQuietStartup(): boolean;
-	setQuietStartup(quiet: boolean): void;
+	getQuietStartup(): QuietStartup;
+	setQuietStartup(quiet: QuietStartup): void;
 	getShellCommandPrefix(): string | undefined;
 	setShellCommandPrefix(prefix: string | undefined): void;
 	getBashInterceptorEnabled(): boolean;
@@ -99,7 +99,8 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getQuietStartup() {
-		return settingsInternals(this).settings.quietStartup ?? false;
+		const value = settingsInternals(this).settings.quietStartup;
+		return value === true || value === "header" ? value : false;
 	},
 
 	setQuietStartup(quiet) {

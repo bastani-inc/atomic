@@ -16,7 +16,16 @@ export type AuthSelectorProvider = {
 	id: string;
 	name: string;
 	authType: "oauth" | "api_key";
+	subscription?: boolean;
 };
+
+export function formatAuthSelectorProviderType(
+	authType: AuthSelectorProvider["authType"],
+	subscription?: boolean,
+): string {
+	if (authType === "api_key") return "API key";
+	return subscription === false ? "account" : "subscription";
+}
 
 /**
  * Component that renders an auth provider selector
@@ -124,7 +133,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			const hasMultipleMethods = this.allProviders.some(
 				(other) => other.id === provider.id && other.authType !== provider.authType,
 			);
-			const methodLabel = provider.authType === "oauth" ? "subscription" : "API key";
+			const methodLabel = formatAuthSelectorProviderType(provider.authType, provider.subscription);
 			const providerLabel = hasMultipleMethods ? `${provider.name} · ${methodLabel}` : provider.name;
 			let line = "";
 			if (isSelected) {
@@ -158,7 +167,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const status = this.getAuthStatus(provider.id);
-		if (!status.configured) return theme.fg("muted", " • unconfigured");
+		if (!status.configured) return theme.fg("muted", " • not configured");
 		switch (status.source) {
 			case "environment":
 				return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
@@ -166,7 +175,10 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 				return theme.fg("success", " ✓ runtime API key");
 			case "stored": {
 				const storedType = this.modelRuntime.getStoredCredentialType(provider.id);
-				return theme.fg("success", ` ✓ ${storedType === "oauth" ? "subscription" : "API key"} configured`);
+				return theme.fg(
+					"success",
+					` ✓ ${formatAuthSelectorProviderType(storedType ?? "api_key", provider.subscription)} configured`,
+				);
 			}
 			case "fallback":
 				return theme.fg("success", " ✓ configured");
@@ -175,7 +187,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			case "models_json_command":
 				return theme.fg("success", " ✓ command in models.json");
 			default:
-				return theme.fg("muted", " • unconfigured");
+				return theme.fg("muted", " • not configured");
 		}
 	}
 

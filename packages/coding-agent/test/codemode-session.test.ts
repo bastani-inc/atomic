@@ -4,6 +4,11 @@ import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi
 import { Type } from "typebox";
 import { test } from "vitest";
 import { createCodemodeExtension } from "../src/extensions/codemode/index.js";
+import {
+	CODEMODE_DOCS_PATH,
+	type CodemodeToolDetails,
+	createCodemodeDescription,
+} from "../src/extensions/codemode/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
 test("codemode executes nested tools in a worker and persists successful branch-local store writes", async () => {
@@ -353,6 +358,291 @@ test("codemode detects the image MIME type instead of trusting the supplied type
 		assert.deepEqual(
 			result.content.filter((block) => block.type === "image"),
 			[{ type: "image", data: png, mimeType: "image/png" }],
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+const TINY_PNG_BASE64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+async function createModelsHarness() {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	const requests: Array<{ baseUrl: string; apiKey: string | undefined; input: unknown }> = [];
+	const painter = {
+		type: "image" as const,
+		id: "painter",
+		name: "Painter",
+		api: "test-images",
+		provider: "scorer",
+		baseUrl: "https://images.test/v1",
+		input: ["text", "image"] as ("text" | "image")[],
+		output: ["text", "image"] as ("text" | "image")[],
+		cost: ZERO_COST,
+	};
+	const judge = {
+		type: "classifier" as const,
+		id: "judge",
+		name: "Judge",
+		api: "test-classifier",
+		provider: "scorer",
+		baseUrl: "https://classify.test/v1",
+		input: ["text"] as "text"[],
+		contextWindow: 8000,
+		cost: ZERO_COST,
+	};
+	harness.session.modelRuntime.registerProvider("scorer", {
+		apiKey: "secret-key",
+		models: [painter, judge],
+		images: {
+			"test-images": {
+				generateImages: async (model, context, options) => {
+					requests.push({ baseUrl: model.baseUrl, apiKey: options?.apiKey, input: context.input });
+					const prompt = context.input.find((block) => block.type === "text")?.text;
+					const base = { api: model.api, provider: model.provider, model: model.id, timestamp: 0 };
+					if (prompt === "explode") {
+						return { ...base, output: [], stopReason: "error", errorMessage: "painter exploded" };
+					}
+					const input = { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100 };
+					return {
+						...base,
+						output: [
+							{ type: "text", text: `painted ${prompt}` },
+							{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+						],
+						usage: { ...input, cost: { input: 0.04, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.04 } },
+						stopReason: "stop",
+					};
+				},
+			},
+		},
+		classifiers: {
+			"test-classifier": {
+				classify: async (model) => ({
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					answers: {},
+					stopReason: "error",
+					errorMessage: "classifier exploded",
+					timestamp: 0,
+				}),
+			},
+		},
+	});
+	return { harness, requests };
+}
+
+async function runScript(harness: Awaited<ReturnType<typeof createModelsHarness>>["harness"], code: string) {
+	harness.setResponses([
+		fauxAssistantMessage([fauxToolCall("codemode", { code })], { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	]);
+	await harness.session.prompt("run script");
+	const result = harness.session.messages.find((message) => message.role === "toolResult");
+	assert(result?.role === "toolResult");
+	return result;
+}
+
+test("codemode generates images with catalog credentials and attaches them through image()", async () => {
+	const { harness, requests } = await createModelsHarness();
+	try {
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const reference = { type: "image", data: "${TINY_PNG_BASE64}", mimeType: "image/png" };
+				const generated = await models.generateImages(
+					{ ...model, baseUrl: "https://evil.test" },
+					{ input: [{ type: "text", text: "a fox" }, reference] },
+				);
+				for (const block of generated.output) {
+					if (block.type === "image") image(block);
+					else text(block.text);
+				}
+				const failed = await models.generateImages(model, { input: [{ type: "text", text: "explode" }] });
+				const attempt = async (fn) => { try { await fn(); return "ok"; } catch (error) { return error.message; } };
+				return {
+					id: model.id,
+					stopReason: generated.stopReason,
+					failed: [failed.stopReason, failed.errorMessage],
+					wrongType: await attempt(() => models.generateImages({ provider: "scorer", id: "judge" }, { input: [] })),
+				};
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		const output = getMessageText(result);
+		assert.match(output, /painted a fox/);
+		assert.match(output, /"stopReason":"stop"/);
+		assert.match(output, /"failed":\["error","painter exploded"\]/);
+		assert.match(
+			output,
+			/"scorer\/judge\\" is a classifier model, not an image model\. List the image models you can use with models\.getAvailableOfType\(\\"image\\"\)\./,
+		);
+		assert.deepEqual(
+			result.content.filter((block) => block.type === "image"),
+			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+		);
+		assert.deepEqual(
+			requests.map((request) => [request.baseUrl, request.apiKey]),
+			[
+				["https://images.test/v1", "secret-key"],
+				["https://images.test/v1", "secret-key"],
+			],
+		);
+		assert.deepEqual(requests[0]?.input, [
+			{ type: "text", text: "a fox" },
+			{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+		]);
+		assert.deepEqual(
+			(result.details as CodemodeToolDetails).calls.map((call) => [
+				call.name,
+				call.args,
+				call.status,
+				call.cost,
+				call.error,
+			]),
+			[
+				["models.generateImages", "scorer/painter", "ok", 0.04, undefined],
+				["models.generateImages", "scorer/painter", "error", undefined, "painter exploded"],
+			],
+		);
+		assert.ok(Math.abs((result.usage?.cost.total ?? 0) - 0.04) < 1e-10);
+		assert.ok(Math.abs(harness.session.getSessionStats().cost - 0.04) < 1e-10);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode notes generated images that the script did not show", async () => {
+	const { harness } = await createModelsHarness();
+	try {
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const generated = await models.generateImages(model, { input: [{ type: "text", text: "a fox" }] });
+				return generated.stopReason;
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		assert.match(
+			getMessageText(result),
+			/stop\nNote: models\.generateImages\(\) returned 1 image that the script did not show\. Show each image block of result\.output with image\(block\)\./,
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode model calls fail with the expected argument shape and a way back", async () => {
+	const { harness } = await createModelsHarness();
+	try {
+		const questions = '{ ok: { type: "bool", instructions: "Fine?", criteria: { true: "yes", false: "no" } } }';
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("classifier", "scorer");
+				const attempt = async (fn) => { try { await fn(); return "ok"; } catch (error) { return error.message; } };
+				return {
+					unknown: await attempt(() => models.classify({ provider: "scorer", id: "nope" }, {})),
+					noModel: await attempt(() => models.classify("judge", {})),
+					undefinedModel: await attempt(() => models.classify(undefined, {})),
+					noState: await attempt(() => models.classify(model, { questions: ${questions} })),
+					badQuestion: await attempt(() =>
+						models.classify(model, { state: {}, questions: { kind: { type: "choice", instructions: "Kind?", criteria: ["a", "b"] } } }),
+					),
+					badImage: await attempt(() => models.generateImages({ provider: "scorer", id: "painter" }, { prompt: "a fox" })),
+					badSplit: await attempt(() => models.getModelOfType("classifier", "scorer/judge")),
+				};
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		const value = JSON.parse(getMessageText(result).split("Output:\n")[1] ?? "{}") as Record<string, string>;
+		assert.equal(
+			value.unknown,
+			'Unknown classifier model "scorer/nope". List the classifier models you can use with models.getAvailableOfType("classifier").',
+		);
+		assert.match(
+			value.noModel ?? "",
+			/^models\.classify\(\) expects a classifier model as its first argument, got a string\./,
+		);
+		assert.match(
+			value.undefinedModel ?? "",
+			/models\.getModelOfType\(\) returns undefined for an unknown provider or id\./,
+		);
+		assert.match(value.noState ?? "", /models\.classify\(\) context\.state must be an object, got undefined\./);
+		assert(value.noState?.includes(CODEMODE_DOCS_PATH));
+		assert(
+			value.badQuestion?.includes(
+				'context.questions.kind is a "choice" question, so criteria must map each label to its meaning.',
+			),
+		);
+		assert.match(
+			value.badImage ?? "",
+			/models\.generateImages\(\) context\.input must be a non-empty array of blocks, got undefined\./,
+		);
+		assert(value.badSplit?.includes("The provider and the id are separate arguments"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode description points to the models reference only when models are enabled", () => {
+	const withModels = createCodemodeDescription([], { models: true });
+
+	assert(withModels.includes("`models`"));
+	assert(withModels.includes(CODEMODE_DOCS_PATH));
+	assert(CODEMODE_DOCS_PATH.endsWith("codemode.md"));
+	assert(!withModels.includes("models.classify("));
+	assert(!createCodemodeDescription([], {}).includes("`models`"));
+});
+
+test("codemode tells declared tools how scripts call them instead of repeating their declaration", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "echo",
+					label: "Echo",
+					description: "Echo a value",
+					parameters: Type.Object({ value: Type.String() }),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+				pi.registerTool({
+					name: "stats",
+					label: "Stats",
+					description: "Report counts",
+					parameters: Type.Object({}),
+					outputSchema: Type.Object({ count: Type.Number(), label: Type.Optional(Type.String()) }),
+					execute: async () => ({
+						content: [{ type: "text", text: "{}" }],
+						structuredContent: { count: 1 },
+						details: {},
+					}),
+				});
+			},
+		],
+		initialActiveToolNames: ["echo", "stats", "codemode"],
+	});
+	try {
+		const description = (name: string) =>
+			harness.session.agent.state.tools.find((tool) => tool.name === name)?.description;
+
+		assert.equal(description("echo"), "Echo a value\n\nCodemode: `tools.echo(args)` resolves to a string.");
+		assert.equal(
+			description("stats"),
+			"Report counts\n\nCodemode: `tools.stats(args)` resolves to `{ count, label? }`.",
 		);
 	} finally {
 		await harness.cleanup();

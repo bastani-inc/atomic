@@ -47,7 +47,7 @@ describe("native MCP lifecycle safety", () => {
 		});
 		const signIn = signInMcpServer({
 			serverUrl: server.url,
-			store: credentials.forServer(server.url),
+			store: credentials.forServer("test", server.url),
 			settings: {},
 			prompt: {
 				showAuthorizationUrl: (url) => {
@@ -59,10 +59,10 @@ describe("native MCP lifecycle safety", () => {
 		});
 		const outcome = signIn.catch((error: unknown) => error);
 		await requested.promise;
-		await credentials.removeAsync(server.url);
+		await credentials.removeAsync("test", server.url);
 		release.resolve();
 		expect(await outcome).toMatchObject({ name: "McpSignInCancelledError" });
-		expect(credentials.tokens(server.url)).toBeUndefined();
+		expect(credentials.tokens("test", server.url)).toBeUndefined();
 	});
 
 	it("serialized logout waits for another process's refresh and fences its late sign-in writes", async () => {
@@ -71,7 +71,9 @@ describe("native MCP lifecycle safety", () => {
 		const url = "https://synthetic.invalid/mcp";
 		const path = join(dir, "mcp-auth.json");
 		const credentials = new McpOAuthCredentialStore(new FileAuthStorageBackend(path), dir);
-		await credentials.forServer(url).save({ serverUrl: url, tokens: { access_token: "old", token_type: "Bearer" } });
+		await credentials
+			.forServer("test", url)
+			.save({ serverUrl: url, tokens: { access_token: "old", token_type: "Bearer" } });
 		const child = spawn(
 			bunExecutable(),
 			[fileURLToPath(new URL("./fixtures/native-refresh-retirement.ts", import.meta.url)), path, dir, url],
@@ -94,7 +96,7 @@ describe("native MCP lifecycle safety", () => {
 		});
 		await vi.waitFor(() => expect(output, errors).toContain("locked"));
 		let removed = false;
-		const logout = credentials.removeAsync(url).then((result) => {
+		const logout = credentials.removeAsync("test", url).then((result) => {
 			removed = true;
 			return result;
 		});
@@ -102,12 +104,12 @@ describe("native MCP lifecycle safety", () => {
 		expect(removed).toBe(false);
 		child.stdin.write("release refresh\n");
 		expect(await logout).toBe(true);
-		expect(credentials.tokens(url)).toBeUndefined();
+		expect(credentials.tokens("test", url)).toBeUndefined();
 		await vi.waitFor(() => expect(output, errors).toContain("saved"));
 		child.stdin.write("release sign-in\n");
 		expect(await exited, errors).toBe(0);
 		expect(output).toContain("fenced");
-		expect(credentials.tokens(url)).toBeUndefined();
+		expect(credentials.tokens("test", url)).toBeUndefined();
 	});
 
 	it("allows a same-origin redirect without losing the provider credential", async () => {
@@ -294,7 +296,7 @@ describe("native MCP lifecycle safety", () => {
 		const server = await startOAuthMcpServer();
 		cleanups.push(server.close);
 		const credentials = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend());
-		const store = credentials.forServer(server.url);
+		const store = credentials.forServer("test", server.url);
 		await store.save({
 			serverUrl: server.url,
 			clientInformation: { client_id: "synthetic-client" },
@@ -322,9 +324,9 @@ describe("native MCP lifecycle safety", () => {
 			},
 		});
 		await requested.promise;
-		credentials.remove(server.url);
+		credentials.remove("test", server.url);
 		release.resolve();
 		await refresh.catch(() => undefined);
-		expect(credentials.tokens(server.url)).toBeUndefined();
+		expect(credentials.tokens("test", server.url)).toBeUndefined();
 	});
 });
