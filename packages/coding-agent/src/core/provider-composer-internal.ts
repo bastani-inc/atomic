@@ -88,6 +88,7 @@ export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelCo
 /** Input type for the extension registerProvider API. */
 export interface ProviderConfigInput {
 	name?: string;
+	aliasOf?: string;
 	baseUrl?: string;
 	apiKey?: string;
 	api?: Api;

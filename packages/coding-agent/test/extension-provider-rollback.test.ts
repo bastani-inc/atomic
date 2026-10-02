@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionAPI } from "../src/core/extensions/loader-api.ts";
@@ -89,4 +90,22 @@ test("rollback keeps an earlier extension's provider of the same name", () => {
 	);
 	expect(shared).toHaveLength(1);
 	expect(shared[0] && "extensionPath" in shared[0] ? shared[0].extensionPath : undefined).toBe("earlier");
+});
+
+test("provider aliases register during factory load and roll back with their extension", () => {
+	const runtime = createExtensionRuntime();
+	const first = createExtensionAPI(extension("accounts"), runtime, "/tmp", createEventBus());
+	first.api.registerProviderAlias({ id: "openai-1", name: "Account 1", provider: "openai" });
+	first.commit();
+	assert.deepEqual(runtime.pendingProviderRegistrations, [
+		{
+			name: "openai-1",
+			config: { aliasOf: "openai", name: "Account 1" },
+			extensionPath: "accounts",
+		},
+	]);
+	const failed = createExtensionAPI(extension("failed"), runtime, "/tmp", createEventBus());
+	failed.api.registerProviderAlias({ id: "openai-2", provider: "openai" });
+	failed.discard();
+	assert.equal(runtime.pendingProviderRegistrations.length, 1);
 });

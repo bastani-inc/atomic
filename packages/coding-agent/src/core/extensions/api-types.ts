@@ -64,7 +64,7 @@ import type {
 	SendMessageOptions,
 	SendMessagesOptions,
 } from "./message-types.ts";
-import type { ProviderConfig } from "./provider-types.ts";
+import type { ProviderAliasConfig, ProviderConfig } from "./provider-types.ts";
 import type {
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
@@ -399,6 +399,7 @@ export interface ExtensionAPI {
 	 */
 	registerProvider(name: string, config: ProviderConfig): void;
 	registerProvider(provider: Provider): void;
+	registerProviderAlias(config: ProviderAliasConfig): void;
 
 	/**
 	 * Unregister a previously registered provider.

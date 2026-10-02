@@ -376,6 +376,7 @@ async function constructAgentSession(
 			streamSimple: (model, context, requestOptions) => {
 				const extension = modelRuntime.getRegisteredProviderConfig(model.provider);
 				return getModelFastRoute(model)?.serviceTier !== undefined &&
+					extension?.aliasOf === undefined &&
 					!(extension?.streamSimple && extension.api === model.api)
 					? streamWithFastRoute(model, context, requestOptions)
 					: modelRuntime.streamSimple(model, context, requestOptions);
@@ -512,7 +513,7 @@ async function constructAgentSession(
 				});
 			}
 			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
-			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream) {
+			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream && extensionProvider?.aliasOf === undefined) {
 				return streamWithFastRoute(requestModel, context, { ...fastRouteStreamOptions, onProviderStreamEvent });
 			}
 			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are

@@ -19,11 +19,13 @@ import type { AtomicProviderCompat } from "../model-capabilities.ts";
 import type { ExtensionAPI } from "./api-types.ts";
 
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
+export type { ProviderAliasConfig } from "../provider-alias.js";
 
 /** Configuration for registering a provider via pi.registerProvider(). */
 export interface ProviderConfig {
 	/** Display name for the provider in UI. */
 	name?: string;
+	aliasOf?: string;
 	/** Base URL for the API endpoint. Required when defining models. */
 	baseUrl?: string;
 	/** API key or environment variable name. Required when defining models (unless oauth provided). */
