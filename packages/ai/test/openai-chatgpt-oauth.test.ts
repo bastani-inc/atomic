@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import { afterEach, test, vi } from "vitest";
 import { openaiChatGPTOAuth } from "../src/auth/oauth/openai-chatgpt.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
@@ -59,6 +60,37 @@ test("ChatGPT requires the issued client ID before exchanging credentials", asyn
 		openaiChatGPTOAuth.login(interaction(undefined), { getDeviceId: () => DEVICE_ID }),
 		/issued client ID/,
 	);
+	assert.equal(fetch.mock.calls.length, 0);
+});
+
+test("ChatGPT login fails before opening the browser when the callback port is taken", async () => {
+	const fetch = vi.fn();
+	vi.stubGlobal("fetch", fetch);
+	const holder = createServer();
+	const held = await new Promise<boolean>((resolve, reject) => {
+		holder.once("error", (error: NodeJS.ErrnoException) =>
+			error.code === "EADDRINUSE" ? resolve(false) : reject(error),
+		);
+		holder.listen(1455, "127.0.0.1", () => resolve(true));
+	});
+	const events: string[] = [];
+	const login = openaiChatGPTOAuth.login(
+		{
+			signal: new AbortController().signal,
+			notify: (event) => events.push(event.type),
+			prompt: async () => {
+				events.push("prompt");
+				throw new Error("login must not prompt for a pasted redirect URL");
+			},
+		},
+		{ getDeviceId: () => DEVICE_ID },
+	);
+	try {
+		await assert.rejects(login, /Port 1455 is in use/);
+	} finally {
+		if (held) await new Promise((resolve) => holder.close(resolve));
+	}
+	assert.deepEqual(events, []);
 	assert.equal(fetch.mock.calls.length, 0);
 });
 
