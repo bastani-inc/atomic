@@ -2,6 +2,7 @@ import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@bastani/pi-ai";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.js";
+import { AuthUrlComponent } from "./auth-url.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.js";
 
@@ -12,6 +13,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private contentContainer: Container;
 	private input: Input;
 	private tui: TUI;
+	private authUrl?: AuthUrlComponent;
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
@@ -97,12 +99,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.contentContainer.clear();
 		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
-		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
-		this.contentContainer.addChild(new Text(theme.fg("accent", linkedUrl), 1, 0));
-
-		const clickHint = process.platform === "darwin" ? "cmd+click open" : "ctrl+click open";
-		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
-		this.contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
+		this.authUrl = new AuthUrlComponent(this.tui, url);
+		this.contentContainer.addChild(this.authUrl);
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -124,6 +122,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Called by onDeviceCode callback - show URL and user code.
 	 */
 	showDeviceCode(info: OAuthDeviceCodeInfo): void {
+		this.authUrl = undefined;
 		this.contentContainer.clear();
 		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
@@ -204,6 +203,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	/** Show static informational details and a close hint. */
 	showDetails(lines: string[]): void {
+		this.authUrl = undefined;
 		this.contentContainer.clear();
 		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
@@ -249,6 +249,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.cancel();
+			return true;
+		}
+		if (this.authUrl && kb.matches(data, "app.auth.copyUrl")) {
+			void this.authUrl.copy();
 			return true;
 		}
 

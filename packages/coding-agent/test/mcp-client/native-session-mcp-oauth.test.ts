@@ -1,21 +1,27 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResultMessage } from "@bastani/pi-ai/compat";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { hyperlink } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, it } from "vitest";
+import { hyperlink, type TUI } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
 import type { ExtensionMode } from "../../src/core/extensions/context-types.ts";
+import type { ExtensionCustomComponent, ExtensionUIContext } from "../../src/core/extensions/types.js";
+import { KeybindingsManager } from "../../src/core/keybindings.js";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.ts";
 import type { McpOAuthConfig, McpServerEntry } from "../../src/extensions/mcp/config.ts";
 import { createMcpExtension } from "../../src/extensions/mcp/index.ts";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
+import { initTheme, theme } from "../../src/modes/interactive/theme/theme.js";
 import { createHarness, getMessageText, type Harness } from "../suite/harness.ts";
 import { startOAuthMcpServer } from "./native-oauth-server.js";
 import { createTestUiContext } from "./native-test-ui.js";
 
+const { copyToClipboard } = vi.hoisted(() => ({ copyToClipboard: vi.fn(async (_text: string) => {}) }));
+vi.mock("../../src/utils/clipboard.js", () => ({ copyToClipboard }));
 describe("AgentSession MCP OAuth", () => {
 	const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -23,7 +29,12 @@ describe("AgentSession MCP OAuth", () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
-	async function setup(browser: "follow" | "paste", oauth?: McpOAuthConfig, mode: ExtensionMode = "print") {
+	async function setup(
+		browser: "follow" | "paste",
+		oauth?: McpOAuthConfig,
+		mode: ExtensionMode = "print",
+		uiOverrides: Partial<ExtensionUIContext> = {},
+	) {
 		const server = await startOAuthMcpServer();
 		cleanups.push(server.close);
 		const backend = new InMemoryAuthStorageBackend();
@@ -59,6 +70,7 @@ describe("AgentSession MCP OAuth", () => {
 		cleanups.push(() => harness.cleanup());
 		await harness.session.bindExtensions({
 			mode,
+			onError: (error) => notifications.push(JSON.stringify(error)),
 			uiContext: createTestUiContext({
 				notify: (message) => notifications.push(message),
 				// The paste prompt waits until sign-in completes unless the user pastes the redirect URL.
@@ -68,9 +80,10 @@ describe("AgentSession MCP OAuth", () => {
 						: new Promise((resolve) =>
 								opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true }),
 							),
+				...uiOverrides,
 			}),
 		});
-		return { harness, server, notifications, backend, opened };
+		return { harness, server, notifications, backend, opened, getRedirectUrl: () => redirectLocation };
 	}
 
 	async function callWhoami(harness: Harness): Promise<ToolResultMessage> {
@@ -122,22 +135,71 @@ describe("AgentSession MCP OAuth", () => {
 		expect(result.isError).toBe(true);
 		expect(getMessageText(result)).toBe('MCP server "issues" requires sign-in. Run /mcp to sign in.');
 	});
-
-	// #10186
-	it("prints the sign-in URL as a short clickable link in the terminal UI", async () => {
-		const tui = await setup("follow", undefined, "tui");
-		await tui.harness.session.prompt("/mcp login issues");
-		const shown = tui.notifications.find((message) => message.startsWith('Sign in to MCP server "issues"'));
+	it("#10186 shows a clickable sign-in URL in the manager and copies it before completing sign-in", async () => {
+		initTheme("dark");
+		let view: ExtensionCustomComponent | undefined;
+		const tui = await setup("paste", undefined, "tui", {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					void Promise.resolve(
+						factory({ requestRender: () => {} } as TUI, theme, new KeybindingsManager(), resolve),
+					).then((component) => {
+						view = component;
+					});
+				}),
+		});
+		const login = tui.harness.session.prompt("/mcp login issues");
+		const rendered = () => view?.render(4096).join("\n") ?? "";
+		await vi.waitFor(() => assert.ok(rendered().includes("to copy"), tui.notifications.join("\n")));
 		const href = tui.opened[0].href;
 		const hint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
-		expect(shown).toBe(
-			`Sign in to MCP server "issues" in your browser:\n${hyperlink(href, href)}\n${hyperlink(hint, href)}`,
-		);
+		assert.ok(rendered().includes("Sign in to issues"));
+		assert.ok(rendered().includes(hyperlink(href, href)));
+		assert.ok(rendered().includes(hyperlink(hint, href)));
+		assert.ok(view?.handleInput);
+		void view.handleInput("\x18");
+		await vi.waitFor(() => assert.ok(rendered().includes("Copied URL to clipboard")));
+		assert.deepEqual(copyToClipboard.mock.calls, [[href]]);
+		const redirect = await tui.getRedirectUrl();
+		assert.ok(redirect);
+		void view.handleInput(redirect);
+		void view.handleInput("\r");
+		await login;
+		assert.equal(getMessageText(await callWhoami(tui.harness)), "token access-1");
+	});
 
-		const plain = await setup("follow");
+	it("does not announce sign-in success when the TUI sign-in callback rejects", async () => {
+		initTheme("dark");
+		const tui = await setup("follow", undefined, "tui", {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					void factory(
+						{
+							requestRender: () => {
+								throw new Error("Sign-in view failed to render");
+							},
+						} as TUI,
+						theme,
+						new KeybindingsManager(),
+						resolve,
+					);
+				}),
+		});
+
+		await tui.harness.session.prompt("/mcp login issues");
+		assert.ok(tui.notifications.includes("Sign-in view failed to render"));
+		assert.equal(
+			tui.notifications.some((message) => message.startsWith("Signed in")),
+			false,
+		);
+	});
+
+	it.each(["print", "rpc"] as const)("keeps the plain sign-in URL in %s mode", async (mode) => {
+		const plain = await setup("follow", undefined, mode);
 		await plain.harness.session.prompt("/mcp login issues");
 		const plainShown = plain.notifications.find((message) => message.startsWith('Sign in to MCP server "issues"'));
-		expect(plainShown).toBe(`Sign in to MCP server "issues" in your browser:\n${plain.opened[0].href}`);
+		assert.equal(plainShown, `Sign in to MCP server "issues" in your browser:\n${plain.opened[0].href}`);
+		assert.equal(getMessageText(await callWhoami(plain.harness)), "token access-1");
 	});
 
 	it("accepts a pasted redirect URL when the browser cannot reach the callback", async () => {

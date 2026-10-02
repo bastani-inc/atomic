@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
-import { readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
+import { readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { editInExternalEditor, resolveExternalEditorCommand } from "./external-editor.ts";
 

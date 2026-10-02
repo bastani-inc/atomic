@@ -167,6 +167,8 @@ When the clipboard has both text and an image, behavior depends on the terminal:
 
 Ctrl+X does not copy messages or selections. A workflow tool-detail view closes to its graph; the scoped-model selector clears its local selection; an attached workflow stage chat returns to its graph; and a workflow graph returns to main chat. Workflow surfaces recognize the physical Ctrl+X chord directly, including CSI variants. `/copy` always copies the last assistant message.
 
+On OAuth sign-in screens, Ctrl+X copies the sign-in URL, including long URLs that wrap across lines. This also works in `/mcp login`. Customize this shortcut with `app.auth.copyUrl`; it does not change Ctrl+X behavior outside sign-in screens. Remote sessions use OSC 52 clipboard forwarding as described above.
+
 A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
 
 In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it with no deadline; it never terminates or replaces the engine.
@@ -213,6 +215,7 @@ Interactive model and thinking choices automatically become startup defaults. Th
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.tools.expand` | `ctrl+o` | Collapse or expand tool and workflow-node detail in main chat or an attached workflow stage chat |
+| `app.auth.copyUrl` | `ctrl+x` | Copy the URL on an OAuth sign-in screen |
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
 

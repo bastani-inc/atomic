@@ -99,7 +99,7 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 					),
 			});
 
-			const model = modelRuntime.getModel("cloudflare-ai-gateway", "claude-sonnet-4.5");
+			const model = modelRuntime.getModel("cloudflare-ai-gateway", "claude-sonnet-4-5");
 			assert.ok(model);
 
 			const resolution = await modelRuntime.getAuth(model);
@@ -116,6 +116,12 @@ describe("Cloudflare AI Gateway Workers AI binding transport", () => {
 			assert.equal(result.stopReason, "stop");
 			assert.deepEqual(result.content, [{ type: "text", text: "Hello from the binding" }]);
 			assert.equal(calls.length, 1);
+			const call = calls[0];
+			assert.ok(call);
+			const request = new Request(call.input, call.init);
+			const body = (await request.json()) as { model: string; stream: boolean };
+			assert.equal(body.model, "claude-sonnet-4-5");
+			assert.equal(body.stream, true);
 		} finally {
 			if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
 			else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;

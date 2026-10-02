@@ -114,7 +114,7 @@ export {
 	normalizeChangelogLinks,
 	parseChangelog,
 } from "../../utils/changelog.ts";
-export { copyToClipboard } from "../../utils/clipboard.ts";
+export { copyToClipboard } from "../../utils/clipboard.js";
 export { parseGitUrl } from "../../utils/git.ts";
 export { getCwdRelativePath } from "../../utils/paths.ts";
 export { getPiUserAgent } from "../../utils/pi-user-agent.ts";

@@ -150,7 +150,10 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
-			result.models = args[++i].split(",").map((s) => s.trim());
+			result.models = args[++i]
+				.split(",")
+				.map((s) => s.trim())
+				.filter((pattern) => pattern.length > 0);
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {

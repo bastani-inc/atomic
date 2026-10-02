@@ -1561,6 +1561,8 @@ Later system messages append instructions, patch named sections (`null` removes 
 
 Models with `supportsMidConvoSystemMessages` receive updates in place. Other models receive the replayed prompt and tools as a leading checkpoint. Anthropic's `supportsMidConvoToolChanges`, OpenAI Responses' `supportsAdditionalTools`/`supportsToolSearch`, and OpenAI Completions' `supportsMidConvoToolAdditions` enable native tool transitions where representable. Unsupported transitions fall back to the current top-level tool list and may invalidate the cached prefix.
 
+With Anthropic's `supportsMidConvoToolChanges`, the `inline-tools-2026-09-15` beta keeps the initial top-level tools and a deferred placeholder fixed. Later `tool_addition` blocks carry complete definitions, including replacements under an existing name; `tool_removal` blocks reference names. This preserves the cached prefix across tool changes. At least one initial tool is required; otherwise the current tool list is sent at the top level.
+
 ## Context Serialization
 
 The `Context` object can be easily serialized and deserialized using standard JSON methods, making it simple to persist conversations, implement chat history, or transfer contexts between services:

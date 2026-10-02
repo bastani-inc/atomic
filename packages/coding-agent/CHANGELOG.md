@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- OAuth sign-in screens now show a copy shortcut for the sign-in URL, including `/mcp login`. Use Ctrl+X or configure `app.auth.copyUrl`; existing message and workflow shortcuts are unchanged.
+
+### Fixed
+
+- Empty comma-separated entries in `--models` no longer add unintended models to the cycle ([#10334](https://github.com/earendil-works/pi/issues/10334)).
+- Pinned `brace-expansion` to 5.0.12 so installations use the patched dependency ([#10288](https://github.com/earendil-works/pi/issues/10288)).
+- MCP OAuth sign-in now rejects pasted redirect URLs whose origin or path differs from the current sign-in's redirect URI.
+
 ## [0.9.26-alpha.2] - 2026-10-02
 
 ### Added

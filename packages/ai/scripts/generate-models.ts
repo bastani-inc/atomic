@@ -2266,7 +2266,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				} else if (upstream === "anthropic") {
 					api = "anthropic-messages";
 					baseUrl = CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL;
-					id = nativeId;
+					id = nativeId.replaceAll(".", "-");
 				} else if (upstream === "workers-ai") {
 					api = "openai-completions";
 					baseUrl = CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL;

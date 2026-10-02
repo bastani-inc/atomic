@@ -31,6 +31,7 @@ export interface AppKeybindings {
 	"app.thinking.toggle": true;
 	"app.session.toggleNamedFilter": true;
 	"app.editor.external": true;
+	"app.auth.copyUrl": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
 	"app.clipboard.pasteImage": true;
@@ -136,6 +137,7 @@ export const KEYBINDINGS = {
 		defaultKeys: "ctrl+g",
 		description: "Open external editor",
 	},
+	"app.auth.copyUrl": { defaultKeys: "ctrl+x", description: "Copy OAuth sign-in URL" },
 	"app.message.followUp": {
 		defaultKeys: windowsKeybindings ? "ctrl+q" : "alt+enter",
 		description: "Queue follow-up message",

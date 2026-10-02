@@ -397,12 +397,15 @@ export class McpSignInCancelledError extends Error {
 
 type AuthorizationResponse = Pick<OAuthCallback, "code" | "iss">;
 
-function responseFromRedirectUrl(input: string, state: string): AuthorizationResponse {
+function responseFromRedirectUrl(input: string, state: string, redirectUrl: URL): AuthorizationResponse {
 	let url: URL;
 	try {
 		url = new URL(input.trim());
 	} catch {
 		throw new Error("Expected the full redirect URL from the browser address bar");
+	}
+	if (url.origin !== redirectUrl.origin || url.pathname !== redirectUrl.pathname) {
+		throw new Error("The redirect URL does not match this sign-in's redirect URI");
 	}
 	const error = url.searchParams.get("error");
 	if (error) throw new Error(url.searchParams.get("error_description") ?? error);
@@ -416,13 +419,14 @@ function responseFromRedirectUrl(input: string, state: string): AuthorizationRes
 async function waitForAuthorizationResponse(
 	callback: OAuthCallbackServer,
 	state: string,
+	redirectUrl: URL,
 	prompt: McpSignInPrompt,
 ): Promise<AuthorizationResponse> {
 	const controller = new AbortController();
-	const fromBrowser = callback.waitForCallback(state);
+	const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname);
 	const fromUser = prompt.promptForRedirectUrl(controller.signal).then((input) => {
 		if (!input?.trim()) throw new McpSignInCancelledError();
-		return responseFromRedirectUrl(input, state);
+		return responseFromRedirectUrl(input, state, redirectUrl);
 	});
 	try {
 		return await Promise.race([fromBrowser, fromUser]);
@@ -514,8 +518,14 @@ export async function signInMcpServer(options: {
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 
 		const state = await provider.state();
+		const authorizationRedirectUrl = new URL(authorizationUrl.searchParams.get("redirect_uri") ?? redirectUrl);
 		options.prompt.showAuthorizationUrl(authorizationUrl);
-		const { code, iss } = await waitForAuthorizationResponse(callback, state, options.prompt);
+		const { code, iss } = await waitForAuthorizationResponse(
+			callback,
+			state,
+			authorizationRedirectUrl,
+			options.prompt,
+		);
 		await authorizeMcp(provider, { ...flow, authorizationCode: code, iss });
 	} finally {
 		await callback.close();

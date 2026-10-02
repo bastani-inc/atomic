@@ -4,6 +4,8 @@ https://github.com/earendil-works/pi/tree/e529a82c98fad679c6e20c03ffbb0bc7896fec
 
 Relative TypeScript imports use .js extensions for Atomic's compiled package.
 Atomic patches OAuth discovery to refresh changed authorization-server metadata.
+OAuth client metadata documents and exact callback path checks are ported from
+1499466d8581035a4dec6c869725b8712aea4bbe. Atomic does not use Pi's hosted client identity.
 Upstream's license is reproduced below. The additional MCP TypeScript SDK
 notice is retained in LICENSES/modelcontextprotocol-typescript-sdk.txt.
 
