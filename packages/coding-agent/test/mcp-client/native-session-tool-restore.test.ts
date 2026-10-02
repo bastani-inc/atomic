@@ -1,7 +1,24 @@
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getCurrentSystemMessage } from "@bastani/pi-ai";
+import {
+	fauxAssistantMessage,
+	fauxToolCall,
+	getApiProvider,
+	registerApiProvider,
+	registerFauxProvider,
+} from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/types.ts";
-import type { SessionManager } from "../../src/core/session-manager.ts";
+import { ModelRuntime } from "../../src/core/model-runtime.ts";
+import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
+import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
+import { type CreateAgentSessionResult, createAgentSession, createUnstartedAgentSession } from "../../src/core/sdk.ts";
+import { SessionManager } from "../../src/core/session-manager.ts";
+import { SettingsManager } from "../../src/core/settings-manager.ts";
+import { builtInExtensions } from "../../src/extensions/index.ts";
 import { type JsonRpcRequest, LATEST_PROTOCOL_VERSION } from "../../src/extensions/mcp/client/index.ts";
 import { createInMemoryTransportPair } from "../../src/extensions/mcp/client/testing/index.ts";
 import type { McpServerEntry } from "../../src/extensions/mcp/config.ts";
@@ -11,7 +28,8 @@ import { createHarness, getMessageText, type Harness } from "../suite/harness.ts
 import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createTestUiContext } from "./native-test-ui.ts";
 
-function createFakeServer(initializeDelayMs: number) {
+/** `initialize` is answered after `initializeDelay` ms, or once that promise settles. */
+function createFakeServer(initializeDelay: number | Promise<unknown>) {
 	const pair = createInMemoryTransportPair();
 	const respond = (request: JsonRpcRequest): unknown => {
 		switch (request.method) {
@@ -44,8 +62,9 @@ function createFakeServer(initializeDelayMs: number) {
 		if (!("id" in message) || !("method" in message)) return;
 		const request = message as JsonRpcRequest;
 		const send = () => void pair.server.send({ jsonrpc: "2.0", id: request.id, result: respond(request) });
-		if (request.method !== "initialize" || initializeDelayMs === 0) queueMicrotask(send);
-		else setTimeout(send, initializeDelayMs);
+		if (request.method !== "initialize" || initializeDelay === 0) queueMicrotask(send);
+		else if (typeof initializeDelay === "number") setTimeout(send, initializeDelay);
+		else void initializeDelay.then(send);
 	});
 	return pair;
 }
@@ -169,5 +188,208 @@ describe("AgentSession MCP tools after resume and reload", () => {
 
 		await vi.waitFor(() => expect(connected).toEqual(["docs", "docs"]));
 		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search"));
+	});
+});
+
+/**
+ * The CLI resumes through `createAgentSession` over a file-backed session: it always passes the
+ * configured loadout and loads the MCP extension, whose servers register their tools after the
+ * session exists. The suite harness above builds `AgentSession` directly, so it cannot see how a
+ * caller-supplied loadout meets the transcript.
+ */
+describe("AgentSession MCP tools after resuming a file-backed session through createAgentSession", () => {
+	const cleanups: Array<() => Promise<void> | void> = [];
+
+	afterEach(async () => {
+		while (cleanups.length > 0) await cleanups.pop()?.();
+	});
+
+	const noBuiltinPackages = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false };
+
+	async function createFixture() {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-mcp-resume-"));
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir);
+		const faux = registerFauxProvider();
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			modelsStore: new InMemoryCodingAgentModelsStore(),
+		});
+		modelRuntime.registerProvider(faux.getModel().provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models.map((model) => ({
+				id: model.id,
+				name: model.name,
+				api: model.api,
+				reasoning: model.reasoning,
+				input: model.input,
+				inputLimits: model.inputLimits,
+				cost: model.cost,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+				baseUrl: model.baseUrl,
+			})),
+		});
+		// A reload resets the global API registry, which drops this test-only API. Real providers are
+		// built in and come back with it, so put the faux one back after startup reloads.
+		const fauxStreams = getApiProvider(faux.api)!;
+		const restoreFauxApi = () =>
+			registerApiProvider({ api: faux.api, stream: fauxStreams.stream, streamSimple: fauxStreams.streamSimple });
+		cleanups.push(() => {
+			faux.unregister();
+			rmSync(cwd, { recursive: true, force: true });
+		});
+		return { cwd, agentDir, faux, modelRuntime, restoreFauxApi };
+	}
+
+	type Fixture = Awaited<ReturnType<typeof createFixture>>;
+
+	/** What `atomic` does for a stored session: file-backed manager, deferred MCP server, same model. */
+	async function startSession(
+		fixture: Fixture,
+		sessionManager: SessionManager,
+		options: {
+			deferExtensions?: boolean;
+			/** The server answers `initialize` once this settles, as a spawned stdio server does after startup. */
+			serverReady?: Promise<unknown>;
+			sessionOptions?: { noTools?: "all" | "builtin"; tools?: string[] };
+		} = {},
+	) {
+		const settingsManager = SettingsManager.inMemory();
+		const servers: McpServerEntry[] = [
+			{ name: "docs", config: { url: "http://unused.invalid", exposure: "deferred" }, source: "test" },
+		];
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: fixture.cwd,
+			agentDir: fixture.agentDir,
+			settingsManager,
+			noSkills: true,
+			noThemes: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+			extensionFactories: [
+				...builtInExtensions,
+				createMcpExtension({
+					loadConfig: () => ({ servers, errors: [] }),
+					createTransport: () => {
+						const pair = createFakeServer(options.serverReady ?? 0);
+						void pair.server.start();
+						return pair.client;
+					},
+				}),
+			],
+		});
+		await resourceLoader.reload(
+			options.deferExtensions ? { deferExtensions: true, deferResources: true } : undefined,
+		);
+		const create = options.deferExtensions ? createUnstartedAgentSession : createAgentSession;
+		const created: CreateAgentSessionResult = await create({
+			cwd: fixture.cwd,
+			agentDir: fixture.agentDir,
+			settingsManager,
+			resourceLoader,
+			modelRuntime: fixture.modelRuntime,
+			model: fixture.faux.getModel(),
+			sessionManager,
+			builtins: noBuiltinPackages,
+			...options.sessionOptions,
+		});
+		cleanups.push(() => created.session.dispose());
+		if (options.deferExtensions) {
+			// Interactive startup paints first, then loads the extensions with a startup reload.
+			await created.session.bindExtensions({ uiContext: createTestUiContext() });
+			await created.session.reload({ reason: "startup" });
+			fixture.restoreFauxApi();
+		}
+		return created.session;
+	}
+
+	/** A first process loads the deferred tool with tool_search and quits; returns the stored session file. */
+	async function loadDocsSearchAndQuit(fixture: Fixture): Promise<string> {
+		const manager = SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const first = await startSession(fixture, manager);
+		fixture.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("tool_search", { query: "search the docs", limit: 1 })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("loaded"),
+		]);
+		await first.prompt("load");
+		expect(first.getActiveToolNames()).toContain("mcp__docs__search");
+		await first.dispose();
+		return manager.getSessionFile()!;
+	}
+
+	/** Resume the stored session with a server that connects only after startup finished. */
+	async function resume(
+		fixture: Fixture,
+		sessionFile: string,
+		options: Parameters<typeof startSession>[2] = {},
+	): Promise<{ session: Awaited<ReturnType<typeof startSession>>; connectServer: () => void }> {
+		let connectServer!: () => void;
+		const serverReady = new Promise<void>((resolve) => {
+			connectServer = resolve;
+		});
+		const session = await startSession(fixture, SessionManager.open(sessionFile, undefined, fixture.cwd), {
+			...options,
+			serverReady,
+		});
+		return { session, connectServer };
+	}
+
+	it.each([
+		{ startup: "eager", deferExtensions: false },
+		{ startup: "deferred extension load", deferExtensions: true },
+	])(
+		"declares tools tool_search loaded in the stored session once their server connects ($startup)",
+		async ({ deferExtensions }) => {
+			const fixture = await createFixture();
+			const sessionFile = await loadDocsSearchAndQuit(fixture);
+
+			const { session: resumed, connectServer } = await resume(fixture, sessionFile, { deferExtensions });
+
+			// The stored transcript declared the tool, so the resumed session must keep declaring it.
+			expect(getCurrentSystemMessage(resumed.messages)?.toolsAdded?.map((tool) => tool.name)).toContain(
+				"mcp__docs__search",
+			);
+			connectServer();
+			await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+			expect(resumed.getActiveToolNames()).toContain("mcp__docs__search");
+			fixture.faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("mcp__docs__search", { query: "again" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+			await resumed.prompt("use it");
+
+			const result = resumed.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "mcp__docs__search",
+			);
+			expect(getMessageText(result)).toBe("again guide\nagain faq");
+			expect(
+				resumed.messages.filter((message) => message.role === "system" && (message.toolsRemoved ?? []).length > 0),
+			).toEqual([]);
+		},
+	);
+
+	it("keeps the built-in loadout --no-builtin-tools asked for when it restores the stored session's other tools", async () => {
+		const fixture = await createFixture();
+		const sessionFile = await loadDocsSearchAndQuit(fixture);
+
+		const { session: resumed, connectServer } = await resume(fixture, sessionFile, {
+			sessionOptions: { noTools: "builtin" },
+		});
+		connectServer();
+		await vi.waitFor(() => expect(resumed.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search"));
+
+		// The stored transcript declared read and bash; the flag, not the transcript, decides them.
+		const active = resumed.getActiveToolNames();
+		expect(active).toContain("mcp__docs__search");
+		expect(active).not.toContain("read");
+		expect(active).not.toContain("bash");
 	});
 });

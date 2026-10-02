@@ -159,14 +159,28 @@ export function _preparePromptAndToolLoadout(
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }
 
-/** Restore registered tools from the selected transcript, not another branch's live state. */
-export function _restoreToolsFromTranscript(this: AgentSession): void {
+/**
+ * Restore registered tools from the selected transcript, not another branch's live state.
+ *
+ * `keepLoadout` is for a session whose creator already chose its loadout (every `createAgentSession`
+ * does, from `--tools`, `--no-builtin-tools` and the `defaultTools` setting). That choice stays
+ * authoritative for built-in tools, so only the other tools the transcript declared are added to it:
+ * the ones an extension or `tool_search` activated, such as MCP tools that are not registered until
+ * their server connects. Without it the transcript replaces the loadout.
+ */
+export function _restoreToolsFromTranscript(this: AgentSession, options?: { keepLoadout?: boolean }): void {
 	this._pendingToolNames.clear();
 	const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 	if (!current) return;
-	const names = (current.toolsAdded ?? []).map((tool) => tool.name);
-	this._pendingToolNames = new Set(names);
-	this._setActiveTools(names);
+	const declared = (current.toolsAdded ?? []).map((tool) => tool.name);
+	if (!options?.keepLoadout) {
+		this._pendingToolNames = new Set(declared);
+		this._setActiveTools(declared);
+		return;
+	}
+	const restored = declared.filter((name) => !this._baseToolDefinitions.has(name));
+	this._pendingToolNames = new Set(restored);
+	this._setActiveTools([...this.getActiveToolNames(), ...restored]);
 }
 
 // =========================================================================
