@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)). SDK consumers of the exported `McpOAuthCredentialStore` must now pass the server name to `forServer`, `tokens`, `remove` and `removeAsync`.
+
 ### Added
 
 - Added `quietStartup: "header"`, which keeps the startup header but hides the model scope line. `/settings` offers it alongside `true` and `false`.
@@ -9,7 +13,6 @@
 
 ### Changed
 
-- MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)).
 - Cancelling a login started from a `/login` menu now returns to that menu.
 - The "Cloud Providers" section of the [Providers](docs/providers.md) docs page is now "Provider Specific Config".
 - Codemode costs fewer prompt tokens. The `codemode` description points to the new [Codemode](docs/codemode.md) reference for the `models` API, which the model reads when it needs it, and declared tools say in one line how scripts call them and what the call resolves to instead of repeating their full declaration. The MCP server section of the system prompt only explains the ways of reaching tools that its servers use, and the system prompt points to the new reference.
@@ -28,7 +31,7 @@
 - `/login` and `/logout` no longer label every OAuth sign-in as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
 - The startup header logo no longer renders with gaps in Apple Terminal; it shows a text `∀ Atomic` wordmark with the version and session details instead.
 - Slash command autocompletion now triggers when the input starts with whitespace ([#10218](https://github.com/earendil-works/pi/pull/10218) by [@haoqixu](https://github.com/haoqixu)).
-- Color no longer bleeds past mouse selections and search highlights in fullscreen mode when a styled token ends at the highlight boundary ([#10169](https://github.com/earendil-works/pi/issues/10169)).
+- Color no longer bleeds past mouse selections in fullscreen mode when a styled token ends at the selection boundary ([#10169](https://github.com/earendil-works/pi/issues/10169)).
 - The transcript retains less memory per rendered message; a long assistant message keeps about a fifth of the heap it kept before.
 
 ## [0.9.25] - 2026-10-01
