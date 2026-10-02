@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.26-alpha.2] - 2026-10-02
+
 ### Added
 
 - Added `pi.registerProviderAlias({ id, provider, name })` for separate account logins that inherit a provider's model catalog and request behavior without copying its implementation. Existing credentials under the alias ID are preserved.
