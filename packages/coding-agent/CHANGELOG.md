@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.26-alpha.3] - 2026-10-03
+
 ### Added
 
 - OAuth sign-in screens now show a copy shortcut for the sign-in URL, including `/mcp login`. Use Ctrl+X or configure `app.auth.copyUrl`; existing message and workflow shortcuts are unchanged.
