@@ -341,6 +341,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
+      if (receivedBeforeStageStart) throw new Error("Intercom session retired before pending-stage delivery; message remains queued");
       return;
     }
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
@@ -1118,8 +1119,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     await ensureConnected("startup");
-    await pendingStageDelivery.deliverPending((from, message) =>
-      handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
+    const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
+      if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
+      const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
+      return typeof id === "string" ? [id] : [];
+    });
+    await pendingStageDelivery.deliverPending(
+      (from, message) => handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
+      { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
     );
   });
 

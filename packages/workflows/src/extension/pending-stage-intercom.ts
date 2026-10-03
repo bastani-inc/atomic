@@ -10,6 +10,7 @@ import {
 	workflowBoundaryHops,
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
+import { type StickyStageDeliveryStatus, stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type {
@@ -384,7 +385,11 @@ function possibleStageRows(
 	runs: ReturnType<Store["runs"]>,
 	rootRunId: string,
 	rootRun: ReturnType<Store["runs"]>[number],
-): { readonly target: string; readonly queuedCount: number }[] {
+): {
+	readonly target: string;
+	readonly queuedCount: number;
+	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+}[] {
 	if (isTerminalRunStatus(rootRun.status)) return [];
 	const stickyQueued = (rootRun.pendingStageMessages ?? []).filter(
 		(entry) => entry.sticky === true && entry.status === "queued",
@@ -400,7 +405,11 @@ function possibleStageRows(
 		const segments = stickySegments(entry);
 		return !(segments !== undefined && segments.length === 1 && segments[0] === "**");
 	});
-	const rows: { readonly target: string; readonly queuedCount: number }[] = [];
+	const rows: {
+		readonly target: string;
+		readonly queuedCount: number;
+		readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+	}[] = [];
 	for (const scanEntry of rootRun.possibleStages ?? []) {
 		const rowSegments = splitStagePathSegments(scanEntry);
 		if (rowSegments.length === 0 || rowSegments.some((segment) => segment.length === 0)) continue;
@@ -426,6 +435,12 @@ function possibleStageRows(
 			return segments !== undefined && segments.length === 1 && segments[0] === "**";
 		}).length,
 	});
+	const statuses = stickyStageDeliveryStatuses(runs, rootRunId);
+	for (let index = 0; index < rows.length; index++) {
+		const row = rows[index]!;
+		const deliveryStates = statuses.filter((status) => status.target === row.target);
+		if (deliveryStates.length > 0) rows[index] = { ...row, deliveryStates };
+	}
 	return rows;
 }
 
@@ -803,6 +818,8 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 			runId: match.run.id,
 			stageId: match.stage.id,
 			...(match.stage.name === match.stage.id ? {} : { stageName: match.stage.name }),
+			...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
+			admission: "transport" as const,
 		}));
 	if (records.length === 0) return false;
 	const backend = durableBackendForRun(getDurableBackend(), runs, rootRunId);

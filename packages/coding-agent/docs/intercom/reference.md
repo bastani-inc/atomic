@@ -81,7 +81,17 @@ Send material updates through Intercom to every affected workflow stage, includi
 
 Name and pattern paths remain sticky for every future matching stage until the root terminates. When shared scope or acceptance criteria change, broadcast one authoritative update to `workflow:<rootRunId>/**` (or a narrower path pattern) rather than enumerating stages: `**` reaches every live stage now and every future descendant. A syntactically valid path outside the persisted known set still queues and returns `notInKnownSet`; if it never delivers, root-terminal settlement sends the correlated undeliverable notification. A sticky entry delivered at least once is not reported undeliverable.
 
-The workflows extension persists up to **50 queued messages per target** with workflow state. Messages survive resume/replay and broker restart, and logical message IDs prevent redelivery to the same materialized stage across stage-attempt restarts. When a matching stage session initializes, it receives the FIFO entries through the ordinary Intercom inbound path before its first model turn, under the heading **Messages received before you started**, with sender identity and `Sent:` timestamps visible separately from the task prompt.
+The `[future]` queued count is the number of retained sticky messages, not the number unread by a particular stage. A message remains queued for later matches after earlier stages receive it. Inspect the per-stage `deliveryStates` in `intercom list` and `workflow({ action: "status", runId: "<rootRunId>" })` to check receipt or why delivery was skipped. `delivered` confirms admission to stage context, not that the model followed the instruction. `receipt-unverified` means only transport delivery or an older receipt is known; inspect the stage transcript before resending.
+
+| State | What to do |
+| --- | --- |
+| `queued` | Wait for the matching stage to finish startup. |
+| `session-replaced` | Check startup status. The new session must receive retained context before its first turn. |
+| `delivery-unavailable` | Enable Intercom for that stage and keep it in the workflow invocation group. |
+| `stage-terminal` | Steer a live stage or start separately authorized work; the ended stage cannot consume the update. |
+| `root-unresolved` | Check the reported ownership problem before retrying. Preserve the run ID and diagnostic when reporting it. |
+
+The workflows extension persists up to **50 queued messages per target** with workflow state. Messages survive resume/replay and broker restart. Reusing a stage's existing session transcript does not duplicate acknowledged messages; a replacement session with a new transcript receives the retained sticky context again. When a matching stage session initializes, it receives the FIFO entries through the ordinary Intercom inbound path before its first model turn, under the heading **Messages received before you started**, with sender identity and `Sent:` timestamps visible separately from the task prompt.
 
 Only a workflow invocation member with eligible invocation-control authority can queue to its invocation-owned stages; this includes a main-chat session that explicitly joined `workflow:<rootRunId>`. Subgroup peers and another root run remain refused even if they add that membership. An explicit stage `group: "default"` is a shared-group escape, is not workflow-owned, and does not receive pending invocation delivery. An ineligible attempt is refused with `Target workflow run is in a different intercom group`. The 51st queued message is refused with `Pending stage message queue is full (limit 50)` rather than evicting an earlier entry.
 

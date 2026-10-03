@@ -216,7 +216,13 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 		async recordPendingStageMessageDeliveries(
 			runId: string,
 			messageId: string,
-			records: readonly { readonly runId: string; readonly stageId: string; readonly stageName?: string }[],
+			records: readonly {
+				readonly runId: string;
+				readonly stageId: string;
+				readonly stageName?: string;
+				readonly sessionId?: string;
+				readonly admission?: "context" | "transport";
+			}[],
 			deliveredAt: string,
 			backend: DurableWorkflowBackend,
 		): Promise<boolean> {

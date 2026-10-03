@@ -160,7 +160,7 @@ function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
 	return `- \`${stage.target}\` [future] ${stage.queuedCount} queued message${
 		stage.queuedCount === 1 ? "" : "s"
-	}`;
+	}${(stage.deliveryStates ?? []).map((delivery) => `\n  delivery ${delivery.messageId} stage ${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session ${delivery.sessionId}`} ${delivery.state} — ${delivery.reason}`).join("")}`;
 }
 
 interface IntercomToolDeps {

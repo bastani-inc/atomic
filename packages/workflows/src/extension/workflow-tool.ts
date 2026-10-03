@@ -202,6 +202,7 @@ export function makeExecuteWorkflowTool(
 					Date.now(),
 					{
 						toolControlRegistry,
+						allRuns: capturedRuns,
 						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
 						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
 					},

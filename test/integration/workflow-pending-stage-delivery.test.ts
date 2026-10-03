@@ -4243,3 +4243,243 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		}
 	}
 });
+
+for (const scenario of ["startup replacement", "durable acknowledgment replay"] as const)
+	test(`sticky broadcast reaches real later-stage context and transcript before first turn after ${scenario} (#3406)`, async () => {
+		const { createHarness, getMessageText } = await import("../../packages/coding-agent/test/suite/harness.js");
+		const { readText } = await import("../helpers/runtime.js");
+		const { fauxAssistantMessage } = await import("@bastani/pi-ai/compat");
+		const { SettingsManager } = await import("../../packages/coding-agent/src/core/settings-manager.js");
+		const store = createStore();
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const owner = extensionFixture("issue-3406-owner", "owner", undefined, "default");
+		const sender = extensionFixture("issue-3406-sender", "sender");
+		intercom(owner.pi as never);
+		intercom(sender.pi as never);
+		const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+		const stages: Awaited<ReturnType<typeof createHarness>>[] = [];
+		const marker = "ISSUE-3406-STICKY-BEFORE-FIRST-TURN";
+		const firstTurnContexts: boolean[] = [];
+		let replaced = false;
+		let replayFile: string | undefined;
+		const persist = backend.persistPendingStageMessages.bind(backend);
+		let acknowledgmentFailed = false;
+		const acknowledgment = vi
+			.spyOn(backend, "persistPendingStageMessages")
+			.mockImplementation(async (runId, messages) => {
+				if (
+					scenario === "durable acknowledgment replay" &&
+					!acknowledgmentFailed &&
+					messages.some((entry) => entry.deliveries?.some((delivery) => delivery.admission === "context"))
+				) {
+					acknowledgmentFailed = true;
+					return false;
+				}
+				return persist(runId, messages);
+			});
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					const stage = await createHarness({
+						sessionManager:
+							replayFile === undefined
+								? SessionManager.create(repoRoot, join(agentDir, "issue-3406-stage"))
+								: SessionManager.open(replayFile),
+						orchestrationContext: options?.orchestrationContext,
+						settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
+						extensionFactories: [
+							intercom,
+							(pi) => {
+								pi.on("context", (event) => {
+									if (options?.orchestrationContext?.workflowStageName === "later")
+										firstTurnContexts.push(
+											event.messages.some((message) => getMessageText(message).includes(marker)),
+										);
+								});
+							},
+						],
+					});
+					stage.setResponses([fauxAssistantMessage("done")]);
+					stages.push(stage);
+					if (options?.orchestrationContext?.workflowStageName === "later" && !replaced) {
+						replaced = true;
+						if (scenario === "durable acknowledgment replay") {
+							await assert.rejects(stage.session.bindExtensions({}), /Extension startup failed/);
+							replayFile = stage.session.sessionFile;
+							assert.ok(replayFile);
+							assert.match(await readText(replayFile), new RegExp(marker));
+							assert.deepEqual(store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+						} else await stage.session.bindExtensions({});
+						await stage.session.dispose();
+						throw new Error("503 service unavailable after extension startup");
+					}
+					return { session: stage.session as unknown as StageSessionRuntime };
+				},
+			},
+		);
+		const definition = workflow({
+			name: "issue-3406",
+			description: "",
+			inputs: {},
+			outputs: { result: Type.String() },
+			run: async (ctx) => {
+				await ctx.stage("first", { tools: ["intercom"] }).prompt("first task");
+				const sent = await executeIntercom(sender, { action: "send", to: `${GROUP}/**`, message: marker });
+				assert.equal(sent.details.queued, true, sent.content[0]?.text);
+				const result = await ctx
+					.stage("later", {
+						tools: ["intercom"],
+						settingsManager: SettingsManager.inMemory({
+							retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+						}),
+					})
+					.prompt("later task");
+				await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+				const listing = await executeIntercom(sender, { action: "list" });
+				assert.match(listing.content[0]?.text ?? "", /delivery .* stage .* delivered/);
+				return { result: String(result) };
+			},
+		});
+		try {
+			await owner.start();
+			await sender.start();
+			backend.registerWorkflow({
+				workflowId: RUN_ID,
+				name: "issue-3406",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+			});
+			const result = await run(definition, {}, { runId: RUN_ID, store, adapters });
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.equal(stages.length, 3);
+			const later = stages[2];
+			assert.ok(later);
+			assert.ok(
+				later.session.messages.some((message) => getMessageText(message).includes(marker)),
+				"sticky message must reach later stage context",
+			);
+			assert.ok(later.session.sessionFile);
+			const transcript = await readText(later.session.sessionFile);
+			assert.match(transcript, new RegExp(marker));
+			assert.deepEqual(firstTurnContexts, [true]);
+			assert.equal(later.session.messages.filter((message) => getMessageText(message).includes(marker)).length, 1);
+			const receipts = store.runs()[0]?.pendingStageMessages?.[0]?.deliveries ?? [];
+			assert.equal(
+				receipts.filter((receipt) => receipt.admission === "context").length,
+				scenario === "startup replacement" ? 2 : 1,
+			);
+			assert.equal(receipts.at(-1)?.sessionId, later.session.sessionId);
+			assert.ok(transcript.indexOf(marker) < transcript.indexOf('"role":"assistant"'));
+		} finally {
+			acknowledgment.mockRestore();
+			for (const stage of stages) await stage.cleanup();
+			disposeBridge();
+			await sender.shutdown();
+			await owner.shutdown();
+			setDurableBackend(undefined);
+		}
+	});
+
+test("retired real startup context cannot acknowledge a dropped sticky message (#3406)", async () => {
+	const { createHarness } = await import("../../packages/coding-agent/test/suite/harness.js");
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const owner = extensionFixture("issue-3406-retired-owner", "owner", undefined, "default");
+	const sender = extensionFixture("issue-3406-retired-sender", "sender");
+	intercom(owner.pi as never);
+	intercom(sender.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	let stage: Awaited<ReturnType<typeof createHarness>> | undefined;
+	try {
+		await owner.start();
+		await sender.start();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "retired-startup",
+			inputs: {},
+			status: "running",
+			stages: [
+				{
+					id: "retired-id",
+					name: "retired",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		backend.registerWorkflow({
+			workflowId: RUN_ID,
+			name: "retired-startup",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const sent = await executeIntercom(sender, {
+			action: "send",
+			to: `${GROUP}/**`,
+			message: "ISSUE-3406-RETIRED-CONTEXT",
+		});
+		assert.equal(sent.details.queued, true);
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, "retired-id", "retired");
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					stage = await createHarness({
+						sessionManager: SessionManager.create(repoRoot, join(agentDir, "issue-3406-retired-stage")),
+						orchestrationContext: options?.orchestrationContext,
+						extensionFactories: [intercom],
+					});
+					return { session: stage.session as unknown as StageSessionRuntime };
+				},
+			},
+		);
+		const retiringDelivery: typeof delivery = {
+			...delivery,
+			deliverPending(deliver, recipient) {
+				assert.ok(stage);
+				stage.sessionManager.newSession();
+				return delivery.deliverPending(deliver, recipient);
+			},
+		};
+		const creationError = await adapters
+			.agentSession!.create(
+				{
+					orchestrationContext: {
+						kind: "workflow-stage",
+						workflowRunId: RUN_ID,
+						workflowStageId: "retired-id",
+						workflowStageName: "retired",
+						constraints: { disableWorkflowTool: true },
+						intercomGroup: GROUP,
+						pendingStageDelivery: retiringDelivery,
+					},
+				},
+				{ runId: RUN_ID, stageId: "retired-id", stageName: "retired", executionMode: "non_interactive" },
+			)
+			.then(
+				() => undefined,
+				(error: Error) => error,
+			);
+		const entry = store.runs()[0]?.pendingStageMessages?.[0];
+		assert.equal(entry?.status, "queued");
+		assert.deepEqual(entry?.deliveries, [], "a non-live context must not generate a delivery receipt");
+		assert.match(creationError?.message ?? "", /Extension startup failed/);
+		assert.ok(stage);
+		assert.equal(stage.eventsOfType("turn_start").length, 0);
+	} finally {
+		await stage?.cleanup();
+		disposeBridge();
+		await sender.shutdown();
+		await owner.shutdown();
+		setDurableBackend(undefined);
+	}
+});

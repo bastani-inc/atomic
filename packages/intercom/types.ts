@@ -38,11 +38,21 @@ export interface WorkflowRunParentAnnouncement {
 	readonly stageKeys: readonly string[];
 }
 
+export interface WorkflowStickyDeliveryState {
+	readonly messageId: string;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly sessionId?: string;
+	readonly state: string;
+	readonly reason: string;
+}
+
 export interface WorkflowPossibleStageAnnouncement {
 	/** Canonical depth-faithful path target, e.g. `workflow:<rootRunId>/orchestrator-*`. */
 	readonly target: string;
 	/** Current number of queued sticky entries matching this target. */
 	readonly queuedCount: number;
+	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
 }
 
 export interface WorkflowFutureStageRosterEntry {
@@ -51,6 +61,7 @@ export interface WorkflowFutureStageRosterEntry {
 	readonly target: string;
 	readonly queuedCount: number;
 	readonly group: string;
+	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
 }
 
 export interface SessionDirectory {

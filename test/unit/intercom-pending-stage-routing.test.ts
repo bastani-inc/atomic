@@ -1312,7 +1312,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		dispose();
 	});
 
-	test("queued sticky messages raise the matching row counts and the broadcast count", async () => {
+	test("queued sticky messages expose row counts and per-stage delivery state (#3406)", async () => {
 		const { routePayload, queueSticky, dispose } = rowHarness({
 			possibleStages: ["orchestrator-*", "setup"],
 		});
@@ -1331,9 +1331,99 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		assert.deepEqual(routePayload()?.possibleStages, [
 			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 2 },
 			{ target: `workflow:${RUN_ID}/setup`, queuedCount: 0 },
-			{ target: `workflow:${RUN_ID}/**`, queuedCount: 1 },
+			{
+				target: `workflow:${RUN_ID}/**`,
+				queuedCount: 1,
+				deliveryStates: [
+					{
+						messageId: "s3",
+						target: `workflow:${RUN_ID}/**`,
+						runId: RUN_ID,
+						stageId: "reviewer-id",
+						state: "queued",
+						reason: "No delivery receipt; stage startup must drain before its first turn",
+					},
+				],
+			},
 		]);
 		dispose();
+	});
+
+	test("workflow status distinguishes acknowledged sessions and actionable sticky skips (#3406)", async () => {
+		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
+		const { summarizeRunSnapshot } = await import(
+			"../../packages/workflows/src/extension/workflow-status-summary.js"
+		);
+		const { store, queueSticky, dispose } = rowHarness({ childRun: true });
+		try {
+			await queueSticky("status-3406", `workflow:${RUN_ID}/**`);
+			const reviewer = store.runs()[0]!.stages[0]!;
+			Object.assign(reviewer, { status: "running", sessionId: "current-session" });
+			store.recordStageStart(RUN_ID, reviewer);
+			for (const stage of [
+				{
+					id: "unavailable",
+					name: "unavailable",
+					status: "pending" as const,
+					pendingStageDeliveryAvailable: false,
+				},
+				{
+					id: "ended",
+					name: "ended",
+					status: "failed" as const,
+					pendingStageDeliveryAvailable: true,
+					error: "Intercom session retired before pending-stage delivery; message remains queued",
+				},
+				{ id: "tool", name: "tool", status: "pending" as const, nodeKind: "tool" as const },
+				{ id: "prompt", name: "prompt", status: "pending" as const, replayKey: "prompt:input:1" },
+			])
+				store.recordStageStart(RUN_ID, { ...stage, parentIds: [], toolEvents: [] });
+			const states = () => {
+				const detail = inspectRun(RUN_ID, { store });
+				assert.ok(detail.ok);
+				assert.deepEqual(
+					summarizeRunSnapshot(store.runs()[0]!, Date.now(), { allRuns: store.runs() }).deliveryStates,
+					detail.detail.deliveryStates,
+				);
+				return detail.detail.deliveryStates ?? [];
+			};
+			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "queued");
+			assert.equal(states().find((delivery) => delivery.stageId === "unavailable")?.state, "delivery-unavailable");
+			assert.equal(
+				states().find((delivery) => delivery.stageId === "ended")?.reason,
+				"Intercom session retired before pending-stage delivery; message remains queued",
+			);
+			assert.equal(
+				states().some((delivery) => ["tool", "prompt", "boundary-id"].includes(delivery.stageId)),
+				false,
+			);
+			await store.recordPendingStageMessageDeliveries(
+				RUN_ID,
+				"status-3406",
+				[{ runId: RUN_ID, stageId: reviewer.id }],
+				"2026-10-02T00:00:00Z",
+				getDurableBackend(),
+			);
+			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "receipt-unverified");
+			await store.recordPendingStageMessageDeliveries(
+				RUN_ID,
+				"status-3406",
+				[{ runId: RUN_ID, stageId: reviewer.id, sessionId: "current-session", admission: "context" }],
+				"2026-10-02T00:00:01Z",
+				getDurableBackend(),
+			);
+			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "delivered");
+			reviewer.sessionId = "replacement-session";
+			store.recordStageStart(RUN_ID, reviewer);
+			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "receipt-unverified");
+			const boundary = store.runs()[0]!.stages.find((stage) => stage.id === "boundary-id")!;
+			delete boundary.workflowChildRun;
+			store.recordStageStart(RUN_ID, boundary);
+			assert.equal(states().find((delivery) => delivery.runId === CHILD_RUN_ID)?.state, "root-unresolved");
+		} finally {
+			dispose();
+		}
 	});
 
 	test("rows disappear when the owning run reaches a terminal status", async () => {
