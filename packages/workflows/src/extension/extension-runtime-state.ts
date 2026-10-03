@@ -332,7 +332,6 @@ export function createWorkflowExtensionRuntimeState(
 		discoveryRef.current?.sources.find((source) => source.id === normalizedName)?.filePath ??
 		resolveBuiltinDefinitionSource(normalizedName);
 	let databasePreparation: { key: string; promise: Promise<void> } | undefined;
-	let databaseAnnounced = false;
 	const prepareDatabase = (): Promise<void> => {
 		const cwd = resolveCwd();
 		const trusted = pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? false;
@@ -347,19 +346,25 @@ export function createWorkflowExtensionRuntimeState(
 	};
 	const databaseReady = (ctx?: DurabilityWarningContext): void => {
 		const owner = getDbosProcessOwner();
-		const diagnostics = owner.databaseDiagnostics?.();
-		if (databaseAnnounced || owner.state !== "ready" || diagnostics === undefined) return;
-		databaseAnnounced = true;
+		const describeDatabase = owner.databaseDiagnostics;
+		if (owner.state !== "ready" || describeDatabase === undefined) return;
+		if (owner.announcedDatabaseDiagnostics === describeDatabase) return;
+		const diagnostics = describeDatabase();
+		const dockerFallback = diagnostics.provider === "docker";
 		let host = "unknown host";
 		try {
 			host = new URL(diagnostics.url).host;
 		} catch {}
-		const message = `Workflow database: ${diagnostics.provider === "docker" ? "Docker fallback" : diagnostics.provider} (${host})`;
+		const message = `Workflow database: ${dockerFallback ? "Docker fallback" : diagnostics.provider} (${host})`;
 		if (ctx?.hasUI && ctx.ui?.notify) {
 			try {
 				ctx.ui.notify(message, "info");
+				owner.announcedDatabaseDiagnostics = describeDatabase;
 			} catch {}
-		} else console.error(message);
+		} else if (dockerFallback) {
+			owner.announcedDatabaseDiagnostics = describeDatabase;
+			console.error(message);
+		}
 	};
 	const startupDiscovery = discoverStartupWorkflowsSync();
 	const runtimeRef: { current: ExtensionRuntime } = {

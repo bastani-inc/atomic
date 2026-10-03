@@ -50,19 +50,64 @@ test.sequential("ready database notice identifies provider and host without expo
 	}
 });
 
-test.sequential("headless database notices go to stderr (#3416)", async () => {
+test.sequential("headless sessions write only the Docker fallback notice to stderr (#3416)", async () => {
+	for (const provider of ["configured", "managed", "docker"]) {
+		resetDbosLifecycleForTests();
+		setDurableBackend(new InMemoryDurableBackend());
+		const owner = getDbosProcessOwner();
+		owner.state = "ready";
+		owner.databaseDiagnostics = () => ({ provider, url: "postgresql://user:password@localhost/db" });
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const notifications: string[] = [];
+		try {
+			const state = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
+			await state.runtimeForContext({ hasUI: false } as PiExecuteContext).dispatch({ action: "list" });
+			await state.runtimeProxy.dispatch({ action: "list" });
+			const ui = { hasUI: true, ui: { notify: (message: string) => notifications.push(message) } };
+			await state.runtimeForContext(ui as PiExecuteContext).dispatch({ action: "list" });
+			if (provider === "docker") {
+				assert.deepEqual(stderr.mock.calls, [["Workflow database: Docker fallback (localhost)"]]);
+				assert.deepEqual(notifications, []);
+			} else {
+				assert.deepEqual(stderr.mock.calls, []);
+				assert.deepEqual(notifications, [`Workflow database: ${provider} (localhost)`]);
+			}
+		} finally {
+			stderr.mockRestore();
+		}
+	}
+});
+
+test.sequential("database notice retries a failed UI delivery and is not repeated after reload (#3416)", async () => {
 	setDurableBackend(new InMemoryDurableBackend());
 	const owner = getDbosProcessOwner();
 	owner.state = "ready";
-	owner.databaseDiagnostics = () => ({ provider: "docker", url: "postgresql://user:password@localhost/db" });
-	const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
-	try {
-		const state = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
-		await state.runtimeForContext({ hasUI: false } as PiExecuteContext).dispatch({ action: "list" });
-		assert.deepEqual(stderr.mock.calls, [["Workflow database: Docker fallback (localhost)"]]);
-	} finally {
-		stderr.mockRestore();
-	}
+	owner.databaseDiagnostics = () => ({ provider: "managed", url: "postgresql://user:password@localhost:5439/db" });
+	const notifications: string[] = [];
+	let notifyFails = true;
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string) => {
+				if (notifyFails) throw new Error("UI unavailable");
+				notifications.push(message);
+			},
+		},
+	} as PiExecuteContext;
+	const beforeReload = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
+	await beforeReload.runtimeForContext(ctx).dispatch({ action: "list" });
+	assert.deepEqual(notifications, []);
+	notifyFails = false;
+	await beforeReload.runtimeForContext(ctx).dispatch({ action: "list" });
+	const afterReload = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
+	await afterReload.runtimeForContext(ctx).dispatch({ action: "list" });
+	assert.deepEqual(notifications, ["Workflow database: managed (localhost:5439)"]);
+	owner.databaseDiagnostics = () => ({ provider: "docker", url: "postgresql://user:password@localhost:5432/db" });
+	await afterReload.runtimeForContext(ctx).dispatch({ action: "list" });
+	assert.deepEqual(notifications, [
+		"Workflow database: managed (localhost:5439)",
+		"Workflow database: Docker fallback (localhost:5432)",
+	]);
 });
 
 describe("workflow durability degradation warning surface", () => {

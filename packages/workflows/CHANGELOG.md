@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added `workflows.durability.systemDatabaseUrl` and `systemDatabaseUrlFile` in global and trusted project settings to choose a persistent workflow database without launcher-specific environment configuration. `DBOS_SYSTEM_DATABASE_URL` retains precedence; explicit selections never provision embedded PostgreSQL or Docker. The first workflow action reports the selected provider and host without credentials. Existing workflow-path arrays remain supported alongside the new object form with `paths` ([#3416](https://github.com/bastani-inc/atomic/issues/3416)).
+- Added `workflows.durability.systemDatabaseUrl` and `systemDatabaseUrlFile` in global and trusted project settings to choose a persistent workflow database without launcher-specific environment configuration. `DBOS_SYSTEM_DATABASE_URL` retains precedence; explicit selections never provision embedded PostgreSQL or Docker. Interactive and RPC sessions report the selected provider and host without credentials on the first workflow action; headless sessions print only a Docker fallback selection to stderr. Existing workflow-path arrays remain supported alongside the new object form with `paths` ([#3416](https://github.com/bastani-inc/atomic/issues/3416)).
 
 ### Fixed
 

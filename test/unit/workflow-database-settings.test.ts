@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SettingsManager } from "@bastani/atomic";
 import { afterEach, beforeEach, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -64,6 +64,10 @@ async function settings() {
 	);
 }
 
+function directories() {
+	return { global: agentDir, project: join(root, ".atomic") };
+}
+
 test("CLI honors trusted project then global workflow database settings without local provisioning (#3416)", async () => {
 	await settings();
 	let provisions = 0;
@@ -97,14 +101,13 @@ test("URL files trim whitespace and resolve relative to the selected settings sc
 	await writeFile(join(root, ".atomic/direct.url"), ` ${projectUrl}\n`);
 	const global = { workflows: { durability: { systemDatabaseUrlFile: "direct.url" } } };
 	const project = { workflows: { durability: { systemDatabaseUrlFile: "direct.url" } } };
-	assert.equal(await resolveWorkflowDatabaseSettings(global, {}, root, agentDir), globalUrl);
-	assert.equal(await resolveWorkflowDatabaseSettings(global, project, root, agentDir), projectUrl);
+	assert.equal(await resolveWorkflowDatabaseSettings(global, {}, directories()), globalUrl);
+	assert.equal(await resolveWorkflowDatabaseSettings(global, project, directories()), projectUrl);
 	assert.equal(
 		await resolveWorkflowDatabaseSettings(
 			global,
 			{ workflows: { durability: { systemDatabaseUrl: projectUrl } } },
-			root,
-			agentDir,
+			directories(),
 		),
 		projectUrl,
 	);
@@ -112,20 +115,41 @@ test("URL files trim whitespace and resolve relative to the selected settings sc
 		await resolveWorkflowDatabaseSettings(
 			{},
 			{ workflows: { durability: { systemDatabaseUrlFile: join(agentDir, "direct.url") } } },
-			root,
-			agentDir,
+			directories(),
 		),
 		globalUrl,
 	);
-	const relativeHome = `~/${relative(homedir(), join(agentDir, "direct.url"))}`;
-	assert.equal(
-		await resolveWorkflowDatabaseSettings(
-			{ workflows: { durability: { systemDatabaseUrlFile: relativeHome } } },
-			{},
-			root,
-		),
-		globalUrl,
+	const originalHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+	try {
+		assert.equal(
+			await resolveWorkflowDatabaseSettings(
+				{ workflows: { durability: { systemDatabaseUrlFile: "~/agent/direct.url" } } },
+				{},
+				directories(),
+			),
+			globalUrl,
+		);
+	} finally {
+		for (const [name, value] of Object.entries(originalHome)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+});
+
+test("relative URL files resolve beside the legacy settings file that declares them (#3416)", async () => {
+	await mkdir(join(root, ".pi"));
+	await writeFile(
+		join(root, ".pi/settings.json"),
+		JSON.stringify({ workflows: { durability: { systemDatabaseUrlFile: "direct.url" } } }),
 	);
+	await writeFile(join(root, ".pi/direct.url"), projectUrl);
+	await writeFile(join(root, ".atomic/settings.json"), JSON.stringify({ workflows: { paths: ["local.ts"] } }));
+	await writeFile(join(root, ".atomic/direct.url"), "postgresql://eve:secret@decoy.example/db");
+	await prepareWorkflowDatabaseSettings(root, true);
+	assert.equal(explicitDbosSystemDatabaseUrl(), projectUrl);
 });
 
 test("invalid explicit settings fail without exposing credentials or selecting another database (#3416)", async () => {
@@ -138,11 +162,43 @@ test("invalid explicit settings fail without exposing credentials or selecting a
 		{ systemDatabaseUrl: globalUrl, systemDatabaseUrlFile: "missing.url" },
 	]) {
 		await assert.rejects(
-			resolveWorkflowDatabaseSettings({ workflows: { durability } }, {}, root, agentDir),
+			resolveWorkflowDatabaseSettings({ workflows: { durability } }, {}, directories()),
 			(error: Error) => !error.message.includes("secret"),
 		);
 	}
-	assert.equal(await resolveWorkflowDatabaseSettings({}, {}, root, agentDir), undefined);
+	assert.equal(await resolveWorkflowDatabaseSettings({}, {}, directories()), undefined);
+});
+
+test("malformed database selections in settings files fail instead of starting a local database (#3416)", async () => {
+	for (const workflows of [globalUrl, { durability: { systemDatabaseURL: globalUrl } }]) {
+		resetDbosProcessOwner();
+		await writeFile(join(agentDir, "settings.json"), JSON.stringify({ workflows }));
+		await assert.rejects(
+			prepareWorkflowDatabaseSettings(root, true),
+			(error: Error) => error instanceof TypeError && !error.message.includes("secret"),
+		);
+		assert.equal(explicitDbosSystemDatabaseUrl(), undefined);
+	}
+	await settings();
+	await writeFile(join(root, ".atomic/settings.json"), JSON.stringify({ workflows: { durability: null } }));
+	resetDbosProcessOwner();
+	await assert.rejects(prepareWorkflowDatabaseSettings(root, true), TypeError);
+	assert.equal(explicitDbosSystemDatabaseUrl(), undefined);
+	await mkdir(join(root, ".pi"));
+	await writeFile(
+		join(root, ".pi/settings.json"),
+		JSON.stringify({ workflows: { durability: { systemDatabaseUrl: "postgresql://eve:secret@legacy.example/db" } } }),
+	);
+	await writeFile(join(root, ".atomic/settings.json"), JSON.stringify({ workflows: "bad-shape" }));
+	resetDbosProcessOwner();
+	await assert.rejects(
+		prepareWorkflowDatabaseSettings(root, true),
+		(error: Error) => error instanceof TypeError && !error.message.includes("secret"),
+	);
+	assert.equal(explicitDbosSystemDatabaseUrl(), undefined);
+	resetDbosProcessOwner();
+	await prepareWorkflowDatabaseSettings(root, false);
+	assert.equal(explicitDbosSystemDatabaseUrl(), globalUrl);
 });
 
 test("workflow paths retain array compatibility and preserve database settings when edited (#3416)", async () => {
@@ -153,7 +209,7 @@ test("workflow paths retain array compatibility and preserve database settings w
 	await manager.flush();
 	assert.deepEqual(manager.getWorkflowPaths(), ["project.ts"]);
 	assert.equal(
-		await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), root, agentDir),
+		await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), directories()),
 		projectUrl,
 	);
 	assert.deepEqual(SettingsManager.inMemory({ workflows: ["legacy.ts"] }).getWorkflowPaths(), ["legacy.ts"]);

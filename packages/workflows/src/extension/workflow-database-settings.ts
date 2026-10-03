@@ -1,26 +1,58 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getAgentDir, type Settings, SettingsManager } from "@bastani/atomic";
+import { getAgentDir, getAgentDirs, getProjectConfigDirs, type Settings, SettingsManager } from "@bastani/atomic";
 import { requestDbosSystemDatabaseUrl } from "../durable/dbos-system-database-url.js";
 
 type DatabaseSettings = NonNullable<Exclude<Settings["workflows"], string[]>>["durability"];
 
+const DATABASE_SETTING_KEYS: ReadonlySet<string> = new Set(["systemDatabaseUrl", "systemDatabaseUrlFile"]);
+
+export interface WorkflowDatabaseSettingsDirectories {
+	readonly global: string;
+	readonly project: string;
+}
+
 function databaseSettings(settings: Settings): DatabaseSettings {
-	return Array.isArray(settings.workflows) ? undefined : settings.workflows?.durability;
+	const workflows: Settings["workflows"] | null = settings.workflows;
+	if (workflows === undefined || workflows === null || Array.isArray(workflows)) return undefined;
+	if (typeof workflows !== "object") throw new TypeError("workflows must be an array of paths or an object");
+	return workflows.durability;
+}
+
+function readSettingsFile(directory: string): Settings | undefined {
+	let parsed: Settings | null;
+	try {
+		parsed = JSON.parse(readFileSync(join(directory, "settings.json"), "utf8").replace(/^\uFEFF/, ""));
+	} catch {
+		return undefined;
+	}
+	return parsed !== null && typeof parsed === "object" ? parsed : undefined;
+}
+
+function settingsDirectoryDeclaringDatabase(directories: readonly string[]): string {
+	let declaring: string | undefined;
+	for (const directory of directories) {
+		const settings = readSettingsFile(directory);
+		if (settings !== undefined && databaseSettings(settings) !== undefined) declaring ??= directory;
+	}
+	return declaring ?? directories[0]!;
 }
 
 export async function resolveWorkflowDatabaseSettings(
 	global: Settings,
 	project: Settings,
-	cwd: string,
-	agentDir = getAgentDir(),
+	directories: WorkflowDatabaseSettingsDirectories,
 ): Promise<string | undefined> {
 	const projectDatabase = databaseSettings(project);
-	const database = projectDatabase ?? databaseSettings(global);
+	const database = projectDatabase !== undefined ? projectDatabase : databaseSettings(global);
 	if (database === undefined) return undefined;
 	if (database === null || typeof database !== "object" || Array.isArray(database)) {
 		throw new TypeError("workflows.durability must be an object");
+	}
+	if (Object.keys(database).some((key) => !DATABASE_SETTING_KEYS.has(key))) {
+		throw new TypeError("workflows.durability supports only systemDatabaseUrl or systemDatabaseUrlFile");
 	}
 	const { systemDatabaseUrl: url, systemDatabaseUrlFile: file } = database;
 	if (url !== undefined && file !== undefined) {
@@ -34,7 +66,7 @@ export async function resolveWorkflowDatabaseSettings(
 		const path =
 			file.startsWith("~/") || file.startsWith("~\\")
 				? join(homedir(), file.slice(2))
-				: resolve(projectDatabase === undefined ? agentDir : join(cwd, ".atomic"), file);
+				: resolve(projectDatabase === undefined ? directories.global : directories.project, file);
 		try {
 			value = await readFile(path, "utf8");
 		} catch {
@@ -59,6 +91,10 @@ export async function prepareWorkflowDatabaseSettings(cwd: string, projectTruste
 	const manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted });
 	if (manager.drainErrors().length > 0)
 		throw new Error("Cannot read workflow database settings; repair settings.json");
-	const url = await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), cwd);
+	const projectDirectories = getProjectConfigDirs(cwd);
+	const url = await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), {
+		global: settingsDirectoryDeclaringDatabase(getAgentDirs()),
+		project: projectTrusted ? settingsDirectoryDeclaringDatabase(projectDirectories) : projectDirectories[0]!,
+	});
 	if (url !== undefined) requestDbosSystemDatabaseUrl(url);
 }
