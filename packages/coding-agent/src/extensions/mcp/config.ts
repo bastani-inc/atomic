@@ -73,6 +73,8 @@ export interface LoadedMcpConfig {
 
 const OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
 
+const RESERVED_SERVER_NAMES: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
 /** Whether an entry overrides a server defined elsewhere instead of defining one. */
 function isOverride(value: Record<string, unknown>): boolean {
 	return value.command === undefined && value.url === undefined && value.type === undefined;
@@ -172,8 +174,10 @@ export function updateMcpServerConfig(
 	patch: McpServerConfigPatch,
 	options: { override?: boolean } = {},
 ): void {
+	if (RESERVED_SERVER_NAMES.has(name))
+		throw new Error(`Invalid MCP server name "${name}": reserved object property names are not allowed`);
 	editMcpServers(path, (servers, parsed) => {
-		let server = servers?.[name];
+		let server: unknown = servers && Object.hasOwn(servers, name) ? servers[name] : undefined;
 		if (server === undefined && options.override) {
 			server = {};
 			parsed.mcpServers = { ...servers, [name]: server };

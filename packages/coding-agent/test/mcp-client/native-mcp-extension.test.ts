@@ -117,6 +117,21 @@ describe("MCP config", () => {
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers.tools, { enabled: true });
 	});
 
+	it("refuses reserved server names when writing a project override instead of touching Object.prototype", () => {
+		const project = join(setup({}, { mcpServers: {} }).cwd, ".atomic", "mcp.json");
+		for (const name of ["__proto__", "constructor", "prototype"]) {
+			assert.throws(
+				() => updateMcpServerConfig(project, name, { enabled: false }, { override: true }),
+				/Invalid MCP server name/,
+			);
+		}
+		assert.equal(Object.hasOwn(Object.prototype, "enabled"), false);
+		assert.equal(({} as Record<string, unknown>).enabled, undefined);
+
+		updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
+		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers, { toString: { enabled: false } });
+	});
+
 	// Regression: #10239.
 	it("rejects server names that differ only in - and _", () => {
 		const paths = setup({ mcpServers: { "work-files": { command: "a" }, work_files: { command: "b" } } }, {});
