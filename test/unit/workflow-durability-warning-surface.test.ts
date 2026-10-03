@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
+import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import type { ExtensionAPI, PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
@@ -26,6 +28,42 @@ function deferred<T>(): {
 	});
 	return { promise, resolve, reject };
 }
+
+test.sequential("ready database notice identifies provider and host without exposing credentials (#3416)", async () => {
+	for (const provider of ["configured", "managed", "docker"]) {
+		resetDbosLifecycleForTests();
+		setDurableBackend(new InMemoryDurableBackend());
+		const owner = getDbosProcessOwner();
+		owner.state = "ready";
+		owner.databaseDiagnostics = () => ({
+			provider,
+			url: "postgresql://alice:secret@db.example:5432/private?sslpassword=hidden#token",
+		});
+		const notifications: string[] = [];
+		const state = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
+		const ctx = { hasUI: true, ui: { notify: (message: string) => notifications.push(message) } } as PiExecuteContext;
+		await state.runtimeForContext(ctx).dispatch({ action: "list" });
+		await state.runtimeForContext(ctx).dispatch({ action: "list" });
+		assert.deepEqual(notifications, [
+			`Workflow database: ${provider === "docker" ? "Docker fallback" : provider} (db.example:5432)`,
+		]);
+	}
+});
+
+test.sequential("headless database notices go to stderr (#3416)", async () => {
+	setDurableBackend(new InMemoryDurableBackend());
+	const owner = getDbosProcessOwner();
+	owner.state = "ready";
+	owner.databaseDiagnostics = () => ({ provider: "docker", url: "postgresql://user:password@localhost/db" });
+	const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const state = createWorkflowExtensionRuntimeState({} as ExtensionAPI, {} as never);
+		await state.runtimeForContext({ hasUI: false } as PiExecuteContext).dispatch({ action: "list" });
+		assert.deepEqual(stderr.mock.calls, [["Workflow database: Docker fallback (localhost)"]]);
+	} finally {
+		stderr.mockRestore();
+	}
+});
 
 describe("workflow durability degradation warning surface", () => {
 	test.sequential("interactive and RPC actions notify the host without exposing the warning to model context", async () => {

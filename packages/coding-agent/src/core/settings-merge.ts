@@ -44,6 +44,16 @@ function deepMergeObjects(base: Record<string, unknown>, overrides: Record<strin
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
 export function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const merged = deepMergeObjects(base as Record<string, unknown>, overrides as Record<string, unknown>) as Settings;
+	if (isMergeableObject(base.workflows) || isMergeableObject(overrides.workflows)) {
+		const globalWorkflows = Array.isArray(base.workflows) ? { paths: base.workflows } : (base.workflows ?? {});
+		const projectWorkflows = Array.isArray(overrides.workflows)
+			? { paths: overrides.workflows }
+			: (overrides.workflows ?? {});
+		merged.workflows = deepMergeObjects(globalWorkflows, projectWorkflows);
+		if (!Array.isArray(overrides.workflows) && overrides.workflows?.durability !== undefined) {
+			merged.workflows.durability = overrides.workflows.durability;
+		}
+	}
 	const overrideTools = Array.isArray(overrides.defaultTools)
 		? overrides.defaultTools.filter((entry) => typeof entry === "string")
 		: undefined;

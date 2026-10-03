@@ -400,7 +400,9 @@ export class ResourceList implements Component, Focusable {
 			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const arrayKey = item.resourceType;
 		const pattern = this.getResourcePattern(item);
-		const updated = (settings[arrayKey] ?? []).filter((entry) => {
+		const configured = settings[arrayKey];
+		const paths = Array.isArray(configured) ? configured : (configured?.paths ?? []);
+		const updated = paths.filter((entry) => {
 			const stripped = /^[!+-]/.test(entry) ? entry.slice(1) : entry;
 			return stripped !== pattern;
 		});

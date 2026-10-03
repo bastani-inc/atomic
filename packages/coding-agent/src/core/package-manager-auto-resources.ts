@@ -103,14 +103,18 @@ export async function addAutoDiscoveredResources(
 		skills: (globalSettings.skills ?? []) as string[],
 		prompts: (globalSettings.prompts ?? []) as string[],
 		themes: (globalSettings.themes ?? []) as string[],
-		workflows: (globalSettings.workflows ?? []) as string[],
+		workflows: Array.isArray(globalSettings.workflows)
+			? globalSettings.workflows
+			: (globalSettings.workflows?.paths ?? []),
 	};
 	const projectOverrides = {
 		extensions: (projectSettings.extensions ?? []) as string[],
 		skills: (projectSettings.skills ?? []) as string[],
 		prompts: (projectSettings.prompts ?? []) as string[],
 		themes: (projectSettings.themes ?? []) as string[],
-		workflows: (projectSettings.workflows ?? []) as string[],
+		workflows: Array.isArray(projectSettings.workflows)
+			? projectSettings.workflows
+			: (projectSettings.workflows?.paths ?? []),
 	};
 	const userConfigDirs = getBaseDirsForScope(context, "user");
 	const projectConfigDirs = getBaseDirsForScope(context, "project");

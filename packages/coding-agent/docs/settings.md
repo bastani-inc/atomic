@@ -532,10 +532,37 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `skills` | string[] | `[]` | Local skill file paths or directories |
 | `prompts` | string[] | `[]` | Local prompt template paths or directories |
 | `themes` | string[] | `[]` | Local theme file paths or directories |
-| `workflows` | string[] | `[]` | Local workflow file paths or directories |
+| `workflows` | string[] or object | `[]` | Local workflow paths, or `{ "paths": [...], "durability": {...} }`; see [Workflow database](#workflow-database) |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.
+
+#### Workflow database
+
+Choose an existing PostgreSQL database in global or trusted project settings:
+
+```json
+{
+  "workflows": {
+    "paths": ["./workflows"],
+    "durability": {
+      "systemDatabaseUrlFile": "~/.atomic/neon/direct.url"
+    }
+  }
+}
+```
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `workflows.paths` | string[] | `[]` | Workflow resource paths in object-form settings; existing `workflows: [...]` settings remain supported |
+| `workflows.durability.systemDatabaseUrl` | string | - | PostgreSQL URL for the workflow database |
+| `workflows.durability.systemDatabaseUrlFile` | string | - | Read the PostgreSQL URL from a UTF-8 file instead of storing credentials in settings |
+
+Set only one URL source per scope. A project `durability` object replaces the global database selection; project settings are ignored unless trusted. Relative URL-file paths resolve against `~/.atomic/agent` for global settings and `.atomic` for project settings. Absolute paths and `~/` are supported. Protect credential files with permissions appropriate for your account, and do not commit them.
+
+Precedence is nonempty `DBOS_SYSTEM_DATABASE_URL`, then settings, then managed embedded PostgreSQL with Docker as its provisioning fallback. URLs and file contents are trimmed. Invalid settings or missing, empty, or invalid URL files stop workflow initialization instead of silently choosing a local database. An explicit URL never starts managed PostgreSQL or Docker, even if the endpoint is unavailable. Existing non-durable fallback warnings still apply when DBOS cannot connect.
+
+Restart Atomic after changing the database selection. Selection takes effect on the first workflow action, and Atomic reports the selected provider and host without credentials. Changing databases does not migrate existing runs; use the original database to inspect or resume them. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 
 #### packages
 
