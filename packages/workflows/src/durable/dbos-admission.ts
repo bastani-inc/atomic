@@ -1,13 +1,24 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { raceAbort } from "../shared/abort.js";
+import {
+	type DbosDatabaseDiagnostics,
+	databaseDependencyMessage,
+	redactedDatabaseMessage,
+} from "./dbos-database-diagnostics.js";
+import { getDbosProcessOwner } from "./dbos-process-owner.js";
 
 export const DBOS_ADMISSION_TIMEOUT_MS = 10_000;
 
-/** Deliberately has no raw message/cause: DBOS retries even wrapped connection errors. */
 export class DbosDependencyError extends Error {
 	readonly code = "ATOMIC_DBOS_DEPENDENCY";
-	constructor(message = "Workflow database unavailable during admission. Restore PostgreSQL before retrying.") {
-		super(message);
+	readonly admissionDetail?: string;
+	constructor(
+		message = "Workflow database unavailable during admission. Restore PostgreSQL before retrying.",
+		diagnostics: DbosDatabaseDiagnostics | null | undefined = getDbosProcessOwner().databaseDiagnostics?.(),
+		admissionDetail?: string,
+	) {
+		super(databaseDependencyMessage(message, diagnostics ?? undefined));
+		this.admissionDetail = admissionDetail === undefined ? undefined : redactedDatabaseMessage(admissionDetail);
 		this.name = "DbosDependencyError";
 	}
 }
@@ -39,6 +50,8 @@ export async function boundedAdmission<T>(
 		return await raceAbort(operation(controller.signal), controller.signal);
 	} catch (error) {
 		controller.abort(error);
+		if (isDbosDependencyError(error) && error.admissionDetail !== undefined)
+			throw new DbosDependencyError(error.admissionDetail, null);
 		throw error;
 	} finally {
 		clearTimeout(timer);

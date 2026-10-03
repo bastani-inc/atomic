@@ -514,6 +514,8 @@ Atomic checks PostgreSQL readiness and matches the server to the managed data an
 
 After attachment, Atomic checks the managed server's SQL and process identity before borrowing database connections and every five seconds while idle. Lost health discards old connections. One elected process may restart the existing managed cluster under the shared setup lock; other sessions reconnect to its verified, persisted port. Recovery never initializes missing data, signals an unrelated listener, switches to Docker, or restarts the DBOS executor.
 
+If the managed server has stopped, the next workflow database action can restart the existing cluster even when `postmaster.opts` is missing. Atomic still requires trusted ownership records, the original cluster identity, and a verified runtime. A hard identity, ownership, or filesystem failure refuses recovery rather than guessing which server or data to use.
+
 Each process makes at most three recovery attempts per check, with short
 backoffs. Later health checks retry after a cooldown if the problem persists.
 If the retained PostgreSQL runtime is damaged or missing, reinstall a complete
@@ -558,6 +560,8 @@ recovery neither starts a replacement workflow nor proves an unfinished external
 effect succeeded. Inspect `/workflow status <full-run-uuid>` for the original run
 and explicitly resume it when eligible. Do not start a duplicate run or delete
 `v18` or `v18.shared` to bypass an identity or availability error.
+
+Database-unavailable admission errors and status `dependencyError` include the selected database provider, its endpoint without credentials or URL options, and the last retained health-probe or recovery failure. A cooldown error keeps the recovery failure visible. Use that reason to repair a missing runtime or configuration; preserve data and ownership records when identity or filesystem checks fail. After repair, inspect and explicitly resume the original run ID.
 
 For an explicit `DBOS_SYSTEM_DATABASE_URL`, Atomic does not manage the external
 database. Restore that endpoint or correct its credentials and TLS settings,

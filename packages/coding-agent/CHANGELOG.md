@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed managed workflow PostgreSQL staying down after shutdown when its old launch options were missing. Database-unavailable errors and workflow status now show the provider, credential-redacted endpoint, and retained recovery refusal or failure ([#3413](https://github.com/bastani-inc/atomic/issues/3413)).
+
 ## [0.9.26-alpha.3] - 2026-10-03
 
 ### Added

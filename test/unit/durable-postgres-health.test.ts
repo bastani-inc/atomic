@@ -121,7 +121,7 @@ test("a persistent monitoring read timeout is a dependency failure that never in
 		assert.equal(isDbosDependencyError(failure), true);
 	}
 	assert.equal(probes, 6, "each check repeats the read-only probe exactly once");
-	assert.equal(isDbosDependencyError(health.lastFailure), true);
+	assert.match(health.lastFailure?.message ?? "", /did not answer a health check/);
 	assert.equal(recoveries, 0);
 	assert.equal(invalidations, 0);
 	slow = false;
@@ -308,6 +308,70 @@ test("a validation that never gets an answer is a bounded transient failure that
 	assert.equal(isDbosDependencyError(failure), true);
 	assert.equal(validate.mock.calls.length, 2);
 	assert.equal(invalidations, 0);
-	assert.equal(health.lastFailure, timeout);
+	assert.equal(health.lastFailure?.message, timeout.message);
 	await health.stop();
+});
+
+test("retained recovery refusal survives cooldown and redacts underlying credentials (#3413)", async () => {
+	const url = "postgresql://private-user:p%40ssword@127.0.0.1:5439/workflows?token=private-token";
+	let now = 0;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		url: () => url,
+		probe: async () => undefined,
+		recover: async () => {
+			recoveries++;
+			throw new Error(`Owned runtime missing: ${url}; password=p@ssword token=private-token`, {
+				cause: new Error("private-token"),
+			});
+		},
+		wait: async () => {},
+		now: () => now,
+	});
+	try {
+		for (const expected of [/bounded recovery/, /cooling down/]) {
+			await assert.rejects(health.check(), (error: Error) => {
+				assert.equal(isDbosDependencyError(error), true);
+				assert.match(error.message, expected);
+				assert.match(error.message, /Provider: managed; endpoint: postgresql:\/\/127\.0\.0\.1:5439\/workflows/);
+				assert.match(error.message, /Owned runtime missing/);
+				assert.doesNotMatch(error.stack ?? "", /private-user|p%40ssword|p@ssword|private-token/);
+				assert.equal(error.cause, undefined);
+				return true;
+			});
+			assert.match(health.lastFailure?.message ?? "", /Owned runtime missing/);
+			assert.doesNotMatch(health.lastFailure?.stack ?? "", /private-user|p%40ssword|p@ssword|private-token/);
+			assert.equal(health.lastFailure?.cause, undefined);
+		}
+		assert.equal(recoveries, 3);
+		now += 5_000;
+		await assert.rejects(health.check(), /Owned runtime missing/);
+		assert.equal(recoveries, 6);
+	} finally {
+		await health.stop();
+	}
+});
+
+test("hard managed health probe reports why recovery is refused without restart authority (#3413)", async () => {
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		url: () => "postgresql://postgres:atomic@127.0.0.1:5439/workflows",
+		probe: async () => {
+			throw new Error("Managed Postgres system identity mismatch. Preserve the existing data.");
+		},
+		recover: async () => {
+			recoveries++;
+		},
+	});
+	try {
+		await assert.rejects(health.check(), (error: Error) => {
+			assert.equal(isDbosDependencyError(error), true);
+			assert.match(error.message, /recovery refused.*system identity mismatch/);
+			assert.match(error.message, /Provider: managed; endpoint:/);
+			return true;
+		});
+		assert.equal(recoveries, 0);
+	} finally {
+		await health.stop();
+	}
 });

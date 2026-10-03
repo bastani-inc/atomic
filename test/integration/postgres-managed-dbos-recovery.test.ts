@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "vitest";
 import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
@@ -63,6 +65,37 @@ test(
 				`Managed recovery failed after ${Date.now() - started}ms (shutdown acknowledged at ${stoppedAt === undefined ? "never" : `${stoppedAt - started}ms`})\n${(await fileExists(log)) ? await readText(log) : "No PostgreSQL log"}`,
 				{ cause: error },
 			);
+		} finally {
+			try {
+				await home.cleanup();
+			} finally {
+				await listener.close();
+			}
+		}
+	},
+	REAL_MANAGED_DBOS_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"managed PostgreSQL recovers after SIGTERM with a held lease and missing launch options (#3413)",
+	async () => {
+		const home = new RealPostgresHome();
+		const listener = await reserveListener();
+		try {
+			const owner = home.client(listener.port);
+			const before = await owner.request<ManagedResult>("ensure");
+			const consumers = await owner.request<{ pid: number }[]>("consumers");
+			assert.ok(consumers.length > 0);
+			const fault = home.client(listener.port);
+			await fault.request("smart-stop");
+			assert.equal(await fileExists(join(home.path, ".atomic/postgres/v18/postmaster.pid")), false);
+			rmSync(join(home.path, ".atomic/postgres/v18/postmaster.opts"));
+			const after = await owner.request<ManagedResult>("ensure");
+			assert.equal(after.metadata.clusterId, before.metadata.clusterId);
+			assert.equal(after.metadata.directoryIdentity, before.metadata.directoryIdentity);
+			assert.equal(after.metadata.server.systemIdentifier, before.metadata.server.systemIdentifier);
+			assert.notEqual(after.metadata.server.pid, before.metadata.server.pid);
+			assert.deepEqual(await owner.request("query", "SELECT 3413::int AS recovered"), [{ recovered: 3413 }]);
 		} finally {
 			try {
 				await home.cleanup();

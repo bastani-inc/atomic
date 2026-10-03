@@ -563,6 +563,7 @@ async function ensureCluster(
 					}
 					const server = current.server;
 					if (!server) throw new Error("Managed Postgres published identity is missing.");
+					if (managedPostmaster(current) === undefined) return undefined;
 					if (!managedPostgresRuntimeHealthy(current, server.port)) {
 						verifyManagedPostmasterProcess(current, server);
 						return undefined;
@@ -582,6 +583,7 @@ async function ensureCluster(
 				};
 				health = new PostgresHealth({
 					probe: () => inspect(),
+					url: embeddedDbosSystemDatabaseUrl,
 					validate: async (client) => {
 						// Bind SQL identity to this borrowed socket, not just a prior probe on the same port.
 						const identity = await inspect(async () => {

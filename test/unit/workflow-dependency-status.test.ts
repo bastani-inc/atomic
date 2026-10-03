@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { PoolClient } from "pg";
 import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -9,6 +10,7 @@ import {
 } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { classifyLatestMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { isWorkflowHeartbeatEligibleRun } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
@@ -646,3 +648,65 @@ test("pause issued during an in-flight resume write waits for it instead of canc
 		await pending;
 	}
 });
+
+test.each(["recovery", "validation"])(
+	"failed managed %s admission retains diagnostics in workflow status dependencyError (#3413)",
+	async (failureAt) => {
+		const health = new PostgresHealth({
+			url: () => "postgresql://private-user:private-password@127.0.0.1:5439/workflows?token=private-token",
+			probe: async () => undefined,
+			recover: async () => {
+				throw new Error("Managed Postgres ownership records are missing; preserve the existing data.");
+			},
+			validate: async () => {
+				throw new Error("Managed Postgres ownership records are missing; preserve the existing data.");
+			},
+			wait: async () => {},
+		});
+		const sdk = createMockSdk();
+		const store = createStore();
+		try {
+			const pending = run(
+				workflow({
+					name: "managed-refusal",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async () => {
+						assert.fail("unadmitted workflow must not execute");
+					},
+				}),
+				{},
+				{
+					runId: "managed-refusal",
+					store,
+					durableBackend: new DbosDurableBackend({
+						...sdk,
+						startWorkflow: async () => {
+							if (failureAt === "validation") await health.validate({} as PoolClient);
+							else await health.check();
+						},
+					}),
+				},
+			);
+			if (failureAt === "validation")
+				await assert.rejects(pending, (error) => error instanceof Error && !(error instanceof DbosDependencyError));
+			else assert.equal((await pending).status, "failed");
+			const snapshot = store.runs()[0]!;
+			const summary = summarizeRunSnapshot(snapshot);
+			assert.match(summary.dependencyError ?? "", /ownership records are missing/);
+			assert.match(
+				summary.dependencyError ?? "",
+				/Provider: managed; endpoint: postgresql:\/\/127\.0\.0\.1:5439\/workflows/,
+			);
+			const status = renderWorkflowToolContent(
+				{ action: "status", filter: "all", runs: [summary], snapshots: [snapshot] },
+				{ action: "status" },
+			);
+			assert.match(status, /ownership records are missing/);
+			assert.doesNotMatch(status, /private-user|private-password|private-token/);
+		} finally {
+			await health.stop();
+		}
+	},
+);

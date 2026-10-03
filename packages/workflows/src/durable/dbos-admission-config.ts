@@ -3,6 +3,7 @@ import { fenceDbosAdmissionPool } from "./dbos-admission-pool.js";
 import { defaultPostgresUrl } from "./dbos-default-postgres-url.js";
 import { withDbosLaunchLock } from "./dbos-launch-lock.js";
 import { resolvedPostgresHealth } from "./dbos-managed-health.js";
+import { getDbosProcessOwner } from "./dbos-process-owner.js";
 import { createRecoverablePostgresPool } from "./dbos-recoverable-pool.js";
 import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
 
@@ -20,6 +21,11 @@ export function configureAdmissionDatabase(
 ): { launch: () => Promise<void>; checkReady: () => Promise<void> } {
 	const systemDatabaseUrl = config.systemDatabaseUrl ?? defaultDatabaseUrl(config.name);
 	const health = resolvedPostgresHealth(systemDatabaseUrl);
+	getDbosProcessOwner().databaseDiagnostics = () => ({
+		provider: health === undefined ? (config.systemDatabaseUrl === undefined ? "docker" : "configured") : "managed",
+		url: health?.endpoint ?? systemDatabaseUrl,
+		failure: health?.lastFailure?.message,
+	});
 	const createPool = () => {
 		let unsubscribe: (() => void) | undefined;
 		const managed = createRecoverablePostgresPool(systemDatabaseUrl, {

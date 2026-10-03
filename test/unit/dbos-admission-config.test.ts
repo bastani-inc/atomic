@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { ensurePGDatabase } from "@dbos-inc/dbos-sdk/datasource";
 import { Client } from "pg";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { boundedAdmission, DbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { configureAdmissionDatabase } from "../../packages/workflows/src/durable/dbos-admission-config.js";
+import { resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import type { DbosConfiguration } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 
 vi.mock("@dbos-inc/dbos-sdk/datasource", async (importOriginal) => ({
@@ -34,6 +36,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	vi.clearAllMocks();
 	vi.unstubAllEnvs();
+	resetDbosProcessOwner();
 });
 
 // #3072: the injected admission pool must use DBOS's application-derived endpoint.
@@ -200,4 +203,31 @@ test("DBOS launch runs inside the database's launch lock after the database is e
 	await database.launch();
 
 	assert.deepEqual(events, ["ensure", `lock:${url}`, "launch", "unlock"]);
+});
+
+test("configured admission timeouts show the provider and redact credentials from endpoint and errors (#3413)", async () => {
+	vi.useFakeTimers();
+	const url =
+		"postgresql://private-user:p%40ssword@db.example:5432/workflows?sslpassword=private-tls&token=private-token";
+	configureAdmissionDatabase(sdk, { ...config, systemDatabaseUrl: url });
+	try {
+		const rejected = assert.rejects(
+			boundedAdmission(async () => await new Promise<void>(() => {}), undefined, 10),
+			(error: Error) => {
+				assert.ok(error instanceof DbosDependencyError);
+				assert.match(error.message, /Provider: configured; endpoint: postgresql:\/\/db\.example:5432\/workflows/);
+				assert.doesNotMatch(error.stack ?? "", /private-user|p%40ssword|p@ssword|private-tls|private-token/);
+				return true;
+			},
+		);
+		await vi.advanceTimersByTimeAsync(10);
+		await rejected;
+		const error = new DbosDependencyError(
+			`Rejected ${url}; password=p@ssword token=private-token sslpassword=private-tls`,
+		);
+		assert.doesNotMatch(error.stack ?? "", /private-user|p%40ssword|p@ssword|private-tls|private-token/);
+		assert.equal(error.cause, undefined);
+	} finally {
+		vi.useRealTimers();
+	}
 });

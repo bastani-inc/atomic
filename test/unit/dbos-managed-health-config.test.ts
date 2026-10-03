@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { Client, Pool } from "pg";
 import { afterEach, test, vi } from "vitest";
-import { DbosDependencyError, dbosAdmissionContext } from "../../packages/workflows/src/durable/dbos-admission.js";
+import {
+	boundedAdmission,
+	DbosDependencyError,
+	dbosAdmissionContext,
+} from "../../packages/workflows/src/durable/dbos-admission.js";
 import { configureAdmissionDatabase } from "../../packages/workflows/src/durable/dbos-admission-config.js";
 import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
+import { resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import type { DbosConfiguration } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 
 const local = vi.hoisted(() => ({ health: undefined as PostgresHealth | undefined }));
@@ -28,6 +33,7 @@ afterEach(async () => {
 	local.health = undefined;
 	vi.restoreAllMocks();
 	vi.useRealTimers();
+	resetDbosProcessOwner();
 });
 
 // #3074: reconnect the SDK's existing pool reference, not a newly launched executor.
@@ -157,7 +163,7 @@ test.each(["acquisition", "timer"])("managed %s health preserves checkouts on 53
 		if (trigger === "timer") await vi.advanceTimersByTimeAsync(5_000);
 		else await assert.rejects(pool.connect(), (error) => error === refusal);
 		assert.equal(probe.mock.calls.length, probesBeforeFailure + 1);
-		assert.equal(local.health.lastFailure, refusal);
+		assert.equal(local.health.lastFailure?.message, refusal.message);
 		assert.equal(end.mock.calls.length, 0, "capacity refusal must not retire the physical pool");
 		assert.equal(consumerError.mock.calls.length, 0);
 		assert.equal(pool.totalCount, 1);
@@ -167,7 +173,11 @@ test.each(["acquisition", "timer"])("managed %s health preserves checkouts on 53
 		if (trigger === "timer") await vi.advanceTimersByTimeAsync(5_000);
 		else assert.equal(await local.health.check(), initialUrl);
 		assert.equal(probe.mock.calls.length, probesBefore + 1);
-		assert.equal(local.health.lastFailure, refusal, "successful checks retain the latest failure for doctor");
+		assert.equal(
+			local.health.lastFailure?.message,
+			refusal.message,
+			"successful checks retain the latest diagnostic",
+		);
 		held.release();
 		const next = await pool.connect();
 		try {
@@ -181,6 +191,39 @@ test.each(["acquisition", "timer"])("managed %s health preserves checkouts on 53
 		}
 	} finally {
 		held.release();
+		await pool.end();
+	}
+});
+
+test("background recovery failures reach managed admission with the current redacted endpoint (#3413)", async () => {
+	vi.useFakeTimers();
+	let url = initialUrl;
+	local.health = new PostgresHealth({
+		url: () => url,
+		probe: async () => undefined,
+		recover: async () => {
+			throw new Error(`Runtime inaccessible for ${url}`);
+		},
+	});
+	const sdk = { setConfig: vi.fn<(config: DbosConfiguration) => void>(), launch: vi.fn(async () => {}) };
+	configureAdmissionDatabase(sdk, config);
+	const pool = sdk.setConfig.mock.calls[0][0].systemDatabasePool!;
+	url = "postgresql://private-user:private-password@127.0.0.1:2/isolated?token=private-token";
+	try {
+		await vi.advanceTimersByTimeAsync(5_750);
+		assert.match(local.health.lastFailure?.message ?? "", /Runtime inaccessible/);
+		await assert.rejects(
+			boundedAdmission((signal) => dbosAdmissionContext.run(signal, () => pool.connect())),
+			(error: Error) => {
+				assert.ok(error instanceof DbosDependencyError);
+				assert.match(error.message, /cooling down/);
+				assert.match(error.message, /Runtime inaccessible/);
+				assert.match(error.message, /Provider: managed; endpoint: postgresql:\/\/127\.0\.0\.1:2\/isolated/);
+				assert.doesNotMatch(error.stack ?? "", /private-user|private-password|private-token/);
+				return true;
+			},
+		);
+	} finally {
 		await pool.end();
 	}
 });

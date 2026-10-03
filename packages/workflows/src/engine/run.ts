@@ -807,7 +807,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				if (control === latestControl && !ownController.signal.aborted && isDbosDependencyError(error)) {
 					activeStore.recordRunExecutionState(runId, {
 						phase: "blocked_dependency",
-						dependencyError: `Workflow database unavailable during ${status === "paused" ? "pause" : "resume"}; persistence not confirmed.`,
+						dependencyError: `Workflow database unavailable during ${status === "paused" ? "pause" : "resume"}; persistence not confirmed. ${error.message}`,
 					});
 					if (status === "paused") return;
 				}
@@ -958,6 +958,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						"name" in error &&
 						error.name === "DurableNestedTopologyError";
 					if (!isDbosDependencyError(error) && !isTopologyError) {
+						activeStore.recordRunExecutionState(runId, {
+							phase: "blocked_dependency",
+							dependencyError: unknownErrorMessage(error),
+						});
 						durableAdmissionFailure = { error };
 						// Admission is a storage operation, not a model-provider request.
 						// Classify that boundary explicitly while preserving the original rejection.
