@@ -20,9 +20,8 @@ afterEach(() => {
 	resetDbosLifecycleForTests();
 });
 
-// #3072: local-only finalization must preserve immediate write rejection without a second flush.
 test.each(["durable admission write failed", 'permission denied for table "dbos"."workflow_status"'])(
-	"immediate admission failure preserves the original rejection and diagnostic: %s",
+	"immediate admission rejection returns a safe error and diagnostic without extra writes (#3413): %s",
 	async (message) => {
 		const writeError = new Error(message);
 		let flushes = 0;
@@ -49,7 +48,13 @@ test.each(["durable admission write failed", 'permission denied for table "dbos"
 		});
 		await assert.rejects(
 			run(definition, {}, { runId, durableBackend: backend, store, toolControlRegistry: controls }),
-			(error) => error === writeError,
+			(error: Error) => {
+				assert.notEqual(error, writeError);
+				assert.equal(error.message, message);
+				assert.equal(error.cause, undefined);
+				assert.equal(error.stack?.includes(writeError.stack ?? ""), false);
+				return true;
+			},
 		);
 		assert.equal(flushes, 1, "failure cleanup must not retry durable writes");
 		assert.equal(executions, 0);

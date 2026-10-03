@@ -163,7 +163,7 @@ test.each(["quit", "pause", "quit-refused"] as const)(
 
 // #3077: failed pause settlement retains both the initialization owner and prior progress.
 test.each(["dependency", "rejection"] as const)(
-	"checkpointed pause retains progress after admission %s",
+	"checkpointed pause retains progress after admission %s (#3413)",
 	async (failure) => {
 		const sdk = createMockSdk();
 		const entered = Promise.withResolvers<void>();
@@ -289,10 +289,15 @@ test.each(["dependency", "rejection"] as const)(
 				);
 				assert.deepEqual(sdk.state.cancels, []);
 			} else {
-				await assert.rejects(
-					resumeRun(runId, { store, toolControlRegistry: controls }),
-					(failure) => failure === error,
-				);
+				await assert.rejects(resumeRun(runId, { store, toolControlRegistry: controls }), (failure) => {
+					assert.ok(failure instanceof Error);
+					assert.notEqual(failure, error);
+					assert.equal(failure.message, error.message);
+					assert.equal(failure.cause, undefined);
+					assert.equal(failure.stack?.includes(error.stack ?? ""), false);
+					assert.equal(failure instanceof DbosDependencyError, false);
+					return true;
+				});
 				await pending;
 			}
 		} finally {

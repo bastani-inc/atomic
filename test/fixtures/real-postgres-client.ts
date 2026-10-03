@@ -45,7 +45,7 @@ for await (const line of lines) {
 			result = inspectPostgresConsumers(base, managedPostgresMetadata(base, 18, false));
 		} else if (command === "binaries") {
 			result = await loadEmbeddedPostgresBinaries({ readOnly: true });
-		} else if (command === "stop") {
+		} else if (command === "stop" || command === "smart-stop") {
 			// Only this fixture's directory is ever passed to pg_ctl, never a supplied PID/port.
 			if (existsSync(join(data, "postmaster.pid"))) {
 				const stoppedServer = managedPostmaster(managedPostgresMetadata(base, 18, false));
@@ -55,7 +55,7 @@ for await (const line of lines) {
 					"-D",
 					data,
 					"-m",
-					"fast",
+					command === "smart-stop" ? "smart" : "fast",
 					"-W",
 					"-t",
 					"15",

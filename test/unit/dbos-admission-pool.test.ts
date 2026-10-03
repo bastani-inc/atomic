@@ -8,10 +8,12 @@ import {
 	dbosAdmissionContext,
 } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { fenceDbosAdmissionPool } from "../../packages/workflows/src/durable/dbos-admission-pool.js";
+import { getDbosProcessOwner, resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
+	resetDbosProcessOwner();
 });
 
 // #3072: schema/authentication failures must retain actionable non-outage diagnostics.
@@ -87,6 +89,8 @@ for (const failureAt of ["connect", "query", "wrapped-connect", "wrapped-query"]
 		[undefined, "Connection terminated due to connection timeout"],
 		[undefined, "Client has encountered a connection error and is not queryable"],
 		[undefined, "timeout exceeded when trying to connect"],
+		[undefined, "Client was closed and is not queryable"],
+		[undefined, "Postgres connection pool changed while acquiring a connection"],
 	])(`SDK admission stops retrying after ${failureAt} failure: %s %s`, async (code, message) => {
 		vi.useFakeTimers();
 		const pool = new Pool();
@@ -238,6 +242,53 @@ test("admission deadline stops SDK retries after a late query failure", async ()
 		assert.equal(query.mock.calls.length, 1);
 		assert.deepEqual(client.release.mock.calls, [[true]]);
 	} finally {
+		await sdk.destroy();
+	}
+});
+
+test("retained network diagnostics cannot restart SDK admission retries (#3413)", async () => {
+	vi.useFakeTimers();
+	const owner = getDbosProcessOwner();
+	owner.databaseDiagnostics = () => ({
+		provider: "managed",
+		url: "postgresql://private-user:private-password@127.0.0.1:5439/isolated",
+		failure: "ECONNREFUSED during connection timeout; password=private-password",
+	});
+	const pool = new Pool();
+	const connect = vi.spyOn(pool, "connect").mockImplementation(async () => {
+		throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+	});
+	const sdk = await DBOSClient.create({
+		systemDatabaseUrl: "postgresql://unused:unused@127.0.0.1:1/disposable",
+		systemDatabasePool: fenceDbosAdmissionPool(pool),
+	});
+	let settled = false;
+	const pending = boundedAdmission((signal) =>
+		dbosAdmissionContext.run(signal, () =>
+			sdk.enqueue({ workflowName: "isolated", queueName: "isolated", workflowID: "same-root" }),
+		),
+	).then(
+		() => assert.fail("database is unavailable"),
+		(error: Error) => {
+			settled = true;
+			return error;
+		},
+	);
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(settled, true, "dependency error must escape SDK without waiting for a retry timer");
+		const error = await pending;
+		assert.ok(error instanceof DbosDependencyError);
+		assert.match(error.message, /ECONNREFUSED during connection timeout/);
+		assert.match(error.message, /Provider: managed; endpoint:/);
+		assert.doesNotMatch(error.stack ?? "", /private-user|private-password/);
+		assert.equal(error.cause, undefined);
+		await vi.advanceTimersByTimeAsync(120_000);
+		assert.equal(connect.mock.calls.length, 1);
+	} finally {
+		owner.databaseDiagnostics = undefined;
+		await vi.advanceTimersByTimeAsync(10_000);
+		await pending;
 		await sdk.destroy();
 	}
 });

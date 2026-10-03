@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { DbosDependencyError } from "./dbos-admission.js";
+import { redactedDatabaseMessage } from "./dbos-database-diagnostics.js";
 
 export interface PostgresHealthIdentity {
 	readonly url: string;
@@ -8,6 +9,7 @@ export interface PostgresHealthIdentity {
 
 interface PostgresHealthOperations {
 	readonly probe: () => Promise<PostgresHealthIdentity | undefined>;
+	readonly url?: () => string;
 	readonly recover: () => Promise<void>;
 	readonly validate?: (client: PoolClient) => Promise<void>;
 	readonly wait?: (ms: number) => Promise<void>;
@@ -41,6 +43,7 @@ export class PostgresHealth {
 	private attempts = 0;
 	private nextRecoveryAt = 0;
 	private failure?: Error;
+	private healthySinceFailure = false;
 	private revision = 0;
 	private readonly listeners = new Set<() => void>();
 
@@ -48,6 +51,26 @@ export class PostgresHealth {
 
 	get lastFailure(): Error | undefined {
 		return this.failure;
+	}
+
+	get endpoint(): string | undefined {
+		return this.operations.url?.();
+	}
+
+	private retainFailure(error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		const safe = redactedDatabaseMessage(message, this.endpoint);
+		this.failure = new Error(safe);
+		this.healthySinceFailure = false;
+	}
+
+	private dependencyFailure(message: string): DbosDependencyError {
+		return new DbosDependencyError(
+			message,
+			this.endpoint === undefined
+				? undefined
+				: { provider: "managed", url: this.endpoint, failure: this.failure?.message },
+		);
 	}
 
 	subscribe(listener: () => void): () => void {
@@ -73,14 +96,18 @@ export class PostgresHealth {
 				await this.operations.validate?.(client);
 			}
 		} catch (error) {
-			this.failure = error instanceof Error ? error : new Error(String(error));
+			this.retainFailure(error);
 			// An unanswered check is load, not evidence about the server: destroy only this unvalidated
 			// socket instead of every concurrent checkout, and let the caller retry admission.
 			if (!isQueryReadTimeout(error)) {
 				this.invalidate();
-				throw error;
+				if (this.endpoint === undefined) throw error;
+				const failure = this.dependencyFailure(
+					"Managed PostgreSQL connection validation refused. Preserve its data and ownership records.",
+				);
+				throw error instanceof DbosDependencyError ? failure : new Error(failure.message);
 			}
-			throw new DbosDependencyError("Managed PostgreSQL did not answer a connection identity check in time.");
+			throw this.dependencyFailure("Managed PostgreSQL did not answer a connection identity check in time.");
 		}
 	}
 
@@ -124,7 +151,7 @@ export class PostgresHealth {
 				identity = await this.operations.probe();
 			} catch (retryError) {
 				if (!isMonitoringConnectionFailure(retryError)) throw retryError;
-				this.failure = retryError;
+				this.retainFailure(retryError);
 				return undefined;
 			}
 		}
@@ -135,6 +162,7 @@ export class PostgresHealth {
 		this.available = identity;
 		this.attempts = 0;
 		this.nextRecoveryAt = 0;
+		this.healthySinceFailure = true;
 		return identity.url;
 	}
 
@@ -146,21 +174,26 @@ export class PostgresHealth {
 			if (isQueryReadTimeout(error)) {
 				// An unanswered monitoring query is load, not evidence about the server: keep `available` and
 				// every checkout, and start no recovery.
-				this.failure = new DbosDependencyError("Managed PostgreSQL did not answer a health check in time.");
-				throw this.failure;
+				this.retainFailure(new Error("Managed PostgreSQL did not answer a health check in time."));
+				throw this.dependencyFailure("Managed PostgreSQL did not answer a health check in time.");
 			}
 			// Identity/authentication failures are not permission to restart anything.
-			this.failure = error instanceof Error ? error : new Error(String(error));
+			this.retainFailure(error);
 			// A refused monitoring connection does not imply existing sockets are unhealthy.
 			if (!(error instanceof Error && "code" in error && error.code === "53300")) this.invalidate();
-			throw error;
+			throw this.endpoint === undefined
+				? error
+				: this.dependencyFailure(
+						"Managed PostgreSQL recovery refused after a health probe failure. Preserve its data and ownership records.",
+					);
 		}
-		// Preserve the latest outage for diagnostics even after automatic recovery.
-		if (this.attempts === 0)
-			this.failure = new DbosDependencyError("Managed PostgreSQL failed its live health check.");
+		if (this.attempts === 0 && (this.failure === undefined || this.healthySinceFailure)) {
+			this.retainFailure(new Error("Managed PostgreSQL failed its live health check."));
+			this.healthySinceFailure = false;
+		}
 		this.invalidate();
 		if ((this.operations.now ?? Date.now)() < this.nextRecoveryAt)
-			throw new DbosDependencyError("Managed Postgres recovery is cooling down after bounded attempts.");
+			throw this.dependencyFailure("Managed Postgres recovery is cooling down after bounded attempts.");
 		while (!this.stopped && this.attempts < RECOVERY_ATTEMPTS) {
 			const attempt = this.attempts++;
 			if (attempt > 0)
@@ -173,12 +206,12 @@ export class PostgresHealth {
 				const ready = await this.probe();
 				if (ready !== undefined) return ready;
 			} catch (error) {
-				this.failure = error instanceof Error ? error : new Error(String(error));
+				this.retainFailure(error);
 			}
 		}
 		this.attempts = 0;
 		this.nextRecoveryAt = (this.operations.now ?? Date.now)() + HEALTH_INTERVAL_MS;
-		throw new DbosDependencyError(
+		throw this.dependencyFailure(
 			"Managed Postgres is unavailable after bounded recovery. Preserve its data and ownership records.",
 		);
 	}

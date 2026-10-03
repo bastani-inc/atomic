@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed managed PostgreSQL staying down after shutdown when its old launch options were missing. Recovery preserves cluster ownership and identity checks, and database-unavailable admission errors and workflow status now show the provider, credential-redacted endpoint, and retained probe or recovery failure ([#3413](https://github.com/bastani-inc/atomic/issues/3413)).
+
 ## [0.9.26-alpha.4] - 2026-10-02
 
 ### Fixed

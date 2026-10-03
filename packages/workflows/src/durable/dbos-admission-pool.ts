@@ -1,16 +1,16 @@
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { raceAbort } from "../shared/abort.js";
-import { DbosDependencyError, dbosAdmissionContext } from "./dbos-admission.js";
+import { DbosDependencyError, dbosAdmissionContext, isDbosDependencyError } from "./dbos-admission.js";
 
 /** The SDK's supported custom-pool seam, scoped to admission, not other runs. */
 export function fenceDbosAdmissionPool(pool: Pool): Pool {
 	const connect = pool.connect.bind(pool);
 	async function acquire(signal: AbortSignal): Promise<PoolClient> {
-		if (signal.aborted) throw new DbosDependencyError();
+		if (signal.aborted) throw sdkDependencyError();
 		const pending = connect().then((client) => {
 			if (signal.aborted) {
 				client.release(true);
-				throw new DbosDependencyError();
+				throw sdkDependencyError();
 			}
 			return fencedClient(client, signal);
 		});
@@ -72,7 +72,7 @@ function fencedClient(client: PoolClient, signal: AbortSignal): PoolClient {
 					? (values.pop() as (error: Error | null, result?: QueryResult) => void)
 					: undefined;
 			const pending = (async () => {
-				if (signal.aborted || released) throw new DbosDependencyError();
+				if (signal.aborted || released) throw sdkDependencyError();
 				try {
 					return await raceAbort(
 						new Promise<QueryResult>((resolve, reject) => {
@@ -124,10 +124,18 @@ const connectionMessages = new Set([
 	"Connection terminated due to connection timeout",
 	"Client has encountered a connection error and is not queryable",
 	"timeout exceeded when trying to connect",
+	"Client was closed and is not queryable",
+	"Postgres connection pool changed while acquiring a connection",
 ]);
 
+function sdkDependencyError(message?: string): DbosDependencyError {
+	const reported = message === undefined ? new DbosDependencyError() : new DbosDependencyError(message, null);
+	return new DbosDependencyError(undefined, null, reported.message);
+}
+
 function databaseError(error: unknown, signal: AbortSignal): unknown {
-	if (signal.aborted) return new DbosDependencyError();
+	if (signal.aborted) return sdkDependencyError();
+	if (isDbosDependencyError(error)) return sdkDependencyError(error.admissionDetail ?? error.message);
 	const pending = [error];
 	const seen = new Set<object>();
 	while (pending.length > 0) {
@@ -144,7 +152,7 @@ function databaseError(error: unknown, signal: AbortSignal): unknown {
 			(code === undefined && connectionMessages.has(message))
 		) {
 			// Do not let these errors enter DBOS's uninterruptible dbRetry backoff.
-			return new DbosDependencyError();
+			return sdkDependencyError();
 		}
 	}
 	return error;
