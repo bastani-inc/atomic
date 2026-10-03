@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.26-alpha.5] - 2026-10-03
+
 ### Added
 
 - Added `pi.registerToolRenderer()` to choose renderers for any tool, including tools not yet registered ([#10285](https://github.com/earendil-works/pi/issues/10285)).
