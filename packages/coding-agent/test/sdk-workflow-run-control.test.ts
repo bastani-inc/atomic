@@ -346,8 +346,6 @@ test(
 		}
 
 		for (const operation of [
-			() => other.workflows.getRun(runId),
-			() => other.workflows.getStages(runId),
 			() => other.workflows.pause(runId),
 			() => other.workflows.quit(runId),
 			() => other.workflows.resume(runId),
@@ -356,6 +354,8 @@ test(
 			assert.ok(error instanceof WorkflowRunOwnershipError, error.message);
 			assert.equal(error.code, "WORKFLOW_RUN_OWNED_ELSEWHERE");
 		}
+		assert.equal((await other.workflows.getRun(runId)).runId, runId);
+		assert.deepEqual(await other.workflows.getStages(runId), []);
 		assert.deepEqual(await other.workflows.listRuns(), []);
 		assert.equal((await owner.workflows.getRun(runId)).status, "running");
 

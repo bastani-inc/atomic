@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed SDK inspection rejecting earlier-process durable runs and crash recovery retaining the old session owner. Explicit SDK resume now atomically adopts an eligible crashed root in the same working directory and workflow database, preserves its UUID and completed checkpoints, and excludes live owners and competing adopters ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+
 ## [0.9.26-alpha.5] - 2026-10-03
 
 ### Added

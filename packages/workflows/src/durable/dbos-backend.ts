@@ -528,6 +528,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
+		modelOwner?: string,
 	): Promise<boolean> {
 		let records: readonly DbosStepRecord[] = [];
 		return await transitionDbosWorkflowStatus({
@@ -551,8 +552,20 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				this.applyMetadata(workflowId, { ...entry, pendingPrompts });
 			},
 			claim: (authoritative, generation) =>
-				this.claimStatusTransition(workflowId, authoritative, generation, status, pendingPrompts, resumable),
+				this.claimStatusTransition(
+					workflowId,
+					authoritative,
+					generation,
+					status,
+					pendingPrompts,
+					resumable,
+					modelOwner,
+				),
 			write: async () => {
+				if (modelOwner !== undefined) {
+					const handle = this.mem.getWorkflow(workflowId);
+					if (handle !== undefined) this.mem.registerWorkflow({ ...handle, modelOwner }, true);
+				}
 				this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
 				await this.flush(workflowId);
 			},
@@ -573,6 +586,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		status: DurableWorkflowStatus,
 		pendingPrompts?: number,
 		resumable?: boolean,
+		modelOwner?: string,
 	): Promise<boolean> {
 		const stepName = claimMetadataStepName(generation);
 		const transitionClaimId = crypto.randomUUID();
@@ -581,6 +595,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			status,
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
+			...(modelOwner === undefined ? {} : { modelOwner }),
 			ownerExecutorId: this.executorId,
 			transitionClaimId,
 			updatedAt: Math.max(Date.now(), authoritative.updatedAt + 1),
@@ -965,7 +980,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
 	private applyMetadata(workflowId: string, metadata: import("./types.js").DurableWorkflowMetadata): void {
 		if (metadata.workflowId !== workflowId) return;
-		this.mem.registerWorkflow(metadata);
+		this.mem.registerWorkflow(metadata, true);
 	}
 }
 

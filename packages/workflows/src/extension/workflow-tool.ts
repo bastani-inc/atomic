@@ -1,6 +1,9 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
+import { getDurableBackend } from "../durable/factory.js";
+import { isSdkCrashedRunAdoptable, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
 import { inspectRun } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
+import { isFullRunId } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
@@ -81,6 +84,7 @@ export function makeExecuteWorkflowTool(
 	ctx: PiExecuteContext,
 	signal?: AbortSignal,
 	onRunAccepted?: (runId: string) => void,
+	access?: "sdk",
 ) => Promise<WorkflowToolResult> {
 	const { store, toolControlRegistry } = owner;
 	return async function executeWorkflowTool(
@@ -88,6 +92,7 @@ export function makeExecuteWorkflowTool(
 		ctx: PiExecuteContext,
 		signal?: AbortSignal,
 		onRunAccepted?: (runId: string) => void,
+		access?: "sdk",
 	): Promise<WorkflowToolResult> {
 		signal?.throwIfAborted();
 		if (args.action === undefined)
@@ -108,7 +113,22 @@ export function makeExecuteWorkflowTool(
 				stages: [],
 			};
 		}
-		const authorize = (id: string): void => assertWorkflowInstanceOwner(id, ctx, store);
+		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
+		const authorize = (id: string): void => {
+			const handle = getDurableBackend().getLoadableWorkflow(id);
+			if (
+				access === "sdk" &&
+				isFullRunId(args.runId?.trim() ?? "") &&
+				(action === "status" ||
+					action === "stages" ||
+					(action === "resume" && handle !== undefined && isSdkCrashedRunAdoptable(handle, recoveryCwd))) &&
+				!store.runs().some((run) => run.id === id) &&
+				handle !== undefined &&
+				isSdkDurableRunInScope(handle, recoveryCwd)
+			)
+				return;
+			assertWorkflowInstanceOwner(id, ctx, store);
+		};
 		if (action === "status" && args.runId === undefined) {
 			for (const run of topLevelWorkflowRuns(store.runs())) authorize(run.id);
 		} else if (["stages", "stage", "transcript", "pause", "quit", "answer"].includes(action)) {
@@ -123,8 +143,16 @@ export function makeExecuteWorkflowTool(
 			}
 		}
 		const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
-		const getRuntime = (): ExtensionRuntime => (typeof runtime === "function" ? runtime(ctx) : runtime);
 		const awaitRequest = <T>(operation: Promise<T>): Promise<T> => raceWorkflowRequestAbort(operation, signal);
+		const getRuntime = (): ExtensionRuntime => {
+			const resolved = typeof runtime === "function" ? runtime(ctx) : runtime;
+			if (access !== "sdk") return resolved;
+			return {
+				...resolved,
+				resumeDurableWorkflow: (id, options) =>
+					resolved.resumeDurableWorkflow(id, { ...options, modelOwner: workflowCaller(ctx) }),
+			};
+		};
 		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
 			try {
 				await awaitRequest(Promise.resolve(ensureWorkflowResourcesLoaded()));

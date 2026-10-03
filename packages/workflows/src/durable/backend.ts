@@ -188,6 +188,7 @@ export interface DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
+		modelOwner?: string,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	adjustPendingPrompts(workflowId: string, delta: number): void;
@@ -252,7 +253,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	private readonly promptReservations = new Map<string, PromptReservationState>();
 	private readonly deletedWorkflowIds = new Set<string>();
 
-	registerWorkflow(handle: WorkflowRegistrationInput): void {
+	registerWorkflow(handle: WorkflowRegistrationInput, authoritativeOwner = false): void {
 		this.deletedWorkflowIds.delete(handle.workflowId);
 		const existing = this.workflows.get(handle.workflowId);
 		const completedCheckpoints = handle.completedCheckpoints ?? existing?.handle.completedCheckpoints ?? 0;
@@ -274,7 +275,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.origin !== undefined
 					? { origin: existing.handle.origin }
 					: {}),
-			modelOwner: existing?.handle.modelOwner ?? handle.modelOwner,
+			modelOwner: authoritativeOwner ? handle.modelOwner : (existing?.handle.modelOwner ?? handle.modelOwner),
 			...(handle.workflowCwd !== undefined
 				? { workflowCwd: handle.workflowCwd }
 				: existing?.handle.workflowCwd !== undefined
@@ -506,8 +507,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
+		modelOwner?: string,
 	): Promise<boolean> {
-		const current = this.workflows.get(workflowId)?.handle;
+		const record = this.workflows.get(workflowId);
+		const current = record?.handle;
 		if (
 			current === undefined ||
 			!expected.includes(current.status) ||
@@ -515,6 +518,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		)
 			return false;
 		this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+		if (modelOwner !== undefined && record !== undefined) record.handle = { ...record.handle, modelOwner };
 		return true;
 	}
 

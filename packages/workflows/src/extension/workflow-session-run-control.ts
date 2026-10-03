@@ -22,7 +22,13 @@ import { classifyControlError, type WorkflowControlFailureCode } from "./workflo
 
 export interface SessionRunControlHost {
 	/** The same executor the registered `workflow` tool runs, so ownership and durability rules are shared. */
-	readonly execute: (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult>;
+	readonly execute: (
+		args: WorkflowToolArgs,
+		ctx: PiExecuteContext,
+		signal?: AbortSignal,
+		onRunAccepted?: (runId: string) => void,
+		access?: "sdk",
+	) => Promise<WorkflowToolResult>;
 	/** The owning session's most recent event context, or `undefined` before it started. */
 	readonly context: () => PiEventContext | undefined;
 	readonly store: Pick<Store, "runs">;
@@ -148,7 +154,7 @@ export function createSessionRunControl(host: SessionRunControlHost): SessionWor
 			const ctx = executeContext(host.context());
 			if (args.runId !== undefined && (args.action === "status" || args.action === "stages"))
 				rejectUnknownRunPrefix(host.store, args.runId);
-			return await host.execute(args, ctx);
+			return await host.execute(args, ctx, undefined, undefined, "sdk");
 		} catch (error) {
 			throw error instanceof Error ? translateThrown(error, args.runId) : error;
 		}

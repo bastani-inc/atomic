@@ -21,6 +21,7 @@ import {
 } from "../../packages/workflows/src/durable/backend.js";
 import { DbosNotReadyError } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { createRecoverablePostgresPool } from "../../packages/workflows/src/durable/dbos-recoverable-pool.js";
+import { getAtomicExecutorId } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
@@ -98,7 +99,12 @@ async function invalidatedPostgresQueryError(): Promise<Error> {
 }
 
 function sessionContext(sessionId: string): PiEventContext {
-	return { sessionManager: { getSessionId: () => sessionId }, ui: { notify: () => undefined }, hasUI: false };
+	return {
+		sessionManager: { getSessionId: () => sessionId },
+		cwd: process.cwd(),
+		ui: { notify: () => undefined },
+		hasUI: false,
+	};
 }
 
 function setup(sessionId: string = SESSION_ID) {
@@ -107,7 +113,10 @@ function setup(sessionId: string = SESSION_ID) {
 		description: "",
 		inputs: {},
 		outputs: {},
-		run: () => ({}),
+		run: async (ctx) => {
+			await ctx.tool("finish", {}, async () => "done");
+			return {};
+		},
 	});
 	const execute = makeExecuteWorkflowTool(
 		createExtensionRuntime({ definitions: [definition], store }),
@@ -236,6 +245,122 @@ afterEach(() => {
 });
 
 describe("session workflow run control", () => {
+	test.sequential("fresh SDK sessions inspect crashed durable runs without adopting them (#3419)", async () => {
+		const runId = testRunId("sdk-crashed-inspection");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 1,
+			updatedAt: 1,
+			modelOwner: "previous-session",
+			ownerExecutorId: "previous-process",
+			origin: "agent",
+			invocationCwd: process.cwd(),
+		});
+		const before = structuredClone(backend.getWorkflow(runId));
+		const { control } = setup();
+		assert.equal((await control.getRun(runId)).status, "crashed");
+		assert.deepEqual(await control.getStages(runId), []);
+		assert.deepEqual(await control.listRuns(), []);
+		assert.deepEqual(store.runs(), []);
+		assert.deepEqual(backend.getWorkflow(runId), before);
+		for (const operation of [() => control.pause(runId), () => control.quit(runId)])
+			assert.ok((await rejection(operation())) instanceof WorkflowRunOwnershipError);
+	});
+
+	test.sequential("fresh SDK sessions adopt crashed durable ownership through resume (#3419)", async () => {
+		const runId = testRunId("sdk-crashed-adoption");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 1,
+			updatedAt: 1,
+			modelOwner: "previous-session",
+			ownerExecutorId: "previous-process",
+			origin: "agent",
+			invocationCwd: process.cwd(),
+		});
+		const { control } = setup();
+		const result = await control.resume(runId);
+		assert.equal(result.runId, runId);
+		assert.equal(result.status, "running");
+		await vi.waitFor(() =>
+			assert.equal(backend.getWorkflow(runId)?.status, "completed", JSON.stringify(backend.getWorkflow(runId))),
+		);
+		assert.equal(backend.getWorkflow(runId)?.modelOwner, SESSION_ID);
+		assert.equal((await control.getRun(runId)).status, "completed");
+		assert.equal((await control.listRuns())[0]?.runId, runId);
+	});
+	test.sequential("SDK preserves existing resume authority for unattributed user launches (#3419)", async () => {
+		const runId = testRunId("sdk-user-durable-resume");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			origin: "user",
+			invocationCwd: process.cwd(),
+		});
+		const { control } = setup();
+		assert.equal((await control.resume(runId)).status, "running");
+		await vi.waitFor(() => assert.equal(backend.getWorkflow(runId)?.status, "completed"));
+		assert.equal(backend.getWorkflow(runId)?.modelOwner, undefined);
+	});
+
+	test.sequential("SDK crash recovery refuses foreign scopes and live or unattributed owners (#3419)", async () => {
+		const cases = [
+			{ invocationCwd: "/another-project" },
+			{ ownerExecutorId: undefined },
+			{ ownerExecutorId: getAtomicExecutorId() },
+			{ modelOwner: undefined },
+			{ updatedAt: Date.now() },
+			{ status: "paused" as const },
+		];
+		for (const [index, overrides] of cases.entries()) {
+			store.clear();
+			const runId = testRunId(`sdk-recovery-refusal-${index}`);
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			backend.registerWorkflow({
+				workflowId: runId,
+				name: "session-run-control",
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+				completedCheckpoints: 1,
+				updatedAt: 1,
+				modelOwner: "previous-session",
+				ownerExecutorId: "previous-process",
+				origin: "agent",
+				invocationCwd: process.cwd(),
+				...overrides,
+			});
+			const before = structuredClone(backend.getWorkflow(runId));
+			const { control } = setup();
+			assert.ok((await rejection(control.resume(runId))) instanceof WorkflowRunOwnershipError);
+			assert.deepEqual(backend.getWorkflow(runId), before);
+			assert.deepEqual(store.runs(), []);
+			if (index === 0 || index === 3) {
+				assert.ok((await rejection(control.getRun(runId))) instanceof WorkflowRunOwnershipError);
+				assert.ok((await rejection(control.getStages(runId))) instanceof WorkflowRunOwnershipError);
+			}
+		}
+	});
+
 	test.sequential("lists runs with the status action's data and filters by status (#3377)", async () => {
 		const runId = testRunId("session-run-control-list");
 		store.recordRunStart(

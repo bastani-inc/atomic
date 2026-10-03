@@ -550,6 +550,8 @@ Fallback starts only after failed DBOS initialization has been cleaned up. If At
 
 **Multiple concurrent Atomic sessions.** A workflow running in another process is not a resume target. Fresh-heartbeat rows are hidden from resume pickers and refused by direct resume. After a crash, the heartbeat becomes stale in about two minutes and inspection reports `crashed`. Concurrent attempts to resume the same run admit one executor; a stale request reports that the run changed.
 
+For SDK crash recovery, save the full run UUID and create a fresh session with the original working directory and workflow database configuration. `session.workflows.getRun(runId)` and `getStages(runId)` inspect its durable state without taking ownership. Once `getRun()` reports `crashed`, `session.workflows.resume(runId)` can adopt the root and replay completed checkpoints, even when the original host used `SessionManager.inMemory()`. No session file needs reopening. Inspection alone does not populate the new session's `listRuns()`. This does not grant mutation authority over live foreign work, another session's paused or terminal runs, or runs outside that working directory. See [SDK workflow run control](/sdk#workflow-run-control).
+
 Independent root workflows persist independently. Nested workflows share their root's ordering.
 
 ### Workflow database recovery

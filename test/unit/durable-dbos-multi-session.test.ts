@@ -362,6 +362,52 @@ describe("shared-database visibility across sessions", () => {
 });
 
 describe("cross-process resume claim", () => {
+	test("racing crash adopters persist exactly one session owner and reconcile cached owners (#3419)", async () => {
+		const id = testRunId("sdk-owner-transfer-race");
+		const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+		const seed = new DbosDurableBackend(createSharedSdk(state), { executorId: "crashed" });
+		seed.registerWorkflow({
+			workflowId: id,
+			name: "multi-session-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 1,
+			updatedAt: 1,
+			modelOwner: "old-session",
+		});
+		await seed.flush();
+		const a = new DbosDurableBackend(createSharedSdk(state), { executorId: "adopter-a" });
+		const b = new DbosDurableBackend(createSharedSdk(state), { executorId: "adopter-b" });
+		await Promise.all([a.hydrateWorkflow(id), b.hydrateWorkflow(id)]);
+		const timestamp = a.getWorkflow(id)!.updatedAt;
+		const outcomes = await Promise.all([
+			a.transitionWorkflowStatus(id, ["running"], "running", undefined, undefined, timestamp, "session-a"),
+			b.transitionWorkflowStatus(id, ["running"], "running", undefined, undefined, timestamp, "session-b"),
+		]);
+		assert.deepEqual([...outcomes].sort(), [false, true]);
+		const owner = outcomes[0] ? "session-a" : "session-b";
+		assert.equal(a.getWorkflow(id)?.modelOwner, owner);
+		assert.equal(b.getWorkflow(id)?.modelOwner, owner);
+		await Promise.all([a.hydrateWorkflow(id), b.hydrateWorkflow(id)]);
+		for (const backend of [a, b]) {
+			assert.equal(backend.getWorkflow(id)?.modelOwner, owner);
+			assert.equal(backend.getWorkflow(id)?.ownerExecutorId, outcomes[0] ? "adopter-a" : "adopter-b");
+		}
+		assert.equal(
+			await seed.transitionWorkflowStatus(
+				id,
+				["running"],
+				"running",
+				undefined,
+				undefined,
+				timestamp,
+				"old-session",
+			),
+			false,
+		);
+		assert.equal(seed.getWorkflow(id)?.modelOwner, owner);
+	});
 	async function pausedWorkflowState(): Promise<SharedDbosState> {
 		const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
 		const seeder = new DbosDurableBackend(createSharedSdk(state));
