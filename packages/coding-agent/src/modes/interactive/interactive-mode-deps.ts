@@ -143,7 +143,6 @@ export { CompactionBoundaryMessageComponent } from "./components/compaction-boun
 export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";
-export { DaxnutsComponent } from "./components/daxnuts.ts";
 export { DynamicBorder } from "./components/dynamic-border.ts";
 export { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 export { ExtensionEditorComponent } from "./components/extension-editor.ts";

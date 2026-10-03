@@ -26,7 +26,6 @@ async function createMode() {
 		showStatus: () => {},
 		showError: vi.fn(),
 		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
-		checkDaxnutsEasterEgg: () => {},
 		findExactModelMatch: async (id: string) => harness.getModel(id),
 		selectThinkingLevel: InteractiveModeBase.prototype.selectThinkingLevel,
 	};

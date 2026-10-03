@@ -268,6 +268,50 @@ test("generates only the three Codex-advertised Bedrock IDs with safe zero prici
 	}
 });
 
+test("keeps models.dev pricing tiers for Amazon Bedrock models", () => {
+	const bedrock = generate([], [], {
+		"amazon-bedrock": {
+			models: {
+				"openai.tier-fixture": {
+					name: "Bedrock tier fixture",
+					tool_call: true,
+					modalities: { input: ["text"], output: ["text"] },
+					limit: { context: 1_050_000, output: 128_000 },
+					cost: {
+						input: 5,
+						output: 30,
+						cache_read: 0.5,
+						tiers: [
+							{
+								tier: { type: "context", size: 272_000 },
+								input: 10,
+								output: 45,
+								cache_read: 1,
+							},
+						],
+					},
+				},
+				"openai.untiered-fixture": {
+					name: "Bedrock untiered fixture",
+					tool_call: true,
+					modalities: { input: ["text"], output: ["text"] },
+					limit: { context: 128_000, output: 8_192 },
+					cost: { input: 1, output: 2 },
+				},
+			},
+		},
+	})["amazon-bedrock"];
+
+	assert.deepEqual(bedrock["openai.tier-fixture"]?.cost, {
+		input: 5,
+		output: 30,
+		cacheRead: 0.5,
+		cacheWrite: 0,
+		tiers: [{ inputTokensAbove: 272_000, input: 10, output: 45, cacheRead: 1, cacheWrite: 0 }],
+	});
+	assert.deepEqual(bedrock["openai.untiered-fixture"]?.cost, { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 });
+});
+
 test("does not fabricate Azure, OpenRouter, or Vercel GPT-6-Astra availability", () => {
 	const catalogs = generate();
 	assert.deepEqual(astraIds(catalogs["azure-openai-responses"]), []);

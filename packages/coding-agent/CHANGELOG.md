@@ -5,12 +5,18 @@
 ### Added
 
 - OAuth sign-in screens now show a copy shortcut for the sign-in URL, including `/mcp login`. Use Ctrl+X or configure `app.auth.copyUrl`; existing message and workflow shortcuts are unchanged.
+- Added project overrides for user-level MCP servers: a `.atomic/mcp.json` entry without `command`, `url`, or `type` sets only `enabled`, `exposure`, and `toolExposure` of the user-level server, and `/mcp` can enable or disable a server for the current project ([#10277](https://github.com/earendil-works/pi/issues/10277)).
+- Added Cloudflare's Clef and Clef Flash classifier models to `cloudflare-workers-ai`, usable from codemode scripts and extensions ([#10316](https://github.com/earendil-works/pi/pull/10316) by [@ndisidore](https://github.com/ndisidore), [#10322](https://github.com/earendil-works/pi/pull/10322) by [@RealAlexandreAI](https://github.com/RealAlexandreAI)).
 
 ### Fixed
 
 - Empty comma-separated entries in `--models` no longer add unintended models to the cycle ([#10334](https://github.com/earendil-works/pi/issues/10334)).
 - Pinned `brace-expansion` to 5.0.12 so installations use the patched dependency ([#10288](https://github.com/earendil-works/pi/issues/10288)).
 - MCP OAuth sign-in now rejects pasted redirect URLs whose origin or path differs from the current sign-in's redirect URI.
+
+### Removed
+
+- Removed the daxnuts easter egg shown when selecting `opencode/kimi-k2.5`.
 
 ## [0.9.26-alpha.2] - 2026-10-02
 

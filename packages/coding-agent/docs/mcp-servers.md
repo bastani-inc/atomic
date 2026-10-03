@@ -31,6 +31,16 @@ Use `/mcp` to inspect connections and manage servers. After changing configurati
 
 Atomic reads user-level servers from `~/.atomic/agent/mcp.json` and project servers from `.atomic/mcp.json`. Project configuration is read only after [project trust](/security) is granted. A project entry replaces a user-level entry with the same name.
 
+A project entry without `command`, `url`, or `type` overrides only `enabled`, `exposure`, and `toolExposure` of the user-level server with the same name and keeps the rest, including `env`, `headers`, and `auth`. For example, this turns off a user-level server in one project:
+
+```json
+{
+  "mcpServers": {
+    "internal-tools": { "enabled": false }
+  }
+}
+```
+
 Both files use a top-level `mcpServers` object. Keep personal servers and credentials in the user-level file. `ATOMIC_CODING_AGENT_DIR` relocates the Atomic agent directory.
 
 Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. Relative `cwd` values resolve against the session directory.
@@ -66,7 +76,7 @@ Server names may contain letters, digits, `_`, and `-`. Names that differ only i
 
 Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute servers with the same configuration shape. File-configured servers take precedence over contributions with the same normalized name. Project packages load only after the project is trusted.
 
-`/mcp` shows each server's source. Enabled-state and exposure changes for file-configured servers are saved without replacing unrelated configuration. Changes to extension-contributed servers apply to the current session.
+`/mcp` shows each server's source. Enabled-state and exposure changes for file-configured servers are saved without replacing unrelated configuration. In a trusted project, "Enable in this project" and "Disable in this project" add a project override for a user-level server; later changes to that server are saved to the override. `atomic mcp list` shows the override. Changes to extension-contributed servers apply to the current session.
 
 ## Manage servers
 

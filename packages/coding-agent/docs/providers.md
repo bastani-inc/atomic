@@ -521,6 +521,8 @@ atomic --provider cloudflare-workers-ai --model "@cf/moonshotai/kimi-k2.6"
 
 Atomic automatically sets `x-session-affinity` for [prefix caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/) discounts.
 
+Workers AI also lists Cloudflare's Clef (`@cf/cloudflare/clef`) and Clef Flash (`@cf/cloudflare/clef-flash`) as classifiers. They use the same `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`. Name the exact ID in `routerModel`, `structured_output`, or `generateStructuredOutput()`; like other classifiers they do not appear in `/model` or work with `--model`. See [Structured decisions](/sdk/structured-decisions).
+
 ### Google Vertex AI
 
 Uses Application Default Credentials:

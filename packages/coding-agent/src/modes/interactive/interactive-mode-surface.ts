@@ -391,8 +391,6 @@ declare module "./interactive-mode-base.ts" {
 		handleDebugCommand(): void;
 		handleArminSaysHi(): void;
 		handleDementedDelves(): void;
-		handleDaxnuts(): void;
-		checkDaxnutsEasterEgg(model: { provider: string; id: string }): void;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 		handleCompactCommand(): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;

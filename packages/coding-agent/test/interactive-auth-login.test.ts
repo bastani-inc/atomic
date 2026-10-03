@@ -393,7 +393,6 @@ describe("post-login model refresh", () => {
 				showStatus,
 				showError: vi.fn(),
 				maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
-				checkDaxnutsEasterEgg: vi.fn(),
 			};
 			const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
 				this: typeof harness,
@@ -438,7 +437,6 @@ describe("post-login model refresh", () => {
 				showStatus,
 				showError: vi.fn(),
 				maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
-				checkDaxnutsEasterEgg: vi.fn(),
 			};
 			const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
 				this: typeof harness,

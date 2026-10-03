@@ -92,6 +92,8 @@ interface ServerReport {
 	name: string;
 	scope: string;
 	source: string;
+	/** Project `mcp.json` that overrides `enabled`, `exposure`, or `toolExposure` of this global server. */
+	override?: string;
 	enabled: boolean;
 	exposure: string;
 	transport: string;
@@ -443,6 +445,7 @@ async function list(
 				name: entry.name,
 				scope: entry.scope ?? "global",
 				source: entry.source,
+				...(entry.override ? { override: entry.override } : {}),
 				enabled: entry.config.enabled !== false,
 				exposure: entry.config.exposure ?? "codemode",
 				transport: describeTransport(entry),
@@ -485,7 +488,9 @@ async function list(
 		return failed ? 1 : 0;
 	}
 	if (reports.length === 0 && loaded.errors.length === 0) {
-		log(`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or .pi/mcp.json.`);
+		log(
+			`No MCP servers configured. Add them to ${join(options.agentDir, "mcp.json")} or ${CONFIG_DIR_NAME}/mcp.json.`,
+		);
 	}
 	for (const report of reports) {
 		const state =
@@ -496,6 +501,7 @@ async function list(
 					: report.state;
 		log(`${report.name}: ${state} (${report.exposure}, ${report.scope})`);
 		log(`  ${report.transport}`);
+		if (report.override) log(`  project override: ${report.override}`);
 		if (report.state === "needs-auth") log(`  sign in with: ${APP_NAME} mcp login ${report.name}`);
 		if (report.tools.length > 0) {
 			const tools = report.tools.map((tool) => {

@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import { afterEach, test, vi } from "vitest";
 import { openaiChatGPTOAuth } from "../src/auth/oauth/openai-chatgpt.ts";
-import type { ProviderAuthInteraction } from "../src/auth/types.ts";
+import type { AuthEvent, ProviderAuthInteraction } from "../src/auth/types.ts";
 
 const DEVICE_ID = "e61bbe28-07ef-466d-8e5d-a344f94ab305";
 const SCOPE = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 const token = { access_token: "access", refresh_token: "refresh", expires_in: 3600, id_token: "id", scope: SCOPE };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
+});
 
 function interaction(clientId: string | undefined, inspect?: (url: URL) => void): ProviderAuthInteraction {
 	let authorize: URL;
@@ -60,6 +64,62 @@ test("ChatGPT requires the issued client ID before exchanging credentials", asyn
 		/issued client ID/,
 	);
 	assert.equal(fetch.mock.calls.length, 0);
+});
+
+test("ChatGPT login fails before opening the browser when the callback port is taken (#10265)", async () => {
+	const fetch = vi.fn();
+	vi.stubGlobal("fetch", fetch);
+	const holder = createServer();
+	const held = await new Promise<boolean>((resolve, reject) => {
+		holder.once("error", (error: NodeJS.ErrnoException) =>
+			error.code === "EADDRINUSE" ? resolve(false) : reject(error),
+		);
+		holder.listen(1455, "127.0.0.1", () => resolve(true));
+	});
+	const events: string[] = [];
+	const login = openaiChatGPTOAuth.login(
+		{
+			signal: new AbortController().signal,
+			notify: (event) => events.push(event.type),
+			prompt: async () => {
+				events.push("prompt");
+				throw new Error("login must not prompt for a pasted redirect URL");
+			},
+		},
+		{ getDeviceId: () => DEVICE_ID },
+	);
+	try {
+		await assert.rejects(login, /Port 1455 is in use/);
+	} finally {
+		if (held) await new Promise((resolve) => holder.close(resolve));
+	}
+	assert.deepEqual(events, []);
+	assert.equal(fetch.mock.calls.length, 0);
+});
+
+test("ChatGPT login falls back to the manual prompt when the callback host cannot be bound", async () => {
+	vi.stubEnv("PI_OAUTH_CALLBACK_HOST", "203.0.113.1");
+	vi.resetModules();
+	const { openaiChatGPTOAuth: unbindable } = await import("../src/auth/oauth/openai-chatgpt.ts");
+	vi.stubGlobal("fetch", async () => Response.json(token));
+	const events: AuthEvent[] = [];
+	const base = interaction("oaiapp_issued");
+	const credential = await unbindable.login(
+		{
+			...base,
+			notify: (event) => {
+				events.push(event);
+				base.notify(event);
+			},
+		},
+		{ getDeviceId: () => DEVICE_ID },
+	);
+	assert.equal(credential.clientId, "oaiapp_issued");
+	const info = events.find((event) => event.type === "info");
+	assert.ok(info && "message" in info && /Could not listen on .*paste the final redirect URL/.test(info.message));
+	assert.ok(
+		events.findIndex((event) => event.type === "info") < events.findIndex((event) => event.type === "auth_url"),
+	);
 });
 
 test("ChatGPT refuses missing direct-use scope", async () => {
