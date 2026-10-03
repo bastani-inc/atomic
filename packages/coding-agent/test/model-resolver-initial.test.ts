@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
-import { defaultModelPerProvider, findPreferredAvailableModel } from "../src/core/model-resolver-defaults.ts";
+import { defaultModelPerProvider, findPreferredAvailableModel } from "../src/core/model-resolver-defaults.js";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const COPILOT_ENV_KEYS = [
