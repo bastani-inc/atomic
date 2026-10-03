@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.26-alpha.4] - 2026-10-02
+
 ### Fixed
 
 - Fixed sticky workflow messages disappearing during stage startup, and added per-stage delivery and skip results to `intercom list` so retained future-message counts cannot be mistaken for receipt by every stage ([#3406](https://github.com/bastani-inc/atomic/issues/3406)).

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.26-alpha.4] - 2026-10-02
+
 ### Fixed
 
 - Fixed sticky Intercom broadcasts to `workflow:<rootRunId>/**` missing later stages before their first model turn. Workflow status now reports per-stage delivery and skip results for retained messages ([#3406](https://github.com/bastani-inc/atomic/issues/3406)).
