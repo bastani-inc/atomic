@@ -388,6 +388,7 @@ function possibleStageRows(
 ): {
 	readonly target: string;
 	readonly queuedCount: number;
+	readonly deliveryOnly?: true;
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
 }[] {
 	if (isTerminalRunStatus(rootRun.status)) return [];
@@ -408,6 +409,7 @@ function possibleStageRows(
 	const rows: {
 		readonly target: string;
 		readonly queuedCount: number;
+		readonly deliveryOnly?: true;
 		readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
 	}[] = [];
 	for (const scanEntry of rootRun.possibleStages ?? []) {
@@ -436,6 +438,14 @@ function possibleStageRows(
 		}).length,
 	});
 	const statuses = stickyStageDeliveryStatuses(runs, rootRunId);
+	for (const target of new Set(statuses.map((status) => status.target))) {
+		if (rows.some((row) => row.target === target)) continue;
+		rows.push({
+			target,
+			queuedCount: stickyQueued.filter((entry) => (entry.targetPath ?? entry.stageKey) === target).length,
+			deliveryOnly: true,
+		});
+	}
 	for (let index = 0; index < rows.length; index++) {
 		const row = rows[index]!;
 		const deliveryStates = statuses.filter((status) => status.target === row.target);

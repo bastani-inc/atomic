@@ -1349,6 +1349,137 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		dispose();
 	});
 
+	test("listing retains sticky delivery states outside the scan and after exact materialization (#3406)", async () => {
+		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { store, queueSticky, routePayload, dispose } = rowHarness({ possibleStages: ["later"] });
+		try {
+			await queueSticky("outside-3406", `workflow:${RUN_ID}/dynamic-*`);
+			await queueSticky("exact-3406", `workflow:${RUN_ID}/later`);
+			for (const name of ["dynamic-worker", "later"]) {
+				store.recordStageStart(RUN_ID, {
+					id: `${name}-id`,
+					name,
+					status: "running",
+					sessionId: `${name}-session`,
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				});
+			}
+			const rows = routePayload()?.possibleStages as {
+				target: string;
+				deliveryOnly?: true;
+				deliveryStates?: { messageId: string; state: string }[];
+			}[];
+			assert.deepEqual(
+				["dynamic-*", "later"].map((target) => {
+					const row = rows.find((candidate) => candidate.target === `workflow:${RUN_ID}/${target}`);
+					return {
+						target,
+						deliveryOnly: row?.deliveryOnly,
+						states: row?.deliveryStates?.map(({ messageId, state }) => ({ messageId, state })),
+					};
+				}),
+				[
+					{ target: "dynamic-*", deliveryOnly: true, states: [{ messageId: "outside-3406", state: "queued" }] },
+					{ target: "later", deliveryOnly: true, states: [{ messageId: "exact-3406", state: "queued" }] },
+				],
+			);
+			for (const [messageId, stageName] of [
+				["outside-3406", "dynamic-worker"],
+				["exact-3406", "later"],
+			] as const) {
+				await store.recordPendingStageMessageDeliveries(
+					RUN_ID,
+					messageId,
+					[
+						{
+							runId: RUN_ID,
+							stageId: `${stageName}-id`,
+							sessionId: `${stageName}-session`,
+							admission: "context",
+						},
+					],
+					"2026-10-03T00:00:00Z",
+					getDurableBackend(),
+				);
+			}
+			const deliveredRows = routePayload()?.possibleStages as {
+				deliveryOnly?: true;
+				queuedCount: number;
+				deliveryStates?: { state: string }[];
+			}[];
+			assert.deepEqual(
+				deliveredRows
+					.filter((row) => row.deliveryOnly)
+					.map((row) => ({
+						queuedCount: row.queuedCount,
+						states: row.deliveryStates?.map(({ state }) => state),
+					})),
+				[
+					{ queuedCount: 1, states: ["delivered"] },
+					{ queuedCount: 1, states: ["delivered"] },
+				],
+			);
+			assert.ok(
+				store.runs()[0]!.pendingStageMessages?.every((entry) => entry.status === "queued" && entry.sticky === true),
+			);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("terminal sticky stages give terminal guidance unless context receipt is confirmed (#3406)", async () => {
+		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
+		const { store, queueSticky, dispose } = rowHarness({});
+		try {
+			await queueSticky("terminal-3406", `workflow:${RUN_ID}/**`);
+			const actual: { stageId: string; state?: string; actionable: boolean }[] = [];
+			const expected: typeof actual = [];
+			for (const status of ["completed", "failed", "skipped"] as const) {
+				for (const admission of ["transport", "context", "none"] as const) {
+					const stageId = `${status}-${admission}`;
+					store.recordStageStart(RUN_ID, {
+						id: stageId,
+						name: stageId,
+						status,
+						sessionId: `${stageId}-session`,
+						parentIds: [],
+						toolEvents: [],
+						pendingStageDeliveryAvailable: false,
+						...(status === "failed" ? { error: "Stage failed" } : {}),
+					});
+					if (admission !== "none") {
+						await store.recordPendingStageMessageDeliveries(
+							RUN_ID,
+							"terminal-3406",
+							[{ runId: RUN_ID, stageId, sessionId: `${stageId}-session`, admission }],
+							"2026-10-03T00:00:00Z",
+							getDurableBackend(),
+						);
+					}
+					const detail = inspectRun(RUN_ID, { store });
+					assert.ok(detail.ok);
+					const state = detail.detail.deliveryStates?.find((delivery) => delivery.stageId === stageId);
+					actual.push({
+						stageId,
+						state: state?.state,
+						actionable: /steer a live stage or start a new stage/.test(state?.reason ?? ""),
+					});
+					expected.push({
+						stageId,
+						state: admission === "context" ? "delivered" : "stage-terminal",
+						actionable: admission !== "context",
+					});
+				}
+			}
+			assert.deepEqual(actual, expected);
+		} finally {
+			dispose();
+		}
+	});
+
 	test("workflow status distinguishes acknowledged sessions and actionable sticky skips (#3406)", async () => {
 		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
@@ -1392,7 +1523,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			assert.equal(states().find((delivery) => delivery.stageId === "unavailable")?.state, "delivery-unavailable");
 			assert.equal(
 				states().find((delivery) => delivery.stageId === "ended")?.reason,
-				"Intercom session retired before pending-stage delivery; message remains queued",
+				"Intercom session retired before pending-stage delivery; message remains queued; Stage ended without confirmed context admission; steer a live stage or start a new stage",
 			);
 			assert.equal(
 				states().some((delivery) => ["tool", "prompt", "boundary-id"].includes(delivery.stageId)),

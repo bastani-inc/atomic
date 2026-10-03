@@ -83,6 +83,8 @@ Name and pattern paths remain sticky for every future matching stage until the r
 
 The `[future]` queued count is the number of retained sticky messages, not the number unread by a particular stage. A message remains queued for later matches after earlier stages receive it. Inspect the per-stage `deliveryStates` in `intercom list` and `workflow({ action: "status", runId: "<rootRunId>" })` to check receipt or why delivery was skipped. `delivered` confirms admission to stage context, not that the model followed the instruction. `receipt-unverified` means only transport delivery or an older receipt is known; inspect the stage transcript before resending.
 
+`[delivery]` rows retain per-stage evidence for sticky targets missing from the future-target list, including exact targets after materialization. They do not indicate that a stage is still in the future or currently live. Use the per-stage state to decide what to do; an ended stage without confirmed context admission shows `stage-terminal`, even when transport delivery was acknowledged.
+
 | State | What to do |
 | --- | --- |
 | `queued` | Wait for the matching stage to finish startup. |

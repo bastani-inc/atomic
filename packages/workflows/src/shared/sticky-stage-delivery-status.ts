@@ -63,6 +63,9 @@ export function stickyStageDeliveryStatuses(
 				} else if (delivered) {
 					state = "delivered";
 					reason = "Startup context admission confirmed; sticky subscription remains for future stages";
+				} else if (["completed", "failed", "skipped"].includes(stage.status)) {
+					state = "stage-terminal";
+					reason = `${stage.error ? `${stage.error}; ` : ""}Stage ended without confirmed context admission; steer a live stage or start a new stage`;
 				} else if (
 					receipts.some(
 						(delivery) =>
@@ -78,9 +81,6 @@ export function stickyStageDeliveryStatuses(
 				} else if (stage.pendingStageDeliveryAvailable !== true) {
 					state = "delivery-unavailable";
 					reason = "Stage has no pre-start Intercom helper; enable Intercom in the invocation group";
-				} else if (["completed", "failed", "skipped"].includes(stage.status)) {
-					state = "stage-terminal";
-					reason = stage.error ?? "Stage ended without a receipt; steer a live stage or start a new stage";
 				} else if (receipts.length > 0) {
 					state = "session-replaced";
 					reason = "Only a previous session has a receipt; replacement must drain before its first turn";

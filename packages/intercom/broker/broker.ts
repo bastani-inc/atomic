@@ -233,6 +233,7 @@ function isWorkflowPossibleStageAnnouncements(
 				typeof announcement.queuedCount === "number" &&
 				Number.isInteger(announcement.queuedCount) &&
 				announcement.queuedCount >= 0 &&
+				(announcement.deliveryOnly === undefined || announcement.deliveryOnly === true) &&
 				(announcement.deliveryStates === undefined || (Array.isArray(announcement.deliveryStates) && announcement.deliveryStates.every((delivery) =>
 					delivery !== null && typeof delivery === "object" &&
 					typeof delivery.messageId === "string" && typeof delivery.runId === "string" &&
@@ -551,6 +552,7 @@ class IntercomBroker {
 					target: row.target,
 					queuedCount: row.queuedCount,
 					...(row.deliveryStates === undefined ? {} : { deliveryStates: row.deliveryStates }),
+					...(row.deliveryOnly === undefined ? {} : { deliveryOnly: row.deliveryOnly }),
 					group: roster.group,
 				});
 			}
