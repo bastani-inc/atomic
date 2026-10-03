@@ -1,17 +1,31 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { instantiateExtensions } from "../../../src/core/extensions/loader.ts";
-import type { LoadExtensionsResult, ToolRenderContext } from "../../../src/core/extensions/types.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
+import { describe, it } from "vitest";
+import { instantiateExtensions } from "../../../src/core/extensions/loader.js";
+import type { LoadExtensionsResult, ToolRenderContext } from "../../../src/core/extensions/types.js";
+import { SessionManager } from "../../../src/core/session-manager.js";
 import { createMcpExtension } from "../../../src/extensions/mcp/index.js";
+import { createMcpToolName } from "../../../src/extensions/mcp/tools.js";
 import { initTheme, theme } from "../../../src/modes/interactive/theme/theme.js";
-import { stripAnsi } from "../../../src/utils/ansi.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "../../utilities.ts";
-import { createHarness } from "../harness.ts";
+import { stripAnsi } from "../../../src/utils/ansi.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "../../utilities.js";
+import { createHarness } from "../harness.js";
 
 const mcpExtension = createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }) });
+const shortenedName = createMcpToolName("a", "search".repeat(15));
+const shortenedServerName = createMcpToolName("a".repeat(55), "search");
+const fallbackLabels = [
+	["mcp__my_docs__search", "my_docs/search"],
+	["mcp__a__b__search", "mcp__a__b__search"],
+	["mcp__a__search__more", "mcp__a__search__more"],
+	["mcp__a___search", "mcp__a___search"],
+	["mcp__a_b__search", "a_b/search"],
+	["mcp__a__search_1234abcd", "mcp__a__search_1234abcd"],
+	[shortenedName, shortenedName],
+	[shortenedServerName, shortenedServerName],
+] as const;
 
 describe("MCP tool renderers", () => {
 	it("binds copied tool renderer registrations to each session runtime after reload (#10285)", async () => {
@@ -50,26 +64,30 @@ describe("MCP tool renderers", () => {
 			settings: { quietStartup: true },
 		});
 		try {
-			expect(harness.session.extensionRunner.resolveToolRenderers("tool", () => undefined)?.renderShell).toBe(
+			assert.equal(
+				harness.session.extensionRunner.resolveToolRenderers("tool", () => undefined)?.renderShell,
 				"self",
 			);
-			expect(
+			assert.deepEqual(
 				harness.session.extensionRunner
 					.resolveToolRenderers("tool", () => undefined)
 					?.renderCall?.({}, theme, {} as ToolRenderContext)
 					.render(80),
-			).toEqual(["true"]);
+				["true"],
+			);
 			harness.settingsManager.setQuietStartup(false);
 			await harness.session.reload();
-			expect(harness.session.extensionRunner.resolveToolRenderers("tool", () => undefined)?.renderShell).toBe(
+			assert.equal(
+				harness.session.extensionRunner.resolveToolRenderers("tool", () => undefined)?.renderShell,
 				"self",
 			);
-			expect(
+			assert.deepEqual(
 				harness.session.extensionRunner
 					.resolveToolRenderers("tool", () => undefined)
 					?.renderCall?.({}, theme, {} as ToolRenderContext)
 					.render(80),
-			).toEqual(["false"]);
+				["false"],
+			);
 		} finally {
 			await harness.cleanup();
 		}
@@ -85,9 +103,18 @@ describe("MCP tool renderers", () => {
 		});
 		try {
 			const runner = harness.session.extensionRunner;
-			expect(runner.resolveToolRenderers("a", () => undefined)).toEqual({ renderCall });
-			expect(runner.resolveToolRenderers("b", () => undefined)).toEqual({ renderShell: "self" });
-			expect(runner.resolveToolRenderers("b", () => ({ renderCall }))).toEqual({ renderCall });
+			assert.deepEqual(
+				runner.resolveToolRenderers("a", () => undefined),
+				{ renderCall },
+			);
+			assert.deepEqual(
+				runner.resolveToolRenderers("b", () => undefined),
+				{ renderShell: "self" },
+			);
+			assert.deepEqual(
+				runner.resolveToolRenderers("b", () => ({ renderCall })),
+				{ renderCall },
+			);
 		} finally {
 			await harness.cleanup();
 		}
@@ -101,12 +128,20 @@ describe("MCP tool renderers", () => {
 				harness.session.extensionRunner.resolveToolRenderers(toolName, () =>
 					harness.session.getToolDefinition(toolName),
 				);
-			const call = resolve("mcp__my_docs__search")?.renderCall?.({ query: "pi" }, theme, {
-				expanded: false,
-			} as ToolRenderContext);
-			expect(stripAnsi(call?.render(100).join("\n") ?? "")).toContain('my_docs/search query="pi"');
-			expect(resolve("not_mcp")).toBeUndefined();
-			expect(resolve("read")?.renderCall).toBe(harness.session.getToolDefinition("read")?.renderCall);
+			for (const [name, label] of fallbackLabels) {
+				const call = resolve(name)?.renderCall?.({ query: "pi" }, theme, {
+					expanded: false,
+				} as ToolRenderContext);
+				assert.ok(stripAnsi(call?.render(100).join("\n") ?? "").includes(`${label} query="pi"`), name);
+			}
+			assert.equal(resolve("not_mcp"), undefined);
+			assert.equal(resolve("read")?.renderCall, harness.session.getToolDefinition("read")?.renderCall);
+			const renderCall = () => ({ render: () => ["a__b/search"], invalidate: () => {} });
+			assert.equal(
+				harness.session.extensionRunner.resolveToolRenderers("mcp__a__b__search", () => ({ renderCall }))
+					?.renderCall,
+				renderCall,
+			);
 		} finally {
 			await harness.cleanup();
 		}
@@ -121,7 +156,12 @@ describe("MCP tool renderers", () => {
 			sessionManager.appendMessage({ role: "user", content: "search", timestamp: 1 });
 			sessionManager.appendMessage({
 				role: "assistant",
-				content: [{ type: "toolCall", id: "call-1", name: "mcp__my_docs__search", arguments: { query: "pi" } }],
+				content: fallbackLabels.map(([name], index) => ({
+					type: "toolCall",
+					id: `call-${index}`,
+					name,
+					arguments: { query: "pi" },
+				})),
 				api: "anthropic-messages",
 				provider: "anthropic",
 				model: "test",
@@ -138,8 +178,12 @@ describe("MCP tool renderers", () => {
 			});
 			const html = readFileSync(await harness.session.exportToHtml(join(dir, "export.html")), "utf8");
 			const data = /<script id="session-data" type="application\/json">([^<]*)<\/script>/.exec(html)?.[1] ?? "";
-			const session = JSON.parse(Buffer.from(data, "base64").toString("utf8"));
-			expect(stripAnsi(session.renderedTools?.["call-1"]?.callHtml ?? "")).toContain("my_docs/search");
+			const session: { renderedTools?: Record<string, { callHtml?: string }> } = JSON.parse(
+				Buffer.from(data, "base64").toString("utf8"),
+			);
+			for (const [index, [, label]] of fallbackLabels.entries()) {
+				assert.ok(stripAnsi(session.renderedTools?.[`call-${index}`]?.callHtml ?? "").includes(label), label);
+			}
 		} finally {
 			await harness.cleanup();
 			rmSync(dir, { recursive: true, force: true });

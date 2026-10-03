@@ -14,6 +14,7 @@
 - Fixed JPEG, GIF, and WebP images rendered by extensions through `Image` not appearing on Kitty-protocol terminals ([#10292](https://github.com/earendil-works/pi/issues/10292)).
 - Fixed fullscreen Kitty images collapsing after scrolling in WezTerm ([#10319](https://github.com/earendil-works/pi/issues/10319)).
 - Fixed `codemode` scripts that print in a loop exhausting memory. Scripts now fail after exceeding 16 Mi characters or 100000 output items ([#10283](https://github.com/earendil-works/pi/issues/10283)).
+- Fixed resumed MCP calls and HTML exports assigning the wrong server to ambiguous tool names. Calls without known renderers now retain their full identifier when the server/tool boundary cannot be recovered.
 
 ## [0.9.26-alpha.3] - 2026-10-03
 

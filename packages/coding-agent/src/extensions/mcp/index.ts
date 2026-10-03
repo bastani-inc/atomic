@@ -402,8 +402,20 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
 		pi.registerToolRenderer((toolName, next) => {
-			const match = /^mcp__(.+?)__(.+)$/.exec(toolName);
-			return next() ?? (match ? createMcpToolRenderers(`${match[1]}/${match[2]}`) : undefined);
+			const registered = next();
+			if (registered) return registered;
+			if (!toolName.startsWith("mcp__")) return undefined;
+			const owner = toolOwners.get(toolName);
+			if (owner) return createMcpToolRenderers(owner.replace("\0", "/"));
+			const encoded = toolName.slice("mcp__".length);
+			const boundary = encoded.indexOf("__");
+			const unambiguous =
+				boundary > 0 &&
+				boundary + 2 < encoded.length &&
+				boundary === encoded.lastIndexOf("__") &&
+				!/_[a-f0-9]{8}$/.test(toolName);
+			const label = unambiguous ? `${encoded.slice(0, boundary)}/${encoded.slice(boundary + 2)}` : toolName;
+			return createMcpToolRenderers(label);
 		});
 
 		const registerTools = (connection: McpServerConnection) => {
