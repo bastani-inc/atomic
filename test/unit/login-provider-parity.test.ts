@@ -122,7 +122,7 @@ test("every adopted builtin provider has a preferred default", () => {
 	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
 	assert.equal(defaultModelPerProvider["qwen-token-plan-individual"], "qwen3.8-max");
 	assert.equal(defaultModelPerProvider.radius, "balanced");
-	assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3-super-120b-a12b");
+	assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3-ultra-550b-a55b");
 	assert.equal(defaultModelPerProvider["zai-coding-cn"], "glm-5.3");
 	assert.equal(Object.hasOwn(defaultModelPerProvider, "cursor"), false);
 });
