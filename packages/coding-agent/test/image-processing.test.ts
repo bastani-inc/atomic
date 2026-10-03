@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
-import { convertToPng } from "../src/utils/image-convert.ts";
+import { convertToPng, loadPngTranscoder } from "../src/utils/image-convert.js";
 import { formatDimensionNote, resizeImage } from "../src/utils/image-resize.ts";
 
 // Small 2x2 red PNG image (base64) - generated with ImageMagick
@@ -81,6 +81,15 @@ describe("convertToPng", () => {
 		assert.equal(png.readUInt32BE(16), 1);
 		assert.equal(png.readUInt32BE(20), 2);
 	});
+});
+it("converts extension images synchronously to oriented PNG data (#10292)", async () => {
+	const transcoder = await loadPngTranscoder();
+	assert.ok(transcoder);
+	const converted = transcoder(jpegWithXmpBeforeOrientation(), "image/jpeg");
+	assert.ok(converted);
+	const png = Buffer.from(converted, "base64");
+	assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [1, 2]);
+	assert.equal(transcoder(Buffer.from("not an image").toString("base64"), "image/jpeg"), null);
 });
 
 describe("resizeImage", () => {

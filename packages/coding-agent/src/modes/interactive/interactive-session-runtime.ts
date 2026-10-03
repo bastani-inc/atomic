@@ -1,6 +1,8 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import type { ToolRenderers } from "../../core/extensions/types.ts";
+import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type AgentSession, setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
+import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
 	const uiContext = this.createExtensionUIContext();
@@ -87,6 +89,10 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 
 InteractiveModeBase.prototype.applyRuntimeSettings = function (this: InteractiveModeBase): void {
 	setCapabilityOverrides(this.settingsManager.getTerminalCapabilityOverrides());
+	ensurePngTranscoder(() => {
+		this.ui.invalidate();
+		this.ui.requestRender();
+	});
 	this.setFullscreenCopyOnSelect(this.settingsManager.getFullscreenCopyOnSelect());
 	this.setFullscreenWheelScrollLines(this.settingsManager.getFullscreenWheelScrollLines());
 	this.transcriptScrollView?.setScrollbar(this.settingsManager.getFullscreenScrollbar());
@@ -168,6 +174,6 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 InteractiveModeBase.prototype.getRegisteredToolDefinition = function (
 	this: InteractiveModeBase,
 	toolName: string,
-): ReturnType<AgentSession["getToolDefinition"]> {
-	return this.session.getToolDefinition(toolName);
+): ToolRenderers | undefined {
+	return this.session.extensionRunner.resolveToolRenderers(toolName, () => this.session.getToolDefinition(toolName));
 };

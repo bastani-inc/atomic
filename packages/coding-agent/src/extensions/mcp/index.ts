@@ -63,7 +63,7 @@ import {
 import { loadMcpRuntime } from "./runtime.lazy.ts";
 import type * as McpRuntime from "./runtime.ts";
 import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./runtime.ts";
-import { createMcpToolDefinition, createMcpToolName, type McpToolDetails } from "./tools.ts";
+import { createMcpToolDefinition, createMcpToolName, createMcpToolRenderers, type McpToolDetails } from "./tools.ts";
 import { type McpMenu, type McpUi, showMcpManager } from "./ui.ts";
 
 function isCodemodeDiscoveryTool(tool: ToolInfo): boolean {
@@ -399,6 +399,24 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const serverTools = new Map<string, Set<string>>();
 		/** Last definition registered under each tool name, to re-register withdrawn tools as hidden. */
 		const definitions = new Map<string, ToolDefinition<TSchema, McpToolDetails>>();
+
+		// Render resumed MCP calls even when their server has not connected or never connects.
+		pi.registerToolRenderer((toolName, next) => {
+			const registered = next();
+			if (registered) return registered;
+			if (!toolName.startsWith("mcp__")) return undefined;
+			const owner = toolOwners.get(toolName);
+			if (owner) return createMcpToolRenderers(owner.replace("\0", "/"));
+			const encoded = toolName.slice("mcp__".length);
+			const boundary = encoded.indexOf("__");
+			const unambiguous =
+				boundary > 0 &&
+				boundary + 2 < encoded.length &&
+				boundary === encoded.lastIndexOf("__") &&
+				!/_[a-f0-9]{8}$/.test(toolName);
+			const label = unambiguous ? `${encoded.slice(0, boundary)}/${encoded.slice(boundary + 2)}` : toolName;
+			return createMcpToolRenderers(label);
+		});
 
 		const registerTools = (connection: McpServerConnection) => {
 			if (!servers.some((candidate) => candidate.connection === connection)) return;

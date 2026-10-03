@@ -660,6 +660,12 @@ Moved to [Writing extensions](/extensions/authoring#multiple-tools).
 
 Moved to [Writing extensions](/extensions/authoring#custom-rendering).
 
+#### Tool rendering
+
+A tool's `renderCall` and `renderResult` draw its calls in the interactive transcript and HTML exports. Use `pi.registerToolRenderer((toolName, next) => renderers)` to choose renderers for any tool, including MCP tools in resumed sessions before their server connects. Resolvers run in extension load order. `next()` returns the remaining resolvers' choice, then the registered tool's renderers, so `next() ?? mine` only fills in when none exist.
+
+Extension `Image` components render JPEG, GIF, and WebP images on Kitty-protocol terminals automatically, just like tool result images.
+
 #### renderCall
 
 Moved to [Writing extensions](/extensions/authoring#rendercall).

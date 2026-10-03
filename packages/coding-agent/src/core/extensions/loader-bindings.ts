@@ -81,6 +81,7 @@ export const registrationFields = [
 	"flags",
 	"shortcuts",
 	"messageRenderers",
+	"toolRenderers",
 	"entryRenderers",
 	"markdownTransformer",
 ] as const;

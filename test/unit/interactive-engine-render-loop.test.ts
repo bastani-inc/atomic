@@ -23,6 +23,7 @@
 import assert from "node:assert/strict";
 import { beforeAll, describe, test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
+import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import type { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.ts";
@@ -50,6 +51,9 @@ interface Harness {
 function makeSessionStub(): AgentSession {
 	const stub = {
 		getToolDefinition: () => undefined,
+		extensionRunner: {
+			resolveToolRenderers: (_name: string, base: () => ToolRenderers | undefined) => base(),
+		},
 		sessionManager: { getCwd: () => process.cwd() },
 	};
 	return stub as unknown as AgentSession;

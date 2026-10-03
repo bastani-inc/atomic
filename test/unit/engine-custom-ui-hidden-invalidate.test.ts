@@ -10,8 +10,15 @@
  */
 
 import assert from "node:assert/strict";
-import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
-import { describe, test } from "vitest";
+import {
+	type Component,
+	Image,
+	type OverlayHandle,
+	resetCapabilitiesCache,
+	setCapabilities,
+	type TUI,
+} from "@earendil-works/pi-tui";
+import { describe, test, vi } from "vitest";
 import {
 	installReactiveWidget,
 	type ReactiveWidgetFactory,
@@ -80,6 +87,25 @@ async function openInline(service: EngineCustomUiService): Promise<void> {
 }
 
 describe("EngineCustomUiService targeted invalidation (#1856)", () => {
+	test.each(["custom", "widget"] as const)(
+		"converts JPEG extension Images in isolated %s UIs (#10292)",
+		async (kind) => {
+			setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+			const { service } = makeHarness();
+			const jpeg =
+				"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAIDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AD3VTB3/2Q==";
+			const image = new Image(jpeg, "image/jpeg", { fallbackColor: (text) => text });
+			try {
+				if (kind === "custom") void service.custom(() => image);
+				else service.setWidget("image", () => image);
+				await vi.waitFor(() => assert.ok(image.render(80).join("\n").includes(";iVBORw0KGgo")));
+			} finally {
+				service.dispose();
+				resetCapabilitiesCache();
+			}
+		},
+	);
+
 	test("requestRender broadcast skips hidden overlay components", async () => {
 		const { service, invalidatedComponentIds, clearMessages } = makeHarness();
 		const overlayHandle = await openOverlay(service);

@@ -21,7 +21,7 @@ import type {
 	SendMessagesOptions,
 } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
-import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
+import type { ToolDefinition, ToolInfo, ToolRendererResolver } from "./tool-types.ts";
 import type { WorkflowActivityHub } from "./workflow-activity-hub.js";
 import type { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
@@ -262,6 +262,7 @@ export interface Extension {
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	toolRenderers?: ToolRendererResolver[];
 	markdownTransformer?: MarkdownTransformer;
 	entryRenderers: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;

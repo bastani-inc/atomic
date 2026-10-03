@@ -12,9 +12,6 @@ import { ToolExecutionComponent } from "../src/modes/interactive/components/tool
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
-const imageConvertMocks = vi.hoisted(() => ({ convertToPng: vi.fn() }));
-vi.mock("../src/utils/image-convert.ts", () => imageConvertMocks);
-
 function createBaseToolDefinition(name = "custom_tool"): ToolDefinition {
 	return {
 		name,
@@ -42,17 +39,12 @@ describe("ToolExecutionComponent parity", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		resetCapabilitiesCache();
-		imageConvertMocks.convertToPng.mockReset();
 	});
 
-	// Upstream #8577/#8743: a partial conversion must not replace the final image.
-	test("keeps the final image when a partial conversion completes late", async () => {
+	test("converts final non-PNG images after replacing partial images (#10292, #8577)", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
-		let finish!: (image: { data: string; mimeType: string }) => void;
-		const conversion = new Promise<{ data: string; mimeType: string }>((resolve) => {
-			finish = resolve;
-		});
-		imageConvertMocks.convertToPng.mockReturnValue(conversion);
+		const jpeg =
+			"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAIDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AD3VTB3/2Q==";
 		const component = new ToolExecutionComponent(
 			"custom_tool",
 			"image-race",
@@ -63,19 +55,18 @@ describe("ToolExecutionComponent parity", () => {
 			process.cwd(),
 		);
 		component.updateResult(
-			{ content: [{ type: "image", data: "partial-jpeg", mimeType: "image/jpeg" }], isError: false },
+			{ content: [{ type: "image", data: "cGFydGlhbA==", mimeType: "image/jpeg" }], isError: false },
 			true,
 		);
 		component.updateResult({
-			content: [{ type: "image", data: "final-png", mimeType: "image/png" }],
+			content: [{ type: "image", data: jpeg, mimeType: "image/jpeg" }],
 			isError: false,
 		});
-		expect(component.render(120).join("\n")).toContain("final-png");
-		finish({ data: "converted-partial", mimeType: "image/png" });
-		await conversion;
+		await vi.waitFor(() => expect(component.render(120).join("\n")).toContain(";iVBORw0KGgo"));
 		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("final-png");
-		expect(rendered).not.toContain("converted-partial");
+		expect(rendered).not.toContain("cGFydGlhbA==");
+		component.invalidate();
+		expect(component.render(120).join("\n")).toBe(rendered);
 		component.dispose();
 	});
 

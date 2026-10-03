@@ -21,6 +21,8 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRendererResolver,
+	ToolRenderers,
 } from "./core/extensions/tool-types.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";

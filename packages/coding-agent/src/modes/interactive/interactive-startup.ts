@@ -2,6 +2,7 @@ import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
@@ -274,6 +275,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	this.ui.start();
+	ensurePngTranscoder(() => {
+		this.ui.invalidate();
+		this.ui.requestRender();
+	});
 	this.disposeMarkitDiagnosticSink = setMarkitDiagnosticSink((message) => renderDiagnosticStatus(message, this));
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();

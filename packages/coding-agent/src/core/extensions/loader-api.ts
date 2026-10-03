@@ -41,6 +41,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolRendererResolver,
 } from "./types.ts";
 import type { SessionWorkflows } from "./workflow-run-control.js";
 
@@ -318,6 +319,14 @@ export function createExtensionAPI(
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
 			assertActive();
 			extension.entryRenderers.set(customType, captureRegistrationInvocation(renderer) as EntryRenderer);
+		},
+
+		registerToolRenderer(resolver: ToolRendererResolver): void {
+			assertActive();
+			extension.toolRenderers ??= [];
+			extension.toolRenderers.push(
+				captureRegistrationInvocation((toolName, next) => captureRegistrationInvocation(resolver(toolName, next))),
+			);
 		},
 
 		getFlag(name: string): boolean | string | undefined {

@@ -9,7 +9,15 @@ export type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "./host-input.js";
-export type { ToolAnnotations, ToolExposure, ToolLoadout, ToolLoadoutChanges, ToolNamespace } from "./tool-types.ts";
+export type {
+	ToolAnnotations,
+	ToolExposure,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
+	ToolRendererResolver,
+	ToolRenderers,
+} from "./tool-types.ts";
 /**
  * Extension system for lifecycle events and custom tools.
  */

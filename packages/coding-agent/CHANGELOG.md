@@ -2,10 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `pi.registerToolRenderer()` to choose renderers for any tool, including tools not yet registered ([#10285](https://github.com/earendil-works/pi/issues/10285)).
+
 ### Fixed
 
 - Fixed managed workflow PostgreSQL staying down after shutdown when its old launch options were missing. Database-unavailable errors and workflow status now show the provider, credential-redacted endpoint, and retained recovery refusal or failure ([#3413](https://github.com/bastani-inc/atomic/issues/3413)).
 - Fixed NVIDIA's built-in default pointing to a model missing from its current catalog. Automatic selection now prefers Nemotron 3 Ultra 550B A55B.
+- Fixed MCP tool calls in resumed sessions and HTML exports rendering fully expanded before their server connects, or when it never connects ([#10285](https://github.com/earendil-works/pi/issues/10285)).
+- Fixed JPEG, GIF, and WebP images rendered by extensions through `Image` not appearing on Kitty-protocol terminals ([#10292](https://github.com/earendil-works/pi/issues/10292)).
+- Fixed fullscreen Kitty images collapsing after scrolling in WezTerm ([#10319](https://github.com/earendil-works/pi/issues/10319)).
+- Fixed `codemode` scripts that print in a loop exhausting memory. Scripts now fail after exceeding 16 Mi characters or 100000 output items ([#10283](https://github.com/earendil-works/pi/issues/10283)).
+- Fixed resumed MCP calls and HTML exports assigning the wrong server to ambiguous tool names. Calls without known renderers now retain their full identifier when the server/tool boundary cannot be recovered.
 
 ## [0.9.26-alpha.3] - 2026-10-03
 

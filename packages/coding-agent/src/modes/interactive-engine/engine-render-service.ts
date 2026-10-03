@@ -4,6 +4,7 @@ import { getAgentDir } from "../../config.js";
 import type { AgentSession } from "../../core/agent-session.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";
+import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import {
@@ -125,12 +126,18 @@ export class EngineRenderService {
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
 			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+			ensurePngTranscoder(() => {
+				tui.invalidate();
+				tui.requestRender();
+			});
 			const component = new ToolExecutionComponent(
 				command.toolName,
 				command.toolCallId,
 				command.args,
 				{ showImages: command.showImages, imageWidthCells: command.imageWidthCells },
-				session.getToolDefinition(command.toolName),
+				session.extensionRunner.resolveToolRenderers(command.toolName, () =>
+					session.getToolDefinition(command.toolName),
+				),
 				tui,
 				session.sessionManager.getCwd(),
 			);
@@ -164,6 +171,10 @@ export class EngineRenderService {
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
 			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+			ensurePngTranscoder(() => {
+				tui.invalidate();
+				tui.requestRender();
+			});
 			const message = command.message as unknown as CustomMessage<object>;
 			const component = new CustomMessageComponent(
 				message,
