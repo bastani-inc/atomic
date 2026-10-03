@@ -80,7 +80,7 @@ import type {
 	SessionTreeEvent,
 } from "./session-events.ts";
 import type { ToolCallEvent, ToolResultEvent } from "./tool-events.ts";
-import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
+import type { ToolDefinition, ToolInfo, ToolRendererResolver } from "./tool-types.ts";
 import type {
 	WorkflowActivityChangedEvent,
 	WorkflowActivityPublisher,
@@ -260,6 +260,9 @@ export interface ExtensionAPI {
 	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
 	/** Register a custom renderer for a persistent CustomEntry. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
+
+	/** Choose how tool calls are drawn. Resolvers run in extension load order. */
+	registerToolRenderer(resolver: ToolRendererResolver): void;
 
 	// =========================================================================
 	// Actions

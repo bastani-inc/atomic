@@ -18,7 +18,13 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, JsonValue, TextContent } from "@earendil-works/pi-ai";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import type { ToolAnnotations, ToolDefinition, ToolExposure, ToolNamespace } from "../../core/extensions/types.ts";
+import type {
+	ToolAnnotations,
+	ToolDefinition,
+	ToolExposure,
+	ToolNamespace,
+	ToolRenderers,
+} from "../../core/extensions/types.ts";
 import { formatToolCallWithArgs, getTextOutput, replaceTabs } from "../../core/tools/render-utils.ts";
 import { formatSize, truncateMiddle } from "../../core/tools/truncate.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
@@ -275,6 +281,26 @@ export function createMcpToolDefinition(options: {
 		exposure: toToolExposure(options.exposure),
 		namespace: options.namespace,
 		...(annotations ? { annotations } : {}),
+		...createMcpToolRenderers(label),
+		async execute(_toolCallId, params, signal, onUpdate) {
+			const client = await options.getClient();
+			const result = await client.callTool(tool.name, (params ?? {}) as Record<string, unknown>, {
+				signal,
+				timeoutMs: options.timeoutMs,
+				onProgress: (progress) => {
+					const total = progress.total === undefined ? "" : `/${progress.total}`;
+					const text = progress.message ?? `Progress ${progress.progress}${total}`;
+					onUpdate?.({ content: [{ type: "text", text }], details: { server, tool: tool.name } });
+				},
+			});
+			return convertMcpResult(server, tool.name, result, { readableResources: options.readableResources?.() });
+		},
+	};
+}
+
+/** Renderers for calls to an MCP tool, also used before it is registered. */
+export function createMcpToolRenderers(label: string): ToolRenderers {
+	return {
 		renderCall(args, theme, context) {
 			const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			component.setText(formatToolCallWithArgs(label, args, theme, context.expanded));
@@ -304,23 +330,10 @@ export function createMcpToolDefinition(options: {
 							`${theme.fg("muted", `... (${hidden} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
 					}),
 				);
-				const fullOutputPath = result.details?.fullOutputPath;
+				const fullOutputPath = (result.details as McpToolDetails | undefined)?.fullOutputPath;
 				if (fullOutputPath) component.addChild(new Text(theme.fg("muted", `Full output: ${fullOutputPath}`), 0, 0));
 			}
 			return component;
-		},
-		async execute(_toolCallId, params, signal, onUpdate) {
-			const client = await options.getClient();
-			const result = await client.callTool(tool.name, (params ?? {}) as Record<string, unknown>, {
-				signal,
-				timeoutMs: options.timeoutMs,
-				onProgress: (progress) => {
-					const total = progress.total === undefined ? "" : `/${progress.total}`;
-					const text = progress.message ?? `Progress ${progress.progress}${total}`;
-					onUpdate?.({ content: [{ type: "text", text }], details: { server, tool: tool.name } });
-				},
-			});
-			return convertMcpResult(server, tool.name, result, { readableResources: options.readableResources?.() });
 		},
 	};
 }

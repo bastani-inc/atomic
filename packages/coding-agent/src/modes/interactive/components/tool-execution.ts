@@ -1,10 +1,10 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
-import { convertToPng } from "../../../utils/image-convert.ts";
+import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
 
@@ -48,17 +48,13 @@ export class ToolExecutionComponent extends Container {
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
-	private toolDefinition?: ToolDefinition<TSchema, unknown>;
+	private toolDefinition?: ToolRenderers;
 	private builtInToolDefinition?: ToolDefinition<TSchema, unknown>;
 	private ui: TUI;
 	private cwd: string;
 	private executionStarted = false;
 	private argsComplete = false;
 	private result?: RenderableToolResult;
-	private convertedImages: Map<
-		number,
-		{ sourceData: string; sourceMimeType: string; data: string; mimeType: string }
-	> = new Map();
 	private renderedImageSpecs: RenderedImageSpec[] = [];
 	private hideComponent = false;
 
@@ -67,7 +63,7 @@ export class ToolExecutionComponent extends Container {
 		toolCallId: string,
 		args: unknown,
 		options: ToolExecutionOptions = {},
-		toolDefinition: ToolDefinition<TSchema, unknown> | undefined,
+		toolDefinition: ToolRenderers | undefined,
 		ui: TUI,
 		cwd: string,
 	) {
@@ -203,33 +199,6 @@ export class ToolExecutionComponent extends Container {
 		this.result = result;
 		this.isPartial = isPartial;
 		this.updateDisplay();
-		this.maybeConvertImagesForKitty();
-	}
-
-	private maybeConvertImagesForKitty(): void {
-		const caps = getCapabilities();
-		if (caps.images !== "kitty") return;
-		if (!this.result) return;
-
-		const imageBlocks = this.result.content.filter((c): c is RenderableImageContent => c.type === "image");
-		for (let i = 0; i < imageBlocks.length; i++) {
-			const img = imageBlocks[i];
-			if (img === undefined || !img.data || !img.mimeType) continue;
-			const sourceData = img.data;
-			const sourceMimeType = img.mimeType;
-			if (sourceMimeType === "image/png") continue;
-			const cached = this.convertedImages.get(i);
-			if (cached?.sourceData === sourceData && cached.sourceMimeType === sourceMimeType) continue;
-
-			const index = i;
-			convertToPng(sourceData, sourceMimeType).then((converted) => {
-				const current = this.result?.content.filter((content) => content.type === "image")[index];
-				if (!converted || current?.data !== sourceData || current.mimeType !== sourceMimeType) return;
-				this.convertedImages.set(index, { sourceData, sourceMimeType, ...converted });
-				this.updateDisplay();
-				this.ui.requestRender();
-			});
-		}
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -378,15 +347,20 @@ export class ToolExecutionComponent extends Container {
 		const nextSpecs: RenderedImageSpec[] = [];
 		if (this.result && this.showImages && capabilities.images) {
 			const imageBlocks = this.result.content.filter((c): c is RenderableImageContent => c.type === "image");
-			for (const [index, image] of imageBlocks.entries()) {
+			for (const image of imageBlocks) {
 				if (!image.data || !image.mimeType) continue;
-				const cached = this.convertedImages.get(index);
-				const converted =
-					cached?.sourceData === image.data && cached.sourceMimeType === image.mimeType ? cached : undefined;
-				const data = converted?.data ?? image.data;
-				const mimeType = converted?.mimeType ?? image.mimeType;
-				if (capabilities.images === "kitty" && mimeType !== "image/png") continue;
-				nextSpecs.push({ data, mimeType, protocol: capabilities.images, widthCells: this.imageWidthCells });
+				nextSpecs.push({
+					data: image.data,
+					mimeType: image.mimeType,
+					protocol: capabilities.images,
+					widthCells: this.imageWidthCells,
+				});
+				if (image.mimeType !== "image/png") {
+					ensurePngTranscoder(() => {
+						this.invalidate();
+						this.ui.requestRender();
+					});
+				}
 			}
 		}
 

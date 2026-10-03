@@ -42,65 +42,65 @@ const expectedArtifacts = new Map([
 	[
 		"@earendil-works/chord",
 		{
-			version: "1.0.0",
-			integrity: "sha512-BIfWfrByM0pKq6tfKYXuwx0ed2CvaqIM3EDA7Dps+fP+d3CiPWdlHi1cDsJC05llqKJoRz5//G0hz0yQwwjISQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/chord/-/chord-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-woq15kjUZ38fUIMqFrFzTeT0fYYM0CfGS2ELCUE5Ufni32tdxfs0Av2+zz8PXFNxyiC3SB1EnyGPp63CLtp8Fg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/chord/-/chord-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-agent-core",
 		{
-			version: "1.0.0",
-			integrity: "sha512-bHFONjtEBDqiV+g1DmmtkSlfAaqHELr+XO+6I5Nah4gswwZrLJO4yZB/JjsnlI4AKWTayBLfgS6DCbeBBz9e2Q==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-os85rJM2hgCOOLdtcQ5WxRRhAbQiTNq9+48/pj6dOUU7czJhU8NTdHmDs41hBfAXR/ZQgstIgrjowEICEXimbQ==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-ai",
 		{
-			version: "1.0.0",
-			integrity: "sha512-3/W1vdDaVtpeMd23ElvJC12HLA5yS/BGqqcXF+0SK082dN7cbgNcCwguTBRBC258Ke8SzSvUW1B75iAf8w8IxA==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-eSA53pdfDLuQTTJn3yz1VC8BBmcX33OKkk8WihOXdVBvbgqqC4zuR6Sf+TeeWuAmh8LuqARoK14R1s2HZqVcsw==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-client",
 		{
-			version: "1.0.0",
-			integrity: "sha512-vK7v5eyD+e0JWk8UWWwTRATXVxjqL811cDjoqfXcd2mhe8rC8eHoRQw6d4Zfh857KrWVLNSR0v7snPX3Gu8FSQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-TtZqDaIKA36MhCyfZdA4Z04EOaPg65ltaOs2gasQB/2o0CW2lo2nCCRtDycv8jIbW92MbyOaUBaC7flQ4oM96Q==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-protocol",
 		{
-			version: "1.0.0",
-			integrity: "sha512-RzBfALctfmvVE7IyZy4tr5N0GgHDSt+U4opzPbbcqunZxB7V6MG8HT1wsKRX6/KphXh39NddG1A5Z/Xjf3zrGg==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-Ww08UdS9SkHAk9iA5Vb5pfZAeldaNO9Q8dCI3jKWwJQuDk/GrbkBHov2ybnUNLY6zb2MFNivU0/mkP9+5GM5Qg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-tui",
 		{
-			version: "1.0.0",
-			integrity: "sha512-JsT7kXnpZA2YOtQu6RyriyxEO0eJIzPyfiH09bH+OLN5+s18HYkwaUD/tBkjhnSfMu6/50CQPRYJagzSP6HdPw==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-Rk/pWLoDKWI7WvywhLxf+DTYppS7XWTN5IacpqlD+QF+CbrT/y5CCnAHqPEoF41y+XtQJKbNjjzUuJE4yq0Dfg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-telemetry",
 		{
-			version: "1.0.0",
-			integrity: "sha512-WjNBj5TYIiPZFQEz2WlULcDwPLaKwIlmsKjVeYM+LJSbnSp38kWsHUJysIDGnu23IcLbKoPtywsvYfUJCeZePA==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-SuJ/4KyqZ6j6Whlau710DmusWDKMWCxKXpWqZclY/Cl3tGUuX8IFmbTbW2VRoVuoJpZYVMg6DJmt1mwHMUt9uw==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.0.1.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-codemode",
 		{
-			version: "1.0.0",
-			integrity: "sha512-LPpFI4+T9NzDnhBDs15izWAolaoM8xnwqdziRd6Zx8BQeoEPvzefD2vMMzSyF0rOtq34TfQqkZ0ki16f6cGdMg==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.0.0.tgz",
+			version: "1.0.1",
+			integrity: "sha512-RpZKpdKceYmIODfqKLJtZWUvfkbDGmEHxEEEYN+i21OFm8uY0sTcBMP4oaLf6SkBVBMPae1Z9GtW27+dIRAYPw==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.0.1.tgz",
 		},
 	],
 ]);
@@ -139,7 +139,7 @@ if (!existsSync(distAppPath)) {
 	);
 }
 
-test("Pi v1.0.0 source declarations and lockfiles stay synchronized", async () => {
+test("Pi v1.0.1 source declarations and lockfiles stay synchronized", async () => {
 	let declarationCount = 0;
 	let externalDeclarationCount = 0;
 	for (const [workspace, names] of declarations) {
@@ -191,7 +191,7 @@ test("Pi v1.0.0 source declarations and lockfiles stay synchronized", async () =
 		for (const [packagePath, entry] of Object.entries(lock.packages)) {
 			for (const [name, range] of Object.entries(entry.dependencies ?? {})) {
 				if (!name.startsWith("@earendil-works/pi-")) continue;
-				assert.match(range, /^\^?1\.0\.0$/, `${lockPath}: ${packagePath} -> ${name}`);
+				assert.match(range, /^\^?1\.0\.1$/, `${lockPath}: ${packagePath} -> ${name}`);
 			}
 		}
 	}
@@ -260,7 +260,7 @@ test("binary pipelines require generated Pi model data and OAuth assets", async 
 	assert.ok(releaseBuilder.includes("assert-pi-runtime-assets.ts --node-modules"));
 });
 
-publishArtifactTest("Pi v1.0.0 generated publish artifacts match source declarations", async () => {
+publishArtifactTest("Pi v1.0.1 generated publish artifacts match source declarations", async () => {
 	for (const [workspace, names] of declarations) {
 		if (workspace === "packages/coding-agent") continue;
 		const source = await readJson<Manifest>(join(root, workspace, "package.json"));
@@ -276,6 +276,6 @@ publishArtifactTest("Pi v1.0.0 generated publish artifacts match source declarat
 	}
 });
 
-binaryAppTest("standalone app bundle embeds Pi v1.0.0 catalog and OAuth runtime markers", () => {
+binaryAppTest("standalone app bundle embeds Pi v1.0.1 catalog and OAuth runtime markers", () => {
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules"), appBundlePath: distAppPath });
 });

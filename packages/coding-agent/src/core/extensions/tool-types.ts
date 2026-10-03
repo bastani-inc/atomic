@@ -159,6 +159,14 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 type AnyToolDefinition = ToolDefinition<TSchema, unknown, unknown>;
 
+export type ToolRenderers = Pick<AnyToolDefinition, "renderShell" | "renderCall" | "renderResult">;
+
+/** Chooses renderers for any tool. `next()` resolves later extensions, then the registered tool. */
+export type ToolRendererResolver = (
+	toolName: string,
+	next: () => ToolRenderers | undefined,
+) => ToolRenderers | undefined;
+
 /**
  * Preserve parameter inference for standalone tool definitions.
  *

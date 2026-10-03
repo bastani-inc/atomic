@@ -63,7 +63,7 @@ import {
 import { loadMcpRuntime } from "./runtime.lazy.ts";
 import type * as McpRuntime from "./runtime.ts";
 import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./runtime.ts";
-import { createMcpToolDefinition, createMcpToolName, type McpToolDetails } from "./tools.ts";
+import { createMcpToolDefinition, createMcpToolName, createMcpToolRenderers, type McpToolDetails } from "./tools.ts";
 import { type McpMenu, type McpUi, showMcpManager } from "./ui.ts";
 
 function isCodemodeDiscoveryTool(tool: ToolInfo): boolean {
@@ -399,6 +399,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const serverTools = new Map<string, Set<string>>();
 		/** Last definition registered under each tool name, to re-register withdrawn tools as hidden. */
 		const definitions = new Map<string, ToolDefinition<TSchema, McpToolDetails>>();
+
+		// Render resumed MCP calls even when their server has not connected or never connects.
+		pi.registerToolRenderer((toolName, next) => {
+			const match = /^mcp__(.+?)__(.+)$/.exec(toolName);
+			return next() ?? (match ? createMcpToolRenderers(`${match[1]}/${match[2]}`) : undefined);
+		});
 
 		const registerTools = (connection: McpServerConnection) => {
 			if (!servers.some((candidate) => candidate.connection === connection)) return;

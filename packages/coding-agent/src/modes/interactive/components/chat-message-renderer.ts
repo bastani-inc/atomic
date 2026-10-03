@@ -1,9 +1,8 @@
 import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@earendil-works/pi-tui";
-import type { TSchema } from "typebox";
 import { parseSkillBlock } from "../../../core/agent-session.js";
-import type { MarkdownTransformer, MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
+import type { MarkdownTransformer, MessageRenderer, ToolRenderers } from "../../../core/extensions/types.ts";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -66,7 +65,7 @@ export interface ChatMessageRenderOptions {
 	isStreaming?: boolean;
 	markdownTransformers?: readonly MarkdownTransformer[];
 	renderLatex?: boolean;
-	getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
+	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
 	createCustomMessageComponent?: (message: CustomMessage<unknown>) => Component;

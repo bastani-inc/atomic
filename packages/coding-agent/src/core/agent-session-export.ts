@@ -138,7 +138,7 @@ export async function exportToHtml(
 
 	// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 	const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
-		getToolDefinition: (name) => this.getToolDefinition(name),
+		getToolRenderers: (name) => this.extensionRunner.resolveToolRenderers(name, () => this.getToolDefinition(name)),
 		theme,
 		cwd: this.sessionManager.getCwd(),
 	});

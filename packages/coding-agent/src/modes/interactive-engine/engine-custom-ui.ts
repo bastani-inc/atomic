@@ -12,6 +12,7 @@ import { runCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
+import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
 import {
@@ -163,6 +164,10 @@ export class EngineCustomUiService {
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
 		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+		ensurePngTranscoder(() => {
+			tui.invalidate();
+			tui.requestRender();
+		});
 		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
@@ -232,6 +237,10 @@ export class EngineCustomUiService {
 			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
 		);
 		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+		ensurePngTranscoder(() => {
+			tui.invalidate();
+			tui.requestRender();
+		});
 		const component = await factory(tui, theme, this.keybindings, done);
 		tui.addChild(component);
 		tui.setFocus(component);
