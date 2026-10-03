@@ -15,13 +15,15 @@ import {
 	makeTempDirectory,
 	moduleDir,
 	readStreamText,
-	removeTempDirectory,
+	removePath,
 	type SpawnedProcess,
 	spawnProcess,
 } from "./runtime.js";
 
 const RPC_TIMEOUT_MS = 45_000;
 const CLEANUP_TIMEOUT_MS = 20_000;
+const TEMP_REMOVAL_MAX_RETRIES = 20;
+const TEMP_REMOVAL_RETRY_DELAY_MS = 50;
 async function bounded<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -279,7 +281,12 @@ export class RealPostgresHome {
 			throw new AggregateError(errors, `Postgres fixture cleanup failed; preserved ${this.path}`);
 		}
 		if (this.runtimeCache !== sharedRuntimeCache) await makeRuntimeRemovable(this.runtimeCache);
-		removeTempDirectory(this.path);
+		await removePath(this.path, {
+			recursive: true,
+			force: true,
+			maxRetries: TEMP_REMOVAL_MAX_RETRIES,
+			retryDelay: TEMP_REMOVAL_RETRY_DELAY_MS,
+		});
 		this.releaseRuntimeCache?.();
 		if (this.runtimeCache === sharedRuntimeCache) activeSharedHomes--;
 	}
