@@ -145,8 +145,7 @@ describe("Bedrock thinking payload", () => {
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "xhigh" });
 	});
 
-	// https://github.com/earendil-works/pi/issues/10324
-	it("sends block_binding and the binding beta for Claude Opus 5.5", async () => {
+	it("sends block_binding and the binding beta for Claude Opus 5.5 (#10324)", async () => {
 		const model = getModel("amazon-bedrock", "global.anthropic.claude-opus-5-5");
 
 		const payload = await capturePayload(model);
@@ -155,10 +154,8 @@ describe("Bedrock thinking payload", () => {
 		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual([THINKING_BINDING_CONTROLS_BETA]);
 	});
 
-	// Bedrock rejects block_binding on 4.6 models: "Extra inputs are not permitted"
-	// (https://github.com/earendil-works/pi/issues/10324)
 	it.each(["global.anthropic.claude-opus-4-6-v1", "global.anthropic.claude-sonnet-4-6"] as const)(
-		"omits block_binding for %s",
+		"omits block_binding for %s (#10324)",
 		async (modelId) => {
 			const model = getModel("amazon-bedrock", modelId);
 

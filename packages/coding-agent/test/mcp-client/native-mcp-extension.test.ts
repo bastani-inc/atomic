@@ -89,7 +89,7 @@ describe("MCP config", () => {
 		assert.deepEqual(untrusted.servers.find((server) => server.name === "shared")?.config, { command: "global-cmd" });
 	});
 
-	it("lets project entries override enabled and exposure of global servers (upstream #10277)", () => {
+	it("lets project entries override enabled and exposure of global servers (#10277)", () => {
 		const paths = setup(
 			{ mcpServers: { tools: { command: "x", env: { TOKEN: "secret" } } } },
 			// An override cannot change the command, which would run with the global env.
