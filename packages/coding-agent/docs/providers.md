@@ -334,6 +334,16 @@ Legacy uppercase env-var-like values such as `MY_API_KEY` are migrated to `$MY_A
 
 The providers below have additional setup, need additional settings, or can use credentials supplied by their platform.
 
+### NVIDIA NIM
+
+NVIDIA's built-in default is `nvidia/nemotron-3-ultra-550b-a55b`. Saved and explicit model choices still take precedence. To select this model explicitly:
+
+```bash
+atomic --provider nvidia --model nvidia/nemotron-3-ultra-550b-a55b
+```
+
+Use `--list-models` or `/model` to check the current catalog and replace a missing saved model. A catalog listing does not verify account access or serving availability.
+
 ### Azure OpenAI
 
 ```bash

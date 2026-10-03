@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
-import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.ts";
+import { defaultModelPerProvider, findPreferredAvailableModel } from "../src/core/model-resolver-defaults.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const COPILOT_ENV_KEYS = [
@@ -98,6 +98,14 @@ describe("default model selection", () => {
 	test("Baseten and Qwen Token Plan Individual defaults track current models", () => {
 		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.3");
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
+	});
+	test("NVIDIA automatic selection prefers listed Nemotron 3 Ultra over the first catalog model", () => {
+		const chatModels = getBuiltinModels("nvidia");
+		const preferred = chatModels.find((model) => model.id === "nvidia/nemotron-3-ultra-550b-a55b");
+		const other = chatModels.find((model) => model.id !== "nvidia/nemotron-3-ultra-550b-a55b");
+		assert.ok(preferred);
+		assert.ok(other);
+		assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
 	});
 	test("built-in chat providers have defaults in their generated catalogs", () => {
 		for (const provider of getBuiltinProviders()) {
