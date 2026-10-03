@@ -96,15 +96,6 @@ function resolvedSemverFor(lockfile: Lockfile, declarer: string): string | undef
 	}
 }
 
-/**
- * The pre-existing override exception is cross-spawn@6, reached through
- * shx -> shelljs -> execa: it declares ^5.5.0, which 7.8.5 does NOT satisfy.
- * Its only semver call checks Node's shell-option support with a boolean
- * `loose` argument. The final test preserves that measured behavior and allows
- * only this named upward override; every other edge must satisfy its range.
- */
-const RAISED_SEMVER_EDGES = new Map<string, string>([["node_modules/execa/node_modules/cross-spawn", "^5.5.0"]]);
-
 /** The semver operations exercised by the shipped-code contract below. */
 interface SemverApi {
 	compare(a: string, b: string): number;
@@ -536,7 +527,7 @@ describe("semver pinned at 7.8.5", () => {
 		}
 	});
 
-	test("dependency ranges are satisfied except the recorded raise, and CLI 3.10.5 keeps its measured behavior", async () => {
+	test("dependency ranges are satisfied and CLI 3.10.5 keeps its measured behavior", async () => {
 		const napiManifest = await readJson<CliManifest>(napiCliManifestPath);
 		const napiSemverManifest = await readJson<Manifest>(requireFromNapiCli.resolve("semver/package.json"));
 		assert.equal(napiManifest.version, PINNED_NAPI_CLI_VERSION);
@@ -560,30 +551,10 @@ describe("semver pinned at 7.8.5", () => {
 		for (const [declarer, range] of semverEdges(lockfile)) {
 			const resolvedVersion = resolvedSemverFor(lockfile, declarer);
 			assert.ok(resolvedVersion, `${declarer} declares semver ${range} but resolves no node`);
-			if (pinned.satisfies(resolvedVersion, range)) continue;
-			assert.equal(
-				RAISED_SEMVER_EDGES.get(declarer),
-				range,
-				`${declarer} declares semver ${range} and resolves ${resolvedVersion}, which is not a recorded raise`,
-			);
-			const floor = minVersion(range);
-			assert.ok(floor, `${range} has no floor to compare ${resolvedVersion} against`);
 			assert.ok(
-				pinned.compare(resolvedVersion, floor.version) > 0,
-				`${declarer} is held below its declared ${range}, not above it`,
+				pinned.satisfies(resolvedVersion, range),
+				`${declarer} declares semver ${range} and resolves incompatible ${resolvedVersion}`,
 			);
-		}
-
-		// cross-spawn@6's boolean third argument must still mean `loose`.
-		for (const [version, supported] of [
-			["v4.7.9", false],
-			["v4.8.0", true],
-			["v5.6.9", false],
-			["v5.7.0", true],
-			["v6.0.0", true],
-			[process.version, true],
-		] as const) {
-			assert.equal(satisfies(version, "^4.8.0 || ^5.7.0 || >= 6.0.0", true), supported, version);
 		}
 
 		// Run the transcribed CLI surface against the pin and its own resolution.
