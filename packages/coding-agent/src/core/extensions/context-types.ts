@@ -104,8 +104,9 @@ export interface WorkflowPendingStageDelivery {
 	readonly routeCapability: string;
 	deliverPending(
 		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
+		recipient?: { readonly sessionId: string; readonly receivedMessageIds: readonly string[] },
 	): Promise<void>;
-	ready(): Promise<void> | undefined;
+	ready(sessionId?: string): Promise<void> | undefined;
 	/**
 	 * Terminal signal from a delivery owner that has run out of recovery: the
 	 * queued messages can no longer be drained, so the stage must fail at its own

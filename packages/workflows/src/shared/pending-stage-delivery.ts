@@ -179,7 +179,13 @@ export function recordPendingStageMessageDeliveries(
 	messages: readonly PendingStageMessage[],
 	runId: string,
 	messageId: string,
-	records: readonly { readonly runId: string; readonly stageId: string; readonly stageName?: string }[],
+	records: readonly {
+		readonly runId: string;
+		readonly stageId: string;
+		readonly stageName?: string;
+		readonly sessionId?: string;
+		readonly admission?: "context" | "transport";
+	}[],
 	deliveredAt: string,
 ): readonly PendingStageMessage[] {
 	const index = messages.findIndex(
@@ -187,16 +193,22 @@ export function recordPendingStageMessageDeliveries(
 	);
 	if (index < 0) return messages;
 	const entry = messages[index]!;
-	const recorded = new Set((entry.deliveries ?? []).map((delivery) => `${delivery.runId}\u0000${delivery.stageId}`));
+	const recorded = new Set(
+		(entry.deliveries ?? []).map((delivery) =>
+			JSON.stringify([delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]),
+		),
+	);
 	const additions: PendingStageMessageDelivery[] = [];
 	for (const record of records) {
-		const key = `${record.runId}\u0000${record.stageId}`;
+		const key = JSON.stringify([record.runId, record.stageId, record.sessionId, record.admission]);
 		if (recorded.has(key)) continue;
 		recorded.add(key);
 		additions.push({
 			runId: record.runId,
 			stageId: record.stageId,
 			...(record.stageName === undefined ? {} : { stageName: record.stageName }),
+			...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+			...(record.admission === undefined ? {} : { admission: record.admission }),
 			deliveredAt,
 		});
 	}

@@ -21,6 +21,10 @@ import {
 	structuredRecoverableWorkflowFailureText,
 } from "../../shared/returned-run-status.js";
 import { observeRunExecution, type RunExecutionObservation } from "../../shared/run-execution-state.js";
+import {
+	type StickyStageDeliveryStatus,
+	stickyStageDeliveryStatuses,
+} from "../../shared/sticky-stage-delivery-status.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
@@ -51,6 +55,7 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly stages: readonly RunSnapshot["stages"][number][];
 	/** Always populated by inspectRun; optional for legacy structural literals. */
 	readonly tools?: readonly NonNullable<RunSnapshot["toolNodes"]>[number][];
+	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
 	readonly result?: WorkflowOutputValues;
 	readonly error?: string;
 	readonly exited?: boolean;
@@ -126,6 +131,9 @@ export function inspectRun(
 		inputs: copy.inputs,
 		stages: expandedStages.map((stage) => structuredClone(stage)),
 		tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
+		deliveryStates: stickyStageDeliveryStatuses(activeStore.runs(), copy.rootRunId ?? copy.id).filter(
+			(delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id,
+		),
 		result: copy.result,
 		error:
 			copy.error ??

@@ -1,6 +1,7 @@
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import { formatStageStartup } from "../shared/stage-startup.js";
+import { stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
@@ -128,6 +129,11 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 			lines.push(`    control: ${run.controlRequestedStatus} (${run.controlPersistence})`);
 		}
 		for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
+		for (const delivery of run.deliveryStates ?? stickyStageDeliveryStatuses(allRuns, run.runId)) {
+			lines.push(
+				`    Intercom delivery ${delivery.messageId} target=${delivery.target} stage=${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session=${delivery.sessionId}`} state=${delivery.state} — ${delivery.reason}`,
+			);
+		}
 		for (const stage of run.pendingStages.slice(0, STATUS_PENDING_STAGE_LIMIT)) {
 			lines.push(statusPendingStageLine(stage));
 		}

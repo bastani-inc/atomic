@@ -1750,6 +1750,41 @@ test("possible future rows are listed inside the invocation, refreshed, and clea
 	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
 });
 
+test("delivery-only sticky listing preserves group isolation and clears with the root (#3406)", async () => {
+	const runId = "d7000010-0000-4000-8000-000000000010";
+	const group = `workflow:${runId}`;
+	const owner = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("delivery-owner", group));
+	await member.connect(productionRegistration("delivery-member", group));
+	await outsider.connect(productionRegistration("delivery-outsider", "other-group"));
+	const row = {
+		target: `workflow:${runId}/dynamic-*`,
+		queuedCount: 1,
+		deliveryOnly: true as const,
+		deliveryStates: [
+			{ messageId: "sticky-3406", runId, stageId: "dynamic-worker", state: "queued", reason: "Startup must drain" },
+		],
+	};
+	owner.registerPendingStageRoute(runId, group, "delivery-capability", [], [row]);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, [
+		{ kind: "workflow-future-stage", runId, group, ...row },
+	]);
+	assert.deepEqual((await outsider.listDirectory()).workflowFutureStages, []);
+	assert.deepEqual((await outsider.listDirectory(group)).workflowFutureStages, []);
+	assert.deepEqual((await member.listDirectory("other-group")).workflowFutureStages, []);
+	assert.deepEqual((await member.listDirectory()).workflowStages, []);
+	owner.registerPendingStageRoute(runId, group, "delivery-capability", [], []);
+	await owner.listSessions();
+	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
+});
+
 test("a nested run's re-announcement preserves the root's possible-stage rows", async () => {
 	const rootId = "d7000002-0000-4000-8000-000000000002";
 	const childRunId = "d7000003-0000-4000-8000-000000000003";

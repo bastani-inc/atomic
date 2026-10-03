@@ -1234,3 +1234,47 @@ function terminalStickyFixture(store: ReturnType<typeof createStore>, ..._ids: s
 		startedAt: 1,
 	});
 }
+
+test("replacement readiness waits for its own sticky admission after prior successful drain (#3406)", async () => {
+	const store = createStore();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	store.recordRunStart({
+		id: ROOT_RUN_ID,
+		name: "replacement-ready",
+		inputs: {},
+		status: "running",
+		stages: [
+			{
+				id: "stage-id",
+				name: "stage",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
+		startedAt: 1,
+	});
+	backend.registerWorkflow({
+		workflowId: ROOT_RUN_ID,
+		name: "replacement-ready",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	await store.queueStickyStageMessage(stickyInput("ready-3406", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
+	const delivery = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "stage-id", "stage");
+	await delivery.deliverPending(() => {}, { sessionId: "first-session", receivedMessageIds: [] });
+	const ready = delivery.ready("replacement-session");
+	assert.ok(ready, "the previous session's successful drain must not release replacement readiness");
+	let released = false;
+	void ready.then(() => {
+		released = true;
+	});
+	await Promise.resolve();
+	assert.equal(released, false);
+	await delivery.deliverPending(() => {}, { sessionId: "replacement-session", receivedMessageIds: [] });
+	await ready;
+	assert.equal(released, true);
+});

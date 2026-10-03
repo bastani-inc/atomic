@@ -277,6 +277,8 @@ export interface PendingStageMessageDelivery {
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName?: string;
+	readonly sessionId?: string;
+	readonly admission?: "context" | "transport";
 	readonly deliveredAt: string;
 }
 

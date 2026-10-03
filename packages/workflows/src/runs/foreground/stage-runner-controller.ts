@@ -1621,7 +1621,7 @@ export class StageSessionController {
 		const attachedSession = session instanceof Promise ? await session : session;
 		this.reportStartupPhase("delivery-readiness");
 		try {
-			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready();
+			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);

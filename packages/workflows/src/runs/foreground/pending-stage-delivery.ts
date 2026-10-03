@@ -4,6 +4,7 @@ type WorkflowPendingStageDelivery = NonNullable<
 	NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"]
 >;
 type WorkflowPendingStageDeliver = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[0];
+type WorkflowPendingStageRecipient = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[1];
 type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 
@@ -91,7 +92,7 @@ export function createWorkflowPendingStageDelivery(
 	};
 	return {
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
-		deliverPending(deliver) {
+		deliverPending(deliver, recipient) {
 			if (drainPromise !== undefined) return drainPromise;
 			// After a terminal failure the queue is left exactly as it is: consuming
 			// entries for a stage that will not run would mark this stage's steering
@@ -99,9 +100,15 @@ export function createWorkflowPendingStageDelivery(
 			// replay silent, which is the whole point of the terminal signal.
 			if (terminalError !== undefined) return Promise.resolve();
 			drainError = undefined;
-			const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver);
+			const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver, recipient);
 			const drain = attempt.then(
-				() => resolveReady?.(),
+				() => {
+					resolveReady?.();
+					readyPromise = undefined;
+					resolveReady = undefined;
+					rejectReady = undefined;
+					if (drainPromise === drain) drainPromise = undefined;
+				},
 				(error: Error) => {
 					drainError = error;
 					rejectReady?.(error);
@@ -115,11 +122,17 @@ export function createWorkflowPendingStageDelivery(
 			drainPromise = drain;
 			return drainPromise;
 		},
-		ready() {
+		ready(sessionId) {
 			if (
 				activeStore.pendingStageMessagesFor(runId, stageId).length === 0 &&
 				(stageId === stageName || activeStore.pendingStageMessagesFor(runId, stageName).length === 0) &&
-				stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName).length === 0
+				stickyPendingStageEntriesForStage(
+					activeStore,
+					runId,
+					stageId,
+					stageName,
+					sessionId === undefined ? undefined : { sessionId },
+				).length === 0
 			) {
 				// Nothing was queued, so a terminal failure costs this stage nothing:
 				// keep the short circuit first and let the stage run.
@@ -150,8 +163,9 @@ async function deliverPendingStageMessages(
 	stageId: string,
 	stageName: string,
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
+	recipient?: WorkflowPendingStageRecipient,
 ): Promise<void> {
-	const stickyEntries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName);
+	const stickyEntries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName, recipient);
 	const candidateIds = new Set(
 		[
 			...activeStore.pendingStageMessagesFor(runId, stageId),
@@ -189,7 +203,8 @@ async function deliverPendingStageMessages(
 		const releaseClaim = claimPendingDelivery(activeStore, claimOwner, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;
 		try {
-			await deliver(toPendingStageSender(entry), entry.message);
+			if (!recipient?.receivedMessageIds.includes(entry.message.id))
+				await deliver(toPendingStageSender(entry), entry.message);
 			if (entry.sticky === true) {
 				// D3: sticky entries stay queued for future matching stages; only this
 				// stage's exactly-once delivery record is written.
@@ -208,6 +223,9 @@ async function deliverPendingStageMessages(
 								runId,
 								stageId,
 								...(stageName === stageId ? {} : { stageName }),
+								...(recipient === undefined
+									? {}
+									: { sessionId: recipient.sessionId, admission: "context" as const }),
 							},
 						],
 						new Date().toISOString(),
@@ -245,6 +263,7 @@ function stickyPendingStageEntriesForStage(
 	runId: string,
 	stageId: string,
 	stageName: string,
+	recipient?: { readonly sessionId: string; readonly receivedMessageIds?: readonly string[] },
 ): readonly PendingStageMessage[] {
 	const runs = activeStore.runs();
 	const rootRunId = durableRootRunIdForRun(runs, runId);
@@ -260,9 +279,19 @@ function stickyPendingStageEntriesForStage(
 		if (entry.sticky !== true || entry.status !== "queued") return false;
 		const parsed = entry.targetPath === undefined ? undefined : parseWorkflowStageTarget(entry.targetPath);
 		if (parsed === undefined || parsed.rootRunId !== rootRunId) return false;
-		if ((entry.deliveries ?? []).some((delivery) => delivery.runId === runId && delivery.stageId === stageId)) {
+		if (
+			(entry.deliveries ?? []).some(
+				(delivery) =>
+					delivery.runId === runId &&
+					delivery.stageId === stageId &&
+					(recipient === undefined ||
+						(delivery.admission === "context" &&
+							delivery.sessionId === recipient.sessionId &&
+							(recipient.receivedMessageIds === undefined ||
+								recipient.receivedMessageIds.includes(entry.message.id)))),
+			)
+		)
 			return false;
-		}
 		return stageMatchesPathPattern(parsed.segments, hops, [stageId, stageName]);
 	});
 }

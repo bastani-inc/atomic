@@ -158,9 +158,9 @@ function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 
 /** D7 (slice 4): one possible-future row from the run's persisted scan (or the `**` broadcast row). */
 function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
-	return `- \`${stage.target}\` [future] ${stage.queuedCount} queued message${
+	return `- \`${stage.target}\` [${stage.deliveryOnly === true ? "delivery" : "future"}] ${stage.queuedCount} queued message${
 		stage.queuedCount === 1 ? "" : "s"
-	}`;
+	}${(stage.deliveryStates ?? []).map((delivery) => `\n  delivery ${delivery.messageId} stage ${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session ${delivery.sessionId}`} ${delivery.state} — ${delivery.reason}`).join("")}`;
 }
 
 interface IntercomToolDeps {

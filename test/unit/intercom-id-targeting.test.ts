@@ -670,6 +670,33 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 		assert.deepEqual(details?.workflowFutureStages, [futureRow, broadcastRow]);
 	});
 
+	test("list exposes sticky delivery evidence without a future lifecycle label (#3406)", async () => {
+		const { tool } = futureFixture({
+			sessions: [session("self-session-id", "self")],
+			workflowStages: [],
+			workflowFutureStages: [
+				{
+					...futureRow,
+					deliveryOnly: true,
+					deliveryStates: [
+						{
+							messageId: "sticky-3406",
+							runId: futureRow.runId,
+							stageId: "orchestrator-1",
+							state: "delivered",
+							reason: "Context admission confirmed",
+						},
+					],
+				},
+			],
+		});
+		const result = await tool.execute("list-call", { action: "list" }, undefined, undefined, context);
+		const text = result.content[0]?.text ?? "";
+		assert.match(text, /\[delivery\] 2 queued messages/);
+		assert.match(text, /delivery sticky-3406 stage .*\/orchestrator-1 delivered/);
+		assert.doesNotMatch(text, /\[future\]/);
+	});
+
 	test("the singular count form renders without the plural suffix", async () => {
 		const self = session("self-session-id", "self");
 		const { tool } = futureFixture({
