@@ -212,14 +212,22 @@ async function loginOpenAIChatGPT(
 	const { verifier, challenge } = await generatePKCE();
 	const state = randomValue();
 	const nonce = randomValue();
-	// Without this server, the browser's callback would reach whatever else holds the port (another
-	// pending login or the Codex CLI), which rejects it as a state mismatch. Fail with a clear error instead.
-	const callback = await startCallbackServer(state).catch((error: unknown) => {
-		if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
-		throw new Error(
-			`Port ${CALLBACK_PORT} is in use, probably by an unfinished login in another Atomic session or by the Codex CLI. Cancel that login and try again.`,
-		);
-	});
+	let callback: CallbackServer | undefined;
+	try {
+		callback = await startCallbackServer(state);
+	} catch (error) {
+		// A port held by another pending login or the Codex CLI would receive the browser's callback and
+		// reject it as a state mismatch, so fail with a clear error instead of offering the paste prompt.
+		if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") {
+			throw new Error(
+				`Port ${CALLBACK_PORT} is in use, probably by an unfinished login in another Atomic session or by the Codex CLI. Cancel that login and try again.`,
+			);
+		}
+		interaction.notify({
+			type: "info",
+			message: `Could not listen on ${REDIRECT_URI}; paste the final redirect URL to continue. ${error instanceof Error ? error.message : String(error)}`,
+		});
+	}
 	const authorizationUrl = new URL(AUTHORIZE_URL);
 	authorizationUrl.search = new URLSearchParams({
 		client_id: DYNAMIC_CLIENT_ID,
@@ -250,7 +258,7 @@ async function loginOpenAIChatGPT(
 		})
 		.then((input) => authorizationResultFromManualInput(input, state));
 	try {
-		const result = await Promise.race([callback.result, manualCode]);
+		const result = await (callback ? Promise.race([callback.result, manualCode]) : manualCode);
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
 		return await exchangeAuthorizationCode(result.code, verifier, result.clientId, interaction.signal);
 	} catch (error) {
@@ -258,9 +266,9 @@ async function loginOpenAIChatGPT(
 		throw error;
 	} finally {
 		manualAbort.abort();
-		callback.server.close();
+		callback?.server.close();
 		// Spare browser connections must not deliver a later login to this old server.
-		callback.server.closeAllConnections();
+		callback?.server.closeAllConnections();
 	}
 }
 
