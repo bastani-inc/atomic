@@ -19,22 +19,49 @@ export function redactedDatabaseEndpoint(url: string): string {
 
 export function redactedDatabaseMessage(message: string, url?: string): string {
 	let safe = message.replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, (value) => redactedDatabaseEndpoint(value));
+	let configuredSecrets: string[] = [];
 	if (url !== undefined) {
 		try {
 			const parsed = new URL(url);
-			const secrets = [parsed.username, parsed.password, ...parsed.searchParams.values()];
-			for (const secret of secrets) {
-				if (secret.length === 0) continue;
-				safe = safe.replaceAll(secret, "[redacted]").replaceAll(decodeURIComponent(secret), "[redacted]");
-			}
+			configuredSecrets = [parsed.username, parsed.password, ...parsed.searchParams.values()]
+				.flatMap((secret) => {
+					try {
+						return [secret, decodeURIComponent(secret)];
+					} catch {
+						return [secret];
+					}
+				})
+				.filter((secret) => secret.length > 0);
 		} catch {
 			return "PostgreSQL diagnostic could not be safely redacted; check the configured endpoint.";
 		}
 	}
-	return safe.replace(
-		/\b(password|passwd|token|secret|sslpassword)\s*[=:]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-		"$1=[redacted]",
+	safe = safe.replace(
+		/\b(password|passwd|token|secret|sslpassword|user(?:name)?)\s*(?:([=:])\s*|((?:is|was)\s+)|\s+)(?:"([^"]*)"|'([^']*)'|([^\s,;]+))/gi,
+		(
+			match,
+			key: string,
+			separator: string | undefined,
+			filler: string | undefined,
+			doubleQuoted: string | undefined,
+			singleQuoted: string | undefined,
+			bare: string | undefined,
+		) => {
+			const value = doubleQuoted ?? singleQuoted ?? bare ?? "";
+			const isUserContext = /^user(?:name)?$/i.test(key);
+			if (separator === undefined && !isUserContext && !configuredSecrets.includes(value)) return match;
+			const rendered =
+				doubleQuoted !== undefined ? '"[redacted]"' : singleQuoted !== undefined ? "'[redacted]'" : "[redacted]";
+			return `${key}${separator ?? " "}${filler ?? ""}${rendered}`;
+		},
 	);
+	for (const secret of new Set(configuredSecrets)) {
+		if (secret.length < 4) continue;
+		const escaped = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const expression = new RegExp(`(?<![\\p{L}\\p{N}_\\[])${escaped}(?![\\p{L}\\p{N}_\\]])`, "gu");
+		safe = safe.replace(expression, "[redacted]");
+	}
+	return safe;
 }
 
 export function databaseDependencyMessage(message: string, diagnostics?: DbosDatabaseDiagnostics): string {

@@ -11,6 +11,7 @@ import {
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { classifyLatestMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
+import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { isWorkflowHeartbeatEligibleRun } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
@@ -710,3 +711,62 @@ test.each(["recovery", "validation"])(
 		}
 	},
 );
+test("non-dependency admission errors are redacted in status and caller diagnostics but remain hard failures (#3413)", async () => {
+	const url = "postgresql://private-user:private-password@127.0.0.1:5439/workflows?token=private-token";
+	const failure = Object.assign(
+		new Error(`password authentication failed for user "private-user" (${url})`, {
+			cause: new Error("private-token"),
+		}),
+		{
+			code: "28P01",
+		},
+	);
+	const owner = getDbosProcessOwner();
+	const previousDiagnostics = owner.databaseDiagnostics;
+	owner.databaseDiagnostics = () => ({ provider: "managed", url });
+	const sdk = createMockSdk();
+	const store = createStore();
+	try {
+		const pending = run(
+			workflow({
+				name: "auth-refusal",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async () => assert.fail("unadmitted workflow must not execute"),
+			}),
+			{},
+			{
+				runId: "auth-refusal",
+				store,
+				durableBackend: new DbosDurableBackend({
+					...sdk,
+					startWorkflow: async () => {
+						throw failure;
+					},
+				}),
+			},
+		);
+		await assert.rejects(pending, (error: Error) => {
+			assert.notEqual(error, failure);
+			assert.equal(error.cause, undefined);
+			assert.equal(error.stack?.includes("private-token"), false);
+			assert.match(error.message, /password authentication failed/);
+			assert.doesNotMatch(error.message, /private-user|private-password|private-token/);
+			assert.equal(error instanceof DbosDependencyError, false);
+			return true;
+		});
+		const snapshot = store.runs()[0]!;
+		assert.equal(snapshot.phase, "blocked_dependency");
+		assert.match(snapshot.dependencyError ?? "", /password authentication failed/);
+		assert.doesNotMatch(snapshot.dependencyError ?? "", /private-user|private-password|private-token/);
+		const summary = summarizeRunSnapshot(snapshot);
+		const status = renderWorkflowToolContent(
+			{ action: "status", filter: "all", runs: [summary], snapshots: [snapshot] },
+			{ action: "status" },
+		);
+		assert.doesNotMatch(status, /private-user|private-password|private-token/);
+	} finally {
+		owner.databaseDiagnostics = previousDiagnostics;
+	}
+});

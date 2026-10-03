@@ -7,6 +7,8 @@ import {
 	dbosAdmissionContext,
 	isDbosDependencyError,
 } from "../durable/dbos-admission.js";
+import { databaseDependencyMessage } from "../durable/dbos-database-diagnostics.js";
+import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -854,7 +856,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			pausePersistence = persistRunControl("paused");
 			if (!admission.admitting) return pausePersistence;
 			backgroundAdmissionControl(durableBackend, runId, pausePersistence, (error, resumable) => {
-				admissionControlError = unknownErrorMessage(error);
+				admissionControlError = databaseDependencyMessage(
+					unknownErrorMessage(error),
+					getDbosProcessOwner().databaseDiagnostics?.(),
+				);
 				runSnapshot.error = admissionControlError;
 				// Keep the paused initialization owner; explicit resume releases its failure.
 				activeStore.recordRunPaused(runId, undefined, { resumable });
@@ -958,21 +963,24 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						"name" in error &&
 						error.name === "DurableNestedTopologyError";
 					if (!isDbosDependencyError(error) && !isTopologyError) {
+						const admissionDetail = unknownErrorMessage(error);
+						const diagnostics = getDbosProcessOwner().databaseDiagnostics?.();
+						const safeMessage = databaseDependencyMessage(admissionDetail, diagnostics);
 						activeStore.recordRunExecutionState(runId, {
 							phase: "blocked_dependency",
-							dependencyError: unknownErrorMessage(error),
+							dependencyError: safeMessage,
 						});
-						durableAdmissionFailure = { error };
-						// Admission is a storage operation, not a model-provider request.
-						// Classify that boundary explicitly while preserving the original rejection.
+						const safeError = new Error(safeMessage);
+						durableAdmissionFailure = { error: safeError };
 						classifiedFailures.set(
-							error,
+							safeError,
 							classifyWorkflowFailure({
 								code: "ATOMIC_DURABLE_ADMISSION_REJECTED",
-								message: unknownErrorMessage(error),
-								cause: error,
+								message: safeMessage,
+								cause: safeError,
 							}),
 						);
+						throw safeError;
 					}
 					throw error;
 				}),

@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
-import { fileExists, readText, sleep } from "../helpers/runtime.js";
+import { fileExists, readText, removePathSync, sleep } from "../helpers/runtime.js";
 
 const REAL_MANAGED_DBOS_PROCESS_TIMEOUT_MS = 120_000;
 type ConsumerResult = Pick<ManagedResult, "metadata"> & { runId: string; completedCalls: number };
@@ -89,7 +88,7 @@ test(
 			const fault = home.client(listener.port);
 			await fault.request("smart-stop");
 			assert.equal(await fileExists(join(home.path, ".atomic/postgres/v18/postmaster.pid")), false);
-			rmSync(join(home.path, ".atomic/postgres/v18/postmaster.opts"));
+			removePathSync(join(home.path, ".atomic/postgres/v18/postmaster.opts"));
 			const after = await owner.request<ManagedResult>("ensure");
 			assert.equal(after.metadata.clusterId, before.metadata.clusterId);
 			assert.equal(after.metadata.directoryIdentity, before.metadata.directoryIdentity);

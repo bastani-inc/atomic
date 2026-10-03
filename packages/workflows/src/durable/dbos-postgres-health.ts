@@ -43,6 +43,7 @@ export class PostgresHealth {
 	private attempts = 0;
 	private nextRecoveryAt = 0;
 	private failure?: Error;
+	private healthySinceFailure = false;
 	private revision = 0;
 	private readonly listeners = new Set<() => void>();
 
@@ -60,6 +61,7 @@ export class PostgresHealth {
 		const message = error instanceof Error ? error.message : String(error);
 		const safe = redactedDatabaseMessage(message, this.endpoint);
 		this.failure = new Error(safe);
+		this.healthySinceFailure = false;
 	}
 
 	private dependencyFailure(message: string): DbosDependencyError {
@@ -160,6 +162,7 @@ export class PostgresHealth {
 		this.available = identity;
 		this.attempts = 0;
 		this.nextRecoveryAt = 0;
+		this.healthySinceFailure = true;
 		return identity.url;
 	}
 
@@ -184,9 +187,10 @@ export class PostgresHealth {
 						"Managed PostgreSQL recovery refused after a health probe failure. Preserve its data and ownership records.",
 					);
 		}
-		// Preserve the latest outage for diagnostics even after automatic recovery.
-		if (this.attempts === 0 && this.failure === undefined)
+		if (this.attempts === 0 && (this.failure === undefined || this.healthySinceFailure)) {
 			this.retainFailure(new Error("Managed PostgreSQL failed its live health check."));
+			this.healthySinceFailure = false;
+		}
 		this.invalidate();
 		if ((this.operations.now ?? Date.now)() < this.nextRecoveryAt)
 			throw this.dependencyFailure("Managed Postgres recovery is cooling down after bounded attempts.");

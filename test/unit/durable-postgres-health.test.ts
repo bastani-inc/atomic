@@ -312,6 +312,56 @@ test("a validation that never gets an answer is a bounded transient failure that
 	await health.stop();
 });
 
+test("refreshes a missing-identity outage after a successful probe without replacing recovery errors during cooldown (#3413)", async () => {
+	let now = 0;
+	let healthy = true;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		probe: async () => (healthy ? { url: "managed", identity: "1" } : undefined),
+		recover: async () => {
+			recoveries++;
+			if (recoveries <= 3) throw new Error("previous recovery failure");
+		},
+		wait: async () => {},
+		now: () => now,
+	});
+	try {
+		await health.check();
+		healthy = false;
+		await assert.rejects(health.check(), /unavailable after bounded recovery/);
+		assert.match(health.lastFailure?.message ?? "", /previous recovery failure/);
+		await assert.rejects(health.check(), /cooling down/);
+		assert.match(health.lastFailure?.message ?? "", /previous recovery failure/);
+		healthy = true;
+		assert.equal(await health.check(), "managed");
+		healthy = false;
+		now += 5_000;
+		await assert.rejects(health.check(), /unavailable after bounded recovery/);
+		assert.match(health.lastFailure?.message ?? "", /live health check/);
+		assert.doesNotMatch(health.lastFailure?.message ?? "", /previous recovery failure/);
+		await assert.rejects(health.check(), /cooling down/);
+		assert.match(health.lastFailure?.message ?? "", /live health check/);
+		assert.equal(recoveries, 6);
+	} finally {
+		await health.stop();
+	}
+});
+
+test("short secrets redact only credential values in diagnostic contexts (#3413)", async () => {
+	const { redactedDatabaseMessage } = await import(
+		"../../packages/workflows/src/durable/dbos-database-diagnostics.js"
+	);
+	const url = "postgresql://u:a@127.0.0.1/db?token=t&sslpassword=s";
+	const message = "Managed Postgres runtime missing; password=a token=t sslpassword=s; user=u; [redacted]";
+	assert.equal(
+		redactedDatabaseMessage(message, url),
+		"Managed Postgres runtime missing; password=[redacted] token=[redacted] sslpassword=[redacted]; user=[redacted]; [redacted]",
+	);
+	assert.equal(
+		redactedDatabaseMessage(`authentication failed for user "u" at postgresql://u:a@127.0.0.1/db?token=t`, url),
+		'authentication failed for user "[redacted]" at postgresql://127.0.0.1/db',
+	);
+});
 test("retained recovery refusal survives cooldown and redacts underlying credentials (#3413)", async () => {
 	const url = "postgresql://private-user:p%40ssword@127.0.0.1:5439/workflows?token=private-token";
 	let now = 0;
@@ -374,4 +424,47 @@ test("hard managed health probe reports why recovery is refused without restart 
 	} finally {
 		await health.stop();
 	}
+});
+test("hard probe failure is not replaced by a missing-identity outage (#3413)", async () => {
+	let probe = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			probe++;
+			if (probe === 2) throw new Error("managed system identity validation failed");
+			if (probe >= 3) return undefined;
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {},
+		wait: async () => {},
+	});
+	try {
+		await health.check();
+		await assert.rejects(health.check(), /managed system identity validation failed/);
+		await assert.rejects(health.check(), /unavailable after bounded recovery/);
+		assert.match(health.lastFailure?.message ?? "", /managed system identity validation failed/);
+	} finally {
+		await health.stop();
+	}
+});
+
+test("redacts unquoted user values and configured secrets without corrupting prose (#3413)", async () => {
+	const { redactedDatabaseMessage } = await import(
+		"../../packages/workflows/src/durable/dbos-database-diagnostics.js"
+	);
+	const url = "postgresql://private-user:p%40ssword@127.0.0.1/db?token=private-token";
+	assert.equal(
+		redactedDatabaseMessage(
+			`could not connect: user private-user; token was private-token; runtime missing; alphabet; encoded ${url}`,
+			url,
+		),
+		"could not connect: user [redacted]; token was [redacted]; runtime missing; alphabet; encoded postgresql://127.0.0.1/db",
+	);
+	assert.equal(
+		redactedDatabaseMessage("unlabelled private-token was rejected; password p@ssword (p@ssword)", url),
+		"unlabelled [redacted] was rejected; password [redacted] ([redacted])",
+	);
+	assert.equal(
+		redactedDatabaseMessage("authentication failed for user private-user"),
+		"authentication failed for user [redacted]",
+	);
 });
