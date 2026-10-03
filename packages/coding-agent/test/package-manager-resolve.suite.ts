@@ -100,6 +100,20 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions.some((r) => r.path === extPath && r.enabled)).toBe(true);
 		});
 
+		it("resolves object-form workflow paths without treating database settings as paths (#3416)", async () => {
+			const workflowPath = join(agentDir, "configured.ts");
+			writeFileSync(workflowPath, "export default {};");
+			const workflowSettings = SettingsManager.inMemory({
+				workflows: {
+					paths: ["configured.ts"],
+					durability: { systemDatabaseUrl: "postgresql://user:secret@db.example/workflows" },
+				},
+			});
+			const configured = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager: workflowSettings });
+			const resolved = await configured.resolve();
+			expect(resolved.workflows.some((resource) => resource.path === workflowPath && resource.enabled)).toBe(true);
+		});
+
 		it("should resolve skill paths from settings", async () => {
 			const skillDir = join(agentDir, "skills", "my-skill");
 			mkdirSync(skillDir, { recursive: true });

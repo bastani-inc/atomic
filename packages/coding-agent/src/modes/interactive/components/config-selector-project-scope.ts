@@ -58,7 +58,8 @@ export function toggleProjectResource(
 		toggleProjectPackage(settings, item, cwd, enabled);
 		return;
 	}
-	const current = [...(settings.getProjectSettings()[item.resourceType] ?? [])];
+	const configured = settings.getProjectSettings()[item.resourceType];
+	const current = [...(Array.isArray(configured) ? configured : (configured?.paths ?? []))];
 	const projectBase = join(cwd, CONFIG_DIR_NAME);
 	const pattern =
 		item.path.startsWith(BUILTIN_PATH_PREFIX) || item.metadata.scope === "user"

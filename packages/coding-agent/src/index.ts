@@ -382,6 +382,7 @@ export {
 	type ModelRoutingSettings,
 	type PackageSource,
 	type RetrySettings,
+	type Settings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
 } from "./core/settings-manager.ts";

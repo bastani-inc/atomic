@@ -458,7 +458,7 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ## Durable Workflows and Cross-Session Resume
 
-Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` may select an existing database. Once DBOS is ready, query and write failures fail the workflow action and never switch backends.
+Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` or `workflows.durability` in settings may select an existing database. Once DBOS is ready, query and write failures fail the workflow action and never switch backends.
 
 SDK callers can choose the backend and database for each `run()` call, and require durable state so a run fails fast instead of using the in-memory fallback; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
@@ -484,7 +484,7 @@ Awaited checkpoint writes also have a 10-second database deadline. If a checkpoi
 
 If recovery reports `Workflow definition not found`, restore the matching workflow definition and run `/workflow reload`, then retry resume with the same full run ID. A failed resume preparation does not discard the recovery target or saved receipts. Do not start a new run to bypass the missing definition.
 
-**Zero-configuration local database.** Without `DBOS_SYSTEM_DATABASE_URL`, Atomic uses its own embedded Postgres for DBOS. It requires no Docker daemon, system Postgres install, install lifecycle script, or first-run download.
+**Zero-configuration local database.** Without an explicit database URL from the environment or settings, Atomic uses its own embedded Postgres for DBOS. It requires no Docker daemon, system Postgres install, install lifecycle script, or first-run download.
 
 Supported targets are Linux x64/ARM64 with glibc or musl, macOS x64/ARM64, and Windows x64/ARM64 using x64 emulation. Linux musl uses PostgreSQL 18.6; other targets use 18.4. Both use the compatible major-version-18 cluster at `~/.atomic/postgres/v18`, with preferred port `5439`.
 
@@ -737,13 +737,31 @@ That history does not authorize any live release action.
 
 ### Configuring DBOS/Postgres
 
+Choose a hosted or separately managed database persistently in `~/.atomic/agent/settings.json` or trusted project `.atomic/settings.json`:
+
+```json
+{
+  "workflows": {
+    "durability": {
+      "systemDatabaseUrlFile": "~/.atomic/neon/direct.url"
+    }
+  }
+}
+```
+
+The file contains only the PostgreSQL connection URL; surrounding whitespace and a trailing newline are trimmed. Use `systemDatabaseUrl` instead for an inline URL, but do not set both. Relative file paths resolve beside the settings file that declares them, such as the global agent directory or project `.atomic` directory. Protect the file from other accounts and keep credentials out of version control. Existing workflow path arrays remain supported; when using the object form, put resource paths in `workflows.paths`.
+
+`DBOS_SYSTEM_DATABASE_URL` overrides settings. A trusted project `durability` object replaces the global selection. Without either, Atomic provisions managed PostgreSQL, then tries Docker if provisioning fails. An explicit URL uses only its chosen endpoint, even on connection failure. Invalid settings, including unrecognized `durability` keys, and unreadable or empty credential files stop initialization rather than choosing another database. Restart Atomic to change the selection; existing runs stay in their original database and are not migrated.
+
+On first database initialization, interactive and RPC sessions display the selected provider and host without credentials or URL options. A Docker selection is labelled `Docker fallback`. Headless sessions, including SDK hosts without a UI, write only the Docker fallback notice to stderr; managed and configured selections stay silent there. In-memory degradation retains its existing warning. See [Workflow database settings](/settings#workflow-database).
+
 **Linux musl and Windows ARM64.** Musl installations include Alpine/musl PostgreSQL 18.6. Windows ARM64 runs PostgreSQL 18.4 x64 through emulation and requires Windows 11 plus the Microsoft Visual C++ x64 v14 Redistributable. This is not native PostgreSQL ARM64; Windows 10 on ARM is unsupported.
 
 Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bin/initdb`, `bin/pg_ctl`, and `bin/postgres` to override packaged runtime discovery, including in air-gapped deployments. Otherwise DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; that explicit URL retains precedence over embedded provisioning. Atomic provisions embedded Postgres next (with drop-privilege support when running as root on Linux), then Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed. Interactive and RPC actions show the warning as a display-only notification that is not added to agent/model context. Print and other headless actions, where no usable UI exists, write the actionable diagnostic to the console instead.
 
 Keep the complete extracted archive, not only the `atomic` executable. `ATOMIC_POSTGRES_RUNTIME_DIR` accepts complete legacy runtimes without provenance; an incomplete override falls through to installed candidates. Packaging failures do not require deleting or reinitializing the v18 cluster.
 
-If starting workflows reports a missing PostgreSQL executable or library, such as `libzstd.1.dylib` on macOS, download a repaired release and reinstall the complete archive. The installers do not check the bundled PostgreSQL runtime, so the problem shows up the first time Atomic starts its embedded database. With `DBOS_SYSTEM_DATABASE_URL` set, Atomic never uses the bundled runtime. If embedded startup fails and the Docker fallback succeeds, workflows run on Docker without reporting the embedded failure. Check `~/.atomic/postgres/v18.log` if the managed database never starts. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
+If starting workflows reports a missing PostgreSQL executable or library, such as `libzstd.1.dylib` on macOS, download a repaired release and reinstall the complete archive. The installers do not check the bundled PostgreSQL runtime, so the problem shows up the first time Atomic starts its embedded database. With an explicit database URL from the environment or settings, Atomic never uses the bundled runtime. If embedded startup fails and the Docker fallback succeeds, workflows run on Docker and the backend notice identifies that fallback. Check `~/.atomic/postgres/v18.log` if the managed database never starts. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
 
 To check an archive runtime, set `runtime` to its `node_modules/@bastani/atomic-natives/postgres-runtime`, then run `"$runtime/bin/postgres" --version` and `"$runtime/bin/pg_ctl" --version`. On Windows use the corresponding `.exe` files in PowerShell. Both must succeed. If a library-link or copy error is reported, repair the complete installation instead of mixing libraries from different releases.
 

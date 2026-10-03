@@ -11,6 +11,7 @@ import {
 	TuiAltScreen,
 	KeybindingsManager as TuiKeybindingsManager,
 	VStack,
+	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { KEYBINDINGS, type KeybindingsConfig, KeybindingsManager } from "../src/core/keybindings.ts";
@@ -126,6 +127,8 @@ interface FixtureOptions {
 	mountOverlay?: boolean;
 	copyOnSelect?: boolean;
 	copySelection?: (text: string) => Promise<boolean>;
+	/** Fullscreen wheel step. Default: Atomic's velocity-dependent `"auto"`. */
+	wheelScrollLines?: WheelScrollLines;
 }
 
 function createFixture(options: FixtureOptions = {}): Fixture {
@@ -148,6 +151,7 @@ function createFixture(options: FixtureOptions = {}): Fixture {
 		terminal,
 		copyOnSelect: options.copyOnSelect,
 		copySelection: options.copySelection,
+		wheelScrollLines: options.wheelScrollLines,
 		shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay, focusedIsViewportSearch) =>
 			shouldHandleFullscreenViewportInput(
 				tui.getFocusedComponent(),
@@ -742,16 +746,18 @@ describe("fullscreen fixtures do not depend on TERM", () => {
 	});
 });
 
+const VELOCITY_INDEPENDENT_WHEEL_LINES = 3;
+
 for (const mountOverlay of [false, true]) {
 	// Pi #9166: exercise Atomic's actual fullscreen adapter, including declined overlay input.
 	test(`Pi 0.85.1 Alt-wheel scrolls five times farther with overlay=${mountOverlay}`, () => {
-		const fixture = createFixture({ mountOverlay });
+		const fixture = createFixture({ mountOverlay, wheelScrollLines: VELOCITY_INDEPENDENT_WHEEL_LINES });
 		try {
 			const { top } = anchorAtEnd(fixture);
 			fixture.terminal.input(WHEEL_UP);
 			fixture.tui.renderNow();
 			const ordinaryDistance = top - fixture.transcript.scrollTop;
-			expect(ordinaryDistance).toBeGreaterThan(0);
+			expect(ordinaryDistance).toBe(VELOCITY_INDEPENDENT_WHEEL_LINES);
 			anchorAtEnd(fixture);
 			fixture.terminal.input("\x1b[<72;10;2M");
 			fixture.tui.renderNow();

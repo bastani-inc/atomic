@@ -1,3 +1,4 @@
+import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
 import { currentToolControlRegistry } from "../engine/run-tool-control-registry.js";
@@ -42,6 +43,7 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
+import { prepareWorkflowDatabaseSettings } from "./workflow-database-settings.js";
 import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
@@ -329,6 +331,41 @@ export function createWorkflowExtensionRuntimeState(
 	const resolvePossibleStageEntry = (normalizedName: string): string | undefined =>
 		discoveryRef.current?.sources.find((source) => source.id === normalizedName)?.filePath ??
 		resolveBuiltinDefinitionSource(normalizedName);
+	let databasePreparation: { key: string; promise: Promise<void> } | undefined;
+	const prepareDatabase = (): Promise<void> => {
+		const cwd = resolveCwd();
+		const trusted = pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? false;
+		const key = JSON.stringify([cwd, trusted]);
+		if (databasePreparation?.key === key) return databasePreparation.promise;
+		const promise = prepareWorkflowDatabaseSettings(cwd, trusted).catch((error: Error) => {
+			if (databasePreparation?.promise === promise) databasePreparation = undefined;
+			throw error;
+		});
+		databasePreparation = { key, promise };
+		return promise;
+	};
+	const databaseReady = (ctx?: DurabilityWarningContext): void => {
+		const owner = getDbosProcessOwner();
+		const describeDatabase = owner.databaseDiagnostics;
+		if (owner.state !== "ready" || describeDatabase === undefined) return;
+		if (owner.announcedDatabaseDiagnostics === describeDatabase) return;
+		const diagnostics = describeDatabase();
+		const dockerFallback = diagnostics.provider === "docker";
+		let host = "unknown host";
+		try {
+			host = new URL(diagnostics.url).host;
+		} catch {}
+		const message = `Workflow database: ${dockerFallback ? "Docker fallback" : diagnostics.provider} (${host})`;
+		if (ctx?.hasUI && ctx.ui?.notify) {
+			try {
+				ctx.ui.notify(message, "info");
+				owner.announcedDatabaseDiagnostics = describeDatabase;
+			} catch {}
+		} else if (dockerFallback) {
+			owner.announcedDatabaseDiagnostics = describeDatabase;
+			console.error(message);
+		}
+	};
 	const startupDiscovery = discoverStartupWorkflowsSync();
 	const runtimeRef: { current: ExtensionRuntime } = {
 		current: createExtensionRuntime({
@@ -343,6 +380,8 @@ export function createWorkflowExtensionRuntimeState(
 			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
+			prepareDatabase,
+			databaseReady,
 		}),
 	};
 	const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
@@ -407,6 +446,8 @@ export function createWorkflowExtensionRuntimeState(
 			...(durabilityWarningSink === undefined ? {} : { durabilityWarningSink }),
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
+			prepareDatabase,
+			databaseReady: () => databaseReady(ctx),
 		});
 	}
 
@@ -449,6 +490,8 @@ export function createWorkflowExtensionRuntimeState(
 			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
+			prepareDatabase,
+			databaseReady,
 		});
 	}
 

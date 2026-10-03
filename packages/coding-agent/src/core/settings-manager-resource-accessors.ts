@@ -270,12 +270,15 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getWorkflowPaths() {
-		return [...(settingsInternals(this).settings.workflows ?? [])];
+		const workflows = settingsInternals(this).settings.workflows;
+		return [...(Array.isArray(workflows) ? workflows : (workflows?.paths ?? []))];
 	},
 
 	setWorkflowPaths(paths) {
 		const state = settingsInternals(this);
-		state.globalSettings.workflows = paths;
+		const workflows = state.globalSettings.workflows;
+		state.globalSettings.workflows =
+			Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
 		state.markModified("workflows");
 		state.save();
 	},
@@ -283,7 +286,8 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	setProjectWorkflowPaths(paths) {
 		const state = settingsInternals(this);
 		const projectSettings = structuredClone(state.projectSettings);
-		projectSettings.workflows = paths;
+		const workflows = projectSettings.workflows;
+		projectSettings.workflows = Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
 		state.markProjectModified("workflows");
 		state.saveProjectSettings(projectSettings);
 	},

@@ -70,8 +70,10 @@ export async function resolvePackages(
 
 	for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
 		const target = getTargetMap(accumulator, resourceType);
-		const globalEntries = (globalSettings[resourceType] ?? []) as string[];
-		const projectEntries = (projectSettings[resourceType] ?? []) as string[];
+		const globalConfigured = globalSettings[resourceType];
+		const projectConfigured = projectSettings[resourceType];
+		const globalEntries = Array.isArray(globalConfigured) ? globalConfigured : (globalConfigured?.paths ?? []);
+		const projectEntries = Array.isArray(projectConfigured) ? projectConfigured : (projectConfigured?.paths ?? []);
 		const projectOrigin = context.settingsManager.isFieldInherited("project", resourceType)
 			? "inherited-pi"
 			: "atomic";

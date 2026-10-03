@@ -81,6 +81,8 @@ export interface ExtensionRuntimeOpts {
 	cwd?: string;
 	/** Display-only degradation warning reporter supplied by the host composition root. */
 	durabilityWarningSink?: DurabilityWarningSink;
+	prepareDatabase?: () => Promise<void>;
+	databaseReady?: () => void;
 	/** Resolve the host's non-default session directory for workflow stage transcripts. */
 	resolveDefaultStageSessionDir?: () => string | undefined;
 	/**
@@ -184,7 +186,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		// against the current DBOS lifecycle generation, so caching a permanently
 		// resolved promise here could mask a backend stopped after a
 		// host-session replacement (issue #1957).
-		return await initializeDurableBackend(durabilityWarningSink);
+		if (opts.prepareDatabase !== undefined) await opts.prepareDatabase();
+		const backend = await initializeDurableBackend(durabilityWarningSink);
+		opts.databaseReady?.();
+		return backend;
 	};
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {

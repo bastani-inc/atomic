@@ -159,7 +159,12 @@ export interface Settings {
 	skills?: string[]; // Array of local skill file paths or directories
 	prompts?: string[]; // Array of local prompt template paths or directories
 	themes?: string[]; // Array of local theme file paths or directories
-	workflows?: string[]; // Array of local workflow file paths or directories
+	workflows?:
+		| string[]
+		| {
+				paths?: string[];
+				durability?: { systemDatabaseUrl?: string; systemDatabaseUrlFile?: string };
+		  };
 	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
 	terminal?: TerminalSettings;
 	herdr?: { enabled?: boolean }; // default: true, only inside an interactive Herdr pane

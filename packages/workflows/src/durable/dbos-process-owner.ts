@@ -49,6 +49,7 @@ export interface DbosProcessOwner {
 	wrappers: DbosRegisteredWrappers | undefined;
 	systemDatabaseUrl?: string;
 	databaseDiagnostics?: () => DbosDatabaseDiagnostics;
+	announcedDatabaseDiagnostics?: () => DbosDatabaseDiagnostics;
 	readonly leases: Set<object>;
 }
 
@@ -92,4 +93,5 @@ export function resetDbosProcessOwner(): void {
 	owner.leases.clear();
 	owner.systemDatabaseUrl = undefined;
 	owner.databaseDiagnostics = undefined;
+	owner.announcedDatabaseDiagnostics = undefined;
 }
