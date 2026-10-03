@@ -138,7 +138,7 @@
     "@types/proper-lockfile": "4.1.4",
     "@types/semver": "7.7.1",
     "ajv": "8.20.0",
-    "shx": "0.4.0",
+    "shx": "0.3.4",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },
