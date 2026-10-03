@@ -67,11 +67,10 @@ afterEach(() => {
 });
 
 describe("public workflow tool request deadline", () => {
-	// #3072 / #3074: ordinary database rejection is not a running or uncertain admission.
 	test.each([
 		["28P01", 'password authentication failed for user "atomic"'],
 		["42501", 'permission denied for table "dbos"."workflow_status"'],
-	])("%s admission rejection preserves its diagnostic and discards only the local run", async (code, message) => {
+	])("%s safe admission rejection is hard and redacted (#3413)", async (code, message) => {
 		vi.useFakeTimers();
 		const sdk = createMockSdk();
 		const startWorkflow = vi.fn(async () => {
@@ -106,7 +105,13 @@ describe("public workflow tool request deadline", () => {
 		assert.equal(result.details.status, "failed");
 		const runId = "runId" in result.details ? result.details.runId : undefined;
 		assert.ok(runId);
-		assert.equal("error" in result.details ? result.details.error : undefined, message);
+		const safeError = "error" in result.details ? result.details.error : undefined;
+		if (code === "28P01") {
+			assert.equal(safeError, 'password authentication failed for user "[redacted]"');
+			assert.doesNotMatch(safeError ?? "", /atomic/u);
+		} else {
+			assert.equal(safeError, message);
+		}
 		assert.equal(workflowStore.runs().length, 0);
 		assert.equal(backend.getWorkflow(runId), undefined);
 		assert.equal(sdk.state.workflows.has(runId), false);

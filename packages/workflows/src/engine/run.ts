@@ -876,7 +876,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				} catch (error) {
 					if (admission.failed) {
 						scheduler.releaseRun();
-						throw error;
+						throw new Error(
+							admissionControlError ??
+								databaseDependencyMessage(
+									unknownErrorMessage(error),
+									getDbosProcessOwner().databaseDiagnostics?.(),
+								),
+						);
 					}
 					// Retry persistence before releasing an admitted owner's pause barrier.
 				}

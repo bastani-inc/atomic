@@ -54,7 +54,7 @@ const exits = [
 	"shutdown",
 ] as const;
 
-test.each(exits)("admission exit matrix: %s", async (exit) => {
+test.each(exits)("admission exit matrix: %s (#3413)", async (exit) => {
 	vi.useFakeTimers();
 	const sdk = createMockSdk();
 	const entered = Promise.withResolvers<void>();
@@ -212,10 +212,13 @@ test.each(exits)("admission exit matrix: %s", async (exit) => {
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");
 		assert.ok(controls.runControl(runId), "failed pause retains its initialization owner until resume");
 		if (rejected) {
-			await assert.rejects(
-				resumeRun(runId, { store, toolControlRegistry: controls }),
-				(error) => error === rejection,
-			);
+			await assert.rejects(resumeRun(runId, { store, toolControlRegistry: controls }), (error: Error) => {
+				assert.notEqual(error, rejection);
+				assert.equal(error.message, rejection.message);
+				assert.equal(error.cause, undefined);
+				assert.equal(error.stack?.includes(rejection.stack ?? ""), false);
+				return true;
+			});
 		} else {
 			// #3078: explicit concurrent resumes retry the retained owner, not a replacement executor.
 			assert.equal(controls.runControl(runId), owner);
@@ -241,7 +244,14 @@ test.each(exits)("admission exit matrix: %s", async (exit) => {
 	}
 	const controlResult = await control;
 	const result = await outcome;
-	if (rejected && !quit) assert.equal(result, rejection);
+	if (rejected && !quit) {
+		assert.ok(result instanceof Error);
+		assert.notEqual(result, rejection);
+		assert.equal(result.message, rejection.message);
+		assert.equal(result.cause, undefined);
+		assert.equal(result.stack?.includes(rejection.stack ?? ""), false);
+		assert.equal(result instanceof DbosDependencyError, false, "an admission rejection remains a hard failure");
+	}
 	if (quit && (unavailable || rejected)) {
 		assert.ok(controlResult && typeof controlResult === "object" && "ok" in controlResult);
 		assert.equal(controlResult.ok, true);
