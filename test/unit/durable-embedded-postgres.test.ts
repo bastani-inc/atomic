@@ -603,12 +603,12 @@ test("setup heartbeats atomically replace the owner marker in the same directory
 		const markerName = readdirSync(lockDir).find((entry) => entry.startsWith(".owner-"));
 		assert.ok(markerName);
 		const markerPath = join(lockDir, markerName);
-		const before = statSync(markerPath);
+		const before = statSync(markerPath, { bigint: true });
 		const beforeContents = readFileSync(markerPath, "utf8");
 
 		now += TEST_SETUP_LOCK_HEARTBEAT_MS;
 		assert.equal(heartbeat(), true);
-		const after = statSync(markerPath);
+		const after = statSync(markerPath, { bigint: true });
 		assert.notEqual(after.ino, before.ino, "heartbeat publication replaces the record rather than overwriting it");
 		assert.notEqual(readFileSync(markerPath, "utf8"), beforeContents);
 		assert.deepEqual(readdirSync(lockDir), [markerName]);
