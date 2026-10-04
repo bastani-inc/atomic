@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Simultaneous subagent calls preserve each caller's wait policy and return only that caller's results instead of a shared parallel receipt ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
+
 ## [0.9.23] - 2026-09-27
 
 ### Fixed

@@ -45,12 +45,7 @@ import {
 	findDuplicateParallelOutputPath,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.js";
-import {
-	settledOutputsFromResponse,
-	settledTaskOutputText,
-	subagentTaskResponseText,
-	taskResponseRecords,
-} from "./task-execution.js";
+import { parallelTaskToolResultWithOutput } from "./task-execution.js";
 
 export async function runParallelPath(
 	data: ExecutionContextData,
@@ -300,20 +295,7 @@ export async function runParallelPath(
 					outcome.kind === "admitted" && outcome.observation.kind === "yielded" ? [ordinal] : [],
 				),
 			);
-			return {
-				content: [
-					{
-						type: "text",
-						text: `${subagentTaskResponseText(response)}${await settledTaskOutputText(ctx.getAgentTaskHost(), settledOutputsFromResponse(response))}`,
-					},
-				],
-				details: {
-					mode: "parallel",
-					results: [],
-					taskResponse: response,
-					taskRecords: taskResponseRecords(response, ctx.getAgentTaskHost()),
-				},
-			};
+			return parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
 		}
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
