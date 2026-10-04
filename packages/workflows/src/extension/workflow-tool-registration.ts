@@ -17,7 +17,7 @@ interface WorkflowToolRegistrationOptions {
 
 export type WorkflowToolRegistrar = Pick<ExtensionAPI, "registerTool">;
 
-export const WORKFLOW_TOOL_REQUEST_TIMEOUT_MS = 120_000;
+export const WORKFLOW_TOOL_REQUEST_TIMEOUT_MS = 150_000;
 
 type WorkflowToolExecutor = (
 	args: WorkflowToolArgs,
