@@ -111,10 +111,11 @@ async function withHeldStderr(
 
 const OUTPUT_CLOSE_FIXTURE = `
 import { createInterface } from 'node:readline';
+import { closeSync } from 'node:fs';
 createInterface({ input: process.stdin }).on('line', line => {
   const { id, command } = JSON.parse(line);
   if (command === 'pid') process.stdout.write(JSON.stringify({ id, result: process.pid }) + '\\n');
-  if (command === 'close-output') process.stdout.end();
+  if (command === 'close-output') process.stdout.end(() => closeSync(1));
   if (command === 'exit') process.exit(0);
 });
 `;
@@ -179,42 +180,53 @@ test("broken fixture stdin rejects all pending and subsequent RPCs without uncau
 	}
 });
 
-const INHERITED_OUTPUT_FIXTURE = `
-import { spawn } from 'node:child_process';
+const EXIT_RPC_MARKER_FIXTURE = `
 import { createInterface } from 'node:readline';
-import { writeSync } from 'node:fs';
+import { writeFileSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
 createInterface({ input: process.stdin }).on('line', line => {
   const { id, command } = JSON.parse(line);
-  if (command === 'hold-output') {
-    const script = "const fs = require('node:fs'); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); process.exit(0); } }, 10); setTimeout(() => process.exit(1), 10000);";
-    spawn(process.execPath, ['-e', script, process.env.HOME + '/release'], { stdio: ['ignore', 1, 2] });
-  }
+  if (command === 'exit') writeFileSync(join(process.env.ATOMIC_FAULT_TEST_HOME, 'exit-rpc'), 'exit');
   writeSync(1, JSON.stringify({ id, result: process.pid }) + '\\n');
   if (command === 'exit') process.exit(0);
 });
 `;
 
-test("intentional crash waits for inherited output drain without an exit RPC and permits repeated cleanup (#3419)", async () => {
-	await withClient(INHERITED_OUTPUT_FIXTURE, async (client) => {
-		await client.request("hold-output");
-		try {
-			const exit = client.crash();
-			assert.equal(
-				await Promise.race([exit.then(() => "exited"), runtime.sleep(50).then(() => "draining")]),
-				"draining",
-			);
-			await runtime.writeFileEnsuringDir(join(client.home, "release"), "release");
-			await exit;
-			await client.exit();
-		} finally {
-			await runtime.writeFileEnsuringDir(join(client.home, "release"), "release");
-		}
+for (const executable of [process.execPath, runtime.bunExecutable()]) {
+	test(`intentional crash waits for held stderr drain without an exit RPC and permits repeated cleanup (${executable}) (#3419)`, async () => {
+		await withHeldStderr(
+			EXIT_RPC_MARKER_FIXTURE,
+			async (client, waitForDrain, release) => {
+				const marker = join(client.home, "exit-rpc");
+				assert.equal(await runtime.fileExists(marker), false);
+				const exit = client.crash();
+				try {
+					await waitForDrain();
+					assert.equal(
+						await Promise.race([exit.then(() => "exited"), runtime.sleep(50).then(() => "draining")]),
+						"draining",
+					);
+				} finally {
+					release();
+				}
+				await exit;
+				await client.exit();
+				await client.exit();
+				assert.equal(
+					await runtime.fileExists(marker),
+					false,
+					"crash and repeated cleanup must not send an exit RPC",
+				);
+			},
+			executable,
+		);
 	});
-});
+}
 
 test("graceful fixture exit still consumes its acknowledgement and permits repeated cleanup (#3419)", async () => {
-	await withClient(INHERITED_OUTPUT_FIXTURE, async (client) => {
+	await withClient(EXIT_RPC_MARKER_FIXTURE, async (client) => {
 		await client.exit();
+		assert.equal(await runtime.fileExists(join(client.home, "exit-rpc")), true);
 		await client.waitForExit();
 		await client.exit();
 	});

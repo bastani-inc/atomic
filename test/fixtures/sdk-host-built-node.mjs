@@ -29,6 +29,35 @@ writeFileSync(definition, source);
 process.env.ATOMIC_FAULT_TEST_HOME = cwd;
 const identities = [];
 const diagnostics = [];
+const progression = [];
+const callbacks = [];
+let previousProgress;
+let pollCount = 0;
+let lastPoll;
+const observeProgress = (details) => {
+	const state = {
+		runs: details.runs.map(({ runId, status, phase, lastProgressAt, awaitingInputCount }) => ({ runId, status, phase, lastProgressAt, awaitingInputCount })),
+		snapshots: details.snapshots.map((run) => ({
+			id: run.id, status: run.status, phase: run.phase, lastProgressAt: run.lastProgressAt,
+			stages: run.stages.map(({ id, name, status, startedAt, endedAt, awaitingInputSince, pendingPrompt }) => ({ id, name, status, startedAt, endedAt, awaitingInputSince, promptId: pendingPrompt?.id })),
+			toolNodes: (run.toolNodes ?? []).map(({ id, name, status, startedAt, endedAt }) => ({ id, name, status, startedAt, endedAt })),
+		})),
+	};
+	lastPoll = { observedAt: Date.now(), poll: ++pollCount, ...state };
+	const serialized = JSON.stringify(state);
+	if (serialized !== previousProgress) {
+		previousProgress = serialized;
+		if (progression.length === 64) progression.shift();
+		progression.push(lastPoll);
+	}
+};
+const answer = (kind, options, value) => {
+	identities.push(options);
+	const { requestId, sessionId, workflowRunId, workflowStageId } = options;
+	callbacks.push({ kind, event: "invoked", observedAt: Date.now(), requestId, sessionId, workflowRunId, workflowStageId });
+	try { return value; }
+	finally { callbacks.push({ kind, event: "returned", observedAt: Date.now(), requestId }); }
+};
 const text = "  durable text  ";
 const options = {
 	cwd,
@@ -41,8 +70,8 @@ const options = {
 const bindings = {
 	onDiagnostic: options.extensionBindings.onDiagnostic,
 	humanInput: {
-		input: async (_title, _placeholder, options) => { identities.push(options); return text; },
-		confirm: async (_title, _message, options) => { identities.push(options); return true; },
+		input: async (_title, _placeholder, options) => answer("input", options, text),
+		confirm: async (_title, _message, options) => answer("confirm", options, true),
 		select: async () => undefined,
 		editor: async () => undefined,
 		questionnaire: async () => ({ answers: [], cancelled: true }),
@@ -62,6 +91,7 @@ try {
 	let pending;
 	do {
 		pending = (await tool.execute("pending", { action: "status" }, new AbortController().signal)).details;
+		observeProgress(pending);
 		if (pending.runs[0]?.awaitingInputCount === 1) break;
 		await sleep(20);
 	} while (Date.now() < pendingDeadline);
@@ -78,13 +108,17 @@ try {
 		const { session: sibling } = await createAgentSession({ ...options, sessionManager: SessionManager.inMemory(cwd) });
 		await sibling.dispose();
 		const retained = (await tool.execute("retained", { action: "status" }, new AbortController().signal)).details;
+		observeProgress(retained);
 		assert.equal(retained.runs[0]?.status, "running", JSON.stringify(retained));
 		assert.equal(retained.runs[0]?.awaitingInputCount, 1, JSON.stringify(retained));
+		callbacks.push({ event: "bindings-installing", observedAt: Date.now() });
 		await session.bindExtensions(bindings);
+		callbacks.push({ event: "bindings-installed", observedAt: Date.now() });
 		const deadline = Date.now() + 10_000;
 		let details;
 		do {
 			details = (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;
+			observeProgress(details);
 			if (details.runs[0]?.status === "completed") break;
 			await sleep(20);
 		} while (Date.now() < deadline);
@@ -94,8 +128,10 @@ try {
 				file, existsSync(join(cwd, file)) ? readFileSync(join(cwd, file), "utf8") : null,
 			]));
 			const runId = details.runs[0]?.runId;
-			const checkpointIds = (details.snapshots[0]?.toolNodes ?? []).map((node) => `${runId}:checkpoint:${node.id}`);
+			const checkpointPrefix = `${runId}:checkpoint:`;
 			let checkpointRows;
+			let databaseActivity;
+			let databaseLocks;
 			let checkpointReadError;
 			let client;
 			try {
@@ -108,15 +144,33 @@ try {
 				client.on("error", () => {});
 				await client.connect();
 				checkpointRows = (await client.query(
-					"SELECT workflow_uuid, status, name, output, error FROM dbos.workflow_status WHERE workflow_uuid = ANY($1::text[]) ORDER BY workflow_uuid",
-					[[runId, ...checkpointIds]],
+					`SELECT workflow_uuid, status, name, created_at, updated_at,
+					 left(inputs::text, 4096) AS inputs, left(output::text, 4096) AS output,
+					 left(error::text, 2048) AS error FROM dbos.workflow_status
+					 WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)
+					 ORDER BY created_at DESC, workflow_uuid LIMIT 64`,
+					[runId, checkpointPrefix],
+				)).rows;
+				databaseActivity = (await client.query(
+					`SELECT pid, application_name, state, wait_event_type, wait_event,
+					 xact_start, query_start, state_change, pg_blocking_pids(pid) AS blocking_pids,
+					 left(query, 1024) AS query FROM pg_stat_activity
+					 WHERE datname = current_database() AND pid <> pg_backend_pid()
+					 ORDER BY query_start LIMIT 32`,
+				)).rows;
+				databaseLocks = (await client.query(
+					`SELECT l.pid, l.locktype, l.mode, l.granted, l.relation::regclass::text AS relation,
+					 l.classid, l.objid, l.objsubid, l.transactionid
+					 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+					 WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
+					 ORDER BY l.granted, l.pid, l.locktype LIMIT 64`,
 				)).rows;
 			} catch (error) {
 				checkpointReadError = String(error);
 			} finally {
 				await client?.end().catch((error) => { checkpointReadError ??= String(error); });
 			}
-			console.error(JSON.stringify({ host: "built-node", observedAt, checkpointReadAt: Date.now(), sideEffects, details, checkpointRows, checkpointReadError, diagnostics }));
+			console.error(JSON.stringify({ host: "built-node", observedAt, deadline, checkpointReadAt: Date.now(), sideEffects, details, progression, lastPoll, callbacks, checkpointPrefix, checkpointRows, databaseActivity, databaseLocks, checkpointReadError, diagnostics }));
 		}
 		assert.equal(details.runs[0]?.status, "completed", JSON.stringify(details));
 		assert.deepEqual(details.snapshots[0].result, { text, approved: true });
