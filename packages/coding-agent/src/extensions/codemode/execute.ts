@@ -1,7 +1,3 @@
-import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type {
 	AnyModel,
 	ClassifierContext,
@@ -26,7 +22,9 @@ import { getCodemodeWorkerUrl, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
+import { formatSize } from "../../core/tools/truncate.js";
 import { combineUsage } from "../../core/usage-totals.ts";
+import { writeOutputFile } from "../../utils/output-files.js";
 import { Bm25Ranker, createToolSearchDocument, DEFAULT_TOOL_SEARCH_LIMIT } from "../tool-search/tool.js";
 import {
 	CODEMODE_DOCS_PATH,
@@ -38,6 +36,41 @@ import {
 	getCodemodeCallableTools,
 	toCodemodeDeclaration,
 } from "./tool.js";
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+	"image/png": ".png",
+	"image/jpeg": ".jpg",
+	"image/gif": ".gif",
+	"image/webp": ".webp",
+};
+
+async function saveImages(items: (TextContent | ImageContent)[]): Promise<(TextContent | ImageContent)[]> {
+	const labels = new Map<string, Promise<string>>();
+	const label = async ({ data, mimeType }: ImageContent): Promise<string> => {
+		const bytes = Buffer.from(data, "base64");
+		const kind = `${mimeType}, ${formatSize(bytes.length)}`;
+		const extension = IMAGE_EXTENSIONS[mimeType];
+		if (!extension) throw new Error(`No file extension for image type ${mimeType}`);
+		try {
+			const path = await writeOutputFile("atomic-codemode", extension, bytes);
+			return `[Image saved to ${path} (${kind})]`;
+		} catch (error) {
+			return `[Image (${kind}) could not be saved: ${error instanceof Error ? error.message : String(error)}]`;
+		}
+	};
+	const result = await Promise.all(
+		items.map(async (item): Promise<(TextContent | ImageContent)[]> => {
+			if (item.type !== "image") return [item];
+			let pending = labels.get(item.data);
+			if (!pending) {
+				pending = label(item);
+				labels.set(item.data, pending);
+			}
+			return [{ type: "text", text: await pending }, item];
+		}),
+	);
+	return result.flat();
+}
 
 export function readCodemodeStore(branch: readonly SessionEntry[]): Record<string, unknown> {
 	const store = new Map<string, unknown>();
@@ -476,10 +509,10 @@ export async function executeCodemode(
 	const budget = (source.maxOutputTokens ?? 10_000) * 4;
 	const details = snapshot();
 	if (text.length > budget) {
-		const path = join(tmpdir(), `atomic-codemode-${randomBytes(8).toString("hex")}.txt`);
+		let path: string;
 		let notice: string;
 		try {
-			await writeFile(path, text);
+			path = await writeOutputFile("atomic-codemode", ".txt", text);
 			details.fullOutputPath = path;
 			notice = `Full output: ${path}`;
 		} catch (error) {
@@ -495,6 +528,8 @@ export async function executeCodemode(
 			...content.filter((block) => block.type === "image"),
 		];
 	}
+	// Save after truncation so labels cannot be cut or separated from their images.
+	content = await saveImages(content);
 	return {
 		content: [
 			{

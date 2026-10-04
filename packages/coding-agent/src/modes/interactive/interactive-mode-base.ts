@@ -721,4 +721,5 @@ export class InteractiveModeBase {
 	 * repaint the final frame while the process is exiting.
 	 */
 	isShuttingDown = false;
+	installChangeWarningShown = false;
 }

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Codemode `image()` also saves each image to a private temp file and names its path before the image, so later turns can copy or move it ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Full codemode text output and binary MCP resources now use exclusively created, user-readable-only temp files ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+
+### Fixed
+
+- Fixed subscription logins such as Sign in with ChatGPT losing rotated OAuth tokens when a request or model refresh was cancelled ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed codemode failing after an update removed the running npm install, and added a restart hint when errors occur after the install changes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed dead terminal stdin errors such as `read EIO` and `setRawMode ENOTTY` being reported as crashes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Breaking Changes

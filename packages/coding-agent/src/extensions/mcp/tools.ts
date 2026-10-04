@@ -10,10 +10,7 @@
  * errors (`isError`) are error results for the model, but scripts still resolve to the result.
  */
 
-import { createHash, randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, JsonValue, TextContent } from "@earendil-works/pi-ai";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
@@ -29,6 +26,7 @@ import { formatToolCallWithArgs, getTextOutput, replaceTabs } from "../../core/t
 import { formatSize, truncateMiddle } from "../../core/tools/truncate.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
+import { writeOutputFile } from "../../utils/output-files.js";
 import {
 	type CallToolResult,
 	type ContentBlock,
@@ -68,11 +66,8 @@ export interface McpToolDetails {
  */
 export type McpOutputSaver = (data: string | Uint8Array, extension: string) => Promise<string>;
 
-export async function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string> {
-	const path = join(tmpdir(), `pi-mcp-${randomBytes(8).toString("hex")}${extension}`);
-	// Results can carry private data, so only the user may read the file.
-	await writeFile(path, data, { mode: 0o600 });
-	return path;
+export function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string> {
+	return writeOutputFile("pi-mcp", extension, data);
 }
 
 export interface McpToolCaller {
