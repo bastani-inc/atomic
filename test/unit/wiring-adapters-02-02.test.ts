@@ -14,6 +14,7 @@ import type {
 	PackageSource,
 } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import { inheritChildSessionOptions } from "../../packages/coding-agent/src/core/child-session-options.js";
 import type {
 	PiCodingAgentSdk,
 	PiSdkResourceLoader,
@@ -224,6 +225,26 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		});
 		assert.equal(Object.hasOwn(calls[0], "fallbackModels"), false);
 		assert.equal(calls[0]?.cwd, "/tmp/project");
+	});
+
+	test("an empty fallbackModels chain overrides the chain a stage session would inherit (#3426)", async () => {
+		const calls: Array<CreateAgentSessionOptions | undefined> = [];
+		const adapters = buildRuntimeAdapters(
+			{
+				getChildSessionOptions: (child) =>
+					inheritChildSessionOptions({ cwd: "/tmp/project", fallbackModels: ["parent/inherited"] }, child),
+			},
+			{
+				createAgentSession: async (options) => {
+					calls.push(options);
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({ fallbackModels: [] });
+		await adapters.agentSession!.create({});
+		assert.deepEqual(calls[0]?.fallbackModels, []);
+		assert.deepEqual(calls[1]?.fallbackModels, ["parent/inherited"]);
 	});
 
 	test("strips workflow-only mcp options before calling createAgentSession", async () => {

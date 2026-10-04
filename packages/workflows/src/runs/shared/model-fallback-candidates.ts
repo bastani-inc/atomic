@@ -242,6 +242,7 @@ export async function buildModelCandidatesFromCatalog(input: {
 	readonly fallbackModels?: readonly string[];
 	readonly fallbackThinkingLevels?: readonly string[];
 	readonly catalog?: WorkflowModelCatalogPort;
+	readonly includeCurrentModel?: boolean;
 }): Promise<WorkflowResolvedModelCandidate[]> {
 	const hasExplicitModel = input.primaryModel !== undefined || (input.fallbackModels?.length ?? 0) > 0;
 	if (!hasExplicitModel) return [];
@@ -260,11 +261,19 @@ export async function buildModelCandidatesFromCatalog(input: {
 			primaryModel: input.primaryModel,
 			fallbackModels: input.fallbackModels,
 			fallbackThinkingLevels: input.fallbackThinkingLevels,
-			currentModel: input.catalog.currentModel,
+			currentModel: input.includeCurrentModel === false ? undefined : input.catalog.currentModel,
 			availableModels,
 			preferredProvider: input.catalog.preferredProvider,
 		});
 	} catch (err) {
+		if (input.includeCurrentModel === false) {
+			if (err instanceof WorkflowModelValidationError) throw err;
+			return buildModelCandidates({
+				primaryModel: input.primaryModel,
+				fallbackModels: input.fallbackModels,
+				fallbackThinkingLevels: input.fallbackThinkingLevels,
+			});
+		}
 		if (input.catalog.currentModel === undefined) {
 			throw err;
 		}

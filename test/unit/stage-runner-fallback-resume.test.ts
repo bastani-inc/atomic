@@ -31,6 +31,7 @@ import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js
 interface FakeSessionConfig {
 	/** Model object the session reports via `.model` (drives workflowModelId). */
 	model?: { provider: string; id: string };
+	thinkingLevel?: StageSessionRuntime["thinkingLevel"];
 	/** When set, prompt() throws this error. */
 	promptError?: Error;
 	/** Shared sink recording prompt/followUp/steer calls for assertions. */
@@ -67,7 +68,9 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 		sessionFile: undefined,
 		sessionId: `fake-${crypto.randomUUID()}`,
 		async setModel() {},
-		setThinkingLevel() {},
+		setThinkingLevel(level) {
+			config.thinkingLevel = level;
+		},
 		async cycleModel() {
 			return undefined;
 		},
@@ -76,7 +79,9 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 		},
 		agent: Object.create(null) as StageSessionRuntime["agent"],
 		model: config.model as StageSessionRuntime["model"],
-		thinkingLevel: "off",
+		get thinkingLevel() {
+			return config.thinkingLevel ?? "off";
+		},
 		messages,
 		isStreaming: false as StageSessionRuntime["isStreaming"],
 		async navigateTree() {
@@ -380,6 +385,42 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			[{ model: "anthropic/model-c", success: false }],
 		);
 	});
+
+	test("reattached final reasoning variant does not replay earlier same-model candidates after overflow (#3426)", async () => {
+		const created: StageSessionCreateOptions[] = [];
+		const prompts: Array<{ kind: "prompt" | "followUp" | "steer"; text: string }> = [];
+		const stage = createStageContext({
+			stageId: "reasoning-resume",
+			stageName: "reasoning-resume",
+			runId: "reasoning-resume",
+			stageOptions: {
+				model: "openai/gpt-5-mini:low",
+				thinkingLevel: "low",
+				fallbackModels: ["openai/gpt-5-mini:high"],
+			},
+			adapters: {
+				agentSession: {
+					async create(options) {
+						created.push(options);
+						return makeFakeStageSession({
+							model: { provider: "openai", id: "gpt-5-mini" },
+							thinkingLevel: "high",
+							calls: prompts,
+							promptError: unresolvedContextOverflowFailure("context exhausted"),
+						});
+					},
+				},
+			},
+		});
+		try {
+			await stage.__ensureSessionFromFile("/tmp/does-not-exist-reasoning-resume.jsonl");
+			await assert.rejects(stage.prompt("follow up"), /context exhausted/);
+			assert.equal(created.length, 1);
+			assert.equal(prompts.length, 1);
+		} finally {
+			await stage.__dispose();
+		}
+	});
 });
 
 describe("live (retained-session) follow-up resumes on the settled model (#1431 follow-up)", () => {
@@ -481,7 +522,7 @@ describe("live (retained-session) follow-up resumes on the settled model (#1431 
 		);
 	});
 });
-describe("request/context incompatibility advances the fallback chain to the current selected model (#1580)", () => {
+describe("request/context incompatibility advances the declared fallback chain (#1580)", () => {
 	const PRIMARY = { provider: "anthropic", id: "model-a" };
 	const FALLBACK = { provider: "anthropic", id: "model-b" };
 	const CURRENT = { provider: "openai", id: "gpt-current" };
@@ -494,7 +535,7 @@ describe("request/context incompatibility advances the fallback chain to the cur
 			stageId: "stage-1580",
 			stageName: "Reviewer",
 			runId: "run-1580",
-			stageOptions: { model: "anthropic/model-a", fallbackModels: ["anthropic/model-b"] },
+			stageOptions: { model: "anthropic/model-a", fallbackModels: ["anthropic/model-b", "openai/gpt-current"] },
 			models: {
 				currentModel: "openai/gpt-current",
 				preferredProvider: "anthropic",
@@ -517,7 +558,7 @@ describe("request/context incompatibility advances the fallback chain to the cur
 		};
 	}
 
-	test("a 400 request-incompatible primary advances to fallback and then the current selected model", async () => {
+	test("a 400 request-incompatible primary advances to the explicitly declared current model (#3426)", async () => {
 		const createdWith: CreateRecord[] = [];
 		const opts = incompatibleOpts((options) => {
 			const model = options?.model as string | undefined;
@@ -543,11 +584,11 @@ describe("request/context incompatibility advances the fallback chain to the cur
 		await ctx.prompt("run");
 		await ctx.__dispose();
 
-		// The chain advanced through all candidates including the appended current model.
+		// The current model is reached only because it was explicitly declared in the chain.
 		assert.deepEqual(
 			createdWith.map((r) => r.model),
 			["anthropic/model-a", "anthropic/model-b", "openai/gpt-current"],
-			"request-incompatible failures must advance through candidates to the current selected model",
+			"request-incompatible failures must advance through all declared candidates",
 		);
 
 		const attempts = ctx.__modelFallbackMeta().modelAttempts ?? [];
@@ -558,7 +599,7 @@ describe("request/context incompatibility advances the fallback chain to the cur
 				{ model: "anthropic/model-b", success: false },
 				{ model: "openai/gpt-current", success: true },
 			],
-			"the current selected user model is the final successful fallback after request-incompatible failures",
+			"the explicitly declared current model is the final successful fallback",
 		);
 	});
 
