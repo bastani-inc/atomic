@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
-import type { ApiKeyAuth, CredentialStore, OAuthAuth, OAuthCredential, ProviderAuth } from "../src/auth/types.ts";
+import type { ApiKeyAuth, CredentialStore, OAuthAuth, ProviderAuth } from "../src/auth/types.ts";
 import { calculateCost, createModels, createProvider, hasApi, type Provider } from "../src/models.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions, Usage } from "../src/types.ts";
@@ -754,46 +755,65 @@ describe("Models runtime", () => {
 		expect(await credentials.read("p1")).toEqual({ type: "api_key", key: "first" });
 	});
 
-	it("passes cancellation to OAuth refresh and preserves the previous credential", async () => {
+	it("persists an OAuth refresh that started before the request was cancelled (#3429)", async () => {
 		const credentials = new InMemoryCredentialStore();
-		const previous: OAuthCredential = { type: "oauth", access: "old", refresh: "old-refresh", expires: 0 };
-		await credentials.modify("p1", async () => previous);
-		let startRefresh: (() => void) | undefined;
-		let finishRefresh: ((credential: typeof previous) => void) | undefined;
-		const refreshStarted = new Promise<void>((resolve) => {
-			startRefresh = resolve;
-		});
-		const blockedRefresh = new Promise<typeof previous>((resolve) => {
-			finishRefresh = resolve;
-		});
-		let receivedSignal: AbortSignal | undefined;
+		await credentials.modify("p1", async () => ({
+			type: "oauth",
+			access: "old",
+			refresh: "old-refresh",
+			expires: 0,
+		}));
+		const controller = new AbortController();
 		const models = createModels({ credentials });
 		models.setProvider(
 			testProvider({
 				id: "p1",
 				auth: {
 					oauth: testOAuth({
-						refresh: async (_credential, signal) => {
-							receivedSignal = signal;
-							startRefresh?.();
-							return blockedRefresh;
+						refresh: async (credential) => {
+							controller.abort();
+							return { ...credential, access: "new", refresh: "new-refresh", expires: Date.now() + 60_000 };
 						},
 					}),
 				},
 			}),
 		);
-		const controller = new AbortController();
-		const auth = models.getAuth("p1", { signal: controller.signal });
-		await refreshStarted;
-		controller.abort();
+		await assert.rejects(models.getAuth("p1", { signal: controller.signal }), { name: "AbortError" });
+		await vi.waitFor(async () => {
+			const stored = await credentials.read("p1");
+			assert.equal(stored?.type === "oauth" ? stored.refresh : undefined, "new-refresh");
+		});
+	});
 
-		await expect(auth).rejects.toMatchObject({ name: "AbortError" });
-		expect(receivedSignal).toBeInstanceOf(AbortSignal);
-		expect(receivedSignal?.aborted).toBe(true);
-		expect(receivedSignal?.reason).toBe(controller.signal.reason);
-		finishRefresh?.({ ...previous, access: "new", expires: Date.now() + 60_000 });
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(await credentials.read("p1")).toEqual(previous);
+	it("persists an OAuth refresh that started before the model refresh was cancelled (#3429)", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("p1", async () => ({
+			type: "oauth",
+			access: "old",
+			refresh: "old-refresh",
+			expires: 0,
+		}));
+		const controller = new AbortController();
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "p1",
+				auth: {
+					oauth: testOAuth({
+						refresh: async (credential) => {
+							controller.abort();
+							return { ...credential, access: "new", refresh: "new-refresh", expires: Date.now() + 60_000 };
+						},
+					}),
+				},
+				refreshModels: async () => {},
+			}),
+		);
+		assert.equal((await models.refresh({ signal: controller.signal })).aborted, true);
+		await vi.waitFor(async () => {
+			const stored = await credentials.read("p1");
+			assert.equal(stored?.type === "oauth" ? stored.refresh : undefined, "new-refresh");
+		});
 	});
 
 	it("resolves auth: stored credential owns the provider, ambient only when nothing stored", async () => {

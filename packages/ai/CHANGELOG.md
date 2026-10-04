@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed OAuth credentials being invalidated when a request or model refresh was cancelled during token rotation. A started refresh now completes and persists its rotated token ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Added

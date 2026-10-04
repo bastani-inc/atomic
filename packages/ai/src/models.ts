@@ -1,7 +1,12 @@
 import { lazyStream } from "./api/lazy.ts";
 import { defaultProviderAuthContext as defaultAuthContext } from "./auth/context.ts";
 import { InMemoryCredentialStore } from "./auth/credential-store.ts";
-import { type AuthResolutionOverrides, ModelsError, resolveProviderAuth } from "./auth/resolve.ts";
+import {
+	type AuthResolutionOverrides,
+	ModelsError,
+	refreshStoredOAuthCredential,
+	resolveProviderAuth,
+} from "./auth/resolve.ts";
 import type {
 	AuthCheck,
 	AuthContext,
@@ -623,15 +628,13 @@ class ModelsImpl implements MutableModels {
 			if (!oauth) return undefined;
 			if (Date.now() < stored.expires) return stored;
 			if (signal.aborted) return undefined;
-			const post = await this.credentials.modify(
+			return refreshStoredOAuthCredential(
+				this.credentials,
 				provider.id,
-				async (current) => {
-					if (current?.type !== "oauth" || Date.now() < current.expires) return undefined;
-					return oauth.refresh(current, signal);
-				},
-				{ signal },
+				oauth,
+				(current) => Date.now() >= current.expires,
+				signal,
 			);
-			return post?.type === "oauth" ? post : undefined;
 		}
 
 		const apiKey = provider.auth.apiKey;
