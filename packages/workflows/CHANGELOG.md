@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-10-04
+
+### Added
+
+- Added `workflows.durability.systemDatabaseUrl` and `systemDatabaseUrlFile` in global and trusted project settings to choose a persistent workflow database without launcher-specific environment configuration. `DBOS_SYSTEM_DATABASE_URL` retains precedence; explicit selections never provision embedded PostgreSQL or Docker. Interactive and RPC sessions report the selected provider and host without credentials on the first workflow action; headless sessions print only a Docker fallback selection to stderr. Existing workflow-path arrays remain supported alongside the new object form with `paths` ([#3416](https://github.com/bastani-inc/atomic/issues/3416)).
+
+### Fixed
+
+- Fixed SDK inspection rejecting earlier-process durable runs and crash recovery retaining the old session owner. Explicit SDK resume atomically adopts an eligible crashed root in the same working directory and workflow database, preserves its UUID and completed checkpoints, and excludes healthy connected owners and competing adopters. Database ownership fencing handles cloned VM identities and rejects disconnected owners' late durable writes. Older unfenced runs support controlled enrollment after their workers stop; unfinished external callbacks may overlap recovery and must use idempotent effects ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed managed PostgreSQL monitoring connection timeouts unnecessarily closing healthy workflow ownership connections. Monitoring retries once; a persistent timeout reports database unavailability without discarding connected owners or restarting the database ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed managed PostgreSQL staying down after shutdown when its old launch options were missing. Recovery preserves cluster ownership and identity checks, and database-unavailable admission errors and workflow status now show the provider, credential-redacted endpoint, and retained probe or recovery failure ([#3413](https://github.com/bastani-inc/atomic/issues/3413)).
+- Fixed sticky Intercom broadcasts to `workflow:<rootRunId>/**` missing later stages before their first model turn. Workflow status now reports per-stage delivery and skip results for retained messages ([#3406](https://github.com/bastani-inc/atomic/issues/3406)).
+- Fixed workflow-stage `ask_user_question` questions never reaching an SDK host's `HostInput` when the stage was already awaiting input, which left the run waiting indefinitely ([#3396](https://github.com/bastani-inc/atomic/issues/3396)).
+
 ## [0.9.26-alpha.6] - 2026-10-04
 
 ### Fixed

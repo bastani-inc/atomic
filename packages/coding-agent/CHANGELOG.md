@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-10-04
+
+### Breaking Changes
+
+- MCP OAuth credentials are now stored per server name and URL, so MCP servers with the same URL can sign in with different accounts. Credentials stored by URL alone move to the first server that uses them ([#10252](https://github.com/earendil-works/pi/issues/10252)). SDK consumers of the exported `McpOAuthCredentialStore` must now pass the server name to `forServer`, `tokens`, `remove` and `removeAsync`.
+
+### Added
+
+- Added `samplingParamsByThinkingLevel` to `models.json` for per-thinking-level sampling parameter overrides on OpenAI-compatible APIs, including native fast routes. See [Sampling by Thinking Level](docs/models/reference.md#sampling-by-thinking-level) ([#9776](https://github.com/earendil-works/pi/pull/9776) by [@mrexodia](https://github.com/mrexodia))
+- Added `pi.registerToolRenderer()` to choose renderers for any tool, including tools not yet registered ([#10285](https://github.com/earendil-works/pi/issues/10285)).
+- OAuth sign-in screens now show a copy shortcut for the sign-in URL, including `/mcp login`. Use Ctrl+X or configure `app.auth.copyUrl`; existing message and workflow shortcuts are unchanged.
+- Added project overrides for user-level MCP servers: a `.atomic/mcp.json` entry without `command`, `url`, or `type` sets only `enabled`, `exposure`, and `toolExposure` of the user-level server, and `/mcp` can enable or disable a server for the current project ([#10277](https://github.com/earendil-works/pi/issues/10277)).
+- Added Cloudflare's Clef and Clef Flash classifier models to `cloudflare-workers-ai`, usable from codemode scripts and extensions ([#10316](https://github.com/earendil-works/pi/pull/10316) by [@ndisidore](https://github.com/ndisidore), [#10322](https://github.com/earendil-works/pi/pull/10322) by [@RealAlexandreAI](https://github.com/RealAlexandreAI)).
+- Added `pi.registerProviderAlias({ id, provider, name })` for separate account logins that inherit a provider's model catalog and request behavior without copying its implementation. Existing credentials under the alias ID are preserved.
+- Added `quietStartup: "header"`, which keeps the startup header but hides the model scope line. `/settings` offers it alongside `true` and `false`.
+- Added `models.generateImages()` to codemode scripts. It runs image models such as OpenRouter's with the session's credentials and returns base64 image blocks that `image()` attaches to the result; usage counts toward the session cost like `models.classify()`. Extensions can call `ctx.modelRegistry.generateImages()`. See [Built-in tools](docs/tools.md#codemode).
+
+### Changed
+
+- Cancelling a login started from a `/login` menu now returns to that menu.
+- The "Cloud Providers" section of the [Providers](docs/providers.md) docs page is now "Provider Specific Config".
+- Codemode costs fewer prompt tokens. The `codemode` description points to the new [Codemode](docs/codemode.md) reference for the `models` API, which the model reads when it needs it, and declared tools say in one line how scripts call them and what the call resolves to instead of repeating their full declaration. The MCP server section of the system prompt only explains the ways of reaching tools that its servers use, and the system prompt points to the new reference.
+- Codemode errors now say how to recover: reading a tool or `models` member that does not exist names the close matches (`tools.Bash` suggests `tools.bash`), `models.classify()` and `models.generateImages()` reject malformed arguments with the expected shape, an unknown model points to `models.getAvailableOfType()`, an oversized `store()` value explains what the store is for, and a script that generates images without showing them gets a note. Scripts that probed for a tool with `typeof tools.name` must use `"name" in tools`.
+- `/login` and `/logout` now label providers without credentials as "not configured" instead of "unconfigured".
+- OAuth browser pages now show the Atomic logo in color instead of white.
+
+### Fixed
+
+- Fixed fresh SDK sessions being unable to inspect or resume crashed durable workflow runs from another process. Hosts using `SessionManager.inMemory()` can recover by full run UUID in the original working directory and workflow database without reopening a session file. Database ownership fencing protects healthy connected owners, including across cloned VM identities, and rejects late durable writes after connection loss. Older unfenced runs support explicit controlled enrollment after their workers stop. Completed checkpoints are preserved; interrupted external effects still require idempotency ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed managed workflow database monitoring timeouts unnecessarily dropping healthy run ownership. A persistent timeout now reports database unavailability without closing existing ownership connections ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed managed workflow PostgreSQL staying down after shutdown when its old launch options were missing. Database-unavailable errors and workflow status now show the provider, credential-redacted endpoint, and retained recovery refusal or failure ([#3413](https://github.com/bastani-inc/atomic/issues/3413)).
+- Fixed NVIDIA's built-in default pointing to a model missing from its current catalog. Automatic selection now prefers Nemotron 3 Ultra 550B A55B.
+- Fixed MCP tool calls in resumed sessions and HTML exports rendering fully expanded before their server connects, or when it never connects ([#10285](https://github.com/earendil-works/pi/issues/10285)).
+- Fixed JPEG, GIF, and WebP images rendered by extensions through `Image` not appearing on Kitty-protocol terminals ([#10292](https://github.com/earendil-works/pi/issues/10292)).
+- Fixed fullscreen Kitty images collapsing after scrolling in WezTerm ([#10319](https://github.com/earendil-works/pi/issues/10319)).
+- Fixed `codemode` scripts that print in a loop exhausting memory. Scripts now fail after exceeding 16 Mi characters or 100000 output items ([#10283](https://github.com/earendil-works/pi/issues/10283)).
+- Fixed resumed MCP calls and HTML exports assigning the wrong server to ambiguous tool names. Calls without known renderers now retain their full identifier when the server/tool boundary cannot be recovered.
+- Empty comma-separated entries in `--models` no longer add unintended models to the cycle ([#10334](https://github.com/earendil-works/pi/issues/10334)).
+- Pinned `brace-expansion` to 5.0.12 so installations use the patched dependency ([#10288](https://github.com/earendil-works/pi/issues/10288)).
+- MCP OAuth sign-in now rejects pasted redirect URLs whose origin or path differs from the current sign-in's redirect URI.
+- Fixed `/login` hiding the redirect-URL paste field for native extension providers that declare `auth.oauth.usesCallbackServer`, including built-in OAuth flows cloned under custom provider IDs ([#3400](https://github.com/bastani-inc/atomic/issues/3400)).
+- `/mcp login` now prints its sign-in URL as a clickable link in the terminal UI, even when the URL wraps ([#10186](https://github.com/earendil-works/pi/issues/10186)).
+- `--provider` without `--model` now fails with an error instead of being silently ignored while the default model from another provider runs ([#10236](https://github.com/earendil-works/pi/issues/10236)).
+- MCP servers that ask for more scope (`insufficient_scope`) no longer trigger repeated sign-in requests. The new sign-in now keeps the scopes granted earlier instead of requesting only the missing ones.
+- User messages in the transcript now keep one copy of each rendered line instead of two full-width copies, with identical output.
+- Deferred MCP tools that `tool_search` loaded are no longer dropped on resume and `/reload` when their server reconnects before the next prompt; the session restored its tools before the MCP servers reconnected.
+- The `system` theme keeps pastel terminal palettes pastel instead of making their accent colors more saturated at the lightness the theme needs ([#10255](https://github.com/earendil-works/pi/issues/10255), [#10293](https://github.com/earendil-works/pi/pull/10293) by [@dgtlntv](https://github.com/dgtlntv)).
+- `/login` and `/logout` no longer label every OAuth sign-in as a subscription. Only subscription-backed providers say "subscription"; other OAuth sign-ins say "account".
+- The startup header logo no longer renders with gaps in Apple Terminal; it shows a text `∀ Atomic` wordmark with the version and session details instead.
+- Slash command autocompletion now triggers when the input starts with whitespace ([#10218](https://github.com/earendil-works/pi/pull/10218) by [@haoqixu](https://github.com/haoqixu)).
+- Color no longer bleeds past mouse selections in fullscreen mode when a styled token ends at the selection boundary ([#10169](https://github.com/earendil-works/pi/issues/10169)).
+- The transcript retains less memory per rendered message; a long assistant message keeps about a fifth of the heap it kept before.
+
+### Removed
+
+- Removed the daxnuts easter egg shown when selecting `opencode/kimi-k2.5`.
+
 ## [0.9.26-alpha.6] - 2026-10-04
 
 ### Added
