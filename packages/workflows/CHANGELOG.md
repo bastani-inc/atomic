@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed misleading ownership diagnostics for crashed durable runs: missing or unfenced executor metadata now names the unverifiable state and available recovery options without guessing the Atomic version. Missing executor identity no longer suggests an unavailable SDK recovery option. A missing database ownership record alone does not prevent explicit resume from retained checkpoints, and live fenced owners remain protected ([#3424](https://github.com/bastani-inc/atomic/issues/3424)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Added

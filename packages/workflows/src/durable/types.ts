@@ -19,6 +19,17 @@ import type {
 } from "../shared/store-types.js";
 import type { WorkflowArtifact, WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
+/**
+ * Why a status transition was refused by the ownership claim before any
+ * metadata comparison ran. `unfenced_owner` means metadata has no database-fenced
+ * executor identity, so its liveness cannot be verified (not a version check);
+ * `owner_active` means a fenced owner still holds its database connection.
+ */
+export interface DurableTransitionRefusal {
+	readonly reason: "unfenced_owner" | "owner_active";
+	readonly ownerExecutorId: string | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
 // ---------------------------------------------------------------------------

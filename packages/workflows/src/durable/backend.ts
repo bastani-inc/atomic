@@ -13,6 +13,7 @@ import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
 	DurableToolCheckpoint,
+	DurableTransitionRefusal,
 	DurableUiCheckpoint,
 	DurableWorkflowFailureMetadata,
 	DurableWorkflowHandle,
@@ -195,6 +196,11 @@ export interface DurableWorkflowBackend {
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
 	): Promise<boolean>;
+	/**
+	 * Why the latest `transitionWorkflowStatus` for this id returned false because the
+	 * ownership claim refused it, rather than because the observed state changed.
+	 */
+	transitionRefusal?(workflowId: string): DurableTransitionRefusal | undefined;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	adjustPendingPrompts(workflowId: string, delta: number): void;
 

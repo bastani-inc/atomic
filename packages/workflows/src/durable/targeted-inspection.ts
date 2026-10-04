@@ -66,10 +66,21 @@ export async function inspectTargetedDurableWorkflow(
 	const foreignLive = isForeignLiveWorkflow(handle, getAtomicExecutorId(), now);
 	const live = isLiveRunningWorkflow(handle, now);
 	const crashed = handle.status === "running" && !live;
+	const unfencedOwner = crashed && handle.ownerLiveness === "unknown";
+	const staleOwner =
+		handle.ownerExecutorId === undefined
+			? "stale durable metadata: missing ownerExecutorId"
+			: `an unfenced executor identity (${handle.ownerExecutorId}) in its durable metadata`;
+	const recovery =
+		handle.ownerExecutorId === undefined
+			? "SDK controlled recovery is unavailable without ownerExecutorId. Keep the original database and checkpoints intact. If available, restore a known-good workflow database backup containing this run's ownership metadata into a separate recovery database and inspect the run there; otherwise contact support with this full run UUID before changing stored state."
+			: "After stopping every Atomic process that uses this workflow database, recover it from an SDK session with session.workflows.resume(runId, { legacyRecovery: { olderWorkersStopped: true } }).";
 	const resumeGuidance = crashed
-		? inspected.detail.resumable === true
-			? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${resolvedWorkflowId}.`
-			: "This workflow appears to have crashed, but its retained state is not resumable."
+		? inspected.detail.resumable === true && unfencedOwner
+			? `This workflow appears to have crashed, but it has ${staleOwner}. Atomic cannot identify a database ownership fence to confirm its worker has stopped, so /workflow resume ${resolvedWorkflowId} cannot safely adopt it automatically. ${recovery}`
+			: inspected.detail.resumable === true
+				? `This workflow appears to have crashed and is resumable. Resume it explicitly with /workflow resume ${resolvedWorkflowId}.`
+				: "This workflow appears to have crashed, but its retained state is not resumable."
 		: foreignLive
 			? "This workflow is actively running in another Atomic session. Inspect it here, but control it from its owner session."
 			: live

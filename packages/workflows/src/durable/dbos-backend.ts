@@ -37,6 +37,7 @@ import { isLiveRunningWorkflow } from "./resume-eligibility.js";
 import type {
 	DurableCheckpoint,
 	WorkflowSerializableObject as DurableInputs,
+	DurableTransitionRefusal,
 	DurableWorkflowFailureMetadata,
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
@@ -55,7 +56,7 @@ export interface DbosSdkHandle {
 	readonly launch: () => Promise<void>;
 	readonly shutdown: () => Promise<void>;
 	readonly ownerLiveness?: (executorId: string | undefined) => Promise<"alive" | "dead" | "unknown">;
-	readonly withWorkflowClaim?: (workflowId: string, callback: () => Promise<boolean>) => Promise<boolean>;
+	readonly withWorkflowClaim?: (workflowId: string, callback: () => Promise<boolean>) => Promise<DbosWorkflowClaim>;
 	readonly executorId?: string;
 	readonly generationLost?: () => boolean;
 	readonly forkGeneration?: () => DbosSdkHandle;
@@ -89,6 +90,11 @@ export interface DbosSdkHandle {
 	/** Permanently delete a root workflow and all prefix checkpoint records. */
 	readonly deleteWorkflowData: (workflowId: string) => Promise<void>;
 }
+
+/** Result of entering the ownership claim: either the callback ran, or the owner's fence refused entry. */
+export type DbosWorkflowClaim =
+	| { readonly kind: "attempted"; readonly claimed: boolean }
+	| ({ readonly kind: "refused" } & DurableTransitionRefusal);
 
 export interface DbosWorkflowInfo {
 	readonly workflowId: string;
@@ -258,6 +264,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private readonly unavailableCheckpoints = new Set<string>();
 	private readonly pendingRecoveryAdmissions = new Set<string>();
 	private readonly ownerLiveness = new Map<string, "alive" | "dead" | "unknown">();
+	private readonly transitionRefusals = new Map<string, DurableTransitionRefusal>();
 	private readonly admissionMetadataAttempted = new Set<string>();
 	private readonly admissionSettlements = new Map<string, Promise<void>>();
 	private readonly admissionRecoveries = new Map<string, Promise<void>>();
@@ -688,9 +695,17 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 					await this.flush(workflowId);
 				},
 			});
+		this.transitionRefusals.delete(workflowId);
 		if (this.sdk.withWorkflowClaim === undefined) return await transition();
 		await this.flush(workflowId);
-		return await this.sdk.withWorkflowClaim(workflowId, transition);
+		const claim = await this.sdk.withWorkflowClaim(workflowId, transition);
+		if (claim.kind === "attempted") return claim.claimed;
+		this.transitionRefusals.set(workflowId, { reason: claim.reason, ownerExecutorId: claim.ownerExecutorId });
+		return false;
+	}
+
+	transitionRefusal(workflowId: string): DurableTransitionRefusal | undefined {
+		return this.transitionRefusals.get(workflowId);
 	}
 
 	/**
@@ -789,6 +804,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.locallyRegistered.delete(workflowId);
 		this.unavailableCheckpoints.delete(workflowId);
 		this.pendingRecoveryAdmissions.delete(workflowId);
+		this.transitionRefusals.delete(workflowId);
 		this.admissionSettlements.delete(workflowId);
 		this.promptReservations.delete(workflowId);
 		await this.mem.deleteWorkflow(workflowId);
@@ -849,6 +865,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.admissionSettlements.clear();
 		this.unavailableCheckpoints.clear();
 		this.pendingRecoveryAdmissions.clear();
+		this.transitionRefusals.clear();
 	}
 
 	async flush(workflowId?: string): Promise<void> {

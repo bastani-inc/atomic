@@ -89,7 +89,7 @@ test.each(["local process", "copied VM identity"])(
 			assert.equal(losers.length, 1);
 			assert.match(
 				String(losers[0].reason),
-				/belongs to another caller\/session|changed while resume was pending|actively running in another Atomic session|is completed, not resumable/,
+				/belongs to another caller\/session|changed while resume was pending|still holds its workflow database ownership connection|actively running in another Atomic session|is completed, not resumable/,
 			);
 			const resumed = winners[0].value;
 			assert.equal(resumed.runId, runId, "recovery must reuse the durable identity");

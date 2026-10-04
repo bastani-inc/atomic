@@ -37,7 +37,7 @@ import { getDurableBackend } from "./factory.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
 import { isSdkCrashedRunAdoptable } from "./sdk-recovery-scope.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
-import type { ResumableWorkflowEntry } from "./types.js";
+import type { DurableTransitionRefusal, ResumableWorkflowEntry } from "./types.js";
 
 export type ResumeDurableResult =
 	| { ok: true; runId: string; workflowId: string; name: string; message: string }
@@ -382,6 +382,8 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 	if (!claimed) {
+		const refusal = backend.transitionRefusal?.(resolved.workflowId);
+		if (refusal !== undefined) return ownershipRefusalResult(resolved.workflowId, refusal);
 		return {
 			ok: false,
 			reason: "stale",
@@ -474,6 +476,34 @@ async function resumeDurableWorkflowClaimed(
 		workflowId: resolved.workflowId,
 		name: handle.name,
 		message: `Resuming durable workflow "${handle.name}" (${resolved.workflowId}) — completed checkpoints will be replayed.`,
+	};
+}
+
+function ownershipRefusalResult(workflowId: string, refusal: DurableTransitionRefusal): ResumeDurableResult {
+	const owner = refusal.ownerExecutorId === undefined ? "no recorded executor" : `executor ${refusal.ownerExecutorId}`;
+	if (refusal.reason === "owner_active") {
+		return {
+			ok: false,
+			reason: "owned_elsewhere",
+			message:
+				`Workflow ${workflowId} is owned by ${owner}, which still holds its workflow database ownership connection. ` +
+				"Stop that Atomic process or wait for PostgreSQL to close its connection, then resume again.",
+		};
+	}
+	const staleOwner =
+		refusal.ownerExecutorId === undefined
+			? "has stale durable metadata: missing ownerExecutorId"
+			: `has an unfenced executor identity (${refusal.ownerExecutorId}) in its durable metadata`;
+	const recovery =
+		refusal.ownerExecutorId === undefined
+			? "SDK controlled recovery is unavailable without ownerExecutorId. Keep the original database and checkpoints intact. If available, restore a known-good workflow database backup containing this run's ownership metadata into a separate recovery database and inspect the run there; otherwise contact support with this full run UUID before changing stored state."
+			: "Stop every Atomic process that uses this workflow database, then recover the run from an SDK session in its original working directory with session.workflows.resume(runId, { legacyRecovery: { olderWorkersStopped: true } }). Completed checkpoints are preserved.";
+	return {
+		ok: false,
+		reason: "owned_elsewhere",
+		message:
+			`Workflow ${workflowId} ${staleOwner}. Atomic cannot identify a database ownership fence to confirm that its worker has stopped, so automatic takeover is unsafe. ` +
+			recovery,
 	};
 }
 

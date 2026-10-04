@@ -396,9 +396,18 @@ export function createRealDbosHandle(
 						authoritative.metadata.status === "running" &&
 						authoritative.metadata.ownerExecutorId !== fence.executorId
 					) {
-						return (await fence.recover(authoritative.metadata.ownerExecutorId, claim)) ?? false;
+						const ownerExecutorId = authoritative.metadata.ownerExecutorId;
+						const recovered = await fence.recover(ownerExecutorId, claim);
+						if (recovered !== undefined) return { kind: "attempted" as const, claimed: recovered };
+						return {
+							kind: "refused" as const,
+							reason: isDatabaseExecutor(ownerExecutorId)
+								? ("owner_active" as const)
+								: ("unfenced_owner" as const),
+							ownerExecutorId,
+						};
 					}
-					return await claim();
+					return { kind: "attempted" as const, claimed: await claim() };
 				},
 				true,
 			),
