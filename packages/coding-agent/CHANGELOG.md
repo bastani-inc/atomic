@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.26-alpha.6] - 2026-10-04
+
 ### Added
 
 - Added `samplingParamsByThinkingLevel` to `models.json` for per-thinking-level sampling parameter overrides on OpenAI-compatible APIs, including native fast routes. See [Sampling by Thinking Level](docs/models/reference.md#sampling-by-thinking-level) ([#9776](https://github.com/earendil-works/pi/pull/9776) by [@mrexodia](https://github.com/mrexodia))
