@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
-export const expectedPiVersion = "1.0.1";
+export const expectedPiVersion = "1.0.2";
 export const expectedPiAiPackage = "@bastani/pi-ai";
 const requiredPiAiFiles = [
 	"package.json",
