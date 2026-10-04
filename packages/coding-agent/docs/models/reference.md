@@ -95,6 +95,7 @@ In `models.json`, `headers` values must be strings. A `null` suppression marker 
 | `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
 | `samplingParams`   | No       | omitted           | Sampling parameters merged verbatim into every request body for OpenAI-compatible APIs (see below) |
+| `samplingParamsByThinkingLevel` | No | omitted      | Sampling parameter overrides keyed by Atomic thinking level for OpenAI-compatible APIs (see [Sampling by Thinking Level](#sampling-by-thinking-level)) |
 | `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
 | `compat.supportsMidConvoSystemMessages` | No | model default | Accept system/developer messages after the conversation starts |
@@ -206,6 +207,32 @@ The catalog can also record `inputLimits.maxRequestBytes`, `images.maxPerMessage
 ```
 
 Only OpenAI-compatible APIs apply these values (`openai-completions`, `openai-responses`, and `azure-openai-responses`); other APIs ignore them. Per-request keys override model defaults and named request fields. In `modelOverrides`, `samplingParams` merges per key with the base model's values. Keys are provider-defined and remain unchanged; malformed `samplingParams` values are rejected while loading `models.json`.
+
+### Sampling by Thinking Level
+
+`samplingParamsByThinkingLevel` sets sampling parameters per thinking level on top of the model's `samplingParams`. Its keys are Atomic thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`), not the provider values from `thinkingLevelMap`:
+
+```json
+{
+  "id": "qwen-thinking-model",
+  "reasoning": true,
+  "samplingParams": {
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "samplingParamsByThinkingLevel": {
+    "off": {
+      "temperature": 0.7,
+      "top_p": 0.8
+    },
+    "high": {
+      "top_k": 20
+    }
+  }
+}
+```
+
+Atomic first clamps an unsupported thinking level to the nearest supported one, then merges the model's `samplingParams`, the effective level's override, and request-level `samplingParams` in that order. Later values win per key, and a level without an entry keeps the model defaults. In `modelOverrides`, each level's entry merges per key with the base model's entry for the same level. These fields apply only to `openai-completions`, `openai-responses`, and `azure-openai-responses`; other APIs ignore them. On a model with `compat.supportsTemperature: false`, the restricted keys are still removed from the final request, including keys that come from a level's override.
 
 For vLLM OpenAI-compatible models that share the reasoning and answer budgets, set `compat.supportsThinkingTokenBudget` to `true`. Atomic sends the opt-in `thinking_token_budget` value for an enabled thinking level and always leaves 1024 tokens for the final answer. Pi's defaults are 1024, 2048, 8192, and 16384 tokens for `minimal`, `low`, `medium`, and `high`; the `thinkingBudgets` settings override them. `xhigh` and `max` use the `high` budget, and Atomic omits the field when no positive budget remains after reserving answer space.
 
@@ -413,7 +440,7 @@ Use `modelOverrides` to customize specific models without replacing the provider
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `inputLimits` (deep-merged), `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `samplingParams` (merged per key), `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `inputLimits` (deep-merged), `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `samplingParams` (merged per key), `samplingParamsByThinkingLevel` (merged per level, then per key), `headers`, `compat`.
 
 Atomic reads one `models.json` from the active agent directory. It does not layer model overrides from `.pi` and `.atomic` files.
 

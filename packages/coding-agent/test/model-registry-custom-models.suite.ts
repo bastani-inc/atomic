@@ -88,12 +88,23 @@ describeModelRegistry((context) => {
 						{
 							id: "custom/sampling-model",
 							samplingParams: { temperature: 1, top_p: 0.95, vendor_sampler: "fast" },
+							samplingParamsByThinkingLevel: {
+								low: { temperature: 0.6, top_p: 0.95 },
+								high: { temperature: 0.8 },
+							},
 							compat: { supportsFinishReason: false, supportsThinkingTokenBudget: true },
 						},
 					],
 					modelOverrides: {
+						"custom/sampling-model": {
+							samplingParamsByThinkingLevel: {
+								low: { temperature: 0.5, top_k: 20 },
+								max: { temperature: 1 },
+							},
+						},
 						"anthropic/claude-sonnet-4": {
 							samplingParams: { top_p: 0.9, min_p: 0.05 },
+							samplingParamsByThinkingLevel: { high: { temperature: 0.8 } },
 						},
 					},
 				},
@@ -104,13 +115,20 @@ describeModelRegistry((context) => {
 
 			const custom = models.find((model) => model.id === "custom/sampling-model");
 			expect(custom?.samplingParams).toEqual({ temperature: 1, top_p: 0.95, vendor_sampler: "fast" });
+			expect(custom?.samplingParamsByThinkingLevel).toEqual({
+				low: { temperature: 0.5, top_p: 0.95, top_k: 20 },
+				high: { temperature: 0.8 },
+				max: { temperature: 1 },
+			});
 			expect(custom?.compat).toMatchObject({ supportsFinishReason: false, supportsThinkingTokenBudget: true });
 
 			const sonnet = models.find((model) => model.id === "anthropic/claude-sonnet-4");
 			expect(sonnet?.samplingParams).toEqual({ top_p: 0.9, min_p: 0.05 });
+			expect(sonnet?.samplingParamsByThinkingLevel).toEqual({ high: { temperature: 0.8 } });
 
 			const opus = models.find((model) => model.id === "anthropic/claude-opus-4.1");
 			expect(opus?.samplingParams).toBeUndefined();
+			expect(opus?.samplingParamsByThinkingLevel).toBeUndefined();
 		});
 
 		test("rejects malformed sampling params while loading models.json", async () => {
@@ -125,6 +143,22 @@ describeModelRegistry((context) => {
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			expect(registry.getError()).toContain("Invalid models.json schema");
 			expect(registry.getError()).toContain("samplingParams");
+		});
+
+		test("rejects malformed per-thinking-level sampling params while loading models.json", async () => {
+			writeRawModelsJson({
+				openrouter: {
+					baseUrl: "https://my-proxy.example.com/v1",
+					api: "openai-completions",
+					models: [
+						{ id: "malformed-sampling-model", samplingParamsByThinkingLevel: { low: ["not", "an", "object"] } },
+					],
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			expect(registry.getError()).toContain("Invalid models.json schema");
+			expect(registry.getError()).toContain("samplingParamsByThinkingLevel");
 		});
 
 		test("custom provider with same name as built-in does not affect other built-in providers", async () => {
