@@ -51,11 +51,12 @@ const observeProgress = (details) => {
 		progression.push(lastPoll);
 	}
 };
-const answer = (kind, options, value) => {
+const confirmAnswer = Promise.withResolvers();
+const answer = async (kind, options, value) => {
 	identities.push(options);
 	const { requestId, sessionId, workflowRunId, workflowStageId } = options;
 	callbacks.push({ kind, event: "invoked", observedAt: Date.now(), requestId, sessionId, workflowRunId, workflowStageId });
-	try { return value; }
+	try { return await value; }
 	finally { callbacks.push({ kind, event: "returned", observedAt: Date.now(), requestId }); }
 };
 const text = "  durable text  ";
@@ -71,7 +72,7 @@ const bindings = {
 	onDiagnostic: options.extensionBindings.onDiagnostic,
 	humanInput: {
 		input: async (_title, _placeholder, options) => answer("input", options, text),
-		confirm: async (_title, _message, options) => answer("confirm", options, true),
+		confirm: async (_title, _message, options) => answer("confirm", options, confirmAnswer.promise),
 		select: async () => undefined,
 		editor: async () => undefined,
 		questionnaire: async () => ({ answers: [], cancelled: true }),
@@ -114,8 +115,30 @@ try {
 		callbacks.push({ event: "bindings-installing", observedAt: Date.now() });
 		await session.bindExtensions(bindings);
 		callbacks.push({ event: "bindings-installed", observedAt: Date.now() });
-		const deadline = Date.now() + 10_000;
+		const confirmDeadline = Date.now() + 10_000;
 		let details;
+		let confirmRequest;
+		let confirmStage;
+		do {
+			details = (await tool.execute("confirm-ready", { action: "status" }, new AbortController().signal)).details;
+			observeProgress(details);
+			confirmRequest = callbacks.find((entry) => entry.kind === "confirm" && entry.event === "invoked");
+			const run = details.snapshots.find((entry) => entry.id === confirmRequest?.workflowRunId);
+			confirmStage = run?.stages.find((entry) => entry.id === confirmRequest?.workflowStageId && entry.pendingPrompt?.kind === "confirm");
+			if (confirmStage) break;
+			await sleep(20);
+		} while (Date.now() < confirmDeadline);
+		assert.ok(confirmStage, JSON.stringify({ phase: "confirm-readiness", confirmDeadline, details, callbacks, progression }));
+		assert.equal(confirmRequest.sessionId, identities[0].sessionId);
+		assert.equal(confirmRequest.workflowRunId, identities[0].workflowRunId);
+		assert.notEqual(confirmRequest.workflowStageId, identities[0].workflowStageId);
+		assert.notEqual(confirmRequest.requestId, identities[0].requestId);
+		assert.equal(details.runs.find((entry) => entry.runId === confirmRequest.workflowRunId)?.awaitingInputCount, 1);
+		assert.equal(readFileSync(join(cwd, "receipts.jsonl"), "utf8"), `${JSON.stringify({ text })}\n`);
+		assert.equal(existsSync(join(cwd, "effects.jsonl")), false);
+		callbacks.push({ event: "confirm-ready", observedAt: Date.now(), requestId: confirmRequest.requestId, promptId: confirmStage.pendingPrompt.id });
+		confirmAnswer.resolve(true);
+		const deadline = Date.now() + 10_000;
 		do {
 			details = (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;
 			observeProgress(details);
@@ -185,6 +208,7 @@ try {
 		console.log(JSON.stringify({ host: "built-node", initiallyPending: true, hash, result: details.snapshots[0].result, effects: 1 }));
 	}
 } finally {
+	confirmAnswer.resolve(false);
 	await session.dispose();
 	rmSync(cwd, { recursive: true, force: true });
 }

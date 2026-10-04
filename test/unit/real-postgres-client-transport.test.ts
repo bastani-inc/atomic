@@ -109,23 +109,118 @@ async function withHeldStderr(
 	}
 }
 
-const OUTPUT_CLOSE_FIXTURE = `
+async function withClosedOutput(
+	run: (client: RealPostgresClient, assertLiveInput: () => Promise<void>) => Promise<void>,
+) {
+	const owned: runtime.SpawnedProcess[] = [];
+	const drains: (Promise<string> | Promise<void>)[] = [];
+	let owner!: runtime.SpawnedProcess;
+	let producer!: runtime.SpawnedProcess;
+	let acknowledgeProbe: (() => void) | undefined;
+	const spawn = runtime.spawnProcess;
+	const endpoint = vi.spyOn(runtime, "spawnProcess").mockImplementation((first, second) => {
+		owner = spawn(first, second);
+		owned.push(owner);
+		producer = spawn(
+			[
+				process.execPath,
+				"-e",
+				"require('node:readline').createInterface({ input: process.stdin }).on('line', line => process.stdout.write(line + '\\n'));",
+			],
+			{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+		);
+		owned.push(producer);
+		drains.push(runtime.readStreamText(producer.stderr));
+		assert.ok(owner.stdout);
+		const reader = runtime.decodeStream(owner.stdout).getReader();
+		drains.push(
+			(async () => {
+				let buffer = "";
+				try {
+					for (;;) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						buffer += value;
+						for (;;) {
+							const newline = buffer.indexOf("\n");
+							if (newline < 0) break;
+							const line = buffer.slice(0, newline);
+							buffer = buffer.slice(newline + 1);
+							const { command } = JSON.parse(line);
+							if (command === "pid") producer.stdin!.write(`${line}\n`);
+							if (command === "close-output") producer.stdin!.end();
+							if (command === "probe") acknowledgeProbe?.();
+						}
+					}
+				} finally {
+					reader.releaseLock();
+				}
+			})(),
+		);
+		return {
+			...owner,
+			stdout: producer.stdout,
+			kill(signal) {
+				owner.kill(signal);
+				if (producer.exitCode === null) producer.kill(signal);
+			},
+			get exitCode() {
+				return owner.exitCode;
+			},
+		};
+	});
+	async function assertLiveInput() {
+		assert.equal(owner.exitCode, null, "the input owner must still be alive");
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				acknowledgeProbe = resolve;
+				timer = setTimeout(
+					() => reject(new Error("Live input owner did not acknowledge probe")),
+					TRANSPORT_FAILURE_TIMEOUT_MS,
+				);
+				owner.stdin!.write(`${JSON.stringify({ id: 0, command: "probe" })}\n`);
+			});
+			assert.equal(owner.exitCode, null);
+		} finally {
+			clearTimeout(timer);
+			acknowledgeProbe = undefined;
+		}
+	}
+	try {
+		await withClient(
+			`
 import { createInterface } from 'node:readline';
-import { closeSync } from 'node:fs';
 createInterface({ input: process.stdin }).on('line', line => {
   const { id, command } = JSON.parse(line);
-  if (command === 'pid') process.stdout.write(JSON.stringify({ id, result: process.pid }) + '\\n');
-  if (command === 'close-output') process.stdout.end(() => closeSync(1));
-  if (command === 'exit') process.exit(0);
+  process.stdout.write(JSON.stringify({ id, result: process.pid, command }) + '\\n');
 });
-`;
+`,
+			async (client) => {
+				await assertLiveInput();
+				await run(client, async () => {
+					assert.equal(await producer.exited, 0, "the actual stdout producer must exit cleanly");
+					await assertLiveInput();
+				});
+			},
+		);
+	} finally {
+		try {
+			for (const child of owned) if (child.exitCode === null) child.kill("SIGKILL");
+			await Promise.all([...owned.map((child) => child.exited), ...drains]);
+		} finally {
+			endpoint.mockRestore();
+		}
+	}
+}
 
 test("closed fixture output promptly rejects pending and subsequent RPCs (#3419)", async () => {
-	await withClient(OUTPUT_CLOSE_FIXTURE, async (client) => {
+	await withClosedOutput(async (client, assertLiveInput) => {
 		await assert.rejects(
 			client.request("close-output", undefined, TRANSPORT_FAILURE_TIMEOUT_MS),
 			/Postgres fixture (output closed|exited)/,
 		);
+		await assertLiveInput();
 		await assert.rejects(
 			client.request("after-close", undefined, TRANSPORT_FAILURE_TIMEOUT_MS),
 			/Postgres fixture (output closed|exited)/,
@@ -320,8 +415,9 @@ test("fixture exit RPC handler errors remain cleanup failures even after a clean
 });
 
 test("terminal output from a still-running fixture retains the graceful exit timeout (#3419)", async () => {
-	await withClient(OUTPUT_CLOSE_FIXTURE, async (client) => {
+	await withClosedOutput(async (client, assertLiveInput) => {
 		await assert.rejects(client.request("close-output", undefined, TRANSPORT_FAILURE_TIMEOUT_MS), /output closed/);
+		await assertLiveInput();
 		await assert.rejects(client.exit(), /Postgres fixture graceful exit exceeded 5000ms/);
 	});
 });

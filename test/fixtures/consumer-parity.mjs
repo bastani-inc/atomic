@@ -336,28 +336,91 @@ try {
 		process.env.ATOMIC_FAULT_TEST_HOME = root;
 		const late = Promise.withResolvers();
 		const identities = [];
-		const humanInput = host(async (_title, _message, identity) => {
-			identities.push(identity);
-			if (reply === "stale" || reply === "duplicate") return late.promise;
-			if (reply === "cancel") return undefined;
-			if (reply === "invalid") return "true";
-			return reply === "true";
-		});
+		const callbacks = [];
+		const progression = [];
+		const phases = [];
+		let previousProgress;
+		let lastPoll;
+		let pollCount = 0;
+		let details;
+		let trueResponseResolvedAt;
+		const trueAnswer = Promise.withResolvers();
+		const recordCallback = async (kind, identity, value) => {
+			const { requestId, sessionId, workflowRunId, workflowStageId } = identity;
+			if (callbacks.length >= 64) callbacks.shift();
+			callbacks.push({ kind, event: "invoked", observedAt: Date.now(), requestId, sessionId, workflowRunId, workflowStageId });
+			try {
+				return await value;
+			} finally {
+				if (callbacks.length >= 64) callbacks.shift();
+				callbacks.push({ kind, event: "returned", observedAt: Date.now(), requestId });
+			}
+		};
+		const humanInput = {
+			...host(async (_title, _message, identity) => {
+				identities.push(identity);
+				const response = reply === "stale" || reply === "duplicate" ? late.promise
+					: reply === "true" ? trueAnswer.promise
+					: reply === "cancel" ? undefined : reply === "invalid" ? "true" : false;
+				const value = await recordCallback("confirm", identity, response);
+				if (reply === "true") trueResponseResolvedAt = Date.now();
+				return value;
+			}),
+			input: async (_title, _message, identity) => recordCallback("input", identity, "  durable text  "),
+		};
+		const waitForPhase = async (phase, check) => {
+			const startedAt = Date.now();
+			const entry = { phase, startedAt, deadline: startedAt + 15_000 };
+			if (phases.length >= 64) phases.shift();
+			phases.push(entry);
+			try {
+				while (true) {
+					try {
+						return await check();
+					} catch (error) {
+						if (Date.now() >= entry.deadline) throw error;
+						await delay(20);
+					}
+				}
+			} finally {
+				entry.endedAt = Date.now();
+			}
+		};
 		const { session } = await createAgentSession({
 			...options(),
 			builtins: { ...disabled, workflows: true },
 			extensionBindings: { humanInput: reply === "missing" ? null : humanInput },
 		});
 		try {
+			phases.push({ phase: "admission", startedAt: Date.now() });
 			await session.prompt("/workflow sdk-host-durable --no-picker");
-			const status = async () => (await call(session, "workflow", { action: "status" })).details;
+			phases[0].endedAt = Date.now();
+			const status = async () => {
+				details = (await call(session, "workflow", { action: "status" })).details;
+				const state = {
+					runs: details.runs.map(({ runId, status, phase, lastProgressAt, awaitingInputCount }) => ({ runId, status, phase, lastProgressAt, awaitingInputCount })),
+					snapshots: details.snapshots.map((run) => ({
+						id: run.id, status: run.status, phase: run.phase, lastProgressAt: run.lastProgressAt,
+						stages: run.stages.map(({ id, name, status, startedAt, endedAt, awaitingInputSince, pendingPrompt }) => ({ id, name, status, startedAt, endedAt, awaitingInputSince, promptId: pendingPrompt?.id })),
+						toolNodes: (run.toolNodes ?? []).map(({ id, name, status, startedAt, endedAt }) => ({ id, name, status, startedAt, endedAt })),
+					})),
+				};
+				lastPoll = { observedAt: Date.now(), poll: ++pollCount, ...state };
+				const serialized = JSON.stringify(state);
+				if (serialized !== previousProgress) {
+					previousProgress = serialized;
+					if (progression.length === 64) progression.shift();
+					progression.push(lastPoll);
+				}
+				return details;
+			};
 			if (reply === "duplicate") {
-				await until(() => assert.equal(identities.length, 1));
+				await waitForPhase("duplicate-readiness", () => assert.equal(identities.length, 1));
 				late.resolve(true);
 				late.resolve(true);
 			}
 			if (["missing", "cancel", "stale", "invalid"].includes(reply)) {
-				await until(async () => {
+				await waitForPhase("pending-input", async () => {
 					const details = await status();
 					assert.equal(details.runs[0]?.awaitingInputCount, 1);
 					if (reply !== "missing") assert.equal(identities.length, 1);
@@ -371,11 +434,38 @@ try {
 				assert.equal((await status()).runs[0].status, "running");
 				assert.equal(existsSync(join(root, "effects.jsonl")), false);
 			} else {
-				const details = await until(async () => {
+				if (reply === "true") {
+					await waitForPhase("confirm-readiness", async () => {
+						const details = await status();
+						assert.equal(identities.length, 1, "approval must be presented exactly once");
+						const identity = identities[0];
+						for (const key of ["requestId", "workflowRunId", "workflowStageId", "sessionId"])
+							assert.equal(typeof identity?.[key], "string", `approval identity missing ${key}`);
+						const run = details.runs.find((entry) => entry.runId === identity.workflowRunId);
+						assert.ok(run, "approval workflow run is not publicly visible");
+						assert.equal(run.awaitingInputCount, 1);
+						assert.ok(
+							run.awaitingInput.some(
+								(input) => input.promptKind === "confirm" && input.stageId === identity.workflowStageId,
+							),
+							"matching confirm is not pending",
+						);
+						assert.equal(trueResponseResolvedAt, undefined, "approval was released before readiness");
+						assert.equal(
+							readFileSync(join(root, "receipts.jsonl"), "utf8"),
+							`${JSON.stringify({ text: "  durable text  " })}\n`,
+						);
+						assert.equal(existsSync(join(root, "effects.jsonl")), false);
+					});
+					phases.push({ phase: "answer-release", observedAt: Date.now() });
+					trueAnswer.resolve(true);
+				}
+				const details = await waitForPhase("completion", async () => {
 					const result = await status();
 					assert.equal(result.runs[0]?.status, "completed");
 					return result;
 				});
+				if (reply === "true") assert.ok(trueResponseResolvedAt, "approval response has not returned");
 				const approved = reply === "true" || reply === "duplicate";
 				assert.deepEqual(details.snapshots[0].result, { text: "  durable text  ", approved });
 				assert.equal(
@@ -392,7 +482,60 @@ try {
 				assert.equal(identities.length, 1, "completed approval was presented again");
 			}
 			assert.equal(createHash("sha256").update(readFileSync(definition)).digest("hex"), hash);
+		} catch (error) {
+			const observedAt = Date.now();
+			const sideEffects = Object.fromEntries(["receipts.jsonl", "effects.jsonl"].map((file) => [
+				file, existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8").slice(0, 4096) : null,
+			]));
+			const runId = details?.runs[0]?.runId;
+			const checkpointPrefix = `${runId}:checkpoint:`;
+			let checkpointRows;
+			let databaseActivity;
+			let databaseLocks;
+			let checkpointReadError;
+			let client;
+			try {
+				const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
+				const { Client } = createRequire(import.meta.resolve("@bastani/atomic"))("pg");
+				client = new Client({
+					host: "127.0.0.1", port: metadata.server.port, user: "postgres", password: "atomic",
+					database: "atomic_workflows_dbos_sys", ssl: false,
+					connectionTimeoutMillis: 1000, query_timeout: 1000, statement_timeout: 1000,
+				});
+				client.on("error", () => {});
+				await client.connect();
+				await client.query("SET default_transaction_read_only = on");
+				checkpointRows = (await client.query(
+					`SELECT workflow_uuid, status, name, created_at, updated_at,
+					 left(inputs::text, 4096) AS inputs, left(output::text, 4096) AS output,
+					 left(error::text, 2048) AS error FROM dbos.workflow_status
+					 WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)
+					 ORDER BY created_at DESC, workflow_uuid LIMIT 64`,
+					[runId, checkpointPrefix],
+				)).rows;
+				databaseActivity = (await client.query(
+					`SELECT pid, application_name, state, wait_event_type, wait_event,
+					 xact_start, query_start, state_change, pg_blocking_pids(pid) AS blocking_pids,
+					 left(query, 1024) AS query FROM pg_stat_activity
+					 WHERE datname = current_database() AND pid <> pg_backend_pid()
+					 ORDER BY query_start LIMIT 32`,
+				)).rows;
+				databaseLocks = (await client.query(
+					`SELECT l.pid, l.locktype, l.mode, l.granted, l.relation::regclass::text AS relation,
+					 l.classid, l.objid, l.objsubid, l.transactionid
+					 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+					 WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
+					 ORDER BY l.granted, l.pid, l.locktype LIMIT 64`,
+				)).rows;
+			} catch (readError) {
+				checkpointReadError = String(readError);
+			} finally {
+				await client?.end().catch((endError) => { checkpointReadError ??= String(endError); });
+			}
+			console.error(JSON.stringify({ host: "packed-node", reply, observedAt, checkpointReadAt: Date.now(), phases, sideEffects, details, progression, lastPoll, callbacks, checkpointPrefix, checkpointRows, databaseActivity, databaseLocks, checkpointReadError, error: String(error) }));
+			throw error;
 		} finally {
+			trueAnswer.resolve(false);
 			await session.dispose();
 		}
 	} else if (mode === "children") {
