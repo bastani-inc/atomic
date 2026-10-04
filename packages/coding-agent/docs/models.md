@@ -165,6 +165,10 @@ Moved to [Model configuration reference](/models/reference#model-configuration).
 
 Moved to [Model configuration reference](/models/reference#sampling-parameters).
 
+### Sampling by Thinking Level
+
+Moved to [Model configuration reference](/models/reference#sampling-by-thinking-level).
+
 ### Request-wide Cost Tiers
 
 Moved to [Model configuration reference](/models/reference#request-wide-cost-tiers).

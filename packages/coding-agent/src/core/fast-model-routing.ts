@@ -211,13 +211,8 @@ function buildFastRouteBaseProviderOptions(
 	model: Model<Api>,
 	options: FastRouteStreamOptions | undefined,
 ): StreamOptions {
-	// Native fast-route streams bypass pi-ai's streamSimple base-options merge.
-	const samplingParams =
-		model.samplingParams || options?.samplingParams
-			? { ...model.samplingParams, ...options?.samplingParams }
-			: undefined;
 	const providerOptions: StreamOptions = {
-		samplingParams,
+		samplingParams: options?.samplingParams,
 		temperature: options?.temperature,
 		maxTokens: options?.maxTokens,
 		signal: options?.signal,

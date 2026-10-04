@@ -240,7 +240,47 @@ describe("fast model route resolution", () => {
 		expect(providerOptions?.reasoningEffort).toBe("medium");
 		expect(providerOptions?.apiKey).toBe("key");
 		expect(providerOptions?.sessionId).toBe("session-1");
-		expect(providerOptions?.samplingParams).toEqual({ top_p: 0.5, min_p: 0.1 });
+		expect(providerOptions?.samplingParams).toEqual({ top_p: 0.5 });
+	});
+
+	it("sends thinking-level sampling params between model and request params on a service-tier route", async () => {
+		interface CapturedSamplingPayload {
+			temperature?: number;
+			top_p?: number;
+			min_p?: number;
+			repetition_penalty?: number;
+			service_tier?: string;
+		}
+		let payload: CapturedSamplingPayload | undefined;
+		const options = withFastRouteStreamOptions(serviceTierRoute, {
+			apiKey: "key",
+			reasoning: "medium",
+			samplingParams: { top_p: 0.5 },
+			onPayload: (captured) => {
+				payload = captured as CapturedSamplingPayload;
+				throw new Error("payload captured");
+			},
+		});
+
+		await streamWithFastRoute(
+			fullModel({
+				api: "openai-responses",
+				provider: "openai",
+				baseUrl: "http://127.0.0.1:9/v1",
+				samplingParams: { temperature: 1, top_p: 0.95, repetition_penalty: 1.1 },
+				samplingParamsByThinkingLevel: { medium: { temperature: 0.8, top_p: 0.6, min_p: 0.1 } },
+			}),
+			{ messages: [{ role: "user", content: "Hello", timestamp: Date.now() }] },
+			options,
+		).result();
+
+		expect(payload).toMatchObject({
+			temperature: 0.8,
+			top_p: 0.5,
+			min_p: 0.1,
+			repetition_penalty: 1.1,
+			service_tier: FAST_MODEL_SERVICE_TIER,
+		});
 	});
 
 	it("uses native OpenAI Codex Responses streaming for a service-tier route", () => {
