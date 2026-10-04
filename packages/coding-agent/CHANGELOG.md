@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed failed `/reload` retiring cleanup leaving in-flight workflows unreachable. The replacement extensions now finish starting, pending settings take effect, joined Intercom groups survive, and the error names the underlying cleanup exception ([#3425](https://github.com/bastani-inc/atomic/issues/3425)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Breaking Changes

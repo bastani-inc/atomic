@@ -624,6 +624,18 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 	}
 }
 
+function failureMessages(error: unknown): string[] {
+	if (error instanceof AggregateError && error.errors.length > 0) return error.errors.flatMap(failureMessages);
+	return [error instanceof Error ? error.message : String(error)];
+}
+
+function retiringCleanupError(failures: unknown[]): AggregateError {
+	const detail = failures.flatMap(failureMessages).join("; ");
+	return Object.assign(new AggregateError(failures, `Reload retiring cleanup failed: ${detail}`), {
+		code: "ShutdownFailed",
+	});
+}
+
 async function cleanupReloadRunner(runner: ExtensionRunner, reason: string): Promise<void> {
 	const failures: unknown[] = [];
 	for (const cleanup of [
@@ -637,8 +649,7 @@ async function cleanupReloadRunner(runner: ExtensionRunner, reason: string): Pro
 			failures.push(error);
 		}
 	}
-	if (failures.length)
-		throw Object.assign(new AggregateError(failures, "Reload retiring cleanup failed"), { code: "ShutdownFailed" });
+	if (failures.length) throw retiringCleanupError(failures);
 }
 
 async function reloadGeneration(this: AgentSession, options?: AgentSessionReloadOptions): Promise<void> {
@@ -679,7 +690,12 @@ async function reloadOwnedGeneration(
 			throw new Error("Strict extension reload requires a transactional resource loader");
 		}
 		oldRunner.revokeAuthority();
-		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason));
+		const retiringFailures: unknown[] = [];
+		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason)).catch(
+			(error: unknown) => {
+				retiringFailures.push(error);
+			},
+		);
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
@@ -708,6 +724,7 @@ async function reloadOwnedGeneration(
 		await startExtensions(this, this._extensionRunner, this._resourceLoader, { type: "session_start", reason });
 		if (this._disposed) throw hostInputError("SessionClosed");
 		this._rebuildSystemPrompt(this.getActiveToolNames());
+		if (retiringFailures.length) throw retiringFailures[0];
 		return;
 	}
 
@@ -831,15 +848,14 @@ async function reloadOwnedGeneration(
 	} catch (error) {
 		failures.push(error);
 	}
-	if (failures.length > (setupFailed ? 1 : 0))
-		throw Object.assign(new AggregateError(failures, "Reload retiring cleanup failed"), { code: "ShutdownFailed" });
-	if (setupFailed) throw failures[0];
-	if (this._disposed) throw hostInputError("SessionClosed");
+	if (setupFailed) throw failures.length > 1 ? retiringCleanupError(failures) : failures[0];
+	if (this._disposed) throw failures.length ? failures[0] : hostInputError("SessionClosed");
 	sessionGenerationClosing.delete(this);
 	// Startup observers need the successor task host. Keep admission sealed until
 	// retiring callbacks are invalidated, then publish reporters before queued user effects.
 	await publication.activateStarts();
 	await publication.release();
+	if (failures.length) throw failures[0];
 }
 
 /** Publish approved startup resources without replacing the session or restarting safe reporters. */
