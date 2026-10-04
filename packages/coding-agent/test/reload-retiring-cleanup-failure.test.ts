@@ -106,3 +106,55 @@ test.each(reloadModes)(
 		}
 	},
 );
+
+test.each(reloadModes)(
+	"a %s reload reports nested aggregate and raw shutdown causes verbatim (#3425)",
+	async (mode) => {
+		const root = mkdtempSync(join(tmpdir(), "reload-aggregate-cleanup-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const factory: ExtensionFactory = (pi) => {
+			pi.on("session_shutdown", (event) => {
+				if (event.reason === "reload")
+					throw new AggregateError(
+						[new Error("nested-a"), new AggregateError([new Error("nested-b"), " raw cause  "], "hidden")],
+						"outer",
+					);
+			});
+		};
+		const Loader = mode === "transactional" ? DefaultResourceLoader : NontransactionalResourceLoader;
+		const resourceLoader = new Loader({
+			cwd,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			extensionFactories: [factory],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(cwd),
+			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		});
+		try {
+			await session.bindExtensions({});
+			await assert.rejects(session.reload(), (error: Error & { code?: string }) => {
+				assert.ok(error instanceof AggregateError);
+				assert.equal(error.code, "ShutdownFailed");
+				assert.match(error.message, /^Reload retiring cleanup failed: .*: nested-a; nested-b; {2}raw cause {2}$/);
+				return true;
+			});
+		} finally {
+			await session.dispose().catch((error: Error & { code?: string }) => {
+				assert.equal(error.code, "ShutdownFailed");
+			});
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
