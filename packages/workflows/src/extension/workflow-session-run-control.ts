@@ -209,6 +209,7 @@ export function createSessionRunControl(host: SessionRunControlHost): SessionWor
 					runId,
 					...(options?.stageId === undefined ? {} : { stageId: options.stageId }),
 					...(options?.message === undefined ? {} : { message: options.message }),
+					...(options?.legacyRecovery === undefined ? {} : { legacyRecovery: options.legacyRecovery }),
 				}),
 			);
 		},

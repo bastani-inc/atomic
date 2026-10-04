@@ -11,6 +11,7 @@ import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { assertWorkflowInstanceOwner, workflowCaller } from "./workflow-instance-owner.js";
+import { enrollLegacySdkRecovery } from "./workflow-legacy-recovery.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
@@ -265,6 +266,9 @@ export function makeExecuteWorkflowTool(
 			case "quit":
 				return awaitRequest(workflowQuitAction(args, owner, { getRuntime, authorize }));
 			case "resume":
+				if (args.legacyRecovery !== undefined) {
+					await awaitRequest(enrollLegacySdkRecovery(args, ctx, access, getRuntime(), owner, signal));
+				}
 				return awaitRequest(
 					workflowResumeAction(args, {
 						getRuntime,

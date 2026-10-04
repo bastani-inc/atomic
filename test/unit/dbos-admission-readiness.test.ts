@@ -87,7 +87,7 @@ test("admission loss preserves synchronous access and predecessor shutdown eligi
 });
 
 // #3072 / #2022: a predecessor's active object has only backend/launch/shutdown.
-test("reused wrappers recover without adding members to the shared owner", async () => {
+test("unfenced predecessor wrappers require restart before database ownership recovery (#3419)", async () => {
 	Object.assign(fake, { healthy: true, checks: 0, starts: 0, shutdowns: 0 });
 	setDurableBackend(undefined);
 	resetDbosLifecycleForTests(
@@ -98,29 +98,10 @@ test("reused wrappers recover without adding members to the shared owner", async
 	await initializeDurableBackend();
 	const owner = getDbosProcessOwner();
 	assert.deepEqual(Object.keys(owner.active ?? {}).sort(), ["backend", "launch", "shutdown"]);
-	const { backend } = await configureDbosDurableBackend();
-	const admit = () =>
-		admitDurableRootRun({
-			backend,
-			runId: "isolated-predecessor",
-			isChildRun: false,
-			registration: {
-				workflowId: "isolated-predecessor",
-				name: "predecessor",
-				inputs: {},
-				status: "running",
-				createdAt: 1,
-				updatedAt: 1,
-			},
-		});
-	fake.healthy = false;
-	await assert.rejects(admit(), DbosDependencyError);
+	await assert.rejects(configureDbosDurableBackend(), /no database ownership fence; restart the host/);
+	assert.equal(fake.starts, 0);
 	assert.equal(owner.state, "ready");
 	assert.equal(owner.failure, undefined);
-	fake.healthy = true;
-	await admit();
-	assert.equal(fake.checks, 0, "predecessor wrapper reuse recovers through admission writes");
-	assert.equal(fake.starts, 3);
 	await shutdownDbos();
 	assert.equal(fake.shutdowns, 1);
 });

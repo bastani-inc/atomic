@@ -51,7 +51,7 @@ test("configured DBOS consumers follow recovered ports without relaunch or recon
 	});
 	const connect = vi
 		.spyOn(Pool.prototype, "connect")
-		.mockImplementation(async () => Object.assign(new Client(), { release: vi.fn() }));
+		.mockImplementation(async () => Object.assign(new SocketlessClient(), { release: vi.fn() }));
 	const sdk = { setConfig: vi.fn<(config: DbosConfiguration) => void>(), launch: vi.fn(async () => {}) };
 	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
 	const pool = sdk.setConfig.mock.calls[0][0].systemDatabasePool!;

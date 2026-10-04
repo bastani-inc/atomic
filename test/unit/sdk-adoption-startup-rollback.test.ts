@@ -25,7 +25,8 @@ function fixture(backend = new InMemoryDurableBackend()) {
 		updatedAt: 1,
 		invocationCwd: process.cwd(),
 		modelOwner: "old-session",
-		ownerExecutorId: "dead-executor",
+		ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
+		ownerLiveness: "dead",
 		completedCheckpoints: 1,
 	});
 	const store = createStore();

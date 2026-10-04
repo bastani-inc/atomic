@@ -66,6 +66,7 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 				: {}),
 			...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
 			...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
+			...(metadata.legacyRecoveryPending === true ? { legacyRecoveryPending: true } : {}),
 			...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
 			...(metadata.label !== undefined ? { label: metadata.label } : {}),
 			...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
@@ -172,6 +173,7 @@ function parseDurableWorkflowMetadata(
 		typeof metadata.updatedAt !== "number" ||
 		(metadata.ownerExecutorId !== undefined && typeof metadata.ownerExecutorId !== "string") ||
 		(metadata.transitionClaimId !== undefined && typeof metadata.transitionClaimId !== "string") ||
+		(metadata.legacyRecoveryPending !== undefined && metadata.legacyRecoveryPending !== true) ||
 		(metadata.sessionFile !== undefined && typeof metadata.sessionFile !== "string") ||
 		(metadata.label !== undefined && typeof metadata.label !== "string") ||
 		(metadata.rootWorkflowId !== undefined && typeof metadata.rootWorkflowId !== "string") ||

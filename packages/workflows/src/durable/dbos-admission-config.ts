@@ -3,6 +3,7 @@ import { fenceDbosAdmissionPool } from "./dbos-admission-pool.js";
 import { defaultPostgresUrl } from "./dbos-default-postgres-url.js";
 import { withDbosLaunchLock } from "./dbos-launch-lock.js";
 import { resolvedPostgresHealth } from "./dbos-managed-health.js";
+import { DbosOwnerFence } from "./dbos-owner-fence.js";
 import { getDbosProcessOwner } from "./dbos-process-owner.js";
 import { createRecoverablePostgresPool } from "./dbos-recoverable-pool.js";
 import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
@@ -26,7 +27,7 @@ export function configureAdmissionDatabase(
 		url: health?.endpoint ?? systemDatabaseUrl,
 		failure: health?.lastFailure?.message,
 	});
-	const createPool = () => {
+	const createPool = (fenced = true) => {
 		let unsubscribe: (() => void) | undefined;
 		const managed = createRecoverablePostgresPool(systemDatabaseUrl, {
 			beforeConnect: health === undefined ? undefined : () => health.check(),
@@ -36,15 +37,43 @@ export function configureAdmissionDatabase(
 		});
 		unsubscribe = health?.subscribe(managed.invalidate);
 		health?.start();
-		return fenceDbosAdmissionPool(managed.pool);
+		return fenced ? fenceDbosAdmissionPool(managed.pool) : managed.pool;
 	};
 	let pool = createPool();
+	const createFence = (executorId: string) => {
+		const fencePool = createPool(false);
+		const created = new DbosOwnerFence(
+			() => fencePool,
+			executorId,
+			() => fencePool.end(),
+		);
+		const owner = getDbosProcessOwner();
+		owner.executorFences ??= new Set();
+		owner.executorFences.add(created);
+		return created;
+	};
+	let fence = createFence(config.executorID);
+	getDbosProcessOwner().executorFence = fence;
+	getDbosProcessOwner().createExecutorFence = () => {
+		const executorId = `atomic-db-${crypto.randomUUID()}`;
+		getDbosProcessOwner().executorId = executorId;
+		const next = createFence(executorId);
+		getDbosProcessOwner().executorFence = next;
+		return next;
+	};
+	pool = fence.protectPool(pool);
 	sdk.setConfig({ ...config, systemDatabaseUrl, systemDatabasePool: pool });
 	const launch = async (): Promise<void> => {
+		if (fence.closed) {
+			const executorId = `atomic-db-${crypto.randomUUID()}`;
+			getDbosProcessOwner().executorId = executorId;
+			fence = createFence(executorId);
+			getDbosProcessOwner().executorFence = fence;
+		}
 		// DBOS closes custom pools on shutdown, including the failed-launch retry.
 		if (pool.ended) {
-			pool = createPool();
-			sdk.setConfig({ ...config, systemDatabaseUrl, systemDatabasePool: pool });
+			pool = fence.protectPool(createPool());
+			sdk.setConfig({ ...config, executorID: fence.executorId, systemDatabaseUrl, systemDatabasePool: pool });
 		}
 		// DBOS skips database creation with a custom pool. Keep its existing
 		// ensure-database behavior via the public datasource API, never reset data.

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { isDatabaseExecutor } from "./dbos-owner-fence.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { isLiveRunningWorkflow } from "./resume-eligibility.js";
 import type { DurableWorkflowHandle } from "./types.js";
@@ -19,6 +20,8 @@ export function isSdkCrashedRunAdoptable(handle: DurableWorkflowHandle, cwd: str
 		handle.status === "running" &&
 		handle.ownerExecutorId !== undefined &&
 		handle.ownerExecutorId !== getAtomicExecutorId() &&
-		!isLiveRunningWorkflow(handle)
+		!isLiveRunningWorkflow(handle) &&
+		isDatabaseExecutor(handle.ownerExecutorId) &&
+		handle.ownerLiveness === "dead"
 	);
 }

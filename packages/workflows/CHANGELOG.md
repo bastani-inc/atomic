@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed SDK inspection rejecting earlier-process durable runs and crash recovery retaining the old session owner. Explicit SDK resume now atomically adopts an eligible crashed root in the same working directory and workflow database, preserves its UUID and completed checkpoints, and excludes live owners and competing adopters ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed SDK inspection rejecting earlier-process durable runs and crash recovery retaining the old session owner. Explicit SDK resume atomically adopts an eligible crashed root in the same working directory and workflow database, preserves its UUID and completed checkpoints, and excludes healthy connected owners and competing adopters. Database ownership fencing handles cloned VM identities and rejects disconnected owners' late durable writes. Older unfenced runs support controlled enrollment after their workers stop; unfinished external callbacks may overlap recovery and must use idempotent effects ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
 
 ## [0.9.26-alpha.5] - 2026-10-03
 

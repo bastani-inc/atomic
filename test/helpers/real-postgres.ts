@@ -75,6 +75,8 @@ export class RealPostgresClient {
 	private readonly pending = new Map<number, { resolve: (value: never) => void; reject: (error: Error) => void }>();
 	private readonly output: Promise<void>;
 	private readonly errors: Promise<string>;
+	private transportError: Error | undefined;
+	private exitObserved = false;
 	constructor(
 		readonly home: string,
 		port: number,
@@ -82,7 +84,8 @@ export class RealPostgresClient {
 		fixture = "real-postgres-client.ts",
 	) {
 		assert.notEqual(process.getuid?.(), 0, "Run disposable managed cluster tests as an unprivileged account");
-		this.child = spawnProcess([bunExecutable(), join(moduleDir(import.meta.url), "../fixtures", fixture)], {
+		const fixturePath = isAbsolute(fixture) ? fixture : join(moduleDir(import.meta.url), "../fixtures", fixture);
+		this.child = spawnProcess([bunExecutable(), fixturePath], {
 			env: {
 				...process.env,
 				HOME: home,
@@ -98,8 +101,13 @@ export class RealPostgresClient {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
+		this.child.stdin!.on("error", (error: Error) => this.failTransport(error));
 		this.errors = readStreamText(this.child.stderr);
 		this.output = this.drain();
+	}
+	private failTransport(error: Error): void {
+		this.transportError ??= error;
+		for (const request of this.pending.values()) request.reject(this.transportError);
 	}
 	private async drain() {
 		const reader = decodeStream(this.child.stdout!).getReader();
@@ -121,12 +129,15 @@ export class RealPostgresClient {
 					else request?.resolve(message.result);
 				}
 			}
+		} catch (error) {
+			this.failTransport(error instanceof Error ? error : new Error(String(error)));
 		} finally {
-			for (const request of this.pending.values())
-				request.reject(new Error(`Postgres fixture exited: ${await this.errors}`));
+			reader.releaseLock();
+			this.failTransport(new Error("Postgres fixture output closed"));
 		}
 	}
 	async request<T = object>(command: string, sql?: string, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
+		if (this.transportError) throw this.transportError;
 		const id = ++this.sequence;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
@@ -136,21 +147,47 @@ export class RealPostgresClient {
 					() => reject(new Error(`Postgres fixture ${command} exceeded ${timeoutMs}ms`)),
 					timeoutMs,
 				);
-				this.child.stdin!.write(`${JSON.stringify({ id, command, sql })}\n`);
+				try {
+					this.child.stdin!.write(`${JSON.stringify({ id, command, sql })}\n`, (error) => {
+						if (error) this.failTransport(error);
+					});
+				} catch (error) {
+					this.failTransport(error instanceof Error ? error : new Error(String(error)));
+				}
 			});
 		} finally {
 			clearTimeout(timer);
 			this.pending.delete(id);
 		}
 	}
+	async waitForExit(): Promise<void> {
+		await bounded(
+			Promise.all([this.child.exited, this.output, this.errors]),
+			5000,
+			"Postgres fixture process cleanup",
+		);
+		this.exitObserved = true;
+	}
+	async crash(): Promise<void> {
+		if (this.child.exitCode === null) this.child.kill("SIGKILL");
+		await this.waitForExit();
+	}
 	async exit() {
 		try {
-			if (this.child.exitCode === null) await this.request("exit", undefined, CLEANUP_TIMEOUT_MS);
-			// An exit acknowledgement precedes process.exit; allow graceful termination.
-			await bounded(this.child.exited, 5000, "Postgres fixture graceful exit");
+			if (this.child.exitCode === null && !this.transportError) {
+				try {
+					await this.request("exit", undefined, CLEANUP_TIMEOUT_MS);
+				} catch (error) {
+					if (error !== this.transportError) throw error;
+				}
+			}
+			const code = await bounded(this.child.exited, 5000, "Postgres fixture graceful exit");
+			if (!this.exitObserved && code !== 0) {
+				throw new Error(`Postgres fixture exited with code ${code}: ${await this.errors}`);
+			}
 		} finally {
 			if (this.child.exitCode === null) this.child.kill("SIGKILL");
-			await bounded(Promise.all([this.child.exited, this.output]), 5000, "Postgres fixture process cleanup");
+			await this.waitForExit();
 		}
 	}
 }

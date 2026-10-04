@@ -133,8 +133,8 @@ function sdkDependencyError(message?: string): DbosDependencyError {
 	return new DbosDependencyError(undefined, null, reported.message);
 }
 
-function databaseError(error: unknown, signal: AbortSignal): unknown {
-	if (signal.aborted) return sdkDependencyError();
+export function databaseError(error: unknown, signal?: AbortSignal): unknown {
+	if (signal?.aborted) return sdkDependencyError();
 	if (isDbosDependencyError(error)) return sdkDependencyError(error.admissionDetail ?? error.message);
 	const pending = [error];
 	const seen = new Set<object>();

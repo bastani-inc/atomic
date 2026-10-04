@@ -188,7 +188,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
 	// cross-ref: issue #1498 — DBOS-backed cross-session resumability.
-	const backendView: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+	const sourceBackend = opts.durableBackend ?? getDurableBackend();
+	const backendView: DurableWorkflowBackend = sourceBackend.executionView?.() ?? sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
@@ -1099,6 +1100,21 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			findWorkflowGracefulQuit(err) ??
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
+		if (
+			isDbosDependencyError(err) &&
+			durableBackend.isCheckpointUnavailable?.(runId) &&
+			(durableBackend.getWorkflow(runId)?.completedCheckpoints ?? 0) > 0
+		) {
+			await admittedTools.closeAndDrain();
+			activeStore.recordRunPaused(runId, undefined, { resumable: true });
+			activeStore.recordRunExecutionState(runId, { phase: "blocked_dependency", dependencyError: err.message });
+			return {
+				runId,
+				status: "paused",
+				stages: [...runSnapshot.stages],
+				toolNodes: [...(runSnapshot.toolNodes ?? [])],
+			};
+		}
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
 		// its boundary checkpoint publication on cancellation.

@@ -82,6 +82,7 @@ export interface ForeignLivenessCandidate {
 	readonly status: DurableWorkflowStatus;
 	readonly updatedAt: number;
 	readonly ownerExecutorId?: string;
+	readonly ownerLiveness?: "alive" | "dead" | "unknown";
 }
 
 /** Whether a running workflow appears live in a DIFFERENT Atomic process. */
@@ -92,7 +93,7 @@ export function isForeignLiveWorkflow(
 ): boolean {
 	if (candidate.status !== "running") return false;
 	if (candidate.ownerExecutorId === undefined || candidate.ownerExecutorId === localExecutorId) return false;
-	return now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+	return candidate.ownerLiveness === "alive" || now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
 }
 
 /**
@@ -101,9 +102,9 @@ export function isForeignLiveWorkflow(
  * double-dispatch across sessions. Only stale-heartbeat (crashed) running
  * workflows surface, presented as crashed rather than running.
  */
-export function isLiveRunningWorkflow(
-	candidate: Pick<ForeignLivenessCandidate, "status" | "updatedAt">,
-	now: number = Date.now(),
-): boolean {
-	return candidate.status === "running" && now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+export function isLiveRunningWorkflow(candidate: ForeignLivenessCandidate, now: number = Date.now()): boolean {
+	return (
+		candidate.status === "running" &&
+		(candidate.ownerLiveness === "alive" || now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
+	);
 }

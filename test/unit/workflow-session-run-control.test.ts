@@ -39,6 +39,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { testRunId } from "../helpers/run-id.js";
 
 const SESSION_ID = "session-a";
+const DEAD_EXECUTOR_ID = "atomic-db-00000000-0000-4000-8000-000000000001";
 
 class ThrowingHydrationBackend extends InMemoryDurableBackend {
 	override async hydrateWorkflow(): Promise<void> {
@@ -245,6 +246,164 @@ afterEach(() => {
 });
 
 describe("session workflow run control", () => {
+	test.sequential("controlled legacy SDK recovery requires stopped-worker attestation and original scope (#3419)", async () => {
+		const id = testRunId("sdk-controlled-legacy-recovery");
+		let enrollments = 0;
+		const memory = new InMemoryDurableBackend();
+		const backend = Object.assign(memory, {
+			async enrollLegacyWorkflow(runId: string, options: { olderWorkersStopped: true; modelOwner: string }) {
+				enrollments++;
+				assert.equal(options.olderWorkersStopped, true);
+				const prior = memory.getWorkflow(runId);
+				assert.ok(prior);
+				memory.registerWorkflow(
+					{
+						...prior,
+						modelOwner: options.modelOwner,
+						ownerExecutorId: getAtomicExecutorId(),
+						status: "blocked",
+						updatedAt: prior.updatedAt + 1,
+					},
+					true,
+				);
+				return true;
+			},
+		});
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: id,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			updatedAt: 1,
+			status: "running",
+			modelOwner: "old-session",
+			ownerExecutorId: "atomic-legacy-process",
+			completedCheckpoints: 1,
+			invocationCwd: process.cwd(),
+		});
+		const { control, execute } = setup();
+		await assert.rejects(control.resume(id), WorkflowRunOwnershipError);
+		await assert.rejects(
+			execute({ action: "resume", runId: id, legacyRecovery: { olderWorkersStopped: true } }, toolContext()),
+			/requires an SDK/,
+		);
+		await assert.rejects(
+			control.resume(id.slice(0, 8), { legacyRecovery: { olderWorkersStopped: true } }),
+			WorkflowRunOwnershipError,
+		);
+		assert.equal(enrollments, 0);
+		const outcome = await control.resume(id, { legacyRecovery: { olderWorkersStopped: true } });
+		assert.equal(outcome.status, "running");
+		assert.equal(enrollments, 1);
+		await vi.waitFor(() => assert.equal(backend.getWorkflow(id)?.status, "completed"));
+		assert.equal(backend.getWorkflow(id)?.modelOwner, SESSION_ID);
+	});
+
+	test.sequential("controlled legacy SDK recovery cannot enroll another cwd, nested root or fenced owner (#3419)", async () => {
+		for (const overrides of [
+			{ invocationCwd: "/different" },
+			{ rootWorkflowId: testRunId("foreign-root") },
+			{ ownerExecutorId: DEAD_EXECUTOR_ID },
+			{ status: "completed" as const },
+			{
+				ownerExecutorId: DEAD_EXECUTOR_ID,
+				legacyRecoveryPending: true as const,
+				ownerLiveness: "alive" as const,
+				status: "blocked" as const,
+			},
+			{
+				ownerExecutorId: DEAD_EXECUTOR_ID,
+				legacyRecoveryPending: true as const,
+				ownerLiveness: "unknown" as const,
+				status: "blocked" as const,
+			},
+			{
+				ownerExecutorId: DEAD_EXECUTOR_ID,
+				legacyRecoveryPending: true as const,
+				ownerLiveness: "dead" as const,
+				status: "running" as const,
+			},
+		]) {
+			const id = testRunId("legacy-recovery-boundary");
+			let enrollments = 0;
+			const backend = Object.assign(new InMemoryDurableBackend(), {
+				async enrollLegacyWorkflow() {
+					enrollments++;
+					return true;
+				},
+			});
+			setDurableBackend(backend);
+			backend.registerWorkflow({
+				workflowId: id,
+				name: "session-run-control",
+				inputs: {},
+				createdAt: 1,
+				updatedAt: 1,
+				status: "running",
+				modelOwner: "old-session",
+				ownerExecutorId: "atomic-legacy-process",
+				completedCheckpoints: 1,
+				invocationCwd: process.cwd(),
+				...overrides,
+			});
+			await assert.rejects(
+				setup().control.resume(id, { legacyRecovery: { olderWorkersStopped: true } }),
+				WorkflowRunOwnershipError,
+			);
+			assert.equal(enrollments, 0);
+		}
+	});
+
+	test.sequential("SDK retries interrupted controlled legacy enrollment only after its fenced owner dies (#3419)", async () => {
+		const id = testRunId("interrupted-legacy-enrollment");
+		const memory = new InMemoryDurableBackend();
+		let enrollments = 0;
+		const backend = Object.assign(memory, {
+			async enrollLegacyWorkflow(runId: string, options: { olderWorkersStopped: true; modelOwner: string }) {
+				enrollments++;
+				const prior = memory.getWorkflow(runId);
+				assert.ok(prior);
+				assert.equal(prior.legacyRecoveryPending, true);
+				assert.equal(prior.ownerLiveness, "dead");
+				memory.registerWorkflow(
+					{
+						...prior,
+						modelOwner: options.modelOwner,
+						ownerExecutorId: getAtomicExecutorId(),
+						status: "blocked",
+						updatedAt: prior.updatedAt + 1,
+					},
+					true,
+				);
+				return true;
+			},
+		});
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: id,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			updatedAt: 1,
+			status: "blocked",
+			modelOwner: "dead-enroller",
+			ownerExecutorId: DEAD_EXECUTOR_ID,
+			ownerLiveness: "dead",
+			legacyRecoveryPending: true,
+			completedCheckpoints: 1,
+			invocationCwd: process.cwd(),
+			resumable: true,
+		});
+		const control = setup().control;
+		await assert.rejects(control.resume(id), WorkflowRunOwnershipError);
+		assert.equal(enrollments, 0);
+		assert.equal((await control.resume(id, { legacyRecovery: { olderWorkersStopped: true } })).status, "running");
+		assert.equal(enrollments, 1);
+		await vi.waitFor(() => assert.equal(backend.getWorkflow(id)?.status, "completed"));
+		assert.equal(backend.getWorkflow(id)?.modelOwner, SESSION_ID);
+	});
+
 	test.sequential("fresh SDK sessions inspect crashed durable runs without adopting them (#3419)", async () => {
 		const runId = testRunId("sdk-crashed-inspection");
 		const backend = new InMemoryDurableBackend();
@@ -286,7 +445,8 @@ describe("session workflow run control", () => {
 			completedCheckpoints: 1,
 			updatedAt: 1,
 			modelOwner: "previous-session",
-			ownerExecutorId: "previous-process",
+			ownerExecutorId: DEAD_EXECUTOR_ID,
+			ownerLiveness: "dead",
 			origin: "agent",
 			invocationCwd: process.cwd(),
 		});
@@ -326,6 +486,11 @@ describe("session workflow run control", () => {
 			{ invocationCwd: "/another-project" },
 			{ ownerExecutorId: undefined },
 			{ ownerExecutorId: getAtomicExecutorId() },
+			{ ownerLiveness: "alive" as const },
+			{ ownerExecutorId: "previous-process" },
+			{ ownerExecutorId: "atomic-1-00000000-11111111-1111-4111-8111-111111111111" },
+			{ ownerLiveness: "unknown" as const },
+			{ ownerLiveness: undefined },
 			{ modelOwner: undefined },
 			{ updatedAt: Date.now() },
 			{ status: "paused" as const },
@@ -344,7 +509,8 @@ describe("session workflow run control", () => {
 				completedCheckpoints: 1,
 				updatedAt: 1,
 				modelOwner: "previous-session",
-				ownerExecutorId: "previous-process",
+				ownerExecutorId: DEAD_EXECUTOR_ID,
+				ownerLiveness: "dead",
 				origin: "agent",
 				invocationCwd: process.cwd(),
 				...overrides,
@@ -354,7 +520,7 @@ describe("session workflow run control", () => {
 			assert.ok((await rejection(control.resume(runId))) instanceof WorkflowRunOwnershipError);
 			assert.deepEqual(backend.getWorkflow(runId), before);
 			assert.deepEqual(store.runs(), []);
-			if (index === 0 || index === 3) {
+			if ("invocationCwd" in overrides || "modelOwner" in overrides) {
 				assert.ok((await rejection(control.getRun(runId))) instanceof WorkflowRunOwnershipError);
 				assert.ok((await rejection(control.getStages(runId))) instanceof WorkflowRunOwnershipError);
 			}

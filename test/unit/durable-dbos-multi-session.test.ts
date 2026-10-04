@@ -92,8 +92,25 @@ function seededMetadata(
 
 describe("per-process executor identity", () => {
 	test("is unique, stable, and namespaced to this Atomic process", () => {
-		assert.match(getAtomicExecutorId(), /^atomic-[0-9a-z]+-[0-9a-f]{8}$/);
+		assert.match(
+			getAtomicExecutorId(),
+			/^atomic-db-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
 		assert.equal(getAtomicExecutorId(), getAtomicExecutorId());
+	});
+
+	test("database owner evidence overrides stale tool progress independently of local PID identity (#3419)", () => {
+		const handle = {
+			status: "running" as const,
+			updatedAt: 1,
+			ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
+		};
+		assert.equal(isForeignLiveWorkflow({ ...handle, ownerLiveness: "alive" }, getAtomicExecutorId()), true);
+		assert.equal(isForeignLiveWorkflow({ ...handle, ownerLiveness: "dead" }, getAtomicExecutorId()), false);
+		assert.equal(
+			isForeignLiveWorkflow({ ...handle, ownerLiveness: "unknown", updatedAt: Date.now() }, getAtomicExecutorId()),
+			true,
+		);
 	});
 });
 

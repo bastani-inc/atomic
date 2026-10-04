@@ -1,4 +1,5 @@
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
+import { isDbosDependencyError } from "../../durable/dbos-admission.js";
 import { getDurableBackend } from "../../durable/factory.js";
 import { isDurableWorkflowResumable } from "../../durable/resume-eligibility.js";
 import { recordRunTimingCheckpoint } from "../../durable/run-timing.js";
@@ -265,7 +266,9 @@ export async function quitRunWithAction(
 		try {
 			if ((await settle()) === "refused") return { ok: false, runId, reason: "already_ended" };
 		} catch (error) {
-			if (!suspendedByAbort) throw error;
+			const alreadyDependencyPaused =
+				isDbosDependencyError(error) && current.status === "paused" && current.phase === "blocked_dependency";
+			if (!suspendedByAbort && !alreadyDependencyPaused) throw error;
 			const preservedProgress = hasDurableQuitProgress(runId);
 			publish(preservedProgress);
 			throw new Error(unrecordedDurableQuitMessage(error, preservedProgress), { cause: error });

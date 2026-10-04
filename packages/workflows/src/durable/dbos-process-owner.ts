@@ -23,6 +23,7 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { ConfiguredDbosDurability } from "./dbos-backend.js";
 import type { DbosDatabaseDiagnostics } from "./dbos-database-diagnostics.js";
 import type { DbosDurabilityError, DbosLifecycleState } from "./dbos-lifecycle.js";
+import type { DbosOwnerFence } from "./dbos-owner-fence.js";
 
 export const DBOS_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/dbos-process-owner@1");
 
@@ -49,6 +50,10 @@ export interface DbosProcessOwner {
 	wrappers: DbosRegisteredWrappers | undefined;
 	systemDatabaseUrl?: string;
 	databaseDiagnostics?: () => DbosDatabaseDiagnostics;
+	executorFence?: DbosOwnerFence;
+	executorId?: string;
+	createExecutorFence?: () => DbosOwnerFence;
+	executorFences?: Set<DbosOwnerFence>;
 	announcedDatabaseDiagnostics?: () => DbosDatabaseDiagnostics;
 	readonly leases: Set<object>;
 }
@@ -93,5 +98,8 @@ export function resetDbosProcessOwner(): void {
 	owner.leases.clear();
 	owner.systemDatabaseUrl = undefined;
 	owner.databaseDiagnostics = undefined;
+	owner.executorFence = undefined;
+	owner.createExecutorFence = undefined;
+	owner.executorFences?.clear();
 	owner.announcedDatabaseDiagnostics = undefined;
 }

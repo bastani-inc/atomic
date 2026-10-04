@@ -83,6 +83,11 @@ export type DurableWorkflowHydrationResult =
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
+	executionView?(): DurableWorkflowBackend;
+	enrollLegacyWorkflow?(
+		workflowId: string,
+		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },
+	): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
 	/** Retire possibly committed admission metadata without waiting on its abandoned queue. */
@@ -312,6 +317,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.ownerExecutorId !== undefined
 					? { ownerExecutorId: existing.handle.ownerExecutorId }
 					: {}),
+			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
+			...(handle.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 		};
 		if (existing) existing.handle = full;
 		else
@@ -599,6 +606,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
+			...(h.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
 			...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),

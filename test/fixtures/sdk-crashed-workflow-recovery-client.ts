@@ -10,7 +10,12 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { shutdownDbos } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
+import { createRealDbosHandle } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
+import { importDbosSdk } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
+import { Client } from "pg";
+import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
+import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
 const home = process.env.ATOMIC_FAULT_TEST_HOME;
@@ -22,10 +27,18 @@ const agentDir = join(home, "agent");
 const packageDir = join(home, "workflow-package");
 const effectFile = join(home, "completed-effect.txt");
 const reachedFile = join(home, "frontier-reached.txt");
+const releaseFile = join(home, "release-source-callback.txt");
+const sourceReturnedFile = join(home, "source-callback-returned.txt");
 let session: AgentSession | undefined;
 let clockOffset = 0;
 const wallClock = Date.now.bind(Date);
 Date.now = () => wallClock() + clockOffset;
+const probeProcess = process.kill.bind(process);
+let maskedOwnerPid: number | undefined;
+process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+	if (pid === maskedOwnerPid && signal === 0) throw Object.assign(new Error("source PID absent in cloned guest"), { code: "ESRCH" });
+	return probeProcess(pid, signal);
+}) as typeof process.kill;
 
 async function ready(): Promise<AgentSession> {
 	if (session !== undefined) return session;
@@ -34,12 +47,17 @@ async function ready(): Promise<AgentSession> {
 	writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "sdk-crashed-recovery-fixture", type: "module", atomic: { workflows: ["./workflows/*.ts"] } }));
 	writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ packages: [packageDir] }));
 	writeFileSync(join(packageDir, "workflows", "recovery.ts"), `import { workflow } from "@bastani/workflows";
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile, access, writeFile } from "node:fs/promises";
 export default workflow({ name: "sdk-crashed-recovery", description: "SDK durable recovery regression", inputs: {}, outputs: {}, run: async ctx => {
   await ctx.tool("completed-effect", {}, async () => { await appendFile(${JSON.stringify(effectFile)}, "effect\\n"); return "checkpointed"; });
   await ctx.tool("frontier", {}, async () => {
     if (process.env.ATOMIC_SDK_RECOVERY_PRODUCER === "1") {
       await writeFile(${JSON.stringify(reachedFile)}, "reached");
+      if (process.env.ATOMIC_SDK_RECOVERY_RELEASEABLE === "1") {
+        while (!(await access(${JSON.stringify(releaseFile)}).then(() => true, () => false))) await new Promise(resolve => setTimeout(resolve, 20));
+        await writeFile(${JSON.stringify(sourceReturnedFile)}, "source returned");
+        return "late-source-result";
+      }
       await new Promise(() => {});
     }
     return "finished";
@@ -104,6 +122,49 @@ for await (const line of createInterface({ input: process.stdin })) {
 				quit: await refusal(host.workflows.quit(runId)),
 				resume: await refusal(host.workflows.resume(runId)),
 			};
+		} else if (command === "terminate-owner") {
+			assert.ok(runId);
+			const host = await ready();
+			await host.workflows.getRun(runId);
+			const backend = getDurableBackend();
+			const hydrated = await backend.hydrateWorkflowForInspection!(runId);
+			assert.equal(hydrated.kind, "current");
+			assert.ok(hydrated.kind === "current" && hydrated.handle.ownerExecutorId);
+			const connectionString = getDbosProcessOwner().databaseDiagnostics?.().url;
+			assert.ok(connectionString);
+			const client = new Client({ connectionString });
+			await client.connect();
+			try {
+				const terminated = await client.query<{ terminated: boolean }>("SELECT pg_terminate_backend(pid) AS terminated FROM pg_stat_activity WHERE application_name = $1", [`atomic-owner:${hydrated.handle.ownerExecutorId}`]);
+				assert.equal(terminated.rows.length, 1, "must terminate only the recorded ownership connection");
+				assert.equal(terminated.rows[0].terminated, true);
+			} finally {
+				await client.end();
+			}
+		} else if (command === "release-source") {
+			writeFileSync(releaseFile, "release");
+			await until(() => fileExists(sourceReturnedFile), "source callback never returned after fencing");
+			assert.ok(runId);
+			const host = await ready();
+			await until(async () => ["paused", "failed", "completed", "cancelled"].includes((await host.workflows.getRun(runId)).status), "source run never settled after lost ownership");
+			const settled = await host.workflows.getRun(runId);
+			const dependencyError = "dependencyError" in settled && typeof settled.dependencyError === "string" ? settled.dependencyError : settled.error;
+			result = { status: settled.status, resumable: settled.resumable, error: dependencyError };
+		} else if (command === "durable-state") {
+			assert.ok(runId);
+			const host = await ready();
+			await host.workflows.getRun(runId);
+			const backend = getDurableBackend();
+			const hydrated = await backend.hydrateWorkflowForInspection!(runId);
+			assert.ok(hydrated.kind === "current");
+			const wrappers = getDbosProcessOwner().wrappers;
+			assert.ok(wrappers);
+			const sdk = createRealDbosHandle(await importDbosSdk(), wrappers.mainWorkflow, wrappers.checkpointWorkflow);
+			const records = (await sdk.listStepRecords(runId)).map(({ stepName, output }) => ({ stepName, output })).sort((a, b) => a.stepName.localeCompare(b.stepName));
+			result = { status: hydrated.handle.status, modelOwner: hydrated.handle.modelOwner, ownerExecutorId: hydrated.handle.ownerExecutorId, updatedAt: hydrated.handle.updatedAt, checkpoints: backend.listCheckpoints(runId), records };
+		} else if (command === "mask-owner") {
+			maskedOwnerPid = Number(runId);
+			assert.ok(Number.isSafeInteger(maskedOwnerPid) && maskedOwnerPid > 0);
 		} else if (command === "expire") {
 			clockOffset = FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1000;
 		} else if (command === "resume") {

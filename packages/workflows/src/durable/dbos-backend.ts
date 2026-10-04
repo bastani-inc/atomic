@@ -15,7 +15,7 @@ import {
 import { DurableNestedTopologyError } from "./boundary-topology.js";
 import {
 	boundedAdmission,
-	type DbosDependencyError,
+	DbosDependencyError,
 	dbosAdmissionContext,
 	isDbosDependencyError,
 } from "./dbos-admission.js";
@@ -54,6 +54,18 @@ import type {
 export interface DbosSdkHandle {
 	readonly launch: () => Promise<void>;
 	readonly shutdown: () => Promise<void>;
+	readonly ownerLiveness?: (executorId: string | undefined) => Promise<"alive" | "dead" | "unknown">;
+	readonly withWorkflowClaim?: (workflowId: string, callback: () => Promise<boolean>) => Promise<boolean>;
+	readonly executorId?: string;
+	readonly generationLost?: () => boolean;
+	readonly forkGeneration?: () => DbosSdkHandle;
+	readonly adoptPreviousGeneration?: (
+		workflowId: string,
+	) => Promise<import("./types.js").DurableWorkflowMetadata | undefined>;
+	readonly enrollLegacyWorkflow?: (
+		workflowId: string,
+		modelOwner: string,
+	) => Promise<import("./types.js").DurableWorkflowMetadata | undefined>;
 	readonly startWorkflow: (
 		workflowId: string,
 		name: string,
@@ -134,6 +146,10 @@ export async function configureDbosDurableBackend(config?: {
 	const sdk = await importDbosSdk();
 	const owner = getDbosProcessOwner();
 	const existing = owner.wrappers;
+	if (existing !== undefined && owner.executorFence === undefined)
+		throw new Error(
+			"Existing workflow executor has no database ownership fence; restart the host before recovering workflows",
+		);
 	let launch = owner.active?.launch ?? (() => sdk.launch());
 	let checkReady: (() => Promise<void>) | undefined;
 	// The SDK forbids setConfig after launch. Recover original wrappers first.
@@ -166,12 +182,34 @@ export async function configureDbosDurableBackend(config?: {
 	if (existing === undefined) {
 		owner.wrappers = { mainWorkflow, checkpointWorkflow };
 	}
+	let backendFence = owner.executorFence;
+	let backend = new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence), {
+		checkReady,
+	});
 	return {
-		backend: new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow), {
-			checkReady,
-		}),
-		launch,
-		shutdown: () => sdk.shutdown(),
+		get backend() {
+			return backend;
+		},
+		launch: async () => {
+			await launch();
+			if (backendFence !== owner.executorFence && backendFence?.closed) {
+				backendFence = owner.executorFence;
+				backend = new DbosDurableBackend(
+					createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence),
+					{ checkReady },
+				);
+			}
+		},
+		shutdown: async () => {
+			const results = await Promise.allSettled([
+				sdk.shutdown(),
+				...[...(owner.executorFences ?? [])].map((fence) => fence.close()),
+			]);
+			const errors = results
+				.filter((result) => result.status === "rejected")
+				.map((result) => (result.reason instanceof Error ? result.reason : new Error(String(result.reason))));
+			if (errors.length > 0) throw new AggregateError(errors, "Workflow database shutdown failed");
+		},
 	};
 }
 
@@ -205,12 +243,12 @@ export async function importDbosSdk(): Promise<DbosStatic> {
 export class DbosDurableBackend implements DurableWorkflowBackend {
 	public readonly persistent = true;
 	private readonly mem = new InMemoryDurableBackend();
-	private readonly sdk: DbosSdkHandle;
+	private sdk: DbosSdkHandle;
 	private readonly invalid = new Set<string>();
 	private readonly current = new Set<string>();
 	private readonly locallyRegistered = new Set<string>();
 	private readonly promptReservations: DbosPromptReservationTracker;
-	private readonly executorId: string;
+	private executorId: string;
 	private readonly writeQueues = new Map<string, Promise<void>>();
 	private readonly writeErrors = new Map<string, Error[]>();
 	private readonly onUnavailable?: (error: DbosDependencyError) => void;
@@ -219,11 +257,16 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private readonly unavailableAdmissions = new Set<string>();
 	private readonly unavailableCheckpoints = new Set<string>();
 	private readonly pendingRecoveryAdmissions = new Set<string>();
+	private readonly ownerLiveness = new Map<string, "alive" | "dead" | "unknown">();
 	private readonly admissionMetadataAttempted = new Set<string>();
 	private readonly admissionSettlements = new Map<string, Promise<void>>();
 	private readonly admissionRecoveries = new Map<string, Promise<void>>();
 	private readonly admissionRecoveryControllers = new Map<string, AbortController>();
 
+	private fixedGeneration = false;
+	private generationIsCurrent?: () => boolean;
+	private rebindInitialAdmission?: () => void;
+	private admitted = false;
 	constructor(
 		sdk: DbosSdkHandle,
 		options?: {
@@ -233,7 +276,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		},
 	) {
 		this.sdk = sdk;
-		this.executorId = options?.executorId ?? getAtomicExecutorId();
+		this.executorId = options?.executorId ?? sdk.executorId ?? getAtomicExecutorId();
 		this.onUnavailable = options?.onUnavailable;
 		this.checkReady = options?.checkReady;
 		this.promptReservations = new DbosPromptReservationTracker({
@@ -243,6 +286,64 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				this.enqueueWrite(workflowId, () => this.sdk.recordStepOutput(workflowId, stepName, output));
 			},
 		});
+	}
+
+	async enrollLegacyWorkflow(
+		workflowId: string,
+		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },
+	): Promise<boolean> {
+		if (options.olderWorkersStopped !== true || this.sdk.enrollLegacyWorkflow === undefined) return false;
+		this.ensureGeneration();
+		return await boundedAdmission(
+			(signal) =>
+				dbosAdmissionContext.run(signal, async () => {
+					signal.throwIfAborted();
+					const metadata = await this.sdk.enrollLegacyWorkflow!(workflowId, options.modelOwner);
+					signal.throwIfAborted();
+					if (metadata === undefined) return false;
+					this.applyMetadata(workflowId, metadata);
+					this.current.add(workflowId);
+					return true;
+				}),
+			options.signal,
+		);
+	}
+
+	executionView(): DurableWorkflowBackend {
+		if (this.fixedGeneration || this.sdk.forkGeneration === undefined) return this;
+		this.ensureGeneration();
+		const view = new DbosDurableBackend(this.sdk, {
+			executorId: this.executorId,
+			checkReady: this.checkReady,
+			onUnavailable: this.onUnavailable,
+		});
+		const reservations = view.promptReservations;
+		Object.assign(view, this);
+		Object.assign(view, {
+			promptReservations: reservations,
+			fixedGeneration: true,
+			generationIsCurrent: () => this.sdk === view.sdk,
+			rebindInitialAdmission: () => {
+				this.ensureGeneration();
+				view.sdk = this.sdk;
+				view.executorId = this.executorId;
+			},
+		});
+		return view;
+	}
+
+	private ensureGeneration(): void {
+		if (this.fixedGeneration) {
+			if (this.generationIsCurrent?.() === false)
+				throw new DbosDependencyError(
+					"Workflow database ownership generation changed; stale execution writes are refused",
+				);
+			return;
+		}
+		if (this.sdk.generationLost?.() && this.sdk.forkGeneration !== undefined) {
+			this.sdk = this.sdk.forkGeneration();
+			this.executorId = this.sdk.executorId ?? this.executorId;
+		}
 	}
 
 	isAdmissionUnavailable(workflowId: string): boolean {
@@ -267,6 +368,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		registration: WorkflowRegistrationInput | undefined,
 		signal: AbortSignal,
 	): Promise<void> {
+		if (!this.admitted) this.rebindInitialAdmission?.();
 		const pending = this.performAdmission(workflowId, registration, signal);
 		this.admissionSettlements.set(workflowId, pending);
 		void pending.then(
@@ -277,6 +379,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		);
 		// Keep extensible startup drains on executor admission, not control acknowledgement.
 		return pending.then(async () => {
+			this.admitted = true;
 			await dbosAdmissionContext.run(signal, () => this.flush(workflowId));
 			signal.throwIfAborted();
 			this.admissionMetadataAttempted.delete(workflowId);
@@ -304,12 +407,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				}),
 				signal,
 			);
+			this.ensureGeneration();
 			this.admissionUnavailable = false;
 			this.unavailableAdmissions.delete(workflowId);
 			this.unavailableCheckpoints.delete(workflowId);
 			this.pendingRecoveryAdmissions.delete(workflowId);
 		} catch (error) {
-			if (isDbosDependencyError(error)) {
+			if (isDbosDependencyError(error) && this.generationIsCurrent?.() !== false) {
 				this.admissionMetadataAttempted.delete(workflowId);
 				this.admissionUnavailable = true;
 				// Another root's successful admission must not enable cleanup of this identity.
@@ -344,6 +448,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	registerWorkflow(handle: WorkflowRegistrationInput): void {
+		this.ensureGeneration();
 		if (this.invalid.has(handle.workflowId)) {
 			throw new DurableNestedTopologyError(`workflow ${handle.workflowId} contains malformed current DBOS records`);
 		}
@@ -396,6 +501,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
+		this.ensureGeneration();
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 		this.mem.recordCheckpoint(checkpoint);
 		this.enqueueWrite(checkpoint.workflowId, () => this.persistCheckpoint(checkpoint));
@@ -431,7 +537,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			undefined,
 			"Workflow database checkpoint timed out. Restore PostgreSQL and inspect the run before resuming; external outcomes may be unknown.",
 		).catch((error: unknown) => {
-			if (isDbosDependencyError(error)) {
+			if (isDbosDependencyError(error) && this.generationIsCurrent?.() !== false) {
 				this.unavailableCheckpoints.add(checkpoint.workflowId);
 				const errors = this.writeErrors.get(checkpoint.workflowId);
 				if (errors !== undefined)
@@ -485,10 +591,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return this.mem.listCheckpoints(workflowId);
 	}
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
-		return this.mem.getWorkflow(workflowId);
+		const handle = this.mem.getWorkflow(workflowId);
+		return handle === undefined || this.sdk.ownerLiveness === undefined
+			? handle
+			: { ...handle, ownerLiveness: this.ownerLiveness.get(handle.ownerExecutorId ?? "") ?? "unknown" };
 	}
 	getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
-		return this.isWorkflowLoadable(workflowId) ? this.mem.getWorkflow(workflowId) : undefined;
+		return this.isWorkflowLoadable(workflowId) ? this.getWorkflow(workflowId) : undefined;
 	}
 
 	setWorkflowStatus(
@@ -498,6 +607,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 	): void {
+		this.ensureGeneration();
 		if (status === "cancelled" || status === "completed" || resumable === false) {
 			this.admissionRecoveryControllers
 				.get(workflowId)
@@ -530,46 +640,57 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
 	): Promise<boolean> {
+		this.ensureGeneration();
 		let records: readonly DbosStepRecord[] = [];
-		return await transitionDbosWorkflowStatus({
-			expectedStatuses: expected,
-			status,
-			flush: () => this.flush(workflowId),
-			expectedUpdatedAt,
-			local: () => this.getLoadableWorkflow(workflowId),
-			read: async () => {
-				records = await this.sdk.listStepRecords(workflowId);
-				return classifyLatestMetadata(records, workflowId);
-			},
-			reconcile: (entry) => {
-				// Metadata stores the reservation baseline, not the live prompt count.
-				const pendingPrompts = this.promptReservations.hydrate(
-					workflowId,
-					entry.pendingPrompts,
-					records,
-					entry.promptReservationEpoch,
-				);
-				this.applyMetadata(workflowId, { ...entry, pendingPrompts });
-			},
-			claim: (authoritative, generation) =>
-				this.claimStatusTransition(
-					workflowId,
-					authoritative,
-					generation,
-					status,
-					pendingPrompts,
-					resumable,
-					modelOwner,
-				),
-			write: async () => {
-				if (modelOwner !== undefined) {
+		const transition = () =>
+			transitionDbosWorkflowStatus({
+				expectedStatuses: expected,
+				status,
+				flush: () => this.flush(workflowId),
+				expectedUpdatedAt,
+				local: () => this.getLoadableWorkflow(workflowId),
+				read: async () => {
+					records = await this.sdk.listStepRecords(workflowId);
+					return classifyLatestMetadata(records, workflowId);
+				},
+				reconcile: (entry) => {
+					// Metadata stores the reservation baseline, not the live prompt count.
+					const pendingPrompts = this.promptReservations.hydrate(
+						workflowId,
+						entry.pendingPrompts,
+						records,
+						entry.promptReservationEpoch,
+					);
+					this.applyMetadata(workflowId, { ...entry, pendingPrompts });
+				},
+				claim: (authoritative, generation) =>
+					this.claimStatusTransition(
+						workflowId,
+						authoritative,
+						generation,
+						status,
+						pendingPrompts,
+						resumable,
+						modelOwner,
+					),
+				write: async () => {
 					const handle = this.mem.getWorkflow(workflowId);
-					if (handle !== undefined) this.mem.registerWorkflow({ ...handle, modelOwner }, true);
-				}
-				this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
-				await this.flush(workflowId);
-			},
-		});
+					if (handle !== undefined)
+						this.mem.registerWorkflow(
+							{
+								...handle,
+								legacyRecoveryPending: undefined,
+								...(modelOwner !== undefined ? { modelOwner } : {}),
+							},
+							true,
+						);
+					this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+					await this.flush(workflowId);
+				},
+			});
+		if (this.sdk.withWorkflowClaim === undefined) return await transition();
+		await this.flush(workflowId);
+		return await this.sdk.withWorkflowClaim(workflowId, transition);
 	}
 
 	/**
@@ -596,6 +717,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
 			...(modelOwner === undefined ? {} : { modelOwner }),
+			legacyRecoveryPending: undefined,
 			ownerExecutorId: this.executorId,
 			transitionClaimId,
 			updatedAt: Math.max(Date.now(), authoritative.updatedAt + 1),
@@ -769,7 +891,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				this.mem.recordCheckpoint(classified.checkpoint);
 			}
 			const handle = this.getLoadableWorkflow(workflowId);
-			return handle === undefined ? { kind: "malformed" } : { kind: "current", handle };
+			return handle === undefined ? { kind: "malformed" } : await this.withOwnerLiveness(handle);
 		}
 		const info = await this.sdk.retrieveWorkflow(workflowId);
 		if (info !== undefined) return await this.hydrateInfo(info);
@@ -789,6 +911,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	reconcileWorkflowAdmission(workflowId: string, signal?: AbortSignal): Promise<void> {
+		this.ensureGeneration();
 		signal?.throwIfAborted();
 		if (!this.unavailableAdmissions.has(workflowId) && !this.unavailableCheckpoints.has(workflowId))
 			return Promise.resolve();
@@ -806,7 +929,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 					if (
 						!(await reconcileDbosAdmission(
 							this.sdk,
-							this.promptReservations.metadata(workflowId, metadata),
+							{ ...this.promptReservations.metadata(workflowId, metadata), ownerExecutorId: this.executorId },
 							this.unavailableAdmissions.has(workflowId),
 							this.checkReady,
 						))
@@ -814,6 +937,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 						await this.suppressWorkflow(workflowId);
 						return;
 					}
+					admissionSignal.throwIfAborted();
+					await this.sdk.adoptPreviousGeneration?.(workflowId);
 					admissionSignal.throwIfAborted();
 					const info = await this.sdk.retrieveWorkflow(workflowId);
 					if (info === undefined) return;
@@ -915,9 +1040,16 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			completedCheckpoints: current.completedCheckpoints,
 		});
 		const handle = this.getLoadableWorkflow(info.workflowId);
-		if (handle !== undefined) return { kind: "current", handle };
+		if (handle !== undefined) return await this.withOwnerLiveness(handle);
 		await this.suppressWorkflow(info.workflowId);
 		return { kind: "malformed" };
+	}
+
+	private async withOwnerLiveness(handle: DurableWorkflowHandle): Promise<DurableWorkflowHydrationResult> {
+		if (this.sdk.ownerLiveness === undefined) return { kind: "current", handle };
+		const ownerLiveness = await this.sdk.ownerLiveness(handle.ownerExecutorId);
+		this.ownerLiveness.set(handle.ownerExecutorId ?? "", ownerLiveness);
+		return { kind: "current", handle: { ...handle, ownerLiveness } };
 	}
 
 	private async suppressWorkflow(workflowId: string): Promise<void> {
@@ -933,9 +1065,22 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		if (signal?.aborted) return Promise.resolve();
 		const previous = this.writeQueues.get(workflowId) ?? Promise.resolve();
 		const next = previous.then(async () => {
+			this.ensureGeneration();
+			const adopted = await this.sdk.adoptPreviousGeneration?.(workflowId);
+			const local = this.mem.getWorkflow(workflowId);
+			if (adopted !== undefined && local !== undefined)
+				this.mem.registerWorkflow(
+					{
+						...local,
+						ownerExecutorId: adopted.ownerExecutorId,
+						updatedAt: Math.max(local.updatedAt, adopted.updatedAt + 1),
+					},
+					true,
+				);
 			if (!signal?.aborted) await fn();
 		});
 		const tracked = next.catch((err) => {
+			if (this.generationIsCurrent?.() === false) return;
 			const error = err instanceof Error ? err : new Error(String(err));
 			const errors = this.writeErrors.get(workflowId) ?? [];
 			errors.push(error);

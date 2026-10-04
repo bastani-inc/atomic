@@ -95,6 +95,7 @@ export interface WorkflowRunResumeOptions {
 	readonly stageId?: string;
 	/** Message delivered to each resumed stage. */
 	readonly message?: string;
+	readonly legacyRecovery?: { readonly olderWorkersStopped: true };
 }
 
 export type WorkflowRunControlStatus = "ok" | "running" | "paused" | "partial" | "noop" | "cancelled";

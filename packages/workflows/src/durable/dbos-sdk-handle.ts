@@ -6,8 +6,14 @@
  * files stay focused.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DbosSdkHandle, DbosStepRecord, DbosWorkflowInfo } from "./dbos-backend.js";
+import { claimMetadataStepName, classifyLatestMetadata, encodeMetadata, metadataStepName } from "./dbos-metadata.js";
+import { type DbosOwnerFence, isDatabaseExecutor } from "./dbos-owner-fence.js";
+import { getDbosProcessOwner } from "./dbos-process-owner.js";
+import type { DbosRowAuthority } from "./dbos-row-guard.js";
 
 interface DbosWorkflowHandle {
 	readonly workflowID?: string;
@@ -31,10 +37,10 @@ interface DbosStatus {
  * sessions share one DBOS database; a per-process id keeps DBOS-level recovery
  * and workflow ownership scoped to the process that actually runs the work.
  */
-const ATOMIC_EXECUTOR_ID = `atomic-${process.pid.toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
-
 export function getAtomicExecutorId(): string {
-	return ATOMIC_EXECUTOR_ID;
+	const owner = getDbosProcessOwner();
+	owner.executorId ??= `atomic-db-${crypto.randomUUID()}`;
+	return owner.executorId;
 }
 
 export interface DbosLogger {
@@ -83,6 +89,8 @@ export function createRealDbosHandle(
 		stepName: string,
 		output: WorkflowSerializableValue,
 	) => Promise<WorkflowSerializableValue>,
+	fence?: DbosOwnerFence,
+	previousExecutorIds: readonly string[] = [],
 ): DbosSdkHandle {
 	const checkpointId = (workflowId: string, stepName: string): string => `${workflowId}:checkpoint:${stepName}`;
 	async function stepRecord(status: DbosStatus, prefix: string): Promise<DbosStepRecord | undefined> {
@@ -100,10 +108,18 @@ export function createRealDbosHandle(
 				: status.output;
 		return { stepName, output, completedAt: status.createdAt };
 	}
-	return {
+	const raw: DbosSdkHandle = {
 		launch: () => dbos.launch(),
 		shutdown: () => dbos.shutdown(),
 		async startWorkflow(workflowId, name, inputs) {
+			if (fence !== undefined) {
+				const existing = await raw.retrieveWorkflow(workflowId);
+				if (existing !== undefined) {
+					if (existing.name !== name || !isDeepStrictEqual(existing.inputs, inputs))
+						throw new Error("Workflow root identity changed during admission");
+					return;
+				}
+			}
 			try {
 				await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
 			} catch (err) {
@@ -120,7 +136,9 @@ export function createRealDbosHandle(
 			await dbos.cancelWorkflow(workflowId, { cancelChildren: true });
 		},
 		async resumeWorkflow(workflowId) {
-			await dbos.resumeWorkflow(workflowId);
+			if (fence === undefined) await dbos.resumeWorkflow(workflowId);
+			else if ((await raw.retrieveWorkflow(workflowId)) === undefined)
+				throw new Error("Workflow root is unavailable for resume");
 		},
 		async listAllWorkflows() {
 			const statuses = await dbos.listWorkflows({
@@ -150,6 +168,15 @@ export function createRealDbosHandle(
 				: undefined;
 		},
 		async recordStepOutput(workflowId, stepName, output) {
+			if (fence !== undefined) {
+				const id = checkpointId(workflowId, stepName);
+				const existing = (await dbos.listWorkflows({ workflowIDs: [id], limit: 1 }))[0];
+				if (
+					existing?.status !== undefined &&
+					["PENDING", "ENQUEUED", "CANCELLED", "ERROR", "DELAYED"].includes(existing.status)
+				)
+					await dbos.deleteWorkflows([id], false);
+			}
 			let handle: DbosWorkflowHandle;
 			try {
 				handle = await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName) })(
@@ -178,6 +205,209 @@ export function createRealDbosHandle(
 			}
 			await dbos.deleteWorkflows([...new Set([workflowId, ...checkpointIds])], true);
 		},
+	};
+	if (fence === undefined) return raw;
+	const claims = new AsyncLocalStorage<{ authority: DbosRowAuthority }>();
+	const rowAuthority = (workflowId: string, current: ReturnType<typeof classifyLatestMetadata>): DbosRowAuthority => ({
+		root: workflowId,
+		actor: fence.executorId,
+		...(current.kind === "current"
+			? { owner: current.metadata.ownerExecutorId, generation: current.generation }
+			: {}),
+		enroll:
+			current.kind === "unavailable" ||
+			(current.kind === "current" && isDatabaseExecutor(current.metadata.ownerExecutorId)),
+	});
+	const mutate = async (
+		workflowId: string,
+		callback: () => Promise<void>,
+		step?: { name: string; output: WorkflowSerializableValue },
+	): Promise<void> =>
+		fence.write(workflowId, async () => {
+			const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+			const claimed = claims.getStore();
+			if (
+				claimed === undefined &&
+				current.kind === "current" &&
+				current.metadata.ownerExecutorId !== fence.executorId
+			)
+				throw new Error("Workflow database ownership changed; stale executor writes are refused");
+			let output =
+				step === undefined
+					? undefined
+					: classifyLatestMetadata([{ stepName: step.name, output: step.output }], workflowId);
+			let persistedStep = step;
+			if (
+				step !== undefined &&
+				output?.kind === "current" &&
+				current.kind === "current" &&
+				!step.name.endsWith(":claim") &&
+				output.metadata.ownerExecutorId === fence.executorId &&
+				output.generation <= current.generation
+			) {
+				const updatedAt = Math.max(current.generation + 1, output.metadata.updatedAt, Date.now());
+				persistedStep = {
+					name: metadataStepName(updatedAt),
+					output: encodeMetadata({ ...output.metadata, updatedAt }),
+				};
+				output = classifyLatestMetadata(
+					[{ stepName: persistedStep.name, output: persistedStep.output }],
+					workflowId,
+				);
+			}
+			const authority = claimed?.authority ?? rowAuthority(workflowId, current);
+			const capability =
+				output?.kind === "current" && step?.name.endsWith(":claim")
+					? {
+							...authority,
+							claim: output.metadata.transitionClaimId,
+							checkpoint: checkpointId(workflowId, step.name),
+						}
+					: authority;
+			const record = persistedStep;
+			await fence.withRowAuthority(
+				capability,
+				record === undefined ? callback : () => raw.recordStepOutput(workflowId, record.name, record.output),
+			);
+			if (claimed !== undefined && output?.kind === "current")
+				claimed.authority = {
+					...capability,
+					owner: output.metadata.ownerExecutorId,
+					generation: output.generation,
+				};
+		});
+	return {
+		...raw,
+		executorId: fence.executorId,
+		generationLost: () => fence.invalidated,
+		forkGeneration: () => {
+			const next = getDbosProcessOwner().createExecutorFence?.();
+			if (next === undefined) throw new Error("Workflow ownership fence cannot create a recovery generation");
+			void fence.close().catch(() => {});
+			return createRealDbosHandle(dbos, mainWorkflow, checkpointWorkflow, next, [
+				...previousExecutorIds,
+				fence.executorId,
+			]);
+		},
+		adoptPreviousGeneration: async (workflowId) => {
+			if (previousExecutorIds.length === 0) return undefined;
+			return await fence.write(
+				workflowId,
+				async () => {
+					const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					if (current.kind !== "current" || current.metadata.ownerExecutorId === fence.executorId)
+						return undefined;
+					const previousExecutorId = current.metadata.ownerExecutorId;
+					if (previousExecutorId === undefined || !previousExecutorIds.includes(previousExecutorId))
+						throw new Error("Workflow database ownership changed; stale executor writes are refused");
+					const metadata = {
+						...current.metadata,
+						ownerExecutorId: fence.executorId,
+						transitionClaimId: crypto.randomUUID(),
+						updatedAt: Math.max(Date.now(), current.metadata.updatedAt + 1),
+					};
+					const adopted = await fence.recover(previousExecutorId, async () => {
+						await fence.withRowAuthority(
+							{
+								...rowAuthority(workflowId, current),
+								claim: metadata.transitionClaimId,
+								checkpoint: checkpointId(workflowId, claimMetadataStepName(current.generation)),
+							},
+							() =>
+								raw.recordStepOutput(
+									workflowId,
+									claimMetadataStepName(current.generation),
+									encodeMetadata(metadata),
+								),
+						);
+						return metadata;
+					});
+					if (adopted === undefined) throw new Error("Workflow previous execution generation is still active");
+					return adopted;
+				},
+				true,
+			);
+		},
+		enrollLegacyWorkflow: async (workflowId, modelOwner) =>
+			fence.write(
+				workflowId,
+				async () => {
+					const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					if (
+						current.kind !== "current" ||
+						(isDatabaseExecutor(current.metadata.ownerExecutorId) &&
+							current.metadata.legacyRecoveryPending !== true) ||
+						!["running", "paused", "blocked"].includes(current.metadata.status) ||
+						(current.metadata.rootWorkflowId !== undefined && current.metadata.rootWorkflowId !== workflowId)
+					)
+						return undefined;
+					const metadata = {
+						...current.metadata,
+						modelOwner,
+						ownerExecutorId: fence.executorId,
+						status: "blocked" as const,
+						resumable: true,
+						legacyRecoveryPending: true as const,
+						updatedAt: Math.max(Date.now(), current.metadata.updatedAt + 1),
+					};
+					const retry = isDatabaseExecutor(current.metadata.ownerExecutorId);
+					const transitionClaimId = crypto.randomUUID();
+					const stepName = retry
+						? claimMetadataStepName(current.generation)
+						: metadataStepName(Math.max(current.generation + 1, metadata.updatedAt));
+					const persist = () =>
+						fence.withRowAuthority(
+							{
+								...rowAuthority(workflowId, current),
+								enroll: true,
+								...(retry ? { claim: transitionClaimId, checkpoint: checkpointId(workflowId, stepName) } : {}),
+							},
+							() =>
+								raw.recordStepOutput(
+									workflowId,
+									stepName,
+									encodeMetadata({ ...metadata, ...(retry ? { transitionClaimId } : {}) }),
+								),
+						);
+					if (retry) {
+						const recovered = await fence.recover(current.metadata.ownerExecutorId!, async () => {
+							await persist();
+							return true;
+						});
+						if (recovered !== true) return undefined;
+					} else await persist();
+					return metadata;
+				},
+				true,
+			),
+		ownerLiveness: (executorId) => fence.liveness(executorId),
+		withWorkflowClaim: (workflowId, callback) =>
+			fence.write(
+				workflowId,
+				async () => {
+					const authoritative = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					const claim = () =>
+						claims.run(
+							{ authority: { ...rowAuthority(workflowId, authoritative), claim: crypto.randomUUID() } },
+							callback,
+						);
+					if (
+						authoritative.kind === "current" &&
+						authoritative.metadata.status === "running" &&
+						authoritative.metadata.ownerExecutorId !== fence.executorId
+					) {
+						return (await fence.recover(authoritative.metadata.ownerExecutorId, claim)) ?? false;
+					}
+					return await claim();
+				},
+				true,
+			),
+		startWorkflow: (id, name, inputs) => mutate(id, () => raw.startWorkflow(id, name, inputs)),
+		cancelWorkflow: (id) => mutate(id, () => raw.cancelWorkflow(id)),
+		resumeWorkflow: (id) => mutate(id, () => raw.resumeWorkflow(id)),
+		recordStepOutput: (id, step, output) =>
+			mutate(id, () => raw.recordStepOutput(id, step, output), { name: step, output }),
+		deleteWorkflowData: (id) => mutate(id, () => raw.deleteWorkflowData(id)),
 	};
 }
 
