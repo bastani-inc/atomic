@@ -19,6 +19,11 @@ interface PostgresHealthOperations {
 const HEALTH_INTERVAL_MS = 5_000;
 const RECOVERY_ATTEMPTS = 3;
 
+export function isMonitoringConnectionTimeout(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if ("code" in error) return error.code === "ETIMEDOUT";
+	return error.message === "timeout expired" || error.message === "Connection terminated due to connection timeout";
+}
 function isMonitoringConnectionFailure(error: unknown): error is Error {
 	if (!(error instanceof Error)) return false;
 	if ("code" in error)
@@ -150,7 +155,8 @@ export class PostgresHealth {
 			try {
 				identity = await this.operations.probe();
 			} catch (retryError) {
-				if (!isMonitoringConnectionFailure(retryError)) throw retryError;
+				if (isMonitoringConnectionTimeout(retryError) || !isMonitoringConnectionFailure(retryError))
+					throw retryError;
 				this.retainFailure(retryError);
 				return undefined;
 			}
@@ -171,8 +177,8 @@ export class PostgresHealth {
 			const ready = await this.probe();
 			if (ready !== undefined) return ready;
 		} catch (error) {
-			if (isQueryReadTimeout(error)) {
-				// An unanswered monitoring query is load, not evidence about the server: keep `available` and
+			if (isQueryReadTimeout(error) || isMonitoringConnectionTimeout(error)) {
+				// An unanswered monitoring probe says nothing about held sockets: keep `available` and
 				// every checkout, and start no recovery.
 				this.retainFailure(new Error("Managed PostgreSQL did not answer a health check in time."));
 				throw this.dependencyFailure("Managed PostgreSQL did not answer a health check in time.");

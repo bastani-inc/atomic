@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -27,6 +28,7 @@ const definition = join(directory, "sdk-host-durable.ts");
 writeFileSync(definition, source);
 process.env.ATOMIC_FAULT_TEST_HOME = cwd;
 const identities = [];
+const diagnostics = [];
 const text = "  durable text  ";
 const options = {
 	cwd,
@@ -34,8 +36,10 @@ const options = {
 	sessionManager: SessionManager.inMemory(cwd),
 	settingsManager: SettingsManager.inMemory(),
 	builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
+	extensionBindings: { onDiagnostic: (entry) => diagnostics.push(entry) },
 };
 const bindings = {
+	onDiagnostic: options.extensionBindings.onDiagnostic,
 	humanInput: {
 		input: async (_title, _placeholder, options) => { identities.push(options); return text; },
 		confirm: async (_title, _message, options) => { identities.push(options); return true; },
@@ -84,6 +88,36 @@ try {
 			if (details.runs[0]?.status === "completed") break;
 			await sleep(20);
 		} while (Date.now() < deadline);
+		if (details.runs[0]?.status !== "completed") {
+			const observedAt = Date.now();
+			const sideEffects = Object.fromEntries(["receipts.jsonl", "effects.jsonl"].map((file) => [
+				file, existsSync(join(cwd, file)) ? readFileSync(join(cwd, file), "utf8") : null,
+			]));
+			const runId = details.runs[0]?.runId;
+			const checkpointIds = (details.snapshots[0]?.toolNodes ?? []).map((node) => `${runId}:checkpoint:${node.id}`);
+			let checkpointRows;
+			let checkpointReadError;
+			let client;
+			try {
+				const { Client } = createRequire(import.meta.resolve("@bastani/atomic"))("pg");
+				client = new Client({
+					host: "127.0.0.1", port: metadata.server.port, user: "postgres", password: "atomic",
+					database: "atomic_workflows_dbos_sys", ssl: false,
+					connectionTimeoutMillis: 1000, query_timeout: 1000, statement_timeout: 1000,
+				});
+				client.on("error", () => {});
+				await client.connect();
+				checkpointRows = (await client.query(
+					"SELECT workflow_uuid, status, name, output, error FROM dbos.workflow_status WHERE workflow_uuid = ANY($1::text[]) ORDER BY workflow_uuid",
+					[[runId, ...checkpointIds]],
+				)).rows;
+			} catch (error) {
+				checkpointReadError = String(error);
+			} finally {
+				await client?.end().catch((error) => { checkpointReadError ??= String(error); });
+			}
+			console.error(JSON.stringify({ host: "built-node", observedAt, checkpointReadAt: Date.now(), sideEffects, details, checkpointRows, checkpointReadError, diagnostics }));
+		}
 		assert.equal(details.runs[0]?.status, "completed", JSON.stringify(details));
 		assert.deepEqual(details.snapshots[0].result, { text, approved: true });
 		assert.equal(identities.length, 2);

@@ -31,6 +31,7 @@ import {
 	fingerprintPreparedRuntime,
 	prepareBinariesForOwner,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
+import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 import {
 	availablePostgresPort,
 	managedPostgresLaunchExecutable,
@@ -1306,10 +1307,81 @@ test("does not attach a server whose SQL identity differs", async () => {
 	assert.equal(managedPostgresMetadata(f.root, 18, false).server?.pid, old.pid);
 });
 
+test.each([
+	new Error("timeout expired"),
+	new Error("Connection terminated due to connection timeout"),
+	Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
+])(
+	"a transient identity connection timeout retries the real probe without retiring live owners (#3419): %s",
+	async (timeout) => {
+		const connect = vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+		vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
+		const query = vi.spyOn(Client.prototype, "query") as unknown as { mockResolvedValue(value: object): void };
+		query.mockResolvedValue({ rows: [{ system_identifier: "same" }] });
+		let invalidations = 0;
+		let recoveries = 0;
+		const health = new PostgresHealth({
+			probe: async () => {
+				const row = await probePostgresIdentity(1);
+				return row && { url: "managed", identity: row.system_identifier };
+			},
+			recover: async () => {
+				recoveries++;
+			},
+		});
+		health.subscribe(() => invalidations++);
+		try {
+			assert.equal(await health.check(), "managed");
+			connect.mockRejectedValueOnce(timeout);
+			assert.equal(await health.check(), "managed");
+			assert.equal(connect.mock.calls.length, 3, "the identity probe must expose the timeout to the health retry");
+			assert.equal(invalidations, 0);
+			assert.equal(recoveries, 0);
+		} finally {
+			await health.stop();
+		}
+	},
+);
+
+test("an unanswered monitoring connection rejects health without retiring owners or granting recovery authority (#3419)", async () => {
+	const foreign = await listener();
+	let unavailable = false;
+	let invalidations = 0;
+	let recoveries = 0;
+	let identity = "same";
+	const health = new PostgresHealth({
+		probe: async () => {
+			if (!unavailable) return { url: "managed", identity };
+			const row = await probePostgresIdentity(foreign.port);
+			return row && { url: "managed", identity: row.system_identifier };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+		wait: async () => {},
+	});
+	health.subscribe(() => invalidations++);
+	try {
+		assert.equal(await health.check(), "managed");
+		unavailable = true;
+		await assert.rejects(health.check(), (error) => isDbosDependencyError(error));
+		assert.equal(invalidations, 0);
+		assert.equal(recoveries, 0);
+		unavailable = false;
+		assert.equal(await health.check(), "managed");
+		assert.equal(invalidations, 0);
+		identity = "new-generation";
+		assert.equal(await health.check(), "managed");
+		assert.equal(invalidations, 1, "uncertainty must retain the previous identity for generation fencing");
+	} finally {
+		await health.stop();
+	}
+});
+
 test("a non-PostgreSQL listener cannot satisfy the bounded SQL probe", async () => {
 	const foreign = await listener();
 	const started = performance.now();
-	assert.equal(await probePostgresIdentity(foreign.port), undefined);
+	await assert.rejects(probePostgresIdentity(foreign.port), /timeout/);
 	assert.ok(performance.now() - started < 5000, "the 1-second connection budget must bound a silent listener");
 	assert.equal(foreign.server.listening, true);
 });
@@ -1331,8 +1403,6 @@ test.each([
 	Object.assign(new Error("terminating connection"), { code: "57P02" }),
 	Object.assign(new Error("the database system is starting up"), { code: "57P03" }),
 	new Error("Connection terminated unexpectedly"),
-	new Error("timeout expired"),
-	new Error("Connection terminated due to connection timeout"),
 ])("the identity probe still reports lost connectivity as unavailable: %s", async (failure) => {
 	vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {});
 	vi.spyOn(Client.prototype, "end").mockImplementation(async () => {});
@@ -1341,14 +1411,19 @@ test.each([
 	assert.equal(await probePostgresIdentity(1), undefined);
 });
 
-test("startup readiness retries an existing server whose identity query read-times-out", async () => {
+test.each([
+	new Error("Query read timeout"),
+	new Error("timeout expired"),
+	new Error("Connection terminated due to connection timeout"),
+	Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
+])("startup readiness retries an existing server whose identity probe times out: %s", async (timeout) => {
 	const f = fixture();
 	f.pidfile(await availablePostgresPort(0));
 	let probes = 0;
 	await hooks.ensureCluster({
 		...f.options,
 		probeIdentity: async (port) => {
-			if (++probes === 1) throw new Error("Query read timeout");
+			if (++probes === 1) throw timeout;
 			return f.row(port);
 		},
 	});

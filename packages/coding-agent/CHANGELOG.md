@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed fresh SDK sessions being unable to inspect or resume crashed durable workflow runs from another process. Hosts using `SessionManager.inMemory()` can recover by full run UUID in the original working directory and workflow database without reopening a session file. Database ownership fencing protects healthy connected owners, including across cloned VM identities, and rejects late durable writes after connection loss. Older unfenced runs support explicit controlled enrollment after their workers stop. Completed checkpoints are preserved; interrupted external effects still require idempotency ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
+- Fixed managed workflow database monitoring timeouts unnecessarily dropping healthy run ownership. A persistent timeout now reports database unavailability without closing existing ownership connections ([#3419](https://github.com/bastani-inc/atomic/issues/3419)).
 
 ## [0.9.26-alpha.5] - 2026-10-03
 

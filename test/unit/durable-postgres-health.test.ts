@@ -33,7 +33,7 @@ test("persistent monitoring connection failure still recovers an outage (#3246)"
 	const health = new PostgresHealth({
 		probe: async () => {
 			probes++;
-			if (recoveries === 0) throw new Error("timeout expired");
+			if (recoveries === 0) throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
 			return { url: "managed", identity: "same" };
 		},
 		recover: async () => {
