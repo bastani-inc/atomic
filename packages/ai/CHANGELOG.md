@@ -4,6 +4,29 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-10-04
+
+### Added
+
+- Added per-thinking-level sampling parameter overrides (`Model.samplingParamsByThinkingLevel`) for `openai-completions`, `openai-responses`, and `azure-openai-responses` requests ([#9776](https://github.com/earendil-works/pi/pull/9776) by [@mrexodia](https://github.com/mrexodia))
+- Added Cloudflare's Clef and Clef Flash classifier models (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`) to the `cloudflare-workers-ai` provider ([#10316](https://github.com/earendil-works/pi/pull/10316) by [@ndisidore](https://github.com/ndisidore), [#10322](https://github.com/earendil-works/pi/pull/10322) by [@RealAlexandreAI](https://github.com/RealAlexandreAI)).
+- Added `OAuthAuth.usesCallbackServer` so native providers can declare callback-server login flows with a manual-paste fallback. Built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth definitions carry this metadata through lazy loading ([#3400](https://github.com/bastani-inc/atomic/issues/3400)).
+
+### Changed
+
+- Native Anthropic tool changes now define added and redefined tools inline, keeping the initial tool list stable for prompt caching. `hasToolRedefinitions()` is deprecated.
+- OAuth browser pages now show the Atomic logo in color instead of white.
+
+### Fixed
+
+- Provider errors containing "Selected model is at capacity" are now retried.
+- Cloudflare AI Gateway now uses dashed Claude model IDs accepted by its Anthropic endpoint.
+- Fixed Sign in with ChatGPT continuing when its callback port is taken by another login, which made the browser show "OAuth state mismatch"; it now fails with a port-in-use error before opening the browser ([#10265](https://github.com/earendil-works/pi/issues/10265)).
+- Amazon Bedrock OpenAI models are no longer costed at the short-context rate above 272k input tokens; Bedrock models now include the pricing tiers listed on models.dev ([#10326](https://github.com/earendil-works/pi/issues/10326)).
+- Amazon Bedrock Claude requests no longer fail with "Invalid `signature` in `thinking` block" after the system prompt or tools change; Claude Opus 4.7+, Sonnet 5+, and Fable 5 now drop stale thinking blocks like the Anthropic provider ([#10324](https://github.com/earendil-works/pi/issues/10324)).
+- Fixed OpenAI Responses requests failing with `Expected an ID that begins with 'ctc'` when replaying grammar tool calls, such as `codemode`, from another provider or a gateway.
+- Fixed Together's `deepseek-ai/DeepSeek-V4-Pro-0813` (the renamed DeepSeek V4 Pro) losing its `high` reasoning control after the model catalog refreshed.
+
 ## [0.9.26-alpha.6] - 2026-10-04
 
 ### Added
