@@ -410,6 +410,17 @@ test.each([
 		},
 		releases: false,
 	},
+	...[
+		new Error("timeout expired"),
+		new Error("Connection terminated due to connection timeout"),
+		Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
+	].map((error) => ({
+		name: `a monitoring connection timeout (${error.message})`,
+		degraded: async (): Promise<PostgresHealthIdentity | undefined> => {
+			throw error;
+		},
+		releases: false,
+	})),
 	{ name: "a lost monitoring answer", degraded: async () => undefined, releases: true },
 	{
 		name: "ECONNREFUSED",
@@ -426,7 +437,7 @@ test.each([
 		releases: true,
 	},
 	{ name: "a changed server identity", degraded: async () => ({ ...healthy, identity: "new" }), releases: true },
-])("$name during monitoring keeps held checkouts only when it is a read timeout", async ({ degraded, releases }) => {
+])("$name during monitoring keeps held checkouts only when it is a timeout", async ({ degraded, releases }) => {
 	const f = fixture();
 	let outage = false;
 	let recoveries = 0;

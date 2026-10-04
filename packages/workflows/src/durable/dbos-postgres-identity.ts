@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { endianness } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { Client } from "pg";
-import { isQueryReadTimeout } from "./dbos-postgres-health.js";
+import { isMonitoringConnectionTimeout, isQueryReadTimeout } from "./dbos-postgres-health.js";
 import {
 	assertManagedPostmaster,
 	type ManagedPostgresMetadata,
@@ -194,7 +194,7 @@ export async function probePostgresIdentity(port: number): Promise<PostgresIdent
 		return result.rows[0];
 	} catch (error) {
 		// A slow reply says nothing about the server's identity or liveness; callers decide how to retry.
-		if (isQueryReadTimeout(error)) throw error;
+		if (isQueryReadTimeout(error) || isMonitoringConnectionTimeout(error)) throw error;
 		const code = error instanceof Error && "code" in error ? error.code : undefined;
 		if (
 			code === "ECONNREFUSED" ||

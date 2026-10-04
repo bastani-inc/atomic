@@ -34,6 +34,7 @@ export interface DurableResumeRuntime {
 		options?: {
 			readonly policy?: WorkflowExecutionPolicy;
 			readonly actor?: WorkflowActor;
+			readonly modelOwner?: string;
 			readonly budget?: WorkflowBudget;
 			readonly signal?: AbortSignal;
 			readonly onRunAccepted?: (runId: string) => void;
@@ -120,6 +121,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 							...deps.baseRunOpts(options?.policy),
 							...(options?.budget === undefined ? {} : { budget: options.budget }),
 							...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
+							...(options?.modelOwner === undefined ? {} : { modelOwner: options.modelOwner }),
 						},
 						durableBackend: backend,
 						resolveDefinition: async (name, cwd) =>

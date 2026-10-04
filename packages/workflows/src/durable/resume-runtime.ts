@@ -35,6 +35,7 @@ import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
+import { isSdkCrashedRunAdoptable } from "./sdk-recovery-scope.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
@@ -235,6 +236,14 @@ async function resumeDurableWorkflowClaimed(
 			message: `Workflow ${resolved.workflowId} is ${handle.status}, not resumable.`,
 		};
 	}
+	const requestedOwner = deps.baseRunOpts.modelOwner;
+	const adopting =
+		requestedOwner !== undefined &&
+		requestedOwner !== handle.modelOwner &&
+		(handle.modelOwner !== undefined || handle.origin === "agent");
+	if (adopting && !isSdkCrashedRunAdoptable(handle, deps.baseRunOpts.cwd)) {
+		return { ok: false, reason: "owned_elsewhere", message: "Workflow instance belongs to another caller/session." };
+	}
 
 	const def =
 		handle.invocationCwd === undefined
@@ -294,6 +303,33 @@ async function resumeDurableWorkflowClaimed(
 	};
 	const sourceSnapshot =
 		toolContinuation?.source ?? deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
+	let adoptedClaimUpdatedAt: number | undefined;
+	const rollbackStartup = async (onRestored?: () => void): Promise<boolean> => {
+		if (adopting) {
+			const current = backend.getWorkflow(resolved.workflowId);
+			if (adoptedClaimUpdatedAt === undefined || current?.modelOwner !== requestedOwner) return false;
+			const restored = await backend.transitionWorkflowStatus(
+				resolved.workflowId,
+				["running"],
+				handle.status,
+				handle.pendingPrompts,
+				handle.resumable,
+				adoptedClaimUpdatedAt,
+			);
+			if (restored) onRestored?.();
+			return restored;
+		}
+		backend.setWorkflowStatus(
+			resolved.workflowId,
+			handle.status,
+			handle.pendingPrompts,
+			handle.resumable,
+			sourceFailure,
+		);
+		await backend.flush(resolved.workflowId);
+		onRestored?.();
+		return true;
+	};
 
 	// Claim resume against concurrent deletion through the required transition seam.
 	let claimed: boolean;
@@ -315,16 +351,20 @@ async function resumeDurableWorkflowClaimed(
 							undefined,
 							undefined,
 							resolved.updatedAt,
+							adopting ? requestedOwner : undefined,
 						);
-						if (accepted && signal.aborted && backend.getWorkflow(resolved.workflowId)?.status === "running") {
-							backend.setWorkflowStatus(
-								resolved.workflowId,
-								handle.status,
-								handle.pendingPrompts,
-								handle.resumable,
-								sourceFailure,
-							);
-							await backend.flush(resolved.workflowId);
+						if (accepted && adopting) {
+							const current = backend.getWorkflow(resolved.workflowId);
+							if (current?.status === "running" && current.modelOwner === requestedOwner)
+								adoptedClaimUpdatedAt = current.updatedAt;
+						}
+						if (
+							accepted &&
+							!adopting &&
+							signal.aborted &&
+							backend.getWorkflow(resolved.workflowId)?.status === "running"
+						) {
+							await rollbackStartup();
 						}
 						return accepted;
 					} finally {
@@ -353,7 +393,7 @@ async function resumeDurableWorkflowClaimed(
 		...deps.baseRunOpts,
 		...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
 		...(handle.origin !== undefined ? { origin: handle.origin } : {}),
-		modelOwner: handle.modelOwner,
+		modelOwner: adopting ? requestedOwner : handle.modelOwner,
 		runId: resolved.workflowId,
 		durableBackend: backend,
 		...(toolContinuation === undefined ? {} : { continuation: toolContinuation }),
@@ -395,15 +435,9 @@ async function resumeDurableWorkflowClaimed(
 			},
 		});
 	} catch (error) {
-		backend.setWorkflowStatus(
-			resolved.workflowId,
-			handle.status,
-			handle.pendingPrompts,
-			handle.resumable,
-			sourceFailure,
-		);
-		await backend.flush(resolved.workflowId);
-		if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+		await rollbackStartup(() => {
+			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+		});
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -421,16 +455,11 @@ async function resumeDurableWorkflowClaimed(
 			`Workflow ${resolved.workflowId} ended before startup admission`,
 		);
 		if (!backend.isAdmissionUnavailable?.(resolved.workflowId)) {
-			if (sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
-			backend.setWorkflowStatus(
-				resolved.workflowId,
-				handle.status,
-				handle.pendingPrompts,
-				handle.resumable,
-				sourceFailure,
-			);
-			await backend.flush(resolved.workflowId);
-			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+			if (!adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
+			await rollbackStartup(() => {
+				if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
+				if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+			});
 		}
 		return {
 			ok: false,

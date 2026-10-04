@@ -83,6 +83,11 @@ export type DurableWorkflowHydrationResult =
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
+	executionView?(): DurableWorkflowBackend;
+	enrollLegacyWorkflow?(
+		workflowId: string,
+		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },
+	): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
 	/** Retire possibly committed admission metadata without waiting on its abandoned queue. */
@@ -188,6 +193,7 @@ export interface DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
+		modelOwner?: string,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	adjustPendingPrompts(workflowId: string, delta: number): void;
@@ -252,7 +258,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	private readonly promptReservations = new Map<string, PromptReservationState>();
 	private readonly deletedWorkflowIds = new Set<string>();
 
-	registerWorkflow(handle: WorkflowRegistrationInput): void {
+	registerWorkflow(handle: WorkflowRegistrationInput, authoritativeOwner = false): void {
 		this.deletedWorkflowIds.delete(handle.workflowId);
 		const existing = this.workflows.get(handle.workflowId);
 		const completedCheckpoints = handle.completedCheckpoints ?? existing?.handle.completedCheckpoints ?? 0;
@@ -274,7 +280,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.origin !== undefined
 					? { origin: existing.handle.origin }
 					: {}),
-			modelOwner: existing?.handle.modelOwner ?? handle.modelOwner,
+			modelOwner: authoritativeOwner ? handle.modelOwner : (existing?.handle.modelOwner ?? handle.modelOwner),
 			...(handle.workflowCwd !== undefined
 				? { workflowCwd: handle.workflowCwd }
 				: existing?.handle.workflowCwd !== undefined
@@ -311,6 +317,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.ownerExecutorId !== undefined
 					? { ownerExecutorId: existing.handle.ownerExecutorId }
 					: {}),
+			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
+			...(handle.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 		};
 		if (existing) existing.handle = full;
 		else
@@ -506,8 +514,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
+		modelOwner?: string,
 	): Promise<boolean> {
-		const current = this.workflows.get(workflowId)?.handle;
+		const record = this.workflows.get(workflowId);
+		const current = record?.handle;
 		if (
 			current === undefined ||
 			!expected.includes(current.status) ||
@@ -515,6 +525,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		)
 			return false;
 		this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+		if (modelOwner !== undefined && record !== undefined) record.handle = { ...record.handle, modelOwner };
 		return true;
 	}
 
@@ -595,6 +606,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
+			...(h.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
 			...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),

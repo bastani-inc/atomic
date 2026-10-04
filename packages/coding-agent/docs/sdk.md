@@ -228,7 +228,7 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 ### Workflow run control
 
-`session.workflows` manages the workflow runs that this session owns, without slash commands or the model-facing `workflow` tool. It uses the same run-control service as the tool, so ownership and durability rules are identical: a run owned by another session, or executing in another live Atomic process, stays read-only here.
+`session.workflows` controls this session's workflow runs without slash commands or the model-facing `workflow` tool. A fresh session can also inspect a durable root from another session by its full UUID, within the same working directory and configured workflow database. Inspection stays read-only and does not add the run to `listRuns()`.
 
 ```typescript
 interface SessionWorkflows {
@@ -244,6 +244,30 @@ interface SessionWorkflows {
 
 `listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `getRun()`, `getStages()`, `pause()` and `quit()` resolve a prefix against the runs this session holds and reject it at once when none matches, so pass the full UUID for a run recorded by an earlier process. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect. For `pause({ all: true })` and `quit({ all: true })`, `partial` means this call stopped at least one run and others are still active: `failedRuns` lists each run that is still active with its `runId`, a `reason` (for example `pause_failed` or `no_active_stages`) and a `message`, so check `outcome.status === "partial"` before treating a batch stop as complete. If active runs could not be stopped and this call stopped none, the call rejects with `WorkflowRunControlError` (`WORKFLOW_RUN_CONTROL_FAILED`) whose `failedRuns` carries the same list, even when other runs were already paused. Runs that are already paused or already ended are not failures, and a batch with no active run left to stop resolves as a `noop`. Call `getRun()` before retrying.
 
+After an owning process crashes, create a new authorized SDK session with the original `cwd` and workflow database configuration. Keep the workflow definition available, then call `getRun(runId)` with the saved full UUID. Once its progress has been stale for about two minutes and its database ownership connection is gone, status reports `crashed`. `resume(runId)` claims the durable run only after the database excludes the previous owner and any unfinished database writes. It continues under the same UUID and replays completed checkpoints. This works with `SessionManager.inMemory()` and does not require reopening a session file. Concurrent recovery attempts admit only one executor; inspect again if another caller won the claim.
+
+A healthy connected foreign owner remains read-only, even while a long-running tool has not refreshed workflow progress or a VM clone cannot see its PID. `pause()` and `quit()` still require its owning session, and `resume()` cannot adopt another session's live, paused, or terminal run. Missing ownership metadata, a different working directory, or unavailable database ownership verification prevents adoption. Older runs without database-fenced ownership remain inspectable but cannot use this distributed recovery path. Recovery from a crashed foreign process requires the full UUID, not a prefix. A host using only the non-durable in-memory workflow backend cannot recover after process loss.
+
+Live-cloned SDK hosts must share one authoritative PostgreSQL server and database. Configure a shared database endpoint for those hosts. Copying the managed PostgreSQL directory into another VM creates an independent database, even if both use the same `localhost` URL; separate databases cannot enforce cross-VM ownership exclusion.
+
+Use a direct PostgreSQL connection or a proxy that preserves each client's database session. Ownership locks and write authorization depend on session affinity. Transaction-mode and statement-mode pooling, including those PgBouncer modes, are unsupported for the workflow database.
+
+Database fencing protects ownership and durable checkpoints, not arbitrary external effects. If an owner loses its database connection, recovery may overlap an unfinished callback in that still-running process. The old owner cannot save new checkpoints, but an interrupted `ctx.tool` callback can be retried before the old callback stops. Make external effects idempotent, for example by passing a stable run/node operation key to an API that deduplicates requests. Completed checkpoints are replayed without rerunning their callbacks; unfinished callbacks do not have exactly-once execution guarantees.
+
+An execution that loses its ownership connection cannot silently regain write authority. Restore database availability, inspect the retained run, and resume explicitly. Recovery uses a fresh execution generation while the disconnected generation stays fenced. Keep the database and completed checkpoints; deleting them is not a recovery step.
+
+For an older run without database-fenced ownership, stop every older Atomic worker connected to its workflow database before enrollment. Upgrade the recovery host, retain the original database and workflow definition, and create an authorized SDK session with the original `cwd`. Inspect the full UUID, then explicitly confirm the stopped-worker prerequisite:
+
+```ts
+await session.workflows.resume(runId, {
+	legacyRecovery: { olderWorkersStopped: true },
+});
+```
+
+This enrolls an eligible legacy root in database fencing and resumes it under the same UUID, preserving completed checkpoints. The option is an operator assertion, not a mechanism that stops workers. Never pass it while an older worker may still be executing. It does not permit recovery in another working directory, stage-only enrollment, or overriding a healthy fenced owner. Ordinary `resume(runId)` does not automatically adopt an unfenced legacy owner; inspection and existing owner-scoped controls remain available.
+
+If the recovery host crashes after enrollment but before execution starts, inspect the full UUID and retry the same explicit option from a fresh session. Retry is permitted only for an interrupted enrollment whose database owner is no longer live. It does not allow takeover of another session's generally paused or blocked fenced run.
+
 Pausing a run doesn't park a stage that is waiting on a prompt, including an `ask_user_question` delivered through `HostInput.questionnaire`. If no other work is active, `pause(runId)` and `pause({ all: true })` mark the run `paused` without cancelling its question. Questions not yet shown wait until the run resumes. A later pause counts it as already paused. If your host then answers an already-open prompt, the stage can continue its turn before you call `resume`. To keep a paused run fully stopped, hold prompt answers until you resume it.
 
 Requests that cannot be carried out reject with a subclass of `WorkflowRunControlError`. Branch on `code` or use `instanceof`:
@@ -251,7 +275,7 @@ Requests that cannot be carried out reject with a subclass of `WorkflowRunContro
 | Class | `code` | Meaning |
 | --- | --- | --- |
 | `WorkflowRunNotFoundError` | `WORKFLOW_RUN_NOT_FOUND` | The run ID is unknown or malformed, or a prefix is ambiguous or matches no run in this session. |
-| `WorkflowRunOwnershipError` | `WORKFLOW_RUN_OWNED_ELSEWHERE` | The run belongs to another session, or is running in another live Atomic process. Control it from its owner. |
+| `WorkflowRunOwnershipError` | `WORKFLOW_RUN_OWNED_ELSEWHERE` | Mutation requires another session's ownership, the run is still live, or the durable run is outside this host's recovery scope. Inspect it read-only when in scope; control live work from its owner. |
 | `WorkflowRunNotResumableError` | `WORKFLOW_RUN_NOT_RESUMABLE` | The run completed, was killed, or has no durable progress to resume. |
 | `WorkflowStageNotFoundError` | `WORKFLOW_STAGE_NOT_FOUND` | `stageId` matches no stage of the run, or the stage has no control to pause. |
 | `WorkflowStageAmbiguousError` | `WORKFLOW_STAGE_AMBIGUOUS` | `stageId` matches more than one stage; pass a more specific identifier. |

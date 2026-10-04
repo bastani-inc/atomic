@@ -69,7 +69,7 @@ import {
 	type EmbeddedPostgresHost,
 	resolveEmbeddedPostgresTarget,
 } from "./dbos-embedded-postgres-targets.js";
-import { isQueryReadTimeout, PostgresHealth } from "./dbos-postgres-health.js";
+import { isMonitoringConnectionTimeout, isQueryReadTimeout, PostgresHealth } from "./dbos-postgres-health.js";
 import {
 	availablePostgresPort,
 	managedPostgresLaunchExecutable,
@@ -283,7 +283,7 @@ async function ensureCluster(
 				try {
 					return await existingServerProbe()(probePort);
 				} catch (error) {
-					if (isQueryReadTimeout(error)) return undefined;
+					if (isQueryReadTimeout(error) || isMonitoringConnectionTimeout(error)) return undefined;
 					throw error;
 				}
 			};

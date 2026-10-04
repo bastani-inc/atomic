@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { DbosDependencyError, dbosAdmissionContext } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { getAtomicExecutorId } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 // #3074: reset removes outage history before admitting an unrelated root.
@@ -41,7 +42,7 @@ test("reset clears failed admission state and its readiness fence", async () => 
 
 // #3072/#3074: owned admission faults only, no external database is contacted.
 for (const accepted of [false, true]) {
-	test(`explicit reconciliation retains the id after root acceptance=${accepted}`, async () => {
+	test(`explicit reconciliation retains the id and fenced owner after root acceptance=${accepted} (#3419)`, async () => {
 		const sdk = createMockSdk();
 		let fail = true;
 		const backend = new DbosDurableBackend({
@@ -78,6 +79,7 @@ for (const accepted of [false, true]) {
 		await fresh.hydrateWorkflow("same-id");
 		assert.equal(fresh.getWorkflow("same-id")?.name, "test");
 		assert.equal(fresh.getWorkflow("same-id")?.status, "blocked");
+		assert.equal(fresh.getWorkflow("same-id")?.ownerExecutorId, getAtomicExecutorId());
 		assert.equal(sdk.state.workflows.size, 1);
 	});
 }
