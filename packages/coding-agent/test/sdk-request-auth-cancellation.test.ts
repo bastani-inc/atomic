@@ -183,7 +183,8 @@ describe("createAgentSession request-auth cancellation", () => {
 			);
 	}
 
-	it("forwards session.abort into the first getRequestAuth refresh and fences a late credential commit", async () => {
+	// #3429: a started provider rotation must survive caller cancellation (#3085).
+	it("stops waiting after session.abort but persists an already-started OAuth rotation", async () => {
 		const entered = deferred();
 		const late = deferred<unknown>();
 		let signal: AbortSignal | undefined;
@@ -199,18 +200,24 @@ describe("createAgentSession request-auth cancellation", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		await entered.promise;
 		let stopped = false;
+		let promptStopped = false;
+		void prompt.then(() => {
+			promptStopped = true;
+		});
 		const abort = f.session.abort().then(() => {
 			stopped = true;
 		});
 		await vi.advanceTimersByTimeAsync(100);
 		try {
-			expect(signal?.aborted).toBe(true);
+			expect(signal).toBeInstanceOf(AbortSignal);
+			expect(signal?.aborted).toBe(false);
 			expect(stopped).toBe(true);
+			expect(promptStopped).toBe(true);
 		} finally {
 			late.resolve({
 				type: "oauth",
-				access: "stale",
-				refresh: "stale",
+				access: "rotated-access",
+				refresh: "rotated-refresh",
 				expires: Number.MAX_SAFE_INTEGER,
 			});
 			await vi.advanceTimersByTimeAsync(REQUEST_AUTH_PREPARATION_TIMEOUT_MS);
@@ -218,34 +225,44 @@ describe("createAgentSession request-auth cancellation", () => {
 			await prompt;
 		}
 		expect(f.calls()).toBe(0);
-		expect((await f.credentials.read("probe"))?.access).toBe("fabricated");
+		expect(f.refreshes()).toBe(1);
+		expect(await f.credentials.read("probe")).toEqual({
+			type: "oauth",
+			access: "rotated-access",
+			refresh: "rotated-refresh",
+			expires: Number.MAX_SAFE_INTEGER,
+		});
+		expect(await f.credentials.read("primary")).toEqual({ type: "api_key", key: "fabricated" });
 	});
 
-	it("does not persist a late OAuth refresh after session.abort", async () => {
-		const late = deferred<unknown>();
-		let entered = false;
-		const f = await fixture({
-			refresh: async () => {
-				entered = true;
-				return late.promise;
-			},
+	it("does not start a queued OAuth refresh or overwrite replacement credentials after session.abort", async () => {
+		const f = await fixture();
+		const entered = deferred();
+		const release = deferred();
+		const replacement = { type: "api_key" as const, key: "replacement" };
+		const mutation = f.credentials.modify("probe", async () => {
+			entered.resolve();
+			await release.promise;
+			return replacement;
 		});
+		await entered.promise;
 		vi.useFakeTimers();
 		const prompt = f.session.prompt("go");
 		await vi.advanceTimersByTimeAsync(0);
-		expect(entered).toBe(true);
 		const abort = f.session.abort();
 		await vi.advanceTimersByTimeAsync(100);
-		late.resolve({
-			type: "oauth",
-			access: "stale",
-			refresh: "stale",
-			expires: Number.MAX_SAFE_INTEGER,
-		});
-		await vi.advanceTimersByTimeAsync(0);
-		await abort;
-		await prompt;
-		expect((await f.credentials.read("probe"))?.access).toBe("fabricated");
+		try {
+			await abort;
+			await prompt;
+			expect(f.refreshes()).toBe(0);
+		} finally {
+			release.resolve();
+			await mutation;
+			await vi.advanceTimersByTimeAsync(0);
+		}
+		expect(await f.credentials.read("probe")).toEqual(replacement);
+		expect(await f.credentials.read("primary")).toEqual({ type: "api_key", key: "fabricated" });
+		expect(f.refreshes()).toBe(0);
 		expect(f.calls()).toBe(0);
 	});
 
