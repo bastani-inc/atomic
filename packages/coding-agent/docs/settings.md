@@ -135,7 +135,7 @@ If `retry.enabled` is `false`, Atomic skips same-model retries and moves directl
 
 The fallback model and its thinking level remain active for later turns in the same main-chat session. Choose another model explicitly with `/model` or model cycle to change them.
 
-Workflow stages that set their own `model` or `fallbackModels` never use this list; they advance only the chain they declare. See [`fallbackModels` / `fallbackThinkingLevels`](/workflows/api-reference#fallbackmodels-fallbackthinkinglevels).
+Workflow stages that set their own `model` or `fallbackModels` never use this list; they advance only the chain they declare. See [`fallbackModels` / `fallbackThinkingLevels`](/workflows/api-reference#fallbackmodels-/-fallbackthinkinglevels).
 
 A failure that another request to the same model cannot repair — a rejected credential, an unavailable model, a request that model cannot serve — takes that model out of the chain for the rest of the turn at **every** reasoning level, so a candidate that differs only by its `:low`/`:high` suffix is skipped rather than spent. Transient rate-limit and transport failures keep those reasoning variants, because retrying them can succeed.
 
