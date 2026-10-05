@@ -68,6 +68,12 @@ export const readToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 export type ReadToolInput = Static<typeof readSchema>;
+
+const readOutputSchema = Type.Union([
+	Type.String(),
+	Type.Object({ type: Type.Literal("image"), data: Type.String(), mimeType: Type.String(), note: Type.String() }),
+]);
+export type ReadToolOutput = Static<typeof readOutputSchema>;
 const READ_TOOL_MAX_RESULT_CHARS = 50_000;
 export interface OversizedReadDetails {
 	blocked: true;
@@ -133,6 +139,11 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 	let end = lines.length;
 	while (end > 0 && lines[end - 1] === "") end--;
 	return lines.slice(0, end);
+}
+function toReadOutput(content: (TextContent | ImageContent)[]): ReadToolOutput {
+	const text = content.find((block) => block.type === "text")?.text ?? "";
+	const image = content.find((block) => block.type === "image");
+	return image ? { type: "image", data: image.data, mimeType: image.mimeType, note: text } : text;
 }
 function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
 	return !model || model.input.includes("image")
@@ -322,6 +333,7 @@ export function createReadToolDefinition(
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		parameters: readSchema,
+		outputSchema: readOutputSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
@@ -884,7 +896,7 @@ export function createReadToolDefinition(
 						}
 					})();
 				},
-			);
+			).then((result) => ({ ...result, structuredContent: toReadOutput(result.content) }));
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

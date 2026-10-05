@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 	});
 
 	describe("read tool", () => {
-		it("should read file contents that fit within limits", async () => {
+		it("should read file contents that fit within limits (#10251)", async () => {
 			const testFile = join(testDir, "test.txt");
 			const content = "Hello, world!\nLine 2\nLine 3";
 			writeFileSync(testFile, content);
@@ -55,6 +55,7 @@ describe("Coding Agent Tools", () => {
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Continue with path selector");
 			expect(result.details?.meta?.source).toBe(testFile);
+			expect(result.structuredContent).toBe(getTextOutput(result));
 		});
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
@@ -321,7 +322,7 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.truncation?.totalLines).toBe(3500);
 			expect(result.details?.truncation?.outputLines).toBe(3000);
 		});
-		it("should detect image MIME type from file magic (not extension)", async () => {
+		it("should detect image MIME type from file magic (not extension) (#10251)", async () => {
 			const png1x1Base64 =
 				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
 			const pngBuffer = Buffer.from(png1x1Base64, "base64");
@@ -341,6 +342,12 @@ describe("Coding Agent Tools", () => {
 			expect(imageBlock?.mimeType).toBe("image/png");
 			expect(typeof imageBlock?.data).toBe("string");
 			expect((imageBlock?.data ?? "").length).toBeGreaterThan(0);
+			expect(result.structuredContent).toEqual({
+				type: "image",
+				data: imageBlock?.data,
+				mimeType: "image/png",
+				note: getTextOutput(result),
+			});
 		});
 		it("should treat files with image extension but non-image content as text", async () => {
 			const testFile = join(testDir, "not-an-image.png");
@@ -351,6 +358,7 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).toContain("definitely not a png");
 			expect(result.content.some((c: any) => c.type === "image")).toBe(false);
+			expect(result.structuredContent).toBe(getTextOutput(result));
 		});
 	});
 });

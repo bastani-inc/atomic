@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -367,6 +368,32 @@ test("codemode detects the image MIME type instead of trusting the supplied type
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+test("codemode read returns text and image blocks accepted by image() (#10251)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode", "read"],
+	});
+	let savedPath: string | undefined;
+	try {
+		writeFileSync(join(harness.tempDir, "notes.txt"), "hello");
+		writeFileSync(join(harness.tempDir, "pixel.png"), Buffer.from(TINY_PNG_BASE64, "base64"));
+		const result = await runScript(
+			harness,
+			'text(await tools.read({ path: "notes.txt:raw" })); const shot = await tools.read({ path: "pixel.png" }); text(shot.note); image(shot);',
+		);
+		assert.equal(result.isError, false);
+		assert.deepEqual(result.content[1], { type: "text", text: "hello" });
+		assert.deepEqual(result.content[2], { type: "text", text: "Read image file [image/png]" });
+		assert.ok(result.content[3].type === "text");
+		savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(result.content[3].text)?.[1];
+		assert.ok(savedPath);
+		assert.deepEqual(result.content.at(-1), { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+	} finally {
+		if (savedPath) rmSync(savedPath, { force: true });
+		await harness.cleanup();
+	}
+});
 
 test("codemode saves duplicate images once and labels each image in output order (#3429)", async () => {
 	const harness = await createHarness({
