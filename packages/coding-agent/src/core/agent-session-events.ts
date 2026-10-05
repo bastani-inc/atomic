@@ -586,7 +586,7 @@ export function closeAgentSession(
 				else errors.push(new Error(component, { cause }));
 			}
 		};
-		await attempt("lifetime", () => abortSessionWork(session));
+		await attempt("lifetime", () => abortSessionWork(session, event.reason === "quit"));
 		await attempt("shell abort", () => abortBash.call(session));
 		await attempt("abort", () => abortCurrentGeneration.call(session));
 		await attempt("reload rollback", () => drainSessionReload(session));

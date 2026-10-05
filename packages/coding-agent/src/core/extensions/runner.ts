@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import type {
 	CacheWarmingAction,
 	CacheWarmingDecisionEvent,
@@ -728,13 +729,17 @@ export class ExtensionRunner {
 		return this.commandDiagnostics;
 	}
 
-	getCommand(name: string): ResolvedCommand | undefined {
+	getCommand(name: string, quitSignal?: AbortSignal): ResolvedCommand | undefined {
 		const command = resolveRegisteredCommands(this.extensions).find((entry) => entry.invocationName === name);
 		if (!command) return undefined;
 		return {
 			...command,
 			handler: (args, context) =>
-				runResourceRegistrationBatch(this.runtime, async () => command.handler(args, context)),
+				runResourceRegistrationBatch(this.runtime, async () => {
+					quitSignal?.throwIfAborted();
+					const execution = command.handler(args, context);
+					return quitSignal ? raceWithAbortSignal(execution, quitSignal) : execution;
+				}),
 		};
 	}
 
