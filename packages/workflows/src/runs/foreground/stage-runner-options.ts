@@ -48,7 +48,7 @@ export function stripWorkflowOnlyOptions(
 	const {
 		schema: _schema,
 		mcp: _mcp,
-		fallbackModels: _fallbackModels,
+		fallbackModels,
 		fallbackThinkingLevels: _fallbackThinkingLevels,
 		modelConstraints: _modelConstraints,
 		taskNeeds: _taskNeeds,
@@ -84,7 +84,11 @@ export function stripWorkflowOnlyOptions(
 			sessionOptions.sessionManager = SessionManager.create(cwd, effectiveSessionDir, classification);
 		}
 	}
-	return { ...sessionOptions, orchestrationContext } as CreateAgentSessionOptions;
+	return {
+		...sessionOptions,
+		...(fallbackModels?.length === 0 ? { fallbackModels: [] } : {}),
+		orchestrationContext,
+	} as CreateAgentSessionOptions;
 }
 
 export function missingAdapter(consumer: AgentSessionConsumer): never {
