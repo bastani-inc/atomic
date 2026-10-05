@@ -28,15 +28,26 @@ import {
 
 const HOST_RELOAD_TIMEOUT_MS = 120_000;
 const reloadCases = ["transactional", "nontransactional", "cli-services", "successful"] as const;
-const WAIT_FOR_MS = 20_000;
 
-async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-	const deadline = Date.now() + WAIT_FOR_MS;
+async function waitFor(
+	predicate: () => boolean,
+	label: string,
+	deadline: number,
+	describe: () => string,
+): Promise<void> {
+	let nextDiagnosticAt = 0;
 	while (Date.now() < deadline) {
-		if (predicate()) return;
+		if (predicate()) {
+			process.stderr.write(`RELOAD-WAIT settled ${label}: ${describe()}\n`);
+			return;
+		}
+		if (Date.now() >= nextDiagnosticAt) {
+			process.stderr.write(`RELOAD-WAIT pending ${label}: ${describe()}\n`);
+			nextDiagnosticAt = Date.now() + HOST_RELOAD_TIMEOUT_MS / 12;
+		}
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
-	assert.equal(predicate(), true, `timed out waiting for ${label}`);
+	assert.equal(predicate(), true, `timed out waiting for ${label}: ${describe()}`);
 }
 
 function gatedWorkflowSource(): string {
@@ -70,6 +81,9 @@ class NontransactionalResourceLoader extends DefaultResourceLoader {
 test.each(reloadCases)(
 	"workflow status, stage-name/ID steering and pause/resume survive a %s reload (#3425)",
 	async (mode) => {
+		const startedAt = Date.now();
+		const deadline = startedAt + HOST_RELOAD_TIMEOUT_MS;
+		const cleanupBudgetMs = HOST_RELOAD_TIMEOUT_MS / 4;
 		const cwd = process.cwd();
 		const root = await mkdtemp(join(tmpdir(), "atomic-reload-cleanup-failure-"));
 		const project = join(root, "project");
@@ -166,13 +180,33 @@ test.each(reloadCases)(
 					});
 		const store = currentWorkflowStore();
 		const findRun = () => store.runs().find((run) => run.name === "gated-reload");
+		const describeRun = () => {
+			const run = findRun();
+			return JSON.stringify({
+				mode,
+				elapsedMs: Date.now() - startedAt,
+				runId: run?.id,
+				status: run?.status,
+				error: run?.error,
+				stages: run?.stages.map(({ name, status, sessionId, startup, error, toolEvents }) => ({
+					name,
+					status,
+					sessionId,
+					startup,
+					error,
+					lastToolEvent: toolEvents.at(-1),
+				})),
+			});
+		};
+		const waitForRun = (predicate: () => boolean, label: string, until = deadline - cleanupBudgetMs) =>
+			waitFor(predicate, label, until, describeRun);
 		try {
 			await session.bindExtensions({});
 			const launchRunner = session.extensionRunner;
 			const command = launchRunner.getCommand("workflow");
 			assert.ok(command, "the /workflow command must be registered on the real host");
 			await command.handler("gated-reload --no-picker", launchRunner.createCommandContext());
-			await waitFor(
+			await waitForRun(
 				() =>
 					findRun()?.stages.some((stage) => stage.sessionId !== undefined && stage.status === "running") === true,
 				"the live stage to register before reload",
@@ -262,11 +296,15 @@ test.each(reloadCases)(
 			assert.equal(resume.details.status, "ok");
 			assert.equal(findRun()?.status, "running");
 			await writeFile(releasePath, "release");
-			await waitFor(() => findRun()?.endedAt !== undefined, "the workflow to complete after reload");
+			await waitForRun(() => findRun()?.endedAt !== undefined, "the workflow to complete after reload");
 			assert.equal(findRun()?.status, "completed");
 		} finally {
 			await writeFile(releasePath, "release");
-			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle before disposal").catch(() => {});
+			await waitForRun(
+				() => findRun()?.endedAt !== undefined,
+				"the run to settle before disposal",
+				deadline - cleanupBudgetMs / 2,
+			).catch(() => {});
 			await session.dispose().catch((error: Error & { code?: string }) => {
 				assert.equal(error.code, "ShutdownFailed");
 			});
