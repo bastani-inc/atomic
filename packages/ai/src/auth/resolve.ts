@@ -126,7 +126,7 @@ function overlayEnvAuthContext(base: AuthContext, env: ProviderEnv): AuthContext
 }
 
 const DEFAULT_OAUTH_MINIMUM_VALIDITY_MS = 5 * 60 * 1000;
-const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 15_000;
+const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 60_000;
 
 /** Cancellation stops waiting for the credential lock, not an already started token rotation. */
 export async function refreshStoredOAuthCredential(

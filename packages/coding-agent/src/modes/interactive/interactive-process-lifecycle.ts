@@ -110,7 +110,9 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 };
 
 InteractiveModeBase.prototype.uncaughtCrash = function (this: InteractiveModeBase, error: Error): never {
-	if (isDeadTerminalError(error)) this.emergencyTerminalExit();
+	if (isDeadTerminalError(error) && (error as NodeJS.ErrnoException).syscall === "setRawMode") {
+		this.emergencyTerminalExit();
+	}
 	if (this.isShuttingDown) {
 		process.exit(1);
 	}

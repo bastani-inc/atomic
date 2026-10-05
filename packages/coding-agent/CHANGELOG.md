@@ -12,6 +12,8 @@
 - Fixed subscription logins such as Sign in with ChatGPT losing rotated OAuth tokens when a request or model refresh was cancelled ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 - Fixed codemode failing after an update removed the running npm install, and added a restart hint when errors occur after the install changes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 - Fixed dead terminal stdin errors such as `read EIO` and `setRawMode ENOTTY` being reported as crashes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed slow OAuth token rotation failing model refresh after the request-authentication waiting deadline ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed unrelated extension and filesystem errors being mistaken for dead-terminal exits, restoring crash reports and extension hints ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 
 ## [0.9.26] - 2026-10-04
 

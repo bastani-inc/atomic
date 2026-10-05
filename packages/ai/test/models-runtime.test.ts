@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
-import type { ApiKeyAuth, CredentialStore, OAuthAuth, ProviderAuth } from "../src/auth/types.ts";
+import type {
+	ApiKeyAuth,
+	Credential,
+	CredentialStore,
+	OAuthAuth,
+	OAuthCredential,
+	ProviderAuth,
+} from "../src/auth/types.ts";
 import { calculateCost, createModels, createProvider, hasApi, type Provider } from "../src/models.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions, Usage } from "../src/types.ts";
@@ -472,6 +479,111 @@ describe("Models runtime", () => {
 		expect((await models.refresh()).errors.size).toBe(0);
 		expect(modelRefreshCredential).toMatchObject({ type: "oauth", access: "fresh", refresh: "rotated" });
 		expect(await credentials.read("oauth-dynamic")).toMatchObject({ access: "fresh", refresh: "rotated" });
+	});
+
+	it("completes model refresh after OAuth rotation takes longer than the request deadline (#3429)", async () => {
+		vi.useFakeTimers();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+			return controller.signal;
+		});
+		try {
+			const credentials = new InMemoryCredentialStore();
+			await credentials.modify("slow", async () => ({ type: "oauth", access: "old", refresh: "old", expires: 0 }));
+			let networkCredential: Credential | undefined;
+			const models = createModels({ credentials });
+			models.setProvider(
+				testProvider({
+					id: "slow",
+					auth: {
+						oauth: testOAuth({
+							refresh: async (credential) => {
+								await new Promise((resolve) => setTimeout(resolve, 16_000));
+								return { ...credential, access: "new", refresh: "rotated", expires: Date.now() + 3600_000 };
+							},
+						}),
+					},
+					refreshModels: async ({ allowNetwork, credential }) => {
+						if (allowNetwork) networkCredential = credential;
+					},
+				}),
+			);
+			const pending = models.refresh();
+			await vi.advanceTimersByTimeAsync(16_000);
+			const result = await pending;
+			assert.equal(result.aborted, false);
+			assert.equal(result.errors.size, 0);
+			assert.deepEqual(networkCredential, await credentials.read("slow"));
+			assert.equal(networkCredential?.type === "oauth" ? networkCredential.refresh : undefined, "rotated");
+		} finally {
+			timeout.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("bounds a stalled rotation and releases its lock while request callers keep their own deadline (#3429)", async () => {
+		const rotationTimeoutMs = 60_000;
+		vi.useFakeTimers();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+			return controller.signal;
+		});
+		try {
+			const credentials = new InMemoryCredentialStore();
+			const old: OAuthCredential = { type: "oauth", access: "old", refresh: "old", expires: 0 };
+			await credentials.modify("stalled", async () => old);
+			let finish: ((credential: OAuthCredential) => void) | undefined;
+			let rotations = 0;
+			const models = createModels({ credentials });
+			models.setProvider(
+				testProvider({
+					id: "stalled",
+					auth: {
+						oauth: testOAuth({
+							refresh: async () => {
+								rotations++;
+								return new Promise<OAuthCredential>((resolve) => {
+									finish = resolve;
+								});
+							},
+						}),
+					},
+					refreshModels: async () => {},
+				}),
+			);
+			const refresh = models.refresh();
+			await vi.advanceTimersByTimeAsync(0);
+			assert.equal(rotations, 1);
+			const request = models.getAuth("stalled");
+			let requestError: Error | undefined;
+			void request.catch((error: Error) => {
+				requestError = error;
+			});
+			await vi.advanceTimersByTimeAsync(15_000);
+			assert.match(requestError?.message ?? "", /Request authentication timed out for stalled/);
+			let lockReleased = false;
+			const queued = credentials.modify("stalled", async () => {
+				lockReleased = true;
+				return undefined;
+			});
+			await vi.advanceTimersByTimeAsync(rotationTimeoutMs - 15_000 - 1);
+			assert.equal(lockReleased, false);
+			await vi.advanceTimersByTimeAsync(1);
+			const result = await refresh;
+			assert.equal(result.errors.size, 1);
+			assert.match(result.errors.get("stalled")?.message ?? "", /OAuth refresh failed/);
+			await queued;
+			assert.equal(lockReleased, true);
+			assert.equal(rotations, 1);
+			finish?.({ ...old, access: "too-late", refresh: "too-late" });
+			await vi.advanceTimersByTimeAsync(0);
+			assert.deepEqual(await credentials.read("stalled"), old);
+		} finally {
+			timeout.mockRestore();
+			vi.useRealTimers();
+		}
 	});
 
 	it("always gives providers a concrete signal", async () => {

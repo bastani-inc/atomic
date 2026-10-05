@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import type { ApiKeyAuth, OAuthAuth, OAuthCredential, ProviderAuth } from "../src/auth/types.ts";
@@ -101,6 +102,7 @@ const expiredOAuth: OAuthCredential = { type: "oauth", access: "old", refresh: "
 
 afterEach(() => {
 	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 function expectAuthTimeoutError(error: unknown, providerId = "p1"): void {
@@ -180,21 +182,27 @@ describe("request-auth preparation deadline", () => {
 		expect(calls).toHaveLength(0);
 	});
 
-	it("does not persist a late refresh after the request-auth deadline", async () => {
+	it("persists rotation after the request-auth waiting deadline (#3429)", async () => {
 		vi.useFakeTimers();
+		vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+			return controller.signal;
+		});
 		const credentials = new InMemoryCredentialStore();
 		await credentials.modify("p1", async () => expiredOAuth);
-		let finishRefresh: ((credential: OAuthCredential) => void) | undefined;
+		let refreshSignal: AbortSignal | undefined;
 		const models = createModels({ credentials });
 		models.setProvider(
 			testProvider({
 				id: "p1",
 				auth: {
 					oauth: testOAuth({
-						refresh: async () =>
-							new Promise<OAuthCredential>((resolve) => {
-								finishRefresh = resolve;
-							}),
+						refresh: async (credential, signal) => {
+							refreshSignal = signal;
+							await new Promise((resolve) => setTimeout(resolve, REQUEST_AUTH_PREPARATION_TIMEOUT_MS + 1000));
+							return { ...credential, access: "fresh", refresh: "r2", expires: Number.MAX_SAFE_INTEGER };
+						},
 					}),
 				},
 			}),
@@ -214,9 +222,14 @@ describe("request-auth preparation deadline", () => {
 		await vi.advanceTimersByTimeAsync(REQUEST_AUTH_PREPARATION_TIMEOUT_MS);
 		expectAuthTimeoutError(settled);
 
-		finishRefresh?.({ type: "oauth", access: "stale", refresh: "r2", expires: Date.now() + 60_000 });
-		await Promise.resolve();
-		expect(await credentials.read("p1")).toEqual(expiredOAuth);
+		assert.equal(refreshSignal?.aborted, false);
+		await vi.advanceTimersByTimeAsync(1000);
+		assert.deepEqual(await credentials.read("p1"), {
+			type: "oauth",
+			access: "fresh",
+			refresh: "r2",
+			expires: Number.MAX_SAFE_INTEGER,
+		});
 	});
 
 	it("settles a hung toAuth derivation at the request-auth deadline", async () => {
