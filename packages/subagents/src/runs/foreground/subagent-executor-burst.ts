@@ -1,19 +1,27 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ExtensionContext } from "@bastani/atomic";
-import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
+import type {
+	ModelAdmitted,
+	ModelSingleResponse,
+	ModelUnstarted,
+} from "../../../../coding-agent/src/core/tasks/contracts.js";
+import { resolveTopLevelParallelConcurrency, type SingleResult, type SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import { formatParallelResultContent } from "../shared/parallel-utils.js";
+import { createExecutionScheduler, formatParallelResultContent } from "../shared/parallel-utils.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
+import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
+	BURST_EXECUTION_SCHEDULE,
 	BURST_TASK_DISCOVERY_CWD,
 	type BurstTaskParam,
 	type SubagentParamsLike,
 	type TaskParam,
 } from "./subagent-executor-types.js";
+import { parallelTaskToolResultWithOutput, taskToolResultWithOutput } from "./task-execution.js";
 
 interface BurstItem {
 	id: string;
@@ -170,6 +178,7 @@ function mergeBurst(items: BurstItem[]): {
 		params: {
 			...(commonCwd ? { cwd: commonCwd } : {}),
 			tasks,
+			wait: first.wait,
 			concurrency: first.concurrency,
 			worktree: first.worktree,
 			context: first.context,
@@ -289,6 +298,30 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	};
 }
 
+function isSingleResponse(outcome: ModelAdmitted | ModelUnstarted): outcome is ModelSingleResponse {
+	return outcome.kind === "admitted" || outcome.reason.kind === "rejected";
+}
+
+async function projectOwnerResult(
+	result: SubagentToolResult,
+	route: ResultRoute,
+	item: BurstItem,
+	ctx: ExtensionContext,
+): Promise<SubagentToolResult | undefined> {
+	const response = result.details?.taskResponse;
+	if (response?.kind !== "parallel") return undefined;
+	const slots = response.slots
+		.slice(route.start, route.start + route.length)
+		.map((slot, ordinal) => ({ ...slot, ordinal }));
+	const host = ctx.getAgentTaskHost?.();
+	const own = slots.length === 1 ? slots[0]!.outcome : undefined;
+	const projected =
+		item.params.agent !== undefined && own !== undefined && isSingleResponse(own)
+			? await taskToolResultWithOutput(own, host)
+			: await parallelTaskToolResultWithOutput({ kind: "parallel", slots }, host);
+	return withForkContext(projected, item.params.context ?? result.details?.context);
+}
+
 function resolveItem(item: BurstItem, result: SubagentToolResult): void {
 	if (item.settled) return;
 	item.settled = true;
@@ -323,25 +356,40 @@ function observeLaterAbort(item: BurstItem): () => void {
 	return cleanup;
 }
 
+function groupByWait(items: BurstItem[]): BurstItem[][] {
+	const groups: BurstItem[][] = [];
+	for (const item of items) {
+		const group = groups.find((candidate) => isDeepStrictEqual(candidate[0]!.params.wait, item.params.wait));
+		if (group) group.push(item);
+		else groups.push([item]);
+	}
+	return groups;
+}
+
 export function createExecutionBurstDispatcher(input: {
 	execute: ExecuteSubagent;
 	isActive: () => boolean;
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
+	concurrencyLimit?: number;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
-	const run = async (items: BurstItem[]): Promise<void> => {
+	const run = async (
+		items: BurstItem[],
+		finish: () => void,
+		schedule?: (dispatch: () => Promise<void>) => void,
+	): Promise<void> => {
 		if (items.length === 1) {
 			const item = items[0]!;
-			input.setActive(true);
+			const params = schedule ? { ...item.params, [BURST_EXECUTION_SCHEDULE]: schedule } : item.params;
 			try {
-				item.resolve(await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
+				item.resolve(await input.execute(item.id, params, item.signal, item.onUpdate, item.ctx));
 			} catch (error) {
 				item.reject(error instanceof Error ? error : new Error(String(error)));
 			} finally {
-				input.setActive(false);
+				finish();
 			}
 			return;
 		}
@@ -354,8 +402,10 @@ export function createExecutionBurstDispatcher(input: {
 		if (merged.error) {
 			for (const item of items) resolveItem(item, merged.error);
 			cleanupLaterAborts();
+			finish();
 			return;
 		}
+		if (schedule) merged.params![BURST_EXECUTION_SCHEDULE] = schedule;
 
 		const first = items[0]!;
 		const display = registerBurstDisplay(
@@ -369,27 +419,51 @@ export function createExecutionBurstDispatcher(input: {
 				if (!item.settled) item.onUpdate?.(projectResult(update, merged.routes![index]!, true));
 			}
 		};
-		input.setActive(true);
 		try {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
 			updateBurstDisplay(display, result);
-			for (let index = 0; index < items.length; index++) {
-				resolveItem(items[index]!, projectResult(result, merged.routes![index]!));
-			}
+			const projections = await Promise.all(
+				items.map(
+					async (item, index) =>
+						(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
+						projectResult(result, merged.routes![index]!),
+				),
+			);
+			for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
 		} catch (error) {
 			const rejection = error instanceof Error ? error : new Error(String(error));
 			for (const item of items) rejectItem(item, rejection);
 		} finally {
-			input.setActive(false);
 			cleanupLaterAborts();
+			finish();
 		}
+	};
+
+	const runBurst = (items: BurstItem[]): void => {
+		const groups = groupByWait(items);
+		const schedule =
+			groups.length > 1
+				? createExecutionScheduler(
+						Math.min(
+							...items.map((item) =>
+								resolveTopLevelParallelConcurrency(item.params.concurrency, input.concurrencyLimit),
+							),
+						),
+					)
+				: undefined;
+		let remaining = groups.length;
+		input.setActive(true);
+		const finish = (): void => {
+			if (--remaining === 0) input.setActive(false);
+		};
+		for (const group of groups) void run(group, finish, schedule);
 	};
 
 	const flush = (): void => {
 		flushScheduled = false;
 		const items = queue;
 		queue = [];
-		void run(items);
+		void runBurst(items);
 	};
 
 	return (id, params, signal, onUpdate, ctx) => {

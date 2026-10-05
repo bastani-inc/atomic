@@ -278,6 +278,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 
 	const executeWithBurstCollection = createExecutionBurstDispatcher({
 		execute,
+		concurrencyLimit: deps.config.parallel?.concurrency,
 		isActive: () => deps.state.subagentInProgress === true,
 		setActive: (active) => {
 			deps.state.subagentInProgress = active;

@@ -102,6 +102,15 @@ export async function commitAdmittedCustomMessage<T>(
 		appendDurableStageAdmission(self, appMessage);
 	} else if (self.isStreaming && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
+	} else if (useProtectedReconciliation && options?.triggerTurn === true && self._workflowStageAdmission) {
+		await queueProtectedStreamingCustomMessage(
+			self,
+			appMessage,
+			options?.deliverAs === "followUp" ? "followUp" : "steer",
+		);
+		const turn = self._runAgentPrompt([]);
+		self._workflowStageAdmission.trackAdmittedWork(turn);
+		void turn.catch(() => {});
 	} else if (options?.triggerTurn) {
 		const promptMessage = useProtectedReconciliation
 			? await admitProtectedStreamingCustomMessage(

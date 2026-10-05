@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Background subagent completions now reach workflow-stage chats as visible notices that trigger a parent turn before acknowledgment, even while other notices arrive ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Breaking Changes

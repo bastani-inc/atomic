@@ -21,6 +21,7 @@ import { workflowSessionMetadataFromContext } from "../../shared/types-depth.js"
 import { mapConcurrent } from "../../shared/utils.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
@@ -62,6 +63,7 @@ interface ForegroundParallelRunInput {
 	sharedAutoIntercomGroup?: string;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	concurrencyLimit: number;
+	schedule?: (dispatch: () => Promise<void>) => void;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
@@ -74,7 +76,7 @@ interface ForegroundParallelRunInput {
 }
 
 /** Legacy callers observe detachment, but execution capacity stays held until exit. */
-function runUnboundParallelTask(
+export function runUnboundParallelTask(
 	options: RunSyncOptions,
 	agent: string,
 	task: string,
@@ -130,23 +132,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const intercomDetachController = new AbortController();
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
-	let active = 0;
-	const queued: Array<() => Promise<void>> = [];
-	const pump = (): void => {
-		while (active < input.concurrencyLimit && queued.length > 0) {
-			const dispatch = queued.shift()!;
-			active++;
-			const release = () => {
-				active--;
-				pump();
-			};
-			void dispatch().then(release, release);
-		}
-	};
-	const schedule = (dispatch: () => Promise<void>) => {
-		queued.push(dispatch);
-		pump();
-	};
+	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
 	return mapConcurrent(input.tasks, input.tasks.length, async (task, index) => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;

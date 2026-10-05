@@ -145,6 +145,26 @@ export async function taskToolResultWithOutput(
 	};
 }
 
+export async function parallelTaskToolResultWithOutput(
+	response: ModelParallelResponse,
+	host?: AgentTaskHost,
+): Promise<SubagentToolResult> {
+	return {
+		content: [
+			{
+				type: "text",
+				text: `${subagentTaskResponseText(response)}${await settledTaskOutputText(host, settledOutputsFromResponse(response))}`,
+			},
+		],
+		details: {
+			mode: "parallel",
+			results: [],
+			taskResponse: response,
+			taskRecords: taskResponseRecords(response, host),
+		},
+	};
+}
+
 /** Snapshot execution metadata for receipt playback, scoped to this response only. */
 export function taskResponseRecords(
 	response: ModelSingleResponse | ModelParallelResponse,

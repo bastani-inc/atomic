@@ -35,13 +35,19 @@ import {
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
+import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
+import {
+	BURST_EXECUTION_SCHEDULE,
+	type ExecutionContextData,
+	type ForegroundControl,
+	type ResolvedExecutorDeps,
+} from "./subagent-executor-types.js";
 import { runAgentTask, taskToolResultWithOutput } from "./task-execution.js";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
@@ -269,6 +275,7 @@ export async function runSinglePath(
 				intentTask: handoffTaskContext,
 				options: runOptions,
 				wait: params.wait,
+				schedule: params[BURST_EXECUTION_SCHEDULE],
 				runtime: deps.runtime,
 				onTerminal: (child) => {
 					settledChild = child;
@@ -287,7 +294,14 @@ export async function runSinglePath(
 			if (!parentAsk || !settledChild?.interrupted)
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
-		} else r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
+		} else {
+			const schedule = params[BURST_EXECUTION_SCHEDULE];
+			r = schedule
+				? await runUnboundParallelTask(runOptions, params.agent!, task, schedule, (options) =>
+						deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, options),
+					)
+				: await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
+		}
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;

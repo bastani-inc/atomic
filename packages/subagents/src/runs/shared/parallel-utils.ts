@@ -1,5 +1,26 @@
 import { isParentCancellation } from "./cancellation-recovery.js";
 
+/** A slot belongs to the dispatch lifetime, not its caller's observation. */
+export function createExecutionScheduler(limit: number): (dispatch: () => Promise<void>) => void {
+	let active = 0;
+	const queued: Array<() => Promise<void>> = [];
+	const pump = (): void => {
+		while (active < limit && queued.length > 0) {
+			const dispatch = queued.shift()!;
+			active++;
+			const release = () => {
+				active--;
+				pump();
+			};
+			void dispatch().then(release, release);
+		}
+	};
+	return (dispatch) => {
+		queued.push(dispatch);
+		pump();
+	};
+}
+
 export async function mapConcurrent<T, R>(
 	items: T[],
 	limit: number,
