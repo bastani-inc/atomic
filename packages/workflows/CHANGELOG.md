@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow stages that set `model` or `fallbackModels` using settings or inherited parent models instead of only their declared chain and reasoning levels, including after reattachment. Exhausted explicit chains now stop rather than append the parent model. Numbered account providers such as `openai-1` resolve from their own `auth.json` credentials without alias registrations or `models.json` entries ([#3426](https://github.com/bastani-inc/atomic/issues/3426)).
+- Raised the durable database admission and checkpoint deadline from 10 seconds to two minutes to tolerate transient PostgreSQL latency, retaining prompt cancellation. Workflow tool requests now allow 150 seconds so their outer deadline does not cut admission short ([#3428](https://github.com/bastani-inc/atomic/issues/3428)).
 
 ## [0.9.26] - 2026-10-04
 
