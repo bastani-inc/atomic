@@ -24,7 +24,7 @@ export type {
 	ToolRendererResolver,
 	ToolRenderers,
 } from "./core/extensions/tool-types.ts";
-export { resolveRestoredModelReference } from "./core/model-resolver-initial.js";
+export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 // Internal trusted-host task integration (not model authority).
