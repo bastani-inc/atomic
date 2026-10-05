@@ -21,6 +21,7 @@ export function inheritChildSessionOptions(
 	}
 	const ceiling = parent.noTools === "all" ? [] : parent.tools;
 	const parentAllows = createToolNameMatcher(ceiling ?? []);
+	const parentNamesMcp = createToolNameMatcher((ceiling ?? []).filter((entry) => entry.startsWith("mcp__")));
 	const childAllows = child.tools === undefined ? undefined : createToolNameMatcher(child.tools);
 	const tools =
 		ceiling === undefined
@@ -30,7 +31,7 @@ export function inheritChildSessionOptions(
 						!name.includes("*") &&
 						parentAllows(name) &&
 						(!childAllows || childAllows(name)) &&
-						(!isMcpToolName(name) || ceiling.includes(name)),
+						(!isMcpToolName(name) || ceiling.includes(name) || parentNamesMcp(name)),
 				);
 	const parentGate = parent.isFallbackModelAllowed;
 	const childGate = child.isFallbackModelAllowed;

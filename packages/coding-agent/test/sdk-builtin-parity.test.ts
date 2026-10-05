@@ -1470,6 +1470,37 @@ test.each([
 	}
 });
 
+test("a child session receives the exact MCP tool its parent admits by an MCP-scoped pattern", async () => {
+	const fixture = await hostSession();
+	const base = fixture.contexts[0]!.getChildSessionOptions!({});
+	const mcpTool = (name: string) => ({
+		name,
+		label: name,
+		description: `${name} probe`,
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+	});
+	const { session: parent } = await createAgentSession({
+		...base,
+		tools: ["read", "mcp__docs__*"],
+		customTools: [mcpTool("mcp__docs__search"), mcpTool("mcp__docs__delete")],
+		sessionManager: SessionManager.inMemory(base.cwd),
+	});
+	let child: AgentSession | undefined;
+	try {
+		const options = parent.extensionRunner.createContext().getChildSessionOptions!({
+			tools: ["mcp__docs__search"],
+			sessionManager: SessionManager.inMemory(base.cwd),
+		});
+		child = (await createAgentSession(options)).session;
+		assert.deepEqual(child.getActiveToolNames(), ["mcp__docs__search"]);
+	} finally {
+		await child?.dispose();
+		await parent.dispose();
+		await fixture.close();
+	}
+});
+
 // #3105: siblings and replacement children retain their invoking owner's configuration.
 test("child callbacks, diagnostics and relative cwd stay owner-local across rebinding and reload", async () => {
 	const diagnostics: HostDiagnostic[][] = [[], []];

@@ -13,6 +13,26 @@ test("a wildcard parent ceiling admits an exact child tool without widening nati
 	assert.deepEqual(inherited.tools, ["read"]);
 });
 
+test("an MCP-scoped parent pattern admits only the exact MCP tool a child requests", () => {
+	const withMcp = [...available, "mcp__docs__delete", "mcp__other__search"];
+	assert.deepEqual(
+		inheritChildSessionOptions(
+			{ cwd: "/tmp/project", tools: ["read", "mcp__docs__*"] },
+			{ tools: ["mcp__docs__search"] },
+			withMcp,
+		).tools,
+		["mcp__docs__search"],
+	);
+	assert.deepEqual(
+		inheritChildSessionOptions(
+			{ cwd: "/tmp/project", tools: ["read", "mcp__docs__*"] },
+			{ tools: ["mcp__other__search", "read_mcp_resource"] },
+			withMcp,
+		).tools,
+		[],
+	);
+});
+
 test("child patterns resolve against the parent ceiling instead of widening it", () => {
 	const inherited = inheritChildSessionOptions(
 		{ cwd: "/tmp/project", tools: ["read", "subagent", "mcp__docs__search"] },
