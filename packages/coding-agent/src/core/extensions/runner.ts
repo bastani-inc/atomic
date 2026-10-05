@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { raceWithAbortSignal } from "../../utils/abort.js";
 import type {
 	CacheWarmingAction,
 	CacheWarmingDecisionEvent,
