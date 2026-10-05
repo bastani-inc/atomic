@@ -30,6 +30,8 @@ export type CodemodeModelRuntime = Pick<
 >;
 export interface CodemodeToolOptions {
 	getToolNamespace?: (name: string) => ToolNamespace | undefined;
+	/** Prompt guidelines shown with tool declarations in describeTool() and ALL_TOOLS. */
+	getToolGuidelines?: () => ReadonlyMap<string, readonly string[]>;
 	models?: boolean;
 	appendEntry?: (type: string, data: CodemodeStoreEntryData) => void;
 	getMode?: () => CodemodeMode;
@@ -58,10 +60,14 @@ export interface CodemodeToolDetails {
 	calls: CodemodeNestedCall[];
 	fullOutputPath?: string;
 }
-export function toCodemodeDeclaration(tool: AgentTool): Omit<CodemodeTool, "execute"> {
+export function toCodemodeDeclaration(
+	tool: AgentTool,
+	guidelines: readonly string[] = [],
+): Omit<CodemodeTool, "execute"> {
+	const bullets = guidelines.flatMap((guideline) => (guideline.trim() ? [`- ${guideline.trim()}`] : []));
 	return {
 		name: tool.name,
-		description: tool.description,
+		description: bullets.length > 0 ? `${tool.description.trim()}\n\n${bullets.join("\n")}` : tool.description,
 		inputSchema: tool.parameters as CodemodeJsonSchema,
 		outputSchema: (tool.outputSchema as CodemodeJsonSchema | undefined) ?? { type: "string" },
 	};
@@ -73,6 +79,7 @@ export interface CodemodeDescriptionOptions {
 	models?: boolean;
 	namespaces?: ReadonlyMap<string, ToolNamespace>;
 	deferred?: ReadonlySet<string>;
+	guidelines?: ReadonlyMap<string, readonly string[]>;
 	inlineBudget?: number;
 }
 const INTRO = `Run JavaScript that composes tool calls in a fresh QuickJS worker sandbox.
@@ -102,7 +109,7 @@ export function createCodemodeDescription(
 			groups.set(key, group);
 		}
 		const id = toCodemodeIdentifier(tool.name);
-		const section = `### \`${id}\`${id === tool.name ? "" : ` (\`${tool.name}\`)`}\n${renderToolSample(toCodemodeDeclaration(tool)).trim()}`;
+		const section = `### \`${id}\`${id === tool.name ? "" : ` (\`${tool.name}\`)`}\n${renderToolSample(toCodemodeDeclaration(tool, options.guidelines?.get(tool.name))).trim()}`;
 		group.entries.push({
 			name: tool.name,
 			section,
@@ -187,9 +194,11 @@ function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 			return namespace ? [[tool.name, namespace] as const] : [];
 		}),
 	);
+	const guidelines = new Map(listed.map((tool) => [tool.name, loadout.getPromptGuidelines(tool.name)] as const));
 	descriptions[CODEMODE_TOOL_NAME] = createCodemodeDescription(listed, {
 		models: options.models,
 		namespaces,
+		guidelines,
 		deferred: new Set(
 			listed.filter((tool) => loadout.getExposure(tool.name) === "deferred").map((tool) => tool.name),
 		),

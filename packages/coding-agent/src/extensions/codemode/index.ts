@@ -14,6 +14,8 @@ export function createCodemodeExtension(options: CodemodeExtensionOptions = {}):
 				models: options.models ?? true,
 				appendEntry: (type, data) => pi.appendEntry(type, data),
 				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
+				getToolGuidelines: () =>
+					new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
 				getMode: () => options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : "on"),
 				getInlineBudget: () => options.inlineBudget ?? pi.getSettings().codemode?.inlineBudget,
 			}),

@@ -106,7 +106,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const toolSnippets: Record<string, string> = {};
 	for (const name of this._toolRegistry.keys()) {
 		const snippet = this._toolPromptSnippets.get(name);
-		if (snippet && !isToolDeclarationHidden(this, name)) {
+		if (snippet) {
 			toolSnippets[name] = snippet;
 		}
 	}
@@ -126,6 +126,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		customPrompt: loaderSystemPrompt,
 		appendSystemPrompt,
 		selectedTools: validToolNames,
+		hiddenTools: validToolNames.filter((name) => isToolDeclarationHidden(this, name)),
 		excludedTools: this._excludedToolNames ? Array.from(this._excludedToolNames) : undefined,
 		toolSnippets,
 		toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
@@ -152,9 +153,7 @@ export function _preparePromptAndToolLoadout(
 	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
 	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];
 	options.selectedTools = applyToolLoadout(this, options.selectedTools).map((tool) => tool.name);
-	options.toolSnippets = Object.fromEntries(
-		Object.entries(options.toolSnippets).filter(([name]) => !isToolDeclarationHidden(this, name)),
-	);
+	options.hiddenTools = options.selectedTools.filter((name) => isToolDeclarationHidden(this, name));
 	const sections = diffSystemPromptSections(current?.sections ?? {}, buildSystemPromptSections(options));
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }

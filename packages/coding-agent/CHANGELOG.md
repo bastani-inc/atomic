@@ -21,6 +21,7 @@
 - Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
 - Fixed `--tools` removing MCP tools when selecting codemode. MCP tools remain callable unless the allowlist contains an entry starting with `mcp__`; unmatched tools are not declared directly.
 - Fixed shutdown leaving MCP connections open while a server was still connecting ([#10249](https://github.com/earendil-works/pi/issues/10249)).
+- Fixed hidden tools appearing in prompt rules and skill-reading hints. Codemode tool declarations now include each tool's prompt guidelines ([#10343](https://github.com/earendil-works/pi/issues/10343)).
 
 ## [0.9.27] - 2026-10-05
 

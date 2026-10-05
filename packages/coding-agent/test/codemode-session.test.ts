@@ -215,7 +215,7 @@ test("codemode filters full nested output while direct calls retain the model-fa
 	}
 });
 
-test("codemode only hides direct declarations and prompt snippets without disabling nested access (#10192)", async () => {
+test("codemode only hides direct declarations, snippets and guidelines without disabling nested access (#10192, #10343)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension({ mode: "only" }),
@@ -225,6 +225,7 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 					label: "Echo",
 					description: "Echo",
 					promptSnippet: "Echo a value",
+					promptGuidelines: ["Use echo to repeat a value."],
 					parameters: Type.Object({}),
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
@@ -241,6 +242,12 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 				const prompt = getCurrentSystemPrompt(context.messages);
 				assert(!prompt.includes("\n- echo: "));
 				assert(prompt.includes("\n- codemode: "));
+				assert(!prompt.includes("Use echo to repeat a value."));
+				assert(
+					getCurrentTools(context.messages)
+						.find((tool) => tool.name === "codemode")
+						?.description.includes("- Use echo to repeat a value."),
+				);
 				return fauxAssistantMessage([fauxToolCall("codemode", { code: "return await tools.echo({});" })], {
 					stopReason: "toolUse",
 				});
@@ -256,6 +263,38 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 			getMessageText(harness.session.messages.find((message) => message.role === "toolResult")),
 			/Script completed/,
 		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode exposes hidden tool guidelines through describeTool and ALL_TOOLS at zero inline budget (#10343)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension({ mode: "only", inlineBudget: 0 })],
+		initialActiveToolNames: ["read", "codemode"],
+	});
+	try {
+		const codemode = harness.session.agent.state.tools.find((tool) => tool.name === "codemode");
+		assert(!codemode?.description.includes("### `read`"));
+		harness.setResponses([
+			(context) => {
+				assert(
+					!getCurrentSystemPrompt(context.messages).includes("Use read to inspect file and resource contents"),
+				);
+				return fauxAssistantMessage(
+					[
+						fauxToolCall("codemode", {
+							code: 'text(await describeTool("read")); text(ALL_TOOLS.find(tool => tool.name === "read"));',
+						}),
+					],
+					{ stopReason: "toolUse" },
+				);
+			},
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("inspect hidden tool guidance");
+		const output = getMessageText(harness.session.messages.find((message) => message.role === "toolResult"));
+		assert.equal(output.match(/- Use read to inspect file and resource contents;/g)?.length, 2, output);
 	} finally {
 		await harness.cleanup();
 	}

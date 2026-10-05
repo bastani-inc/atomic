@@ -24,6 +24,7 @@ export function applyToolLoadout(session: AgentSession, names: readonly string[]
 		registered: [...session._toolRegistry.values()],
 		getExposure: (name) => session.getToolDefinition(name)?.exposure ?? "direct",
 		getNamespace: (name) => session.getToolDefinition(name)?.namespace,
+		getPromptGuidelines: (name) => session._toolPromptGuidelines.get(name) ?? [],
 	};
 	const descriptions = new Map<string, string>();
 	const hidden = new Set<string>();

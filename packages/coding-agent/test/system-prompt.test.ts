@@ -414,4 +414,31 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).not.toContain("If an equivalent user-question tool is available");
 		});
 	});
+	describe("hidden tools (#10343)", () => {
+		const build = (hiddenTools: string[]) =>
+			buildSystemPrompt({
+				selectedTools: ["read", "bash", "run"],
+				hiddenTools,
+				toolSnippets: { read: "Read files", bash: "Run commands", run: "Run a task" },
+				toolGuidelines: { read: ["Use read for files."], run: ["Prefer run."] },
+				contextFiles: [],
+				skills: [testSkill],
+				cwd: process.cwd(),
+			});
+
+		test("leaves hidden tools out of the tool list and rules", () => {
+			const prompt = build(["read", "bash"]);
+			assert.match(prompt, /Available tools:\n- run: Run a task\n/);
+			assert(!prompt.includes("- read: "));
+			assert(!prompt.includes("Use read for files."));
+			assert(!prompt.includes("Use bash for file operations"));
+			assert(prompt.includes("- Prefer run."));
+		});
+
+		test("keeps skills without naming a hidden reader", () => {
+			assert(build(["read", "bash"]).includes("\nLoad a skill's file when the task matches its description."));
+			assert(build(["read"]).includes("Use bash to load a skill's file"));
+			assert(build([]).includes("Use the read tool to load a skill's file"));
+		});
+	});
 });
