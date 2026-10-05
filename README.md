@@ -40,6 +40,18 @@
 </p>
 
 <p align="center">
+  <sub>USED BY ENGINEERS AT</sub>
+  <br /><br />
+  <img src="./assets/used-by/meta.svg" height="20" alt="Meta" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="./assets/used-by/microsoft.svg" height="20" alt="Microsoft" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="./assets/used-by/salesforce.svg" height="20" alt="Salesforce" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="./assets/used-by/gridd.svg" height="20" alt="GRiDD" />
+</p>
+
+<p align="center">
   If Atomic is useful to you, star the repository ⭐
 </p>
 
