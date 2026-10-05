@@ -1,3 +1,8 @@
+import {
+	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
+	LIST_MCP_RESOURCES_TOOL,
+	READ_MCP_RESOURCE_TOOL,
+} from "../extensions/mcp/resources.js";
 import type { SubagentChildPolicy } from "./extensions/types.ts";
 
 export function createToolNameMatcher(entries: Iterable<string>): (name: string) => boolean {
@@ -21,7 +26,7 @@ export function createToolNameMatcher(entries: Iterable<string>): (name: string)
 export function isMcpToolName(name: string): boolean {
 	return (
 		name.startsWith("mcp__") ||
-		["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name)
+		[LIST_MCP_RESOURCES_TOOL, LIST_MCP_RESOURCE_TEMPLATES_TOOL, READ_MCP_RESOURCE_TOOL].includes(name)
 	);
 }
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
+
 ## [0.9.25] - 2026-10-01
 
 ### Breaking Changes

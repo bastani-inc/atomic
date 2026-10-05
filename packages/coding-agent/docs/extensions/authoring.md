@@ -435,7 +435,7 @@ Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `m
 
 `direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a registered tool inactive until you select it with `pi.setActiveTools()`. `namespace: { name, description }` groups related tools. Optional `annotations` carry `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; these are advisory hints, not permission checks or verified guarantees.
 
-An active orchestrator may implement `prepareLoadout(loadout)`. The loadout lists `declared`, `callable`, and `registered` tools and provides `getExposure(name)` and `getNamespace(name)`. Return `descriptions` to replace model-facing descriptions or `hiddenDeclarations` to hide declarations while retaining permitted nested access. This changes presentation, not authorization.
+An active orchestrator may implement `prepareLoadout(loadout)`. The loadout lists `declared`, `callable`, and `registered` tools and provides `getExposure(name)`, `getNamespace(name)`, and `getPromptGuidelines(name)`. Return `descriptions` to replace model-facing descriptions or `hiddenDeclarations` to hide declarations while retaining permitted nested access. This changes presentation, not authorization.
 
 ### Fireworks deferred tool loading
 
