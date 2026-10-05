@@ -1282,14 +1282,18 @@ export class StageSessionController {
 		if (this.reattachSessionFile !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
 			const restoredId = workflowModelId(resumed.model);
-			const restoredIndex =
+			const exactRestoredIndex =
 				restoredId === undefined
 					? -1
 					: candidates.findIndex(
-							(entry) =>
-								entry.id === restoredId &&
-								(entry.reasoningLevel === undefined || entry.reasoningLevel === resumed.thinkingLevel),
+							(entry) => entry.id === restoredId && entry.reasoningLevel === resumed.thinkingLevel,
 						);
+			// An unspecified effort accepts the SDK's effective effort, but must not
+			// shadow a later candidate explicitly declaring the saved reasoning tier.
+			const restoredIndex =
+				exactRestoredIndex >= 0
+					? exactRestoredIndex
+					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
 			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;

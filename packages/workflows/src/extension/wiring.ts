@@ -25,6 +25,7 @@ import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
 	isStaleExtensionContextError,
+	resolveRestoredModelReference,
 } from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
@@ -481,7 +482,7 @@ function makeStageExtensionUiContext(
 }
 
 /** Resolve only an explicitly requested account clone, never every credential in auth.json. */
-function resolveStageModel(options: CreateAgentSessionOptions, restoreSavedModel: boolean): void {
+async function resolveStageModel(options: CreateAgentSessionOptions, restoreSavedModel: boolean): Promise<void> {
 	const runtime = options.modelRuntime;
 	if (!runtime) return;
 	const saved = restoreSavedModel ? options.sessionManager?.buildSessionContext() : undefined;
@@ -504,6 +505,7 @@ function resolveStageModel(options: CreateAgentSessionOptions, restoreSavedModel
 			model = runtime.getModel(provider, modelId);
 		}
 	}
+	if (!model && saved?.model) model = await resolveRestoredModelReference(provider, modelId, runtime);
 	if (!model) throw new Error(`Workflow stage model unavailable: ${reference}`);
 	options.model = model;
 	if (saved?.model) options.thinkingLevel = saved.thinkingLevel as CreateAgentSessionOptions["thinkingLevel"];
@@ -564,7 +566,7 @@ export function buildRuntimeAdapters(
 					pi.getChildSessionOptions?.(stripWorkflowOnlyOptions(stageOptions) ?? {}) ??
 					stripWorkflowOnlyOptions(stageOptions) ??
 					{};
-				resolveStageModel(
+				await resolveStageModel(
 					inheritedOptions,
 					stageOptions.model === undefined && stageOptions.sessionManager !== undefined,
 				);

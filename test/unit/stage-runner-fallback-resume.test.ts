@@ -386,6 +386,72 @@ describe("reattached context overflow resumes fallback after the restored tier",
 		);
 	});
 
+	test("restored effective effort still accepts an unspecified candidate when no exact tier exists (#3432)", async () => {
+		const created: StageSessionCreateOptions[] = [];
+		const stage = createStageContext({
+			stageId: "unspecified-resume",
+			stageName: "unspecified-resume",
+			runId: "unspecified-resume",
+			stageOptions: { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/model-b:high"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						created.push(options);
+						return options.model === undefined
+							? makeFakeStageSession({
+									model: { provider: "openai", id: "gpt-5-mini" },
+									thinkingLevel: "low",
+									promptError: unresolvedContextOverflowFailure("context exhausted"),
+								})
+							: makeFakeStageSession({ model: B, thinkingLevel: "high" });
+					},
+				},
+			},
+		});
+		try {
+			await stage.__ensureSessionFromFile("/tmp/does-not-exist-unspecified-resume.jsonl");
+			await stage.prompt("follow up");
+			assert.deepEqual(
+				created.map((options) => options.model),
+				[undefined, "anthropic/model-b"],
+			);
+		} finally {
+			await stage.__dispose();
+		}
+	});
+
+	test("unsuffixed primary does not replay an exhausted restored explicit reasoning tier (#3432)", async () => {
+		const created: StageSessionCreateOptions[] = [];
+		const prompts: Array<{ kind: "prompt" | "followUp" | "steer"; text: string }> = [];
+		const stage = createStageContext({
+			stageId: "unsuffixed-resume",
+			stageName: "unsuffixed-resume",
+			runId: "unsuffixed-resume",
+			stageOptions: { model: "openai/gpt-5-mini", thinkingLevel: "low", fallbackModels: ["openai/gpt-5-mini:high"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						created.push(options);
+						return makeFakeStageSession({
+							model: { provider: "openai", id: "gpt-5-mini" },
+							thinkingLevel: "high",
+							calls: prompts,
+							promptError: unresolvedContextOverflowFailure("context exhausted"),
+						});
+					},
+				},
+			},
+		});
+		try {
+			await stage.__ensureSessionFromFile("/tmp/does-not-exist-unsuffixed-resume.jsonl");
+			await assert.rejects(stage.prompt("follow up"), /context exhausted/);
+			assert.equal(created.length, 1, "an exhausted saved reasoning tier must not create another attempt");
+			assert.equal(prompts.length, 1, "the saved final tier must receive only one provider dispatch");
+		} finally {
+			await stage.__dispose();
+		}
+	});
+
 	test("reattached final reasoning variant does not replay earlier same-model candidates after overflow (#3426)", async () => {
 		const created: StageSessionCreateOptions[] = [];
 		const prompts: Array<{ kind: "prompt" | "followUp" | "steer"; text: string }> = [];
