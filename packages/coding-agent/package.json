@@ -87,7 +87,7 @@
     "@earendil-works/pi-client": "1.0.2",
     "@earendil-works/pi-codemode": "1.0.2",
     "@earendil-works/pi-protocol": "1.0.2",
-    "@earendil-works/pi-tui": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.3",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@mozilla/readability": "^0.6.0",
