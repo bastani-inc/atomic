@@ -5,6 +5,8 @@
 ### Added
 
 - Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.
+- Added `*` patterns to `--tools` and `--exclude-tools`, including MCP tool names.
+- Added `--no-mcp` to disable built-in MCP support for one run, including interactive sessions.
 
 ### Changed
 
@@ -17,6 +19,7 @@
 - Invalid router and provider-list settings retain their configuration validation errors during Azure provider migration.
 - Fixed codemode `tools.read()` returning text instead of an image block for image files. Pass the result to `image()` to display it ([#10251](https://github.com/earendil-works/pi/issues/10251)).
 - Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
+- Fixed `--tools` removing MCP tools when selecting codemode. MCP tools remain callable unless the allowlist contains an entry starting with `mcp__`; unmatched tools are not declared directly.
 
 ## [0.9.27] - 2026-10-05
 

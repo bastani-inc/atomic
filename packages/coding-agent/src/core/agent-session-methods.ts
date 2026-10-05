@@ -576,6 +576,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_appliedDefaultTools: Set<string>;
 	_allowedToolNames?: Set<string>;
 	_excludedToolNames?: Set<string>;
+	_allowedTools?: (name: string) => boolean;
+	_excludedTools?: (name: string) => boolean;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;

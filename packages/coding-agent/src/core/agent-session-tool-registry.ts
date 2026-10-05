@@ -7,6 +7,7 @@ import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandato
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { isRegisteredToolAllowed } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
 import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
@@ -21,24 +22,15 @@ export function _refreshToolRegistry(
 ): void {
 	const previousRegistryNames = new Set(this._toolRegistry.keys());
 	const previousActiveToolNames = this.getActiveToolNames();
-	const allowedToolNames = this._allowedToolNames;
-	const excludedToolNames = this._excludedToolNames;
-	const isExposedTool = (name: string): boolean => {
-		if (allowedToolNames && !allowedToolNames.has(name)) {
-			return false;
-		}
-		if (excludedToolNames?.has(name)) {
-			return false;
-		}
-		return true;
-	};
+	const allowedTools = this._allowedTools;
+	const isExposedTool = (name: string): boolean => isRegisteredToolAllowed(this, name);
 
 	const registeredTools = this._extensionRunner
 		.getAllRegisteredTools()
 		.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
 	const selectedMcpTools = new Set(
 		registeredTools.filter(
-			(tool) => !excludedToolNames?.has(tool.definition.name) && isSelectedNativeMcpTool(tool, this._subagentPolicy),
+			(tool) => !this._excludedTools?.(tool.definition.name) && isSelectedNativeMcpTool(tool, this._subagentPolicy),
 		),
 	);
 	const selectedMcpNames = new Set([...selectedMcpTools].map((tool) => tool.definition.name));
@@ -119,9 +111,13 @@ export function _refreshToolRegistry(
 		const exposure = definition?.exposure ?? "direct";
 		return definition?.defaultActive !== false && (exposure === "direct" || exposure === "model-only");
 	};
-	if (allowedToolNames) {
+	if (allowedTools) {
 		for (const toolName of this._toolRegistry.keys()) {
-			if (allowedToolNames.has(toolName) || (selectedMcpNames.has(toolName) && activatesOnRegistration(toolName))) {
+			const exposure = this._toolDefinitions.get(toolName)?.definition.exposure ?? "direct";
+			if (
+				(allowedTools(toolName) && (exposure === "direct" || exposure === "model-only")) ||
+				(selectedMcpNames.has(toolName) && activatesOnRegistration(toolName))
+			) {
 				nextActiveToolNames.push(toolName);
 			}
 		}
@@ -157,8 +153,8 @@ export function _buildRuntime(
 	const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 	const shellPath = this.settingsManager.getShellPath();
 	const isAllowedBuiltinTool = (name: string): boolean => {
-		if (this._allowedToolNames && !this._allowedToolNames.has(name)) return false;
-		if (this._excludedToolNames?.has(name)) return false;
+		if (this._allowedTools && !this._allowedTools(name)) return false;
+		if (this._excludedTools?.(name)) return false;
 		return true;
 	};
 	const activeBuiltinTools = (options.activeToolNames ?? [...getDefaultToolNames()]).filter(isAllowedBuiltinTool);

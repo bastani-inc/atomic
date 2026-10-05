@@ -85,6 +85,7 @@ export interface DefaultResourceLoaderInheritanceSnapshot {
 	readonly builtinPackagePaths?: readonly PackageSource[];
 	readonly extensionFactories?: readonly InlineExtension[];
 	readonly noExtensions?: boolean;
+	readonly disabledBuiltinExtensions?: readonly string[];
 	readonly noSkills?: boolean;
 	readonly noPromptTemplates?: boolean;
 	readonly noThemes?: boolean;
@@ -107,6 +108,7 @@ export interface DefaultResourceLoaderOptions {
 	builtinPackagePaths?: PackageSource[];
 	extensionFactories?: InlineExtension[];
 	noExtensions?: boolean;
+	disabledBuiltinExtensions?: string[];
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;

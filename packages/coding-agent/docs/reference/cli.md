@@ -144,14 +144,20 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific coding, extension, and custom tools, including Intercom |
-| `--exclude-tools <list>`, `-xt <list>` | Exclude specific coding, extension, and custom tools, including Intercom |
+| `--tools <list>`, `-t <list>` | Allowlist tool names or `*` patterns; keeps MCP tools unless an entry starts with `mcp__` |
+| `--exclude-tools <list>`, `-xt <list>` | Exclude tool names or `*` patterns, including MCP tools and Intercom |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable every tool, including Intercom, even with `--tools` |
 
-Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `ls` remains available but is not a default. `defaultTools` selects initial coding tools without narrowing extension/custom tools. `--tools` selects an explicit allowlist; `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--no-tools` overrides all selection. To retain Intercom with an allowlist, include `intercom` explicitly.
+Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `ls` remains available but is not a default. `defaultTools` selects initial coding tools without narrowing extension/custom tools. `--tools` selects an explicit allowlist; `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. The bundled Intercom extension remains loaded with `--no-extensions`, but its tool follows the allowlist, exclusions, and `--no-tools` like other extension tools.
 
 To add opt-in [codemode](/tools#codemode) or [tool search](/tools#tool_search) alongside defaults, use `"defaultTools": ["+codemode", "+tool_search"]` in settings. With `--tools`, include their names and every other tool you want available.
+
+### MCP tools
+
+`--tools read,codemode` keeps non-hidden MCP tools with codemode or deferred exposure callable from codemode scripts. MCP tools unmatched by the allowlist are not declared directly, regardless of exposure. Unmatched direct-exposure tools remain registered but inactive. Only an enabled `tool_search` can load unmatched tools with non-direct exposure.
+
+An entry starting with `mcp__` filters MCP tools too. For example, `atomic --tools read,codemode,'mcp__docs__*'` keeps only tools from the `docs` server. MCP resource tools also count as MCP tools. Exclusions apply to both server and resource tools. Use `--no-mcp` to disable built-in MCP connections and resources entirely.
 
 ## Project Trust Options
 
@@ -168,6 +174,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 |--------|-------------|
 | `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
 | `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
+| `--no-mcp` | Disable built-in MCP support for this run, even when explicitly enabled; replacement extensions are unaffected |
 | `--skill <path>` | Load a skill; repeatable |
 | `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load a prompt template; repeatable |

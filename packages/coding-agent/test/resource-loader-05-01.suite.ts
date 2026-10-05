@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -23,6 +24,77 @@ describe("DefaultResourceLoader", () => {
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("disables built-in MCP despite settings, explicit paths, and inherited resources", async () => {
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ extensions: ["+builtin:mcp"] }));
+		const loaded: string[] = [];
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			disabledBuiltinExtensions: ["mcp"],
+			additionalExtensionPaths: ["builtin:mcp"],
+			extensionFactories: [
+				{ name: "mcp", builtin: true, factory: () => void loaded.push("builtin:mcp") },
+				{
+					name: "replacement",
+					factory: (pi) => {
+						loaded.push("replacement");
+						pi.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
+					},
+				},
+			],
+		});
+		await loader.reload();
+		expect(loaded).toEqual(["replacement"]);
+		expect(loader.getExtensions().errors).toEqual([]);
+		expect(loader.getExtensions().extensions.some((extension) => extension.path === "builtin:mcp")).toBe(false);
+		const child = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			resourceLoaderInheritanceSnapshot: loader.getInheritanceSnapshot(),
+		});
+		await child.reload();
+		expect(loaded).toEqual(["replacement", "replacement"]);
+		expect(child.getExtensions().extensions.some((extension) => extension.path === "builtin:mcp")).toBe(false);
+	});
+
+	it("disables the shipped MCP package entry through trust discovery, reload and inheritance", async () => {
+		const mcp = getBuiltinPackageLocations(true).find((location) => location.distDirName === "mcp")!;
+		const entry = join(mcp.packageDir, "index.ts");
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			builtinPackagePaths: [mcp.packageDir],
+			additionalExtensionPaths: [entry],
+			disabledBuiltinExtensions: ["mcp"],
+			extensionFactories: [
+				{
+					name: "replacement",
+					factory: (pi) => {
+						pi.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
+					},
+				},
+			],
+		});
+		const safe = await loader.loadProjectTrustExtensions();
+		expect(safe.errors).toEqual([]);
+		expect(safe.extensions.map((extension) => extension.resolvedPath)).not.toContain(entry);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await loader.reload();
+			expect(loader.getExtensions().errors).toEqual([]);
+			expect(loader.getExtensions().extensions.map((extension) => extension.resolvedPath)).not.toContain(entry);
+			expect(loader.getExtensions().extensions.some((extension) => extension.commands.has("mcp"))).toBe(true);
+		}
+		const child = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			resourceLoaderInheritanceSnapshot: loader.getInheritanceSnapshot(),
+		});
+		await child.reload();
+		expect(child.getExtensions().extensions.map((extension) => extension.resolvedPath)).not.toContain(entry);
+		expect(child.getExtensions().extensions.some((extension) => extension.commands.has("mcp"))).toBe(true);
 	});
 
 	describe("extension conflict detection", () => {

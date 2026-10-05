@@ -40,6 +40,7 @@ export function buildInteractiveEngineArgs(
 	appendValue(args, "--no-builtin-tools", parsed.noBuiltinTools);
 	appendValues(args, "--extension", resources.extensions);
 	appendValue(args, "--no-extensions", parsed.noExtensions);
+	appendValue(args, "--no-mcp", parsed.noMcp);
 	appendValues(args, "--skill", resources.skills);
 	appendValue(args, "--no-skills", parsed.noSkills);
 	appendValues(args, "--prompt-template", resources.promptTemplates);

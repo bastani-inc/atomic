@@ -80,10 +80,15 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		sessionManager?: SessionManager,
 		extensionFactories: ExtensionFactory[] = [],
 		initializeDelayMs = 0,
+		selection: { allowedToolNames?: string[]; excludedToolNames?: string[]; exposure?: "direct" | "deferred" } = {},
 	) {
 		const connected: string[] = [];
 		const servers: McpServerEntry[] = [
-			{ name: "docs", config: { url: "http://unused.invalid", exposure: "deferred" }, source: "test" },
+			{
+				name: "docs",
+				config: { url: "http://unused.invalid", exposure: selection.exposure ?? "deferred" },
+				source: "test",
+			},
 		];
 		const factories = [
 			...extensionFactories,
@@ -106,7 +111,12 @@ describe("AgentSession MCP tools after resume and reload", () => {
 				extensions = await createTestExtensionsResult(factories);
 			},
 		};
-		const harness = await createHarness({ resourceLoader, sessionManager });
+		const harness = await createHarness({
+			resourceLoader,
+			sessionManager,
+			...selection,
+			initialActiveToolNames: selection.allowedToolNames,
+		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({ uiContext: createTestUiContext() });
 		return { harness, connected };
@@ -122,6 +132,46 @@ describe("AgentSession MCP tools after resume and reload", () => {
 		await harness.session.prompt("load");
 		expect(harness.session.getActiveToolNames()).toContain("mcp__docs__search");
 	}
+
+	it("keeps unnamed MCP tools callable and lets tool_search load them", async () => {
+		const { harness } = await setup(undefined, [], 0, { allowedToolNames: ["read", "tool_search"] });
+		await loadDocsSearch(harness);
+		expect(harness.session.getCallableToolNames()).toContain("mcp__docs__search");
+		expect(harness.session.getAllTools().map((tool) => tool.name)).not.toContain("bash");
+	});
+
+	it("does not redeclare unnamed direct MCP tools from a restored transcript", async () => {
+		const first = await setup(undefined, [], 0, { exposure: "direct" });
+		first.harness.setResponses([fauxAssistantMessage("done")]);
+		await first.harness.session.prompt("go");
+		expect(first.harness.session.getActiveToolNames()).toContain("mcp__docs__search");
+		const second = await setup(first.harness.sessionManager, [], 0, {
+			allowedToolNames: ["read", "tool_search"],
+			exposure: "direct",
+		});
+		second.harness.setResponses([fauxAssistantMessage("done")]);
+		await second.harness.session.prompt("go");
+		expect(second.harness.session.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__search");
+		expect(second.harness.session.getActiveToolNames()).not.toContain("mcp__docs__search");
+		second.harness.session.setActiveToolsByName(["mcp__docs__search"]);
+		expect(second.harness.session.getActiveToolNames()).not.toContain("mcp__docs__search");
+	});
+
+	it.each([
+		{ allowedToolNames: ["read", "mcp__docs__s*"], excludedToolNames: [], kept: true },
+		{ allowedToolNames: ["read", "mcp__other__*"], excludedToolNames: [], kept: false },
+		{ allowedToolNames: ["read"], excludedToolNames: ["mcp__docs__*"], kept: false },
+		{ allowedToolNames: [], excludedToolNames: [], kept: false },
+	])(
+		"applies MCP patterns and empty allowlists: $allowedToolNames / $excludedToolNames",
+		async ({ kept, ...selection }) => {
+			const { harness } = await setup(undefined, [], 0, { ...selection, exposure: "direct" });
+			harness.setResponses([fauxAssistantMessage("done")]);
+			await harness.session.prompt("go");
+			expect(harness.session.getAllTools().some((tool) => tool.name === "mcp__docs__search")).toBe(kept);
+			expect(harness.session.getActiveToolNames().includes("mcp__docs__search")).toBe(kept);
+		},
+	);
 
 	it("declares tools tool_search loaded again on resume once their server connects", async () => {
 		const first = await setup();

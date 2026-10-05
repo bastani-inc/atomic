@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import { describe, expect, test } from "vitest";
-import { parseArgs } from "../src/cli/args.ts";
+import { describe, expect, test, vi } from "vitest";
+import { parseArgs, printHelp } from "../src/cli/args.ts";
 
 describe("parseArgs", () => {
+	test("parses --no-mcp alongside tool patterns", () => {
+		const result = parseArgs(["--no-mcp", "--tools", "read,mcp__docs__*", "--exclude-tools", "mcp__docs__delete*"]);
+		assert.equal(result.noMcp, true);
+		assert.deepEqual(result.tools, ["read", "mcp__docs__*"]);
+		assert.deepEqual(result.excludeTools, ["mcp__docs__delete*"]);
+		assert.equal(result.unknownFlags.size, 0);
+	});
 	describe("--version flag", () => {
 		test("parses --version flag", () => {
 			const result = parseArgs(["--version"]);
@@ -23,6 +30,23 @@ describe("parseArgs", () => {
 	});
 
 	describe("--help flag", () => {
+		test("distinguishes mandatory Intercom loading from tool selection", () => {
+			const output = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				printHelp();
+				const help = output.mock.calls.map(([text]) => String(text)).join("\n");
+				assert.match(help, /--no-tools, -nt\s+Disable every tool, including Intercom/);
+				assert.match(help, /Intercom follows the allowlist and exclusions/);
+				assert.match(
+					help,
+					/--no-extensions, -ne\s+Disable optional extension discovery; mandatory bundled Intercom remains loaded/,
+				);
+				assert.doesNotMatch(help, /mandatory intercom remains|intercom cannot be excluded/i);
+			} finally {
+				output.mockRestore();
+			}
+		});
+
 		test("parses --help flag", () => {
 			const result = parseArgs(["--help"]);
 			expect(result.help).toBe(true);

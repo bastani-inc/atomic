@@ -36,6 +36,7 @@ import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts"
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
+import { isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.ts";
 
 class ExtensionPublicationGate {
@@ -321,8 +322,7 @@ export function _bindExtensionCore(
 	// only accepted candidates release the deferred activation into the live session.
 	const candidateDefinitions = () => {
 		const definitions = new Map<string, RegisteredTool>();
-		const permitted = (name: string) =>
-			(!this._allowedToolNames || this._allowedToolNames.has(name)) && !this._excludedToolNames?.has(name);
+		const permitted = (name: string) => isRegisteredToolAllowed(this, name);
 		for (const [name, definition] of this._baseToolDefinitions) {
 			if (permitted(name))
 				definitions.set(name, {
@@ -335,10 +335,7 @@ export function _bindExtensionCore(
 			.filter((tool) => !isMandatoryRuntimeTool(tool.definition.name) || isTrustedMandatoryRuntimeTool(tool));
 		for (const tool of registered) {
 			const name = tool.definition.name;
-			if (
-				permitted(name) ||
-				(!this._excludedToolNames?.has(name) && isSelectedNativeMcpTool(tool, this._subagentPolicy))
-			)
+			if (permitted(name) || (!this._excludedTools?.(name) && isSelectedNativeMcpTool(tool, this._subagentPolicy)))
 				definitions.set(name, tool);
 		}
 		for (const definition of this._customTools) {
@@ -366,7 +363,11 @@ export function _bindExtensionCore(
 		}
 		candidateActiveTools = [...new Set(candidateActiveTools)].filter((name) => {
 			const tool = definitions.get(name);
-			return tool && tool.definition.exposure !== "hidden";
+			return (
+				tool &&
+				tool.definition.exposure !== "hidden" &&
+				isToolActivatable(this, name, tool.definition.exposure ?? "direct", definitions.has("tool_search"))
+			);
 		});
 		return definitions;
 	};
@@ -490,7 +491,11 @@ export function _bindExtensionCore(
 					const definitions = refreshCandidateTools();
 					candidateActiveTools = [...new Set(toolNames)].filter((name) => {
 						const tool = definitions.get(name);
-						return tool && tool.definition.exposure !== "hidden";
+						return (
+							tool &&
+							tool.definition.exposure !== "hidden" &&
+							isToolActivatable(this, name, tool.definition.exposure ?? "direct", definitions.has("tool_search"))
+						);
 					});
 					const accepted = [...candidateActiveTools];
 					publication.defer(() => this.setActiveToolsByName(accepted));
