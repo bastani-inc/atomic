@@ -95,6 +95,23 @@ export class AuthStorage implements CredentialStore {
 	): Promise<Credential | undefined> {
 		const signal = options?.signal;
 		signal?.throwIfAborted();
+		if (this.storage.modifyProviderAsync) {
+			const operation = this.storage.modifyProviderAsync(
+				provider,
+				async (current) => {
+					signal?.throwIfAborted();
+					const pending = fn(current);
+					const next = signal === undefined ? await pending : await raceWithAbortSignal(pending, signal);
+					signal?.throwIfAborted();
+					return next;
+				},
+				signal,
+			);
+			const snapshot = signal === undefined ? await operation : await raceWithAbortSignal(operation, signal);
+			this.data = this.parseStorageData(snapshot.next);
+			if (snapshot.result !== undefined) this.data[provider] = snapshot.result;
+			return snapshot.result;
+		}
 		let persistedData: AuthStorageData | undefined;
 		const operation = this.storage.withLockAsync(async (content) => {
 			signal?.throwIfAborted();

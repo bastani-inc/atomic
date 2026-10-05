@@ -14,6 +14,7 @@
 - Fixed dead terminal stdin errors such as `read EIO` and `setRawMode ENOTTY` being reported as crashes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 - Fixed slow OAuth token rotation failing model refresh after the request-authentication waiting deadline ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 - Fixed unrelated extension and filesystem errors being mistaken for dead-terminal exits, restoring crash reports and extension hints ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed slow OAuth rotation blocking logout and credential updates for unrelated providers. File-backed rotation now uses a provider-specific lock and preserves concurrent logout or credential replacement ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 
 ## [0.9.26] - 2026-10-04
 
