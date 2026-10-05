@@ -5,9 +5,9 @@ import type {
 	ModelSingleResponse,
 	ModelUnstarted,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
-import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
+import { resolveTopLevelParallelConcurrency, type SingleResult, type SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import { formatParallelResultContent } from "../shared/parallel-utils.js";
+import { createExecutionScheduler, formatParallelResultContent } from "../shared/parallel-utils.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
@@ -15,6 +15,7 @@ import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
+	BURST_EXECUTION_SCHEDULE,
 	BURST_TASK_DISCOVERY_CWD,
 	type BurstTaskParam,
 	type SubagentParamsLike,
@@ -370,12 +371,17 @@ export function createExecutionBurstDispatcher(input: {
 	isActive: () => boolean;
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
+	concurrencyLimit?: number;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
-	const run = async (items: BurstItem[], finish: () => void): Promise<void> => {
-		if (items.length === 1) {
+	const run = async (
+		items: BurstItem[],
+		finish: () => void,
+		schedule?: (dispatch: () => Promise<void>) => void,
+	): Promise<void> => {
+		if (items.length === 1 && !schedule) {
 			const item = items[0]!;
 			try {
 				item.resolve(await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
@@ -398,6 +404,7 @@ export function createExecutionBurstDispatcher(input: {
 			finish();
 			return;
 		}
+		if (schedule) merged.params![BURST_EXECUTION_SCHEDULE] = schedule;
 
 		const first = items[0]!;
 		const display = registerBurstDisplay(
@@ -433,12 +440,22 @@ export function createExecutionBurstDispatcher(input: {
 
 	const runBurst = (items: BurstItem[]): void => {
 		const groups = groupByWait(items);
+		const schedule =
+			groups.length > 1
+				? createExecutionScheduler(
+						Math.min(
+							...items.map((item) =>
+								resolveTopLevelParallelConcurrency(item.params.concurrency, input.concurrencyLimit),
+							),
+						),
+					)
+				: undefined;
 		let remaining = groups.length;
 		input.setActive(true);
 		const finish = (): void => {
 			if (--remaining === 0) input.setActive(false);
 		};
-		for (const group of groups) void run(group, finish);
+		for (const group of groups) void run(group, finish, schedule);
 	};
 
 	const flush = (): void => {

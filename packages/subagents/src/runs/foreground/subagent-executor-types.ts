@@ -15,6 +15,7 @@ import type { ChildModePolicy } from "../inprocess/child-policy.js";
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+export const BURST_EXECUTION_SCHEDULE = Symbol("burstExecutionSchedule");
 
 export interface TaskParam {
 	agent: string;
@@ -37,6 +38,7 @@ export type BurstTaskParam = TaskParam & {
 };
 
 export interface SubagentParamsLike {
+	[BURST_EXECUTION_SCHEDULE]?: (dispatch: () => Promise<void>) => void;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	wait?: import("@bastani/atomic").WaitPolicy;

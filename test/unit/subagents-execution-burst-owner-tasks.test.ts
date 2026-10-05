@@ -44,7 +44,7 @@ afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext?: "fork") {
+function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext?: "fork", concurrency = 4) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-burst-owner-"));
 	const parent = join(cwd, "parent.jsonl");
 	writeFileSync(parent, "");
@@ -93,7 +93,7 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 			pendingForegroundControlNotices: new Map(),
 			lastUiContext: null,
 		},
-		config: { parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
+		config: { parallel: { concurrency, maxTasks: 50 } } as ExecutorDeps["config"],
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -244,4 +244,124 @@ test("coalesced caller receipts preserve inferred default-fork context (#3427)",
 		assert.equal(single(result).observation.kind, "settled");
 		assert.equal(result.details?.context, "fork");
 	}
+});
+
+test("mixed-wait burst children share cap 2 even after background observations yield (#3427)", async () => {
+	const tasks = ["B1", "B2", "F1", "F2"];
+	const gates = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
+	const started = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
+	const finished = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
+	let active = 0;
+	let peak = 0;
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		active++;
+		peak = Math.max(peak, active);
+		started.get(task)!.resolve();
+		try {
+			await gates.get(task)!.promise;
+			return childResult(task);
+		} finally {
+			active--;
+			finished.get(task)!.resolve();
+		}
+	});
+	cleanups.push(() => {
+		for (const gate of gates.values()) gate.resolve();
+	});
+	const calls = tasks.map((task) =>
+		call(task, {
+			agent: "echo",
+			task,
+			concurrency: 2,
+			wait: task.startsWith("B") ? { kind: "background" } : { kind: "foreground" },
+		}),
+	);
+	let foregroundSettled = false;
+	void Promise.all(calls.slice(2)).then(() => {
+		foregroundSettled = true;
+	});
+	const background = await Promise.all(calls.slice(0, 2));
+	for (const result of background) {
+		const observation = single(result).observation;
+		assert.equal(observation.kind === "yielded" && observation.reason, "explicit");
+		assert.deepEqual(
+			result.details?.taskRecords?.map((record) => record.ref.taskId),
+			[observation.taskId],
+		);
+	}
+	await Promise.all([started.get("B1")!.promise, started.get("B2")!.promise]);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(peak, 2, "yielded background children must retain their execution slots across wait groups");
+	assert.equal(active, 2);
+	assert.equal(foregroundSettled, false, "background receipts do not wait for foreground completion");
+	gates.get("B1")!.resolve();
+	await started.get("F1")!.promise;
+	assert.equal(active, 2, "a queued foreground child starts only after an execution ends");
+	gates.get("B2")!.resolve();
+	await started.get("F2")!.promise;
+	gates.get("F1")!.resolve();
+	gates.get("F2")!.resolve();
+	const foreground = await Promise.all(calls.slice(2));
+	for (const [index, result] of foreground.entries()) {
+		assert.equal(single(result).observation.kind, "settled");
+		assert.match(text(result), new RegExp(`output:F${index + 1}\\b`));
+		assert.doesNotMatch(text(result), new RegExp(`output:F${2 - index}\\b|output:B[12]\\b`));
+	}
+	await Promise.all([...finished.values()].map((value) => value.promise));
+	assert.equal(peak, 2);
+	assert.equal(active, 0);
+});
+
+test("same-policy burst children keep cap 2 and caller-specific results (#3427)", async () => {
+	const firstPairStarted = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let active = 0;
+	let peak = 0;
+	let launches = 0;
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		active++;
+		peak = Math.max(peak, active);
+		if (++launches === 2) firstPairStarted.resolve();
+		await release.promise;
+		active--;
+		return childResult(task);
+	});
+	cleanups.push(() => release.resolve());
+	const calls = ["A", "B", "C", "D"].map((task) =>
+		call(task, { agent: "echo", task, concurrency: 2, wait: { kind: "foreground" } }),
+	);
+	await firstPairStarted.promise;
+	assert.equal(active, 2);
+	release.resolve();
+	const results = await Promise.all(calls);
+	for (const [index, result] of results.entries()) {
+		assert.equal(single(result).observation.kind, "settled");
+		assert.match(text(result), new RegExp(`output:${["A", "B", "C", "D"][index]}\\b`));
+		assert.equal(result.details?.taskRecords?.length, 1);
+	}
+	assert.equal(launches, 4);
+	assert.equal(peak, 2);
+	assert.equal(active, 0);
+});
+
+test("singleton wait groups share the settings cap while unbounded foreground waits do not block background admission (#3427)", async () => {
+	const release = Promise.withResolvers<void>();
+	const launched: string[] = [];
+	const { call } = harness(
+		async (_cwd, _agents, _agent, task) => {
+			launched.push(task);
+			if (task === "foreground") await release.promise;
+			return childResult(task);
+		},
+		undefined,
+		1,
+	);
+	cleanups.push(() => release.resolve());
+	const foreground = call("foreground", { agent: "echo", task: "foreground", wait: { kind: "foreground" } });
+	const background = await call("background", { agent: "echo", task: "background", wait: { kind: "background" } });
+	assert.equal(single(background).observation.kind, "yielded");
+	assert.deepEqual(launched, ["foreground"], "background is admitted but cannot execute before foreground exits");
+	release.resolve();
+	assert.equal(single(await foreground).observation.kind, "settled");
+	assert.deepEqual(launched, ["foreground", "background"]);
 });

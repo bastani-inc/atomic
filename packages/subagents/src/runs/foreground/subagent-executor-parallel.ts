@@ -36,7 +36,12 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
+import {
+	BURST_EXECUTION_SCHEDULE,
+	type ExecutionContextData,
+	type ResolvedExecutorDeps,
+	type TaskParam,
+} from "./subagent-executor-types.js";
 import {
 	buildParallelModeError,
 	buildParallelWorktreeSuffix,
@@ -221,6 +226,7 @@ export async function runParallelPath(
 
 		const results = await runForegroundParallelTasks({
 			wait: params.wait,
+			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onTaskTerminal: (index) => detachedCleanup.recover(index),
 			onDetachedExit: (index, result) => {
 				try {
