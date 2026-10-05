@@ -231,8 +231,7 @@ describe("AgentSession MCP OAuth", () => {
 		expect(getMessageText(await callWhoami(harness))).toBe("token access-1");
 	});
 
-	// #10226
-	it("registers with the configured client name", async () => {
+	it("registers with the configured client name and native application type (#10226, #10493)", async () => {
 		const { harness, server, notifications } = await setup("follow", { clientName: "Claude Code" });
 		await harness.session.prompt("/mcp login issues");
 		expect(notifications.at(-1)).toBe('Signed in to MCP server "issues" (1 tools).');
@@ -241,6 +240,7 @@ describe("AgentSession MCP OAuth", () => {
 		const fallback = await setup("follow");
 		await fallback.harness.session.prompt("/mcp login issues");
 		expect(fallback.server.registrations.map((metadata) => metadata.client_name)).toEqual(["atomic"]);
+		expect(fallback.server.registrations.map((metadata) => metadata.application_type)).toEqual(["native"]);
 	});
 
 	it("adds the listening port to a callback URL without one", async () => {

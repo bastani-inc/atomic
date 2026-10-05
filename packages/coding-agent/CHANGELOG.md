@@ -16,6 +16,7 @@
 - Fixed syntax colors leaking across lines in multiline tokens and interpolation substitutions inheriting string colors.
 - Invalid router and provider-list settings retain their configuration validation errors during Azure provider migration.
 - Fixed codemode `tools.read()` returning text instead of an image block for image files. Pass the result to `image()` to display it ([#10251](https://github.com/earendil-works/pi/issues/10251)).
+- Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
 
 ## [0.9.27] - 2026-10-05
 

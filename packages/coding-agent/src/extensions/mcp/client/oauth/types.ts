@@ -43,6 +43,7 @@ export interface OAuthClientMetadata {
 	token_endpoint_auth_method?: string;
 	grant_types?: string[];
 	response_types?: string[];
+	application_type?: string;
 	client_name?: string;
 	client_uri?: string;
 	logo_uri?: string;
