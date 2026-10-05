@@ -255,6 +255,10 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(announceRoutes);
 	announceRoutes();
+	pi.on?.("session_start", () => {
+		announcedRoutes.clear();
+		announceRoutes();
+	});
 	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
 		const runs = activeStore.runs();

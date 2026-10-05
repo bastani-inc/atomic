@@ -114,11 +114,22 @@ const isSessionBeforeEvent = (event: RunnerEmitEvent): event is SessionBeforeEve
 	event.type === "session_before_compact" ||
 	event.type === "session_before_tree";
 
+function shutdownErrorMessage(error: unknown): string {
+	if (error instanceof AggregateError && error.errors.length > 0)
+		return error.errors.map(shutdownErrorMessage).join("; ");
+	return error instanceof Error ? error.message : String(error);
+}
+
 const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, event: string, error: unknown): void => {
 	emitError({
 		extensionPath,
 		event,
-		error: error instanceof Error ? error.message : String(error),
+		error:
+			event === "session_shutdown"
+				? shutdownErrorMessage(error)
+				: error instanceof Error
+					? error.message
+					: String(error),
 		stack: error instanceof Error ? error.stack : undefined,
 	});
 };
