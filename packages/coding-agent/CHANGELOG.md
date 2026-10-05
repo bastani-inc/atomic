@@ -14,6 +14,7 @@
 ### Fixed
 
 - Fixed syntax colors leaking across lines in multiline tokens and interpolation substitutions inheriting string colors.
+- Invalid router and provider-list settings retain their configuration validation errors during Azure provider migration.
 
 ## [0.9.27] - 2026-10-05
 

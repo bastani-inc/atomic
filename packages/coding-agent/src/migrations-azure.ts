@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getAgentConfigPaths, getProjectConfigPaths } from "./config.js";
-import { FileAuthStorageBackend } from "./core/auth-storage-backends.js";
+import { FileAuthStorageBackend } from "./core/auth-storage-backends.ts";
 import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-provider-compat.js";
-import type { Settings } from "./core/settings-types.js";
-import { parseJsonFileContent, stripJsonComments } from "./utils/json.js";
+import type { Settings } from "./core/settings-types.ts";
+import { parseJsonFileContent, stripJsonComments } from "./utils/json.ts";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };

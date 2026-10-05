@@ -344,6 +344,8 @@ atomic --provider nvidia --model nvidia/nemotron-3-ultra-550b-a55b
 
 Use `--list-models` or `/model` to check the current catalog and replace a missing saved model. A catalog listing does not verify account access or serving availability.
 
+<a id="azure-openai" />
+
 ### Azure
 
 Use the `azure` provider for OpenAI Responses models and Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`:

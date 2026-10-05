@@ -7,6 +7,7 @@ import { resolveCandidateModel } from "../../subagents/src/shared/model-resoluti
 import { buildRuntimeAdapters } from "../../workflows/src/extension/wiring.js";
 import type { StageSessionCreateResult } from "../../workflows/src/runs/foreground/stage-runner.js";
 import { AuthStorage, ReadOnlyAuthStorage, readStoredCredential } from "../src/core/auth-storage.js";
+import { normalizeAzureSettings } from "../src/core/azure-provider-compat.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { resolveCliModel } from "../src/core/model-resolver-cli.js";
 import { findInitialModel, resolveRestoredModelReference } from "../src/core/model-resolver-initial.js";
@@ -17,6 +18,19 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
 const legacy = "azure-openai-responses";
+
+test("Azure settings normalization preserves invalid shapes for settings validation", () => {
+	for (const invalid of [null, false, 7, "not-an-array", {}, [7], [null]]) {
+		const settings = {
+			defaultProvider: legacy,
+			routerModel: typeof invalid === "string" ? 7 : invalid,
+			enabledModels: invalid,
+			fallbackModels: invalid,
+			modelRouting: { allowedProviders: invalid, excludedProviders: invalid },
+		};
+		assert.deepEqual(normalizeAzureSettings(settings as never), { ...settings, defaultProvider: "azure" });
+	}
+});
 
 test("saving legacy Azure credentials publishes canonical auth and available models immediately", async () => {
 	for (const refreshCatalog of [false, true]) {

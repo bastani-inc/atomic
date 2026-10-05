@@ -73,7 +73,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
 	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
-	bodyViewport = new ScrollableComponentViewport();
+	bodyViewport: ScrollableComponentViewport;
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;
 	transcriptRenderSettingsKey = "";
 	renderIdentityIds = new WeakMap<object, number>();
@@ -93,6 +93,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;
 		this.commands = opts.commands ?? {};
+		this.bodyViewport = new ScrollableComponentViewport(opts.keybindings);
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
 		this.isStreamingOverride = opts.isStreaming;

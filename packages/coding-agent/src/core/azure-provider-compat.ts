@@ -1,5 +1,5 @@
 import { type AnyModel, normalizeProviderId } from "@bastani/pi-ai";
-import type { Settings } from "./settings-types.js";
+import type { Settings } from "./settings-types.ts";
 
 export const LEGACY_AZURE_PROVIDER = "azure-openai-responses";
 
@@ -24,30 +24,47 @@ export function normalizeProviderKeys<T>(entries: Record<string, T>): Record<str
 	return result;
 }
 
+function isRecord<T>(value: T): value is T & Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
 export function normalizeAzureSettings(settings: Settings): Settings {
 	return {
 		...settings,
-		...(settings.defaultProvider && { defaultProvider: normalizeProviderId(settings.defaultProvider) }),
-		...(settings.routerModel && { routerModel: normalizeModelReference(settings.routerModel) }),
-		...(settings.enabledModels && { enabledModels: settings.enabledModels.map(normalizeModelReference) }),
-		...(settings.fallbackModels && { fallbackModels: settings.fallbackModels.map(normalizeModelReference) }),
-		...(settings.modelThinkingLevels && { modelThinkingLevels: normalizeProviderKeys(settings.modelThinkingLevels) }),
-		...(settings.modelRouting && {
+		...(typeof settings.defaultProvider === "string" && {
+			defaultProvider: normalizeProviderId(settings.defaultProvider),
+		}),
+		...(typeof settings.routerModel === "string" && { routerModel: normalizeModelReference(settings.routerModel) }),
+		...(isStringArray(settings.enabledModels) && {
+			enabledModels: settings.enabledModels.map(normalizeModelReference),
+		}),
+		...(isStringArray(settings.fallbackModels) && {
+			fallbackModels: settings.fallbackModels.map(normalizeModelReference),
+		}),
+		...(isRecord(settings.modelThinkingLevels) && {
+			modelThinkingLevels: normalizeProviderKeys(settings.modelThinkingLevels),
+		}),
+		...(isRecord(settings.modelRouting) && {
 			modelRouting: {
 				...settings.modelRouting,
-				...(settings.modelRouting.allowedProviders && {
+				...(isStringArray(settings.modelRouting.allowedProviders) && {
 					allowedProviders: settings.modelRouting.allowedProviders.map(normalizeProviderId),
 				}),
-				...(settings.modelRouting.excludedProviders && {
+				...(isStringArray(settings.modelRouting.excludedProviders) && {
 					excludedProviders: settings.modelRouting.excludedProviders.map(normalizeProviderId),
 				}),
 			},
 		}),
-		...(settings.compaction?.modelOverrides && {
-			compaction: {
-				...settings.compaction,
-				modelOverrides: normalizeProviderKeys(settings.compaction.modelOverrides),
-			},
-		}),
+		...(isRecord(settings.compaction) &&
+			isRecord(settings.compaction.modelOverrides) && {
+				compaction: {
+					...settings.compaction,
+					modelOverrides: normalizeProviderKeys(settings.compaction.modelOverrides),
+				},
+			}),
 	};
 }

@@ -20,7 +20,7 @@ import {
 async function makeScrollableStageChatFixture(
 	rows: number | (() => number | undefined) = 12,
 	withFooter = false,
-	piKeybindings?: unknown,
+	piKeybindings: KeybindingsManager = new KeybindingsManager(),
 ): Promise<{
 	store: ReturnType<typeof createStore>;
 	view: StageChatView;
@@ -286,9 +286,9 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
 
 		const paused = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.match(paused, /↓ Jump to latest message · end/);
+		assert.match(paused, /↓ Jump to latest message · ctrl\+end/);
 		assert.match(paused, /PAUSED/);
-		assert.equal(view.handleInput("\x1b[F"), true);
+		assert.equal(view.handleInput("\x1b[1;5F"), true);
 		assert.equal(view._bodyScrollFromBottom, 0);
 		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to latest/);
 		view.dispose();
@@ -334,10 +334,10 @@ describe("StageChatView", () => {
 		assert.ok(view._bodyScrollFromBottom > 0);
 
 		const scrolled = view.render(96).map(stripTerminalSequences).join("\n");
-		assert.match(scrolled, /↓ Jump to latest message · end/);
+		assert.match(scrolled, /↓ Jump to latest message · ctrl\+end/);
 		assert.match(scrolled, /READ-ONLY SESSION/);
 
-		assert.equal(view.handleInput("\x1b[F"), true);
+		assert.equal(view.handleInput("\x1b[1;5F"), true);
 		assert.equal(view._bodyScrollFromBottom, 0);
 		assert.doesNotMatch(view.render(96).map(stripTerminalSequences).join("\n"), /Jump to latest/);
 		view.dispose();
@@ -451,11 +451,32 @@ describe("StageChatView", () => {
 			view.render(96);
 			assert.equal(view.handleInput("\x1b[5~"), true);
 			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
-			assert.match(scrolled, /↓ Jump to latest message · ctrl\+e/);
+			assert.match(scrolled, /↓ Jump to latest message · ctrl\+e(?:\s|$)/);
 
 			assert.equal(view.handleInput("\x05"), true);
 			assert.equal(view._bodyScrollFromBottom, 0);
 			assert.doesNotMatch(stripTerminalSequences(view.render(96).join("\n")), /Jump to latest/);
+		} finally {
+			view?.dispose();
+			setKeybindings(previousKeybindings);
+		}
+	});
+
+	test("shows the injected stage-chat jump binding independently of global keybindings", async () => {
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		let view: StageChatView | undefined;
+		try {
+			({ view } = await makeScrollableStageChatFixture(
+				12,
+				false,
+				new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+e" }),
+			));
+			view.render(96);
+			view.handleInput("\x1b[5~");
+			assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · ctrl\+e(?:\s|$)/);
+			assert.equal(view.handleInput("\x05"), true);
+			assert.equal(view._bodyScrollFromBottom, 0);
 		} finally {
 			view?.dispose();
 			setKeybindings(previousKeybindings);
@@ -483,7 +504,7 @@ describe("StageChatView", () => {
 		const visible = stripTerminalSequences(scrolled.join("\n"));
 
 		assert.ok(view._bodyScrollFromBottom > 0);
-		assert.match(visible, /↓ Jump to latest message · end/);
+		assert.match(visible, /↓ Jump to latest message · ctrl\+end/);
 		assert.equal(scrolled.length, 12);
 		view.dispose();
 	});
@@ -495,7 +516,7 @@ describe("StageChatView", () => {
 		assert.equal(view.handleInput("\x1b[5~"), true);
 		const scrolled = view.render(96);
 		assert.ok(view._bodyScrollFromBottom > 0);
-		assert.match(stripTerminalSequences(scrolled.join("\n")), /↓ Jump to latest message · end/);
+		assert.match(stripTerminalSequences(scrolled.join("\n")), /↓ Jump to latest message · ctrl\+end/);
 		assert.equal(scrolled.length, 13);
 
 		assert.equal(view.handleInput("\x1b[6~"), true);
@@ -595,13 +616,16 @@ describe("StageChatView", () => {
 		}
 	});
 
-	test("the bound end key returns stage chat to the live end and hides the indicator", async () => {
+	test("the bound Ctrl+End key returns stage chat to the live end and hides the indicator", async () => {
 		const view = await makeScrollableStageChat();
 		view.render(96);
 		view.handleInput("\x1b[5~");
-		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · end/);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · ctrl\+end/);
+		const scrollFromBottom = view._bodyScrollFromBottom;
+		view.handleInput("\x1b[F");
+		assert.equal(view._bodyScrollFromBottom, scrollFromBottom, "End must stay with the editor");
 
-		assert.equal(view.handleInput("\x1b[F"), true);
+		assert.equal(view.handleInput("\x1b[1;5F"), true);
 		const bottom = view.render(96);
 		const visible = stripTerminalSequences(bottom.join("\n"));
 		assert.equal(view._bodyScrollFromBottom, 0);
@@ -615,7 +639,7 @@ describe("StageChatView", () => {
 		const view = await makeScrollableStageChat(() => rows, true);
 		view.render(96);
 		assert.equal(view.handleInput("\x1b[5~"), true);
-		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · end/);
+		assert.match(stripTerminalSequences(view.render(96).join("\n")), /↓ Jump to latest message · ctrl\+end/);
 
 		rows = 8;
 		const tight = view.render(96);

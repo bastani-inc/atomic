@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	ChatTranscriptComponent,
 	chatEntriesFromAgentMessages,
@@ -217,6 +218,36 @@ describe("chat message renderer utilities", () => {
 		assert.deepEqual(viewport.render(20), ["line-0", "line-1", "line-2"]);
 		assert.equal(viewport.handleInput("\x1b[6~"), true);
 		assert.deepEqual(viewport.render(20), ["line-2", "line-3", "line-4"]);
+	});
+
+	test("scrollable viewport uses Ctrl+Home/Ctrl+End and leaves Home/End to the editor", () => {
+		const viewport = new ScrollableComponentViewport();
+		viewport.setVisibleRows(2);
+		viewport.setComponents([{ render: () => ["first", "middle", "last"], invalidate: () => {} }]);
+		assert.deepEqual(viewport.render(20), ["middle", "last"]);
+		assert.equal(viewport.handleInput("\x1b[H"), false);
+		assert.deepEqual(viewport.render(20), ["middle", "last"]);
+		assert.equal(viewport.handleInput("\x1b[1;5H"), true);
+		assert.deepEqual(viewport.render(20), ["first", "middle"]);
+		assert.equal(viewport.handleInput("\x1b[F"), false);
+		assert.deepEqual(viewport.render(20), ["first", "middle"]);
+		assert.equal(viewport.handleInput("\x1b[1;5F"), true);
+		assert.deepEqual(viewport.render(20), ["middle", "last"]);
+	});
+
+	test("scrollable viewport honors injected top/bottom bindings instead of defaults", () => {
+		const keybindings = new KeybindingsManager({ "tui.altScreen.top": "ctrl+t", "tui.altScreen.bottom": "ctrl+b" });
+		const viewport = new ScrollableComponentViewport(keybindings);
+		viewport.setVisibleRows(2);
+		viewport.setComponents([{ render: () => ["first", "middle", "last"], invalidate: () => {} }]);
+		assert.deepEqual(viewport.render(20), ["middle", "last"]);
+		assert.equal(viewport.handleInput("\x1b[1;5H"), false);
+		assert.equal(viewport.handleInput("\x14"), true);
+		assert.deepEqual(viewport.render(20), ["first", "middle"]);
+		assert.equal(viewport.handleInput("\x1b[1;5F"), false);
+		assert.deepEqual(viewport.render(20), ["first", "middle"]);
+		assert.equal(viewport.handleInput("\x02"), true);
+		assert.deepEqual(viewport.render(20), ["middle", "last"]);
 	});
 
 	test("scrollable viewport renders only visible rows for windowed components", () => {
