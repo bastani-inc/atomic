@@ -6,6 +6,7 @@
 
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { VERSION } from "../../config.js";
 import { resolveMcpServerUrl } from "../../core/mcp-servers.ts";
@@ -245,7 +246,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	private closing: Promise<void> | undefined;
 	private readonly activeRequests = new Map<McpClient, number>();
 	private readonly retiringClients = new Map<McpClient, { promise: Promise<void>; close: () => Promise<void> }>();
-	private closed = false;
+	/** Aborted by `close()`; cancels setup and the wait between connection retries. */
+	private readonly shutdown = new AbortController();
 	/** Stderr of the last stdio server that failed to connect. */
 	private stderrTail: string | undefined;
 	private readonly cwd: string;
@@ -299,6 +301,10 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 
 	get name(): string {
 		return this.entry.name;
+	}
+
+	private get closed(): boolean {
+		return this.shutdown.signal.aborted;
 	}
 
 	get timeoutMs(): number {
@@ -480,7 +486,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 				if (this.closed || delay === undefined || !isTransientError(error)) {
 					throw this.connectFailed(error);
 				}
-				await new Promise((resolve) => setTimeout(resolve, delay));
+				await sleep(delay, undefined, { signal: this.shutdown.signal }).catch(() => undefined);
 				if (this.closed) throw this.connectFailed(error);
 			}
 		}
@@ -497,6 +503,13 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.initializingClient = client;
 		const log = this.log;
 		if (log) client.onNotification("notifications/message", (params) => log.write(this.entry.name, params));
+		// A second client.close() can return before its transport has finished closing.
+		let closing: Promise<void> | undefined;
+		const closeClient = () => {
+			closing ??= client.close().catch(() => undefined);
+			return closing;
+		};
+		this.shutdown.signal.addEventListener("abort", closeClient, { once: true });
 		let transport: McpTransport | undefined;
 		try {
 			transport = this.createTransport(this.entry, this.cwd, this.authProvider);
@@ -531,12 +544,13 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			this.changed();
 			return client;
 		} catch (error) {
-			await client.close().catch(() => undefined);
+			await closeClient();
 			if (transport instanceof StdioTransport) {
 				this.stderrTail = transport.stderr.trim().slice(-STDERR_TAIL_CHARS) || undefined;
 			}
 			throw error;
 		} finally {
+			this.shutdown.signal.removeEventListener("abort", closeClient);
 			// A delayed start may allocate resources after its first close. Retire them too.
 			if (this.closed) await transport?.close().catch(() => undefined);
 			if (this.initializingClient === client) {
@@ -588,9 +602,10 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.changed();
 	}
 
+	/** Retires connected and still-connecting transports, bounded for broken transports. */
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
-		this.closed = true;
+		this.shutdown.abort();
 		this.state = "closed";
 		this.changed();
 		const client = this.client;

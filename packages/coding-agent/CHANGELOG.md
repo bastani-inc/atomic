@@ -20,6 +20,7 @@
 - Fixed codemode `tools.read()` returning text instead of an image block for image files. Pass the result to `image()` to display it ([#10251](https://github.com/earendil-works/pi/issues/10251)).
 - Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
 - Fixed `--tools` removing MCP tools when selecting codemode. MCP tools remain callable unless the allowlist contains an entry starting with `mcp__`; unmatched tools are not declared directly.
+- Fixed shutdown leaving MCP connections open while a server was still connecting ([#10249](https://github.com/earendil-works/pi/issues/10249)).
 
 ## [0.9.27] - 2026-10-05
 

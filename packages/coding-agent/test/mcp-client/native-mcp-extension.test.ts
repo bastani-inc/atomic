@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.js";
 import { truncateMiddle } from "../../src/core/tools/truncate.js";
 import {
@@ -687,6 +687,61 @@ for await (const line of createInterface({ input: process.stdin })) {
 		await assert.rejects(failing.connection.getClient(), /status 400: bad/);
 		assert.equal(failing.connection.state, "failed");
 		assert.equal(failing.opened(), 1);
+	});
+
+	it("closes a connection that is still initializing before close returns (#10249)", async () => {
+		const pair = createInMemoryTransportPair();
+		// The server receives initialize but never answers it.
+		const initializing = new Promise<void>((resolve) => {
+			pair.server.onMessage(() => resolve());
+		});
+		void pair.server.start();
+		let transportClosed = false;
+		pair.client.onClose(() => {
+			transportClosed = true;
+		});
+		const { connection } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [
+			() => pair.client,
+		]);
+		let failure: string | undefined;
+		void connection.getClient().catch((error) => {
+			failure = String(error);
+		});
+		await initializing;
+		await connection.close();
+		assert.equal(transportClosed, true);
+		assert.match(failure ?? "", /failed to connect/);
+	});
+
+	it("stops waiting to retry a connection when closed (#10249)", async () => {
+		vi.useFakeTimers();
+		try {
+			const { connection, opened } = connect(
+				{ name: "fake", config: { url: "http://unused.invalid", headers: { Authorization: "x" } }, source: "test" },
+				[
+					() => {
+						const transport = createTransport();
+						transport.send = async () => {
+							throw new McpHttpError(503, "MCP HTTP request failed with status 503");
+						};
+						return transport;
+					},
+				],
+			);
+			let failure: string | undefined;
+			void connection.getClient().catch((error) => {
+				failure = String(error);
+			});
+			// The first attempt failed; the retry is still 240ms away.
+			await vi.advanceTimersByTimeAsync(10);
+			const closing = connection.close();
+			await vi.advanceTimersByTimeAsync(0);
+			assert.match(failure ?? "", /status 503/);
+			await closing;
+			assert.equal(opened(), 1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("retries resource reads, but not tool calls, after a transient HTTP error", async () => {
