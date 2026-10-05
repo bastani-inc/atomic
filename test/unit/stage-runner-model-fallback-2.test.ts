@@ -165,7 +165,7 @@ describe("createStageContext — model fallback", () => {
 		);
 	});
 
-	test("current model is appended as an implicit final fallback", async () => {
+	test("current model is not appended to an exhausted explicit stage chain (#3426)", async () => {
 		const calls: string[] = [];
 		const agentSession: AgentSessionAdapter = {
 			async create(options) {
@@ -214,9 +214,10 @@ describe("createStageContext — model fallback", () => {
 			}),
 		) as InternalStageContext;
 
-		assert.equal(await ctx.prompt("go"), "current answer");
-		assert.deepEqual(calls, ["anthropic/primary", "openai/fallback", "current/model"]);
+		await assert.rejects(ctx.prompt("go"), /503 service unavailable/);
+		assert.deepEqual(calls, ["anthropic/primary", "openai/fallback"]);
 		assert.deepEqual(ctx.__modelFallbackMeta().attemptedModels, calls);
+		await ctx.__dispose();
 	});
 
 	test("all-candidate failure keeps fallback warning metadata", async () => {

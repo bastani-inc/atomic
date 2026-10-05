@@ -126,18 +126,18 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					envelope.completionId,
 				);
 			}
-			await admission.admit(
-				envelope.completionId,
-				() =>
-					this.sendCustomMessage(message, {
-						triggerTurn: true,
-						persistWhenStreaming: true,
-						stageAdmissionKey: envelope.completionId,
-					}),
-				() => {
+			const deliver = () =>
+				this.sendCustomMessage(message, {
+					triggerTurn: true,
+					persistWhenStreaming: true,
+					stageAdmissionKey: envelope.completionId,
+				});
+			if (stageAdmission) await deliver();
+			else {
+				await admission.admit(envelope.completionId, deliver, () => {
 					throw new Error("Task owner is closed");
-				},
-			).completion;
+				}).completion;
+			}
 		},
 	);
 	this._taskCompletionOutbox = outbox;

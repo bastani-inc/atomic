@@ -6,6 +6,8 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 
 > **Placement for /reload:** Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
 
+If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and running workflows and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
+
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
 - **Event interception** - Block or modify tool calls, inject context, observe/cancel deletion-only compaction, and customize branch summaries

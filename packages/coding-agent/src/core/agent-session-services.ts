@@ -20,7 +20,11 @@ import {
 	createAgentSession,
 	createUnstartedAgentSession,
 } from "./sdk.ts";
-import { type SessionLifecycleContext, sessionLifecycleCreation } from "./session-lifecycle-scope.ts";
+import {
+	lifecycleScopeForOwner,
+	type SessionLifecycleContext,
+	sessionLifecycleCreation,
+} from "./session-lifecycle-scope.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { endTimingSpan, startTimingSpan } from "./timings.ts";
@@ -200,6 +204,8 @@ async function prepareOwnedAgentSessionServices(
 		settingsManager,
 	});
 	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
+	// Prepared CLI discovery bypasses loader.reload(), which normally captures this lineage.
+	lifecycleScopeForOwner(defaultResourceLoader);
 	const completeReload = await prepareDefaultResourceLoaderReload(
 		defaultResourceLoader,
 		options.resourceLoaderReloadOptions,

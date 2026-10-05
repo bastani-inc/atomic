@@ -65,6 +65,8 @@ const { session } = await createAgentSession({
 
 `ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides, plus the model-catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)). `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
 
+Use `await resolveRestoredModelReference(provider, modelId, modelRuntime)` to resolve a saved model without selecting a settings default. It returns the authenticated exact model, reconstructs eligible custom or dynamic IDs, or returns `undefined` when restoration is unavailable. Import it from `@bastani/atomic` and check the result before creating a session when restoration must not fall back to another model.
+
 Extensions supplied directly to SDK sessions can use the exported `InlineExtension` type. Extension APIs and event types include native `registerProvider(Provider)`, `registerEntryRenderer`, `entry_appended`, `before_provider_headers`, and `agent_settled`.
 
 The package root also exports `buildContextEntries`, `sessionEntryToContextMessages`, and `CompactionEntry` for converting durable session branches into model context. The equivalent active-session operation is `sessionManager.buildContextEntries()`.

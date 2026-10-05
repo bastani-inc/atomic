@@ -1,5 +1,5 @@
 import { registerSubagentReplyCapability } from "./subagent-reply-capability.js";
-import { APP_NAME, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext, sessionScopedExtensionState } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
 import {
 	IntercomClient,
@@ -158,6 +158,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let agentRunning = false;
   let sessionHomeGroup: string | null = null;
   let joinedGroups: Set<string> | null = null;
+  const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
+    pi.lifecycleScope ?? pi.events ?? pi,
+    "intercom:session-memberships:v1",
+    () => new Map(),
+  );
   const activeTools = new Map<string, string>();
   let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterRegistry(DEFAULT_REPLY_TIMEOUT_MS, config.maxPendingAsks);
@@ -219,12 +224,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function setJoinedGroups(groups: readonly string[]): void {
     joinedGroups = normalizeGroups(groups);
     const sessionId = currentSessionId;
-    if (sessionId) setRuntimeIntercomGroup(sessionId, currentIntercomGroup());
+    if (!sessionId) return;
+    setRuntimeIntercomGroup(sessionId, currentIntercomGroup());
+    sessionMemberships.set(sessionId, [...joinedGroups]);
   }
   function clearJoinedGroups(): void {
+    if (currentSessionId) sessionMemberships.delete(currentSessionId);
+    releaseJoinedGroups();
+  }
+  function releaseJoinedGroups(): void {
     joinedGroups = null;
     const sessionId = currentSessionId;
-    if (sessionId) clearRuntimeIntercomGroup(sessionId);
+    if (sessionId && !sessionMemberships.has(sessionId)) clearRuntimeIntercomGroup(sessionId);
   }
   function buildRegistration(): Omit<SessionInfo, "id"> {
     const liveContext = getLiveContext();
@@ -1068,6 +1079,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     homeGroup: currentIntercomGroup,
   });
 
+  pi.on("session_shutdown", (event) => {
+    if (event.reason !== "reload" && currentSessionId) sessionMemberships.delete(currentSessionId);
+  });
   registerIntercomLifecycle(pi, {
     config,
     client: () => client,
@@ -1084,7 +1098,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     clearReconnectTimer,
     setRuntimeContext: (value) => {
       if (value === null) {
-        clearJoinedGroups();
+        releaseJoinedGroups();
         sessionHomeGroup = null;
       } else {
         sessionHomeGroup = resolveHomeGroup(config, value);
@@ -1110,7 +1124,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     restoreIntercomSessionIdEnv,
     currentStatus,
   });
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    const retainedMemberships = event.reason === "reload" ? sessionMemberships.get(ctx.sessionManager.getSessionId()) : undefined;
+    if (retainedMemberships) setJoinedGroups(retainedMemberships);
     const pendingStageDelivery = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.pendingStageDelivery : undefined;
     if (pendingStageDelivery === undefined) {
       // An admitted child registers at startup so its supervisor and peers can

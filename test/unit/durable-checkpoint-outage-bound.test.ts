@@ -12,9 +12,43 @@ import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 afterEach(() => vi.useRealTimers());
 
+test("checkpoint records its receipt after database latency exceeds ten seconds (#3428)", async () => {
+	vi.useFakeTimers();
+	const sdk = createMockSdk();
+	const entered = Promise.withResolvers<void>();
+	const backend = new DbosDurableBackend({
+		...sdk,
+		async recordStepOutput(id, step, output) {
+			if (step === "slow-effect") {
+				entered.resolve();
+				await new Promise<void>((resolve) => setTimeout(resolve, 15_000));
+			}
+			await sdk.recordStepOutput(id, step, output);
+		},
+	});
+	backend.registerWorkflow({ workflowId: "slow-id", name: "test", inputs: {}, createdAt: 1, status: "running" });
+	await backend.flush();
+	const pending = backend.recordCheckpointAsync({
+		kind: "tool",
+		workflowId: "slow-id",
+		checkpointId: "slow-effect",
+		argsHash: "effect",
+		name: "effect",
+		output: "receipt",
+		completedAt: 1,
+	});
+	await entered.promise;
+	await vi.advanceTimersByTimeAsync(15_000);
+	await pending;
+	const fresh = new DbosDurableBackend(sdk);
+	await fresh.hydrateWorkflow("slow-id");
+	assert.equal(fresh.getToolOutput("slow-id", "effect"), "receipt");
+	assert.equal(vi.getTimerCount(), 0);
+});
+
 // #3072/#3074: a stalled checkpoint must release its queue without publishing late metadata.
 for (const cancelled of [false, true]) {
-	test(`checkpoint write is bounded and fenced on ${cancelled ? "cancellation" : "deadline"}`, async () => {
+	test(`checkpoint write is bounded and fenced on ${cancelled ? "cancellation" : "deadline"} (#3428)`, async () => {
 		vi.useFakeTimers();
 		const sdk = createMockSdk();
 		const entered = Promise.withResolvers<void>();
@@ -48,8 +82,16 @@ for (const cancelled of [false, true]) {
 		);
 		const rejected = assert.rejects(pending, cancelled ? /operator cancelled/ : /checkpoint timed out/);
 		await entered.promise;
-		if (cancelled) controller.abort(new Error("operator cancelled"));
-		else await vi.advanceTimersByTimeAsync(DBOS_ADMISSION_TIMEOUT_MS);
+		if (cancelled) {
+			const cancelledAt = Date.now();
+			controller.abort(new Error("operator cancelled"));
+			await rejected;
+			assert.equal(Date.now(), cancelledAt, "cancellation must settle without advancing the clock");
+		} else {
+			await vi.advanceTimersByTimeAsync(119_999);
+			assert.equal(writeSignal?.aborted, false, "checkpoint retains its full two-minute budget");
+			await vi.advanceTimersByTimeAsync(1);
+		}
 		await rejected;
 		assert.equal(writeSignal?.aborted, true);
 		await backend.flush("id");
