@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { test } from "vitest";
-import type { ExtensionFactory } from "../src/core/extensions/types.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { ExtensionFactory } from "../src/core/extensions/types.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 class NontransactionalResourceLoader extends DefaultResourceLoader {
 	supportsTransactionalReload(): boolean {

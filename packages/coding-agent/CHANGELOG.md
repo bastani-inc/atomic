@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed failed `/reload` retiring cleanup leaving in-flight workflows unreachable. The replacement extensions now finish starting, pending settings take effect, joined Intercom groups survive, and the error names the underlying cleanup exception ([#3425](https://github.com/bastani-inc/atomic/issues/3425)).
+- Fixed failed `/reload` retiring cleanup leaving in-flight workflows unreachable. The replacement extensions now finish starting, pending settings take effect, joined Intercom groups and workflow-stage targets by name or ID survive, and the error names the underlying cleanup exception. Successful reloads also preserve live, pending, and future workflow-stage routing ([#3425](https://github.com/bastani-inc/atomic/issues/3425)).
 
 ## [0.9.26] - 2026-10-04
 
