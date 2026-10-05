@@ -27,6 +27,27 @@ describe("issue #6904 DNS transport failure retry", () => {
 		}
 	});
 
+	it.each(["The pending stream has been canceled", "The pending stream has been canceled (caused by: socket closed)"])(
+		"retries HTTP/2 pending stream cancellation: %s",
+		async (errorMessage) => {
+			const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 0 } } });
+			try {
+				harness.setResponses([
+					fauxAssistantMessage("", { stopReason: "error", errorMessage }),
+					fauxAssistantMessage("recovered after transport retry"),
+				]);
+
+				await harness.session.prompt("test");
+
+				expect(harness.faux.state.callCount).toBe(2);
+				expect(harness.eventsOfType("auto_retry_start").map((event) => event.errorMessage)).toEqual([errorMessage]);
+				expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
+			} finally {
+				harness.cleanup();
+			}
+		},
+	);
+
 	it("stops after the configured DNS retry bound", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 } } });
 		try {
