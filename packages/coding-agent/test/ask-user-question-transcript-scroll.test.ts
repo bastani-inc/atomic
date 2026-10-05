@@ -58,6 +58,8 @@ const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
 const HOME = "\x1b[H";
 const END = "\x1b[F";
+const CTRL_HOME = "\x1b[1;5H";
+const CTRL_END = "\x1b[1;5F";
 const LEFT = "\x1b[D";
 const BACKSPACE = "\x7f";
 const DOWN = "\x1b[B";
@@ -1438,10 +1440,14 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 		const defaults = new KeybindingsManager();
 		expect(isFullscreenViewportAction(PAGE_UP, defaults)).toBe(true);
 		expect(isFullscreenViewportAction(DOWN, defaults)).toBe(false);
+		expect(isFullscreenViewportAction(HOME, defaults)).toBe(false);
+		expect(isFullscreenViewportAction(END, defaults)).toBe(false);
+		expect(isFullscreenViewportAction(CTRL_HOME, defaults)).toBe(true);
+		expect(isFullscreenViewportAction(CTRL_END, defaults)).toBe(true);
 
 		const remapped = new KeybindingsManager({ "tui.altScreen.top": "ctrl+g" });
 		expect(isFullscreenViewportAction("\x07", remapped)).toBe(true);
-		expect(isFullscreenViewportAction(HOME, remapped)).toBe(false);
+		expect(isFullscreenViewportAction(CTRL_HOME, remapped)).toBe(false);
 	});
 
 	test.each([
@@ -1477,12 +1483,12 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			(data) => isFullscreenTranscriptScrollAction(data, keybindings) || isMouseWheelInput(data),
 		);
 
-		for (const data of [PAGE_UP, PAGE_DOWN, HOME, END, WHEEL_UP, WHEEL_DOWN]) {
+		for (const data of [PAGE_UP, PAGE_DOWN, CTRL_HOME, CTRL_END, WHEEL_UP, WHEEL_DOWN]) {
 			expect(wrapper.handleInput(data)).toBe(false);
 		}
 		expect(received).toEqual([]);
 
-		const owned = ["draft", DOWN, LEFT, "\r", "\t", " ", "\x1b", LEFT_CLICK];
+		const owned = ["draft", HOME, END, DOWN, LEFT, "\r", "\t", " ", "\x1b", LEFT_CLICK];
 		for (const data of owned) expect(wrapper.handleInput(data)).toBe(true);
 		expect(received).toEqual(owned);
 	});
@@ -1591,11 +1597,11 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(baselineMaxScrollTop);
 			expectDraft("draft");
-			terminal.input(HOME);
+			terminal.input(CTRL_HOME);
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(0);
 			expectDraft("draft");
-			terminal.input(END);
+			terminal.input(CTRL_END);
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(baselineMaxScrollTop);
 			expectDraft("draft");

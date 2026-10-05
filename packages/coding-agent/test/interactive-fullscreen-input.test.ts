@@ -1,5 +1,6 @@
 import {
 	type Component,
+	Editor,
 	getKeybindings,
 	ScrollView,
 	setKeybindings,
@@ -14,7 +15,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.ts";
 import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector-component.ts";
 import { createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
 beforeAll(() => {
@@ -60,7 +61,7 @@ function makeEditor(inputs: string[]): Component & { focused: boolean } {
 }
 
 describe("fullscreen input navigation", () => {
-	test.sequential("routes transcript navigation and preserves modified editor variants", () => {
+	test.sequential("keeps Home/End with the editor and routes Ctrl+Home/Ctrl+End to the transcript", () => {
 		const terminal = new RecordingTerminal();
 		terminal.columns = 40;
 		terminal.rows = 10;
@@ -76,8 +77,8 @@ describe("fullscreen input navigation", () => {
 			),
 			{ follow: "end", primary: true },
 		);
-		const editorInputs: string[] = [];
-		const editor = makeEditor(editorInputs);
+		const editor = new Editor(tui, getEditorTheme());
+		editor.setText("draft prompt");
 		tui.setLayoutRoot(
 			new VStack([
 				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
@@ -96,24 +97,37 @@ describe("fullscreen input navigation", () => {
 			tui.renderNow();
 			expect(transcript.scrollTop).toBeLessThan(bottom);
 
-			terminal.input("\x1bOH");
+			terminal.input("\x1b[1;5H");
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(0);
+			expect(editor.getCursor()).toEqual({ line: 0, col: "draft prompt".length });
 
 			terminal.input("\x1b[6~");
 			tui.renderNow();
 			expect(transcript.scrollTop).toBeGreaterThan(0);
 
-			terminal.input("\x1bOF");
+			terminal.input("\x1b[1;5F");
 			tui.renderNow();
 			expect(tui.isFollowingOutput).toBe(true);
+			expect(editor.getCursor()).toEqual({ line: 0, col: "draft prompt".length });
 			const atBottom = transcript.scrollTop;
 
-			const modifiedInputs = ["\x1b[1;5H", "\x1b[1;5F", "\x1b[5;5~", "\x1b[6;5~"];
-			for (const input of modifiedInputs) terminal.input(input);
+			for (const [home, end] of [
+				["\x1bOH", "\x1bOF"],
+				["\x1b[H", "\x1b[F"],
+			] as const) {
+				terminal.input(home);
+				tui.renderNow();
+				expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+				expect(transcript.scrollTop).toBe(atBottom);
+				terminal.input(end);
+				tui.renderNow();
+				expect(editor.getCursor()).toEqual({ line: 0, col: "draft prompt".length });
+				expect(transcript.scrollTop).toBe(atBottom);
+			}
+			for (const input of ["\x1b[5;5~", "\x1b[6;5~"]) terminal.input(input);
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(atBottom);
-			expect(editorInputs).toEqual(modifiedInputs);
 		} finally {
 			tui.stop();
 		}
@@ -275,7 +289,7 @@ describe("fullscreen input navigation", () => {
 
 		try {
 			const initialTop = transcript.scrollTop;
-			const stageInputsToCheck = ["\x1b[5~", "\x1b[6~", "\x1bOH", "\x1bOF", "\x15", "\x04"];
+			const stageInputsToCheck = ["\x1b[5~", "\x1b[6~", "\x1b[1;5H", "\x1b[1;5F", "\x15", "\x04"];
 			for (const input of stageInputsToCheck) terminal.input(input);
 			tui.renderNow();
 			expect(transcript.scrollTop).toBe(initialTop);

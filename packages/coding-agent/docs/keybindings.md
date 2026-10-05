@@ -51,8 +51,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+s
 | `tui.editor.cursorWordRight` | `alt+right`, `ctrl+right`, `alt+f` | Move cursor word right |
 | `tui.editor.historyPrevious` | *(none)* | Select the previous prompt history entry |
 | `tui.editor.historyNext` | *(none)* | Select the next prompt history entry |
-| `tui.editor.cursorLineStart` | `home`, `ctrl+home`, `ctrl+a` | Move to line start |
-| `tui.editor.cursorLineEnd` | `end`, `ctrl+end`, `ctrl+e` | Move to line end |
+| `tui.editor.cursorLineStart` | `home`, `ctrl+a` | Move to line start |
+| `tui.editor.cursorLineEnd` | `end`, `ctrl+e` | Move to line end |
 | `tui.editor.jumpForward` | `ctrl+]` | Jump forward to character |
 | `tui.editor.jumpBackward` | `ctrl+alt+]` | Jump backward to character |
 | `tui.editor.pageUp` | `pageUp`, `ctrl+pageUp` | Scroll up by page |
@@ -111,21 +111,21 @@ Hold Alt while using the mouse wheel to scroll five times as far in fullscreen m
 
 Drag with the primary button to select characters, double-click for a word or path, and triple-click for a line. Changing focus or clicking elsewhere clears the selection.
 
-While the main editor has focus, fullscreen transcript bindings take precedence. Unmodified navigation keys control the transcript; their `ctrl` variants control the editor.
+While the main editor has focus, fullscreen transcript bindings take precedence. `home` and `end` stay with the editor; `ctrl+home` and `ctrl+end` jump to the transcript top and bottom. `pageUp` and `pageDown` control the transcript, while their `ctrl` variants control the editor.
 
 | Key | Editor action | Fullscreen action |
 |-----|---------------|------------------|
-| `home`, `end` | Editor | Transcript |
-| `ctrl+home`, `ctrl+end` | Editor | Editor |
+| `home`, `end` | Editor | Editor |
+| `ctrl+home`, `ctrl+end` | *(none)* | Transcript |
 | `pageUp`, `pageDown` | Editor | Transcript |
 | `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
 
 This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for half-page steps, or `tui.altScreen.lineUp` and `tui.altScreen.lineDown` for single-line steps, while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
 A focused custom component may consume viewport keys and mouse input before the transcript. Extension authors should follow the [input handling contract](/extensions/ui#custom-components).
 
-The blocking `ask_user_question` dialog is a bottom-pinned overlay. Opening it does not shrink the transcript viewport or change the page step. `pageUp`, `pageDown`, `home`, `end`, and the wheel still reach every scrollback line, including the newest ones, in the visible strip above the dialog.
+The blocking `ask_user_question` dialog is a bottom-pinned overlay. Opening it does not shrink the transcript viewport or change the page step. `pageUp`, `pageDown`, `ctrl+home`, `ctrl+end`, and the wheel still reach every scrollback line, including the newest ones, in the visible strip above the dialog.
 
-These transcript actions also work while Notes is open. Notes keeps ordinary text and edit actions, including the default `ctrl+home` and `ctrl+end`. A key moves the transcript instead only when configured for a `tui.altScreen.*` action.
+These transcript actions also work while Notes is open. Notes keeps ordinary text and edit actions, including the default `home` and `end`. A key moves the transcript instead only when configured for a `tui.altScreen.*` action.
 
 On short terminals, the dialog is bounded to preserve that visible strip. The active questionnaire row stays visible as you move through single-select and multi-select choices, Next, Submit, Cancel, and inline inputs. The dialog keeps its own arrow, `enter`, `tab`, `space`, `esc`, click, and selection input.
 
@@ -139,8 +139,8 @@ On short terminals, the dialog is bounded to preserve that visible strip. The ac
 | `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
 | `tui.altScreen.previousPrompt` | `ctrl+shift+up` | Jump to the previous marked message |
 | `tui.altScreen.nextPrompt` | `ctrl+shift+down` | Jump to the next marked message |
-| `tui.altScreen.top` | `home` | Scroll to the beginning of the transcript |
-| `tui.altScreen.bottom` | `end` | Scroll to the transcript end and follow new output |
+| `tui.altScreen.top` | `ctrl+home` | Scroll to the beginning of the transcript |
+| `tui.altScreen.bottom` | `ctrl+end` | Scroll to the transcript end and follow new output |
 
 Atomic does not ship a find-in-transcript shortcut. The four `tui.altScreen.search*` actions remain in the keybinding table so an existing `keybindings.json` still validates, but they have no default keys and do nothing.
 
