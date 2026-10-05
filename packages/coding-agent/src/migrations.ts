@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import { migrateAzureProvider } from "./migrations-azure.js";
 import { stripBom } from "./utils/text.ts";
 
 const MIGRATION_GUIDE_URL =
@@ -342,6 +343,7 @@ export function runMigrations(
 } {
 	const migratedAuthProviders = migrateAuthToAuthJson();
 	migrateExplicitEnvVarConfigValues();
+	migrateAzureProvider(cwd, options);
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();

@@ -90,7 +90,7 @@ describe("getSupportedThinkingLevels", () => {
 	});
 
 	it("supports GPT-6.1 Sol efforts without sending none", () => {
-		for (const provider of ["openai", "azure-openai-responses", "openai-codex"] as const) {
+		for (const provider of ["openai", "azure", "openai-codex"] as const) {
 			const model = getModel(provider, "gpt-6.1-sol");
 			expect(model).toBeDefined();
 			expect(getSupportedThinkingLevels(model!)).toEqual(

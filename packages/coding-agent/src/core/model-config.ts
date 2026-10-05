@@ -7,6 +7,7 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
+import { normalizeProviderKeys } from "./azure-provider-compat.js";
 
 const PercentileCutoffsSchema = Type.Object({
 	p50: Type.Optional(Type.Number()),
@@ -337,7 +338,7 @@ export class ModelConfig {
 
 		const config = parsed as ModelsJson;
 		const providers = new Map<string, ModelsJsonProvider>();
-		for (const [providerId, provider] of Object.entries(config.providers)) {
+		for (const [providerId, provider] of Object.entries(normalizeProviderKeys(config.providers))) {
 			providers.set(providerId, deepFreeze(structuredClone(provider)));
 		}
 		return new ModelConfig(providers);

@@ -4,6 +4,7 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { deepMergeSettings } from "./settings-merge.ts";
 import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
@@ -75,7 +76,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			if (!existsSync(readPath)) continue;
 			try {
 				const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
-				merged = deepMergeSettings(merged, parsed);
+				merged = deepMergeSettings(merged, normalizeAzureSettings(parsed));
 				found = true;
 			} catch (error) {
 				if (error instanceof Error) (error as Error & { path?: string }).path = readPath;

@@ -3,6 +3,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { normalizeModelReference } from "./azure-provider-compat.js";
 import { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.js";
@@ -55,7 +56,8 @@ export function resolveModelScopeFromModels(
 	const availableModels = [...models];
 	const scopedModels: ScopedModel[] = [];
 	const diagnostics: ModelScopeDiagnostic[] = [];
-	for (const pattern of patterns) {
+	for (const rawPattern of patterns) {
+		const pattern = normalizeModelReference(rawPattern);
 		const completeExactMatch = findExactModelReferenceMatch(pattern, availableModels);
 		if (completeExactMatch) {
 			if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, completeExactMatch))) {

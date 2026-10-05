@@ -209,7 +209,7 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | ---------------------------------- | ------------------------------------------------------------------------- | ---------------------------- |
 | Anthropic                          | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN`                 | `anthropic`                  |
 | Ant Ling                           | `ANT_LING_API_KEY`                                                        | `ant-ling`                   |
-| Azure OpenAI Responses             | `AZURE_OPENAI_API_KEY`                                                    | `azure-openai-responses`     |
+| Azure                              | `AZURE_OPENAI_API_KEY`                                                    | `azure`                      |
 | OpenAI                             | `OPENAI_API_KEY`                                                          | `openai`                     |
 | DeepSeek                           | `DEEPSEEK_API_KEY`                                                        | `deepseek`                   |
 | NVIDIA NIM                         | `NVIDIA_API_KEY`                                                          | `nvidia`                     |
@@ -344,12 +344,23 @@ atomic --provider nvidia --model nvidia/nemotron-3-ultra-550b-a55b
 
 Use `--list-models` or `/model` to check the current catalog and replace a missing saved model. A catalog listing does not verify account access or serving availability.
 
-### Azure OpenAI
+### Azure
+
+Use the `azure` provider for OpenAI Responses models and Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`:
+
+```bash
+atomic --model azure/deepseek-v4-pro:high
+```
+
+DeepSeek V4 Pro supports `low`, `medium`, and `high` reasoning effort. Azure OpenAI models keep the `azure-openai-responses` API ID; Chat Completions models use `openai-completions`.
+
+Custom Azure deployments in `models.json` or extension registrations default to the Responses API when no API is specified and the model ID is not in the catalog. Set `api: "openai-completions"` at the provider or model level to use Chat Completions.
 
 ```bash
 export AZURE_OPENAI_API_KEY=...
 export AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com
 # also supported: https://your-resource.cognitiveservices.azure.com
+# Azure Foundry endpoints such as https://your-resource.services.ai.azure.com are supported too
 # root endpoints are auto-normalized to /openai/v1
 # or use resource name instead of base URL
 export AZURE_OPENAI_RESOURCE_NAME=your-resource
@@ -358,6 +369,12 @@ export AZURE_OPENAI_RESOURCE_NAME=your-resource
 export AZURE_OPENAI_API_VERSION=2024-02-01
 export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-4=my-gpt4,gpt-4o=my-gpt4o
 ```
+
+`AZURE_OPENAI_API_VERSION` configures Responses requests. Chat Completions uses the normalized `/openai/v1` endpoint.
+
+Deployment names default to model IDs. Set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` when your deployments have different names; it applies to both APIs without changing the model ID shown in sessions.
+
+The former provider name `azure-openai-responses` remains accepted in model selections, saved sessions, and SDK lookups. Startup renames that provider in `auth.json`, `settings.json`, and `models.json`, including legacy Pi configuration paths. Existing `azure` entries win on collisions. Project configuration is migrated only after the project is trusted; session files are not rewritten. Use `azure` in new configuration.
 
 ### Amazon Bedrock
 

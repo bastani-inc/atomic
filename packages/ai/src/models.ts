@@ -20,6 +20,7 @@ import type {
 	ProviderAuth,
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
+import { normalizeProviderId } from "./provider-id.ts";
 import type {
 	AnyModel,
 	Api,
@@ -394,6 +395,32 @@ function mergeHeaders(
 	return merged;
 }
 
+export function normalizeProvider(provider: Provider): Provider {
+	const id = normalizeProviderId(provider.id);
+	if (id === provider.id) return provider;
+	const normalizeModels = <T extends AnyModel>(models: readonly T[]): readonly T[] =>
+		models.map((model) => ({ ...model, provider: normalizeProviderId(model.provider) }));
+	return {
+		...provider,
+		id,
+		name: provider.name,
+		baseUrl: provider.baseUrl,
+		headers: provider.headers,
+		auth: provider.auth,
+		refreshModels: provider.refreshModels?.bind(provider),
+		filterModels: provider.filterModels?.bind(provider),
+		filterAllModels: provider.filterAllModels?.bind(provider),
+		stream: provider.stream.bind(provider),
+		streamSimple: provider.streamSimple.bind(provider),
+		fetchDeferred: provider.fetchDeferred?.bind(provider),
+		cancelDeferred: provider.cancelDeferred?.bind(provider),
+		generateImages: provider.generateImages?.bind(provider),
+		classify: provider.classify?.bind(provider),
+		getModels: () => normalizeModels(provider.getModels()),
+		getAllModels: () => normalizeModels(provider.getAllModels?.() ?? provider.getModels()),
+	};
+}
+
 class ModelsImpl implements MutableModels {
 	private providers = new Map<string, Provider>();
 	private credentials: CredentialStore;
@@ -410,11 +437,13 @@ class ModelsImpl implements MutableModels {
 	}
 
 	setProvider(provider: Provider): void {
+		provider = normalizeProvider(provider);
 		this.supersedeProviderRefresh(provider.id);
 		this.providers.set(provider.id, provider);
 	}
 
 	deleteProvider(id: string): void {
+		id = normalizeProviderId(id);
 		this.supersedeProviderRefresh(id);
 		this.providers.delete(id);
 	}
@@ -431,12 +460,12 @@ class ModelsImpl implements MutableModels {
 	}
 
 	getProvider(id: string): Provider | undefined {
-		return this.providers.get(id);
+		return this.providers.get(normalizeProviderId(id));
 	}
 
 	getModels(provider?: string): readonly Model<Api>[] {
 		if (provider !== undefined) {
-			const entry = this.providers.get(provider);
+			const entry = this.getProvider(provider);
 			if (!entry) return [];
 			try {
 				return entry.getModels();
@@ -458,7 +487,7 @@ class ModelsImpl implements MutableModels {
 
 	getAllModels(provider?: string): readonly AnyModel[] {
 		if (provider !== undefined) {
-			const entry = this.providers.get(provider);
+			const entry = this.getProvider(provider);
 			if (!entry) return [];
 			try {
 				return entry.getAllModels?.() ?? entry.getModels();
@@ -561,7 +590,7 @@ class ModelsImpl implements MutableModels {
 		const callerSignal = operationSignal(options.signal);
 		const errors = new Map<string, Error>();
 		if (callerSignal.aborted) return { aborted: true, errors };
-		const selected = options.providers ? new Set(options.providers) : undefined;
+		const selected = options.providers ? new Set(options.providers.map(normalizeProviderId)) : undefined;
 		const refreshable = Array.from(this.providers.values()).filter(
 			(provider): provider is Provider & Required<Pick<Provider, "refreshModels">> =>
 				provider.refreshModels !== undefined && (!selected || selected.has(provider.id)),
@@ -647,7 +676,11 @@ class ModelsImpl implements MutableModels {
 
 	private async readCredential(providerId: string, signal: AbortSignal): Promise<Credential | undefined> {
 		try {
-			return await this.credentials.read(providerId, { signal });
+			const credential = await this.credentials.read(providerId, { signal });
+			return (
+				credential ??
+				(providerId === "azure" ? await this.credentials.read("azure-openai-responses", { signal }) : undefined)
+			);
 		} catch (error) {
 			throw new ModelsError("auth", `Credential store read failed for ${providerId}`, { cause: error });
 		}
@@ -680,6 +713,7 @@ class ModelsImpl implements MutableModels {
 	}
 
 	checkAuth(providerId: string, options?: AuthOperationOptions): Promise<AuthCheck | undefined> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options?.signal);
 		const check = (async () => {
 			signal.throwIfAborted();
@@ -693,7 +727,7 @@ class ModelsImpl implements MutableModels {
 	private async getAuthenticatedProviders(providerId: string | undefined, signal: AbortSignal) {
 		signal.throwIfAborted();
 		const providers = providerId
-			? [this.providers.get(providerId)].filter((entry) => entry !== undefined)
+			? [this.getProvider(providerId)].filter((entry) => entry !== undefined)
 			: this.getProviders();
 		const checks = await Promise.all(
 			providers.map(async (provider) => {
@@ -750,7 +784,9 @@ class ModelsImpl implements MutableModels {
 		overrides?: AuthResolutionOverrides,
 	): Promise<AuthResult | undefined> {
 		const signal = operationSignal(overrides?.signal);
-		const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
+		const providerId = normalizeProviderId(
+			typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider,
+		);
 		const provider = this.providers.get(providerId);
 		if (!provider) return undefined;
 		const result = await resolveProviderAuth(provider, this.credentials, this.authContext, { ...overrides, signal });
@@ -770,6 +806,7 @@ class ModelsImpl implements MutableModels {
 		interaction: AuthInteraction,
 		options?: LoginOptions,
 	): Promise<Credential> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(interaction.signal);
 		signal.throwIfAborted();
 		const provider = this.providers.get(providerId);
@@ -822,10 +859,12 @@ class ModelsImpl implements MutableModels {
 	}
 
 	async logout(providerId: string, options?: AuthOperationOptions): Promise<void> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options?.signal);
 		signal.throwIfAborted();
 		try {
 			await this.credentials.delete(providerId, { signal });
+			if (providerId === "azure") await this.credentials.delete("azure-openai-responses", { signal });
 		} catch (error) {
 			signal.throwIfAborted();
 			throw new ModelsError("auth", `Credential store delete failed for ${providerId}`, { cause: error });
@@ -833,7 +872,7 @@ class ModelsImpl implements MutableModels {
 	}
 
 	private requireProvider(model: AnyModel): Provider {
-		const provider = this.providers.get(model.provider);
+		const provider = this.getProvider(model.provider);
 		if (!provider) {
 			throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
 		}
@@ -884,6 +923,8 @@ class ModelsImpl implements MutableModels {
 		context: Context,
 		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
+		const providerId = normalizeProviderId(model.provider);
+		if (providerId !== model.provider) model = { ...model, provider: providerId };
 		const transcript = normalizeContext(context);
 		return lazyStream(model, async () => {
 			const provider = this.requireChatProvider(model);
@@ -904,6 +945,8 @@ class ModelsImpl implements MutableModels {
 	}
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+		const providerId = normalizeProviderId(model.provider);
+		if (providerId !== model.provider) model = { ...model, provider: providerId };
 		const transcript = normalizeContext(context);
 		return lazyStream(model, async () => {
 			const provider = this.requireChatProvider(model);

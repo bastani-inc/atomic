@@ -93,7 +93,7 @@ function generate(
 		openai: read("openai"),
 		"openai-codex": read("openai-codex"),
 		"amazon-bedrock": read("amazon-bedrock"),
-		"azure-openai-responses": read("azure-openai-responses"),
+		azure: read("azure"),
 		openrouter: read("openrouter"),
 		"vercel-ai-gateway": read("vercel-ai-gateway"),
 		"github-copilot": read("github-copilot"),
@@ -314,7 +314,7 @@ test("keeps models.dev pricing tiers for Amazon Bedrock models", () => {
 
 test("does not fabricate Azure, OpenRouter, or Vercel GPT-6-Astra availability", () => {
 	const catalogs = generate();
-	assert.deepEqual(astraIds(catalogs["azure-openai-responses"]), []);
+	assert.deepEqual(astraIds(catalogs.azure), []);
 	assert.deepEqual(astraIds(catalogs.openrouter), []);
 	assert.deepEqual(astraIds(catalogs["vercel-ai-gateway"]), []);
 });

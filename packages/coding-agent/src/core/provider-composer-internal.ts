@@ -292,7 +292,7 @@ export function applyModelsJson(
 		const defaults = findModelDefaults(
 			models.filter((model) => isModelType(model, "chat")),
 			definition.id,
-			definition.api ?? config.api,
+			definition.api ?? config.api ?? (providerId === "azure" ? "azure-openai-responses" : undefined),
 		);
 		const model = modelFromJson(providerId, definition, config, defaults);
 		if (existingIndex >= 0) models[existingIndex] = model;
@@ -316,6 +316,9 @@ export function applyExtension(
 		const defaults =
 			candidates.find((model) => model.id === definition.id) ??
 			(definition.api ? candidates.find((model) => model.api === definition.api) : undefined) ??
+			(type === "chat" && providerId === "azure"
+				? candidates.find((model) => model.api === "azure-openai-responses")
+				: undefined) ??
 			(type === "chat" ? candidates.find((model) => model.api === "openai-completions") : undefined) ??
 			candidates[0];
 		const api = definition.api ?? (type === "chat" ? config.api : undefined) ?? defaults?.api;

@@ -1,5 +1,7 @@
+import { normalizeProviderId } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { normalizeModelReference } from "./azure-provider-compat.js";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.js";
@@ -88,7 +90,9 @@ export function resolveCliModel(options: {
 	cliModel?: string;
 	modelRuntime: ModelRuntime;
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRuntime } = options;
+	const { modelRuntime } = options;
+	const cliProvider = options.cliProvider ? normalizeProviderId(options.cliProvider.toLowerCase()) : undefined;
+	const cliModel = options.cliModel ? normalizeModelReference(options.cliModel) : undefined;
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };

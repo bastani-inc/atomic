@@ -3,7 +3,13 @@
  * Provider auth orchestration belongs to ModelRuntime and pi-ai Models.
  */
 
-import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/pi-ai";
+import {
+	type AuthOperationOptions,
+	type Credential,
+	type CredentialInfo,
+	type CredentialStore,
+	normalizeProviderId,
+} from "@bastani/pi-ai";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir } from "../config.js";
 import { raceWithAbortSignal } from "../utils/abort.js";
@@ -13,6 +19,7 @@ import {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 } from "./auth-storage-backends.ts";
+import { LEGACY_AZURE_PROVIDER, normalizeProviderKeys } from "./azure-provider-compat.js";
 import { resolveConfigValue } from "./resolve-config-value.ts";
 
 export {
@@ -52,7 +59,7 @@ export class AuthStorage implements CredentialStore {
 		if (!content) {
 			return {};
 		}
-		return JSON.parse(stripBom(content)) as AuthStorageData;
+		return normalizeProviderKeys(JSON.parse(stripBom(content)) as AuthStorageData);
 	}
 
 	/**
@@ -77,12 +84,12 @@ export class AuthStorage implements CredentialStore {
 
 	/** Read the current in-memory credential snapshot without triggering refresh or I/O. */
 	peek(provider: string): Credential | undefined {
-		return this.data[provider];
+		return this.data[normalizeProviderId(provider)];
 	}
 
 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
-		const credential = this.data[provider];
+		const credential = this.peek(provider);
 		if (credential?.type !== "api_key") return credential;
 		if (credential.key === undefined) return credential;
 		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
@@ -93,6 +100,7 @@ export class AuthStorage implements CredentialStore {
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 		options?: AuthOperationOptions,
 	): Promise<Credential | undefined> {
+		provider = normalizeProviderId(provider);
 		const signal = options?.signal;
 		signal?.throwIfAborted();
 		if (this.storage.modifyProviderAsync) {
@@ -134,7 +142,9 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	async delete(provider: string): Promise<void> {
+		provider = normalizeProviderId(provider);
 		if (this.storage.deleteProviderAsync) {
+			if (provider === "azure") await this.storage.deleteProviderAsync(LEGACY_AZURE_PROVIDER);
 			const content = await this.storage.deleteProviderAsync(provider);
 			this.data = this.parseStorageData(content);
 			return;
@@ -216,18 +226,18 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
 		}
 
-		this.data = parsed as AuthStorageData;
+		this.data = normalizeProviderKeys(parsed as AuthStorageData);
 		return this.data;
 	}
 
 	/** Raw configured values for privacy screening; never execute API-key commands. */
 	peek(providerId: string): Credential | undefined {
-		return this.load()[providerId];
+		return this.load()[normalizeProviderId(providerId)];
 	}
 
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
-		const credential = this.load()[providerId];
+		const credential = this.peek(providerId);
 		options?.signal?.throwIfAborted();
 		if (!credential) return undefined;
 		if (credential.type !== "api_key" || credential.key === undefined) {
@@ -267,7 +277,9 @@ export function readStoredCredential(providerId: string, authPath?: string | str
 	try {
 		let credential: Credential | undefined;
 		storage.withLock((content) => {
-			credential = content ? (JSON.parse(stripBom(content)) as AuthStorageData)[providerId] : undefined;
+			credential = content
+				? normalizeProviderKeys(JSON.parse(stripBom(content)) as AuthStorageData)[normalizeProviderId(providerId)]
+				: undefined;
 			return { result: undefined };
 		});
 		return credential;

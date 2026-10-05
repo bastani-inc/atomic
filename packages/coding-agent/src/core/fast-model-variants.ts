@@ -94,7 +94,7 @@ export function isNativeFastRouteApi(api: Api): api is "openai-responses" | "ope
  * OpenAI-style fast routing keeps the base upstream model ID and adds a priority service tier.
  *
  * Eligibility requires both a first-party provider ID and an adapter that serializes
- * `service_tier`. A renamed provider, proxy, Azure OpenAI (`azure-openai-responses`), OpenRouter
+ * `service_tier`. A renamed provider, proxy, Azure (`azure`), OpenRouter
  * (`openai-completions`), and generic OpenAI-compatible providers do not qualify. An `openai` or
  * `openai-codex` model on an adapter that cannot carry `service_tier` must not offer a fast variant,
  * because selecting it would send an ordinary request under a name that promises otherwise.

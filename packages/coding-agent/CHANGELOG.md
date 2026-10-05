@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.
+
+### Changed
+
+- Home and End move the editor cursor to the start and end of the line. Ctrl+Home and Ctrl+End jump to the top and bottom of the fullscreen transcript.
+- Renamed the Azure provider to `azure`. Existing provider references remain supported, and startup migrates credentials and configuration without replacing existing `azure` entries. Project files are migrated only when trusted.
+
+### Fixed
+
+- Fixed syntax colors leaking across lines in multiline tokens and interpolation substitutions inheriting string colors.
+
 ## [0.9.27] - 2026-10-05
 
 ### Changed

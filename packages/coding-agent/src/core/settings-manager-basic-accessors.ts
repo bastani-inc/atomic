@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model } from "@bastani/pi-ai";
+import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model, normalizeProviderId } from "@bastani/pi-ai";
 import { normalizePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
@@ -344,7 +344,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getModelThinkingLevel(provider, modelId) {
-		return settingsInternals(this).settings.modelThinkingLevels?.[`${provider}/${modelId}`];
+		return settingsInternals(this).settings.modelThinkingLevels?.[`${normalizeProviderId(provider)}/${modelId}`];
 	},
 
 	getAllModelThinkingLevels() {
@@ -354,7 +354,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	setModelThinkingLevel(provider, modelId, level) {
 		const state = settingsInternals(this);
 		state.globalSettings.modelThinkingLevels ??= {};
-		state.globalSettings.modelThinkingLevels[`${provider}/${modelId}`] = level;
+		state.globalSettings.modelThinkingLevels[`${normalizeProviderId(provider)}/${modelId}`] = level;
 		state.markModified("modelThinkingLevels");
 		state.save();
 	},
@@ -362,7 +362,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	removeModelThinkingLevel(provider, modelId) {
 		const state = settingsInternals(this);
 		if (!state.globalSettings.modelThinkingLevels) return;
-		delete state.globalSettings.modelThinkingLevels[`${provider}/${modelId}`];
+		delete state.globalSettings.modelThinkingLevels[`${normalizeProviderId(provider)}/${modelId}`];
 		if (Object.keys(state.globalSettings.modelThinkingLevels).length === 0)
 			delete state.globalSettings.modelThinkingLevels;
 		state.markModified("modelThinkingLevels");

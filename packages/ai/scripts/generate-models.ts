@@ -369,6 +369,14 @@ const DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP = {
 	...DEEPSEEK_V4_THINKING_LEVEL_MAP,
 	low: "low",
 } as const;
+const AZURE_DEEPSEEK_V4_THINKING_LEVEL_MAP = {
+	minimal: null,
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: null,
+	max: null,
+} as const;
 // Verified against Fireworks Messages raw_output on 2026-09-10 (#9323).
 // Fall back to verified support when models.dev omits effort metadata; this is
 // not an allowlist. Any Fireworks Messages model advertising effort uses adaptive thinking.
@@ -1114,7 +1122,7 @@ function applyStrictToolCompatMetadata(model: Model<Api>): void {
 const OPENAI_GRAMMAR_TOOL_PROVIDERS = new Set([
 	"openai",
 	"openai-codex",
-	"azure-openai-responses",
+	"azure",
 	"github-copilot",
 	"opencode",
 	"cloudflare-ai-gateway",
@@ -1375,10 +1383,12 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 			model,
 			model.provider === "openrouter"
 				? { ...DEEPSEEK_V4_THINKING_LEVEL_MAP, xhigh: "xhigh", max: null }
-				: (model.provider === "deepseek" || model.provider === "opencode" || model.provider === "opencode-go") &&
-					model.id.includes("deepseek-v4-flash")
-					? DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP
-					: DEEPSEEK_V4_THINKING_LEVEL_MAP,
+				: model.provider === "azure"
+					? AZURE_DEEPSEEK_V4_THINKING_LEVEL_MAP
+					: (model.provider === "deepseek" || model.provider === "opencode" || model.provider === "opencode-go") &&
+						model.id.includes("deepseek-v4-flash")
+						? DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP
+						: DEEPSEEK_V4_THINKING_LEVEL_MAP,
 		);
 	}
 	// Google publishes LOW | MEDIUM | HIGH for Gemini 3.8 Flash and states outright that "MINIMAL is
@@ -3771,7 +3781,7 @@ async function generateModels() {
 		.map((model) => ({
 			...model,
 			api: "azure-openai-responses",
-			provider: "azure-openai-responses",
+			provider: "azure",
 			baseUrl: "",
 			cost: {
 				input: model.cost.input,
@@ -3782,6 +3792,23 @@ async function generateModels() {
 			contextWindow: AZURE_CONTEXT_WINDOW_OVERRIDES[model.id] ?? model.contextWindow,
 		}));
 	allModels.push(...azureOpenAiModels);
+	const azureDeepSeekModels: Model<Api>[] = allModels
+		.filter((model) => model.provider === "deepseek" && model.id === "deepseek-v4-pro")
+		.map((model) => ({
+			...model,
+			provider: "azure",
+			baseUrl: "",
+			cost: { input: 1.925, output: 3.828, cacheRead: 0.165, cacheWrite: 0 },
+			thinkingLevelMap: AZURE_DEEPSEEK_V4_THINKING_LEVEL_MAP,
+			compat: {
+				...(model.compat as OpenAICompletionsCompat),
+				supportsDeveloperRole: false,
+				supportsMidConvoSystemMessages: true,
+				thinkingFormat: "openai",
+				supportsLongCacheRetention: false,
+			},
+		}));
+	allModels.push(...azureDeepSeekModels);
 	for (const model of allModels) {
 		if (model.provider === "openai" && model.api === "openai-responses") {
 			model.serviceTiers = openAiServiceTiers(model.id);
@@ -3960,6 +3987,17 @@ async function generateModels() {
 					const filename = `${providerId}.models.ts`;
 					generatedShardFiles.add(filename);
 					writeFileSync(join(providersDir, filename), output);
+				}
+				if (sortedProviderIds.includes("azure")) {
+					const legacyAzureFilename = "azure-openai-responses.models.ts";
+					generatedShardFiles.add(legacyAzureFilename);
+					writeFileSync(join(providersDir, legacyAzureFilename), `${generatedHeader}/** @deprecated Use the Azure catalogs from providers/azure.models. */
+export {
+	AZURE_MODELS as AZURE_OPENAI_RESPONSES_MODELS,
+	AZURE_IMAGE_MODELS as AZURE_OPENAI_RESPONSES_IMAGE_MODELS,
+	AZURE_CLASSIFIER_MODELS as AZURE_OPENAI_RESPONSES_CLASSIFIER_MODELS,
+} from "./azure.models.ts";
+`);
 				}
 				for (const entry of readdirSync(providersDir)) {
 					if (entry.endsWith(".models.ts") && !generatedShardFiles.has(entry)) rmSync(join(providersDir, entry));

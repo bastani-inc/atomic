@@ -221,7 +221,11 @@ async function readCredential(
 	signal: AbortSignal,
 ): Promise<Credential | undefined> {
 	try {
-		return await credentials.read(providerId, { signal });
+		const credential = await credentials.read(providerId, { signal });
+		return (
+			credential ??
+			(providerId === "azure" ? await credentials.read("azure-openai-responses", { signal }) : undefined)
+		);
 	} catch (error) {
 		throw new ModelsError("auth", `Credential store read failed for ${providerId}`, { cause: error });
 	}
