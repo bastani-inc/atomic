@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.27-alpha.1] - 2026-10-04
+
 ### Changed
 
 - Codemode `image()` also saves each image to a private temp file and names its path before the image, so later turns can copy or move it ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).

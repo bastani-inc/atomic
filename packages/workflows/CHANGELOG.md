@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.27-alpha.1] - 2026-10-04
+
 ### Fixed
 
 - Fixed workflow stages that set `model` or `fallbackModels` using settings or inherited parent models instead of only their declared chain and reasoning levels, including after reattachment. Exhausted explicit chains now stop rather than append the parent model. Numbered account providers such as `openai-1` resolve from their own `auth.json` credentials without alias registrations or `models.json` entries ([#3426](https://github.com/bastani-inc/atomic/issues/3426)).
