@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.27] - 2026-10-05
+
+### Fixed
+
+- Fixed joined workflow groups being lost when extensions reload, including when retiring cleanup fails ([#3425](https://github.com/bastani-inc/atomic/issues/3425)).
+
 ## [0.9.27-alpha.1] - 2026-10-04
 
 ### Fixed
