@@ -99,6 +99,7 @@ test.each(reloadCases)(
 						name: "bash",
 						arguments: {
 							command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`const fs = require('node:fs'); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(releasePath)})) clearInterval(timer); }, 20);`)}`,
+							wait: { kind: "foreground", budgetMs: HOST_RELOAD_TIMEOUT_MS },
 						},
 					},
 				],
