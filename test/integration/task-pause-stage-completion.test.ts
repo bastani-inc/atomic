@@ -70,7 +70,7 @@ async function startBackgroundShell(session: AgentSession, command: string, desc
 	);
 	assert.ok(started.ok, started.ok ? undefined : JSON.stringify(started.error));
 	const observation = await supervisor.initialObservation(started.value, { kind: "background" });
-	assert.ok(observation.ok && observation.value.kind === "yielded");
+	assert.ok(observation.ok && observation.value.kind === "yielded", JSON.stringify(observation));
 	return { host, supervisor, lease: started.value, taskId: observation.value.taskId };
 }
 
@@ -86,7 +86,7 @@ async function completeShell(supervisor: TaskSupervisor, lease: TaskLease): Prom
 		).ok,
 	);
 	const settled = await supervisor.waitForTask(lease);
-	assert.ok(settled.ok && settled.value.kind === "settled");
+	assert.ok(settled.ok && settled.value.kind === "settled", JSON.stringify(settled));
 	return settled.value.result;
 }
 
@@ -239,10 +239,12 @@ test.runIf(process.platform !== "win32")(
 	async () => {
 		const fixture = await createStageSkillFixture();
 		const sibling = await createStageSkillFixture();
-		bindStageAdmission(fixture.stage.session, fixture.runId, fixture.stageId);
+		const boundary = bindStageAdmission(fixture.stage.session, fixture.runId, fixture.stageId);
 		bindStageAdmission(sibling.stage.session, sibling.runId, sibling.stageId);
 		const pidFile = join(fixture.directory, "stage-paused-shell.pid");
 		const siblingPidFile = join(sibling.directory, "sibling-shell.pid");
+		const responseStarted = Promise.withResolvers<void>();
+		const finishResponse = Promise.withResolvers<void>();
 		try {
 			const shell = await startBackgroundShell(
 				fixture.stage.session,
@@ -265,7 +267,17 @@ test.runIf(process.platform !== "win32")(
 			assert.equal(result.value.result.kind, "cancelled");
 			assert.equal(shell.host.resolveTask(shell.taskId).ok, true);
 			await assert.rejects(startBackgroundShell(fixture.stage.session, "printf REFUSED", "Paused launch"), /paused/);
+			fixture.stage.setResponses([
+				async () => {
+					responseStarted.resolve();
+					await finishResponse.promise;
+					return fauxAssistantMessage("Resumed stage work complete");
+				},
+			]);
 			await fixture.handle.resume();
+			await responseStarted.promise;
+			assert.equal(boundary.isOpen(), true);
+			assert.equal(fixture.stage.session.queuedMessagesPaused, false);
 			assert.equal(alive(siblingPid), true);
 			const fresh = await startBackgroundShell(
 				fixture.stage.session,
@@ -275,6 +287,7 @@ test.runIf(process.platform !== "win32")(
 			assert.notEqual(fresh.taskId, shell.taskId);
 			assert.equal((await completeShell(fresh.supervisor, fresh.lease)).kind, "completed");
 			assert.equal(executionKind(shell.host, shell.taskId), "settled", "resume never revives cancelled executions");
+			finishResponse.resolve();
 			await (fixture.stage.session as StageGenerationSession).closeWorkflowStageGeneration();
 			assert.equal(executionKind(siblingShell.host, siblingShell.taskId), "running");
 			assert.equal(alive(siblingPid), true, "completing one stage must not cancel a sibling stage owner");
@@ -289,6 +302,7 @@ test.runIf(process.platform !== "win32")(
 			);
 			await vi.waitFor(() => assert.equal(alive(siblingPid), false));
 		} finally {
+			finishResponse.resolve();
 			await fixture.cleanup();
 			await sibling.cleanup();
 		}

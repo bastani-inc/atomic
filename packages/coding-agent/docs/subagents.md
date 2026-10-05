@@ -74,6 +74,10 @@ Runtime-created session contexts bind single launches to their actual session or
 - `wait: {kind: "background"}` uses reason `explicit`.
 - `wait: {kind: "foreground", budgetMs: 30000}` opts into foreground-first observation. The omitted foreground budget is 30000 ms.
 
+When you issue several single-agent calls in one turn, each keeps its own `wait` policy and returns only its own task result. Background completions appear as visible notices and notify the parent agent, including in workflow-stage chats receiving other messages.
+
+These calls share the `concurrency` limit, or the configured subagent parallel limit when omitted, even when their wait policies differ. A background receipt or an expired foreground observation does not free a running child's slot; queued children start when execution capacity becomes available.
+
 Use `subagent({action: "wait", id: taskId})` to observe an existing task in the same owner without restarting it. It uses the owner's observation budget unless explicitly overridden.
 
 When a task has settled, the launch result, `action: "wait"`, and `action: "status"` show its output after the task record: up to 16 KB of text, a `Full output:` path to a private copy of the complete result, and a `Requested output:` line naming the `output` file you asked for (background runs included). The private copies live in a temporary directory readable only by you and are removed when Atomic exits. With `outputMode: "file-only"` the text is only the saved-file reference, and the private copy holds the file's contents. A child that stops to ask a question through `contact_supervisor` settles with the question and a ready-to-run follow-up call in this output.

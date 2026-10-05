@@ -558,7 +558,7 @@ readonly fallbackModels?: readonly string[];
 readonly fallbackThinkingLevels?: readonly string[];
 ```
 
-`fallbackModels` tries the primary, each fallback in order, then the current Atomic-selected model when available. The chain advances for:
+`fallbackModels` tries the primary and each declared fallback in order. If all fail, the stage fails; the current Atomic-selected model is not appended implicitly. To use it as a final fallback, include it explicitly. The chain advances for:
 
 - Rate limits and quota or usage-limit exhaustion, including `The usage limit has been reached`, `usage_limit_reached`, and `insufficient_quota`.
 - Auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` or `fetch failed`, and 5xx responses.
@@ -567,9 +567,13 @@ Before advancing, Atomic retries a thrown failure on the same candidate when ano
 
 Rejected credentials, unavailable models, and incompatible requests advance immediately, as in main chat. Retrying the same candidate cannot repair these failures.
 
+A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior.
+
+Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist. `modelRouting.allowedProviders`, `modelRouting.excludedProviders`, and `routerModel` apply to `model: "auto"`, not to these pinned primary or fallback models.
+
 A same-candidate retry resumes the existing turn when the transcript ends in a message the agent can continue from. Otherwise, it re-sends the stage prompt. In either case, Atomic removes the failed provider error from the live transcript and delivers the prompt exactly once.
 
-Request/context incompatibility also advances it, including HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length or context-window overflow; and `too large`, `invalid_request`, or `bad_request` errors. This lets the chain reach the current selected user model when no configured candidate can serve the request.
+Request/context incompatibility also advances it, including HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length or context-window overflow; and `too large`, `invalid_request`, or `bad_request` errors.
 
 If extension initialization fails and its session cannot be cleaned up, the stage stops without trying another model. Later prompts or attachment attempts on that stage also fail. Inspect both the initialization and cleanup errors and resolve the extension failure before starting a new run; changing fallback models does not fix a cleanup failure.
 

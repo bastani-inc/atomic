@@ -5,6 +5,7 @@ import type { WorkflowResolvedModelCandidate } from "../shared/model-fallback.js
 interface StageSessionOptionsInput {
 	readonly effectiveStageOptions: StageOptions | undefined;
 	readonly candidate: WorkflowResolvedModelCandidate | undefined;
+	readonly ownsFallbackChain: boolean;
 	readonly restoreSavedModel?: boolean;
 	readonly reattachSessionFile: string | undefined;
 	readonly sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
@@ -20,9 +21,11 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
 					...(input.candidate.reasoningLevel !== undefined
 						? { thinkingLevel: input.candidate.reasoningLevel }
 						: {}),
-					fallbackModels: undefined,
-					fallbackThinkingLevels: undefined,
 				};
+	if (input.ownsFallbackChain) {
+		options.fallbackModels = [];
+		options.fallbackThinkingLevels = undefined;
+	}
 	if (input.restoreSavedModel === true) delete options.model;
 
 	if (input.reattachSessionFile !== undefined && options.sessionManager === undefined) {

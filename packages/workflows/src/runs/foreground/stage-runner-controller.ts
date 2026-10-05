@@ -1227,6 +1227,7 @@ export class StageSessionController {
 						]
 					: this.effectiveStageOptions?.fallbackThinkingLevels,
 				catalog: this.modelCatalog,
+				includeCurrentModel: this.modelRoute !== undefined,
 			});
 			this.candidatesPromise = this.modelRoute
 				? resolved.then((candidates) => {
@@ -1281,7 +1282,18 @@ export class StageSessionController {
 		if (this.reattachSessionFile !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
 			const restoredId = workflowModelId(resumed.model);
-			const restoredIndex = restoredId === undefined ? -1 : candidates.findIndex((entry) => entry.id === restoredId);
+			const exactRestoredIndex =
+				restoredId === undefined
+					? -1
+					: candidates.findIndex(
+							(entry) => entry.id === restoredId && entry.reasoningLevel === resumed.thinkingLevel,
+						);
+			// An unspecified effort accepts the SDK's effective effort, but must not
+			// shadow a later candidate explicitly declaring the saved reasoning tier.
+			const restoredIndex =
+				exactRestoredIndex >= 0
+					? exactRestoredIndex
+					: candidates.findIndex((entry) => entry.id === restoredId && entry.reasoningLevel === undefined);
 			this.activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
 			this.selectedModel = restoredId ?? first.id;
 			this.resumeCurrentSession = true;
@@ -1556,10 +1568,13 @@ export class StageSessionController {
 			}
 		}
 		this.reportStartupPhase("resource-preparation");
-		this.applyCandidateThinking(candidate);
+		// Saved effort must survive attachment so the restored candidate can be identified.
+		if (resumeOptions?.restoreSavedModel) this.pendingThinkingLevel = undefined;
+		else this.applyCandidateThinking(candidate);
 		const stageOptions = buildStageSessionOptions({
 			effectiveStageOptions: this.effectiveStageOptions,
 			candidate,
+			ownsFallbackChain: this.hasExplicitModelFallbackConfig,
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionFile: this.reattachSessionFile,
 			sharedModelRuntime: this.sharedModelRuntime,
