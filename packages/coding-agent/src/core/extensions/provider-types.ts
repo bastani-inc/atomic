@@ -62,8 +62,9 @@ export interface ProviderConfig {
 		login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
 		/**
 		 * Refresh expired credentials, return updated credentials to persist.
-		 * `signal` is the caller's cancellation signal — forward it into the
-		 * network call so an aborted refresh is actually abandoned.
+		 * `signal` bounds the rotation to 60 seconds; forward it into network calls.
+		 * Once started, rotation is independent of caller cancellation so updated
+		 * credentials can be persisted even after the caller stops waiting.
 		 */
 		refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 		/** Convert credentials to API key string for the provider. */

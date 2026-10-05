@@ -1,29 +1,13 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ProviderConfig } from "../src/core/extensions/provider-types.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ExtensionOAuthConfig } from "../src/core/provider-composer-internal.ts";
 
-/**
- * pi hands the abort signal to the OAuth refresh hook: `Models.refresh({signal})`
- * forwards it through `resolveRefreshCredential` into `oauth.refresh(current,
- * signal)` (pi-ai `models.js:87,131`, declared at `auth/types.d.ts:202`). Atomic
- * owns the extension-facing `refreshToken` contract, which used to take only the
- * credential, so `adaptOAuth` received the signal and dropped it and an in-flight
- * token refresh could not be cancelled.
- *
- * The login half of the same adapter already threaded `signal` through, so this
- * closes the asymmetry.
- *
- * Both tests must define `refreshModels`: `Models.refresh()` only visits
- * providers that declare it (`models.js:74`), and the OAuth refresh path hangs
- * off that walk. Without it the hook is never entered at all.
- */
+/** Extension refresh hooks receive a timeout signal; caller cancellation must not discard rotation. */
 
-/**
- * Bounds the unforwarded case: without the signal the hook cannot observe the
- * abort, so it must still finish rather than hang the suite.
- */
+/** Let the provider complete even though the caller no longer waits for the result. */
 const ABORT_OBSERVATION_TIMEOUT_MS = 200;
 
 type Equal<Left, Right> =
@@ -58,7 +42,7 @@ describe("extension OAuth refreshToken abort signal", () => {
 		expect(publicRefreshSignalIsExact).toBe(true);
 		expect(internalRefreshSignalIsExact).toBe(true);
 	});
-	it("forwards the caller's abort signal to refreshToken", async () => {
+	it("keeps the refresh timeout signal independent of caller cancellation (#3429)", async () => {
 		const runtime = await ModelRuntime.create({ credentials: expiredOAuthStore(), modelsPath: null });
 		let hookEntered = false;
 		let observedSignal: AbortSignal | undefined;
@@ -85,16 +69,14 @@ describe("extension OAuth refreshToken abort signal", () => {
 		// Guards the assertion below: a never-entered hook would also leave
 		// observedSignal undefined and would prove nothing.
 		expect(hookEntered).toBe(true);
-		// Models composes the caller signal with its provider-operation controller,
-		// so identity is intentionally not stable. The hook must receive a signal
-		// that follows the caller's abort, which the second test exercises.
-		expect(observedSignal).toBeDefined();
+		assert.ok(observedSignal instanceof AbortSignal);
 		controller.abort();
-		expect(observedSignal?.aborted).toBe(true);
+		assert.equal(observedSignal.aborted, false);
 	});
 
-	it("lets an abort that arrives mid-refresh abandon the in-flight refresh", async () => {
-		const runtime = await ModelRuntime.create({ credentials: expiredOAuthStore(), modelsPath: null });
+	it("persists rotated credentials after caller cancellation mid-refresh (#3429)", async () => {
+		const credentials = expiredOAuthStore();
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
 		let hookEntered = false;
 		let refreshCompleted = false;
 		let markEntered: () => void = () => {};
@@ -109,10 +91,7 @@ describe("extension OAuth refreshToken abort signal", () => {
 				name: "OAuth Signal",
 				login: async () => ({ access: "a", refresh: "r", expires: Date.now() + 60_000 }),
 				refreshToken: async (credential, signal) => {
-					// Abort only after the hook is entered, so pi's own pre-flight
-					// `if (signal?.aborted) return undefined` cannot short-circuit it.
-					// Reaching the abort therefore requires the signal to have been
-					// forwarded here. The timeout bounds the run when it was not.
+					// Abort only after the provider starts so this exercises actual token rotation.
 					hookEntered = true;
 					markEntered();
 					await new Promise<void>((resolve) => {
@@ -120,11 +99,9 @@ describe("extension OAuth refreshToken abort signal", () => {
 						signal.addEventListener("abort", () => resolve(), { once: true });
 						setTimeout(resolve, ABORT_OBSERVATION_TIMEOUT_MS);
 					});
-					// A real implementation forwards the signal into fetch(); reject on
-					// abort the same way an aborted fetch would.
-					if (signal.aborted) throw new Error("refresh aborted");
+					signal.throwIfAborted();
 					refreshCompleted = true;
-					return { ...credential, access: "refreshed", expires: Date.now() + 60_000 };
+					return { ...credential, access: "refreshed", refresh: "rotated", expires: Date.now() + 60_000 };
 				},
 				getApiKey: (credential) => credential.access,
 			},
@@ -137,10 +114,13 @@ describe("extension OAuth refreshToken abort signal", () => {
 		controller.abort();
 		const result = await pending;
 
-		expect(hookEntered).toBe(true);
-		// Without forwarding, the hook never observes the abort, falls through the
-		// timeout, and completes — which is exactly the defect.
-		expect(refreshCompleted).toBe(false);
-		expect(result.aborted || result.errors.size > 0).toBe(true);
+		assert.equal(hookEntered, true);
+		assert.equal(result.aborted, true);
+		await vi.waitFor(async () => {
+			assert.equal(refreshCompleted, true);
+			const stored = await credentials.read("oauth-signal");
+			assert.ok(stored?.type === "oauth");
+			assert.equal(stored.refresh, "rotated");
+		});
 	});
 });

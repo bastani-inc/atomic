@@ -2,8 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Codemode `image()` also saves each image to a private temp file and names its path before the image, so later turns can copy or move it ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Full codemode text output and binary MCP resources now use exclusively created, user-readable-only temp files ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+
 ### Fixed
 
+- Fixed subscription logins such as Sign in with ChatGPT losing rotated OAuth tokens when a request or model refresh was cancelled ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed codemode failing after an update removed the running npm install, and added a restart hint when errors occur after the install changes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed dead terminal stdin errors such as `read EIO` and `setRawMode ENOTTY` being reported as crashes ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed slow OAuth token rotation failing model refresh after the request-authentication waiting deadline ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed unrelated extension and filesystem errors being mistaken for dead-terminal exits, restoring crash reports and extension hints ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
+- Fixed slow OAuth rotation blocking logout and credential updates for unrelated providers. File-backed rotation now uses a provider-specific lock and preserves concurrent logout or credential replacement ([#3429](https://github.com/bastani-inc/atomic/issues/3429)).
 - Fixed failed `/reload` retiring cleanup leaving in-flight workflows unreachable. The replacement extensions now finish starting, pending settings take effect, joined Intercom groups and workflow-stage targets by name or ID survive, and the error names the underlying cleanup exception. Successful reloads also preserve live, pending, and future workflow-stage routing ([#3425](https://github.com/bastani-inc/atomic/issues/3425)).
 - Background subagent completions now reach workflow-stage chats as visible notices that trigger a parent turn before acknowledgment, even while other notices arrive ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
 

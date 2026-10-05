@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { resolvePackageDirFrom } from "./config-package-identity.ts";
@@ -130,18 +129,45 @@ function getModuleAssetRoot(): string {
 }
 
 /** Codemode workers and wasm live beside Atomic's split/development bundle. */
+let codemodeWorkerDataUrl: URL | undefined;
+let quickJSWasmPath: string | undefined;
+
 export function getCodemodeWorkerUrl(): URL | undefined {
-	if (isBunBinary) return pathToFileURL(join(getPackageDir(), "codemode-worker.js"));
-	if (isBundledBuild) return pathToFileURL(join(dirname(resolve(process.argv[1])), "codemode-worker.js"));
-	return undefined;
+	if (codemodeWorkerDataUrl) return codemodeWorkerDataUrl;
+	const worker = isBunBinary
+		? join(getPackageDir(), "codemode-worker.js")
+		: isBundledBuild
+			? join(dirname(resolve(process.argv[1])), "codemode-worker.js")
+			: join(getModuleAssetRoot(), "codemode-worker.js");
+	if (!isBunBinary && !isBundledBuild && !existsSync(worker)) return undefined;
+	// A self-contained worker survives replacement or removal of the running install.
+	codemodeWorkerDataUrl ??= new URL(`data:text/javascript;base64,${readFileSync(worker).toString("base64")}`);
+	return codemodeWorkerDataUrl;
 }
 
 export function getQuickJSWasmPath(): string {
-	if (isBunBinary) return join(getPackageDir(), "quickjs.wasm");
-	if (isBundledBuild) return join(dirname(resolve(process.argv[1])), "quickjs.wasm");
-	return createRequire(__filename).resolve("quickjs-wasi/quickjs.wasm");
+	quickJSWasmPath ??= isBunBinary
+		? join(getPackageDir(), "quickjs.wasm")
+		: isBundledBuild
+			? join(dirname(resolve(process.argv[1])), "quickjs.wasm")
+			: createRequire(__filename).resolve("quickjs-wasi/quickjs.wasm");
+	return quickJSWasmPath;
 }
 
+export type InstallChange = { kind: "updated"; version: string } | { kind: "removed" };
+
+export function detectInstallChange(packageJsonPath = startupPackageJsonPath): InstallChange | undefined {
+	if (isBunBinary || !packageJsonPath) return undefined;
+	let installed: PackageJson;
+	try {
+		installed = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as PackageJson;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "removed" } : undefined;
+	}
+	return installed.version && installed.version !== VERSION
+		? { kind: "updated", version: installed.version }
+		: undefined;
+}
 /**
  * Get path to built-in themes directory (shipped with package)
  * - For Bun binary: theme/ next to executable
@@ -228,8 +254,11 @@ interface PackageJson extends Record<string, unknown> {
 }
 
 let pkg: PackageJson = {};
+let startupPackageJsonPath: string | undefined;
 try {
-	pkg = JSON.parse(stripBom(readFileSync(getPackageJsonPath(), "utf-8"))) as PackageJson;
+	const packageJsonPath = getPackageJsonPath();
+	pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as PackageJson;
+	startupPackageJsonPath = packageJsonPath;
 } catch (e: unknown) {
 	const err = e as NodeJS.ErrnoException;
 	if (err.code !== "ENOENT") throw e;

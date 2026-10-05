@@ -1,4 +1,16 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { createHash } from "node:crypto";
+import type { Credential } from "@bastani/pi-ai";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
@@ -37,6 +49,11 @@ export interface AuthStorageBackend {
 	read?(): string | undefined;
 	deleteProvider?(provider: string): string | undefined;
 	deleteProviderAsync?(provider: string): Promise<string | undefined>;
+	modifyProviderAsync?(
+		provider: string,
+		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		signal?: AbortSignal,
+	): Promise<LockResult<Credential | undefined>>;
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
@@ -48,6 +65,50 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	constructor(authPath: string = join(getAgentDir(), "auth.json"), readPaths: string[] = [authPath]) {
 		this.authPath = normalizePath(authPath);
 		this.readPaths = readPaths.map((readPath) => normalizePath(readPath));
+	}
+
+	async modifyProviderAsync(
+		provider: string,
+		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		signal?: AbortSignal,
+	): Promise<LockResult<Credential | undefined>> {
+		this.ensureParentDir();
+		this.ensureFileExists();
+		const providerPath = `${realpathSync(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
+		let compromised: Error | undefined;
+		const release = await lockfile.lock(providerPath, {
+			realpath: false,
+			retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
+			stale: 30000,
+			onCompromised: (error) => {
+				compromised = error;
+			},
+		});
+		try {
+			signal?.throwIfAborted();
+			if (compromised) throw compromised;
+			const originalData = JSON.parse(this.readMergedAuth() ?? "{}") as AuthStorageData;
+			const original = JSON.stringify(originalData[provider]);
+			const next = await fn(originalData[provider]);
+			if (compromised) throw compromised;
+			return await this.withLockAsync(async (content) => {
+				signal?.throwIfAborted();
+				if (compromised) throw compromised;
+				const current = JSON.parse(content ?? "{}") as AuthStorageData;
+				if (next !== undefined && JSON.stringify(current[provider]) === original) {
+					const merged = JSON.stringify({ ...current, [provider]: next }, null, 2);
+					return { result: { result: next, next: merged }, next: merged };
+				}
+				return {
+					result: {
+						result: JSON.stringify(current[provider]) === original ? originalData[provider] : current[provider],
+						next: content,
+					},
+				};
+			});
+		} finally {
+			await release().catch(() => undefined);
+		}
 	}
 
 	private ensureParentDir(): void {

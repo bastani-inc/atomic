@@ -1,3 +1,4 @@
+import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -20,9 +21,26 @@ import {
 	ToolExecutionComponent,
 	theme,
 } from "./interactive-mode-deps.ts";
+import { formatResumeCommand } from "./interactive-mode-helpers.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
+
+InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
+	if (this.installChangeWarningShown) return true;
+	const change = detectInstallChange();
+	if (!change) return false;
+	this.installChangeWarningShown = true;
+	const cause =
+		change.kind === "updated"
+			? `${APP_NAME} was updated to ${change.version} while this session was running (${VERSION})`
+			: `The ${APP_NAME} installation this session runs from was removed or replaced`;
+	const resume = formatResumeCommand(this.sessionManager);
+	this.showWarning(
+		`${cause}. Features that load code on demand can fail until restart. ${resume ? `Restart with \`${resume}\` to continue this session.` : `Restart ${APP_NAME}.`}`,
+	);
+	return true;
+};
 
 function createToolComponent(
 	mode: InteractiveModeBase,
@@ -262,6 +280,11 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.streamingComponent.updateContent(this.streamingMessage, false);
 
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+					if (
+						this.streamingMessage.stopReason === "error" &&
+						!/\b(?:abort(?:ed)?|cancel(?:l?ed)?)\b/i.test(this.streamingMessage.errorMessage ?? "")
+					)
+						this.maybeShowInstallChangeWarning();
 					if (!errorMessage) {
 						errorMessage = this.streamingMessage.errorMessage || "Error";
 					}
@@ -329,6 +352,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "tool_execution_end": {
+			if (event.isError) this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError });

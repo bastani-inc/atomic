@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -182,4 +183,112 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		expect(order).toEqual([]);
 		expect(context.runtimeHost.dispose).not.toHaveBeenCalled();
 	});
+});
+
+type HandlerContext = {
+	isShuttingDown: boolean;
+	signalCleanupHandlers: Array<() => void>;
+	shutdown: () => Promise<void>;
+	unregisterSignalHandlers: () => void;
+	emergencyTerminalExit: () => never;
+	uncaughtCrash: (error: Error) => never;
+	getCrashExtensionHint: () => string | undefined;
+	ui: { stop: () => void };
+};
+type HandlerPrototype = {
+	registerSignalHandlers(this: HandlerContext): void;
+	unregisterSignalHandlers(this: HandlerContext): void;
+	emergencyTerminalExit(this: HandlerContext): never;
+	uncaughtCrash(this: HandlerContext, error: Error): never;
+};
+const handlerPrototype = InteractiveMode.prototype as unknown as HandlerPrototype;
+
+test("unrelated uncaught EIO and ENOTTY restore the terminal and report a crash (#3429)", () => {
+	const hint = "Error in extension unrelated-extension";
+	const stop = vi.fn();
+	const context: HandlerContext = {
+		isShuttingDown: false,
+		signalCleanupHandlers: [],
+		shutdown: async () => {},
+		unregisterSignalHandlers: () => handlerPrototype.unregisterSignalHandlers.call(context),
+		emergencyTerminalExit: () => handlerPrototype.emergencyTerminalExit.call(context),
+		uncaughtCrash: (error) => handlerPrototype.uncaughtCrash.call(context, error),
+		getCrashExtensionHint: () => hint,
+		ui: { stop },
+	};
+	const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+		throw new Error(`exit ${code}`);
+	});
+	const report = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		for (const code of ["EIO", "ENOTTY", "EPIPE", "ENOTCONN"]) {
+			for (const syscall of [undefined, "read", "open"]) {
+				context.isShuttingDown = false;
+				stop.mockClear();
+				report.mockClear();
+				handlerPrototype.registerSignalHandlers.call(context);
+				const error = Object.assign(new Error(`unrelated extension setRawMode ${code}`), { code, syscall });
+				const handler = process.listeners("uncaughtException")[0] as (error: Error) => void;
+				assert.throws(() => handler(error), /exit 1$/);
+				assert.equal(stop.mock.calls.length, 1);
+				assert.ok(report.mock.calls.some(([value]) => value === error));
+				assert.ok(report.mock.calls.some(([value]) => String(value).includes(hint)));
+			}
+		}
+	} finally {
+		context.unregisterSignalHandlers();
+		exit.mockRestore();
+		report.mockRestore();
+	}
+});
+
+test("dead stdin and uncaught terminal errors exit quietly while other errors still crash (#3429)", () => {
+	const context: HandlerContext = {
+		isShuttingDown: false,
+		signalCleanupHandlers: [],
+		shutdown: async () => {},
+		unregisterSignalHandlers: () => handlerPrototype.unregisterSignalHandlers.call(context),
+		emergencyTerminalExit: () => handlerPrototype.emergencyTerminalExit.call(context),
+		uncaughtCrash: (error) => handlerPrototype.uncaughtCrash.call(context, error),
+		getCrashExtensionHint: () => undefined,
+		ui: { stop: vi.fn() },
+	};
+	const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+		throw new Error(`exit ${code}`);
+	});
+	const report = vi.spyOn(console, "error").mockImplementation(() => {});
+	const before = process.stdin.listenerCount("error");
+	try {
+		for (const code of ["EIO", "ENOTTY"]) {
+			context.isShuttingDown = false;
+			handlerPrototype.registerSignalHandlers.call(context);
+			assert.equal(process.stdin.listenerCount("error"), before + 1);
+			assert.throws(
+				() => process.stdin.emit("error", Object.assign(new Error(`read ${code}`), { code })),
+				/exit 129/,
+			);
+			assert.equal(report.mock.calls.length, 0);
+			assert.equal(process.stdin.listenerCount("error"), before);
+			context.isShuttingDown = false;
+			assert.throws(
+				() =>
+					context.uncaughtCrash(Object.assign(new Error(`setRawMode ${code}`), { code, syscall: "setRawMode" })),
+				/exit 129/,
+			);
+			assert.equal(report.mock.calls.length, 0);
+		}
+		context.isShuttingDown = false;
+		handlerPrototype.registerSignalHandlers.call(context);
+		const error = Object.assign(new Error("read ECONNREFUSED"), { code: "ECONNREFUSED" });
+		assert.throws(
+			() => process.stdin.emit("error", error),
+			(actual) => actual === error,
+		);
+		assert.throws(() => context.uncaughtCrash(error), /exit 1/);
+		assert.ok(report.mock.calls.length > 0);
+	} finally {
+		context.unregisterSignalHandlers();
+		exit.mockRestore();
+		report.mockRestore();
+	}
 });

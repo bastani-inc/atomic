@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createCodemodeExtension } from "../src/extensions/codemode/index.js";
 import {
 	CODEMODE_DOCS_PATH,
@@ -367,6 +368,119 @@ test("codemode detects the image MIME type instead of trusting the supplied type
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
+test("codemode saves duplicate images once and labels each image in output order (#3429)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	let path: string | undefined;
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `text("before"); image("data:image/png;base64,${TINY_PNG_BASE64}"); image("data:image/png;base64,${TINY_PNG_BASE64}"); text("after");`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("emit images");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert.ok(result?.role === "toolResult");
+		assert.equal(result.isError, false);
+		const items = result.content.slice(1);
+		assert.deepEqual(
+			items.map((item) => item.type),
+			["text", "text", "image", "text", "image", "text"],
+		);
+		assert.deepEqual(items[0], { type: "text", text: "before" });
+		assert.deepEqual(items[5], { type: "text", text: "after" });
+		assert.ok(items[1].type === "text");
+		path = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(items[1].text)?.[1];
+		assert.ok(path);
+		assert.deepEqual(items[3], items[1]);
+		assert.equal(readFileSync(path).toString("base64"), TINY_PNG_BASE64);
+		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+	} finally {
+		if (path) rmSync(path, { force: true });
+		await harness.cleanup();
+	}
+});
+
+test("image save failures keep successful script output and images (#3429)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, `${harness.tempDir}/missing-output-dir`);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `text("kept verbatim"); image("data:image/png;base64,${TINY_PNG_BASE64}");`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("save image with unwritable temp directory");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert.ok(result?.role === "toolResult");
+		assert.equal(result.isError, false);
+		assert.deepEqual(result.content[1], { type: "text", text: "kept verbatim" });
+		assert.ok(result.content[2].type === "text");
+		assert.match(result.content[2].text, /^\[Image \(image\/png, \d+B\) could not be saved: /);
+		assert.deepEqual(result.content[3], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+	} finally {
+		vi.unstubAllEnvs();
+		await harness.cleanup();
+	}
+});
+
+test("truncation keeps saved image labels next to images and outside the text budget (#3429)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	const paths: string[] = [];
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `// @options: {"max_output_tokens": 10}\ntext("x".repeat(200)); image("data:image/png;base64,${TINY_PNG_BASE64}");`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("truncate image output");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert.ok(result?.role === "toolResult");
+		assert.equal(result.isError, false);
+		assert.deepEqual(result.content.at(-1), { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+		const label = result.content.at(-2);
+		assert.ok(label?.type === "text");
+		const imagePath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(label.text)?.[1];
+		assert.ok(imagePath);
+		paths.push(imagePath);
+		assert.equal(readFileSync(imagePath).toString("base64"), TINY_PNG_BASE64);
+		const outputPath = (result.details as CodemodeToolDetails).fullOutputPath;
+		assert.ok(outputPath);
+		paths.push(outputPath);
+		assert.equal(readFileSync(outputPath, "utf8"), "x".repeat(200));
+		if (process.platform !== "win32") assert.equal(statSync(outputPath).mode & 0o777, 0o600);
+	} finally {
+		for (const path of paths) rmSync(path, { force: true });
+		await harness.cleanup();
+	}
+});
+
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 async function createModelsHarness() {
@@ -490,6 +604,16 @@ test("codemode generates images with catalog credentials and attaches them throu
 			result.content.filter((block) => block.type === "image"),
 			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		);
+		const label = result.content[2];
+		assert.ok(label.type === "text");
+		const savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(label.text)?.[1];
+		assert.ok(savedPath);
+		try {
+			assert.equal(readFileSync(savedPath).toString("base64"), TINY_PNG_BASE64);
+		} finally {
+			rmSync(savedPath, { force: true });
+		}
+		assert.deepEqual(result.content[3], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 		assert.deepEqual(
 			requests.map((request) => [request.baseUrl, request.apiKey]),
 			[

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { zstdDecompressSync } from "node:zlib";
 import {
 	type Api,
@@ -303,6 +304,37 @@ describe("ModelRuntime auth options", () => {
 		).rejects.toThrow();
 		expect(runtime.hasConfiguredAuth("openai")).toBe(false);
 		expect(refreshes).toBe(0);
+	});
+	it("does not cancel an extension OAuth refresh with the request (#3429)", async () => {
+		const credentials = AuthStorage.inMemory({
+			"extension-oauth": { type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+		});
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+		const controller = new AbortController();
+		let refreshSignal: AbortSignal | undefined;
+		runtime.registerProvider("extension-oauth", {
+			baseUrl: "https://example.test/v1",
+			api: "openai-completions",
+			oauth: {
+				name: "Extension subscription",
+				login: async () => ({ access: "access", refresh: "refresh", expires: Date.now() + 60_000 }),
+				refreshToken: async (credential, signal) => {
+					refreshSignal = signal;
+					controller.abort(new Error("cancelled"));
+					return { ...credential, refresh: "rotated", expires: Date.now() + 3600_000 };
+				},
+				getApiKey: (credential) => credential.access,
+			},
+			models: [testModel("extension-model")],
+		});
+		await assert.rejects(runtime.getAuth("extension-oauth", { signal: controller.signal }));
+		assert.ok(refreshSignal instanceof AbortSignal);
+		assert.equal(refreshSignal.aborted, false);
+		await vi.waitFor(async () => {
+			const stored = await credentials.read("extension-oauth");
+			assert.ok(stored?.type === "oauth");
+			assert.equal(stored.refresh, "rotated");
+		});
 	});
 });
 

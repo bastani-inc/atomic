@@ -1,12 +1,15 @@
+import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	detectInstallChange,
 	detectInstallMethod,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getUpdateInstruction,
+	VERSION,
 } from "../src/config.ts";
 
 const execPathDescriptor = Object.getOwnPropertyDescriptor(process, "execPath");
@@ -369,4 +372,18 @@ describe("detectInstallMethod", () => {
 		expect(getSelfUpdateCommand("@bastani/atomic")).toBeUndefined();
 		expect(getSelfUpdateUnavailableInstruction("@bastani/atomic")).toContain("the install path is not writable");
 	});
+});
+
+test("detects changed installs without falling back to an unrelated parent package (#3429)", () => {
+	tempDir = mkdtempSync(join(tmpdir(), "atomic-install-change-"));
+	const installDir = join(tempDir, "global", "hash");
+	mkdirSync(installDir, { recursive: true });
+	const path = join(installDir, "package.json");
+	writeFileSync(path, JSON.stringify({ version: VERSION }));
+	assert.equal(detectInstallChange(path), undefined);
+	writeFileSync(path, JSON.stringify({ version: "3429.0.0" }));
+	assert.deepEqual(detectInstallChange(path), { kind: "updated", version: "3429.0.0" });
+	writeFileSync(join(tempDir, "package.json"), JSON.stringify({ version: "0.0.1" }));
+	rmSync(installDir, { recursive: true, force: true });
+	assert.deepEqual(detectInstallChange(path), { kind: "removed" });
 });

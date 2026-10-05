@@ -110,6 +110,9 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 };
 
 InteractiveModeBase.prototype.uncaughtCrash = function (this: InteractiveModeBase, error: Error): never {
+	if (isDeadTerminalError(error) && (error as NodeJS.ErrnoException).syscall === "setRawMode") {
+		this.emergencyTerminalExit();
+	}
 	if (this.isShuttingDown) {
 		process.exit(1);
 	}
@@ -180,10 +183,10 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 		}
 		throw error;
 	};
-	process.stdout.on("error", terminalErrorHandler);
-	process.stderr.on("error", terminalErrorHandler);
-	this.signalCleanupHandlers.push(() => process.stdout.off("error", terminalErrorHandler));
-	this.signalCleanupHandlers.push(() => process.stderr.off("error", terminalErrorHandler));
+	for (const stream of [process.stdin, process.stdout, process.stderr]) {
+		stream.on("error", terminalErrorHandler);
+		this.signalCleanupHandlers.push(() => stream.off("error", terminalErrorHandler));
+	}
 
 	// Restore the terminal before the process dies on any uncaught throw.
 	// Without this, an unhandled exception from extension code (or anywhere
