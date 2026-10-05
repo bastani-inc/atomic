@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
@@ -105,6 +105,7 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	return {
+		cwd,
 		call: (id: string, params: SubagentParamsLike): Promise<SubagentToolResult> =>
 			executor.execute(id, params, new AbortController().signal, undefined, ctx),
 	};
@@ -364,4 +365,59 @@ test("singleton wait groups share the settings cap while unbounded foreground wa
 	release.resolve();
 	assert.equal(single(await foreground).observation.kind, "settled");
 	assert.deepEqual(launched, ["foreground", "background"]);
+});
+
+test("singleton mixed-wait SINGLE progress stays run-isolated without overwriting project progress (#3427)", async () => {
+	const release = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const progressPaths: string[] = [];
+	let active = 0;
+	let peak = 0;
+	const { call, cwd } = harness(
+		async (_cwd, _agents, _agent, task, options) => {
+			assert.ok(options.progressPath);
+			progressPaths.push(options.progressPath);
+			assert.ok(readFileSync(options.progressPath, "utf8").length > 0);
+			active++;
+			peak = Math.max(peak, active);
+			started.resolve();
+			await release.promise;
+			active--;
+			return childResult(task.startsWith("foreground") ? "foreground" : "background");
+		},
+		undefined,
+		2,
+	);
+	cleanups.push(() => release.resolve());
+	const sentinel = "Project progress must survive.\n";
+	const projectProgress = join(cwd, "progress.md");
+	writeFileSync(projectProgress, sentinel);
+	const foreground = call("foreground", {
+		agent: "echo",
+		task: "foreground",
+		progress: true,
+		wait: { kind: "foreground" },
+	});
+	const background = await call("background", {
+		agent: "echo",
+		task: "background",
+		progress: true,
+		wait: { kind: "background" },
+	});
+	await started.promise;
+	assert.equal(readFileSync(projectProgress, "utf8"), sentinel);
+	assert.equal(single(background).observation.kind, "yielded");
+	release.resolve();
+	const settled = await foreground;
+	assert.equal(single(settled).observation.kind, "settled");
+	assert.match(text(settled), /output:foreground/);
+	assert.doesNotMatch(text(settled), /output:background/);
+	assert.equal(progressPaths.length, 2);
+	assert.equal(new Set(progressPaths).size, 2);
+	for (const progressPath of progressPaths) {
+		assert.notEqual(progressPath, projectProgress);
+		assert.match(progressPath, /[\\/]progress[\\/][^\\/]+[\\/]progress\.md$/);
+	}
+	assert.equal(peak, 2);
+	assert.equal(readFileSync(projectProgress, "utf8"), sentinel);
 });

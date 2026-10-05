@@ -6,6 +6,7 @@
 
 - Simultaneous subagent calls preserve each caller's wait policy and return only that caller's results instead of a shared parallel receipt ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
 - Simultaneous subagent calls with mixed foreground and background waits now share the configured concurrency limit; returning a background receipt does not free a running child's slot ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
+- Single-agent calls with mixed wait policies keep progress files isolated per run instead of overwriting an existing project `progress.md` ([#3427](https://github.com/bastani-inc/atomic/issues/3427)).
 
 ## [0.9.23] - 2026-09-27
 

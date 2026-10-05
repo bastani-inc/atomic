@@ -381,10 +381,11 @@ export function createExecutionBurstDispatcher(input: {
 		finish: () => void,
 		schedule?: (dispatch: () => Promise<void>) => void,
 	): Promise<void> => {
-		if (items.length === 1 && !schedule) {
+		if (items.length === 1) {
 			const item = items[0]!;
+			const params = schedule ? { ...item.params, [BURST_EXECUTION_SCHEDULE]: schedule } : item.params;
 			try {
-				item.resolve(await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
+				item.resolve(await input.execute(item.id, params, item.signal, item.onUpdate, item.ctx));
 			} catch (error) {
 				item.reject(error instanceof Error ? error : new Error(String(error)));
 			} finally {

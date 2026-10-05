@@ -76,7 +76,7 @@ interface ForegroundParallelRunInput {
 }
 
 /** Legacy callers observe detachment, but execution capacity stays held until exit. */
-function runUnboundParallelTask(
+export function runUnboundParallelTask(
 	options: RunSyncOptions,
 	agent: string,
 	task: string,
