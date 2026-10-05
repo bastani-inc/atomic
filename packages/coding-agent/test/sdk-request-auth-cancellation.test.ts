@@ -183,8 +183,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			);
 	}
 
-	// #3429: a started provider rotation must survive caller cancellation (#3085).
-	it("stops waiting after session.abort but persists an already-started OAuth rotation", async () => {
+	it("stops waiting after session.abort but persists an already-started OAuth rotation (#3429)", async () => {
 		const entered = deferred();
 		const late = deferred<unknown>();
 		let signal: AbortSignal | undefined;
@@ -235,7 +234,7 @@ describe("createAgentSession request-auth cancellation", () => {
 		expect(await f.credentials.read("primary")).toEqual({ type: "api_key", key: "fabricated" });
 	});
 
-	it("does not start a queued OAuth refresh or overwrite replacement credentials after session.abort", async () => {
+	it("does not start a queued OAuth refresh or overwrite replacement credentials after session.abort (#3429)", async () => {
 		const f = await fixture();
 		const entered = deferred();
 		const release = deferred();
