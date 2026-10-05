@@ -7,7 +7,7 @@ import {
 } from "./dbos-database-diagnostics.js";
 import { getDbosProcessOwner } from "./dbos-process-owner.js";
 
-export const DBOS_ADMISSION_TIMEOUT_MS = 10_000;
+export const DBOS_ADMISSION_TIMEOUT_MS = 120_000;
 
 export class DbosDependencyError extends Error {
 	readonly code = "ATOMIC_DBOS_DEPENDENCY";

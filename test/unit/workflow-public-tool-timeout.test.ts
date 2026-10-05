@@ -125,7 +125,7 @@ describe("public workflow tool request deadline", () => {
 
 	// #3072 / verifier F7: failed admission must not re-enter an unavailable DB for cleanup.
 	for (const mode of ["frozen", "refusing"] as const) {
-		test(`preserves the admission failure and identity through a ${mode} database outage`, async () => {
+		test(`preserves the admission failure and identity through a ${mode} database outage (#3428)`, async () => {
 			vi.useFakeTimers();
 			const sdk = createMockSdk();
 			const reads = vi.fn(async (): Promise<never> => {
@@ -172,7 +172,7 @@ describe("public workflow tool request deadline", () => {
 					return result;
 				});
 			await vi.advanceTimersByTimeAsync(mode === "frozen" ? DBOS_ADMISSION_TIMEOUT_MS : 0);
-			assert.ok(settled, "admission failure must settle without waiting for the 120-second request timeout");
+			assert.ok(settled, "admission failure must settle before the outer request timeout");
 			const result = await pending;
 			assert.equal(result.details.action, "run");
 			assert.equal(result.details.status, "failed");
@@ -236,8 +236,8 @@ describe("public workflow tool request deadline", () => {
 		);
 	});
 
-	test("times out every public action once at two minutes, cancels supported work, and ignores late settlement", async () => {
-		assert.equal(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS, 120_000);
+	test("times out every public action once at 150 seconds, cancels supported work, and ignores late settlement (#3428)", async () => {
+		assert.equal(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS, 150_000);
 		vi.useFakeTimers();
 		let invocationCount = 0;
 		let active:

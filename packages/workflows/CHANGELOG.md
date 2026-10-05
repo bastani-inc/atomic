@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the durable database admission and checkpoint deadline from 10 seconds to two minutes to tolerate transient PostgreSQL latency, retaining prompt cancellation. Workflow tool requests now allow 150 seconds so their outer deadline does not cut admission short ([#3428](https://github.com/bastani-inc/atomic/issues/3428)).
+
 ## [0.9.26] - 2026-10-04
 
 ### Added
