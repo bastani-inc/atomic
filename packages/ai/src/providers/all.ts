@@ -1,10 +1,11 @@
 import { CLASSIFIER_MODELS, IMAGE_MODELS, MODELS } from "../models.generated.ts";
 import { type CreateModelsOptions, createModels, type MutableModels, type Provider } from "../models.ts";
+import { normalizeProviderId } from "../provider-id.ts";
 import type { AnyModel, Api, ClassifierApi, ClassifierModel, ImageApi, ImageModel, Model } from "../types.ts";
 import { amazonBedrockProvider } from "./amazon-bedrock.ts";
 import { antLingProvider } from "./ant-ling.ts";
 import { anthropicProvider } from "./anthropic.ts";
-import { azureOpenAIResponsesProvider } from "./azure-openai-responses.ts";
+import { azureProvider } from "./azure.ts";
 import { basetenProvider } from "./baseten.ts";
 import { cerebrasProvider } from "./cerebras.ts";
 import { cloudflareAIGatewayProvider } from "./cloudflare-ai-gateway.ts";
@@ -50,11 +51,16 @@ export { radiusProvider };
 /** Providers present in the generated catalog. `KnownProvider` additionally
  * includes purely dynamic providers (e.g. "radius") that have no static
  * catalog entry. */
-export type BuiltinProvider = keyof typeof MODELS;
+type BuiltinCatalog = typeof MODELS & { "azure-openai-responses": (typeof MODELS)["azure"] };
+type BuiltinImageCatalog = typeof IMAGE_MODELS & { "azure-openai-responses": (typeof IMAGE_MODELS)["azure"] };
+type BuiltinClassifierCatalog = typeof CLASSIFIER_MODELS & {
+	"azure-openai-responses": (typeof CLASSIFIER_MODELS)["azure"];
+};
+export type BuiltinProvider = keyof BuiltinCatalog;
 
-type BuiltinChatModelId<TProvider extends BuiltinProvider> = keyof (typeof MODELS)[TProvider];
-type BuiltinImageModelId<TProvider extends BuiltinProvider> = keyof (typeof IMAGE_MODELS)[TProvider];
-type BuiltinClassifierModelId<TProvider extends BuiltinProvider> = keyof (typeof CLASSIFIER_MODELS)[TProvider];
+type BuiltinChatModelId<TProvider extends BuiltinProvider> = keyof BuiltinCatalog[TProvider];
+type BuiltinImageModelId<TProvider extends BuiltinProvider> = keyof BuiltinImageCatalog[TProvider];
+type BuiltinClassifierModelId<TProvider extends BuiltinProvider> = keyof BuiltinClassifierCatalog[TProvider];
 /** API ids of catalog entries. Built-in getters return `Model<Api>` shapes, not literal entry types. */
 type CatalogApi<TEntry> = TEntry extends { api: infer TApi extends string } ? TApi : never;
 
@@ -62,33 +68,30 @@ type CatalogApi<TEntry> = TEntry extends { api: infer TApi extends string } ? TA
 export function getBuiltinModel<TProvider extends BuiltinProvider, TModelId extends BuiltinChatModelId<TProvider>>(
 	provider: TProvider,
 	modelId: TModelId,
-): Model<CatalogApi<(typeof MODELS)[TProvider][TModelId]>> {
-	return (MODELS as Record<string, Record<string, Model<Api>> | undefined>)[provider]?.[modelId as string] as Model<
-		CatalogApi<(typeof MODELS)[TProvider][TModelId]>
-	>;
+): Model<CatalogApi<BuiltinCatalog[TProvider][TModelId]>> {
+	return (MODELS as Record<string, Record<string, Model<Api>> | undefined>)[normalizeProviderId(provider)]?.[
+		modelId as string
+	] as Model<CatalogApi<BuiltinCatalog[TProvider][TModelId]>>;
 }
 
 /** Typed read of one generated built-in image model. */
 export function getBuiltinImageModel<
 	TProvider extends BuiltinProvider,
 	TModelId extends BuiltinImageModelId<TProvider>,
->(provider: TProvider, modelId: TModelId): ImageModel<CatalogApi<(typeof IMAGE_MODELS)[TProvider][TModelId]>> {
-	return (IMAGE_MODELS as Record<string, Record<string, ImageModel<ImageApi>> | undefined>)[provider]?.[
-		modelId as string
-	] as ImageModel<CatalogApi<(typeof IMAGE_MODELS)[TProvider][TModelId]>>;
+>(provider: TProvider, modelId: TModelId): ImageModel<CatalogApi<BuiltinImageCatalog[TProvider][TModelId]>> {
+	return (IMAGE_MODELS as Record<string, Record<string, ImageModel<ImageApi>> | undefined>)[
+		normalizeProviderId(provider)
+	]?.[modelId as string] as ImageModel<CatalogApi<BuiltinImageCatalog[TProvider][TModelId]>>;
 }
 
 /** Typed read of one generated built-in classifier model. */
 export function getBuiltinClassifierModel<
 	TProvider extends BuiltinProvider,
 	TModelId extends BuiltinClassifierModelId<TProvider>,
->(
-	provider: TProvider,
-	modelId: TModelId,
-): ClassifierModel<CatalogApi<(typeof CLASSIFIER_MODELS)[TProvider][TModelId]>> {
-	return (CLASSIFIER_MODELS as Record<string, Record<string, ClassifierModel<ClassifierApi>> | undefined>)[provider]?.[
-		modelId as string
-	] as ClassifierModel<CatalogApi<(typeof CLASSIFIER_MODELS)[TProvider][TModelId]>>;
+>(provider: TProvider, modelId: TModelId): ClassifierModel<CatalogApi<BuiltinClassifierCatalog[TProvider][TModelId]>> {
+	return (CLASSIFIER_MODELS as Record<string, Record<string, ClassifierModel<ClassifierApi>> | undefined>)[
+		normalizeProviderId(provider)
+	]?.[modelId as string] as ClassifierModel<CatalogApi<BuiltinClassifierCatalog[TProvider][TModelId]>>;
 }
 
 export function getBuiltinProviders(): BuiltinProvider[] {
@@ -103,28 +106,30 @@ export function getBuiltinModelDataGeneratedAt(): number | undefined {
 
 export function getBuiltinModels<TProvider extends BuiltinProvider>(
 	provider: TProvider,
-): Model<CatalogApi<(typeof MODELS)[TProvider][BuiltinChatModelId<TProvider>]>>[] {
-	const models = (MODELS as Record<string, Record<string, Model<Api>> | undefined>)[provider];
-	return Object.values(models ?? {}) as Model<CatalogApi<(typeof MODELS)[TProvider][BuiltinChatModelId<TProvider>]>>[];
+): Model<CatalogApi<BuiltinCatalog[TProvider][BuiltinChatModelId<TProvider>]>>[] {
+	const models = (MODELS as Record<string, Record<string, Model<Api>> | undefined>)[normalizeProviderId(provider)];
+	return Object.values(models ?? {}) as Model<CatalogApi<BuiltinCatalog[TProvider][BuiltinChatModelId<TProvider>]>>[];
 }
 
 export function getBuiltinImageModels<TProvider extends BuiltinProvider>(
 	provider: TProvider,
-): ImageModel<CatalogApi<(typeof IMAGE_MODELS)[TProvider][BuiltinImageModelId<TProvider>]>>[] {
-	const models = (IMAGE_MODELS as Record<string, Record<string, ImageModel<ImageApi>> | undefined>)[provider];
+): ImageModel<CatalogApi<BuiltinImageCatalog[TProvider][BuiltinImageModelId<TProvider>]>>[] {
+	const models = (IMAGE_MODELS as Record<string, Record<string, ImageModel<ImageApi>> | undefined>)[
+		normalizeProviderId(provider)
+	];
 	return Object.values(models ?? {}) as ImageModel<
-		CatalogApi<(typeof IMAGE_MODELS)[TProvider][BuiltinImageModelId<TProvider>]>
+		CatalogApi<BuiltinImageCatalog[TProvider][BuiltinImageModelId<TProvider>]>
 	>[];
 }
 
 export function getBuiltinClassifierModels<TProvider extends BuiltinProvider>(
 	provider: TProvider,
-): ClassifierModel<CatalogApi<(typeof CLASSIFIER_MODELS)[TProvider][BuiltinClassifierModelId<TProvider>]>>[] {
+): ClassifierModel<CatalogApi<BuiltinClassifierCatalog[TProvider][BuiltinClassifierModelId<TProvider>]>>[] {
 	const models = (CLASSIFIER_MODELS as Record<string, Record<string, ClassifierModel<ClassifierApi>> | undefined>)[
-		provider
+		normalizeProviderId(provider)
 	];
 	return Object.values(models ?? {}) as ClassifierModel<
-		CatalogApi<(typeof CLASSIFIER_MODELS)[TProvider][BuiltinClassifierModelId<TProvider>]>
+		CatalogApi<BuiltinClassifierCatalog[TProvider][BuiltinClassifierModelId<TProvider>]>
 	>[];
 }
 
@@ -138,7 +143,7 @@ export function builtinProviders(): Provider[] {
 		amazonBedrockProvider(),
 		antLingProvider(),
 		anthropicProvider(),
-		azureOpenAIResponsesProvider(),
+		azureProvider(),
 		basetenProvider(),
 		cerebrasProvider(),
 		cloudflareAIGatewayProvider(),

@@ -10,7 +10,7 @@ function createModel(): Model<"azure-openai-responses"> {
 		id: "gpt-5-mini",
 		name: "GPT-5 Mini",
 		api: "azure-openai-responses",
-		provider: "azure-openai-responses",
+		provider: "azure",
 		baseUrl: "https://example.invalid",
 		reasoning: true,
 		input: ["text"],
@@ -75,7 +75,7 @@ function getReplayedReasoning(model: Model<"azure-openai-responses">, assistant:
 			{ role: "user", content: "follow-up", timestamp: Date.now() },
 		],
 	});
-	const input = convertResponsesMessages(model, context, new Set(["azure-openai-responses"]));
+	const input = convertResponsesMessages(model, context, new Set(["azure"]));
 	return input.find((item) => item.type === "reasoning");
 }
 
@@ -133,5 +133,19 @@ describe("Azure OpenAI Responses reasoning replay", () => {
 			id: "rs_missing",
 			encrypted_content: "from-response-completed",
 		});
+	});
+	it("replays encrypted reasoning from legacy Azure session provider references", () => {
+		const model = createModel();
+		const output = createOutput(model);
+		output.provider = "azure-openai-responses";
+		const reasoning: ResponseReasoningItem = {
+			type: "reasoning",
+			id: "rs_legacy",
+			summary: [],
+			encrypted_content: "legacy",
+		};
+		output.content = [{ type: "thinking", thinking: "", thinkingSignature: JSON.stringify(reasoning) }];
+		expect(getReplayedReasoning(model, output)).toEqual(reasoning);
+		expect(output.provider).toBe("azure-openai-responses");
 	});
 });

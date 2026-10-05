@@ -145,6 +145,10 @@ Tools are named `mcp__<server>__<tool>`, with punctuation replaced by `_`. Names
 
 Codemode and deferred tools can be reached through either indirect mechanism. Server summaries appear in the `mcp_servers` system prompt section. Scripts can read instructions and tool names with `describeNamespace("mcp__github")`.
 
+`--tools` keeps MCP tools unless an entry starts with `mcp__`. For example, `atomic --tools read,codemode` can still call non-hidden MCP tools with codemode or deferred exposure from scripts, but unmatched MCP tools are not declared directly. Unmatched direct-exposure tools remain registered but inactive. Include `tool_search` to load unmatched tools with non-direct exposure. To restrict the server tools, use `atomic --tools read,codemode,'mcp__docs__*'`. `--exclude-tools` accepts the same `*` patterns and also applies to MCP resource tools.
+
+`--no-mcp` disables built-in MCP support for one run. No built-in servers connect, MCP tools load, or `/mcp` command registers. A replacement extension is unaffected.
+
 Codemode receives the complete MCP result, including `content`, `structuredContent`, and `isError`. Text over 20 KB is shortened for the model, with the complete text saved to a temporary file named in the result. Every MCP call passes through Atomic's tool pipeline, including permission hooks.
 
 ## Use resources

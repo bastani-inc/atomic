@@ -1,6 +1,8 @@
+import { normalizeProviderId } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
+import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { resolveCliModel } from "./model-resolver-cli.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
@@ -29,6 +31,7 @@ export async function resolveRestoredModelReference(
 	modelId: string,
 	modelRuntime: ModelRuntime,
 ): Promise<Model<Api> | undefined> {
+	provider = normalizeProviderId(provider);
 	const found = modelRuntime.getModel(provider, modelId);
 	if (found) return modelRuntime.hasConfiguredAuth(found.provider) ? found : undefined;
 	if (!modelRuntime.canRestoreUnknownModel(provider, modelId)) return undefined;
@@ -59,12 +62,14 @@ export async function findInitialModel(options: {
 		cliModel,
 		scopedModels,
 		isContinuing,
-		defaultProvider,
+		defaultProvider: configuredDefaultProvider,
 		defaultModelId,
 		defaultThinkingLevel,
-		modelThinkingLevels,
+		modelThinkingLevels: configuredThinkingLevels,
 		modelRuntime,
 	} = options;
+	const defaultProvider = configuredDefaultProvider ? normalizeProviderId(configuredDefaultProvider) : undefined;
+	const modelThinkingLevels = configuredThinkingLevels ? normalizeProviderKeys(configuredThinkingLevels) : undefined;
 
 	let model: Model<Api> | undefined;
 	let thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL;

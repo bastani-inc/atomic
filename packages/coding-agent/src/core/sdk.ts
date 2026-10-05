@@ -44,6 +44,7 @@ import { SettingsManager } from "./settings-manager.ts";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
+import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
@@ -305,11 +306,14 @@ async function constructAgentSession(
 							: (options.subagentPolicy.mcpDirectTools ?? (allowedToolNames === undefined ? undefined : [])),
 				}
 			: options.subagentPolicy;
-	const initialActiveToolNames: string[] = allowedToolNames
-		? [...allowedToolNames]
-		: options.noTools
-			? []
-			: [...(configuredDefaultToolNames ?? getDefaultToolNames())];
+	const isExcludedTool = options.excludedTools ? createToolNameMatcher(options.excludedTools) : undefined;
+	const initialActiveToolNames: string[] = (
+		allowedToolNames
+			? [...allowedToolNames]
+			: options.noTools
+				? []
+				: [...(configuredDefaultToolNames ?? getDefaultToolNames())]
+	).filter((name) => !isExcludedTool?.(name));
 	const childBuiltins = { ...options.builtins };
 	const childExcludedTools = [
 		...(options.excludedTools ?? []),
@@ -606,6 +610,7 @@ async function constructAgentSession(
 						parentCommandTaskOwner: childCommandTaskOwner,
 					},
 					child,
+					session.getAllTools().map((tool) => tool.name),
 				),
 			scopedModels: options.scopedModels,
 			fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),

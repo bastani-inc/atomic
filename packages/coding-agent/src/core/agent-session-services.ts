@@ -77,6 +77,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	isFallbackModelAllowed?: CreateAgentSessionOptions["isFallbackModelAllowed"];
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	tools?: string[];
+	builtins?: CreateAgentSessionOptions["builtins"];
 	excludedTools?: CreateAgentSessionOptions["excludedTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
@@ -297,6 +298,7 @@ function createSessionFromServices(
 		thinkingLevel: options.thinkingLevel,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
+		builtins: options.builtins,
 		fallbackModels: options.fallbackModels,
 		isFallbackModelAllowed: options.isFallbackModelAllowed,
 		excludedTools: options.excludedTools,

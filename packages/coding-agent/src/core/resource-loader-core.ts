@@ -48,6 +48,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private builtinPackagePaths: PackageSource[];
 	private extensionFactories: InlineExtension[];
 	private noExtensions: boolean;
+	private disabledBuiltinExtensions: Set<string>;
 	private noSkills: boolean;
 	private noPromptTemplates: boolean;
 	private noThemes: boolean;
@@ -142,6 +143,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			),
 		});
 		this.noExtensions = options.noExtensions ?? inheritanceSnapshot?.noExtensions ?? false;
+		this.disabledBuiltinExtensions = new Set(
+			options.disabledBuiltinExtensions ?? inheritanceSnapshot?.disabledBuiltinExtensions,
+		);
 		this.noSkills = options.noSkills ?? inheritanceSnapshot?.noSkills ?? false;
 		this.noPromptTemplates = options.noPromptTemplates ?? inheritanceSnapshot?.noPromptTemplates ?? false;
 		this.noThemes = options.noThemes ?? inheritanceSnapshot?.noThemes ?? false;
@@ -251,6 +255,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			builtinPackagePaths: clonePackageSources(this.builtinPackagePaths),
 			extensionFactories: [...this.extensionFactories],
 			noExtensions: this.noExtensions,
+			disabledBuiltinExtensions: [...this.disabledBuiltinExtensions],
 			noSkills: this.noSkills,
 			noPromptTemplates: this.noPromptTemplates,
 			noThemes: this.noThemes,
@@ -334,6 +339,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			builtinPackagePaths: clonePackageSources(this.builtinPackagePaths),
 			extensionFactories: [...this.extensionFactories],
 			noExtensions: this.noExtensions,
+			disabledBuiltinExtensions: [...this.disabledBuiltinExtensions],
 			noSkills: this.noSkills,
 			noPromptTemplates: this.noPromptTemplates,
 			noThemes: this.noThemes,

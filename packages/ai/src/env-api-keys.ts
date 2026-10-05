@@ -23,6 +23,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 	});
 }
 
+import { normalizeProviderId } from "./provider-id.ts";
 import type { KnownProvider, ProviderEnv } from "./types.ts";
 import { getProviderEnvValue } from "./utils/provider-env.ts";
 
@@ -76,7 +77,7 @@ const apiKeyEnvMap: Record<string, string> = {
 	"qwen-token-plan-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
 	"qwen-token-plan-individual": "QWEN_TOKEN_PLAN_API_KEY",
 	openai: "OPENAI_API_KEY",
-	"azure-openai-responses": "AZURE_OPENAI_API_KEY",
+	azure: "AZURE_OPENAI_API_KEY",
 	nvidia: "NVIDIA_API_KEY",
 	deepseek: "DEEPSEEK_API_KEY",
 	google: "GEMINI_API_KEY",
@@ -116,7 +117,7 @@ function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 	if (provider === "anthropic") {
 		return [ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV];
 	}
-	const envVar = apiKeyEnvMap[provider];
+	const envVar = apiKeyEnvMap[normalizeProviderId(provider)];
 	return envVar ? [envVar] : undefined;
 }
 

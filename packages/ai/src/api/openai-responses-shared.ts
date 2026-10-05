@@ -14,6 +14,7 @@ import type {
 	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
 import { calculateCost, getServiceTierCost } from "../models.ts";
+import { normalizeProviderId } from "../provider-id.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -322,7 +323,8 @@ export function convertResponsesMessages<TApi extends Api>(
 		if (!id.includes("|")) return normalizeIdPart(id);
 		const [callId, itemId] = id.split("|");
 		const normalizedCallId = normalizeIdPart(callId);
-		const isForeignToolCall = source.provider !== model.provider || source.api !== model.api;
+		const isForeignToolCall =
+			normalizeProviderId(source.provider) !== normalizeProviderId(model.provider) || source.api !== model.api;
 		let normalizedItemId = isForeignToolCall ? buildForeignResponsesItemId(itemId) : normalizeIdPart(itemId);
 		// OpenAI Responses API requires item id to start with "fc"
 		if (!normalizedItemId.startsWith("fc_")) {
@@ -410,7 +412,9 @@ export function convertResponsesMessages<TApi extends Api>(
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;
-			const isSameProviderAndApi = assistantMsg.provider === model.provider && assistantMsg.api === model.api;
+			const isSameProviderAndApi =
+				normalizeProviderId(assistantMsg.provider) === normalizeProviderId(model.provider) &&
+				assistantMsg.api === model.api;
 			const isSameModel = isSameProviderAndApi && assistantMsg.model === model.id;
 			const isDifferentModel = isSameProviderAndApi && assistantMsg.model !== model.id;
 			let textBlockIndex = 0;

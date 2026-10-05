@@ -4,6 +4,18 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added Azure Foundry Chat Completions and `azure/deepseek-v4-pro`, with Azure endpoint resolution, deployment-name mapping, and supported reasoning efforts.
+
+### Changed
+
+- Renamed the Azure provider to `azure`, retaining the `azure-openai-responses` API ID and compatibility with the former provider name and exports.
+
+### Fixed
+
+- Retry transient HTTP/2 errors containing "pending stream has been canceled".
+
 ## [0.9.27] - 2026-10-05
 
 ### Fixed

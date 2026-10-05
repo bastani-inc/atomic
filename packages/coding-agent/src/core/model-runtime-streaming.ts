@@ -24,6 +24,7 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 } from "@bastani/pi-ai";
+import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
@@ -104,6 +105,7 @@ export class ModelRuntimeStreaming {
 		options: ModelRuntimePreparedStreamOptions | undefined,
 	): Promise<{ provider: Provider; model: Model<Api>; options: StreamOptions }> {
 		assertChatModel(model);
+		model = normalizeModelProvider(model);
 		const provider = this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
 		const { transformHeaders, preparedRequestAuth, ...providerOptions } = options ?? {};

@@ -2,6 +2,7 @@ import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolLoadout } from "./extensions/tool-types.ts";
+import { isToolActivatable } from "./tool-selection.ts";
 
 const hiddenDeclarations = new WeakMap<AgentSession, ReadonlySet<string>>();
 export function isToolDeclarationHidden(session: AgentSession, name: string): boolean {
@@ -10,7 +11,12 @@ export function isToolDeclarationHidden(session: AgentSession, name: string): bo
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
 	const tools = [...new Set(names)].flatMap((name) => {
 		const tool = session._toolRegistry.get(name);
-		return tool && session.getToolDefinition(name)?.exposure !== "hidden" ? [tool] : [];
+		const exposure = session.getToolDefinition(name)?.exposure ?? "direct";
+		return tool &&
+			exposure !== "hidden" &&
+			isToolActivatable(session, name, exposure, session._toolRegistry.has("tool_search"))
+			? [tool]
+			: [];
 	});
 	const loadout: ToolLoadout = {
 		declared: tools,
@@ -18,6 +24,7 @@ export function applyToolLoadout(session: AgentSession, names: readonly string[]
 		registered: [...session._toolRegistry.values()],
 		getExposure: (name) => session.getToolDefinition(name)?.exposure ?? "direct",
 		getNamespace: (name) => session.getToolDefinition(name)?.namespace,
+		getPromptGuidelines: (name) => session._toolPromptGuidelines.get(name) ?? [],
 	};
 	const descriptions = new Map<string, string>();
 	const hidden = new Set<string>();

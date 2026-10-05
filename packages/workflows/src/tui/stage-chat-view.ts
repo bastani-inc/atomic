@@ -24,6 +24,7 @@
 
 import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
+import { isKeybindingsLike, TUI_ACTION } from "./keybindings-adapter.js";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,
@@ -174,9 +175,11 @@ export class StageChatView implements Component, Focusable {
 		let bodyLines: string[];
 		let transcriptBodyActive = false;
 		let reservedIndicatorLines: readonly string[] = [];
+		const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 		const indicator = new TranscriptFollowIndicator({
 			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
-			keyLabel: () => keyText("tui.altScreen.bottom"),
+			keyLabel: () =>
+				keybindings?.getKeys?.(TUI_ACTION.altScreenBottom)?.join("/") ?? keyText("tui.altScreen.bottom"),
 		});
 		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
 		if (bodyBudget <= 0) {

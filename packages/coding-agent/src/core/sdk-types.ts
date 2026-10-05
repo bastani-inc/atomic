@@ -54,18 +54,20 @@ export interface CreateAgentSessionOptions {
 	 */
 	noTools?: "all" | "builtin";
 	/**
-	 * Optional allowlist of tool names.
+	 * Optional allowlist of tool names or patterns where `*` matches any characters.
 	 *
 	 * When omitted, Atomic uses the resolved `defaultTools` setting for the initial
 	 * built-in selection when configured. Otherwise it enables the default
 	 * built-in tools (read, bash, edit, write, find, search, ask_user_question,
 	 * todo). Extension/custom tools remain enabled unless `noTools` changes
-	 * that default. When provided, only the listed tool names are enabled,
-	 * minus any names in `excludedTools`. `noTools: "all"` overrides this selection.
+	 * that default. MCP tools stay registered for codemode and tool search unless
+	 * an entry starts with `mcp__`; only matching tools are declared directly.
+	 * `excludedTools` applies afterwards. `noTools: "all"` overrides this selection.
+	 * Intercom follows the same selection and suppression rules as other extension tools.
 	 */
 	tools?: string[];
 	/**
-	 * Optional blocklist of tool names.
+	 * Optional blocklist of tool names or patterns, including MCP tools.
 	 *
 	 * Matching built-in, extension, and SDK custom tools are omitted from the
 	 * final session tool registry and active tool set. Unknown names are ignored.

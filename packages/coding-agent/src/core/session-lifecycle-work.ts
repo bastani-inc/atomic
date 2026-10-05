@@ -6,6 +6,7 @@ const reloadCleanupFailures = new WeakMap<object, unknown[]>();
 const reloadRetirements = new WeakMap<object, Set<Promise<void>>>();
 const work = new WeakMap<object, Set<Promise<void>>>();
 const lifetimes = new WeakMap<object, AbortController>();
+const quitSignals = new WeakMap<object, AbortController>();
 export const sessionGenerationClosing = new WeakSet<object>();
 const retiringWork = new WeakMap<object, Set<Promise<void>>>();
 const retirementChanges = new WeakMap<object, { promise: Promise<void>; resolve: () => void }>();
@@ -122,9 +123,22 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 	return result;
 }
 
-export function abortSessionWork(session: object): void {
+export function sessionQuitSignal(session: object): AbortSignal {
+	let controller = quitSignals.get(session);
+	if (!controller) {
+		controller = new AbortController();
+		quitSignals.set(session, controller);
+	}
+	return controller.signal;
+}
+
+export function abortSessionWork(session: object, quitting = false): void {
 	sessionLifetime(session);
 	lifetimes.get(session)!.abort();
+	if (quitting) {
+		sessionQuitSignal(session);
+		quitSignals.get(session)!.abort();
+	}
 }
 
 export function hasCallingSessionWork(session: object): boolean {
@@ -153,4 +167,5 @@ export async function drainSessionWork(
 
 export function renewSessionWork(session: object): void {
 	lifetimes.delete(session);
+	quitSignals.delete(session);
 }

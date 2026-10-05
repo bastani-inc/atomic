@@ -105,7 +105,9 @@ export function readModelDataStructure(packageRoot: string): ModelDataStructure 
 	const providersDir = join(packageRoot, "src", "providers");
 	const dataDir = join(providersDir, "data");
 	const providerIds = readModelDataProviderIds(packageRoot);
-	const expectedShards = providerIds.map((providerId) => `${providerId}.models.ts`).sort();
+	const expectedShards = providerIds.map((providerId) => `${providerId}.models.ts`);
+	if (providerIds.includes("azure")) expectedShards.push("azure-openai-responses.models.ts");
+	expectedShards.sort();
 	const actualShards = readdirSync(providersDir)
 		.filter((entry) => entry.endsWith(".models.ts"))
 		.sort();

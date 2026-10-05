@@ -99,4 +99,19 @@ describe("regression #5109: exclude tools", () => {
 			harness.cleanup();
 		}
 	});
+	it("matches allowlist and denylist patterns", async () => {
+		const harness = await createHarness({
+			allowedToolNames: ["*_tool", "ask_*", "re*"],
+			excludedToolNames: ["ask*"],
+			initialActiveToolNames: ["*_tool", "ask_*", "re*"],
+			extensionFactories,
+		});
+		try {
+			await harness.session.bindExtensions({});
+			expect(toolNames(harness.session.getAllTools())).toEqual(["dynamic_tool", "read"]);
+			expect(harness.session.getActiveToolNames().sort()).toEqual(["dynamic_tool", "read"]);
+		} finally {
+			await harness.cleanup();
+		}
+	});
 });

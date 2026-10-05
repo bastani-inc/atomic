@@ -421,7 +421,10 @@ export async function executeCodemode(
 	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
 	const publish = () => update?.({ content: [], details: snapshot() });
 	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
-	const samples = new Map(callable.map((tool) => [tool.name, renderToolSample(toCodemodeDeclaration(tool))]));
+	const guidelines = options.getToolGuidelines?.();
+	const samples = new Map(
+		callable.map((tool) => [tool.name, renderToolSample(toCodemodeDeclaration(tool, guidelines?.get(tool.name)))]),
+	);
 	const sandbox = new CodemodeSandbox({
 		tools: callable.map((tool) => ({
 			name: tool.name,

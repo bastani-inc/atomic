@@ -81,6 +81,8 @@ export interface ToolLoadout {
 	readonly registered: readonly import("@earendil-works/pi-agent-core").AgentTool[];
 	getExposure(name: string): ToolExposure;
 	getNamespace(name: string): ToolNamespace | undefined;
+	/** A tool's prompt guidelines, omitted from system prompt rules when its declaration is hidden. */
+	getPromptGuidelines(name: string): readonly string[];
 }
 
 export interface ToolLoadoutChanges {

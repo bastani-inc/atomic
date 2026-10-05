@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -214,7 +215,7 @@ test("codemode filters full nested output while direct calls retain the model-fa
 	}
 });
 
-test("codemode only hides direct declarations and prompt snippets without disabling nested access (#10192)", async () => {
+test("codemode only hides direct declarations, snippets and guidelines without disabling nested access (#10192, #10343)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension({ mode: "only" }),
@@ -224,6 +225,7 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 					label: "Echo",
 					description: "Echo",
 					promptSnippet: "Echo a value",
+					promptGuidelines: ["Use echo to repeat a value."],
 					parameters: Type.Object({}),
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
@@ -240,6 +242,12 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 				const prompt = getCurrentSystemPrompt(context.messages);
 				assert(!prompt.includes("\n- echo: "));
 				assert(prompt.includes("\n- codemode: "));
+				assert(!prompt.includes("Use echo to repeat a value."));
+				assert(
+					getCurrentTools(context.messages)
+						.find((tool) => tool.name === "codemode")
+						?.description.includes("- Use echo to repeat a value."),
+				);
 				return fauxAssistantMessage([fauxToolCall("codemode", { code: "return await tools.echo({});" })], {
 					stopReason: "toolUse",
 				});
@@ -255,6 +263,38 @@ test("codemode only hides direct declarations and prompt snippets without disabl
 			getMessageText(harness.session.messages.find((message) => message.role === "toolResult")),
 			/Script completed/,
 		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode exposes hidden tool guidelines through describeTool and ALL_TOOLS at zero inline budget (#10343)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension({ mode: "only", inlineBudget: 0 })],
+		initialActiveToolNames: ["read", "codemode"],
+	});
+	try {
+		const codemode = harness.session.agent.state.tools.find((tool) => tool.name === "codemode");
+		assert(!codemode?.description.includes("### `read`"));
+		harness.setResponses([
+			(context) => {
+				assert(
+					!getCurrentSystemPrompt(context.messages).includes("Use read to inspect file and resource contents"),
+				);
+				return fauxAssistantMessage(
+					[
+						fauxToolCall("codemode", {
+							code: 'text(await describeTool("read")); text(ALL_TOOLS.find(tool => tool.name === "read"));',
+						}),
+					],
+					{ stopReason: "toolUse" },
+				);
+			},
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("inspect hidden tool guidance");
+		const output = getMessageText(harness.session.messages.find((message) => message.role === "toolResult"));
+		assert.equal(output.match(/- Use read to inspect file and resource contents;/g)?.length, 2, output);
 	} finally {
 		await harness.cleanup();
 	}
@@ -367,6 +407,32 @@ test("codemode detects the image MIME type instead of trusting the supplied type
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+test("codemode read returns text and image blocks accepted by image() (#10251)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode", "read"],
+	});
+	let savedPath: string | undefined;
+	try {
+		writeFileSync(join(harness.tempDir, "notes.txt"), "hello");
+		writeFileSync(join(harness.tempDir, "pixel.png"), Buffer.from(TINY_PNG_BASE64, "base64"));
+		const result = await runScript(
+			harness,
+			'text(await tools.read({ path: "notes.txt:raw" })); const shot = await tools.read({ path: "pixel.png" }); text(shot.note); image(shot);',
+		);
+		assert.equal(result.isError, false);
+		assert.deepEqual(result.content[1], { type: "text", text: "hello" });
+		assert.deepEqual(result.content[2], { type: "text", text: "Read image file [image/png]" });
+		assert.ok(result.content[3].type === "text");
+		savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(result.content[3].text)?.[1];
+		assert.ok(savedPath);
+		assert.deepEqual(result.content.at(-1), { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+	} finally {
+		if (savedPath) rmSync(savedPath, { force: true });
+		await harness.cleanup();
+	}
+});
 
 test("codemode saves duplicate images once and labels each image in output order (#3429)", async () => {
 	const harness = await createHarness({

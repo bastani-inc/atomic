@@ -242,7 +242,8 @@ test("fullscreen viewport ownership keeps Ctrl+T with its focused host owner", (
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "a", false, true, keybindings), true);
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, mouse, true, true, keybindings), false);
 	assert.equal(shouldHandleFullscreenViewportInput(inline, editor, mouse, true, false, keybindings), true);
-	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "\x1bOH", false, true, keybindings), false);
+	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "\x1b[1;5H", false, true, keybindings), false);
+	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "\x1bOH", false, true, keybindings), true);
 });
 
 test("a forwarded keypress pipelines a fresh frame request behind the input", async () => {
@@ -845,10 +846,10 @@ test("an unhandled isolated fullscreen key reaches the transcript once", async (
 
 	try {
 		assert.ok(transcript.scrollTop > 0, "transcript did not start scrolled to the end");
-		terminal.input("\x1bOH");
+		terminal.input("\x1b[1;5H");
 		await flush();
 		tui.renderNow();
-		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
+		assert.deepEqual(inputs, ["\x1b[1;5H"], "the child did not receive exactly one input");
 		assert.equal(transcript.scrollTop, 0, "an unhandled remote key did not reach the transcript");
 	} finally {
 		tui.stop();
@@ -943,12 +944,12 @@ test("an unresponsive remote child falls back to the viewport and keeps later in
 		const initialTop = transcript.scrollTop;
 		assert.ok(initialTop > 0, "transcript did not start scrolled to the end");
 
-		terminal.input("\x1bOH");
+		terminal.input("\x1b[1;5H");
 		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
 		tui.renderNow();
 		assert.equal(transcript.scrollTop, 0, "a stalled remote child did not release the key to the viewport");
 
-		terminal.input("\x1bOF");
+		terminal.input("\x1b[1;5F");
 		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
 		tui.renderNow();
 		assert.equal(transcript.scrollTop, initialTop, "input routing hung after the first stalled request");
@@ -1000,11 +1001,11 @@ test("does not replay a handled fullscreen key after the remote child closes", a
 	try {
 		const initialTop = transcript.scrollTop;
 		assert.ok(initialTop > 0, "transcript did not start scrolled to the end");
-		terminal.input("\x1bOH");
+		terminal.input("\x1b[1;5H");
 		await flush();
 		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
 		tui.renderNow();
-		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
+		assert.deepEqual(inputs, ["\x1b[1;5H"], "the child did not receive exactly one input");
 		assert.equal(transcript.scrollTop, initialTop, "a handled key was replayed after the child closed");
 	} finally {
 		tui.stop();

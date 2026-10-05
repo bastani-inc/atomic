@@ -57,6 +57,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
+import { createToolNameMatcher } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.ts";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
@@ -195,6 +196,8 @@ class AgentSessionBase {
 	protected _subagentPolicy?: SubagentChildPolicy;
 	protected _allowedToolNames?: Set<string>;
 	protected _excludedToolNames?: Set<string>;
+	protected _allowedTools?: (name: string) => boolean;
+	protected _excludedTools?: (name: string) => boolean;
 	protected _childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	protected _baseToolsOverride?: Record<string, AgentTool>;
 	protected _sessionStartEvent: SessionStartEvent;
@@ -264,6 +267,8 @@ class AgentSessionBase {
 		);
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
+		this._allowedTools = config.allowedToolNames ? createToolNameMatcher(config.allowedToolNames) : undefined;
+		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._childSessionOptions = config.childSessionOptions;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };

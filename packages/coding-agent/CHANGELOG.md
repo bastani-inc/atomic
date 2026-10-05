@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.
+- Added `*` patterns to `--tools` and `--exclude-tools`, including MCP tool names.
+- Added `--no-mcp` to disable built-in MCP support for one run, including interactive sessions.
+
+### Changed
+
+- Home and End move the editor cursor to the start and end of the line. Ctrl+Home and Ctrl+End jump to the top and bottom of the fullscreen transcript.
+- Renamed the Azure provider to `azure`. Existing provider references remain supported, and startup migrates credentials and configuration without replacing existing `azure` entries. Project files are migrated only when trusted.
+
+### Fixed
+
+- Fixed syntax colors leaking across lines in multiline tokens and interpolation substitutions inheriting string colors.
+- Invalid router and provider-list settings retain their configuration validation errors during Azure provider migration.
+- Fixed codemode `tools.read()` returning text instead of an image block for image files. Pass the result to `image()` to display it ([#10251](https://github.com/earendil-works/pi/issues/10251)).
+- Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
+- Fixed `--tools` removing MCP tools when selecting codemode. MCP tools remain callable unless the allowlist contains an entry starting with `mcp__`; unmatched tools are not declared directly.
+- Fixed shutdown leaving MCP connections open while a server was still connecting ([#10249](https://github.com/earendil-works/pi/issues/10249)).
+- Fixed hidden tools appearing in prompt rules and skill-reading hints. Codemode tool declarations now include each tool's prompt guidelines ([#10343](https://github.com/earendil-works/pi/issues/10343)).
+- Fixed interactive quit waiting on pending extension commands, which could leave connecting MCP servers running.
+
 ## [0.9.27] - 2026-10-05
 
 ### Changed

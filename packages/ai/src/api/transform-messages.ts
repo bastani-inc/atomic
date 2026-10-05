@@ -1,3 +1,4 @@
+import { normalizeProviderId } from "../provider-id.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -161,7 +162,7 @@ export function transformMessages<TApi extends Api>(
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
 			const isSameModel =
-				assistantMsg.provider === model.provider &&
+				normalizeProviderId(assistantMsg.provider) === normalizeProviderId(model.provider) &&
 				assistantMsg.api === model.api &&
 				assistantMsg.model === model.id;
 			// A different model on the same provider and API whose API adjudicates model binding
@@ -169,7 +170,7 @@ export function transformMessages<TApi extends Api>(
 			// may read and silently drops the rest.
 			const canReplayForeignThinking =
 				!isSameModel &&
-				assistantMsg.provider === model.provider &&
+				normalizeProviderId(assistantMsg.provider) === normalizeProviderId(model.provider) &&
 				assistantMsg.api === model.api &&
 				delegatesThinkingModelBinding(model);
 			const preservesThinking = isSameModel || canReplayForeignThinking;

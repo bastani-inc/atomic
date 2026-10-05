@@ -17,6 +17,7 @@ import {
 	assertSessionOpen,
 	sessionGenerationClosing,
 	sessionLifetime,
+	sessionQuitSignal,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
@@ -588,7 +589,8 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
-	const command = this._extensionRunner.getCommand(commandName);
+	const quitSignal = sessionQuitSignal(this);
+	const command = this._extensionRunner.getCommand(commandName, quitSignal);
 	if (!command) return false;
 
 	// Get command context from extension runner (includes session control methods)
@@ -601,6 +603,7 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 		);
 		return true;
 	} catch (err) {
+		if (quitSignal.aborted) return true;
 		// Emit error via extension runner
 		this._extensionRunner.emitError({
 			extensionPath: `command:${commandName}`,

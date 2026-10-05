@@ -522,6 +522,8 @@ Moved to [Extension API reference](/extensions/api-reference#pi-on-event-handler
 
 Moved to [Extension API reference](/extensions/api-reference#pi-registertool-definition).
 
+A tool that orchestrates other tools can adjust what the model sees with `prepareLoadout(loadout)`. The hook receives declared, callable, and registered tools, with `getExposure()`, `getNamespace()`, and `getPromptGuidelines()`. Return replacement `descriptions` or `hiddenDeclarations` to hide active tools' declarations while keeping them callable. The default system prompt omits hidden tools from its tool list and rules, and names no tool in the skills hint when the file reader is hidden. The orchestrating tool should present those guidelines itself, as `codemode` does.
+
 #### Built-in tool prompt contributions
 
 Moved to [Extension API reference](/extensions/api-reference#built-in-tool-prompt-contributions).

@@ -52,10 +52,7 @@ describe("fast model variant eligibility", () => {
 	});
 
 	it("keeps Azure OpenAI, OpenRouter, and generic OpenAI-compatible providers ineligible", () => {
-		assert.equal(
-			usesOpenAIFastServiceTier({ provider: "azure-openai-responses", api: "azure-openai-responses" }),
-			false,
-		);
+		assert.equal(usesOpenAIFastServiceTier({ provider: "azure", api: "azure-openai-responses" }), false);
 		assert.equal(usesOpenAIFastServiceTier({ provider: "openrouter", api: "openai-completions" }), false);
 		assert.equal(usesOpenAIFastServiceTier({ provider: "my-openai-compatible", api: "openai-responses" }), false);
 		assert.equal(usesOpenAIFastServiceTier({ provider: "github-copilot", api: "openai-responses" }), false);
@@ -74,7 +71,8 @@ describe("fast model variant eligibility", () => {
 		["openai-codex", "openai-codex-responses", true],
 		["openai-codex", "openai-completions", false],
 		["codex-proxy", "openai-codex-responses", false],
-		["azure-openai-responses", "azure-openai-responses", false],
+		["azure", "azure-openai-responses", false],
+		["azure", "openai-completions", false],
 		["openrouter", "openai-completions", false],
 		["my-openai-compatible", "openai-responses", false],
 		["github-copilot", "openai-responses", false],
@@ -206,7 +204,7 @@ describe("deriveFastModelVariants", () => {
 
 	it("returns ineligible catalogs unchanged", () => {
 		const base = [
-			model({ id: "gpt-5.6", provider: "azure-openai-responses", api: "azure-openai-responses" }),
+			model({ id: "gpt-5.6", provider: "azure", api: "azure-openai-responses" }),
 			model({ id: "anthropic/claude-opus-5", provider: "openrouter", api: "openai-completions" }),
 			model({ id: "local-model", provider: "my-openai-compatible", api: "openai-responses" }),
 		];
@@ -314,7 +312,7 @@ describe("deriveFastModelVariants", () => {
 			["codex-proxy", "openai-codex-responses"],
 			["openrouter", "openai-completions"],
 			["openrouter", "openai-responses"],
-			["azure-openai-responses", "azure-openai-responses"],
+			["azure", "azure-openai-responses"],
 			["anthropic", "anthropic-messages"],
 			["vercel-ai-gateway", "openai-completions"],
 			["my-openai-compatible", "openai-responses"],

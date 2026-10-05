@@ -25,6 +25,7 @@ export interface ResourceLoaderInternals {
 	builtinPackagePaths: PackageSource[];
 	extensionFactories: InlineExtension[];
 	noExtensions: boolean;
+	disabledBuiltinExtensions: Set<string>;
 	noSkills: boolean;
 	noPromptTemplates: boolean;
 	noThemes: boolean;

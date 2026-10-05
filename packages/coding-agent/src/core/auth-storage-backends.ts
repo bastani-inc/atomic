@@ -17,6 +17,7 @@ import { getAgentDir } from "../config.js";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
+import { normalizeProviderKeys } from "./azure-provider-compat.js";
 
 export type LockResult<T> = {
 	result: T;
@@ -159,7 +160,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const readPath = this.readPaths[i]!;
 			if (!existsSync(readPath)) continue;
 			const parsed = JSON.parse(stripBom(readFileSync(readPath, "utf-8"))) as AuthStorageData;
-			merged = { ...merged, ...parsed };
+			merged = { ...merged, ...normalizeProviderKeys(parsed) };
 			found = true;
 		}
 		return found ? JSON.stringify(merged, null, 2) : undefined;

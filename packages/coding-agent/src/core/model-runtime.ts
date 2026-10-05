@@ -38,6 +38,8 @@ import {
 	type ModelType,
 	type ModelTypeMap,
 	type MutableModels,
+	normalizeProvider,
+	normalizeProviderId,
 	type Provider,
 	type ProviderHeaders,
 } from "@bastani/pi-ai";
@@ -46,6 +48,7 @@ import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { containsAuthConfig } from "./credential-screening.ts";
 import {
 	copilotAdvertisedFastModelIds,
@@ -306,7 +309,8 @@ export class ModelRuntime implements Models {
 		}
 	}
 	private composeProvider(providerId: string): void {
-		const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
+		const native = this.nativeExtensionProviders.get(providerId);
+		const base = native ? normalizeProvider(native) : this.builtins.get(providerId);
 		const extension = this.extensionProviders.get(providerId);
 		if (extension?.aliasOf !== undefined) {
 			try {
@@ -470,7 +474,7 @@ export class ModelRuntime implements Models {
 		return this.models.getProviders();
 	}
 	getProvider(providerId: string): Provider | undefined {
-		return this.models.getProvider(providerId);
+		return this.models.getProvider(normalizeProviderId(providerId));
 	}
 	/**
 	 * Whether an authenticated provider may reconstruct an absent saved model ID.
@@ -484,6 +488,7 @@ export class ModelRuntime implements Models {
 	 * (several exist under `vercel-ai-gateway`) still restores.
 	 */
 	canRestoreUnknownModel(providerId: string, modelId?: string): boolean {
+		providerId = normalizeProviderId(providerId);
 		if (
 			modelId !== undefined &&
 			isGitHubCopilotModel({ provider: providerId }) &&
@@ -508,7 +513,7 @@ export class ModelRuntime implements Models {
 		return this.models.getModels(providerId);
 	}
 	getModel(providerId: string, modelId: string): Model<Api> | undefined {
-		return this.models.getModel(providerId, modelId);
+		return this.models.getModel(normalizeProviderId(providerId), modelId);
 	}
 	getModelsOfType<TType extends ModelType>(type: TType, providerId?: string): readonly ModelTypeMap[TType][] {
 		return this.models.getModelsOfType(type, providerId);
@@ -582,7 +587,7 @@ export class ModelRuntime implements Models {
 	}
 
 	getRegisteredProviderConfig(providerId: string): ProviderConfigInput | undefined {
-		return this.extensionProviders.get(providerId);
+		return this.extensionProviders.get(normalizeProviderId(providerId));
 	}
 
 	/**
@@ -600,13 +605,14 @@ export class ModelRuntime implements Models {
 	}
 
 	getRegisteredNativeProvider(providerId: string): Provider | undefined {
-		return this.nativeExtensionProviders.get(providerId);
+		return this.nativeExtensionProviders.get(normalizeProviderId(providerId));
 	}
 	getOAuthProviderMetadata() {
 		return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders);
 	}
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
+		model = normalizeModelProvider(model);
 		return resolveCompatibilityRequestConfig(
 			model,
 			this.config.getProvider(model.provider),
@@ -615,16 +621,16 @@ export class ModelRuntime implements Models {
 	}
 
 	isUsingOAuth(providerId: string): boolean {
-		return this.snapshot.auth.get(providerId)?.type === "oauth";
+		return this.snapshot.auth.get(normalizeProviderId(providerId))?.type === "oauth";
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
-		return this.snapshot.configuredProviders.has(providerId);
+		return this.snapshot.configuredProviders.has(normalizeProviderId(providerId));
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
 	getCredentialSnapshot(providerId: string): Credential | undefined {
-		return this.credentials.peek(providerId);
+		return this.credentials.peek(normalizeProviderId(providerId));
 	}
 
 	getAuth(providerId: string, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
@@ -633,7 +639,9 @@ export class ModelRuntime implements Models {
 		providerOrModel: string | AnyModel,
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
-		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
+		if (typeof providerOrModel === "string")
+			return this.models.getAuth(normalizeProviderId(providerOrModel), overrides);
+		providerOrModel = normalizeModelProvider(providerOrModel);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
 		return mergeConfiguredAuthHeaders(
@@ -652,6 +660,7 @@ export class ModelRuntime implements Models {
 	 * them override API-computed defaults that intentionally replace catalog values.
 	 */
 	async getRequestAuth(model: Model<Api>, overrides: ModelRuntimeAuthOverrides = {}): Promise<AuthResult | undefined> {
+		model = normalizeModelProvider(model);
 		const resolution = await this.getAuth(model.provider, overrides);
 		if (!resolution) return undefined;
 		return mergeConfiguredAuthHeaders(
@@ -825,6 +834,7 @@ export class ModelRuntime implements Models {
 		credential: Credential,
 		options: SaveCredentialOptions = {},
 	): Promise<void> {
+		providerId = normalizeProviderId(providerId);
 		const refreshCatalog = options.refreshCatalog ?? true;
 		const signal = operationSignal(undefined);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
@@ -858,6 +868,7 @@ export class ModelRuntime implements Models {
 	 * separately.
 	 */
 	async setRuntimeApiKey(providerId: string, apiKey: string, options: AuthOperationOptions): Promise<void> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
@@ -869,6 +880,7 @@ export class ModelRuntime implements Models {
 	}
 
 	async removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
@@ -885,10 +897,11 @@ export class ModelRuntime implements Models {
 	}
 
 	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
-		return this.snapshot.storedCredentialTypes.get(providerId);
+		return this.snapshot.storedCredentialTypes.get(normalizeProviderId(providerId));
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		providerId = normalizeProviderId(providerId);
 		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,
 			providerId,
@@ -901,6 +914,7 @@ export class ModelRuntime implements Models {
 
 	/** Apply authoritative auth state returned by an isolated engine mutation. */
 	applyExternalProviderAuthStatus(providerId: string, status: AuthStatus): void {
+		providerId = normalizeProviderId(providerId);
 		this.markCatalogInputsChanged();
 		this.snapshotGeneration += 1;
 		const remainingAuth =
@@ -999,6 +1013,7 @@ export class ModelRuntime implements Models {
 		interaction: AuthInteraction,
 		options?: LoginOptions,
 	): Promise<Credential> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal }, options);
@@ -1017,6 +1032,7 @@ export class ModelRuntime implements Models {
 	}
 
 	async logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		const logoutGeneration = await this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });
@@ -1075,6 +1091,7 @@ export class ModelRuntime implements Models {
 		}
 		this.config = config;
 		this.configureRadiusProviders();
+		if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
 			this.updateModelSnapshot();
@@ -1134,6 +1151,7 @@ export class ModelRuntime implements Models {
 	}
 
 	createExtensionProviderTransaction(replacedProviderIds: Iterable<string> = []): ExtensionProviderTransaction {
+		replacedProviderIds = Array.from(replacedProviderIds, normalizeProviderId);
 		const nativeProviders = new Map(this.nativeExtensionProviders);
 		const providers = new Map(this.extensionProviders);
 		for (const providerId of replacedProviderIds) {
@@ -1144,12 +1162,15 @@ export class ModelRuntime implements Models {
 		for (const providerId of replacedProviderIds) configuredProviders.delete(providerId);
 		return {
 			registerNativeProvider: (provider) => {
-				if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
-				providers.delete(provider.id);
-				if (this.snapshot.storedProviders.has(provider.id)) configuredProviders.add(provider.id);
-				nativeProviders.set(provider.id, provider);
+				const id = normalizeProviderId(provider.id);
+				if (!id.trim()) throw new Error("Provider id must not be empty.");
+				providers.delete(id);
+				if (this.snapshot.storedProviders.has(id)) configuredProviders.add(id);
+				nativeProviders.set(id, provider);
 			},
 			registerProvider: (providerId, config) => {
+				providerId = normalizeProviderId(providerId);
+				if (config.aliasOf !== undefined) config = { ...config, aliasOf: normalizeProviderId(config.aliasOf) };
 				validateExtensionProvider(
 					providerId,
 					this.builtins.get(providerId),
@@ -1173,11 +1194,12 @@ export class ModelRuntime implements Models {
 				providers.set(providerId, effective);
 			},
 			unregisterProvider: (providerId) => {
+				providerId = normalizeProviderId(providerId);
 				providers.delete(providerId);
 				configuredProviders.delete(providerId);
 				nativeProviders.delete(providerId);
 			},
-			hasConfiguredAuth: (providerId) => configuredProviders.has(providerId),
+			hasConfiguredAuth: (providerId) => configuredProviders.has(normalizeProviderId(providerId)),
 			commit: async () => {
 				const previous = {
 					extensionProviders: new Map(this.extensionProviders),
@@ -1218,20 +1240,23 @@ export class ModelRuntime implements Models {
 	}
 
 	registerNativeProvider(provider: Provider): void {
-		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
-		this.extensionProviders.delete(provider.id);
-		this.nativeExtensionProviders.set(provider.id, provider);
-		this.recomposeProvider(provider.id);
+		const id = normalizeProviderId(provider.id);
+		if (!id.trim()) throw new Error("Provider id must not be empty.");
+		this.extensionProviders.delete(id);
+		this.nativeExtensionProviders.set(id, provider);
+		this.recomposeProvider(id);
 		this.updateModelSnapshot();
 		this.markProvisionallyConfigured(
-			provider.id,
-			configuredRequestAuthStatus(this.config.getProvider(provider.id), undefined),
+			id,
+			configuredRequestAuthStatus(this.config.getProvider(id), undefined),
 			provider.auth?.oauth && !provider.auth.apiKey ? "oauth" : "api_key",
 		);
 		this.scheduleRegistrationRefresh();
 	}
 
 	registerProvider(providerId: string, config: ProviderConfigInput): void {
+		providerId = normalizeProviderId(providerId);
+		if (config.aliasOf !== undefined) config = { ...config, aliasOf: normalizeProviderId(config.aliasOf) };
 		// Validate the incoming registration on its own, like the legacy registry:
 		// a broken re-registration must throw without touching the stored config.
 		validateExtensionProvider(providerId, this.builtins.get(providerId), this.config.getProvider(providerId), config);
@@ -1279,6 +1304,7 @@ export class ModelRuntime implements Models {
 	}
 
 	unregisterProvider(providerId: string): void {
+		providerId = normalizeProviderId(providerId);
 		this.extensionProviders.delete(providerId);
 		this.nativeExtensionProviders.delete(providerId);
 		this.recomposeProvider(providerId);

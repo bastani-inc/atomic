@@ -267,7 +267,7 @@ test("six task anchors stay complete behind a bounded viewport and mounted promp
 		assert.equal((stripAnsi(all).match(/∀ worker:/g) ?? []).length, 6);
 		assert.equal(main.renderBody(80, 5).length, 5);
 		const entries = main.entries().filter((entry) => entry.kind === "task");
-		main.handleScrollInput("\x1b[H");
+		main.handleScrollInput("\x1b[1;5H");
 		const top = stripAnsi(main.renderBody(80, 5).join("\n"));
 		assert.match(top, /task-0/);
 		taskValue(

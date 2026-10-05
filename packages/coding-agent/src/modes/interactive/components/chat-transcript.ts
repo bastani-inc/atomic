@@ -1,4 +1,11 @@
-import { type Component, type Container, matchesKey, Spacer } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type Container,
+	getKeybindings,
+	type KeybindingsManager,
+	matchesKey,
+	Spacer,
+} from "@earendil-works/pi-tui";
 
 /**
  * Roles that participate in pi's chat spacing contract.
@@ -276,6 +283,13 @@ export class ScrollableComponentViewport implements Component {
 	 * honour it. See `scrollTo` for why the request has to outlive the call.
 	 */
 	private pendingScrollRow: number | undefined;
+	private readonly keybindings: Pick<KeybindingsManager, "matches"> | undefined;
+
+	constructor(keybindings?: unknown) {
+		const candidate = keybindings as Partial<Pick<KeybindingsManager, "matches">> | undefined;
+		this.keybindings =
+			typeof candidate?.matches === "function" ? (candidate as Pick<KeybindingsManager, "matches">) : undefined;
+	}
 
 	setComponents(components: readonly Component[]): void {
 		this.components = components;
@@ -373,11 +387,11 @@ export class ScrollableComponentViewport implements Component {
 			this.scrollBy(this.pageSize());
 			return true;
 		}
-		if (matchesKey(data, "home")) {
+		if ((this.keybindings ?? getKeybindings()).matches(data, "tui.altScreen.top")) {
 			this.scrollToTop();
 			return true;
 		}
-		if (matchesKey(data, "end")) {
+		if ((this.keybindings ?? getKeybindings()).matches(data, "tui.altScreen.bottom")) {
 			this.scrollToBottom();
 			return true;
 		}

@@ -1,8 +1,8 @@
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath, resolvePath } from "../utils/paths.ts";
-import { getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
+import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
@@ -44,6 +44,27 @@ import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 import { buildSkillCatalog } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
+
+function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): string[] {
+	if (disabled.size === 0) return paths;
+	const canonical = (path: string): string => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return path;
+		}
+	};
+	const roots = getAllBuiltinPackageLocations()
+		.filter((location) => disabled.has(location.distDirName))
+		.map((location) => canonical(location.packageDir));
+	return paths.filter((path) => {
+		if (path.startsWith(BUILTIN_PATH_PREFIX)) return !disabled.has(path.slice(BUILTIN_PATH_PREFIX.length));
+		return !roots.some((root) => {
+			const child = relative(root, canonical(path));
+			return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+		});
+	});
+}
 
 function getEnabledResources(
 	resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
@@ -135,13 +156,16 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
 	// Herdr pane; see extensions/herdr-file-integration.ts.
-	const extensionPaths = filterSupersededHerdrIntegrationPaths(
-		mergeResourcePaths(
-			state.cwd,
-			cliEnabledExtensions,
-			state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
-		),
-	).filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX));
+	const extensionPaths = filterDisabledBuiltinExtensionPaths(
+		filterSupersededHerdrIntegrationPaths(
+			mergeResourcePaths(
+				state.cwd,
+				cliEnabledExtensions,
+				state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+			),
+		).filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+		state.disabledBuiltinExtensions,
+	);
 	const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 	const extensionsResult = await loadExtensionPaths(
 		loader,
@@ -313,12 +337,15 @@ export async function prepareDefaultResourceLoaderReload(
 
 		// The builtin Herdr reporter supersedes the installed file integration in a
 		// Herdr pane; see extensions/herdr-file-integration.ts.
-		const extensionPaths = filterSupersededHerdrIntegrationPaths(
-			mergeResourcePaths(
-				state.cwd,
-				cliEnabledExtensions,
-				state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+		const extensionPaths = filterDisabledBuiltinExtensionPaths(
+			filterSupersededHerdrIntegrationPaths(
+				mergeResourcePaths(
+					state.cwd,
+					cliEnabledExtensions,
+					state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
+				),
 			),
+			state.disabledBuiltinExtensions,
 		);
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);

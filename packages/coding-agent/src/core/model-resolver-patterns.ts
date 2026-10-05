@@ -1,6 +1,7 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { normalizeModelReference } from "./azure-provider-compat.js";
 import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
 import type { ParsedModelResult } from "./model-resolver-types.ts";
 
@@ -24,7 +25,7 @@ export function findExactModelReferenceMatch(
 	modelReference: string,
 	availableModels: Model<Api>[],
 ): Model<Api> | undefined {
-	const trimmedReference = modelReference.trim();
+	const trimmedReference = normalizeModelReference(modelReference.trim());
 	if (!trimmedReference) {
 		return undefined;
 	}

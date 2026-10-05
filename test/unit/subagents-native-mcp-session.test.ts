@@ -164,10 +164,10 @@ async function nativeChild(
 	}
 }
 
-test(
-	"an explicit child loadout admits only its selected live native MCP tool",
-	async () => {
-		const { session, calls } = await nativeChild({ tools: ["read"], mcpDirectTools: ["github/search_code"] });
+test.each([{ tools: ["read"] }, { tools: ["read", "mcp__github__*"] }, { tools: ["re*"] }])(
+	"an explicit child loadout $tools admits only its selected live native MCP tool",
+	async ({ tools }) => {
+		const { session, calls } = await nativeChild({ tools, mcpDirectTools: ["github/search_code"] });
 		try {
 			const selected = session.agent.state.tools.find((tool) => tool.name === "mcp__github__search_code");
 			assert.ok(selected, `expected selected MCP tool, got ${session.getActiveToolNames().join(", ")}`);
@@ -190,7 +190,11 @@ test(
 test(
 	"noTools all keeps native MCP selectors disabled in a child session",
 	async () => {
-		const { session, calls } = await nativeChild({ noTools: "all", mcpDirectTools: ["github/search_code"] });
+		const { session, calls } = await nativeChild({
+			noTools: "all",
+			tools: ["*"],
+			mcpDirectTools: ["github/search_code"],
+		});
 		try {
 			assert.deepEqual(session.getActiveToolNames(), []);
 			assert.equal(
@@ -367,6 +371,45 @@ test.each([
 			);
 		} finally {
 			session.dispose();
+		}
+	},
+	NATIVE_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a wildcard parent admits an exact child read tool without widening its ceiling",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-wildcard-parent-"));
+		roots.push(root);
+		const { session: parent } = await createAgentSession({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(root),
+			model: getModel("anthropic", "claude-sonnet-4-5"),
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			tools: ["re*", "subagent"],
+		});
+		try {
+			const resolver = parent.extensionRunner.createContext().getChildSessionOptions;
+			assert.ok(resolver);
+			const childOptions = resolver({
+				tools: ["read", "bash", "read_mcp_resource"],
+				sessionManager: SessionManager.inMemory(root),
+			});
+			assert.deepEqual(childOptions.tools, ["read"]);
+			const { session: child } = await createAgentSession(childOptions);
+			try {
+				assert.deepEqual(child.getActiveToolNames(), ["read"]);
+				assert.deepEqual(
+					child.getAllTools().map((tool) => tool.name),
+					["read"],
+				);
+			} finally {
+				child.dispose();
+			}
+		} finally {
+			parent.dispose();
 		}
 	},
 	NATIVE_CHILD_SESSION_TIMEOUT_MS,
