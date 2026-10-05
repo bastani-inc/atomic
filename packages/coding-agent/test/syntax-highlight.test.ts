@@ -1,6 +1,6 @@
 import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { highlightCode, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getMarkdownTheme, highlightCode, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	highlight,
 	loadAllHighlightLanguages,
@@ -103,6 +103,28 @@ describe("theme syntax highlighting", () => {
 			process.env.COLORTERM = previousColorTerm;
 		}
 		resetCapabilitiesCache();
+	});
+
+	it("colors each line of Python docstrings independently (#10143)", () => {
+		const code = '"""\nline one\n\nline two\n"""\nafter';
+		const ansi = theme.getFgAnsi("syntaxString");
+		const expected = [
+			`${ansi}"""\x1b[39m`,
+			`${ansi}line one\x1b[39m`,
+			"",
+			`${ansi}line two\x1b[39m`,
+			`${ansi}"""\x1b[39m`,
+			"after",
+		];
+
+		expect(highlightCode(code, "python")).toEqual(expected);
+		expect(getMarkdownTheme().highlightCode?.(code, "python")).toEqual(expected);
+	});
+
+	it("uses text color for string substitutions", () => {
+		const interpolation = "$" + "{value}";
+		const line = highlightCode(`\`hello ${interpolation}\``, "javascript")[0];
+		expect(line).toContain(theme.fg("text", interpolation));
 	});
 
 	it("colors diff additions and deletions in fenced diff blocks", () => {
