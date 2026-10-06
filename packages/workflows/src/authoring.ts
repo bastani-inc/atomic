@@ -361,6 +361,12 @@ export interface Store {
 	removeRun(runId: string): boolean;
 	recordNotice(notice: WorkflowNotice): void;
 	ackNotice(id: string): boolean;
+	/** JSON copy of every run and notice at the current store version. */
+	snapshot(): StoreSnapshot;
+	/** Cached, payload-bounded projection for graph rendering; one object per store version. */
+	graphSnapshot(): StoreSnapshot;
+	/** Calls `listener` with a fresh `snapshot()` after each store change. Returns an unsubscribe function. */
+	subscribe(listener: (snapshot: StoreSnapshot) => void): () => void;
 }
 
 export declare function createStore(): Store;
