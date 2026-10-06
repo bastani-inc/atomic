@@ -1309,6 +1309,7 @@ interface RunOpts {
   readonly onRunStart?: (snapshot: RunSnapshot) => void;
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
+  readonly onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
   readonly onRunEnd?: (
     runId: string,
     status: RunStatus,
@@ -1320,6 +1321,8 @@ interface RunOpts {
 ```
 
 Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)`. Every field is optional.
+
+`onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.
 

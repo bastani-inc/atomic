@@ -421,6 +421,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageStart: opts.onStageStart,
 		onStageEnd: durableOnStageEnd,
 		onStageSession: durableOnStageSession,
+		onStageSessionEvent: opts.onStageSessionEvent,
 		confirmStageReadiness: opts.confirmStageReadiness,
 		usePromptNodesForUi: opts.usePromptNodesForUi,
 	};
@@ -457,6 +458,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
 		onStageSession: opts.onStageSession,
+		onStageSessionEvent: opts.onStageSessionEvent,
 		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,

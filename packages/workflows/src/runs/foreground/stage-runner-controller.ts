@@ -1685,7 +1685,15 @@ export class StageSessionController {
 		}
 		this.unsubscribeTerminateWatcher?.();
 		let applyingFallback = false;
+		const onSessionEvent = this.opts.onSessionEvent;
 		this.unsubscribeTerminateWatcher = result.session.subscribe((event) => {
+			if (onSessionEvent !== undefined) {
+				// A caller's event observer must never break the stage it observes; a `void`
+				// callback may still be async, so its rejection is settled here too.
+				try {
+					void Promise.resolve(onSessionEvent(event)).catch(() => {});
+				} catch {}
+			}
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
 			// after applying both model and effort. Ignore effort changes outside fallback selection.
