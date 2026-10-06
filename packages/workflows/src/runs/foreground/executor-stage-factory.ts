@@ -6,7 +6,7 @@ import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../s
 import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
-import { stageUiBroker } from "../../shared/stage-ui-broker.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
@@ -61,6 +61,7 @@ export function createWorkflowStageFactory(input: {
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly stageRegistry: StageControlRegistry;
+	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
 	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
@@ -262,7 +263,7 @@ export function createWorkflowStageFactory(input: {
 					toolEvent.args,
 					Date.now(),
 				);
-				if (adapter) stageUiBroker.provideStagePrompt(input.runId, stageId, adapter);
+				if (adapter) input.stageUiBroker.provideStagePrompt(input.runId, stageId, adapter);
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
 				return;
 			}
@@ -277,7 +278,7 @@ export function createWorkflowStageFactory(input: {
 				state.chatAnswerObservedThisTurn = true;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-				stageUiBroker.clearStagePrompt(input.runId, stageId);
+				input.stageUiBroker.clearStagePrompt(input.runId, stageId);
 			}
 		});
 		const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
@@ -294,7 +295,7 @@ export function createWorkflowStageFactory(input: {
 			activeAskUserQuestionCalls.clear();
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-			stageUiBroker.clearStagePrompt(input.runId, stageId);
+			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
 			await innerCtx.__dispose();
 		};
 
@@ -376,7 +377,7 @@ export function createWorkflowStageFactory(input: {
 			const artifacts = input.takeTerminalArtifacts?.(replayKey);
 			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
 			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-			stageUiBroker.cancelStagePrompt(
+			input.stageUiBroker.cancelStagePrompt(
 				input.runId,
 				stageId,
 				new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
@@ -441,6 +442,7 @@ export function createWorkflowStageFactory(input: {
 			activeStore: input.activeStore,
 			opts: input.opts,
 			stageRegistry: input.stageRegistry,
+			stageUiBroker: input.stageUiBroker,
 			scheduler: input.scheduler,
 			signal: input.signal,
 			exit: input.exit,

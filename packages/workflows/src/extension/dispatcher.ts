@@ -81,6 +81,8 @@ export interface DispatcherOpts {
 	jobs?: JobTracker;
 	stageControlRegistry?: import("../runs/foreground/stage-control-registry.js").StageControlRegistry;
 	toolControlRegistry?: import("../engine/run-tool-control-registry.js").ToolControlRegistry;
+	/** Broker that carries this session's stage questions to its host. */
+	stageUiBroker?: import("../shared/stage-ui-broker.js").StageUiBroker;
 	/** Persistence port forwarded to the executor. */
 	persistence?: WorkflowPersistencePort;
 	/** MCP scope-gating port forwarded to the executor. */
@@ -226,6 +228,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					jobs: opts.jobs,
 					stageControlRegistry: opts.stageControlRegistry,
 					toolControlRegistry: opts.toolControlRegistry,
+					stageUiBroker: opts.stageUiBroker,
 					persistence: opts.persistence,
 					mcp: opts.mcp,
 					config: opts.config,

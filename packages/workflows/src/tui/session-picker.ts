@@ -63,7 +63,10 @@ export interface PickerRow {
 	readonly bucket: "active" | "terminal";
 }
 
-export type ResumeCandidateProbe = (run: RunSnapshot) => WorkflowRunResumeCandidate;
+export type ResumeCandidateProbe = (
+	run: RunSnapshot,
+	sessionRuns: readonly RunSnapshot[],
+) => WorkflowRunResumeCandidate;
 export type ResumeCandidateLookup = (run: RunSnapshot) => WorkflowRunResumeCandidate;
 
 /** Cache resume probes for one store revision so render and input share the same filesystem/backend work. */
@@ -85,7 +88,7 @@ export function createSessionPickerResumeCandidateCache(
 		return (run: RunSnapshot): WorkflowRunResumeCandidate => {
 			const cached = candidates.get(run.id);
 			if (cached !== undefined) return cached;
-			const candidate = probe(sourceRuns.get(run.id) ?? run);
+			const candidate = probe(sourceRuns.get(run.id) ?? run, snapshot.runs);
 			candidates.set(run.id, candidate);
 			return candidate;
 		};
@@ -122,7 +125,7 @@ export function selectRunsForPicker(
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
 		if (intent === "resume") {
-			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r);
+			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r, runs);
 			if (!isWorkflowRunResumable(candidate)) continue;
 		}
 		const endedAt = r.endedAt;

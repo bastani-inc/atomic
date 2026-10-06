@@ -61,6 +61,7 @@ import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
+import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -349,6 +350,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	};
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
 	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const sourceToContinuationNodeIds = new Map<string, string>();
 	const replayIndex = createContinuationReplayIndex(opts.continuation, sourceToContinuationNodeIds);
 	const scheduler = createStageScheduler({
@@ -450,6 +452,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		registry: opts.registry,
 		stageControlRegistry: opts.stageControlRegistry,
 		toolControlRegistry: opts.toolControlRegistry,
+		stageUiBroker,
 		toolAdmissionBoundary: toolAdmission,
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
@@ -476,6 +479,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		inputRuntimeDefaults,
 		workflowInvocationCwd,
 		stageRegistry,
+		stageUiBroker,
 		gitWorktreeSetupCache,
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
 		exit,
@@ -582,6 +586,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			classifyExecutorFailure,
 			opts: { ...opts, onStageEnd: durableOnPromptNodeEnd },
 			stageControlRegistry: stageRegistry,
+			stageUiBroker,
 			signal: ownController.signal,
 			throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
 			registerWorkflowExitCleanup: exit.registerWorkflowExitCleanup,

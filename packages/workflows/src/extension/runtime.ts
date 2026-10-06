@@ -20,6 +20,7 @@ import { currentJobTracker, type JobTracker } from "../runs/background/job-track
 import { type RunOpts, resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import { currentStageControlRegistry, type StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 import type { RunSnapshot, ToolNodeSnapshot, WorkflowActor } from "../shared/store-types.js";
@@ -64,6 +65,8 @@ export interface ExtensionRuntimeOpts {
 	cancellation?: CancellationRegistry;
 	stageControlRegistry?: StageControlRegistry;
 	toolControlRegistry?: ToolControlRegistry;
+	/** Broker that carries this session's stage questions to its host. */
+	stageUiBroker?: StageUiBroker;
 	/** Persistence port forwarded to the executor. */
 	persistence?: WorkflowPersistencePort;
 	/** MCP scope-gating port forwarded to the executor. */
@@ -172,6 +175,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const cancellation = opts.cancellation ?? currentCancellationRegistry();
 	const stageControlRegistry = opts.stageControlRegistry ?? currentStageControlRegistry();
 	const toolControlRegistry = opts.toolControlRegistry ?? currentToolControlRegistry();
+	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const persistence = opts.persistence;
 	const mcp = opts.mcp;
 	const config = opts.config;
@@ -201,6 +205,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			cancellation,
 			stageControlRegistry,
 			toolControlRegistry,
+			stageUiBroker,
 			persistence,
 			mcp,
 			config,
@@ -385,6 +390,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				cancellation,
 				stageControlRegistry,
 				toolControlRegistry,
+				stageUiBroker,
 				jobs,
 				persistence,
 				mcp,
@@ -406,6 +412,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		...createDurableResumeRuntime({
 			registry,
 			store: activeStore,
+			stageControlRegistry,
 			adapters,
 			runtimeCwd,
 			getWorkflowHostModules: opts.getWorkflowHostModules,

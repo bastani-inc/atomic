@@ -14,6 +14,7 @@ import type { StageControlRegistry } from "../runs/foreground/stage-control-regi
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { StageOptions, WorkflowArtifact } from "../shared/types.js";
@@ -41,6 +42,7 @@ export interface EngineRuntimeInput {
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
 	readonly stageRegistry: StageControlRegistry;
+	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
 	readonly budget: RunBudgetController;
 	readonly rootBudget: RunBudgetController;
@@ -143,6 +145,7 @@ export class EngineRuntime {
 			workflowInvocationCwd: input.workflowInvocationCwd,
 			gitWorktreeSetupCache: input.gitWorktreeSetupCache,
 			stageRegistry: input.stageRegistry,
+			stageUiBroker: input.stageUiBroker,
 			budget: input.budget,
 			exit: input.exit,
 			classifyExecutorFailure: input.classifyExecutorFailure,

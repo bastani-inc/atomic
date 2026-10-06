@@ -17,6 +17,7 @@ import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
+import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
@@ -56,6 +57,7 @@ export interface DurableResumeRuntime {
 export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
+	readonly stageControlRegistry?: StageControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
 	readonly ensureReady: () => Promise<DurableWorkflowBackend>;
@@ -201,6 +203,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					{
 						durableBackend: backend,
 						store: deps.store,
+						stageControlRegistry: deps.stageControlRegistry,
 						adapters: deps.adapters,
 						cwd: handle?.workflowCwd ?? handle?.invocationCwd ?? deps.runtimeCwd,
 						defaultSessionDir: deps.resolveDefaultStageSessionDir?.(),

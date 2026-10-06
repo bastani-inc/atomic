@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Attached stage chats honor configured transcript jump shortcuts, defaulting to Ctrl+Home and Ctrl+End, without intercepting the editor's Home and End keys.
 - Fixed slow workflow discovery for imports of `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` by sharing the running CLI's modules instead of loading them again for each workflow file. The host's versions take precedence over project copies for these three exact specifiers. These imports no longer need project-local packages in standalone-binary installs; workflow files and relative imports still refresh on reload ([#3454](https://github.com/bastani-inc/atomic/issues/3454)).
+- Fixed workflow stage questions in one process hosting several SDK sessions reaching the wrong session. A stage's `ask_user_question`, readiness question, or `ctx.ui.custom` prompt could go to whichever sibling session started last, so its own `HostInput.questionnaire` was never called and the stage stayed `awaiting_input`. Each session now keeps its own workflow store, stage UI broker, and run registries ([#3456](https://github.com/bastani-inc/atomic/issues/3456)).
 
 ## [0.9.27] - 2026-10-05
 

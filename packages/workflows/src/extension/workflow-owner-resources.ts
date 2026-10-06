@@ -14,12 +14,20 @@ export interface WorkflowOwnerResources {
 	readonly jobs: JobTracker;
 }
 
-export function captureWorkflowOwnerResources(): WorkflowOwnerResources {
-	return {
+export function captureWorkflowOwnerResources(
+	resources: WorkflowOwnerResources = {
 		store: currentWorkflowStore(),
 		toolControlRegistry: currentToolControlRegistry(),
 		stageControlRegistry: currentStageControlRegistry(),
 		stageUiBroker: currentStageUiBroker(),
 		jobs: currentJobTracker(),
+	},
+): WorkflowOwnerResources {
+	return {
+		store: resources.store,
+		toolControlRegistry: resources.toolControlRegistry,
+		stageControlRegistry: resources.stageControlRegistry,
+		stageUiBroker: resources.stageUiBroker,
+		jobs: resources.jobs,
 	};
 }

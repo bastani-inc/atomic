@@ -44,8 +44,11 @@ function normalizeSerializedPath(value: string): string {
 type ArtifactReferenceSnapshot = Pick<RunSnapshot, "id" | "result" | "stages" | "resumedFromRunId">;
 
 /** Return the run identities allowed to own artifacts referenced by this snapshot. */
-function workflowRunArtifactOwnerIds(run: ArtifactReferenceSnapshot): readonly string[] {
-	const localRuns = new Map(store.runs().map((candidate) => [candidate.id, candidate]));
+function workflowRunArtifactOwnerIds(
+	run: ArtifactReferenceSnapshot,
+	sessionRuns: readonly RunSnapshot[],
+): readonly string[] {
+	const localRuns = new Map(sessionRuns.map((candidate) => [candidate.id, candidate]));
 	const owners = new Set<string>();
 	const visited = new Set<string>();
 	let cursor: ArtifactReferenceSnapshot | undefined = run;
@@ -61,7 +64,10 @@ function workflowRunArtifactOwnerIds(run: ArtifactReferenceSnapshot): readonly s
 }
 
 /** Extract identity-scoped owners whose configured artifact paths appear in the snapshot. */
-function workflowRunReferencedArtifactOwnerIds(run: ArtifactReferenceSnapshot): readonly string[] {
+function workflowRunReferencedArtifactOwnerIds(
+	run: ArtifactReferenceSnapshot,
+	sessionRuns: readonly RunSnapshot[],
+): readonly string[] {
 	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
 	if (serialized === undefined) return [];
 	// `JSON.stringify` escapes Windows separators, so one replacement can leave
@@ -75,26 +81,38 @@ function workflowRunReferencedArtifactOwnerIds(run: ArtifactReferenceSnapshot): 
 	// match an unrelated run.
 	const normalized = normalizeSerializedPath(serialized);
 	const runsRoot = normalizeSerializedPath(workflowArtifactRunsRoot());
-	return workflowRunArtifactOwnerIds(run).filter(
+	return workflowRunArtifactOwnerIds(run, sessionRuns).filter(
 		(ownerId) => normalized.includes(`${runsRoot}/${ownerId}/`) || normalized.includes(`/runs/${ownerId}/`),
 	);
 }
 
-/** Detect an identity-scoped run artifact path anywhere in a run's result or stages. */
-export function workflowRunHasArtifactReference(run: ArtifactReferenceSnapshot): boolean {
-	return workflowRunReferencedArtifactOwnerIds(run).length > 0;
+/**
+ * Detect an identity-scoped run artifact path anywhere in a run's result or stages.
+ * `sessionRuns` are the owning session's runs, used to follow resume sources.
+ */
+export function workflowRunHasArtifactReference(
+	run: ArtifactReferenceSnapshot,
+	sessionRuns: readonly RunSnapshot[] = store.runs(),
+): boolean {
+	return workflowRunReferencedArtifactOwnerIds(run, sessionRuns).length > 0;
 }
 
 /** Return integrity only for identity-scoped owners whose artifacts the snapshot names. */
-export function workflowRunArtifactsIntact(run: ArtifactReferenceSnapshot): boolean | undefined {
-	const ownerIds = workflowRunReferencedArtifactOwnerIds(run);
+export function workflowRunArtifactsIntact(
+	run: ArtifactReferenceSnapshot,
+	sessionRuns: readonly RunSnapshot[] = store.runs(),
+): boolean | undefined {
+	const ownerIds = workflowRunReferencedArtifactOwnerIds(run, sessionRuns);
 	if (ownerIds.length === 0) return undefined;
 	return ownerIds.every((ownerId) => existsSync(workflowArtifactRunPath(ownerId)));
 }
 
 /** Build the one resume candidate shape used by all live-run resume surfaces. */
-export function workflowRunResumeCandidate(run: RunSnapshot): WorkflowRunResumeCandidate {
-	const artifactsIntact = workflowRunArtifactsIntact(run);
+export function workflowRunResumeCandidate(
+	run: RunSnapshot,
+	sessionRuns: readonly RunSnapshot[] = store.runs(),
+): WorkflowRunResumeCandidate {
+	const artifactsIntact = workflowRunArtifactsIntact(run, sessionRuns);
 	let hasDurableCheckpoint: boolean | undefined;
 	try {
 		hasDurableCheckpoint = getDurableBackend().isWorkflowLoadable(run.id);

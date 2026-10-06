@@ -3,17 +3,13 @@ import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
-import { currentToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import { currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
-import { currentJobTracker } from "../runs/background/job-tracker.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
-import { currentStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import { currentWorkflowStore } from "../shared/store-factory.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
+import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
@@ -89,15 +85,14 @@ export interface WorkflowLifecycleRegistrationDeps {
 	storeWidgetRef: { current: (() => void) | null };
 	intercomControlRef: { current: (() => void) | null };
 	disposeObservation?: () => void;
+	/** The owning session's run-scoped instances; defaults to the current ones. */
+	runState?: WorkflowSessionRunState;
 }
 
 export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: WorkflowLifecycleRegistrationDeps): void {
 	if (typeof pi.on !== "function") return;
-	const store = currentWorkflowStore();
-	const cancellationRegistry = currentCancellationRegistry();
-	const stageControlRegistry = currentStageControlRegistry();
-	const toolControlRegistry = currentToolControlRegistry();
-	const jobs = currentJobTracker();
+	const { store, cancellationRegistry, stageControlRegistry, toolControlRegistry, jobs } =
+		deps.runState ?? currentWorkflowSessionRunState();
 	const lifetime = sessionScopedExtensionState<WorkflowLifetime>(
 		pi.lifecycleScope ?? pi.events ?? pi,
 		"workflows:lifecycle:v1",

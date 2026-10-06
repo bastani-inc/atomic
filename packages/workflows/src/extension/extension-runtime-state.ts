@@ -1,15 +1,9 @@
 import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
-import { currentToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import { currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
-import { currentJobTracker } from "../runs/background/job-tracker.js";
-import { currentStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import { resolveBuiltinDefinitionSource } from "../shared/possible-stages.js";
-import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
-import { currentWorkflowStore } from "../shared/store-factory.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
@@ -19,6 +13,7 @@ import type {
 	WorkflowRuntimeConfig,
 } from "../shared/types.js";
 import type { WorkflowHeartbeatIdentity } from "../shared/workflow-heartbeat-contract.js";
+import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
 import {
 	type ConfigLoadResult,
 	loadWorkflowConfig,
@@ -139,6 +134,8 @@ export interface WorkflowExtensionRuntimeStateOptions {
 	resolveHostCwd?: () => string;
 	/** Newest live model context; the launch ctx retires on a preserving `/reload` (#3201). */
 	resolveLiveModelContext?: () => WorkflowModelContext | undefined;
+	/** The owning session's run-scoped instances; defaults to the current ones. */
+	runState?: WorkflowSessionRunState;
 }
 
 export function createWorkflowExtensionRuntimeState(
@@ -147,15 +144,9 @@ export function createWorkflowExtensionRuntimeState(
 	options: WorkflowExtensionRuntimeStateOptions = {},
 ): WorkflowExtensionRuntimeState {
 	const { resolveHostCwd, resolveLiveModelContext } = options;
-	const store = currentWorkflowStore();
-	const stageUiBroker = currentStageUiBroker();
-	const cancellationRegistry = currentCancellationRegistry();
-	const scopedRunOptions = {
-		store,
-		jobs: currentJobTracker(),
-		stageControlRegistry: currentStageControlRegistry(),
-		toolControlRegistry: currentToolControlRegistry(),
-	};
+	const { store, stageUiBroker, cancellationRegistry, jobs, stageControlRegistry, toolControlRegistry } =
+		options.runState ?? currentWorkflowSessionRunState();
+	const scopedRunOptions = { store, jobs, stageControlRegistry, toolControlRegistry, stageUiBroker };
 	// #3105: discovery follows the SDK session, never the process working directory.
 	let contextCwd: string | undefined;
 	const resolveCwd = (): string => resolveHostCwd?.() ?? contextCwd ?? pi.sessionManager?.getCwd?.() ?? process.cwd();

@@ -512,7 +512,7 @@ async function resolveExplicitDurableTarget(
 		return controlFailure("resume", target, error);
 	}
 	deps.signal?.throwIfAborted();
-	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, completed);
+	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, completed, deps.owner?.store.runs());
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
@@ -672,7 +672,7 @@ export async function workflowResumeAction(
 		run !== undefined &&
 		!isPaused &&
 		run.exitReason !== "quit" &&
-		isWorkflowRunResumable(workflowRunResumeCandidate(run));
+		isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
 	if (isDurableAuthorExit) {
 		const refusal = refuseStageScopedDurableResume(stageRunId, args);
 		if (refusal !== undefined) return refusal;

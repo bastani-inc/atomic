@@ -65,7 +65,7 @@ export function createTrackedStageCaller(input: {
 			);
 			return ready ? { action: "advance" } : { action: "stay" };
 		}
-		return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, signal);
+		return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, signal, runtime.stageUiBroker);
 	};
 
 	const suppressReadinessForCurrentTurn = (): void => {

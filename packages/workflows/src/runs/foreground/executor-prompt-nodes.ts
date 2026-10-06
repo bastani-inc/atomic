@@ -4,7 +4,7 @@ import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { requirePrimitivePromptAnswer } from "../../shared/prompt-answer.js";
 import { withPromptCallerStack } from "../../shared/prompt-callsite-context.js";
-import { stageUiBroker } from "../../shared/stage-ui-broker.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
@@ -53,6 +53,7 @@ export function buildPromptNodeUiAdapter(input: {
 	readonly activeStore: Store;
 	readonly opts: RunOpts;
 	readonly stageControlRegistry: StageControlRegistry;
+	readonly stageUiBroker: StageUiBroker;
 	readonly tracker: GraphFrontierTracker;
 	readonly replayIndex: ContinuationReplayIndex;
 	readonly signal: AbortSignal;
@@ -227,7 +228,7 @@ export function buildPromptNodeUiAdapter(input: {
 				}
 				stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
 				if (!shouldReplay) {
-					stageUiBroker.cancelStagePrompt(
+					input.stageUiBroker.cancelStagePrompt(
 						input.runId,
 						stageId,
 						new Error(`atomic-workflows: prompt ${stageId} skipped by workflow exit`),
@@ -283,11 +284,11 @@ export function buildPromptNodeUiAdapter(input: {
 					await finalizePromptStage("skipped");
 					throw error;
 				}
-				const response = await stageUiBroker.requestCustomUi(
+				const response = await input.stageUiBroker.requestCustomUi(
 					input.runId,
 					stageId,
-					descriptor.factory as unknown as Parameters<typeof stageUiBroker.requestCustomUi>[2],
-					descriptor.options as Parameters<typeof stageUiBroker.requestCustomUi>[3],
+					descriptor.factory as unknown as Parameters<StageUiBroker["requestCustomUi"]>[2],
+					descriptor.options as Parameters<StageUiBroker["requestCustomUi"]>[3],
 					mergedSignal.signal,
 				);
 				await waitForExplicitResume();
@@ -298,7 +299,7 @@ export function buildPromptNodeUiAdapter(input: {
 				return response;
 			} catch (err) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-				stageUiBroker.cancelStagePrompt(input.runId, stageId, err);
+				input.stageUiBroker.cancelStagePrompt(input.runId, stageId, err);
 				if (mergedSignal.signal.aborted) {
 					input.preserveWorkflowExitSkippedReason(
 						stageSnapshot,
