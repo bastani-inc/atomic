@@ -131,6 +131,7 @@ export async function POST(request: Request): Promise<Response> {
   if (conversation.busy || session.isStreaming) {
     return new Response("This conversation is already answering a prompt.", { status: 409 });
   }
+  if (request.signal.aborted) return new Response(null, { status: 499 });
   conversation.busy = true;
 
   const encoder = new TextEncoder();
@@ -249,6 +250,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request): Promise<Response> {
   if (!(await authenticate(request))) return new Response("Unauthorized", { status: 401 });
   const { topic } = (await request.json()) as { topic: string };
+  if (request.signal.aborted) return new Response(null, { status: 499 });
 
   const encoder = new TextEncoder();
   const abort = new AbortController();
@@ -312,8 +314,8 @@ A route that drives an agent session lets whoever calls it run tools on your ser
 - **Require authentication** on every route that creates sessions, sends prompts, or starts workflows, and scope conversation ids to the authenticated user, as `getConversation()` does above.
 - **Allow only the tools you need.** `tools` is an allowlist; the examples allow only the read-only `read`, `find`, and `search`. Leave out `bash`, `edit`, and `write` unless the agent must change files or run commands. `excludedTools` removes tools, and `noTools: "all"` exposes none. `ask_user_question` needs a person to answer, so leave it out of headless sessions. See [Tools](/sdk/reference#tools).
 - **Disable builtins you don't use.** `builtins` turns off the shipped workflows, subagents, MCP, web access, and Intercom packages, along with their tools.
-- **Choose the working directory deliberately.** `cwd` decides which files the tools can reach and which project settings, context files, and extensions Atomic discovers. Point it at a directory you control, never at an upload or a user-supplied path.
-- **Isolate the process** in a container, VM, or restricted OS account when the agent can write files or run commands. See [Containerization](/containerization).
+- **Choose the working directory deliberately.** `cwd` sets the starting directory for tool paths and controls which project settings, context files, and extensions Atomic discovers. It does not restrict file access: tools can use absolute paths and paths outside `cwd`. Point it at a directory you control, never at an upload or a user-supplied path.
+- **Isolate the process** in a container, VM, or restricted OS account when callers must not access other server files, even with read-only tools, or when the agent can write files or run commands. See [Containerization](/containerization).
 - **Keep credentials on the server.** Provider keys come from the server's `ModelRuntime`. Never send them to the browser or accept them from requests.
 
 ## Next steps
