@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.28-alpha.1] - 2026-10-05
+
 ### Added
 
 - Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.

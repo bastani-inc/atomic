@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.28-alpha.1] - 2026-10-05
+
 ### Fixed
 
 - Attached stage chats honor configured transcript jump shortcuts, defaulting to Ctrl+Home and Ctrl+End, without intercepting the editor's Home and End keys.
