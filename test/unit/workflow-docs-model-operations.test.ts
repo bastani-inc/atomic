@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { getWorkflowHostModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 /**
  * The classifier and image examples in the workflow authoring guide are the
  * only documented way to call a non-chat model from workflow TypeScript. They
- * are loaded here exactly as a user project would load them: through workflow
- * discovery, with `@bastani/pi-ai` installed in the project that owns the
- * workflow file, and then executed against a stubbed provider response so the
- * result fields the snippets read (`stopReason`, `answers.intent`,
+ * are loaded through workflow discovery with the host's module instances and
+ * no project node_modules, then executed against a stubbed provider response.
+ * The result fields the snippets read (`stopReason`, `answers.intent`,
  * `output[].type === "image"`) are the real ones.
  */
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -45,17 +45,6 @@ function documentedExamples(): { triage: string; previewAsset: string } {
 function userProject(): string {
 	const project = mkdtempSync(join(tmpdir(), "atomic-docs-model-ops-"));
 	tempDirs.push(project);
-	const piAi = join(repositoryRoot, "packages/ai");
-	const atomic = join(repositoryRoot, "packages/coding-agent");
-	assert.ok(existsSync(join(atomic, "dist/index.js")), "build @bastani/atomic before running this suite");
-	assert.ok(existsSync(join(piAi, "dist/providers/all.js")), "build @bastani/pi-ai before running this suite");
-	mkdirSync(join(project, "node_modules/@bastani"), { recursive: true });
-	symlinkSync(piAi, join(project, "node_modules/@bastani/pi-ai"), process.platform === "win32" ? "junction" : "dir");
-	symlinkSync(
-		atomic,
-		join(project, "node_modules/@bastani/atomic"),
-		process.platform === "win32" ? "junction" : "dir",
-	);
 	process.env.ATOMIC_CODING_AGENT_DIR = join(project, "agent-config");
 	mkdirSync(join(project, ".atomic/workflows"), { recursive: true });
 	const { triage, previewAsset } = documentedExamples();
@@ -104,12 +93,13 @@ const jsonResponse = (value: unknown): Response =>
 	new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
 
 describe("workflow authoring guide: classifier and image examples", () => {
-	test("both documented workflows register through discovery from a project that installed both libraries", async () => {
+	test("both documented workflows register without project node_modules (#3454)", async () => {
 		const project = userProject();
 		const { registry, errors } = await discoverWorkflows({
 			cwd: project,
-			homeDir: mkdtempSync(join(tmpdir(), "atomic-docs-model-ops-home-")),
+			homeDir: project,
 			includeBundled: false,
+			getWorkflowHostModules,
 		});
 		assert.deepEqual(errors, []);
 		assert.deepEqual(registry.names().sort(), ["preview-asset", "triage"]);
@@ -117,7 +107,12 @@ describe("workflow authoring guide: classifier and image examples", () => {
 
 	test("triage routes a confident classifier answer to a chat stage and leaves the classifier out of execution", async () => {
 		const project = userProject();
-		const { registry } = await discoverWorkflows({ cwd: project, homeDir: project, includeBundled: false });
+		const { registry } = await discoverWorkflows({
+			cwd: project,
+			homeDir: project,
+			includeBundled: false,
+			getWorkflowHostModules,
+		});
 		const triage = registry.get("triage");
 		assert.ok(triage);
 		const { ctx, toolCalls, taskCalls } = fakeContext(project, { request: "Why was my account charged twice?" });
@@ -162,7 +157,12 @@ describe("workflow authoring guide: classifier and image examples", () => {
 
 	test("triage sends an uncertain answer to human review without starting a stage", async () => {
 		const project = userProject();
-		const { registry } = await discoverWorkflows({ cwd: project, homeDir: project, includeBundled: false });
+		const { registry } = await discoverWorkflows({
+			cwd: project,
+			homeDir: project,
+			includeBundled: false,
+			getWorkflowHostModules,
+		});
 		const triage = registry.get("triage");
 		assert.ok(triage);
 		const { ctx, taskCalls } = fakeContext(project, { request: "hello?" });
@@ -186,7 +186,12 @@ describe("workflow authoring guide: classifier and image examples", () => {
 
 	test("triage surfaces a missing TypeSafe key as the tool error instead of a silent route", async () => {
 		const project = userProject();
-		const { registry } = await discoverWorkflows({ cwd: project, homeDir: project, includeBundled: false });
+		const { registry } = await discoverWorkflows({
+			cwd: project,
+			homeDir: project,
+			includeBundled: false,
+			getWorkflowHostModules,
+		});
 		const triage = registry.get("triage");
 		assert.ok(triage);
 		const { ctx, taskCalls } = fakeContext(project, { request: "anything" });
@@ -205,7 +210,12 @@ describe("workflow authoring guide: classifier and image examples", () => {
 
 	test("preview-asset writes the generated image under the run's asset directory", async () => {
 		const project = userProject();
-		const { registry } = await discoverWorkflows({ cwd: project, homeDir: project, includeBundled: false });
+		const { registry } = await discoverWorkflows({
+			cwd: project,
+			homeDir: project,
+			includeBundled: false,
+			getWorkflowHostModules,
+		});
 		const previewAsset = registry.get("preview-asset");
 		assert.ok(previewAsset);
 		const { ctx, toolCalls } = fakeContext(project, { brief: "a teal onboarding illustration" });

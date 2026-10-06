@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
+import { getWorkflowHostModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
@@ -370,6 +371,40 @@ describe("workflow reload rediscovery matrix", () => {
 		assert.ok(after.includes("post-start-global"));
 		assert.ok(after.includes("post-start-configured"));
 		assert.ok(after.includes("adversarial-verification"), "bundled workflows must remain after rediscovery");
+	});
+
+	test("slash reload refreshes workflow files and relative imports with host aliases (#3454)", async () => {
+		const { project } = await makeIsolatedRoots("workflow-host-reload");
+		const path = join(project, ".atomic/workflows/fresh.ts");
+		const helper = join(project, ".atomic/helper.ts");
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(helper, 'export const description = "helper-one";');
+		const writeDefinition = (name: string) =>
+			writeFile(
+				path,
+				[
+					'import { workflow } from "@bastani/atomic/workflows";',
+					'import { AuthStorage } from "@bastani/atomic";',
+					'import { description } from "../helper.js";',
+					`export default workflow({ name: "${name}", description: description + ":" + AuthStorage.name, inputs: {}, outputs: {}, run: async () => ({}) });`,
+				].join("\n"),
+			);
+		await writeDefinition("fresh-one");
+		const harness = createHarness({ getWorkflowHostModules });
+		await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
+		assert.ok(names(await harness.execute({ action: "list" })).includes("fresh-one"));
+		const before = await harness.execute({ action: "get", workflow: "fresh-one" });
+		assert.equal(before.action, "get");
+		assert.equal(before.details?.output?.description, "helper-one:AuthStorage");
+		await writeFile(helper, 'export const description = "helper-two";');
+		await writeDefinition("fresh-two");
+		await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
+		const reloadedNames = names(await harness.execute({ action: "list" }));
+		assert.ok(!reloadedNames.includes("fresh-one"));
+		assert.ok(reloadedNames.includes("fresh-two"));
+		const after = await harness.execute({ action: "get", workflow: "fresh-two" });
+		assert.equal(after.action, "get");
+		assert.equal(after.details?.output?.description, "helper-two:AuthStorage");
 	});
 
 	test.sequential("add edit rename delete and malformed siblings replace metadata while preserving valid workflows", async () => {

@@ -219,6 +219,10 @@ export interface ExtensionAPI {
 	/** Get the value of a registered CLI flag. */
 	getFlag(name: string): boolean | string | undefined;
 
+	getWorkflowHostModules(): Promise<
+		Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
+	>;
+
 	/** Return package-provided workflow files discovered for this session. */
 	getWorkflowResources(): ResolvedResource[];
 
