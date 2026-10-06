@@ -4,7 +4,7 @@ import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 } from "../modes/interactive/streaming-assistant-message.ts";
-import type { AgentSessionEvent } from "./agent-session-types.ts";
+import type { AgentSessionEvent } from "./agent-session-types.js";
 
 /** Assistant prose. */
 export interface TranscriptTextPart {
@@ -22,7 +22,10 @@ export interface TranscriptThinkingPart {
 export interface TranscriptToolResult {
 	/** Text content of the result, joined with newlines. Set when the tool reports `"content"`. */
 	content?: string;
-	/** The result's `details`, or `null` when it had none. Set when the tool reports `"details"`. */
+	/**
+	 * The result's `details`, or `null` when it had none. Set when the tool reports `"details"`.
+	 * A failed call without details also carries its error text in `content`.
+	 */
 	details?: JsonValue;
 	isError: boolean;
 	/** True while the result comes from `tool_execution_update` and the tool is still running. */
@@ -103,16 +106,17 @@ export function createTranscript(options: TranscriptOptions = {}): Transcript {
 
 	const toolResult = (toolName: string, raw: RawToolResult): TranscriptToolResult => {
 		const value = raw.result as { content?: unknown; details?: unknown } | string | null | undefined;
-		if ((options.toolResult?.(toolName) ?? "content") === "details") {
-			const details = typeof value === "object" && value !== null ? value.details : undefined;
-			return { details: toJson(details), isError: raw.isError, isPartial: raw.isPartial };
-		}
 		let content = typeof value === "string" ? value : "";
 		if (typeof value === "object" && value !== null && Array.isArray(value.content)) {
 			content = value.content
 				.filter((item): item is { type: "text"; text: string } => item?.type === "text")
 				.map((item) => item.text)
 				.join("\n");
+		}
+		if ((options.toolResult?.(toolName) ?? "content") === "details") {
+			const details = toJson(typeof value === "object" && value !== null ? value.details : undefined);
+			const errorText = raw.isError && details === null && content !== "" ? { content } : {};
+			return { details, ...errorText, isError: raw.isError, isPartial: raw.isPartial };
 		}
 		return { content, isError: raw.isError, isPartial: raw.isPartial };
 	};

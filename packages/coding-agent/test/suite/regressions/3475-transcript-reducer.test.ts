@@ -134,6 +134,24 @@ describe("createTranscript (#3475)", () => {
 		);
 	});
 
+	it("keeps error text for a failed details-mode call without details (#3475)", () => {
+		const transcript = createTranscript({ toolResult: () => "details" });
+		const call = { type: "toolCall", id: "t", name: "todo", arguments: {} } as const;
+		transcript.apply(event({ type: "message_end", message: assistant([call], "toolUse") }));
+		transcript.apply(
+			event({
+				type: "tool_execution_end",
+				toolCallId: call.id,
+				toolName: call.name,
+				result: { content: [{ type: "text", text: "permission denied" }] },
+				isError: true,
+			}),
+		);
+		assert.deepEqual(transcript.parts(), [
+			{ ...call, result: { details: null, content: "permission denied", isError: true, isPartial: false } },
+		]);
+	});
+
 	it("ignores events from nested tool calls (#3475)", () => {
 		const transcript = createTranscript();
 		const call = { type: "toolCall", id: "outer", name: "codemode", arguments: {} } as const;

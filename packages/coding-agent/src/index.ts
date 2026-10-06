@@ -43,7 +43,7 @@ export {
 	type TranscriptToolCallPart,
 	type TranscriptToolResult,
 	type TranscriptToolResultFormat,
-} from "./core/transcript.ts";
+} from "./core/transcript.js";
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
 export {
 	type CodemodeToolDetails,
