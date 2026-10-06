@@ -69,6 +69,18 @@ describe("createTranscript (#3475)", () => {
 		]);
 	});
 
+	it("skips redacted thinking while it is still streaming (#3475)", () => {
+		const transcript = createTranscript();
+		const partial = assistant([]);
+		transcript.apply(event({ type: "message_start", message: partial }));
+		partial.content.push({ type: "thinking", thinking: "[Reasoning redacted]", redacted: true });
+		transcript.apply(update(partial, { type: "thinking_start", contentIndex: 0, partial }));
+		transcript.apply(
+			update(partial, { type: "thinking_end", contentIndex: 0, content: "[Reasoning redacted]", partial }),
+		);
+		assert.deepEqual(transcript.parts(), []);
+	});
+
 	it("merges a tool call with its partial update and final error result (#3475)", () => {
 		const transcript = createTranscript();
 		const call = { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } } as const;
@@ -264,6 +276,46 @@ describe("createTranscript (#3475)", () => {
 			arguments: { items: ["a"] },
 			result: { details: { done: ["a"] }, isError: false, isPartial: false },
 		});
+	});
+
+	it("keeps results of a tool call id reused across assistant messages apart (#3475)", () => {
+		const transcript = createTranscript();
+		const call = { type: "toolCall", id: "reused", name: "read", arguments: {} } as const;
+		const end = (text: string): AgentSessionEvent =>
+			event({
+				type: "tool_execution_end",
+				toolCallId: "reused",
+				toolName: "read",
+				result: { content: [{ type: "text", text }] },
+				isError: false,
+			});
+		transcript.apply(event({ type: "message_end", message: assistant([call], "toolUse") }));
+		transcript.apply(end("first"));
+		transcript.apply(event({ type: "message_end", message: assistant([call], "toolUse") }));
+		assert.deepEqual(transcript.parts(), [
+			{ ...call, result: { content: "first", isError: false, isPartial: false } },
+			call,
+		]);
+
+		transcript.apply(
+			event({
+				type: "tool_execution_update",
+				toolCallId: "reused",
+				toolName: "read",
+				args: {},
+				partialResult: { content: [{ type: "text", text: "loading" }] },
+			}),
+		);
+		assert.deepEqual(transcript.parts()[1], {
+			...call,
+			result: { content: "loading", isError: false, isPartial: true },
+		});
+
+		transcript.apply(end("second"));
+		assert.deepEqual(transcript.parts(), [
+			{ ...call, result: { content: "first", isError: false, isPartial: false } },
+			{ ...call, result: { content: "second", isError: false, isPartial: false } },
+		]);
 	});
 
 	it("keeps a result that arrives before its tool call block and does not overwrite it on abort (#3475)", () => {

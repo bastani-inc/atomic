@@ -1,5 +1,6 @@
 import type { JsonObject, JsonValue } from "@bastani/pi-ai";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, TextContent } from "@bastani/pi-ai/compat";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -59,21 +60,33 @@ export interface Transcript {
 	parts(): TranscriptPart[];
 }
 
+/** What a tool reports as its result; anything else reports empty content and no details. */
+type ToolResultValue = Partial<AgentToolResult> | string | null | undefined;
+
 interface RawToolResult {
-	toolName: string;
-	result: unknown;
+	result: ToolResultValue;
 	isError: boolean;
 	isPartial: boolean;
 }
 
+/** One assistant message and the results bound to its tool calls, keyed by call id. */
+interface MessageEntry {
+	message: AssistantMessage;
+	results: Map<string, RawToolResult>;
+}
+
 /** A detached, JSON-shaped copy, so callers cannot mutate transcript state and parts always serialize. */
-function toJson(value: unknown): JsonValue {
+function toJson(value: JsonValue | undefined): JsonValue {
 	try {
 		const text = JSON.stringify(value);
 		return text === undefined ? null : (JSON.parse(text) as JsonValue);
 	} catch {
 		return null;
 	}
+}
+
+function hasToolCall(message: AssistantMessage, id: string): boolean {
+	return message.content.some((block) => block.type === "toolCall" && block.id === id);
 }
 
 /**
@@ -86,17 +99,40 @@ function toJson(value: unknown): JsonValue {
  * ```
  */
 export function createTranscript(options: TranscriptOptions = {}): Transcript {
-	const messages: AssistantMessage[] = [];
-	const results = new Map<string, RawToolResult>();
-	let streaming: AssistantMessage | undefined;
+	const entries: MessageEntry[] = [];
+	/** Results that arrived before any assistant message held their tool call. */
+	const unbound = new Map<string, RawToolResult>();
+	let streaming: MessageEntry | undefined;
 
-	const settle = (message: AssistantMessage): void => {
+	/** Bind to the most recent call with this id that has no final result, so reused ids keep separate results. */
+	const record = (id: string, raw: RawToolResult): void => {
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (!hasToolCall(entry.message, id) || entry.results.get(id)?.isPartial === false) continue;
+			entry.results.set(id, raw);
+			return;
+		}
+		if (raw.isPartial && unbound.get(id)?.isPartial === false) return;
+		unbound.set(id, raw);
+	};
+
+	const adopt = (entry: MessageEntry): void => {
+		for (const block of entry.message.content) {
+			if (block.type !== "toolCall" || entry.results.has(block.id)) continue;
+			const raw = unbound.get(block.id);
+			if (!raw) continue;
+			entry.results.set(block.id, raw);
+			unbound.delete(block.id);
+		}
+	};
+
+	const settle = (entry: MessageEntry): void => {
+		const message = entry.message;
 		if (message.stopReason !== "aborted" && message.stopReason !== "error") return;
 		const text = message.errorMessage || (message.stopReason === "aborted" ? "Operation aborted" : "Unknown error");
 		for (const block of message.content) {
-			if (block.type !== "toolCall" || results.get(block.id)?.isPartial === false) continue;
-			results.set(block.id, {
-				toolName: block.name,
+			if (block.type !== "toolCall" || entry.results.get(block.id)?.isPartial === false) continue;
+			entry.results.set(block.id, {
 				result: { content: [{ type: "text", text }] },
 				isError: true,
 				isPartial: false,
@@ -105,11 +141,11 @@ export function createTranscript(options: TranscriptOptions = {}): Transcript {
 	};
 
 	const toolResult = (toolName: string, raw: RawToolResult): TranscriptToolResult => {
-		const value = raw.result as { content?: unknown; details?: unknown } | string | null | undefined;
+		const value = raw.result;
 		let content = typeof value === "string" ? value : "";
 		if (typeof value === "object" && value !== null && Array.isArray(value.content)) {
 			content = value.content
-				.filter((item): item is { type: "text"; text: string } => item?.type === "text")
+				.filter((item): item is TextContent => item?.type === "text")
 				.map((item) => item.text)
 				.join("\n");
 		}
@@ -127,64 +163,71 @@ export function createTranscript(options: TranscriptOptions = {}): Transcript {
 			switch (event.type) {
 				case "message_start":
 					if (event.message.role !== "assistant") return;
-					streaming = beginStreamingAssistantMessage(event.message);
-					messages.push(streaming);
+					streaming = { message: beginStreamingAssistantMessage(event.message), results: new Map() };
+					entries.push(streaming);
 					return;
-				case "message_update":
+				case "message_update": {
 					if (!streaming) {
 						streaming = {
-							role: "assistant",
-							content: [],
-							api: "",
-							provider: "",
-							model: "",
-							usage: {
-								input: 0,
-								output: 0,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							message: {
+								role: "assistant",
+								content: [],
+								api: "",
+								provider: "",
+								model: "",
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
 							},
-							stopReason: "stop",
-							timestamp: Date.now(),
+							results: new Map(),
 						};
-						messages.push(streaming);
+						entries.push(streaming);
 					}
-					applyAssistantMessageDelta(streaming, event.assistantMessageEvent);
+					const delta = event.assistantMessageEvent;
+					applyAssistantMessageDelta(streaming.message, delta);
+					if (
+						delta.type === "thinking_start" ||
+						delta.type === "thinking_delta" ||
+						delta.type === "thinking_end"
+					) {
+						// Deltas do not carry the redaction flag; the provider's partial does.
+						const source = delta.partial?.content[delta.contentIndex];
+						const block = streaming.message.content[delta.contentIndex];
+						if (source?.type === "thinking" && source.redacted && block?.type === "thinking")
+							block.redacted = true;
+					}
+					adopt(streaming);
 					return;
+				}
 				case "message_end": {
 					if (event.message.role !== "assistant") return;
-					const final = beginStreamingAssistantMessage(event.message);
-					const index = streaming ? messages.indexOf(streaming) : -1;
-					if (index >= 0) messages[index] = final;
-					else messages.push(final);
+					const message = beginStreamingAssistantMessage(event.message);
+					const entry = streaming ?? { message, results: new Map<string, RawToolResult>() };
+					if (streaming) entry.message = message;
+					else entries.push(entry);
 					streaming = undefined;
-					settle(final);
+					adopt(entry);
+					settle(entry);
 					return;
 				}
 				case "tool_execution_update":
-					if (results.get(event.toolCallId)?.isPartial === false) return;
-					results.set(event.toolCallId, {
-						toolName: event.toolName,
-						result: event.partialResult,
-						isError: false,
-						isPartial: true,
-					});
+					record(event.toolCallId, { result: event.partialResult, isError: false, isPartial: true });
 					return;
 				case "tool_execution_end":
-					results.set(event.toolCallId, {
-						toolName: event.toolName,
-						result: event.result,
-						isError: event.isError,
-						isPartial: false,
-					});
+					record(event.toolCallId, { result: event.result, isError: event.isError, isPartial: false });
 					return;
 			}
 		},
 		parts() {
 			const parts: TranscriptPart[] = [];
-			for (const message of messages) {
+			for (const { message, results } of entries) {
 				for (const block of message.content) {
 					if (block.type === "text") {
 						if (block.text) parts.push({ type: "text", text: block.text });
