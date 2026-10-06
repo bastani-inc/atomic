@@ -33,6 +33,15 @@ const run = async () => {
  const sandbox = new CodemodeSandbox({ workerUrl: config.getCodemodeWorkerUrl(), wasm: loadQuickJSWasm(config.getQuickJSWasmPath()) });
  try { const result = await sandbox.execute('return 3429;'); assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.value, 3429); } finally { await sandbox.close(); }
 };
+const patched = new CodemodeSandbox({ workerUrl: config.getCodemodeWorkerUrl(), wasm: loadQuickJSWasm(config.getQuickJSWasmPath()) });
+try {
+ const result = await patched.execute('Array.prototype.toJSON = () => { throw new Error("patched built-in ran"); }; return [1, 2, 3];');
+ assert.equal(result.ok, true, JSON.stringify(result));
+ assert.deepEqual(result.value, [1, 2, 3]);
+ const next = await patched.execute('return [4, 5];');
+ assert.equal(next.ok, true, JSON.stringify(next));
+ assert.deepEqual(next.value, [4, 5]);
+} finally { await patched.close(); }
 await run();
 unlinkSync(${JSON.stringify(worker)}); unlinkSync(${JSON.stringify(wasm)});
 assert.equal(config.getCodemodeWorkerUrl(), worker);

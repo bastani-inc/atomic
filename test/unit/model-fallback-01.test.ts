@@ -324,6 +324,14 @@ describe("model fallback helpers", () => {
 		assert.equal(isRetryableModelFailure("user cancelled"), false);
 	});
 
+	test.each([
+		"The pending stream has been canceled",
+		"The pending stream has been canceled (caused by: socket closed)",
+	])("pending stream cancellation is a retryable network timeout: %s", (errorMessage) => {
+		assert.equal(normalizeModelFailureSignal(errorMessage).kind, "network_timeout");
+		assert.equal(isRetryableModelFailure(errorMessage), true);
+	});
+
 	test("retry classifier uses structured diagnostics before localized text", () => {
 		const signal = normalizeModelFailureSignal({
 			role: "assistant",

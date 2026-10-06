@@ -41,7 +41,7 @@ import {
 	type McpOAuthCredentialStore,
 	type McpOAuthSettings,
 } from "./oauth.ts";
-import { isMcpAppResource, type McpResourceServer } from "./resources.ts";
+import { isMcpAppResource, type McpResourceServer } from "./resources.js";
 import type { McpToolCaller } from "./tools.ts";
 
 export { McpServerLog } from "./log.ts";

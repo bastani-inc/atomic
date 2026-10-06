@@ -82,7 +82,7 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^1.0.3",
+    "@earendil-works/pi-tui": "^1.0.4",
     "typebox": "*"
   },
   "peerDependenciesMeta": {

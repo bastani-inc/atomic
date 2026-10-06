@@ -59,7 +59,7 @@ import {
 	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
 	LIST_MCP_RESOURCES_TOOL,
 	READ_MCP_RESOURCE_TOOL,
-} from "./resources.ts";
+} from "./resources.js";
 import { loadMcpRuntime } from "./runtime.lazy.ts";
 import type * as McpRuntime from "./runtime.ts";
 import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./runtime.ts";

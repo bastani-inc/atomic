@@ -53,6 +53,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/stream ended before message_stop/i,
 	/stream ended before a terminal response event/i,
 	/http2 request did not get a response/i,
+	/pending stream has been canceled/i,
 	/retry delay/i,
 	/finish.?reason:?\s*error/i,
 	/terminated/i,
@@ -76,7 +77,10 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 
 const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [/cancel/i, /abort/i, /interrupted/i];
 
-const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [/getaddrinfo|ENOTFOUND|EAI_AGAIN/i];
+const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [
+	/getaddrinfo|ENOTFOUND|EAI_AGAIN/i,
+	/pending stream has been canceled/i,
+];
 
 export type ModelFallbackFailureKind =
 	| "auth_on_candidate_provider"

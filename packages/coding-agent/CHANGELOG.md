@@ -12,6 +12,7 @@
 
 - Home and End move the editor cursor to the start and end of the line. Ctrl+Home and Ctrl+End jump to the top and bottom of the fullscreen transcript.
 - Renamed the Azure provider to `azure`. Existing provider references remain supported, and startup migrates credentials and configuration without replacing existing `azure` entries. Project files are migrated only when trusted.
+- Codemode built-ins are frozen in pi 1.0.4. Patches to built-ins are ignored instead of crashing the host.
 
 ### Fixed
 
@@ -23,6 +24,7 @@
 - Fixed shutdown leaving MCP connections open while a server was still connecting ([#10249](https://github.com/earendil-works/pi/issues/10249)).
 - Fixed hidden tools appearing in prompt rules and skill-reading hints. Codemode tool declarations now include each tool's prompt guidelines ([#10343](https://github.com/earendil-works/pi/issues/10343)).
 - Fixed interactive quit waiting on pending extension commands, which could leave connecting MCP servers running.
+- Fixed HTTP/2 pending stream cancellations being treated as user cancellations instead of retryable transport failures.
 
 ## [0.9.27] - 2026-10-05
 
