@@ -716,11 +716,9 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `routerModel` may select a classifier for routing, but a classifier never executes a chat stage.
 
-Discovery loads a workflow file with the project that owns it as the module root. The host provides `@bastani/atomic/workflows` and `typebox`; other imports, including `@bastani/atomic` for `AuthStorage`, resolve from that project's `node_modules` in npm and standalone-binary installs alike. Install both libraries next to the workflow at the version `atomic --version` prints, because older releases have no `classify()` or `generateImages()`:
+Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
 
-```sh
-npm install --save-dev @bastani/atomic@"$(atomic --version)" @bastani/pi-ai@"$(atomic --version)"
-```
+Other imports, including unlisted deep package subpaths, still resolve from the owning project's `node_modules`. Install those dependencies next to the workflow. `/workflow reload` reloads workflow files and their relative imports, but does not replace the shared host modules; restart Atomic to use a different host version.
 
 Pass `AuthStorage.create()` to `builtinModels()` so classifier and image requests use credentials saved by Atomic's `/login` flows in `auth.json`; this is the recommended default for workflows running inside Atomic. Ambient provider environment variables such as `TYPESAFE_API_KEY` and `OPENROUTER_API_KEY` continue to work. Never read, print, or pass credential values in workflow state, prompts, or artifacts. Both operations resolve instead of throwing: check `stopReason === "stop"` before using a result, and forward the tool's `signal` so a quit or targeted abort cancels the request.
 
@@ -777,7 +775,7 @@ export default workflow({
 });
 ```
 
-The cached `{ choice, confidence }` is what a resumed run replays; the classifier is not asked again. For a consequential action, add policy checks or `ctx.ui.confirm(...)` before the side effect. Without the extra install, a schema-backed stage or task (`ctx.task(name, { schema, prompt })`, as the `classify-and-act` builtin does) can also make a validated decision. Its `structured_output` call can name a registered classifier or omit `model` and use the current chat model. A classifier probability is available only from a direct `classify()` call like the example above; a chat result does not supply one.
+The cached `{ choice, confidence }` is what a resumed run replays; the classifier is not asked again. For a consequential action, add policy checks or `ctx.ui.confirm(...)` before the side effect. A schema-backed stage or task (`ctx.task(name, { schema, prompt })`, as the `classify-and-act` builtin does) can also make a validated decision. Its `structured_output` call can name a registered classifier or omit `model` and use the current chat model. A classifier probability is available only from a direct `classify()` call like the example above; a chat result does not supply one.
 
 #### Generate an image artifact in a durable tool step
 

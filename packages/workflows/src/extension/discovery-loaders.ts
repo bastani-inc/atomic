@@ -1,7 +1,11 @@
 import { readdir, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import type { DiscoveryDiagnostic, DiscoveryKind } from "./discovery.js";
-import { collectWorkflowModuleCandidates, loadWorkflowModule } from "./workflow-module-loader.js";
+import {
+	collectWorkflowModuleCandidates,
+	loadWorkflowModule,
+	type WorkflowHostModuleProvider,
+} from "./workflow-module-loader.js";
 
 export type WorkflowModuleCandidateRecord = {
 	readonly value: unknown;
@@ -30,10 +34,11 @@ async function importWorkflowFile(
 	filePath: string,
 	kind: DiscoveryKind,
 	diagnostics: DiscoveryDiagnostic[],
+	getWorkflowHostModules?: WorkflowHostModuleProvider,
 ): Promise<WorkflowModuleCandidateRecord[]> {
 	let mod: Record<string, unknown>;
 	try {
-		mod = loadWorkflowModule(filePath);
+		mod = loadWorkflowModule(filePath, await getWorkflowHostModules?.());
 	} catch (err) {
 		diagnostics.push({
 			level: "error",
@@ -56,13 +61,14 @@ export async function loadFromDir(
 	dir: string,
 	kind: DiscoveryKind,
 	diagnostics: DiscoveryDiagnostic[],
+	getWorkflowHostModules?: WorkflowHostModuleProvider,
 ): Promise<WorkflowModuleCandidateRecord[]> {
 	const files = await scanWorkflowDir(dir);
 	if (files === null) return [];
 
 	const all: WorkflowModuleCandidateRecord[] = [];
 	for (const filePath of files) {
-		const candidates = await importWorkflowFile(filePath, kind, diagnostics);
+		const candidates = await importWorkflowFile(filePath, kind, diagnostics, getWorkflowHostModules);
 		all.push(...candidates);
 	}
 	return all;
@@ -74,6 +80,7 @@ export async function loadFromPaths(
 	kind: DiscoveryKind,
 	baseCwd: string,
 	diagnostics: DiscoveryDiagnostic[],
+	getWorkflowHostModules?: WorkflowHostModuleProvider,
 ): Promise<WorkflowModuleCandidateRecord[]> {
 	const all: WorkflowModuleCandidateRecord[] = [];
 
@@ -102,8 +109,8 @@ export async function loadFromPaths(
 		}
 
 		const candidates = pathStats.isDirectory()
-			? await loadFromDir(absPath, kind, diagnostics)
-			: await importWorkflowFile(absPath, kind, diagnostics);
+			? await loadFromDir(absPath, kind, diagnostics, getWorkflowHostModules)
+			: await importWorkflowFile(absPath, kind, diagnostics, getWorkflowHostModules);
 		for (const c of candidates) {
 			all.push({ ...c, ...(configuredName !== undefined ? { configuredName } : {}) });
 		}

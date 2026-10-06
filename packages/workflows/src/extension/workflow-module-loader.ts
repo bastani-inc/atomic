@@ -62,10 +62,6 @@ function createWorkflowVirtualModules(moduleSpecifier: string): Record<string, u
 		[`${builtinModuleSpecifier}/steering-context`]: steeringContext,
 	};
 }
-// Workflow modules share the host's TypeBox peer instance. The other host
-// virtual modules are extension execution dependencies (agent core, UI, model
-// transport, and lockfile handling), not workflow-authoring dependencies, so
-// they intentionally stay out of this loader.
 const TYPEBOX_COMPILE_MODULE: Record<string, unknown> = {
 	...typeboxCompileModule,
 };
@@ -84,8 +80,13 @@ const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
 	"@sinclair/typebox/value": TYPEBOX_VALUE_MODULE,
 };
 
+export type WorkflowHostModules = Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>;
+
+export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
+
 export const workflowModuleLoaderTestHooks = {
-	getVirtualModuleSpecifiers: (): string[] => Object.keys(WORKFLOWS_VIRTUAL_MODULES),
+	getVirtualModuleSpecifiers: (hostModules?: WorkflowHostModules): string[] =>
+		Object.keys({ ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules }),
 };
 
 const workflowModuleLoader = createJiti(import.meta.url, {
@@ -169,8 +170,15 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
 	return null;
 }
 
-export function loadWorkflowModule(filePath: string): Record<string, unknown> {
-	return normalizeWorkflowModule(workflowModuleLoader(filePath));
+export function loadWorkflowModule(filePath: string, hostModules?: WorkflowHostModules): Record<string, unknown> {
+	const loader = hostModules
+		? createJiti(import.meta.url, {
+				moduleCache: false,
+				tryNative: false,
+				virtualModules: { ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules },
+			})
+		: workflowModuleLoader;
+	return normalizeWorkflowModule(loader(filePath));
 }
 
 export function collectWorkflowModuleCandidates(mod: Record<string, unknown>): WorkflowModuleCandidate[] {

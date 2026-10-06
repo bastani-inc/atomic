@@ -180,6 +180,7 @@ export interface ExtensionAPI {
 	sendMessage?: StageLateMessageRouter["routeMessage"];
 	sendMessages?: StageLateMessageRouter["routeMessages"];
 	registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
+	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 	getWorkflowResources?: () => readonly WorkflowResourceInfo[];
 	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
 	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;

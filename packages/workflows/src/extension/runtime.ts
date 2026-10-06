@@ -93,6 +93,7 @@ export interface ExtensionRuntimeOpts {
 	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
 	/** Seed lifecycle state before historical completed snapshots are restored. */
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
+	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 }
 // ---------------------------------------------------------------------------
 // Public interface
@@ -407,6 +408,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			store: activeStore,
 			adapters,
 			runtimeCwd,
+			getWorkflowHostModules: opts.getWorkflowHostModules,
 			ensureReady: ensureDbosReady,
 			resolveDefaultStageSessionDir,
 			baseRunOpts: (policy) => runOptions(policy),

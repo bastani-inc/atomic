@@ -7,6 +7,7 @@
 - Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.
 - Added `*` patterns to `--tools` and `--exclude-tools`, including MCP tool names.
 - Added `--no-mcp` to disable built-in MCP support for one run, including interactive sessions.
+- Added `ExtensionAPI.getWorkflowHostModules()` to supply shared host module instances for the exact workflow imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all`, avoiding repeated package loading ([#3454](https://github.com/bastani-inc/atomic/issues/3454)).
 
 ### Changed
 

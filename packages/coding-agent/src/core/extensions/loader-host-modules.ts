@@ -124,3 +124,18 @@ export async function getVirtualModules(): Promise<Record<string, object>> {
 	);
 	return virtualModulesPromise;
 }
+
+export async function getWorkflowHostModules(): Promise<
+	Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
+> {
+	const [atomic, piAi, providers] = await Promise.all([
+		import("../../index.js"),
+		import("@bastani/pi-ai/compat"),
+		import("@bastani/pi-ai/providers/all"),
+	]);
+	return {
+		"@bastani/atomic": atomic,
+		"@bastani/pi-ai": piAi,
+		"@bastani/pi-ai/providers/all": providers,
+	};
+}

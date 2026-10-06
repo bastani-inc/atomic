@@ -371,6 +371,7 @@ export function createWorkflowExtensionRuntimeState(
 		current: createExtensionRuntime({
 			registry: startupDiscovery.registry,
 			cwd: resolveCwd(),
+			getWorkflowHostModules: pi.getWorkflowHostModules,
 			adapters,
 			cancellation: cancellationRegistry,
 			...scopedRunOptions,
@@ -435,6 +436,7 @@ export function createWorkflowExtensionRuntimeState(
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
 			cwd: resolveCwd(),
+			getWorkflowHostModules: pi.getWorkflowHostModules,
 			adapters,
 			cancellation: cancellationRegistry,
 			...scopedRunOptions,
@@ -481,6 +483,7 @@ export function createWorkflowExtensionRuntimeState(
 		runtimeRef.current = createExtensionRuntime({
 			registry,
 			cwd: resolveCwd(),
+			getWorkflowHostModules: pi.getWorkflowHostModules,
 			adapters,
 			cancellation: cancellationRegistry,
 			...scopedRunOptions,
@@ -584,7 +587,12 @@ export function createWorkflowExtensionRuntimeState(
 			if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
 				return supersededReloadReport(coalescedRequests, configResult);
 			}
-			const result = await discoverWorkflows({ cwd: resolveCwd(), config: discoveryConfig, packageWorkflowPaths });
+			const result = await discoverWorkflows({
+				cwd: resolveCwd(),
+				config: discoveryConfig,
+				packageWorkflowPaths,
+				getWorkflowHostModules: pi.getWorkflowHostModules,
+			});
 			if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
 				return supersededReloadReport(coalescedRequests, configResult, result);
 			}

@@ -22,6 +22,7 @@ import {
 	originalRegistrationCallback,
 	resolveInvocationRuntime,
 } from "./loader-bindings.ts";
+import { getWorkflowHostModules } from "./loader-host-modules.js";
 import {
 	emptyWorkflowResourceProvider,
 	normalizeWorkflowResourceProvider,
@@ -334,6 +335,11 @@ export function createExtensionAPI(
 			const pendingDefault = runtime.getPendingFlagDefault?.(extension.path, name);
 			if (!extension.flags.has(name) && pendingDefault === undefined) return undefined;
 			return runtime.flagValues.get(name) ?? pendingDefault;
+		},
+
+		getWorkflowHostModules() {
+			assertActive(true);
+			return trackAPIWork(getWorkflowHostModules);
 		},
 
 		getWorkflowResources() {

@@ -63,6 +63,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly baseRunOpts: (policy?: WorkflowExecutionPolicy) => RunOpts;
 	readonly beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 	readonly jobs?: JobTracker;
+	readonly getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
@@ -125,7 +126,12 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						},
 						durableBackend: backend,
 						resolveDefinition: async (name, cwd) =>
-							(await discoverWorkflows({ cwd: cwd ?? deps.runtimeCwd })).registry.get(name),
+							(
+								await discoverWorkflows({
+									cwd: cwd ?? deps.runtimeCwd,
+									getWorkflowHostModules: deps.getWorkflowHostModules,
+								})
+							).registry.get(name),
 						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 					};
 					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);

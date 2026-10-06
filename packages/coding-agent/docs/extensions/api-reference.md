@@ -819,6 +819,20 @@ if (pi.getFlag("plan")) {
 }
 ```
 
+### pi.getWorkflowHostModules()
+
+Returns a promise for the running host's in-memory module namespaces. The workflows adapter uses this capability to avoid re-evaluating the host's package graphs for each workflow file.
+
+The returned object has exactly these keys:
+
+- `@bastani/atomic`
+- `@bastani/pi-ai`, backed by the host's compatibility API
+- `@bastani/pi-ai/providers/all`
+
+These are shared host instances, not isolated copies. Workflow imports use the host's versions rather than project-local copies of these exact specifiers, preserving identity for exports such as `AuthStorage` and sharing module state. This also supports standalone-binary projects without those packages in `node_modules`. Other deep subpaths and third-party dependencies still resolve from disk. Workflow files and their relative imports are evaluated fresh on `/workflow reload`.
+
+`getWorkflowHostModules()` is required on the current Atomic `ExtensionAPI`. It is optional on the workflows adapter's host interface so older or alternative hosts can omit it. Integrations that support those hosts should check for the method before calling it, for example `await pi.getWorkflowHostModules?.()`. Without it, the workflows adapter retains filesystem package resolution and needs resolvable packages for these imports.
+
 ### pi.exec(command, args, options?)
 
 Execute a shell command.

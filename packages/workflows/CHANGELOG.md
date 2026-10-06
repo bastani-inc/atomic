@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Attached stage chats honor configured transcript jump shortcuts, defaulting to Ctrl+Home and Ctrl+End, without intercepting the editor's Home and End keys.
+- Fixed slow workflow discovery for imports of `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` by sharing the running CLI's modules instead of loading them again for each workflow file. The host's versions take precedence over project copies for these three exact specifiers. These imports no longer need project-local packages in standalone-binary installs; workflow files and relative imports still refresh on reload ([#3454](https://github.com/bastani-inc/atomic/issues/3454)).
 
 ## [0.9.27] - 2026-10-05
 

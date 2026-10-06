@@ -28,7 +28,11 @@ import type { WorkflowDefinition } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
 import { loadFromDir, loadFromPaths, type WorkflowModuleCandidateRecord } from "./discovery-loaders.js";
-import { validateWorkflowDefinitionShape as validateDefinitionShape } from "./workflow-module-loader.js";
+import {
+	validateWorkflowDefinitionShape as validateDefinitionShape,
+	type WorkflowHostModuleProvider,
+	type WorkflowHostModules,
+} from "./workflow-module-loader.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -134,6 +138,7 @@ export interface DiscoveryOptions {
 	packageWorkflowPaths?: string[] | Record<string, string>;
 	/** When false, bundled workflows are excluded. Default: true */
 	includeBundled?: boolean;
+	getWorkflowHostModules?: WorkflowHostModuleProvider;
 }
 
 /** Result returned by discoverWorkflows(). */
@@ -328,6 +333,9 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	const config = options?.config;
 	const packageWorkflowPaths = options?.packageWorkflowPaths;
 	const includeBundled = options?.includeBundled !== false;
+	let hostModules: Promise<WorkflowHostModules> | undefined;
+	const hostModuleProvider = options?.getWorkflowHostModules;
+	const getWorkflowHostModules = hostModuleProvider ? () => (hostModules ??= hostModuleProvider()) : undefined;
 
 	const diagnostics: DiscoveryDiagnostic[] = [];
 	const sources: DiscoverySource[] = [];
@@ -354,14 +362,14 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 		const pw = config.projectWorkflows;
 		const hasEntries = Array.isArray(pw) ? pw.length > 0 : Object.keys(pw).length > 0;
 		if (hasEntries) {
-			const candidates = await loadFromPaths(pw, "settings-project", cwd, diagnostics);
+			const candidates = await loadFromPaths(pw, "settings-project", cwd, diagnostics, getWorkflowHostModules);
 			registry = await applyBatch(candidates, registry, sources, diagnostics);
 		}
 	}
 
 	// 2. project-local
 	for (const dir of getProjectConfigPaths(cwd, "workflows").reverse()) {
-		const candidates = await loadFromDir(dir, "project-local", diagnostics);
+		const candidates = await loadFromDir(dir, "project-local", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);
 	}
 
@@ -370,14 +378,14 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 		const gw = config.globalWorkflows;
 		const hasEntries = Array.isArray(gw) ? gw.length > 0 : Object.keys(gw).length > 0;
 		if (hasEntries) {
-			const candidates = await loadFromPaths(gw, "settings-global", homeDir, diagnostics);
+			const candidates = await loadFromPaths(gw, "settings-global", homeDir, diagnostics, getWorkflowHostModules);
 			registry = await applyBatch(candidates, registry, sources, diagnostics);
 		}
 	}
 
 	// 4. user-global — configured Atomic agent dir plus legacy/defaults when applicable.
 	for (const dir of agentDirs.map((agentDir) => join(agentDir, "workflows")).reverse()) {
-		const candidates = await loadFromDir(dir, "user-global", diagnostics);
+		const candidates = await loadFromDir(dir, "user-global", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);
 	}
 
@@ -387,7 +395,13 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 			? packageWorkflowPaths.length > 0
 			: Object.keys(packageWorkflowPaths).length > 0;
 		if (hasEntries) {
-			const candidates = await loadFromPaths(packageWorkflowPaths, "package", cwd, diagnostics);
+			const candidates = await loadFromPaths(
+				packageWorkflowPaths,
+				"package",
+				cwd,
+				diagnostics,
+				getWorkflowHostModules,
+			);
 			registry = await applyBatch(candidates, registry, sources, diagnostics);
 		}
 	}
