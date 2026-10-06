@@ -237,14 +237,16 @@ async function deliverPendingStageMessages(
 		const releaseClaim = claimPendingDelivery(activeStore, claimOwner, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;
 		try {
-			if (entry.sticky === true && recipient?.receivedMessageIds.includes(entry.message.id)) {
+			if (
+				entry.sticky === true &&
+				(recipient === undefined || recipient.receivedMessageIds.includes(entry.message.id))
+			) {
 				const entryBackend = durableBackendForRun(rootBackend, activeStore.runs(), entry.runId);
 				if (
 					await entryBackend?.hasPendingStageDeliveryReceipt?.(entry.runId, entry.id, {
 						runId,
 						stageId,
-						sessionId: recipient.sessionId,
-						admission: "context",
+						...(recipient === undefined ? {} : { sessionId: recipient.sessionId, admission: "context" as const }),
 					})
 				)
 					continue;

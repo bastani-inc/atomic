@@ -356,6 +356,141 @@ describe("pre-start sticky drain", () => {
 		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, count);
 	});
 
+	test("deduplicates archived no-recipient sticky delivery after failed-stage retry and cold hydration (#3467)", async () => {
+		const { store } = rootFixture([]);
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		setDurableBackend(backend);
+		await store.queueStickyStageMessage(
+			stickyInput("optional-recipient", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		const stage = baseStage({ id: "retry-id", name: "retry", status: "running" });
+		store.recordStageStart(ROOT_RUN_ID, stage);
+		let delivered = 0;
+		const deliver = () => {
+			delivered += 1;
+		};
+		await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+		assert.equal(delivered, 1);
+		store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+		await store.queueStageMessage(
+			{ ...stickyInput("archive-trigger", "future"), targetPath: undefined },
+			GROUP,
+			GROUP,
+			backend,
+		);
+		assert.deepEqual(store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+		assert.equal(
+			await backend.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "optional-recipient", {
+				runId: ROOT_RUN_ID,
+				stageId: stage.id,
+			}),
+			true,
+		);
+		store.recordStageStart(ROOT_RUN_ID, stage);
+		await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+		assert.equal(delivered, 1);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		setDurableBackend(resumed);
+		const restored = createStore();
+		restored.recordRunStart({
+			...store.runs()[0]!,
+			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+		assert.equal(delivered, 1);
+		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		const newSession = createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, stage.id, stage.name);
+		await newSession.deliverPending(deliver, { sessionId: "new-session", receivedMessageIds: [] });
+		await newSession.deliverPending(deliver, {
+			sessionId: "new-session",
+			receivedMessageIds: ["optional-recipient"],
+		});
+		assert.equal(delivered, 2);
+		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
+	});
+
+	test.each(["context", "transport"] as const)(
+		"preserves no-recipient deduplication of archived %s admissions (#3467)",
+		async (admission) => {
+			const { store } = rootFixture([]);
+			const sdk = createMockSdk();
+			const backend = new DbosDurableBackend(sdk);
+			backend.registerWorkflow({
+				workflowId: ROOT_RUN_ID,
+				name: "flow",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+			});
+			await backend.flush();
+			setDurableBackend(backend);
+			await store.queueStickyStageMessage(
+				stickyInput("mixed-recipient", `workflow:${ROOT_RUN_ID}/**`),
+				GROUP,
+				GROUP,
+				backend,
+			);
+			const stage = baseStage({ id: "mixed-retry", name: "mixed-retry", status: "running" });
+			store.recordStageStart(ROOT_RUN_ID, stage);
+			await store.recordPendingStageMessageDeliveries(
+				ROOT_RUN_ID,
+				"mixed-recipient",
+				[{ runId: ROOT_RUN_ID, stageId: stage.id, sessionId: "old-session", admission }],
+				"2026-09-01T00:00:01.000Z",
+				backend,
+			);
+			let callbacks = 0;
+			const deliver = () => {
+				callbacks += 1;
+			};
+			await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+			assert.equal(callbacks, 0);
+			store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+			await store.queueStageMessage(
+				{ ...stickyInput("mixed-archive-trigger", "future"), targetPath: undefined },
+				GROUP,
+				GROUP,
+				backend,
+			);
+			assert.deepEqual(store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+			store.recordStageStart(ROOT_RUN_ID, stage);
+			await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+			assert.equal(callbacks, 0);
+			if (admission === "context") {
+				for (const key of sdk.state.steps.keys()) {
+					if (
+						key.includes(":checkpoint:__atomic_pending_delivery_receipt:") &&
+						!key.endsWith(":context-any-session")
+					)
+						sdk.state.steps.delete(key);
+				}
+			}
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			setDurableBackend(resumed);
+			const restored = createStore();
+			restored.recordRunStart({
+				...store.runs()[0]!,
+				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver);
+			assert.equal(callbacks, 0);
+			assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, stage.id, stage.name).deliverPending(deliver, {
+				sessionId: "new-session",
+				receivedMessageIds: [],
+			});
+			assert.equal(callbacks, 1);
+		},
+	);
+
 	test("bounds failed-iteration sticky receipts through resume and settlement (#3467)", async () => {
 		const { store } = rootFixture([]);
 		const sdk = createMockSdk();

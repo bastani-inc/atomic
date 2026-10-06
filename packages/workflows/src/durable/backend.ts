@@ -388,6 +388,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		receipts.add(
 			JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]),
 		);
+		receipts.add(JSON.stringify([messageId, delivery.runId, delivery.stageId, undefined, undefined]));
 		if (delivery.admission === "context" && delivery.sessionId !== undefined)
 			receipts.add(JSON.stringify([messageId, delivery.runId, delivery.stageId, "context-any-session"]));
 	}

@@ -512,6 +512,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			await this.sdk.recordStepOutput(workflowId, stickyReceiptStep(messageId, delivery), true);
 			this.cacheStickyReceipt(workflowId, stickyReceiptStep(messageId, delivery));
 		});
+		if (delivery.sessionId !== undefined || delivery.admission !== undefined) {
+			const summary = stickyReceiptStep(messageId, { ...delivery, sessionId: undefined, admission: undefined });
+			await this.enqueueWrite(workflowId, async () => {
+				await this.sdk.recordStepOutput(workflowId, summary, true);
+				this.cacheStickyReceipt(workflowId, summary);
+			});
+		}
 		if (delivery.admission === "context" && delivery.sessionId !== undefined) {
 			const summary = `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined })}:context-any-session`;
 			await this.enqueueWrite(workflowId, async () => {
@@ -548,12 +555,17 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 	): Promise<boolean> {
-		const name = stickyReceiptStep(messageId, delivery);
-		const record =
-			this.sdk.readStepRecord === undefined
-				? (await this.sdk.listStepRecords(workflowId)).find((candidate) => candidate.stepName === name)
-				: await this.sdk.readStepRecord(workflowId, name);
-		return record?.output === true;
+		const names = [stickyReceiptStep(messageId, delivery)];
+		if (delivery.sessionId === undefined && delivery.admission === undefined)
+			names.push(`${stickyReceiptStep(messageId, { ...delivery, admission: "context" })}:context-any-session`);
+		if (this.sdk.readStepRecord === undefined) {
+			const records = await this.sdk.listStepRecords(workflowId);
+			return records.some((record) => names.includes(record.stepName) && record.output === true);
+		}
+		for (const name of names) {
+			if ((await this.sdk.readStepRecord(workflowId, name))?.output === true) return true;
+		}
+		return false;
 	}
 
 	async persistPendingStageMessages(
