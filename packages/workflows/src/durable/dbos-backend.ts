@@ -2,6 +2,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { raceAbort } from "../shared/abort.js";
+import { retainPendingStageMessages } from "../shared/pending-stage-retention.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
@@ -567,10 +568,14 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			const value = this.mem.toMetadata(workflowId);
 			if (handle === undefined || value === undefined) return;
 			const updatedAt = Math.max(Date.now(), handle.updatedAt + 1);
-			const pendingStageMessages = replacePendingStageMessagesForRun(
-				handle.pendingStageMessages ?? [],
-				logicalRunId,
-				messages,
+			const pendingStageMessages = await retainPendingStageMessages(
+				replacePendingStageMessagesForRun(handle.pendingStageMessages ?? [], logicalRunId, messages),
+				(entry) =>
+					this.sdk.recordStepOutput(
+						workflowId,
+						`__atomic_pending_receipt:${durableHash(JSON.stringify([entry.runId, entry.id]))}`,
+						JSON.stringify(entry),
+					),
 			);
 			const metadata = {
 				...this.promptReservations.metadata(workflowId, value),

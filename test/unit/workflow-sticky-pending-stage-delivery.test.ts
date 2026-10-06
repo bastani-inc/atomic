@@ -356,6 +356,139 @@ describe("pre-start sticky drain", () => {
 		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, count);
 	});
 
+	test("bounds failed-iteration sticky receipts through resume and settlement (#3467)", async () => {
+		const { store } = rootFixture([]);
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		setDurableBackend(backend);
+		await store.queueStickyStageMessage(
+			stickyInput("failed-loop", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		for (let index = 0; index < 200; index++) {
+			const stage = baseStage({ id: `failed-${index}`, name: `failed-${index}`, status: "running" });
+			store.recordStageStart(ROOT_RUN_ID, stage);
+			let deliveries = 0;
+			const drain = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name);
+			const session = { sessionId: `session-${index}`, receivedMessageIds: [] };
+			await drain.deliverPending(() => {
+				deliveries += 1;
+			}, session);
+			await drain.deliverPending(
+				() => {
+					deliveries += 1;
+				},
+				{ ...session, receivedMessageIds: ["failed-loop"] },
+			);
+			assert.equal(deliveries, 1);
+			store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+		}
+		const pending = backend.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
+		assert.equal(pending[0]?.deliveryCount, 200);
+		assert.ok((pending[0]?.deliveries?.length ?? 0) <= 1);
+		assert.ok(JSON.stringify(pending).length < 1500);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		setDurableBackend(resumed);
+		const restored = createStore();
+		restored.recordRunStart({
+			...store.runs()[0]!,
+			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		let delivered = 0;
+		restored.recordStageStart(ROOT_RUN_ID, baseStage({ id: "failed-0", name: "failed-0", status: "running" }));
+		const old = createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "failed-0", "failed-0");
+		await old.deliverPending(
+			() => {
+				delivered += 1;
+			},
+			{ sessionId: "session-0", receivedMessageIds: ["failed-loop"] },
+		);
+		assert.equal(delivered, 0);
+		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 200);
+		restored.recordStageEnd(ROOT_RUN_ID, { ...baseStage({ id: "failed-0", name: "failed-0" }), status: "failed" });
+		const future = baseStage({ id: "future-failure", name: "future-failure", status: "running" });
+		restored.recordStageStart(ROOT_RUN_ID, future);
+		const futureDrain = createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, future.id, future.name);
+		await futureDrain.deliverPending(
+			() => {
+				delivered += 1;
+			},
+			{ sessionId: "future-session", receivedMessageIds: [] },
+		);
+		await futureDrain.deliverPending(
+			() => {
+				delivered += 1;
+			},
+			{ sessionId: "future-session", receivedMessageIds: ["failed-loop"] },
+		);
+		assert.equal(delivered, 1);
+		restored.recordStageEnd(ROOT_RUN_ID, { ...future, status: "failed" });
+		assert.equal(
+			await restored.settleStickyPendingStageMessageDelivered(
+				ROOT_RUN_ID,
+				"failed-loop",
+				"2026-09-01T00:00:05.000Z",
+				resumed,
+			),
+			true,
+		);
+		const settled = resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
+		assert.equal(settled[0]?.status, "delivered");
+		assert.equal(settled[0]?.deliveryCount, 201);
+		assert.deepEqual(settled[0]?.deliveries, []);
+		assert.ok(JSON.stringify(settled).length < 1500);
+	});
+
+	test("settlement archives sticky receipts whose failed stages are no longer materialized (#3467)", async () => {
+		const { store } = rootFixture([]);
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		setDurableBackend(backend);
+		await store.queueStickyStageMessage(
+			stickyInput("missing-stages", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		const records = Array.from({ length: 200 }, (_, index) => ({
+			runId: ROOT_RUN_ID,
+			stageId: `gone-${index}`,
+			sessionId: `gone-session-${index}`,
+			admission: "context" as const,
+		}));
+		await store.recordPendingStageMessageDeliveries(
+			ROOT_RUN_ID,
+			"missing-stages",
+			records,
+			"2026-09-01T00:00:01.000Z",
+			backend,
+		);
+		assert.equal(
+			await store.settleStickyPendingStageMessageDelivered(
+				ROOT_RUN_ID,
+				"missing-stages",
+				"2026-09-01T00:00:05.000Z",
+				backend,
+			),
+			true,
+		);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		const pending = resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
+		assert.equal(pending[0]?.status, "delivered");
+		assert.equal(pending[0]?.deliveryCount, 200);
+		assert.deepEqual(pending[0]?.deliveries, []);
+		assert.ok(JSON.stringify(pending).length < 1500);
+		assert.equal(await resumed.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "missing-stages", records[0]!), true);
+	});
+
 	test("bounds sticky receipts across completed iterations and preserves resumed delivery (#3467)", async () => {
 		const { store, backend } = rootFixture([]);
 		await store.queueStickyStageMessage(stickyInput("bounded", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);

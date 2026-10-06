@@ -6,13 +6,14 @@ import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-ba
 import { classifyLatestMetadata, encodeMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { DbosOwnerFence } from "../../packages/workflows/src/durable/dbos-owner-fence.js";
 import { createRealDbosHandle, type DbosStatic } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
+import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 
 const REAL_METADATA_RETENTION_TIMEOUT_MS = 180_000;
 
 test(
-	"compacts owned metadata without duplicate payloads and restores the latest snapshot (#3467)",
+	"compacts owned metadata and sibling delivery state without duplicate payloads and restores the latest snapshot (#3467)",
 	async () => {
 		const home = new RealPostgresHome();
 		const listener = await reserveListener();
@@ -127,6 +128,37 @@ test(
 					.rows[0].count,
 				2,
 			);
+			let firstBytes = 0;
+			for (let index = 0; index < 120; index++) {
+				const childId = `child-${index}`;
+				const scoped = new ScopedDurableBackend(fresh, { rootWorkflowId: root, scopePrefix: childId });
+				assert.equal(
+					await scoped.persistPendingStageMessages(childId, [
+						{
+							runId: childId,
+							id: "message",
+							stageKey: "review",
+							status: "delivered",
+							queuedAt: "now",
+							from: { id: "sender", name: "sender" },
+							message: { id: "message", timestamp: 1, content: { text: "amendment".repeat(20) } },
+						},
+					]),
+					true,
+				);
+				const rows: QueryResult<{ count: number; bytes: number; inputs: number }> = await control.query(
+					"SELECT count(*)::int AS count, sum(octet_length(output))::int AS bytes, count(inputs)::int AS inputs FROM dbos.workflow_status WHERE starts_with(workflow_uuid,$1)",
+					[`${root}:checkpoint:__atomic_metadata:`],
+				);
+				assert.equal(rows.rows[0].count, 1);
+				assert.equal(rows.rows[0].inputs, 0);
+				if (index === 49) firstBytes = rows.rows[0].bytes;
+				if (index >= 50) assert.ok(rows.rows[0].bytes < firstBytes + 1_000);
+			}
+			const restored = new DbosDurableBackend(handle);
+			await restored.hydrateWorkflow(root);
+			assert.equal(restored.getWorkflow(root)?.pendingStageMessages?.length, 50);
+			assert.equal((await restored.readSettledPendingStageMessage(root, "message", "child-0"))?.status, "delivered");
 		} finally {
 			try {
 				if (launched) await DBOS.shutdown({ deregister: true });

@@ -16,11 +16,10 @@ import {
 	recordPendingStageMessageDeliveries,
 	settleStickyPendingStageMessageDelivered,
 } from "./pending-stage-delivery.js";
+import { retainPendingStageMessages } from "./pending-stage-retention.js";
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
 import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput } from "./store-types.js";
-
-const PENDING_STAGE_SETTLED_MESSAGE_LIMIT = 50;
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
@@ -324,7 +323,12 @@ async function persistTransition(
 				const stage = context.state.runs
 					.find((run) => run.id === delivery.runId)
 					?.stages.find((stage) => stage.id === delivery.stageId);
-				if (stage?.status === "completed" || stage?.status === "skipped") {
+				if (
+					entry.status !== "queued" ||
+					stage?.status === "completed" ||
+					stage?.status === "skipped" ||
+					stage?.status === "failed"
+				) {
 					await backend.archivePendingStageDeliveryReceipt(runId, entry.id, delivery);
 					continue;
 				}
@@ -341,14 +345,9 @@ async function persistTransition(
 	}
 	retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
 	if (backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined) {
-		const settled = retained.filter(
-			(entry) =>
-				entry.status === "delivered" ||
-				(entry.status === "undeliverable" && entry.undeliverableNotifiedAt !== undefined),
+		retained = await retainPendingStageMessages(retained, (entry) =>
+			backend.archivePendingStageMessage!(runId, entry),
 		);
-		const expired = new Set(settled.slice(0, Math.max(0, settled.length - PENDING_STAGE_SETTLED_MESSAGE_LIMIT)));
-		for (const entry of expired) await backend.archivePendingStageMessage(runId, entry);
-		if (expired.size > 0) retained = retained.filter((entry) => !expired.has(entry));
 	}
 	if (!(await backend.persistPendingStageMessages(runId, retained))) {
 		throw new Error(`atomic-workflows: durable workflow ${runId} is unavailable for pending-stage persistence`);
