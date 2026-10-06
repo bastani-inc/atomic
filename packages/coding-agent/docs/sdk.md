@@ -26,6 +26,8 @@ For a custom host that runs background work, see [Owner-bound task supervisor](/
 
 Not sure the SDK is the right integration mode? Compare it with RPC and JSON mode on [Programmatic use](/programmatic).
 
+To serve an agent over HTTP, see [Embedding Atomic in a web server](/sdk/web-server), which walks through a Next.js App Router route that streams session output to a browser.
+
 ## Quick Start
 
 ```typescript

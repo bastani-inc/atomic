@@ -421,6 +421,7 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/themes/reference",
 	],
 	"/extensions/api-reference": ["/custom-provider/api-reference"],
+	"/sdk": ["/sdk/web-server"],
 	"/sdk/reference": ["/sdk/structured-decisions"],
 };
 
@@ -639,8 +640,8 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			35,
-			"migration routes, upstream additions, reader-path orientation pages, /mcp-servers, and /sdk/structured-decisions have insertion points",
+			36,
+			"migration routes, upstream additions, reader-path orientation pages, /mcp-servers, /sdk/structured-decisions, and /sdk/web-server have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
 
