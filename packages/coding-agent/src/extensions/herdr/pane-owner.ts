@@ -19,7 +19,8 @@ export interface PaneOwner {
 	status: "active" | "releasing" | "retired";
 	seq: number;
 	identitySent: boolean;
-	pending?: SessionActivity;
+	lastDeliveredActivity?: SessionActivity;
+	pending?: { activity: SessionActivity; skipUnchanged: boolean };
 	flight?: Promise<void>;
 	release?: Promise<void>;
 	flush(): Promise<void>;
@@ -84,17 +85,29 @@ export async function claimPaneReporting(
 	return owner;
 }
 
-export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity): void {
+function matchesActivity(previous: SessionActivity | undefined, activity: SessionActivity): boolean {
+	return (
+		activity.state === previous?.state &&
+		activity.reason === previous?.reason &&
+		activity.message === previous?.message
+	);
+}
+
+export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, skipUnchanged = false): void {
 	if (owner.status !== "active" || owners.get(owner.environment.paneId) !== owner) {
 		diagnostic(owner, { kind: "stale_owner" });
 		return;
 	}
-	owner.pending = activity;
+	if (!owner.flight && skipUnchanged && matchesActivity(owner.lastDeliveredActivity, activity)) return;
+	const pendingExplicitRefresh =
+		owner.pending?.skipUnchanged === false && matchesActivity(owner.pending.activity, activity);
+	owner.pending = { activity, skipUnchanged: skipUnchanged && !pendingExplicitRefresh };
 	if (owner.flight) return;
 	owner.flight = (async () => {
 		while (owner.pending && owner.status === "active") {
-			const next = owner.pending;
+			const { activity: next, skipUnchanged } = owner.pending;
 			owner.pending = undefined;
+			if (skipUnchanged && matchesActivity(owner.lastDeliveredActivity, next)) continue;
 			allocateSequence(owner);
 			const args = [...argv(owner, "report-agent"), "--state", next.state];
 			if (next.message) args.push("--message", next.message);
@@ -103,7 +116,12 @@ export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity):
 				if (owner.identity.path && isAbsolute(owner.identity.path))
 					args.push("--agent-session-path", owner.identity.path);
 			}
-			if (await send(owner, args)) owner.identitySent = true;
+			if (await send(owner, args)) {
+				owner.identitySent = true;
+				owner.lastDeliveredActivity = next;
+			} else {
+				owner.lastDeliveredActivity = undefined;
+			}
 		}
 	})().finally(() => {
 		owner.flight = undefined;

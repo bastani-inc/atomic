@@ -1,4 +1,4 @@
-import { sessionScopedExtensionState } from "@bastani/atomic";
+import { publishExtensionContextEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import type { ExtensionAPI } from "./public-types.js";
 import type { WorkflowModelContext } from "./workflow-model-catalog.js";
 
@@ -23,14 +23,12 @@ interface LiveHostSessions {
  * then on, so stage creation and the model catalog resolve the newest
  * committed generation of the same host session instead (#3201).
  *
- * A reload candidate starts before its transaction commits and is only
- * published once its predecessor retires with `session_shutdown(reload)`,
- * which the host emits only after commit. A rolled-back candidate shuts down
- * while still pending, so runs never see it. `lifecycleScope` also spans
- * `/new`, `/fork`, and `/resume`, so only a `reload` start joins the current
- * host session; any other start begins a new one. Resolves `undefined` when
- * the host session has no committed generation left, and callers keep their
- * launch surface.
+ * A reload candidate joins while pending and is published synchronously at
+ * transaction commit, before its predecessor loses authority. A rolled-back
+ * candidate shuts down while still pending, so runs never see it. `lifecycleScope` also spans
+ * `/new`, `/fork`, and `/resume`, which begin a new host session. Resolves
+ * `undefined` when the host session has no committed generation left, and
+ * callers keep their launch surface.
  */
 export function trackLiveHostGeneration(pi: ExtensionAPI): () => LiveHostGeneration | undefined {
 	const state = sessionScopedExtensionState<LiveHostSessions>(
@@ -41,26 +39,20 @@ export function trackLiveHostGeneration(pi: ExtensionAPI): () => LiveHostGenerat
 	const generation: LiveHostGeneration = { pi, modelContext: undefined, committed: false };
 	let hostSession: LiveHostGeneration[] = [];
 	pi.on?.("session_start", (event, ctx) => {
-		const reload = typeof event === "object" && event !== null && "reason" in event && event.reason === "reload";
-		hostSession = reload ? (state.current ?? []) : [];
+		const reason = typeof event === "object" && event !== null && "reason" in event ? event.reason : undefined;
+		hostSession = reason === "reload" || reason === "startup" ? (state.current ?? []) : [];
 		generation.modelContext = ctx;
-		generation.committed = !hostSession.some((live) => live.committed);
+		generation.committed = false;
 		hostSession.push(generation);
-		state.current = hostSession;
+		const start = () => {
+			generation.committed = true;
+			state.current = hostSession;
+		};
+		return ctx ? publishExtensionContextEffect(ctx, start, "commit") : start();
 	});
-	pi.on?.("session_shutdown", (event) => {
+	pi.on?.("session_shutdown", () => {
 		const index = hostSession.indexOf(generation);
-		if (index === -1) return;
-		hostSession.splice(index, 1);
-		const retiredAfterCommit =
-			generation.committed &&
-			typeof event === "object" &&
-			event !== null &&
-			"reason" in event &&
-			event.reason === "reload";
-		if (retiredAfterCommit) {
-			for (const live of hostSession) live.committed = true;
-		}
+		if (index !== -1) hostSession.splice(index, 1);
 	});
 	return () => hostSession.findLast((live) => live.committed);
 }

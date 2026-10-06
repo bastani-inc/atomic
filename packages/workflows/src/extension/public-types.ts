@@ -96,6 +96,7 @@ export interface PiCommandContext extends PiModelContext {
 	} & PiUISurface;
 	hasUI?: boolean;
 	hasHumanInput?: boolean;
+	isPresentationOnly?: boolean;
 }
 
 export interface PiFlagNamedOpts {

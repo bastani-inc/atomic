@@ -183,6 +183,7 @@ export interface ExtensionBindings {
 	humanInput?: import("./extensions/host-input.js").HostInput | null;
 	onDiagnostic?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
 	uiContext?: ExtensionUIContext;
+	isPresentationOnly?: boolean;
 	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;

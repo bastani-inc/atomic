@@ -1,5 +1,8 @@
+import assert from "node:assert/strict";
+import { type Component, Container } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const timingMock = vi.hoisted(() => ({ labels: [] as string[] }));
 
@@ -225,6 +228,78 @@ describe("InteractiveMode startup latency hooks", () => {
 		await waitForImmediate();
 		expect(context.footerDataProvider.startGitWatcher).not.toHaveBeenCalled();
 		expect(timingMock.labels).not.toContain("interactive-input-handler-ready");
+	});
+
+	it("keeps startup confirmation keyboard focus while the engine binds (#3468)", async () => {
+		initTheme("dark");
+		let focused: Component | undefined;
+		const context = {
+			init: InteractiveMode.prototype.init,
+			showExtensionConfirm: InteractiveMode.prototype.showExtensionConfirm,
+			showExtensionSelector: InteractiveMode.prototype.showExtensionSelector,
+			hideExtensionSelector: InteractiveMode.prototype.hideExtensionSelector,
+			runtimeHost: {},
+			isInitialized: false,
+			registerSignalHandlers: vi.fn(),
+			ui: {
+				addChild: vi.fn(),
+				setFocus: (component: Component) => {
+					focused = component;
+				},
+				start: vi.fn(),
+				requestRender: vi.fn(),
+			},
+			headerContainer: new Container(),
+			documentContainer: new Container(),
+			chatContainer: new Container(),
+			pendingMessagesContainer: new Container(),
+			statusContainer: new Container(),
+			widgetContainerAbove: new Container(),
+			usageMeter: new Container(),
+			editorContainer: new Container(),
+			footerContainer: new Container(),
+			widgetContainerBelow: new Container(),
+			editor: { render: () => [], handleInput: vi.fn() },
+			renderWidgets: vi.fn(),
+			mountInteractiveTui: vi.fn(),
+			setupKeyHandlers: vi.fn(),
+			setupEditorSubmitHandler: vi.fn(),
+			disposeActiveSelector: vi.fn(),
+			pendingUserInputs: [],
+			defaultEditor: {},
+			options: {},
+			startupReplayInputs: [],
+			footerDataProvider: { onBranchChange: vi.fn() },
+			themeController: { applyFromSettings: vi.fn(async () => {}) },
+			settingsManager: { getFullscreenScrollbar: () => "auto", getQuietStartup: () => false },
+			getStartupIdentityText: () => "Atomic v0.0.0",
+			shouldShowStartupHeader: () => true,
+			isShuttingDown: false,
+			deferredStartupPending: false,
+			ensureManagedToolsReady: vi.fn(async () => {}),
+			attachStartupNoticesContainer: vi.fn(),
+			renderInitialMessages: vi.fn(),
+		} as unknown as InteractiveMode;
+		const controller = new AbortController();
+		const confirmation = context.showExtensionConfirm("Resume interrupted workflows?", "Resume now?", {
+			signal: controller.signal,
+		});
+		engineWaitMock.wait.mockImplementationOnce(async () => {
+			await confirmation;
+		});
+		const init = context.init();
+		try {
+			await waitForImmediate();
+			assert.equal(context.isInitialized, false);
+			assert.equal(focused, context.extensionSelector);
+			focused?.handleInput?.("\x1b[B");
+			focused?.handleInput?.("\r");
+			assert.equal(await confirmation, false);
+			assert.equal(focused, context.editor);
+		} finally {
+			controller.abort();
+			await init;
+		}
 	});
 
 	it("paints the startup identity and editor before the isolated engine binds", async () => {

@@ -1,3 +1,4 @@
+import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
 import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
@@ -116,6 +117,7 @@ export interface WorkflowExtensionRuntimeState {
 	/** Seed lifecycle notification state before completed historical snapshots are inserted. */
 	beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
 	runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime;
+	resolveInvocationCwd(): string;
 	resetWorkflowDiscoveryForSession(): void;
 	ensureWorkflowConfigLoaded(): Promise<void>;
 	ensureWorkflowResourcesLoaded(): Promise<void>;
@@ -155,6 +157,11 @@ export function createWorkflowExtensionRuntimeState(
 		contextCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
 		detachHumanInput?.();
 		detachHumanInput = ctx === undefined ? undefined : bindWorkflowHumanInput(store, ctx, stageUiBroker);
+		if (ctx)
+			registerExtensionContextRetirementEffect(ctx, () => {
+				detachHumanInput?.();
+				detachHumanInput = undefined;
+			});
 	});
 	pi.on?.("session_shutdown", () => {
 		detachHumanInput?.();
@@ -711,6 +718,7 @@ export function createWorkflowExtensionRuntimeState(
 		workflowHeartbeatSchedulerState,
 		beforeRestoreCompleted,
 		runtimeForContext,
+		resolveInvocationCwd: resolveCwd,
 		resetWorkflowDiscoveryForSession,
 		ensureWorkflowConfigLoaded,
 		ensureWorkflowResourcesLoaded,

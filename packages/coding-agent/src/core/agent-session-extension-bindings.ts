@@ -13,7 +13,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { bindExtensionContextPublication } from "./extensions/runner-context.ts";
+import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
 import type { ExtensionRuntime, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
@@ -43,7 +43,10 @@ class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
 	private readonly effects: Array<() => void | Promise<void>> = [];
 	private readonly startEffects: Array<() => void | Promise<void>> = [];
+	private readonly commitEffects: Array<() => void> = [];
+	private readonly commitFailures: unknown[] = [];
 	readonly providerTransaction: ExtensionProviderTransaction;
+	private commitsActivated = false;
 	readonly providerIds = new Set<string>();
 	private readonly isClosed: () => boolean;
 	private readonly runner: ExtensionRunner;
@@ -70,6 +73,36 @@ class ExtensionPublicationGate {
 		if (!this.discarded) this.startEffects.push(effect);
 	}
 
+	stageCommit(effect: () => void): void {
+		if (this.discarded) return;
+		if (!this.commitsActivated) {
+			this.commitEffects.push(effect);
+			return;
+		}
+		try {
+			runSynchronousExtensionContextEffect(effect);
+		} catch (error) {
+			this.commitFailures.push(error);
+			try {
+				this.report(error, "session_start");
+			} catch (reportingError) {
+				this.commitFailures.push(reportingError);
+			}
+		}
+	}
+
+	activateCommits(): void {
+		this.commitsActivated = true;
+		for (const effect of this.commitEffects.splice(0)) this.stageCommit(effect);
+		this.drainCommitFailures();
+	}
+
+	drainCommitFailures(): void {
+		if (this.commitFailures.length) {
+			throw new AggregateError(this.commitFailures.splice(0), "Extension commit activation failed");
+		}
+	}
+
 	async activateStarts(): Promise<void> {
 		await this.publish(this.startEffects);
 	}
@@ -82,6 +115,7 @@ class ExtensionPublicationGate {
 		this.discarded = true;
 		this.effects.length = 0;
 		this.startEffects.length = 0;
+		this.commitEffects.length = 0;
 	}
 
 	async release(): Promise<void> {
@@ -160,6 +194,7 @@ const extensionStarts = new WeakMap<ExtensionRunner, Promise<void>>();
 const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
+const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
 
 function startExtensions(
 	session: AgentSession,
@@ -222,6 +257,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	if (bindings.mode !== undefined) {
 		this._extensionMode = bindings.mode;
 	}
+	if (bindings.isPresentationOnly !== undefined) presentationOnlyBindings.set(this, bindings.isPresentationOnly);
 	if (bindings.commandContextActions !== undefined) {
 		this._extensionCommandContextActions = bindings.commandContextActions;
 	}
@@ -276,7 +312,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 		this._extensionDiagnosticListener,
 		humanInputBindingRevisions.get(this),
 	);
-	runner.setUIContext(this._extensionUIContext, this._extensionMode);
+	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(this._childSessionOptions);
 
@@ -315,7 +351,11 @@ export function _bindExtensionCore(
 	publication?: ExtensionPublicationGate,
 ): void {
 	runner.bindWorkOwner(this);
-	bindExtensionContextPublication(runner.createContext(), publication && ((effect) => publication.stageStart(effect)));
+	if (publication) {
+		bindExtensionContextPublication(runner.createContext(), (effect, phase) =>
+			phase === "commit" ? publication.stageCommit(effect) : publication.stageStart(effect),
+		);
+	}
 	runner.bindTaskHost(() => this.getAgentTaskHost());
 	// A transactional successor starts before it is published. Its callbacks must inspect and
 	// activate its own definitions, never the retiring session's registry. Keep this view local;
@@ -621,6 +661,22 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 		replaceSessionTaskOwner(this);
 		if (this._disposed) throw hostInputError("SessionClosed");
 		await reloadGeneration.call(this, options);
+		if (
+			!this._disposed &&
+			!sessionGenerationClosing.has(this) &&
+			!this.isStreaming &&
+			!this._queuedMessagesPaused &&
+			this._protectedStreamingCustomMessages?.some((entry) => entry.phase === "queued")
+		) {
+			this._agentRunAbortRequested = false;
+			void trackSessionWork(this, () => this._runAgentPrompt([])).catch((error) => {
+				this._extensionRunner.emitError({
+					extensionPath: "session:reload",
+					event: "reload",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+		}
 	} catch (error) {
 		if (!this._disposed && this._extensionRunner === retiringRunner) retiringRunner.resumeAfterRejectedReload();
 		throw error;
@@ -645,7 +701,9 @@ async function cleanupReloadRunner(runner: ExtensionRunner, reason: string): Pro
 	const failures: unknown[] = [];
 	for (const cleanup of [
 		() => runner.drainWork(),
-		() => reason === "reload" && emitSessionShutdownEvent(runner, { type: "session_shutdown", reason: "reload" }),
+		() =>
+			(reason === "reload" || reason === "startup") &&
+			emitSessionShutdownEvent(runner, { type: "session_shutdown", reason: "reload" }),
 		() => runner.invalidate(),
 	]) {
 		try {
@@ -694,8 +752,12 @@ async function reloadOwnedGeneration(
 		if (options?.failOnExtensionErrors) {
 			throw new Error("Strict extension reload requires a transactional resource loader");
 		}
-		oldRunner.revokeAuthority();
 		const retiringFailures: unknown[] = [];
+		try {
+			oldRunner.revokeAuthority();
+		} catch (error) {
+			retiringFailures.push(error);
+		}
 		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason)).catch(
 			(error: unknown) => {
 				retiringFailures.push(error);
@@ -776,7 +838,11 @@ async function reloadOwnedGeneration(
 			this._extensionDiagnosticListener,
 			humanInputBindingRevisions.get(this),
 		);
-		candidateRunner.setUIContext(this._extensionUIContext, this._extensionMode);
+		candidateRunner.setUIContext(
+			this._extensionUIContext,
+			this._extensionMode,
+			presentationOnlyBindings.get(this) ?? false,
+		);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(this._childSessionOptions);
 		if (options?.failOnExtensionErrors && errors.length > 0)
@@ -805,6 +871,7 @@ async function reloadOwnedGeneration(
 			() => rollbackPreparedResources?.(),
 			() => publication.discard(),
 			() => candidateRunner.sealHostInput(),
+			() => candidateRunner.retireObservation(),
 			() => candidateRunner.drainWork(),
 			() => emitSessionShutdownEvent(candidateRunner, { type: "session_shutdown", reason: "reload" }),
 			() => candidateRunner.invalidate(),
@@ -849,8 +916,23 @@ async function reloadOwnedGeneration(
 	}
 	const setupFailed = failures.length > 0;
 	try {
+		publication.activateCommits();
+	} catch (error) {
+		failures.push(error);
+	}
+	try {
 		oldRunner.revokeAuthority();
+	} catch (error) {
+		failures.push(error);
+	}
+	try {
 		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason));
+	} catch (error) {
+		failures.push(error);
+	}
+	bindExtensionContextPublication(candidateRunner.createContext(), undefined);
+	try {
+		publication.drainCommitFailures();
 	} catch (error) {
 		failures.push(error);
 	}
@@ -861,7 +943,7 @@ async function reloadOwnedGeneration(
 	// retiring callbacks are invalidated, then publish reporters before queued user effects.
 	await publication.activateStarts();
 	await publication.release();
-	if (failures.length) throw failures[0];
+	if (failures.length) throw failures.length > 1 ? retiringCleanupError(failures) : failures[0];
 }
 
 /** Publish approved startup resources without replacing the session or restarting safe reporters. */

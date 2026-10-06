@@ -47,6 +47,7 @@ import {
 	createExtensionCommandContext,
 	createExtensionContext,
 	type ExtensionCommandContextSource,
+	retireExtensionContextEffects,
 } from "./runner-context.ts";
 import {
 	type BeforeAgentStartCombinedResult,
@@ -196,6 +197,7 @@ export class ExtensionRunner {
 	);
 	private onDiagnostic?: (diagnostic: HostDiagnostic) => void;
 	private mode: ExtensionMode = "print";
+	private presentationOnly = false;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -472,7 +474,8 @@ export class ExtensionRunner {
 		copyHostQuestionnaire(bridged, this.uiContext);
 	}
 
-	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
+	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print", isPresentationOnly = false): void {
+		this.presentationOnly = isPresentationOnly;
 		if (uiContext !== this.presentationUI) {
 			this.endActiveUIPrompt();
 			++this.uiPromptBinding;
@@ -665,16 +668,28 @@ export class ExtensionRunner {
 		return this.shortcutDiagnostics;
 	}
 
+	retireObservation(): void {
+		retireExtensionContextEffects(this.contextOwner);
+	}
+
 	revokeAuthority(): void {
-		this.authorityRevoked = true;
-		revokeExtensionAuthority(this.runtime);
+		try {
+			this.retireObservation();
+		} finally {
+			this.authorityRevoked = true;
+			revokeExtensionAuthority(this.runtime);
+		}
 	}
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
 		this.sealHostInput();
-		if (!this.staleMessage) {
-			this.staleMessage = message;
-			this.runtime.invalidate(message);
+		try {
+			this.retireObservation();
+		} finally {
+			if (!this.staleMessage) {
+				this.staleMessage = message;
+				this.runtime.invalidate(message);
+			}
 		}
 	}
 
@@ -813,6 +828,7 @@ export class ExtensionRunner {
 			getMode: () => this.mode,
 			hasUI: () => this.hasUI(),
 			hasHumanInput: () => this.inputBridge.available,
+			isPresentationOnly: () => this.presentationOnly,
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,

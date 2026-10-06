@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +10,11 @@ import type { EventBus } from "../src/core/event-bus.ts";
 import { sessionScopedExtensionState } from "../src/core/extension-session-state.ts";
 import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
@@ -75,6 +77,60 @@ describe("interactive deferred startup first prompt readiness", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	for (const { isolated, mode: extensionMode } of [
+		{ isolated: false, mode: "tui" },
+		{ isolated: true, mode: "tui" },
+		{ isolated: false, mode: "print" },
+		{ isolated: false, mode: "rpc" },
+	] as const) {
+		it(`${extensionMode} startup reports presentation-only=${isolated} to extension handlers (#3468)`, async () => {
+			const observed: Array<boolean | undefined> = [];
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+				builtinPackagePaths: [],
+				noExtensions: true,
+				extensionFactories: [
+					(pi) =>
+						pi.on("session_start", (_event, ctx) => {
+							observed.push(ctx.isPresentationOnly);
+						}),
+				],
+			});
+			await resourceLoader.reload();
+			const { session } = await createUnstartedAgentSession({
+				cwd: tempDir,
+				agentDir,
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(),
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			});
+			try {
+				const runtimeHost = isolated ? Object.create(IsolatedInteractiveRuntime.prototype) : {};
+				Object.defineProperty(runtimeHost, "setProjectTrustContextFactory", { value: () => undefined });
+				const mode = {
+					runtimeHost,
+					session,
+					createExtensionUIContext: () => session.extensionRunner.createContext().ui,
+					deferredStartupPending: true,
+					setupAutocompleteProvider: () => undefined,
+					setupExtensionShortcuts: () => undefined,
+				} as unknown as InteractiveMode;
+				if (extensionMode === "tui") await InteractiveMode.prototype.bindCurrentSessionExtensions.call(mode);
+				else await session.bindExtensions({ mode: extensionMode });
+				assert.deepEqual(observed, [isolated]);
+				await session.reload({ reason: "reload" });
+				assert.deepEqual(observed, [isolated, isolated]);
+			} finally {
+				await session.dispose();
+			}
+		});
+	}
 
 	it("loads extension tools, resources, and provider overrides before the first prompt", async () => {
 		const skillFile = join(tempDir, "startup-skill.md");

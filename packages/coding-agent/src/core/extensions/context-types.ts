@@ -209,6 +209,7 @@ export interface ExtensionContext {
 	hasUI: boolean;
 	/** Whether a semantic human-input adapter is available, independently of rendering. */
 	hasHumanInput: boolean;
+	readonly isPresentationOnly?: boolean;
 	/** Current working directory */
 	cwd: string;
 	/** Session manager (read-only) */

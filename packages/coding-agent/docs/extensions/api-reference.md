@@ -18,6 +18,10 @@ UI methods for user interaction. See [Custom UI](/extensions/ui#custom-ui) for f
 
 `false` in print mode (`-p`) and JSON mode. `true` in interactive and RPC mode. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) work via the extension UI sub-protocol, and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) emit requests to the client. Some TUI-specific methods are no-ops or return defaults (see [RPC mode](/rpc/extension-ui#extension-ui-protocol)).
 
+### ctx.isPresentationOnly
+
+`true` in the local presentation host when the isolated interactive engine owns execution. Keep UI registration active, but skip background execution and durable recovery in lifecycle hooks in this context to avoid starting the same work in both processes. Normal SDK, print, RPC, and engine contexts leave this flag false or unset.
+
 ### ctx.cwd
 
 Current working directory.

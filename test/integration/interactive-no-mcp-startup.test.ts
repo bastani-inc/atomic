@@ -56,7 +56,14 @@ await import(${JSON.stringify(pathToFileURL(fixtureServer).href)});
 			`import { writeFileSync } from "node:fs";
 export default function(pi) {
 	pi.on("session_shutdown", () => writeFileSync(process.env.STARTUP_SNAPSHOT + ".closed", "closed"));
-	pi.on("session_start", () => {
+	pi.registerCommand("startup-ready", {
+		handler: async (_args, ctx) => {
+			if (ctx.isPresentationOnly) return;
+			writeFileSync(process.env.STARTUP_SNAPSHOT + ".ready", String(process.pid));
+		},
+	});
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.isPresentationOnly) return;
 		// Let later session_start handlers start their background MCP connections.
 		setTimeout(async () => {
 			const commands = pi.getCommands().map(command => command.name);
@@ -70,7 +77,8 @@ export default function(pi) {
 			}));
 		}, 0);
 	});
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.isPresentationOnly) return;
 		if (process.env.STARTUP_DELAY) await new Promise(resolve => setTimeout(resolve, 1000));
 	});
 }
@@ -138,6 +146,17 @@ export default function(pi) {
 					while (!(await fileExists(snapshotPath)) && Date.now() < deadline) await sleep(50);
 					assert.ok(await fileExists(snapshotPath), tmux("capture-pane", "-p", "-t", name));
 					const snapshot = await readJson<StartupSnapshot>(snapshotPath);
+					tmux("send-keys", "-t", name, "-l", "/startup-ready");
+					while (!tmux("capture-pane", "-p", "-t", name).includes("/startup-ready") && Date.now() < deadline)
+						await sleep(50);
+					assert.ok(tmux("capture-pane", "-p", "-t", name).includes("/startup-ready"));
+					tmux("send-keys", "-t", name, "Enter");
+					while (!(await fileExists(`${snapshotPath}.ready`)) && Date.now() < deadline) await sleep(50);
+					assert.ok(
+						await fileExists(`${snapshotPath}.ready`),
+						`${name}: engine startup-ready command must complete before exit (#10249)`,
+					);
+					assert.equal(Number(await readText(`${snapshotPath}.ready`)), snapshot.pid);
 					const hostPid = Number(tmux("display-message", "-p", "-t", name, "#{pane_pid}"));
 					assert.notEqual(snapshot.pid, hostPid, "snapshot must come from the isolated engine child");
 					assert.equal(snapshot.commands.includes("mcp"), !disabled, JSON.stringify(snapshot));
@@ -149,12 +168,6 @@ export default function(pi) {
 					while (!disabled && !(await fileExists(serverMarker)) && Date.now() < deadline) await sleep(50);
 					assert.equal(await fileExists(serverMarker), !disabled, "--no-mcp must not start the server");
 					if (!disabled) serverPid = Number(await readText(serverMarker));
-					while (!tmux("capture-pane", "-p", "-t", name).includes("[Extensions]") && Date.now() < deadline)
-						await sleep(50);
-					assert.ok(
-						tmux("capture-pane", "-p", "-t", name).includes("[Extensions]"),
-						`${name}: deferred startup must finish before shutdown`,
-					);
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
 						while (!tmux("capture-pane", "-p", "-t", name).includes("/mcp") && Date.now() < deadline)

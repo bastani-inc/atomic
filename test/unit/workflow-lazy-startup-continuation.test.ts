@@ -15,6 +15,7 @@ import {
 } from "../../packages/workflows/src/durable/factory.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { assertWorkflowInstanceOwner } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { cancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -56,7 +57,10 @@ function workflowConfigDir(root: string): string {
 	return join(root, ".atomic", "extensions", "workflow");
 }
 
-function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): {
+function registerFactory(
+	piOverrides: Partial<ExtensionAPI> = {},
+	prompt = async () => "ok",
+): {
 	handlers: Map<string, Handler>;
 	commands: Array<{ name: string; options: PiCommandOptions }>;
 	sent: SentMessage[];
@@ -77,7 +81,7 @@ function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): {
 		},
 		createAgentSession: async () => ({
 			session: {
-				prompt: async () => "ok",
+				prompt,
 				steer: async () => undefined,
 				followUp: async () => undefined,
 				subscribe: () => () => undefined,
@@ -139,7 +143,569 @@ export default workflow({
 	);
 }
 
+async function writeTrackedWorkflowFixture(filePath: string, name: string): Promise<void> {
+	await writeFile(
+		filePath,
+		`import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: ${JSON.stringify(name)}, description: "", inputs: {}, outputs: {},
+  run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
+});
+`,
+		"utf8",
+	);
+}
+
 describe("workflow lazy-startup continuation fixes", () => {
+	test("session_start revalidates project scope after ask confirmation (#3468)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-project-race-"));
+		try {
+			mkdirSync(workflowConfigDir(root), { recursive: true });
+			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
+			const workflowPath = join(root, "shared.ts");
+			await writeTrackedWorkflowFixture(workflowPath, "shared");
+			process.chdir(root);
+			const backend = getDurableBackend();
+			const runId = testRunId("startup-project-confirmation-race");
+			const handle = {
+				workflowId: runId,
+				name: "shared",
+				inputs: {},
+				status: "running" as const,
+				createdAt: 1,
+				updatedAt: 1,
+				completedCheckpoints: 1,
+				invocationCwd: root,
+			};
+			backend.registerWorkflow(handle);
+			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			let prompts = 0;
+			let changedHandle = backend.getWorkflow(runId);
+			await handlers.get("session_start")?.(
+				{ reason: "startup" },
+				{
+					cwd: root,
+					hasUI: true,
+					ui: {
+						notify: () => undefined,
+						confirm: async () => {
+							prompts += 1;
+							backend.registerWorkflow({ ...handle, invocationCwd: join(root, "elsewhere") });
+							changedHandle = backend.getWorkflow(runId);
+							return true;
+						},
+					},
+				},
+			);
+			await cleanupJobs();
+			assert.equal(prompts, 1);
+			assert.equal(store.runs().length, 0);
+			assert.deepEqual(backend.getWorkflow(runId), changedHandle);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const mode of ["auto", "ask"] as const) {
+		for (const ownership of ["user", "agent", "legacy"] as const) {
+			test(`session_start ${mode} excludes ${ownership} runs from another project sharing a database (#3468)`, async () => {
+				const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-project-"));
+				try {
+					const projectA = join(root, "a");
+					const projectB = join(root, "b");
+					mkdirSync(projectA);
+					mkdirSync(workflowConfigDir(projectB), { recursive: true });
+					writeFileSync(
+						join(workflowConfigDir(projectB), "config.json"),
+						JSON.stringify({ resumeInFlight: mode }),
+					);
+					const workflowPath = join(projectB, "shared.ts");
+					await writeTrackedWorkflowFixture(workflowPath, "shared");
+					await writeTrackedWorkflowFixture(join(projectA, "shared.ts"), "shared");
+					process.chdir(projectA);
+					const backend = getDurableBackend();
+					const runId = testRunId(`startup-project-${mode}-${ownership}`);
+					backend.registerWorkflow({
+						workflowId: runId,
+						name: "shared",
+						inputs: {},
+						status: "running",
+						createdAt: 1,
+						updatedAt: 1,
+						completedCheckpoints: 1,
+						...(ownership === "legacy" ? {} : { invocationCwd: projectA }),
+						...(ownership === "agent" ? { origin: "agent", modelOwner: "previous-session" } : {}),
+					});
+					const before = backend.getWorkflow(runId);
+					let prompts = 0;
+					const ctx = {
+						cwd: projectB,
+						hasUI: true,
+						ui: {
+							notify: () => undefined,
+							confirm: async () => {
+								prompts += 1;
+								return true;
+							},
+						},
+					};
+					const { handlers, commands } = registerFactory({
+						sessionManager: { getCwd: () => projectB } as ExtensionAPI["sessionManager"],
+						getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					});
+					await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+					await cleanupJobs();
+					assert.equal(prompts, 0);
+					assert.deepEqual(backend.getWorkflow(runId), before);
+					assert.equal(store.runs().length, 0);
+					if (ownership !== "agent") {
+						await commands.find((entry) => entry.name === "workflow")?.options.handler?.(`resume ${runId}`, ctx);
+						await cleanupJobs();
+						assert.equal(backend.getWorkflow(runId)?.status, "completed", backend.getWorkflow(runId)?.error);
+					}
+				} finally {
+					process.chdir(originalCwd);
+					rmSync(root, { recursive: true, force: true });
+				}
+			});
+		}
+	}
+
+	for (const scenario of ["safe", "safe-ask", "foreign-cwd", "unknown-owner", "concurrent-claim"] as const) {
+		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
+			class ClaimBackend extends InMemoryDurableBackend {
+				override async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (scenario === "concurrent-claim" && args[6] !== undefined) {
+						const [id, expected, status, prompts, resumable, updatedAt] = args;
+						await super.transitionWorkflowStatus(
+							id,
+							expected,
+							status,
+							prompts,
+							resumable,
+							updatedAt,
+							"competing-session",
+						);
+						return false;
+					}
+					return super.transitionWorkflowStatus(...args);
+				}
+			}
+			const backend = new ClaimBackend();
+			setDurableBackend(backend);
+			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-owner-"));
+			try {
+				mkdirSync(workflowConfigDir(root), { recursive: true });
+				writeFileSync(
+					join(workflowConfigDir(root), "config.json"),
+					JSON.stringify({ resumeInFlight: scenario === "safe-ask" ? "ask" : "auto" }),
+				);
+				const workflowPath = join(root, "startup-owner.ts");
+				await writeFile(
+					workflowPath,
+					`import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: "startup-owner", description: "", inputs: {}, outputs: {},
+  run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
+});
+`,
+					"utf8",
+				);
+				process.chdir(root);
+				const runId = testRunId(`startup-owner-${scenario}`);
+				backend.registerWorkflow({
+					workflowId: runId,
+					name: "startup-owner",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+					updatedAt: 1,
+					completedCheckpoints: 1,
+					origin: "agent",
+					modelOwner: "previous-session",
+					invocationCwd: scenario === "foreign-cwd" ? join(root, "elsewhere") : root,
+					ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
+					ownerLiveness: scenario === "unknown-owner" ? "unknown" : "dead",
+				});
+				const original = backend.getWorkflow(runId);
+				const ctx = {
+					sessionManager: { getSessionId: () => "recovering-session" },
+					cwd: root,
+					hasUI: scenario === "safe-ask",
+					ui: { notify: () => undefined, confirm: async () => true },
+				};
+				const { handlers } = registerFactory({
+					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+				});
+				await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				await cleanupJobs();
+				if (scenario === "safe" || scenario === "safe-ask") {
+					assert.equal(
+						backend.getWorkflow(runId)?.status,
+						"completed",
+						store.runs().find((run) => run.id === runId)?.error,
+					);
+					assert.equal(backend.getWorkflow(runId)?.modelOwner, ctx.sessionManager.getSessionId());
+					assert.doesNotThrow(() => assertWorkflowInstanceOwner(runId, ctx as never, store));
+					assert.throws(
+						() => assertWorkflowInstanceOwner(runId, { sessionId: "foreign-session" } as never, store),
+						/another caller\/session/,
+					);
+				} else {
+					assert.equal(
+						store.runs().some((run) => run.id === runId),
+						false,
+					);
+					if (scenario === "concurrent-claim") {
+						assert.equal(backend.getWorkflow(runId)?.modelOwner, "competing-session");
+					} else {
+						assert.deepEqual(backend.getWorkflow(runId), original);
+					}
+					assert.throws(() => assertWorkflowInstanceOwner(runId, ctx as never, store), /another caller\/session/);
+				}
+			} finally {
+				process.chdir(originalCwd);
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
+	for (const mode of ["auto", "ask"] as const) {
+		test(`repeated startup generations preserve ${mode} recovery without prompting twice (#3468)`, async () => {
+			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-generations-"));
+			let resolvePrompt: (value: string) => void = () => undefined;
+			const prompt = new Promise<string>((resolve) => {
+				resolvePrompt = resolve;
+			});
+			try {
+				mkdirSync(workflowConfigDir(root), { recursive: true });
+				writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: mode }));
+				const workflowPath = join(root, "startup-generations.ts");
+				await writePromptWorkflowFixture(workflowPath, "startup-generations");
+				process.chdir(root);
+				const runId = testRunId("startup-generations");
+				getDurableBackend().registerWorkflow({
+					workflowId: runId,
+					name: "startup-generations",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+					updatedAt: 1,
+					completedCheckpoints: 1,
+					invocationCwd: root,
+				});
+				const lifecycleScope = {};
+				const overrides = {
+					lifecycleScope,
+					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					createAgentSession: async () => {
+						const messages: Array<{
+							role: "assistant";
+							content: Array<{ type: "text"; text: string }>;
+							stopReason: "stop";
+						}> = [];
+						return {
+							session: {
+								messages,
+								prompt: async () => {
+									messages.push({
+										role: "assistant",
+										content: [{ type: "text", text: await prompt }],
+										stopReason: "stop",
+									});
+								},
+								steer: async () => undefined,
+								followUp: async () => undefined,
+								subscribe: () => () => undefined,
+								sessionFile: undefined,
+								sessionId: "workflow-startup-generations-session",
+								setModel: async () => undefined,
+								setThinkingLevel: () => undefined,
+								dispose: async () => undefined,
+							},
+						};
+					},
+				} as unknown as Partial<ExtensionAPI>;
+				let confirmations = 0;
+				const ctx = {
+					hasUI: true,
+					ui: {
+						notify: () => undefined,
+						confirm: async () => {
+							confirmations += 1;
+							return true;
+						},
+					},
+				};
+				const first = registerFactory(overrides);
+				await first.handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				assert.equal(
+					store.runs().find((run) => run.id === runId)?.status,
+					"running",
+					store.runs().find((run) => run.id === runId)?.error,
+				);
+				await first.handlers.get("session_shutdown")?.({ reason: "reload" });
+				const second = registerFactory(overrides);
+				await second.handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				assert.equal(confirmations, mode === "ask" ? 1 : 0);
+				assert.equal(
+					store.runs().find((run) => run.id === runId)?.status,
+					"running",
+					store.runs().find((run) => run.id === runId)?.error,
+				);
+				resolvePrompt("finished");
+				await cleanupJobs();
+				assert.equal(getDurableBackend().getWorkflow(runId)?.status, "completed");
+			} finally {
+				resolvePrompt("finished");
+				await cleanupJobs();
+				process.chdir(originalCwd);
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
+	for (const scenario of [
+		{ mode: "auto", hasUI: false, answer: false, resumes: true, prompts: 0 },
+		{ mode: "never", hasUI: true, answer: true, resumes: false, prompts: 0 },
+		{ mode: "ask", hasUI: true, answer: true, resumes: true, prompts: 1 },
+		{ mode: "ask", hasUI: true, answer: false, resumes: false, prompts: 1 },
+		{ mode: "ask", hasUI: false, answer: true, resumes: false, prompts: 0 },
+	] as const) {
+		test(`session_start ${scenario.mode} UI=${scenario.hasUI} answer=${scenario.answer} honors durable recovery policy (#3468)`, async () => {
+			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-policy-"));
+			try {
+				mkdirSync(workflowConfigDir(root), { recursive: true });
+				writeFileSync(
+					join(workflowConfigDir(root), "config.json"),
+					JSON.stringify({ resumeInFlight: scenario.mode }),
+				);
+				const workflowPath = join(root, "startup-workflow.ts");
+				await writeFile(
+					workflowPath,
+					`import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: "startup-workflow", description: "", inputs: {}, outputs: {},
+  run: async (ctx) => {
+    await ctx.tool("startup-marker", {}, async () => true);
+    return {};
+  },
+});
+`,
+					"utf8",
+				);
+				process.chdir(root);
+				const runId = testRunId("startup-policy");
+				const backend = getDurableBackend();
+				backend.registerWorkflow({
+					workflowId: runId,
+					name: "startup-workflow",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+					updatedAt: 1,
+					completedCheckpoints: 1,
+					invocationCwd: root,
+				});
+				const originalHandle = backend.getWorkflow(runId);
+				const notices: string[] = [];
+				let prompts = 0;
+				const ctx = {
+					hasUI: scenario.hasUI,
+					ui: {
+						notify: (message: string) => notices.push(message),
+						confirm: async (title: string) => {
+							assert.match(title, /Resume interrupted workflows/);
+							prompts += 1;
+							return scenario.answer;
+						},
+					},
+				};
+				const { handlers, commands } = registerFactory({
+					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+				});
+				await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				await cleanupJobs();
+				await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				await cleanupJobs();
+				assert.equal(prompts, scenario.prompts);
+				if (!scenario.resumes) {
+					assert.deepEqual(backend.getWorkflow(runId), originalHandle);
+					assert.equal(
+						store.runs().some((run) => run.id === runId),
+						false,
+					);
+					const command = commands.find((entry) => entry.name === "workflow");
+					assert.ok(command);
+					await command.options.handler?.(`resume ${runId}`, { hasUI: false, ui: ctx.ui });
+					await cleanupJobs();
+				}
+				assert.equal(backend.getWorkflow(runId)?.status, "completed", notices.join("\n"));
+				assert.equal(store.runs().find((run) => run.id === runId)?.status, "completed");
+			} finally {
+				process.chdir(originalCwd);
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test("session_start ask does not offer live, paused, failed, blocked or awaiting-input runs (#3468)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-exclusions-"));
+		try {
+			mkdirSync(workflowConfigDir(root), { recursive: true });
+			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
+			process.chdir(root);
+			const backend = getDurableBackend();
+			for (const status of ["paused", "failed", "blocked", "running"] as const) {
+				backend.registerWorkflow({
+					workflowId: testRunId(`startup-excluded-${status}`),
+					name: "excluded",
+					inputs: {},
+					status,
+					createdAt: 1,
+					updatedAt: status === "running" ? Date.now() : 1,
+					completedCheckpoints: 1,
+					invocationCwd: root,
+				});
+			}
+			backend.registerWorkflow({
+				workflowId: testRunId("startup-awaiting-input"),
+				name: "excluded",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				pendingPrompts: 1,
+				invocationCwd: root,
+			});
+			backend.registerWorkflow({
+				workflowId: testRunId("startup-live-quiet-owner"),
+				name: "excluded",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				completedCheckpoints: 1,
+				invocationCwd: root,
+				ownerLiveness: "alive",
+			});
+			const before = backend.listResumableWorkflows();
+			let discoveryCalls = 0;
+			const { handlers } = registerFactory({
+				disableAsyncDiscovery: true,
+				getWorkflowResources: () => {
+					discoveryCalls += 1;
+					return [];
+				},
+			});
+			let prompts = 0;
+			await handlers.get("session_start")?.(
+				{ reason: "startup" },
+				{
+					hasUI: true,
+					ui: {
+						confirm: async () => {
+							prompts += 1;
+							return false;
+						},
+					},
+				},
+			);
+			assert.equal(prompts, 0);
+			assert.deepEqual(backend.listResumableWorkflows(), before);
+			assert.equal(store.runs().length, 0);
+			assert.equal(discoveryCalls, 0);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const mode of ["auto", "ask"] as const) {
+		test(`presentation-only session_start does not apply ${mode} recovery (#3468)`, async () => {
+			class CatalogBackend extends InMemoryDurableBackend {
+				catalogReads = 0;
+				override async hydrateResumableWorkflows(): Promise<void> {
+					this.catalogReads += 1;
+					await super.hydrateResumableWorkflows();
+				}
+			}
+			const backend = new CatalogBackend();
+			setDurableBackend(backend);
+			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-presentation-startup-"));
+			try {
+				mkdirSync(workflowConfigDir(root), { recursive: true });
+				writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: mode }));
+				process.chdir(root);
+				backend.registerWorkflow({
+					workflowId: testRunId("presentation-startup"),
+					name: "presentation-startup",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+					updatedAt: 1,
+					completedCheckpoints: 1,
+					invocationCwd: root,
+				});
+				const before = backend.listResumableWorkflows();
+				let prompts = 0;
+				const { handlers } = registerFactory({ disableAsyncDiscovery: true });
+				await handlers.get("session_start")?.(
+					{ reason: "startup" },
+					{
+						isPresentationOnly: true,
+						hasUI: true,
+						ui: {
+							confirm: async () => {
+								prompts += 1;
+								return false;
+							},
+						},
+					},
+				);
+				assert.equal(backend.catalogReads, 0);
+				assert.equal(prompts, 0);
+				assert.deepEqual(backend.listResumableWorkflows(), before);
+				assert.equal(store.runs().length, 0);
+			} finally {
+				process.chdir(originalCwd);
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test("session_start recovery failure warns without failing startup (#3468)", async () => {
+		class UnavailableBackend extends InMemoryDurableBackend {
+			override async hydrateResumableWorkflows(): Promise<void> {
+				throw new Error("durable catalog unavailable");
+			}
+		}
+		setDurableBackend(new UnavailableBackend());
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-unavailable-"));
+		try {
+			mkdirSync(workflowConfigDir(root), { recursive: true });
+			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "auto" }));
+			process.chdir(root);
+			const notices: string[] = [];
+			const { handlers } = registerFactory({ disableAsyncDiscovery: true });
+			await handlers.get("session_start")?.(
+				{ reason: "startup" },
+				{
+					hasUI: false,
+					ui: { notify: (message: string) => notices.push(message) },
+				},
+			);
+			assert.match(notices.join("\n"), /durable catalog unavailable.*\/workflow resume/);
+			assert.equal(store.runs().length, 0);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("session_start ignores session workflow state without discovering workflow modules", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-config-restore-"));
 		try {

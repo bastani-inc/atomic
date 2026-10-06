@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, test } from "vitest";
+import { afterAll, beforeAll, test, vi } from "vitest";
 import type { PendingStageMessageRequest } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -1508,6 +1508,106 @@ test("a refused production route settles its pipelined list barrier with the bro
 			group,
 		},
 	]);
+});
+
+test("duplicate workflow bridge loads preserve recovered stage routing authority (#3468)", async () => {
+	const { createStore } = await import("../../packages/workflows/src/shared/store.js");
+	const first = await import("../../packages/workflows/src/extension/pending-stage-intercom.js");
+	vi.resetModules();
+	const second = await import("../../packages/workflows/src/extension/pending-stage-intercom.js");
+	const runId = "5b45c3dd-f399-4590-b762-5c02de4e41e5";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "recovered-workflow",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		stages: [
+			{
+				id: "reviewer-id",
+				name: "reviewer",
+				status: "pending",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
+	});
+	const owner = new IntercomClient();
+	realClients.add(owner);
+	owner.on("error", () => {});
+	await owner.connect(productionRegistration("duplicate-bridge-owner", group));
+	const publications: Promise<void>[] = [];
+	const capabilities: string[] = [];
+	const surface = {
+		events: {
+			emit(event: string, payload: Record<string, unknown>) {
+				if (event !== "atomic:workflow-pending-stage-route") return;
+				capabilities.push(payload.capability as string);
+				owner.registerPendingStageRoute(
+					payload.runId as string,
+					payload.group as string,
+					payload.capability as string,
+					payload.stages as import("../../packages/intercom/types.js").WorkflowStageRosterAnnouncement[],
+				);
+				const completion = owner.listSessions().then(() => undefined);
+				payload.completion = completion;
+				publications.push(completion);
+			},
+		},
+	};
+	const disposeFirst = first.registerPendingStageIntercomBridge(surface, store);
+	let disposeSecond: (() => void) | undefined;
+	try {
+		await Promise.all(publications);
+		disposeSecond = second.registerPendingStageIntercomBridge(surface, store);
+		await Promise.all(publications);
+		assert.equal(owner.isConnected(), true);
+		assert.deepEqual(
+			(await owner.listDirectory()).workflowStages?.filter((stage) => stage.runId === runId),
+			[
+				{
+					kind: "workflow-stage",
+					runId,
+					stageId: "reviewer-id",
+					stageName: "reviewer",
+					target: `workflow:${runId}/reviewer-id`,
+					lifecycle: "pending",
+					group,
+				},
+			],
+		);
+		assert.equal(capabilities[0], capabilities[1]);
+		const foreignStore = createStore();
+		const otherRunId = "a99b15a6-d4fb-40e1-b673-fbe50bdb1f14";
+		foreignStore.recordRunStart(structuredClone(store.runs()[0]!));
+		foreignStore.recordRunStart({ ...structuredClone(store.runs()[0]!), id: otherRunId });
+		const foreignCapabilities = new Map<string, string>();
+		const disposeForeign = second.registerPendingStageIntercomBridge(
+			{
+				events: {
+					emit(event, payload) {
+						if (event !== "atomic:workflow-pending-stage-route") return;
+						foreignCapabilities.set(payload.runId as string, payload.capability as string);
+						payload.completion = Promise.resolve();
+					},
+				},
+			},
+			foreignStore,
+		);
+		try {
+			assert.equal(foreignCapabilities.size, 2);
+			assert.notEqual(foreignCapabilities.get(runId), capabilities[0]);
+			assert.notEqual(foreignCapabilities.get(runId), foreignCapabilities.get(otherRunId));
+		} finally {
+			disposeForeign();
+		}
+	} finally {
+		disposeFirst();
+		disposeSecond?.();
+	}
 });
 
 test("broker rejects an attacker-first live route without the workflow capability", async () => {

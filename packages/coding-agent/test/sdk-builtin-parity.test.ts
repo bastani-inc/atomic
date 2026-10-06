@@ -23,14 +23,16 @@ import type { AtomicBuiltin, CreateAgentSessionOptions } from "../src/core/sdk-t
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { getDefaultToolNames } from "../src/core/tools/index.ts";
-import type {
-	ExtensionBindings,
-	ExtensionContext,
-	HostDiagnostic,
-	HostInput,
-	HostInputOptions,
-	QuestionnaireResult,
-	QuestionParams,
+import {
+	type ExtensionBindings,
+	type ExtensionContext,
+	type HostDiagnostic,
+	type HostInput,
+	type HostInputOptions,
+	publishExtensionContextEffect,
+	type QuestionnaireResult,
+	type QuestionParams,
+	registerExtensionContextRetirementEffect,
 } from "../src/index.js";
 import { startOAuthMcpServer } from "./mcp-client/native-oauth-server.js";
 
@@ -3344,8 +3346,251 @@ test.each(["activate", "commit", "settings", "activate-cleanup"])("reload public
 	assert.equal(active.size, 0);
 });
 
+test.each(["error", "diagnostic"] as const)(
+	"public reload retires its predecessor when a commit and %s observer throw (#3468)",
+	async (observerFailure) => {
+		const cwd = mkdtempSync(join(tmpdir(), "sdk-commit-observer-failure-"));
+		const settingsManager = SettingsManager.inMemory();
+		const active = new Set<number>();
+		const started: Array<{ id: number; context: ExtensionContext; write: () => void }> = [];
+		const stopped: number[] = [];
+		const retired: number[] = [];
+		const commits: string[] = [];
+		const commitError = new Error("candidate commit failed");
+		const observerError = new Error(`${observerFailure} observer failed`);
+		let next = 0;
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: cwd,
+			settingsManager,
+			noExtensions: true,
+			extensionFactories: [
+				(pi) => {
+					const id = ++next;
+					pi.on("session_start", async (_event, ctx) => {
+						active.add(id);
+						started.push({ id, context: ctx, write: () => pi.setSessionName(`generation-${id}`) });
+						registerExtensionContextRetirementEffect(ctx, () => retired.push(id));
+						if (started.length === 2) {
+							await publishExtensionContextEffect(
+								ctx,
+								() => {
+									commits.push("failing");
+									throw commitError;
+								},
+								"commit",
+							);
+							await publishExtensionContextEffect(
+								ctx,
+								() => {
+									commits.push("remaining");
+									pi.setSessionName(`generation-${id}`);
+								},
+								"commit",
+							);
+						}
+					});
+					pi.on("session_shutdown", () => {
+						active.delete(id);
+						stopped.push(id);
+					});
+				},
+			],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: cwd,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(cwd),
+			tools: [],
+			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		});
+		await session.bindExtensions({
+			[observerFailure === "error" ? "onError" : "onDiagnostic"]: () => {
+				throw observerError;
+			},
+		});
+		const predecessor = started[0]!;
+		const oldRunner = session.extensionRunner;
+		try {
+			const failure = await session.reload().catch((error: Error) => error);
+			assert.deepEqual(commits, ["failing", "remaining"]);
+			assert.ok(failure instanceof AggregateError);
+			assert.ok(failure.errors.includes(commitError));
+			assert.ok(failure.errors.includes(observerError));
+			const successor = started[1]!;
+			assert.deepEqual([...active], [successor.id]);
+			assert.ok(retired.includes(predecessor.id));
+			assert.equal(stopped.filter((id) => id === predecessor.id).length, 1);
+			assert.throws(predecessor.write, /stale|no longer active/i);
+			assert.throws(() => predecessor.context.getAgentTaskHost(), /stale|no longer active/i);
+			assert.notEqual(session.extensionRunner, oldRunner);
+			successor.write();
+			assert.ok(successor.context.getAgentTaskHost());
+			assert.equal(session.sessionManager.getSessionName(), `generation-${successor.id}`);
+		} finally {
+			await session.dispose();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+		assert.equal(active.size, 0);
+		for (const { id } of started) {
+			assert.equal(stopped.filter((stoppedId) => stoppedId === id).length, 1);
+			assert.equal(retired.filter((retiredId) => retiredId === id).length, 1);
+		}
+	},
+);
+
+test("public reload retains late commit and observer failures during retirement (#3468)", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "sdk-late-commit-failure-"));
+	const settingsManager = SettingsManager.inMemory();
+	const retiring = Promise.withResolvers<void>();
+	const releaseRetirement = Promise.withResolvers<void>();
+	const contexts: ExtensionContext[] = [];
+	const stopped: number[] = [];
+	const commitError = new Error("late commit failed");
+	const observerError = new Error("late commit observer failed");
+	let next = 0;
+	let predecessorId: number | undefined;
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: cwd,
+		settingsManager,
+		noExtensions: true,
+		extensionFactories: [
+			(pi) => {
+				const id = ++next;
+				pi.on("session_start", (_event, ctx) => {
+					predecessorId ??= id;
+					contexts.push(ctx);
+				});
+				pi.on("session_shutdown", async () => {
+					stopped.push(id);
+					if (id === predecessorId) {
+						retiring.resolve();
+						await releaseRetirement.promise;
+					}
+				});
+			},
+		],
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir: cwd,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(cwd),
+		tools: [],
+		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+	});
+	await session.bindExtensions({
+		onError: () => {
+			throw observerError;
+		},
+	});
+	try {
+		const reloading = session.reload().catch((error: unknown) => error);
+		await retiring.promise;
+		await publishExtensionContextEffect(
+			contexts[1]!,
+			() => {
+				throw commitError;
+			},
+			"commit",
+		);
+		let remaining = false;
+		await publishExtensionContextEffect(
+			contexts[1]!,
+			() => {
+				remaining = true;
+			},
+			"commit",
+		);
+		releaseRetirement.resolve();
+		const failure = await reloading;
+		assert.equal(remaining, true);
+		assert.ok(failure instanceof AggregateError);
+		assert.ok(failure.errors.includes(commitError));
+		assert.ok(failure.errors.includes(observerError));
+		assert.deepEqual(stopped, [predecessorId]);
+		assert.ok(contexts[1]!.getAgentTaskHost());
+	} finally {
+		releaseRetirement.resolve();
+		await session.dispose();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 // #3105: installing a successor must not lose retiring ownership if reconstruction throws.
-test.each(["failure", "shutdown", "invalidation", "control"])(
+test.each(["shutdown"] as const)("public reload retains commit and %s failures (#3468)", async (mode) => {
+	const cwd = mkdtempSync(join(tmpdir(), "sdk-combined-publication-failure-"));
+	const settingsManager = SettingsManager.inMemory();
+	const commitError = new Error("candidate commit failed");
+	const shutdownError = new Error("predecessor shutdown failed");
+	const stopped: number[] = [];
+	const retired: number[] = [];
+	const started: number[] = [];
+	let next = 0;
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: cwd,
+		settingsManager,
+		noExtensions: true,
+		extensionFactories: [
+			(pi) => {
+				const id = ++next;
+				pi.on("session_start", async (_event, ctx) => {
+					started.push(id);
+					registerExtensionContextRetirementEffect(ctx, () => retired.push(id));
+					if (started.length === 2) {
+						await publishExtensionContextEffect(
+							ctx,
+							() => {
+								throw commitError;
+							},
+							"commit",
+						);
+						pi.setSessionName("successor published");
+					}
+				});
+				pi.on("session_shutdown", () => {
+					stopped.push(id);
+					if (mode === "shutdown" && id === started[0]) throw shutdownError;
+				});
+			},
+		],
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir: cwd,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(cwd),
+		tools: [],
+		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+	});
+	try {
+		const failure = await session.reload().catch((error: unknown) => error);
+		const errors = (error: unknown): unknown[] =>
+			error instanceof AggregateError ? error.errors.flatMap(errors) : [error];
+		const observed = errors(failure);
+		assert.ok(observed.includes(commitError));
+		assert.ok(observed.some((error) => error instanceof Error && error.message.includes(shutdownError.message)));
+		assert.deepEqual(stopped, [started[0]]);
+		assert.deepEqual(retired, [started[0]]);
+		assert.equal(session.sessionManager.getSessionName(), "successor published");
+	} finally {
+		await session.dispose().catch((error) => {
+			assert.equal(error.code, "ShutdownFailed");
+		});
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test.each(["failure", "shutdown", "invalidation", "observation", "control"])(
 	"postcommit rebuild retains retiring cleanup: %s",
 	async (mode) => {
 		const cwd = mkdtempSync(join(tmpdir(), "sdk-postcommit-cleanup-"));
@@ -3355,6 +3600,7 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 		const setupError = new Error("postcommit prompt failed");
 		const shutdownError = new Error("retiring shutdown failed");
 		const invalidationError = new Error("retiring invalidation failed");
+		const observationError = new Error("retiring observation failed");
 		let committed = false;
 		let next = 0;
 		class Loader extends DefaultResourceLoader {
@@ -3387,8 +3633,13 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 			extensionFactories: [
 				(pi) => {
 					const id = ++next;
-					pi.on("session_start", () => {
+					pi.on("session_start", (_event, ctx) => {
 						active.add(id);
+						if (id === 2 && mode === "observation") {
+							registerExtensionContextRetirementEffect(ctx, () => {
+								throw observationError;
+							});
+						}
 					});
 					pi.on("session_shutdown", () => {
 						active.delete(id);
@@ -3430,13 +3681,14 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 					assert.ok(all.includes(setupError));
 					if (mode === "invalidation") assert.ok(all.includes(invalidationError));
 					if (mode === "shutdown") assert.match(all.map(String).join("\n"), /retiring shutdown failed/);
+					if (mode === "observation") assert.ok(all.includes(observationError));
 					return true;
 				});
 			assert.deepEqual([...active], [4]);
 			assert.equal(invalidated, true);
 		} finally {
 			await session.dispose().catch((error) => {
-				assert.ok(mode === "shutdown" || mode === "invalidation");
+				assert.ok(mode === "shutdown" || mode === "invalidation" || mode === "observation");
 				assert.equal(error.code, "ShutdownFailed");
 			});
 			rmSync(cwd, { recursive: true, force: true });
@@ -5258,4 +5510,24 @@ test("SDK native MCP login without a TTY does not authorize before or after call
 		await server.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("commit effects reject asynchronous callbacks without executing them (#3468)", async () => {
+	let called = false;
+	await assert.rejects(
+		publishExtensionContextEffect(
+			{},
+			async () => {
+				called = true;
+			},
+			"commit",
+		),
+		/must be synchronous/,
+	);
+	assert.equal(called, false);
+	await assert.rejects(
+		publishExtensionContextEffect({}, () => Promise.resolve(), "commit"),
+		/must be synchronous/,
+	);
+	await publishExtensionContextEffect({}, () => JSON.parse('{"then":"not a promise"}'), "commit");
 });

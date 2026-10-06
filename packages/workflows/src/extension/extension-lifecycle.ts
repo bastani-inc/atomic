@@ -1,7 +1,10 @@
-import { sessionScopedExtensionState } from "@bastani/atomic";
+import { resolve } from "node:path";
+import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
+import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
@@ -13,13 +16,17 @@ import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
-import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
+import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
 import { formatStartupDiagnostics } from "./workflow-command-surfaces.js";
+import { prepareWorkflowResumeCatalog } from "./workflow-durable-resume-command.js";
+import { workflowCaller } from "./workflow-instance-owner.js";
+import { workflowPolicyFromContext } from "./workflow-policy.js";
 
 interface WorkflowLifetime {
 	readonly generations: Set<(boundary?: "quit" | "switch") => Promise<void>>;
 	release?: () => Promise<void>;
 	closing?: Promise<void>;
+	startupStarted?: boolean;
 }
 
 async function attemptAll(actions: readonly (() => unknown | Promise<unknown>)[]): Promise<void> {
@@ -175,7 +182,89 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	};
 	let startupResourcesDiscovered = false;
 
+	const resumeInFlight = async (ctx: PiEventContext | undefined): Promise<void> => {
+		if (ctx?.isPresentationOnly === true) return;
+		const mode = runtimeState.configLoadRef.current?.config?.resumeInFlight ?? "ask";
+		if (mode === "never" || (mode === "ask" && (ctx?.hasUI === false || typeof ctx?.ui?.confirm !== "function")))
+			return;
+		try {
+			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
+			const backend = getDurableBackend();
+			const isInterruptedInProject = (entry: ResumableWorkflowEntry): boolean => {
+				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
+				return (
+					handle.invocationCwd !== undefined &&
+					resolve(handle.invocationCwd) ===
+						resolve(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd()) &&
+					handle.status === "running" &&
+					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
+					!isLiveRunningWorkflow(handle)
+				);
+			};
+			const interrupted = catalog.filter(isInterruptedInProject);
+			if (interrupted.length === 0) return;
+			if (
+				mode === "ask" &&
+				!(await ctx?.ui?.confirm?.(
+					"Resume interrupted workflows?",
+					`${interrupted.length} interrupted workflow(s) can resume from their durable checkpoints. Resume now? Choose No to leave them available through /workflow resume.`,
+				))
+			)
+				return;
+			await runtimeState.ensureWorkflowResourcesLoaded();
+			const runtime = runtimeState.runtimeForContext(ctx);
+			const prepared = await prepareWorkflowResumeCatalog(runtime, new Set(store.runs().map((run) => run.id)));
+			const eligibleIds = new Set(interrupted.map((entry) => entry.workflowId));
+			const availableIds = new Set(prepared.resumable.map((entry) => entry.workflowId));
+			for (const entry of interrupted) {
+				if (availableIds.has(entry.workflowId)) continue;
+				ctx?.ui?.notify?.(
+					`Workflow ${entry.workflowId} is not available for startup recovery. Enable its workflow resources, then use /workflow resume ${entry.workflowId}.`,
+					"warning",
+				);
+			}
+			for (const entry of prepared.resumable) {
+				if (!eligibleIds.has(entry.workflowId) || !isInterruptedInProject(entry)) continue;
+				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
+					policy: workflowPolicyFromContext(ctx),
+					actor: "user",
+					...(ctx === undefined ? {} : { modelOwner: workflowCaller(ctx) }),
+				});
+				ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
+			}
+		} catch (error) {
+			ctx?.ui?.notify?.(
+				`Workflow startup resume failed: ${String(error)}. Use /workflow resume to retry.`,
+				"warning",
+			);
+		}
+	};
+
+	const closeObservation = (): void => {
+		const errors: unknown[] = [];
+		for (const dispose of [
+			() => {
+				deps.intercomControlRef.current?.();
+				deps.intercomControlRef.current = null;
+			},
+			() => {
+				deps.storeWidgetRef.current?.();
+				deps.storeWidgetRef.current = null;
+			},
+			() => runtimeState.resetWorkflowDiscoveryForSession(),
+			() => runtimeState.setNotificationsActive(false),
+			() => deps.disposeObservation?.(),
+		]) {
+			try {
+				dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length) throw new AggregateError(errors, "Workflow observation retirement failed");
+	};
 	pi.on("session_start", async (event, ctx) => {
+		if (ctx) registerExtensionContextRetirementEffect(ctx, closeObservation);
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
 			getDurableBackendProcessOwner().injectedBackend === undefined ? acquireDbosLease() : async () => {};
@@ -183,17 +272,19 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			typeof event === "object" && event !== null && "reason" in event
 				? (event as { readonly reason?: string }).reason
 				: undefined;
+		const stopsWorkflows = replacementStopsWorkflows(reason) && !(reason === "startup" && lifetime.startupStarted);
+		if (reason === "startup") lifetime.startupStarted = true;
 		startupResourcesDiscovered = false;
 		runtimeState.resetWorkflowDiscoveryForSession();
 		await runtimeState.ensureWorkflowConfigLoaded();
-		if (replacementStopsWorkflows(reason)) {
+		if (stopsWorkflows) {
 			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
 			store.clear();
 		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
-		if (replacementStopsWorkflows(reason)) await stageControlRegistry.clear();
+		if (stopsWorkflows) await stageControlRegistry.clear();
 		else await stageControlRegistry.clearDetached();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
@@ -204,9 +295,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			deps.storeWidgetRef.current?.();
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
-		// Session JSONL contains chat transcripts only. Workflow state is loaded
-		// from DBOS on the first workflow command or run, never during startup.
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
+		if (stopsWorkflows) await resumeInFlight(ctx);
 	});
 	// A second startup discovery in one session means deferred startup (such as
 	// project trust) published a changed package set after session_start (#3354).
@@ -223,20 +313,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	installCompactionHook(pi, store);
 	pi.on("session_shutdown", async (event) => {
 		const reason = eventReason(event);
-		const closeGeneration = () =>
-			attemptAll([
-				() => {
-					deps.intercomControlRef.current?.();
-					deps.intercomControlRef.current = null;
-				},
-				() => {
-					deps.storeWidgetRef.current?.();
-					deps.storeWidgetRef.current = null;
-				},
-				() => runtimeState.resetWorkflowDiscoveryForSession(),
-				() => runtimeState.setNotificationsActive(false),
-				() => deps.disposeObservation?.(),
-			]);
+		const closeGeneration = closeObservation;
 		if (replacementStopsWorkflows(reason)) {
 			lifetime.closing ??= attemptAll([
 				closeGeneration,

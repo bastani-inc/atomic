@@ -34,6 +34,7 @@ export interface ExtensionContextSource {
 	getMode(): ExtensionMode;
 	hasUI(): boolean;
 	hasHumanInput?(): boolean;
+	isPresentationOnly?(): boolean;
 	getCwd(): string;
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
@@ -116,32 +117,81 @@ export function copyScopedModels(scoped: readonly ScopedModel[]): readonly Scope
 // Private host/builtin bridge, also read by intercom/context-owner.ts. Separate
 // bundles share identity without exposing guarded capabilities or retaining UI.
 const CONTEXT_OWNERS_KEY = Symbol.for("atomic-coding-agent/extension-context-owners@1");
-const contextOwnerBag = globalThis as typeof globalThis & { [CONTEXT_OWNERS_KEY]?: WeakMap<ExtensionContext, object> };
-contextOwnerBag[CONTEXT_OWNERS_KEY] ??= new WeakMap<ExtensionContext, object>();
+const contextOwnerBag = globalThis as typeof globalThis & { [CONTEXT_OWNERS_KEY]?: WeakMap<object, object> };
+contextOwnerBag[CONTEXT_OWNERS_KEY] ??= new WeakMap<object, object>();
 const contextOwners = contextOwnerBag[CONTEXT_OWNERS_KEY];
 
 /** Internal lifecycle identity; contexts themselves are recreated for every dispatch. */
-export function getExtensionContextOwner(context: ExtensionContext): object {
+export function getExtensionContextOwner(context: object): object {
 	return contextOwners.get(context) ?? context;
 }
 
 type ContextEffect = () => void | Promise<void>;
-const contextPublications = new WeakMap<object, (effect: ContextEffect) => void>();
+export type ExtensionContextEffectPhase = "start" | "commit";
+type ContextPublication = (effect: ContextEffect, phase: ExtensionContextEffectPhase) => void;
+const contextPublications = new WeakMap<object, ContextPublication>();
+const contextRetirements = new WeakMap<object, Set<() => void>>();
 
-/** Keep builtin lifecycle effects behind the host's transactional publication boundary. */
-export function bindExtensionContextPublication(
-	context: ExtensionContext,
-	stage: ((effect: ContextEffect) => void) | undefined,
-): void {
+export function bindExtensionContextPublication(context: object, stage: ContextPublication | undefined): void {
 	const owner = getExtensionContextOwner(context);
 	if (stage) contextPublications.set(owner, stage);
 	else contextPublications.delete(owner);
 }
 
-export async function publishExtensionContextEffect(context: ExtensionContext, effect: ContextEffect): Promise<void> {
+export function runSynchronousExtensionContextEffect(effect: () => void): void {
+	if (effect.constructor.name === "AsyncFunction") {
+		throw new TypeError("Extension commit and retirement effects must be synchronous");
+	}
+	const result: unknown = effect();
+	if (
+		result &&
+		(typeof result === "object" || typeof result === "function") &&
+		"then" in result &&
+		typeof result.then === "function"
+	) {
+		void Promise.resolve(result).catch((error: unknown) =>
+			console.error("Invalid asynchronous extension effect failed", error),
+		);
+		throw new TypeError("Extension commit and retirement effects must be synchronous");
+	}
+}
+
+export function publishExtensionContextEffect(context: object, effect: () => void, phase: "commit"): Promise<void>;
+export function publishExtensionContextEffect(context: object, effect: ContextEffect, phase?: "start"): Promise<void>;
+export async function publishExtensionContextEffect(
+	context: object,
+	effect: ContextEffect,
+	phase: ExtensionContextEffectPhase = "start",
+): Promise<void> {
 	const stage = contextPublications.get(getExtensionContextOwner(context));
-	if (stage) stage(effect);
+	if (stage) stage(effect, phase);
+	else if (phase === "commit") runSynchronousExtensionContextEffect(effect);
 	else await effect();
+}
+
+export function registerExtensionContextRetirementEffect(context: object, effect: () => void): () => void {
+	const owner = getExtensionContextOwner(context);
+	let effects = contextRetirements.get(owner);
+	if (!effects) {
+		effects = new Set();
+		contextRetirements.set(owner, effects);
+	}
+	effects.add(effect);
+	return () => effects.delete(effect);
+}
+
+export function retireExtensionContextEffects(owner: object): void {
+	const effects = contextRetirements.get(owner);
+	contextRetirements.delete(owner);
+	const failures: unknown[] = [];
+	for (const effect of effects ?? []) {
+		try {
+			runSynchronousExtensionContextEffect(effect);
+		} catch (error) {
+			failures.push(error);
+		}
+	}
+	if (failures.length) throw new AggregateError(failures, "Extension observation retirement failed");
 }
 
 /**
@@ -188,6 +238,10 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		get hasUI() {
 			source.assertActive();
 			return source.hasUI();
+		},
+		get isPresentationOnly() {
+			source.assertActive();
+			return source.isPresentationOnly?.() ?? false;
 		},
 		get cwd() {
 			source.assertActive();

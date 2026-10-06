@@ -1,3 +1,4 @@
+import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
@@ -134,9 +135,14 @@ function factory(pi: ExtensionAPI): void {
 		stageControlRegistry: runState.stageControlRegistry,
 	};
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
+	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
+	const disposePendingRoutes = registerPendingStageIntercomBridge(pi, store);
+	pi.on?.("session_start", (_event, ctx) => {
+		if (!ctx) return;
+		registerExtensionContextRetirementEffect(ctx, disposeCompletedRoutes);
+		registerExtensionContextRetirementEffect(ctx, disposePendingRoutes);
+	});
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver);
-	registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
-	registerPendingStageIntercomBridge(pi, store);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
 	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };
