@@ -2,9 +2,9 @@ import type {
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	ModelRegistry,
-	SessionWorkflows,
 	ToolDefinition,
 	WorkflowActivityPublisher,
+	WorkflowRunControl,
 	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
@@ -171,7 +171,7 @@ export interface ExtensionAPI {
 	/** @internal Stable ownership identity across host generation replacement. */
 	readonly lifecycleScope?: object;
 	registerWorkflowActivityPublisher?: () => WorkflowActivityPublisher;
-	registerWorkflowRunControl?: (control: SessionWorkflows) => WorkflowRunControlRegistration;
+	registerWorkflowRunControl?: (control: WorkflowRunControl) => WorkflowRunControlRegistration;
 	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
 	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;

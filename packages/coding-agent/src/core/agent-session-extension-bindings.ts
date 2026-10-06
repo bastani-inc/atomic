@@ -825,6 +825,7 @@ async function reloadOwnedGeneration(
 	// Publication transferred ownership: keep the started candidate reachable even
 	// when reconstruction fails, and retain retiring cleanup through every step.
 	this._extensionRunner = candidateRunner;
+	this._workflows?.rebindObservers();
 	retainedRuntimes.add(extensionsResult.runtime);
 	const failures: unknown[] = [];
 	try {

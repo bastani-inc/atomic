@@ -241,6 +241,7 @@ interface SessionWorkflows {
   pause(target: { all: true }): Promise<WorkflowRunControlOutcome>;
   quit(target: string | { all: true }): Promise<WorkflowRunControlOutcome>;
   resume(runId: string, options?: { stageId?: string; message?: string }): Promise<WorkflowRunControlOutcome>;
+  observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
 }
 ```
 
@@ -313,7 +314,38 @@ async function onResumeClicked() {
 }
 ```
 
-`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available. See [pausing, quitting, and resuming](/workflows/operations#pausing-quitting-and-resuming) for what each action guarantees. To watch runs change instead of polling `listRuns()`, use the observation contract in [Workflow activity and lifecycle hooks](/extensions/events#workflow-activity-and-lifecycle-hooks).
+`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available. See [pausing, quitting, and resuming](/workflows/operations#pausing-quitting-and-resuming) for what each action guarantees.
+
+#### Observing workflow runs
+
+To follow runs instead of polling `listRuns()`, call `session.workflows.observe(observer)`. It covers runs that the agent launches with the `workflow` tool, and needs no extension. The first frame is a `snapshot`. After it come `changed` and `removed` frames, delivered in order. Each callback finishes before the next one starts. Call `dispose()` on the returned subscription to stop. The frames and cursors follow the [workflow activity contract](/extensions/events#workflow-activity-and-lifecycle-hooks).
+
+Each root summary carries a `graph` with the nodes of that root's workflow, including the nodes of nested child workflows. Nodes are `stage` nodes and `ctx.tool` nodes. Each one has an `id`, `kind`, `name`, `status`, `parentIds`, `runId`, `nodeId` (its run-local id), `depth`, and `executionOrder` when it is known. Tool nodes add their `ordinal`. A stage that is waiting on a prompt adds `pendingPrompt` with the prompt's `id`, `kind`, `message`, `choices`, and `createdAt`. A prompt that a run raises outside any stage appears in `graph.runPrompts` with the same fields and the `runId` that owns it. A node status change produces a `changed` frame. Frames are plain JSON-serializable objects.
+
+```typescript
+import type { WorkflowRootActivity } from "@bastani/atomic";
+
+const roots = new Map<string, WorkflowRootActivity>();
+const subscription = session.workflows.observe((frame) => {
+  if (frame.kind === "snapshot") {
+    roots.clear();
+    // `recovering` or `unavailable` means activity is unknown, not idle.
+    if (frame.availability === "ready") for (const root of frame.roots) roots.set(root.rootRunId, root);
+  } else if (frame.kind === "changed") {
+    roots.set(frame.root.rootRunId, frame.root);
+    for (const node of frame.root.graph?.nodes ?? []) {
+      renderNode(node.id, node.name, node.status, node.parentIds);
+    }
+  } else {
+    roots.delete(frame.rootRunId);
+  }
+});
+
+// Later:
+subscription.dispose();
+```
+
+Observation can start before the workflows package has finished loading; the first snapshot then reports `availability: "unavailable"`, and a `ready` snapshot follows. The subscription survives `session.reload()`. After a reload, the observer receives a new snapshot with a new cursor `epoch`, so replace everything you knew. `observe()` throws `WorkflowRunControlUnavailableError` after the session is disposed. This stream reports root activity and graph state. It does not carry the events inside each stage.
 
 ### Workflow and subagent children
 

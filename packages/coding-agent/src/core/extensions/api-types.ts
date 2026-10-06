@@ -88,7 +88,7 @@ import type {
 	WorkflowLifecycleEvent,
 	WorkflowStageCompletedEvent,
 } from "./workflow-events.js";
-import type { SessionWorkflows, WorkflowRunControlRegistration } from "./workflow-run-control.js";
+import type { WorkflowRunControl, WorkflowRunControlRegistration } from "./workflow-run-control.js";
 
 /** Handler function type for events */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
@@ -104,7 +104,7 @@ export interface ExtensionAPI {
 	lifecycleScope?: object;
 	registerWorkflowActivityPublisher(): WorkflowActivityPublisher;
 	/** Register the implementation behind `session.workflows`; disposed with this extension generation. */
-	registerWorkflowRunControl(control: SessionWorkflows): WorkflowRunControlRegistration;
+	registerWorkflowRunControl(control: WorkflowRunControl): WorkflowRunControlRegistration;
 	on(
 		event: "cache_warming_decision",
 		handler: ExtensionHandler<CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult>,

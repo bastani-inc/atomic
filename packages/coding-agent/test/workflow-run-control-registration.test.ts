@@ -4,8 +4,10 @@ import { createEventBus } from "../src/core/event-bus.js";
 import type { ExtensionAPI } from "../src/core/extensions/index.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
+import { WorkflowActivityHub } from "../src/core/extensions/workflow-activity-hub.js";
+import type { WorkflowActivityFrame, WorkflowActivityPublisher } from "../src/core/extensions/workflow-events.js";
 import {
-	type SessionWorkflows,
+	type WorkflowRunControl,
 	WorkflowRunControlError,
 	type WorkflowRunControlOutcome,
 	WorkflowRunControlUnavailableError,
@@ -18,7 +20,7 @@ function outcome(action: WorkflowRunControlOutcome["action"], label: string): Wo
 	return { action, runId: RUN_ID, status: "ok", message: label };
 }
 
-function recordingControl(label: string, calls: string[]): SessionWorkflows {
+function recordingControl(label: string, calls: string[]): WorkflowRunControl {
 	return {
 		async listRuns(filter) {
 			calls.push(`${label}:listRuns:${filter?.status ?? "-"}`);
@@ -57,7 +59,13 @@ async function setup(register: (api: ExtensionAPI) => void) {
 		"<run-control-registrar>",
 	);
 	const runner = new ExtensionRunner([extension], runtime, process.cwd(), {} as never, {} as never);
-	return { runner, handle: new SessionWorkflowsHandle(() => runner.getWorkflowRunControl()) };
+	return {
+		runner,
+		handle: new SessionWorkflowsHandle(
+			() => runner.getWorkflowRunControl(),
+			() => (observer) => runner.observeWorkflowActivity(observer),
+		),
+	};
 }
 
 test("session workflows delegate every method to the registered control (#3377)", async () => {
@@ -141,4 +149,84 @@ test("invalidating the extension generation revokes the registered control (#337
 
 	await assert.rejects(handle.listRuns(), WorkflowRunControlUnavailableError);
 	assert.deepEqual(calls, ["ext:listRuns:-"]);
+});
+
+test("session workflows observe activity before the publisher registers and reject without a runtime (#3476)", async () => {
+	let register!: () => WorkflowActivityPublisher;
+	const { runner, handle } = await setup((pi) => {
+		register = () => pi.registerWorkflowActivityPublisher();
+	});
+	const frames: WorkflowActivityFrame[] = [];
+	const subscription = handle.observe((frame) => {
+		frames.push(frame);
+	});
+	const publisher = register();
+	const root = {
+		rootRunId: RUN_ID,
+		ownerSessionId: "session",
+		state: "working",
+		reason: "executing",
+		activeExecutionCount: 1,
+		actionableBlockCount: 0,
+		needsAttention: false,
+		graph: { nodes: [] },
+	} as const;
+	publisher.publishSnapshot({ availability: "ready", roots: [] });
+	publisher.publishChanged(root);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	subscription.dispose();
+	assert.deepEqual(
+		frames.map((frame) => (frame.kind === "snapshot" ? `snapshot:${frame.availability}` : frame.kind)),
+		["snapshot:unavailable", "snapshot:unavailable", "snapshot:ready", "changed"],
+	);
+	assert.deepEqual(frames.at(-1)?.kind === "changed" ? frames.at(-1) : undefined, {
+		kind: "changed",
+		cursor: frames.at(-1)?.cursor,
+		root,
+	});
+
+	const detached = new SessionWorkflowsHandle(
+		() => undefined,
+		() => undefined,
+	);
+	assert.throws(() => detached.observe(() => {}), WorkflowRunControlUnavailableError);
+	runner.invalidate();
+});
+
+test("session workflow observers stay serialized across reload rebinding and close with the session (#3476)", async () => {
+	let hub = new WorkflowActivityHub();
+	const firstEpoch = hub.getSnapshotFrame().cursor.epoch;
+	const handle = new SessionWorkflowsHandle(
+		() => undefined,
+		() => (observer) => hub.observeWorkflowActivity(observer),
+	);
+	const events: string[] = [];
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let first = true;
+	handle.observe(async (frame) => {
+		events.push(`start:${frame.cursor.epoch === firstEpoch ? "old" : "new"}`);
+		if (first) {
+			first = false;
+			await gate;
+		}
+		events.push("end");
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["start:old"]);
+
+	hub = new WorkflowActivityHub();
+	handle.rebindObservers();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["start:old"], "the new generation waits for the in-flight callback");
+	release();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["start:old", "end", "start:new", "end"]);
+
+	handle.disposeObservers();
+	hub.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["start:old", "end", "start:new", "end"]);
 });

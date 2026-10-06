@@ -624,6 +624,7 @@ export function closeAgentSession(
 		await attempt("subscriptions", () => {
 			session._disconnectFromAgent();
 			session._eventListeners = [];
+			session._workflows?.disposeObservers();
 		});
 		await attempt("provider", () => cleanupSessionResources(session.sessionId));
 		await attempt("storage", () => {
