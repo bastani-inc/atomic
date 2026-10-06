@@ -6,6 +6,10 @@
 
 - Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
 
+### Fixed
+
+- Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
+
 ## [0.9.28-alpha.1] - 2026-10-05
 
 ### Added
