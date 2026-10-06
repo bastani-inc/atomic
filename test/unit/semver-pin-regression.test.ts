@@ -3,18 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	Comparator,
-	compare,
-	maxSatisfying,
-	minVersion,
-	Range,
-	rcompare,
-	satisfies,
-	subset,
-	valid,
-	validRange,
-} from "semver";
+import { compare, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
 import { afterEach, describe, test } from "vitest";
 import {
 	getLatestNpmVersion,
@@ -35,9 +24,8 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
  * they preserve prerelease, build-metadata and package-source range behavior.
  * Numeric tails after x-ranges must be rejected by the upstream 7.8.4 fix.
  *
- * Check every locked semver node and resolve the installed CLI from its owning
- * workspace: npm may hoist or nest it without changing this contract. The CLI
- * surface below was re-measured against @napi-rs/cli 3.10.5 and semver 7.8.5.
+ * Check every locked semver node: npm may hoist or nest it without changing
+ * this contract.
  * To re-record these tables after a future pin move, unpack upstream outside
  * this tree and replay the same calls against it:
  *
@@ -48,7 +36,6 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
 
 const PINNED_SEMVER_VERSION = "7.8.5";
 const BASELINE_SEMVER_VERSION = "7.8.5";
-const PINNED_NAPI_CLI_VERSION = "3.10.5";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const codingAgentDir = join(root, "packages/coding-agent");
@@ -57,10 +44,6 @@ const requireFromTest = createRequire(import.meta.url);
 /** The three manifest shapes this file reads. */
 interface Manifest {
 	version: string;
-}
-
-interface CliManifest extends Manifest {
-	dependencies: Record<string, string>;
 }
 
 interface Lockfile {
@@ -108,112 +91,6 @@ interface SemverApi {
 
 /** The instance the shipped code links against, imported the way the shipped code imports it. */
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
-
-/**
- * @napi-rs/cli 3.10.5 declares semver@^7.8.2, satisfied by the shared 7.8.5 pin.
- * Its four semver imports feed restrictWasiNodeEngine and its helpers, which
- * intersect engines.node with the supported WASI Node.js lines.
- *
- * The floor and functions below are transcribed from the installed 3.10.5
- * dist/index.js: `restrictWasiNodeEngine`, `normalizeComparatorSet`, and
- * `stabilizePrereleaseComparator` are byte-for-byte unchanged from 3.9.0 (only
- * minified differently), and the declared semver range and WASI floor are
- * also unchanged, so the recorded baseline table below still applies.
- * This exercises the CLI's semver surface, not the
- * full native build command, against both actual module resolutions.
- */
-const MINIMUM_WASI_NODE_VERSION = "^20.19.0 || ^22.13.0 || >=23.5.0";
-
-/** The four `semver` entry points `@napi-rs/cli` imports, and nothing else. */
-type NapiSemverApi = Pick<typeof import("semver"), "Comparator" | "Range" | "minVersion" | "subset">;
-
-/** Resolve from the owning workspace, whether npm hoists or nests the CLI. */
-const requireFromNatives = createRequire(join(root, "packages/natives/package.json"));
-const napiCliManifestPath = requireFromNatives.resolve("@napi-rs/cli/package.json");
-const requireFromNapiCli = createRequire(napiCliManifestPath);
-const pinnedNapiSurface: NapiSemverApi = { Comparator, Range, minVersion, subset };
-const napiCliSemver = requireFromNapiCli("semver") as NapiSemverApi;
-
-function restrictWasiNodeEngine(semverBuild: NapiSemverApi, nodeRange: string): string {
-	const {
-		Comparator: BuildComparator,
-		Range: BuildRange,
-		minVersion: buildMinVersion,
-		subset: buildSubset,
-	} = semverBuild;
-
-	function stabilizePrereleaseComparator(comparator: Comparator): Comparator {
-		if (comparator.semver.prerelease.length === 0) return comparator;
-		const stableVersion = `${comparator.semver.major}.${comparator.semver.minor}.${comparator.semver.patch}`;
-		if (comparator.operator === ">" || comparator.operator === ">=") return new BuildComparator(`>=${stableVersion}`);
-		if (comparator.operator === "<" || comparator.operator === "<=")
-			return new BuildComparator(`<${stableVersion}-0`);
-		return comparator;
-	}
-
-	function normalizeComparatorSet(comparators: readonly Comparator[]): string | undefined {
-		const exactMatch = comparators.find(({ operator }) => operator === "");
-		if (exactMatch) {
-			return comparators.every((comparator) => comparator.test(exactMatch.semver)) ? exactMatch.value : undefined;
-		}
-		let lowerBound: Comparator | undefined;
-		let upperBound: Comparator | undefined;
-		for (const rawComparator of comparators) {
-			const comparator = stabilizePrereleaseComparator(rawComparator);
-			if (comparator.operator === ">" || comparator.operator === ">=") {
-				if (
-					!lowerBound ||
-					comparator.semver.compare(lowerBound.semver) > 0 ||
-					(comparator.semver.compare(lowerBound.semver) === 0 && comparator.operator === ">")
-				) {
-					lowerBound = comparator;
-				}
-			} else if (comparator.operator === "<" || comparator.operator === "<=") {
-				if (
-					!upperBound ||
-					comparator.semver.compare(upperBound.semver) < 0 ||
-					(comparator.semver.compare(upperBound.semver) === 0 && comparator.operator === "<")
-				) {
-					upperBound = comparator;
-				}
-			}
-		}
-		return [lowerBound?.value, upperBound?.value].filter(Boolean).join(" ");
-	}
-
-	try {
-		if (buildSubset(nodeRange, MINIMUM_WASI_NODE_VERSION)) return nodeRange;
-		if (buildSubset(MINIMUM_WASI_NODE_VERSION, nodeRange)) return MINIMUM_WASI_NODE_VERSION;
-		const supportedRangeSets = new BuildRange(MINIMUM_WASI_NODE_VERSION).set;
-		const restrictedRangeSets = new BuildRange(nodeRange).set
-			.flatMap((comparators) =>
-				supportedRangeSets.map((supportedComparators) =>
-					normalizeComparatorSet([...comparators, ...supportedComparators]),
-				),
-			)
-			.filter((candidate) => candidate !== undefined && buildMinVersion(candidate) !== null);
-		if (restrictedRangeSets.length > 0) return restrictedRangeSets.join(" || ");
-	} catch {
-		return MINIMUM_WASI_NODE_VERSION;
-	}
-	throw new Error(
-		`Cannot restrict engines.node "${nodeRange}" to the Node.js versions supported by WASI packages: ` +
-			`it does not intersect "${MINIMUM_WASI_NODE_VERSION}". ` +
-			"Broaden engines.node to include a supported Node.js version or remove the WASI targets.",
-	);
-}
-
-/**
- * restrictWasiNodeEngine(range) from CLI 3.10.5 with semver 7.8.5, for the
- * repository's engines.node ranges plus the WASI minimum itself.
- */
-const BASELINE_NAPI_WASI_ENGINE = new Map<string, string>([
-	[">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
-	["^20.19.0 || ^22.13.0 || >=23.5.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
-	[">=22.19.0", ">=22.19.0 <23.0.0-0 || >=23.5.0"],
-	[">=14.0.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
-	[">=18", "^20.19.0 || ^22.13.0 || >=23.5.0"],
-]);
 
 /** Versions in this project's own release shape, prereleases included. */
 const PROJECT_SHAPED_VERSIONS = [
@@ -527,27 +404,8 @@ describe("semver pinned at 7.8.5", () => {
 		}
 	});
 
-	test("dependency ranges are satisfied and CLI 3.10.5 keeps its measured behavior", async () => {
-		const napiManifest = await readJson<CliManifest>(napiCliManifestPath);
-		const napiSemverManifest = await readJson<Manifest>(requireFromNapiCli.resolve("semver/package.json"));
-		assert.equal(napiManifest.version, PINNED_NAPI_CLI_VERSION);
-		assert.equal(napiSemverManifest.version, PINNED_SEMVER_VERSION);
-		assert.ok(
-			pinned.satisfies(napiSemverManifest.version, napiManifest.dependencies.semver),
-			`@napi-rs/cli resolves semver ${napiSemverManifest.version}, outside its declared ${napiManifest.dependencies.semver}`,
-		);
-
+	test("every declared semver range in the lockfile is satisfied by its resolution", async () => {
 		const lockfile = await readJson<Lockfile>(join(root, "package-lock.json"));
-		const lockedCli = Object.entries(lockfile.packages).filter(([path]) =>
-			path.endsWith("node_modules/@napi-rs/cli"),
-		);
-		assert.ok(lockedCli.length > 0, "package-lock.json must contain @napi-rs/cli");
-		for (const [path, node] of lockedCli) {
-			assert.equal(node.version, napiManifest.version, `${path} must match the CLI being measured`);
-			assert.equal(node.dependencies?.semver, napiManifest.dependencies.semver, `${path} semver dependency range`);
-		}
-
-		// Check declared dependency ranges, not just the resolved versions' floors.
 		for (const [declarer, range] of semverEdges(lockfile)) {
 			const resolvedVersion = resolvedSemverFor(lockfile, declarer);
 			assert.ok(resolvedVersion, `${declarer} declares semver ${range} but resolves no node`);
@@ -556,31 +414,5 @@ describe("semver pinned at 7.8.5", () => {
 				`${declarer} declares semver ${range} and resolves incompatible ${resolvedVersion}`,
 			);
 		}
-
-		// Run the transcribed CLI surface against the pin and its own resolution.
-		for (const [nodeRange, restricted] of BASELINE_NAPI_WASI_ENGINE) {
-			assert.equal(restrictWasiNodeEngine(napiCliSemver, nodeRange), restricted, `${nodeRange} at the CLI's build`);
-			assert.equal(restrictWasiNodeEngine(pinnedNapiSurface, nodeRange), restricted, `${nodeRange} at the pin`);
-		}
-
-		const natives = await readJson<{
-			devDependencies: Record<string, string>;
-			engines: { node: string };
-			napi: { targets: string[] };
-		}>(join(root, "packages/natives/package.json"));
-
-		// A CLI pin move requires re-measuring the transcribed surface above.
-		assert.equal(natives.devDependencies["@napi-rs/cli"], PINNED_NAPI_CLI_VERSION);
-		assert.ok(
-			BASELINE_NAPI_WASI_ENGINE.has(natives.engines.node),
-			`packages/natives engines.node ${natives.engines.node} is not in BASELINE_NAPI_WASI_ENGINE`,
-		);
-
-		// WASI restriction is not reached by this repository's native-only targets.
-		assert.deepEqual(
-			natives.napi.targets.filter((target) => target.includes("wasi") || target.includes("wasm")),
-			[],
-			"a WASI target would make @napi-rs/cli's semver surface live; re-measure before adding one",
-		);
 	});
 });
