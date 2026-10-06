@@ -84,14 +84,14 @@ describe("GitHub Copilot credential endpoints in summaries", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("uses the credential-resolved endpoint for Verbatim Compaction", async () => {
+	it("uses the credential-resolved endpoint for Verbatim Compaction (#3470)", async () => {
 		harness = await createHarness();
 		installCopilotCredential(harness);
 		seedCompactableSession(harness);
 		const requests: CapturedRequest[] = [];
 		harness.session.agent.streamFunction = async (requestModel, _context, options) => {
 			requests.push({ baseUrl: requestModel.baseUrl, headers: options?.headers });
-			return completedStream(requestModel, "1,20\n");
+			return completedStream(requestModel, "1:1,20\n");
 		};
 
 		await harness.session.compact({ preserve_recent: 0 });

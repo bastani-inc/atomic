@@ -1,9 +1,10 @@
-import { type AnyModel, isModelType } from "@bastani/pi-ai";
+import { type AnyModel, type ClassifierApi, type ClassifierModel, isModelType } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 
 export type CompactionModelSelection =
 	| { kind: "chat"; fullId: string; model: Model<Api> }
-	| { kind: "classifier" | "morph"; fullId: string };
+	| { kind: "classifier"; fullId: string; model: ClassifierModel<ClassifierApi> }
+	| { kind: "morph"; fullId: string };
 
 export function resolveCompactionModel(
 	configured: string,
@@ -18,7 +19,7 @@ export function resolveCompactionModel(
 	}
 	const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === configured);
 	if (model && isModelType(model, "chat")) return { kind: "chat", fullId: configured, model };
-	if (model && isModelType(model, "classifier")) return { kind: "classifier", fullId: configured };
+	if (model && isModelType(model, "classifier")) return { kind: "classifier", fullId: configured, model };
 	if (configured === "morph/morph-compactor") return { kind: "morph", fullId: configured };
 	throw new Error(
 		"Invalid compactionModel: the exact model is not in the current chat, classifier, or compactor catalog.",

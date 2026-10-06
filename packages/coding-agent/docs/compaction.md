@@ -100,6 +100,8 @@ Set `compactionModel` in your global or project settings to choose a compactor w
 
 The default, `auto`, uses the current session model, including Anthropic models. An exact registered chat-model ID selects that model just for compaction. Registered classifiers and Morph compactors are also selectable; project settings cannot select `morph/*`.
 
+For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
+
 If you see a message such as "This request was blocked as it seems to violate Anthropic's Terms of Service", the provider refused that compaction request. Atomic tries the pi-style summary fallback on the same model, then your fallback chain if needed. Anthropic remains supported. If no attempt succeeds, add a `fallbackModels` entry or choose another `compactionModel`, such as a chat model, classifier, or Morph.
 
 ## Parameters

@@ -1,7 +1,16 @@
-import type { RetryCallbacks, RetryPolicy } from "@bastani/pi-ai";
+import type {
+	ClassifierApi,
+	ClassifierContext,
+	ClassifierModel,
+	ClassifierOptions,
+	ClassifierResult,
+	RetryCallbacks,
+	RetryPolicy,
+} from "@bastani/pi-ai";
 import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "../session-manager-types.js";
+import { planClassifierRanges } from "./classifier-compaction.js";
 import { getKeptTailTokenEstimate, hasKeptTailTokenEstimate } from "./compaction-boundary.js";
 import type {
 	BorrowedPlanner,
@@ -53,6 +62,11 @@ export interface CompactionRunRequest extends CompactionPlanOptions {
 	/** Configured fallback candidates. Omitted means borrowing is impossible. */
 	fallback?: FallbackPlannerContext;
 	compactionModel?: CompactionModelSelection;
+	classify?: (
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ClassifierOptions,
+	) => Promise<ClassifierResult>;
 	summaryEntries?: SessionEntry[];
 }
 
@@ -64,7 +78,7 @@ export type CompactionRungResult = CompactedTranscript & {
 	keptTail: boolean;
 	/** Aggregate usage across every planner request and retry in this run. */
 	usage?: Usage;
-	backend?: "planner" | "summary";
+	backend?: "planner" | "classifier" | "summary";
 	model?: string;
 	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	summaryFirstKeptEntryId?: string;
@@ -378,6 +392,26 @@ export async function runVerbatimCompaction(
 	const borrow: BorrowFallbackPlanner | undefined = request.fallback
 		? createFallbackPlannerBorrower({ ...request.fallback, selectedModelId: selection.fullId })
 		: undefined;
+	let classifierFailure: TerminalPlannerOutcome | undefined;
+	if (selection.kind === "classifier") {
+		try {
+			const classify = request.classify;
+			if (!classify) throw new Error("Compaction classifier is unavailable");
+			const ranges = await planClassifierRanges(
+				preparation.region,
+				preparation.parameters,
+				(context) => classify(selection.model, context, { signal }),
+				plannerOptions,
+			);
+			return {
+				...plannedResult(preparation, ranges, undefined, plannerUsage, selection.fullId),
+				backend: "classifier",
+			};
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Compaction cancelled");
+			classifierFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	const primaryModel = selection.kind === "chat" ? selection.model : undefined;
 	const primaryBudget = resolvePlannerRequest(primaryModel ?? model, request.thinkingLevel);
 	const primaryAuth = primaryModel
@@ -385,7 +419,10 @@ export async function runVerbatimCompaction(
 		: {
 				failure: {
 					kind: "providerError" as const,
-					message: `Compaction backend ${selection.kind} is not yet available`,
+					message:
+						classifierFailure?.kind === "providerError"
+							? classifierFailure.message
+							: `Compaction backend ${selection.kind} is not yet available`,
 				},
 			};
 	let lastTerminal: TerminalPlannerOutcome | undefined = "failure" in primaryAuth ? primaryAuth.failure : undefined;

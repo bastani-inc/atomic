@@ -5,6 +5,7 @@
 ### Added
 
 - Added `compactionModel` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added verbatim classifier compaction with registered models such as `typesafe/jev-latest`, retaining protected context and recent messages ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 
 ### Changed
 
