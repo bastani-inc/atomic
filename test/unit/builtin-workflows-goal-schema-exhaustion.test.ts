@@ -22,6 +22,8 @@ for (const failure of [
 	"nonplain state",
 	"provider failure",
 	"provider then missing tool",
+	"provider then invalid input in same prompt",
+	"provider then invalid input then missing tool",
 ] as const) {
 	test(`Goal handles schema exhaustion from ${failure} without confusing infrastructure and review outcomes (#3466)`, async () => {
 		const root = await mkdtemp(join(tmpdir(), "goal-schema-exhaustion-"));
@@ -39,13 +41,34 @@ for (const failure of [
 							async prompt() {
 								attempts += 1;
 								skippedStructuredOutputTurn(mock.session.messages);
-								if (failure === "missing tool" || (failure === "provider then missing tool" && attempts > 1))
+								if (
+									failure === "missing tool" ||
+									((failure === "provider then missing tool" ||
+										failure === "provider then invalid input then missing tool") &&
+										attempts > 1)
+								)
 									return;
+								if (failure.startsWith("provider then invalid input") && attempts === 1) {
+									mock.emit({
+										type: "tool_execution_end",
+										toolName: "structured_output",
+										isError: true,
+										result: {
+											content: [
+												{
+													type: "text",
+													text: "Structured output provider request failed. Check provider configuration and connectivity.",
+												},
+											],
+										},
+									});
+								}
 								if (
 									failure === "whitespace instructions" ||
 									failure === "empty state" ||
 									failure === "nonfinite state" ||
-									failure === "nonplain state"
+									failure === "nonplain state" ||
+									failure.startsWith("provider then invalid input")
 								) {
 									const tool = createOptions?.customTools?.find(
 										(candidate) => candidate.name === "structured_output",
@@ -63,7 +86,11 @@ for (const failure of [
 										await tool.execute(
 											`invalid-input-${attempts}`,
 											{
-												instructions: failure === "whitespace instructions" ? "   " : "Judge completion.",
+												instructions:
+													failure === "whitespace instructions" ||
+													failure.startsWith("provider then invalid input")
+														? "   "
+														: "Judge completion.",
 												state,
 											},
 											undefined,

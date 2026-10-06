@@ -152,6 +152,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 						await controller.promptWithFallback(nextPrompt, sdkOptions, "prompt", newSessionPrompt);
 						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
+						executionFailure ??= controller.structuredOutputExecutionFailure();
 						if (!isStructuredOutputContractFailure(structuredOutputError))
 							executionFailure ??= structuredOutputError;
 						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
