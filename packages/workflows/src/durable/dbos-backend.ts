@@ -2,6 +2,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { raceAbort } from "../shared/abort.js";
+import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	type DurableInactiveDeleteResult,
@@ -28,10 +29,12 @@ import {
 	isMetadataStep,
 	metadataStepName,
 	parseCurrentMetadataRecord,
+	parsePendingStageMessages,
 } from "./dbos-metadata.js";
 import { DbosPromptReservationTracker, isDbosPromptStateStep } from "./dbos-prompt-reservations.js";
 import { transitionDbosWorkflowStatus } from "./dbos-status-transition.js";
 import { classifyDbosDeletionTombstone, DBOS_DELETION_STEP, encodeDbosDeletionTombstone } from "./dbos-tombstone.js";
+import { durableHash } from "./durable-hash.js";
 import { inactivePromptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
 import { isLiveRunningWorkflow } from "./resume-eligibility.js";
 import type {
@@ -243,6 +246,7 @@ export async function importDbosSdk(): Promise<DbosStatic> {
 export class DbosDurableBackend implements DurableWorkflowBackend {
 	public readonly persistent = true;
 	private readonly mem = new InMemoryDurableBackend();
+	private readonly stickyReceiptCache = new Map<string, Set<string>>();
 	private sdk: DbosSdkHandle;
 	private readonly invalid = new Set<string>();
 	private readonly current = new Set<string>();
@@ -468,6 +472,87 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			if (dbosAdmissionContext.getStore()) this.admissionMetadataAttempted.add(handle.workflowId);
 			await this.writeMetadata(handle.workflowId);
 		});
+	}
+
+	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
+		await this.enqueueWrite(workflowId, () =>
+			this.sdk.recordStepOutput(
+				workflowId,
+				`__atomic_pending_receipt:${durableHash(JSON.stringify([entry.runId, entry.id]))}`,
+				JSON.stringify(entry),
+			),
+		);
+	}
+
+	async readSettledPendingStageMessage(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<PendingStageMessage | undefined> {
+		const name = `__atomic_pending_receipt:${durableHash(JSON.stringify([logicalRunId, messageId]))}`;
+		const record =
+			this.sdk.readStepRecord === undefined
+				? (await this.sdk.listStepRecords(workflowId)).find((candidate) => candidate.stepName === name)
+				: await this.sdk.readStepRecord(workflowId, name);
+		if (record === undefined) return undefined;
+		if (typeof record.output !== "string") throw new Error("atomic-workflows: invalid pending delivery receipt");
+		const entry = parsePendingStageMessages([JSON.parse(record.output) as WorkflowSerializableValue])?.[0];
+		if (entry === undefined || entry.runId !== logicalRunId || entry.id !== messageId || entry.status === "queued")
+			throw new Error("atomic-workflows: invalid pending delivery receipt identity");
+		return entry;
+	}
+
+	async archivePendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: PendingStageMessageDelivery,
+	): Promise<void> {
+		await this.enqueueWrite(workflowId, async () => {
+			await this.sdk.recordStepOutput(workflowId, stickyReceiptStep(messageId, delivery), true);
+			this.cacheStickyReceipt(workflowId, stickyReceiptStep(messageId, delivery));
+		});
+		if (delivery.admission === "context" && delivery.sessionId !== undefined) {
+			const summary = `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined })}:context-any-session`;
+			await this.enqueueWrite(workflowId, async () => {
+				await this.sdk.recordStepOutput(workflowId, summary, true);
+				this.cacheStickyReceipt(workflowId, summary);
+			});
+		}
+	}
+
+	private cacheStickyReceipt(workflowId: string, stepName: string): void {
+		let receipts = this.stickyReceiptCache.get(workflowId);
+		if (receipts === undefined) {
+			receipts = new Set();
+			this.stickyReceiptCache.set(workflowId, receipts);
+		}
+		receipts.add(stepName);
+	}
+
+	hasCachedPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		anySession = false,
+	): boolean {
+		const name =
+			anySession && delivery.admission === "context"
+				? `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined })}:context-any-session`
+				: stickyReceiptStep(messageId, delivery);
+		return this.stickyReceiptCache.get(workflowId)?.has(name) ?? false;
+	}
+
+	async hasPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+	): Promise<boolean> {
+		const name = stickyReceiptStep(messageId, delivery);
+		const record =
+			this.sdk.readStepRecord === undefined
+				? (await this.sdk.listStepRecords(workflowId)).find((candidate) => candidate.stepName === name)
+				: await this.sdk.readStepRecord(workflowId, name);
+		return record?.output === true;
 	}
 
 	async persistPendingStageMessages(
@@ -785,6 +870,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	async deleteWorkflow(workflowId: string): Promise<void> {
 		this.admissionRecoveryControllers.get(workflowId)?.abort(new Error("Workflow deleted during recovery."));
 		this.invalid.add(workflowId);
+		this.stickyReceiptCache.delete(workflowId);
 		this.current.delete(workflowId);
 		this.locallyRegistered.delete(workflowId);
 		this.unavailableCheckpoints.delete(workflowId);
@@ -812,6 +898,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			(await this.sdk.retrieveWorkflow(workflowId)) === undefined
 		) {
 			this.current.delete(workflowId);
+			this.stickyReceiptCache.delete(workflowId);
 			this.locallyRegistered.delete(workflowId);
 			this.admissionSettlements.delete(workflowId);
 			this.promptReservations.delete(workflowId);
@@ -837,6 +924,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.admissionRecoveries.clear();
 		this.admissionRecoveryControllers.clear();
 		this.mem.reset();
+		this.stickyReceiptCache.clear();
 		this.invalid.clear();
 		this.current.clear();
 		this.locallyRegistered.clear();
@@ -875,10 +963,17 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
 		if (this.locallyRegistered.has(workflowId)) {
 			const records = await this.sdk.listStepRecords(workflowId);
+			this.stickyReceiptCache.delete(workflowId);
+			for (const record of records) {
+				if (record.stepName.startsWith("__atomic_pending_delivery_receipt:") && record.output === true)
+					this.cacheStickyReceipt(workflowId, record.stepName);
+			}
 			for (const record of records) {
 				if (
 					isMetadataStep(record.stepName) ||
 					isDbosPromptStateStep(record.stepName) ||
+					record.stepName.startsWith("__atomic_pending_receipt:") ||
+					record.stepName.startsWith("__atomic_pending_delivery_receipt:") ||
 					record.stepName === DBOS_DELETION_STEP
 				) {
 					continue;
@@ -983,6 +1078,11 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		expected?: Pick<DurableWorkflowHandle, "name" | "inputs">,
 	): Promise<DurableWorkflowHydrationResult> {
 		const records = await this.sdk.listStepRecords(info.workflowId);
+		this.stickyReceiptCache.delete(info.workflowId);
+		for (const record of records) {
+			if (record.stepName.startsWith("__atomic_pending_delivery_receipt:") && record.output === true)
+				this.cacheStickyReceipt(info.workflowId, record.stepName);
+		}
 		dbosAdmissionContext.getStore()?.throwIfAborted();
 		const deletion = classifyDbosDeletionTombstone(records, info.workflowId);
 		if (deletion !== "absent") {
@@ -1003,6 +1103,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			if (
 				isMetadataStep(record.stepName) ||
 				isDbosPromptStateStep(record.stepName) ||
+				record.stepName.startsWith("__atomic_pending_receipt:") ||
+				record.stepName.startsWith("__atomic_pending_delivery_receipt:") ||
 				record.stepName === DBOS_DELETION_STEP
 			)
 				continue;
@@ -1054,6 +1156,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
 	private async suppressWorkflow(workflowId: string): Promise<void> {
 		this.invalid.add(workflowId);
+		this.stickyReceiptCache.delete(workflowId);
 		this.current.delete(workflowId);
 		this.pendingRecoveryAdmissions.delete(workflowId);
 		this.promptReservations.delete(workflowId);
@@ -1130,3 +1233,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 }
 
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.
+
+function stickyReceiptStep(messageId: string, delivery: Omit<PendingStageMessageDelivery, "deliveredAt">): string {
+	return `__atomic_pending_delivery_receipt:${durableHash(JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]))}`;
+}

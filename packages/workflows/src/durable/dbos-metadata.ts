@@ -258,7 +258,7 @@ function serializePendingStageMessages(messages: readonly PendingStageMessage[])
 	}));
 }
 
-function parsePendingStageMessages(
+export function parsePendingStageMessages(
 	value: WorkflowSerializableValue | undefined,
 ): readonly PendingStageMessage[] | null {
 	if (value === undefined) return [];

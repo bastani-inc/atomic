@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { test } from "vitest";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
-import { encodeMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import { classifyLatestMetadata, encodeMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { createRealDbosHandle, type DbosStatic } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 
@@ -436,4 +436,105 @@ test("preserves duplicate order, legacy IDs, exact step names and non-string obj
 		assert.ok(Object.hasOwn(record, "completedAt"));
 		assert.equal(record.completedAt, undefined);
 	}
+});
+
+test("bounds metadata snapshots while restoring the latest state and checkpoints (#3467)", async () => {
+	const rows = new Map<string, { workflowID: string; status: string; output: WorkflowSerializableValue }>();
+	let failWrite = false;
+	let failPrune = false;
+	const sdk: DbosStatic = {
+		...sdkWithReads({
+			listWorkflows: async (query) =>
+				[...rows.values()].filter((row) =>
+					Array.isArray(query.workflowIDs)
+						? query.workflowIDs.includes(row.workflowID)
+						: row.workflowID.startsWith(String(query.workflow_id_prefix)),
+				),
+			retrieveWorkflow: (id) => ({ getStatus: async () => null, getResult: async () => rows.get(id)!.output }),
+		}),
+		startWorkflow:
+			(target, params) =>
+			async (...args) => {
+				const id = params!.workflowID!;
+				if (failWrite) throw new Error("replacement failed");
+				const output = await target(...args);
+				rows.set(id, { workflowID: id, status: "SUCCESS", output });
+				return { getStatus: async () => null, getResult: async () => output };
+			},
+		deleteWorkflows: async (ids) => {
+			if (failPrune) throw new Error("cleanup interrupted");
+			for (const id of ids) rows.delete(id);
+		},
+	};
+	const handle = createRealDbosHandle(sdk, main, async (_root, _step, output) => output);
+	await handle.recordStepOutput("root", "tool:retained", { effect: "done" });
+	for (let index = 1; index <= 200; index++) {
+		await handle.recordStepOutput(
+			"root",
+			`__atomic_metadata:${index}:snapshot`,
+			encodeMetadata({
+				workflowId: "root",
+				name: "bounded",
+				inputs: {},
+				status: "paused",
+				createdAt: 1,
+				updatedAt: index,
+				completedCheckpoints: index,
+				pendingPrompts: 0,
+				promptReservationEpoch: "epoch",
+				label: `latest-${index}`,
+				pendingStageMessages: [
+					{
+						id: "pending",
+						runId: "root",
+						stageKey: "future",
+						from: { id: "sender" },
+						message: { id: "pending", timestamp: 1, content: { text: `pending-${index}` } },
+						queuedAt: "now",
+						status: "queued",
+					},
+				],
+			}),
+		);
+		assert.equal(rows.size, 2);
+		assert.ok(Buffer.byteLength(JSON.stringify([...rows.values()])) < 1500);
+	}
+	const restored = await createRealDbosHandle(sdk, main, checkpoint).listStepRecords("root");
+	assert.equal(restored.length, 2);
+	assert.equal(classifyLatestMetadata(restored, "root").kind, "current");
+	const latest = classifyLatestMetadata(restored, "root");
+	assert.ok(latest.kind === "current");
+	assert.equal(latest.metadata.label, "latest-200");
+	assert.equal(latest.metadata.completedCheckpoints, 200);
+	assert.equal(latest.metadata.pendingStageMessages?.[0]?.message.content.text, "pending-200");
+	assert.deepEqual(restored.find((row) => row.stepName === "tool:retained")?.output, { effect: "done" });
+	const snapshot = (generation: number) => {
+		assert.ok(latest.kind === "current");
+		return encodeMetadata({ ...latest.metadata, updatedAt: generation, label: `latest-${generation}` });
+	};
+	failWrite = true;
+	await assert.rejects(
+		handle.recordStepOutput("root", "__atomic_metadata:201:failed", snapshot(201)),
+		/replacement failed/,
+	);
+	assert.equal(rows.size, 2);
+	failWrite = false;
+	failPrune = true;
+	await assert.rejects(
+		handle.recordStepOutput("root", "__atomic_metadata:202:interrupted", snapshot(202)),
+		/cleanup interrupted/,
+	);
+	const interrupted = classifyLatestMetadata(await handle.listStepRecords("root"), "root");
+	assert.ok(interrupted.kind === "current");
+	assert.equal(interrupted.metadata.label, "latest-202");
+	failPrune = false;
+	await createRealDbosHandle(sdk, main, async (_root, _step, output) => output).recordStepOutput(
+		"root",
+		"__atomic_metadata:203:recovered",
+		snapshot(203),
+	);
+	assert.equal(rows.size, 2);
+	const recovered = classifyLatestMetadata(await handle.listStepRecords("root"), "root");
+	assert.ok(recovered.kind === "current");
+	assert.equal(recovered.metadata.label, "latest-203");
 });

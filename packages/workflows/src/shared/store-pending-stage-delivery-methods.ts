@@ -1,5 +1,8 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { getDurableBackend } from "../durable/factory.js";
+import { durableBackendForRun } from "../durable/run-owner-backend.js";
 import {
+	compactStickyStageMessageDeliveries,
 	markPendingStageMessageDelivered,
 	markPendingStageMessageUndeliverable,
 	markPendingStageMessageUndeliverableNotified,
@@ -16,6 +19,8 @@ import {
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
 import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput } from "./store-types.js";
+
+const PENDING_STAGE_SETTLED_MESSAGE_LIMIT = 50;
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
@@ -57,19 +62,22 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
 				const stageIdentity = resolvePendingStageIdentity(run, input.stageKey);
+				const receipt = await backend.readSettledPendingStageMessage?.(input.runId, input.message.id);
 				const result = queueStageMessage(
-					run.pendingStageMessages ?? [],
+					receipt === undefined
+						? (run.pendingStageMessages ?? [])
+						: [...(run.pendingStageMessages ?? []), receipt],
 					input,
 					senderGroup,
 					runGroup,
 					stageIdentity,
 				);
 				if (result.ok && !result.deduplicated) {
-					await persistTransition(backend, input.runId, result.messages);
-					run.pendingStageMessages = [...result.messages];
+					const messages = await persistTransition(backend, input.runId, result.messages, context);
+					run.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
 				}
-				return result;
+				return result.ok ? { ...result, messages: run.pendingStageMessages ?? [] } : result;
 			});
 		},
 
@@ -79,8 +87,12 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
+				const backend = durableBackendForRun(getDurableBackend(), context.state.runs, input.runId);
+				const receipt = await backend?.readSettledPendingStageMessage?.(input.runId, input.message.id);
 				const result = queueStageMessage(
-					run.pendingStageMessages ?? [],
+					receipt === undefined
+						? (run.pendingStageMessages ?? [])
+						: [...(run.pendingStageMessages ?? []), receipt],
 					input,
 					undefined,
 					undefined,
@@ -133,8 +145,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					resolvePendingStageIdentity(run, stageKey),
 				);
 				if (next === current) return false;
-				await persistTransition(backend, runId, next);
-				run.pendingStageMessages = [...next];
+				const messages = await persistTransition(backend, runId, next, context);
+				run.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -160,8 +172,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					resolvePendingStageIdentity(run, stageKey),
 				);
 				if (next === current) return false;
-				await persistTransition(backend, runId, next);
-				run.pendingStageMessages = [...next];
+				const messages = await persistTransition(backend, runId, next, context);
+				run.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -188,8 +200,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					notifiedAt,
 				);
 				if (next === current) return false;
-				await persistTransition(backend, runId, next);
-				run.pendingStageMessages = [...next];
+				const messages = await persistTransition(backend, runId, next, context);
+				run.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -203,13 +215,21 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
-				const result = queueStickyStageMessage(run.pendingStageMessages ?? [], input, senderGroup, runGroup);
+				const receipt = await backend.readSettledPendingStageMessage?.(input.runId, input.message.id);
+				const result = queueStickyStageMessage(
+					receipt === undefined
+						? (run.pendingStageMessages ?? [])
+						: [...(run.pendingStageMessages ?? []), receipt],
+					input,
+					senderGroup,
+					runGroup,
+				);
 				if (result.ok && !result.deduplicated) {
-					await persistTransition(backend, input.runId, result.messages);
-					run.pendingStageMessages = [...result.messages];
+					const messages = await persistTransition(backend, input.runId, result.messages, context);
+					run.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
 				}
-				return result;
+				return result.ok ? { ...result, messages: run.pendingStageMessages ?? [] } : result;
 			});
 		},
 
@@ -232,8 +252,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const current = run.pendingStageMessages ?? [];
 				const next = recordPendingStageMessageDeliveries(current, runId, messageId, records, deliveredAt);
 				if (next === current) return false;
-				await persistTransition(backend, runId, next);
-				run.pendingStageMessages = [...next];
+				const messages = await persistTransition(backend, runId, next, context);
+				run.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -251,8 +271,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const current = run.pendingStageMessages ?? [];
 				const next = settleStickyPendingStageMessageDelivered(current, runId, messageId, settledAt);
 				if (next === current) return false;
-				await persistTransition(backend, runId, next);
-				run.pendingStageMessages = [...next];
+				const messages = await persistTransition(backend, runId, next, context);
+				run.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -281,8 +301,57 @@ async function persistTransition(
 	backend: DurableWorkflowBackend,
 	runId: string,
 	messages: readonly PendingStageMessage[],
-): Promise<void> {
-	if (!(await backend.persistPendingStageMessages(runId, messages))) {
+	context: StoreContext,
+): Promise<readonly PendingStageMessage[]> {
+	let retained = messages;
+	if (
+		backend.archivePendingStageDeliveryReceipt !== undefined &&
+		backend.hasPendingStageDeliveryReceipt !== undefined
+	) {
+		const compacted: PendingStageMessage[] = [];
+		for (const entry of retained) {
+			if (entry.sticky !== true || entry.deliveries === undefined) {
+				compacted.push(entry);
+				continue;
+			}
+			const latest = new Map<string, number>();
+			entry.deliveries.forEach((delivery, index) => {
+				latest.set(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission]), index);
+			});
+			const deliveries = [];
+			for (let index = 0; index < entry.deliveries.length; index++) {
+				const delivery = entry.deliveries[index]!;
+				const stage = context.state.runs
+					.find((run) => run.id === delivery.runId)
+					?.stages.find((stage) => stage.id === delivery.stageId);
+				if (stage?.status === "completed" || stage?.status === "skipped") {
+					await backend.archivePendingStageDeliveryReceipt(runId, entry.id, delivery);
+					continue;
+				}
+				if (
+					latest.get(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission])) === index ||
+					delivery.sessionId === undefined
+				)
+					deliveries.push(delivery);
+				else await backend.archivePendingStageDeliveryReceipt(runId, entry.id, delivery);
+			}
+			compacted.push(deliveries.length === entry.deliveries.length ? entry : { ...entry, deliveries });
+		}
+		retained = compacted;
+	}
+	retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
+	if (backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined) {
+		const settled = retained.filter(
+			(entry) =>
+				entry.status === "delivered" ||
+				(entry.status === "undeliverable" && entry.undeliverableNotifiedAt !== undefined),
+		);
+		const expired = new Set(settled.slice(0, Math.max(0, settled.length - PENDING_STAGE_SETTLED_MESSAGE_LIMIT)));
+		for (const entry of expired) await backend.archivePendingStageMessage(runId, entry);
+		if (expired.size > 0) retained = retained.filter((entry) => !expired.has(entry));
+	}
+	if (!(await backend.persistPendingStageMessages(runId, retained))) {
 		throw new Error(`atomic-workflows: durable workflow ${runId} is unavailable for pending-stage persistence`);
 	}
+	return retained;
 }

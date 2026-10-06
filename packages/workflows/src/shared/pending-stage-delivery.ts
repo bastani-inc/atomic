@@ -214,10 +214,41 @@ export function recordPendingStageMessageDeliveries(
 	}
 	if (additions.length === 0) return messages;
 	const deliveries = [...(entry.deliveries ?? []), ...additions];
-	const next: PendingStageMessage = { ...entry, deliveries, deliveryCount: deliveries.length };
+	const next: PendingStageMessage = {
+		...entry,
+		deliveries,
+		deliveryCount: (entry.deliveryCount ?? entry.deliveries?.length ?? 0) + additions.length,
+	};
 	const result = [...messages];
 	result[index] = next;
 	return result;
+}
+
+export function compactStickyStageMessageDeliveries(
+	messages: readonly PendingStageMessage[],
+	runs: readonly {
+		readonly id: string;
+		readonly stages: readonly { readonly id: string; readonly status: string }[];
+	}[],
+): readonly PendingStageMessage[] {
+	const finished = new Set(
+		runs.flatMap((run) =>
+			run.stages
+				.filter((stage) => stage.status === "completed" || stage.status === "skipped")
+				.map((stage) => JSON.stringify([run.id, stage.id])),
+		),
+	);
+	let changed = false;
+	const next = messages.map((entry) => {
+		if (entry.sticky !== true || entry.deliveries === undefined) return entry;
+		const deliveries = entry.deliveries.filter(
+			(delivery) => !finished.has(JSON.stringify([delivery.runId, delivery.stageId])),
+		);
+		if (deliveries.length === entry.deliveries.length) return entry;
+		changed = true;
+		return { ...entry, deliveries, deliveryCount: entry.deliveryCount ?? entry.deliveries.length };
+	});
+	return changed ? next : messages;
 }
 
 /** Settle a sticky entry that delivered at least once when its root run terminates (D4: no notification). */

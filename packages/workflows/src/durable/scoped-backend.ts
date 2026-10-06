@@ -19,6 +19,7 @@
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
+import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type {
 	DurableInactiveDeleteResult,
@@ -68,6 +69,52 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		this.inner = inner;
 		this.scope = scope;
 		this.persistent = inner.persistent;
+	}
+
+	async archivePendingStageMessage(_workflowId: string, entry: PendingStageMessage): Promise<void> {
+		await this.inner.archivePendingStageMessage?.(this.scope.rootWorkflowId, entry);
+	}
+
+	async readSettledPendingStageMessage(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<PendingStageMessage | undefined> {
+		return this.inner.readSettledPendingStageMessage?.(this.scope.rootWorkflowId, messageId, logicalRunId);
+	}
+
+	async archivePendingStageDeliveryReceipt(
+		_workflowId: string,
+		messageId: string,
+		delivery: PendingStageMessageDelivery,
+	): Promise<void> {
+		await this.inner.archivePendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery);
+	}
+
+	hasCachedPendingStageDeliveryReceipt(
+		_workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		anySession = false,
+	): boolean {
+		return (
+			this.inner.hasCachedPendingStageDeliveryReceipt?.(
+				this.scope.rootWorkflowId,
+				messageId,
+				delivery,
+				anySession,
+			) ?? false
+		);
+	}
+
+	async hasPendingStageDeliveryReceipt(
+		_workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+	): Promise<boolean> {
+		return (
+			(await this.inner.hasPendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery)) ?? false
+		);
 	}
 
 	registerWorkflow(_handle: WorkflowRegistrationInput): void {

@@ -139,7 +139,41 @@ export function createWorkflowPendingStageDelivery(
 				return undefined;
 			}
 			if (terminalError !== undefined) return Promise.reject(terminalError);
-			return drainError === undefined ? pendingReady() : Promise.reject(drainError);
+			if (drainError !== undefined) return Promise.reject(drainError);
+			const ready = pendingReady();
+			if (
+				sessionId !== undefined &&
+				activeStore.pendingStageMessagesFor(runId, stageId).length === 0 &&
+				activeStore.pendingStageMessagesFor(runId, stageName).length === 0
+			) {
+				const entries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName, { sessionId });
+				void Promise.all(
+					entries.map(async (entry) => {
+						const backend = durableBackendForRun(getDurableBackend(), activeStore.runs(), entry.runId);
+						return (
+							(await backend?.hasPendingStageDeliveryReceipt?.(entry.runId, entry.id, {
+								runId,
+								stageId,
+								sessionId,
+								admission: "context",
+							})) ?? false
+						);
+					}),
+				).then(
+					(receipts) => {
+						if (receipts.every(Boolean) && readyPromise === ready) {
+							resolveReady?.();
+							readyPromise = undefined;
+							resolveReady = undefined;
+							rejectReady = undefined;
+						}
+					},
+					(error: Error) => {
+						if (readyPromise === ready) rejectReady?.(error);
+					},
+				);
+			}
+			return ready;
 		},
 		fail(reason) {
 			// First terminal wins and is sticky for the life of this delivery, which
@@ -203,6 +237,18 @@ async function deliverPendingStageMessages(
 		const releaseClaim = claimPendingDelivery(activeStore, claimOwner, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;
 		try {
+			if (entry.sticky === true && recipient?.receivedMessageIds.includes(entry.message.id)) {
+				const entryBackend = durableBackendForRun(rootBackend, activeStore.runs(), entry.runId);
+				if (
+					await entryBackend?.hasPendingStageDeliveryReceipt?.(entry.runId, entry.id, {
+						runId,
+						stageId,
+						sessionId: recipient.sessionId,
+						admission: "context",
+					})
+				)
+					continue;
+			}
 			if (!recipient?.receivedMessageIds.includes(entry.message.id))
 				await deliver(toPendingStageSender(entry), entry.message);
 			if (entry.sticky === true) {
@@ -270,6 +316,8 @@ function stickyPendingStageEntriesForStage(
 	if (rootRunId === undefined) return [];
 	const rootRun = runs.find((run) => run.id === rootRunId);
 	if (rootRun === undefined) return [];
+	const stage = runs.find((run) => run.id === runId)?.stages.find((candidate) => candidate.id === stageId);
+	if (stage?.status === "completed" || stage?.status === "skipped") return [];
 	// Hops keep both depth-faithful spellings per ancestor (boundary-stage name or
 	// materialized child-run id, D5/D8 clarification), so a sticky target addressed
 	// through a materialized run id matches the same future stage as the name form.

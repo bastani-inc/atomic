@@ -318,6 +318,77 @@ function rootFixture(
 }
 
 describe("pre-start sticky drain", () => {
+	test("bounds sticky session receipts while retaining old-session deduplication (#3467)", async () => {
+		const { store } = rootFixture();
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		setDurableBackend(backend);
+		await store.queueStickyStageMessage(stickyInput("sessions", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
+		for (let index = 0; index < 100; index++) {
+			await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(
+				() => {},
+				{ sessionId: `session-${index}`, receivedMessageIds: [] },
+			);
+		}
+		assert.ok((store.runs()[0]?.pendingStageMessages?.[0]?.deliveries?.length ?? 0) <= 1);
+		const count = store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount;
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		setDurableBackend(resumed);
+		const restored = createStore();
+		restored.recordRunStart({
+			...store.runs()[0]!,
+			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		let delivered = 0;
+		const oldSession = createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
+		await oldSession.ready("session-0");
+		await oldSession.deliverPending(
+			() => {
+				delivered += 1;
+			},
+			{ sessionId: "session-0", receivedMessageIds: ["sessions"] },
+		);
+		await oldSession.ready("session-0");
+		assert.equal(delivered, 0);
+		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, count);
+	});
+
+	test("bounds sticky receipts across completed iterations and preserves resumed delivery (#3467)", async () => {
+		const { store, backend } = rootFixture([]);
+		await store.queueStickyStageMessage(stickyInput("bounded", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
+		for (let index = 0; index < 100; index++) {
+			const stage = { ...baseStage(), id: `iteration-${index}`, name: `iteration-${index}` };
+			store.recordStageStart(ROOT_RUN_ID, stage);
+			let deliveries = 0;
+			const drain = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, stage.id, stage.name);
+			await drain.deliverPending(() => {
+				deliveries += 1;
+			});
+			await drain.deliverPending(() => {
+				deliveries += 1;
+			});
+			assert.equal(deliveries, 1);
+			assert.ok((store.runs()[0]?.pendingStageMessages?.[0]?.deliveries?.length ?? 0) <= 1);
+			store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "completed" });
+		}
+		const pending = backend.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
+		assert.equal(pending[0]?.deliveryCount, 100);
+		assert.ok(JSON.stringify(pending).length < 1500);
+		const restored = createStore();
+		restored.recordRunStart({ ...store.runs()[0]!, pendingStageMessages: [...pending] });
+		let delivered = 0;
+		await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "future", "future").deliverPending(() => {
+			delivered += 1;
+		});
+		await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "future", "future").deliverPending(() => {
+			delivered += 1;
+		});
+		assert.equal(delivered, 1);
+	});
+
 	test("delivers a matching pattern entry once and keeps the entry queued for later iterations", async () => {
 		const { store, backend } = rootFixture();
 		const queued = await store.queueStickyStageMessage(
@@ -864,6 +935,25 @@ function stickyBridgeFixture(
 }
 
 describe("pending-stage bridge sticky delivery", () => {
+	test("keeps transport retries deduplicated when older session receipts are archived (#3467)", async () => {
+		const harness = stickyBridgeFixture(baseStage({ id: "live-id", status: "running", sessionId: "session-0" }));
+		try {
+			const target = `workflow:${ROOT_RUN_ID}/**`;
+			await harness.request("transport-history", { target });
+			for (let index = 0; index < 100; index++) {
+				harness.store.recordStageSession(ROOT_RUN_ID, "live-id", { sessionId: `session-${index}` });
+				assert.equal(await harness.confirm("transport-history", target, [`${GROUP}/live-id`]), true);
+			}
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries?.length, 1);
+			harness.store.recordStageSession(ROOT_RUN_ID, "live-id", { sessionId: "session-0" });
+			const retried = await harness.request("transport-history", { target });
+			assert.equal(retried.result?.outcome, "queued");
+			if (retried.result?.outcome === "queued") assert.equal(retried.result.forwardTargets, undefined);
+		} finally {
+			harness.dispose();
+		}
+	});
+
 	afterEach(() => setDurableBackend(undefined));
 
 	test("queues a pattern target speculatively with notInKnownSet when the scan excludes it", async () => {
