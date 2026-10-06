@@ -9,6 +9,7 @@ import { moduleDir } from "../helpers/runtime.js";
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 /** A real `tsc` child process type-checks the probe against the built package declarations. */
 const TSC_PROBE_TIMEOUT_MS = 60_000;
+const TSC_CHILD_TIMEOUT_MS = TSC_PROBE_TIMEOUT_MS - 5_000;
 
 test(
 	"built public workflow types match the runtime store, stage snapshots, and createAgentSession adapters (#3473)",
@@ -84,6 +85,7 @@ void opts; void snapshot; void parentIds; void executionOrder; void model; void 
 				execFileSync("bun", [join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", root], {
 					encoding: "utf8",
 					stdio: "pipe",
+					timeout: TSC_CHILD_TIMEOUT_MS,
 				});
 			} catch (error) {
 				const failure = error as { stdout?: string; stderr?: string };
