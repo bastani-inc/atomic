@@ -784,13 +784,19 @@ async function deliverStickyTarget(
 					delivery.runId === match.run.id &&
 					delivery.stageId === match.stage.id &&
 					delivery.sessionId === match.stage.sessionId &&
-					delivery.admission === "transport",
+					(delivery.admission === "transport" || delivery.admission === "context"),
 			) ||
 			(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, result.entry.id, {
 				runId: match.run.id,
 				stageId: match.stage.id,
 				...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
 				admission: "transport",
+			})) ||
+			(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, result.entry.id, {
+				runId: match.run.id,
+				stageId: match.stage.id,
+				...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
+				admission: "context",
 			}))
 		) {
 			continue;
@@ -853,7 +859,17 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	if (backend === undefined) return false;
 	const unconfirmedRecords = [];
 	for (const record of records) {
-		if (!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, record))) {
+		if (
+			!entry.deliveries?.some(
+				(delivery) =>
+					delivery.runId === record.runId &&
+					delivery.stageId === record.stageId &&
+					delivery.sessionId === record.sessionId &&
+					(delivery.admission === "context" || delivery.admission === "transport"),
+			) &&
+			!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, record)) &&
+			!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, { ...record, admission: "context" }))
+		) {
 			unconfirmedRecords.push(record);
 		}
 	}

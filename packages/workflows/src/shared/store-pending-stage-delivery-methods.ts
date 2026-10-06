@@ -1,5 +1,4 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { getDurableBackend } from "../durable/factory.js";
 import { durableBackendForRun } from "../durable/run-owner-backend.js";
 import {
 	compactStickyStageMessageDeliveries,
@@ -86,6 +85,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
+				const { getDurableBackend } = await import("../durable/factory.js");
 				const backend = durableBackendForRun(getDurableBackend(), context.state.runs, input.runId);
 				const receipt = await backend?.readSettledPendingStageMessage?.(input.runId, input.message.id);
 				const result = queueStageMessage(
@@ -249,7 +249,34 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
 				const current = run.pendingStageMessages ?? [];
-				const next = recordPendingStageMessageDeliveries(current, runId, messageId, records, deliveredAt);
+				const unconfirmedRecords = [];
+				for (const record of records) {
+					const contextReceipt =
+						record.admission === "transport" ? { ...record, admission: "context" as const } : undefined;
+					if (
+						!(await backend.hasPendingStageDeliveryReceipt?.(runId, messageId, record)) &&
+						(contextReceipt === undefined ||
+							(!current
+								.find((entry) => entry.id === messageId)
+								?.deliveries?.some(
+									(delivery) =>
+										delivery.runId === record.runId &&
+										delivery.stageId === record.stageId &&
+										delivery.sessionId === record.sessionId &&
+										delivery.admission === "context",
+								) &&
+								!(await backend.hasPendingStageDeliveryReceipt?.(runId, messageId, contextReceipt))))
+					) {
+						unconfirmedRecords.push(record);
+					}
+				}
+				const next = recordPendingStageMessageDeliveries(
+					current,
+					runId,
+					messageId,
+					unconfirmedRecords,
+					deliveredAt,
+				);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
 				run.pendingStageMessages = [...messages];

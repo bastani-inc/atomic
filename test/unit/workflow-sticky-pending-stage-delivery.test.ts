@@ -1212,53 +1212,112 @@ function stickyBridgeFixture(
 }
 
 describe("pending-stage bridge sticky delivery", () => {
-	test("suppresses archived live transport retries after failed-stage cold hydration (#3467)", async () => {
+	test.each(["context", "transport"] as const)(
+		"suppresses inline and archived live %s retries after failed-stage cold hydration (#3467)",
+		async (admission) => {
+			const sdk = createMockSdk();
+			const backend = new DbosDurableBackend(sdk);
+			const stage = baseStage({ id: "live-id", status: "running", sessionId: "original-session" });
+			const harness = stickyBridgeFixture(stage, { backend });
+			const target = `workflow:${ROOT_RUN_ID}/**`;
+			const deliveredTargets = [`${GROUP}/live-id`];
+			try {
+				const sent = await harness.request("archived-transport", { target });
+				assert.equal(sent.result?.outcome, "queued");
+				if (sent.result?.outcome === "queued") assert.deepEqual(sent.result.forwardTargets, deliveredTargets);
+				if (admission === "transport") {
+					assert.equal(await harness.confirm("archived-transport", target, deliveredTargets), true);
+				} else {
+					await createWorkflowPendingStageDelivery(
+						harness.store,
+						ROOT_RUN_ID,
+						stage.id,
+						stage.name,
+					).deliverPending(() => {}, { sessionId: stage.sessionId!, receivedMessageIds: [] });
+				}
+				const inlineRetry = await harness.request("archived-transport", { target });
+				assert.equal(inlineRetry.result?.outcome, "queued");
+				if (inlineRetry.result?.outcome === "queued") assert.equal(inlineRetry.result.forwardTargets, undefined);
+				assert.equal(await harness.confirm("archived-transport", target, deliveredTargets), false);
+				harness.store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+				await harness.request("archive-trigger", { target });
+				assert.deepEqual(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+			} finally {
+				harness.dispose();
+			}
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			const store = createStore();
+			store.recordRunStart({
+				...harness.store.runs()[0]!,
+				stages: [{ ...stage, status: "running" }],
+				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+			try {
+				const retried = await restored.request("archived-transport", { target });
+				assert.equal(retried.result?.outcome, "queued");
+				if (retried.result?.outcome === "queued") assert.equal(retried.result.forwardTargets, undefined);
+				assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+				store.recordStageSession(ROOT_RUN_ID, stage.id, { sessionId: "new-session" });
+				const newRecipient = await restored.request("archived-transport", { target });
+				assert.equal(newRecipient.result?.outcome, "queued");
+				if (newRecipient.result?.outcome === "queued") {
+					assert.deepEqual(newRecipient.result.forwardTargets, deliveredTargets);
+				}
+				assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), true);
+				assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
+				const repeated = await restored.request("archived-transport", { target });
+				assert.equal(repeated.result?.outcome, "queued");
+				if (repeated.result?.outcome === "queued") assert.equal(repeated.result.forwardTargets, undefined);
+			} finally {
+				restored.dispose();
+			}
+		},
+	);
+
+	test("deduplicates concurrent confirmations when the stage finishes before queued updates (#3467)", async () => {
 		const sdk = createMockSdk();
 		const backend = new DbosDurableBackend(sdk);
-		const stage = baseStage({ id: "live-id", status: "running", sessionId: "original-session" });
+		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
 		const harness = stickyBridgeFixture(stage, { backend });
 		const target = `workflow:${ROOT_RUN_ID}/**`;
-		const deliveredTargets = [`${GROUP}/live-id`];
 		try {
-			const sent = await harness.request("archived-transport", { target });
-			assert.equal(sent.result?.outcome, "queued");
-			if (sent.result?.outcome === "queued") assert.deepEqual(sent.result.forwardTargets, deliveredTargets);
-			assert.equal(await harness.confirm("archived-transport", target, deliveredTargets), true);
-			harness.store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
-			await harness.request("archive-trigger", { target });
+			await harness.request("racing-confirmation", { target });
+			const first = harness.confirm("racing-confirmation", target, [`${GROUP}/live-id`]);
+			const second = harness.confirm("racing-confirmation", target, [`${GROUP}/live-id`]);
+			harness.store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "completed" });
+			assert.deepEqual(await Promise.all([first, second]), [true, false]);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 			assert.deepEqual(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			assert.equal(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, 1);
 		} finally {
 			harness.dispose();
 		}
-		const resumed = new DbosDurableBackend(sdk);
-		await resumed.hydrateWorkflow(ROOT_RUN_ID);
-		const store = createStore();
-		store.recordRunStart({
-			...harness.store.runs()[0]!,
-			stages: [{ ...stage, status: "running" }],
-			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
-		});
-		const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+	});
+
+	test("deduplicates a transport confirmation queued behind pre-start context admission (#3467)", async () => {
+		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
+		const harness = stickyBridgeFixture(stage);
+		const target = `workflow:${ROOT_RUN_ID}/**`;
 		try {
-			const retried = await restored.request("archived-transport", { target });
-			assert.equal(retried.result?.outcome, "queued");
-			if (retried.result?.outcome === "queued") assert.equal(retried.result.forwardTargets, undefined);
-			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
-			assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
-			store.recordStageSession(ROOT_RUN_ID, stage.id, { sessionId: "new-session" });
-			const newRecipient = await restored.request("archived-transport", { target });
-			assert.equal(newRecipient.result?.outcome, "queued");
-			if (newRecipient.result?.outcome === "queued") {
-				assert.deepEqual(newRecipient.result.forwardTargets, deliveredTargets);
-			}
-			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), true);
-			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
-			assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
-			const repeated = await restored.request("archived-transport", { target });
-			assert.equal(repeated.result?.outcome, "queued");
-			if (repeated.result?.outcome === "queued") assert.equal(repeated.result.forwardTargets, undefined);
+			await harness.request("context-confirmation", { target });
+			const context = harness.store.recordPendingStageMessageDeliveries(
+				ROOT_RUN_ID,
+				"context-confirmation",
+				[{ runId: ROOT_RUN_ID, stageId: stage.id, sessionId: stage.sessionId, admission: "context" }],
+				new Date().toISOString(),
+				harness.backend,
+			);
+			const confirmed = harness.confirm("context-confirmation", target, [`${GROUP}/live-id`]);
+			assert.deepEqual(await Promise.all([context, confirmed]), [true, false]);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 		} finally {
-			restored.dispose();
+			harness.dispose();
 		}
 	});
 

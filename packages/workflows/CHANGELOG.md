@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed long workflow runs retaining a full metadata snapshot for every checkpoint and message update. Atomic now compacts superseded snapshots, removes their duplicate input payloads, and bounds settled delivery state across root and child runs, including failed-stage sticky receipts, while preserving resume and message deduplication ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
 - Fixed archived sticky message receipts being ignored when a failed stage retries delivery without an explicit recipient or through live Intercom transport. Retry forwarding and confirmation deduplication survive cold resume, while a new recipient session can still receive the message ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
+- Fixed sticky messages delivered as pre-start context being forwarded again to the same live session, including after receipt archival and cold resume. Concurrent confirmations remain deduplicated when a stage finishes before they are saved, while a new recipient session can still receive the message ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

@@ -215,12 +215,14 @@ export function createRealDbosHandle(
 				const records = await metadataRecords(workflowId);
 				const latest = classifyLatestMetadata(records, workflowId);
 				if (latest.kind !== "current") return;
-				const retained = records.findLast(
-					(record) =>
-						isMetadataStep(record.stepName) &&
-						classifyLatestMetadata([record], workflowId).kind === "current" &&
-						isDeepStrictEqual(classifyLatestMetadata([record], workflowId), latest),
-				);
+				const retained = [...records]
+					.reverse()
+					.find(
+						(record) =>
+							isMetadataStep(record.stepName) &&
+							classifyLatestMetadata([record], workflowId).kind === "current" &&
+							isDeepStrictEqual(classifyLatestMetadata([record], workflowId), latest),
+					);
 				if (retained === undefined) return;
 				if (fence !== undefined) {
 					if (latest.metadata.ownerExecutorId !== fence.executorId) return;
