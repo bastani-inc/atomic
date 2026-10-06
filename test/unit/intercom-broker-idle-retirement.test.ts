@@ -189,24 +189,46 @@ test(
 );
 
 test(
-	"a liveness probe late in the idle window keeps the broker up for the client that follows it",
+	"every liveness probe restarts the idle window so the client behind it can still connect",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-probe-"));
 		const broker = spawnBroker(agentDir);
-		await waitForBrokerPid(agentDir, broker);
-		const probeLeadMs = 1_000;
-		await sleep(BROKER_IDLE_SHUTDOWN_MS - probeLeadMs);
-
-		const probe = await connect(agentDir);
-		await new Promise<void>((resolveClosed) => {
-			probe.once("close", () => resolveClosed());
-			probe.end();
+		let brokerOutput = "";
+		broker.stdout?.on("data", (chunk: Buffer) => {
+			brokerOutput += chunk.toString();
 		});
-		await sleep(probeLeadMs * 2);
+		await waitForBrokerPid(agentDir, broker);
+		const probeIntervalMs = 500;
+		const probeUntil = Date.now() + BROKER_IDLE_SHUTDOWN_MS + 1_000;
+		const retirementWaitMs = 12_000;
+		const timerEarlyFireToleranceMs = 50;
+		let probesAccepted = 0;
 
-		assert.equal(isBrokerAlive(broker), true, "broker retired between a successful probe and the client connect");
-		const client = await connect(agentDir);
-		client.end();
+		while (Date.now() < probeUntil && isBrokerAlive(broker)) {
+			try {
+				const probe = await connect(agentDir);
+				await new Promise<void>((resolveClosed) => {
+					probe.once("close", () => resolveClosed());
+					probe.end();
+				});
+				probesAccepted += 1;
+			} catch {
+				break;
+			}
+			await sleep(probeIntervalMs);
+		}
+		assert.ok(probesAccepted > 0, "no liveness probe reached the broker");
+		assert.equal(await waitForExit(broker, retirementWaitMs), 0);
+		const stdout = broker.stdout;
+		if (stdout && !stdout.readableEnded) await new Promise((resolveEnded) => stdout.once("end", resolveEnded));
+
+		const reported = /No sessions connected for (\d+)ms since the last connection/.exec(brokerOutput);
+		assert.ok(reported, `broker did not report its idle retirement:\n${brokerOutput}`);
+		const idleMs = Number(reported[1]);
+		assert.ok(
+			idleMs >= BROKER_IDLE_SHUTDOWN_MS - timerEarlyFireToleranceMs,
+			`broker retired ${idleMs}ms after its last connection, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
+		);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
