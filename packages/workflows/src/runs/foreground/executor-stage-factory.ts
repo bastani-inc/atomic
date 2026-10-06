@@ -231,6 +231,11 @@ export function createWorkflowStageFactory(input: {
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
 				runtime.startStageSessionHeartbeat();
 			},
+			...(input.opts.onStageSessionEvent === undefined
+				? {}
+				: {
+						onSessionEvent: (event) => input.opts.onStageSessionEvent?.(input.runId, stageId, event),
+					}),
 		});
 
 		const state: LiveStageMutableState = {

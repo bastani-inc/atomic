@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, test } from "vitest";
 import {
 	type ConvergenceEntry,
@@ -407,7 +408,7 @@ describe("goal convergence", () => {
 		assert.match(outcome.decision.reason, /flat/);
 	});
 
-	test("convergence appends prior-round evidence to orchestrator failure escalation", async () => {
+	test("convergence preserves prior rounds when orchestrator execution rejects (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const laterTurnCtx = makeMockCtx(
 			{
@@ -430,28 +431,30 @@ describe("goal convergence", () => {
 				},
 			},
 		);
-		const laterTurnResult = await mod.default.run(laterTurnCtx);
-		const laterTurnLedger = JSON.parse(readFileSync(String(laterTurnResult.ledger_path), "utf8")) as {
-			readonly decisions: readonly { readonly reason: string }[];
-			readonly lifecycle: readonly { readonly event: string; readonly summary: string }[];
-		};
-		const laterTurnDecision = laterTurnLedger.decisions.at(-1);
-		const laterTurnStatusEvent = laterTurnLedger.lifecycle.filter((event) => event.event === "status_decided").at(-1);
-		const laterTurnReason = laterTurnDecision?.reason ?? "";
-		assert.equal(laterTurnResult.status, "needs_human");
-		assert.equal(laterTurnResult.turns_completed, 2);
-		assert.equal(
-			laterTurnResult.remaining_work,
-			"Orchestrator failed before producing a receipt: orchestrator failed on second turn",
+		await assert.rejects(async () => mod.default.run(laterTurnCtx), /orchestrator failed on second turn/);
+		const laterTurnLedger = JSON.parse(
+			readFileSync(
+				join(
+					dirname(String(laterTurnCtx.calls.taskOptions["orchestrator-1"]?.[0]?.output)),
+					"goal-ledger-state.json",
+				),
+				"utf8",
+			),
+		) as GoalLedger;
+		assert.equal(laterTurnLedger.status, "active");
+		assert.equal(laterTurnLedger.turns, 1);
+		assert.equal(laterTurnLedger.receipts.length, 1);
+		assert.equal(laterTurnLedger.reviews.length, 3);
+		assert.deepEqual(
+			laterTurnLedger.decisions.map((decision) => [decision.turn, decision.decision]),
+			[[1, "continue"]],
 		);
-		assert.match(
-			laterTurnReason,
-			/Orchestrator failed before producing a receipt: orchestrator failed on second turn/,
-		);
-		assert.match(laterTurnReason, /1 round recorded/);
-		assert.match(laterTurnReason, /flat/);
-		assert.match(laterTurnReason, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
-		assert.equal(laterTurnStatusEvent?.summary, laterTurnReason);
+		assert.equal(laterTurnLedger.convergence?.length, 1);
+		const priorEvidence = convergence_escalation_evidence(laterTurnLedger.convergence ?? []).join("\n");
+		assert.match(priorEvidence, /1 round recorded/);
+		assert.match(priorEvidence, /flat/);
+		assert.match(priorEvidence, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
+		assert.equal(laterTurnLedger.lifecycle.filter((event) => event.event === "status_decided").length, 1);
 
 		const firstTurnCtx = makeMockCtx(
 			{
@@ -468,19 +471,26 @@ describe("goal convergence", () => {
 				},
 			},
 		);
-		const firstTurnResult = await mod.default.run(firstTurnCtx);
-		const firstTurnLedger = JSON.parse(readFileSync(String(firstTurnResult.ledger_path), "utf8")) as {
-			readonly decisions: readonly { readonly reason: string }[];
-			readonly lifecycle: readonly { readonly event: string; readonly summary: string }[];
-		};
-		const firstTurnDecision = firstTurnLedger.decisions.at(-1);
-		const firstTurnStatusEvent = firstTurnLedger.lifecycle.filter((event) => event.event === "status_decided").at(-1);
-		const firstTurnReason = "Orchestrator failed before producing a receipt: orchestrator failed on first turn";
-		assert.equal(firstTurnResult.status, "needs_human");
-		assert.equal(firstTurnResult.remaining_work, firstTurnReason);
-		assert.equal(firstTurnDecision?.reason, firstTurnReason);
-		assert.equal(firstTurnStatusEvent?.summary, firstTurnReason);
-		assert.doesNotMatch(firstTurnDecision?.reason ?? "", /round recorded|EVIDENCE only/);
+		await assert.rejects(async () => mod.default.run(firstTurnCtx), /orchestrator failed on first turn/);
+		const firstTurnLedger = JSON.parse(
+			readFileSync(
+				join(
+					dirname(String(firstTurnCtx.calls.taskOptions["orchestrator-1"]?.[0]?.output)),
+					"goal-ledger-state.json",
+				),
+				"utf8",
+			),
+		) as GoalLedger;
+		assert.equal(firstTurnLedger.status, "active");
+		assert.equal(firstTurnLedger.turns, 0);
+		assert.deepEqual(firstTurnLedger.receipts, []);
+		assert.deepEqual(firstTurnLedger.reviews, []);
+		assert.deepEqual(firstTurnLedger.decisions, []);
+		assert.deepEqual(firstTurnLedger.convergence ?? [], []);
+		assert.deepEqual(
+			firstTurnLedger.lifecycle.filter((event) => event.event === "status_decided"),
+			[],
+		);
 	});
 
 	test("convergence escalation evidence uses singular round grammar and observed wording", () => {
@@ -489,7 +499,7 @@ describe("goal convergence", () => {
 		assert.doesNotMatch(text, /1 rounds recorded/);
 	});
 
-	test("runGoalWorkflow convergence ledger records one usage block per round and failed-review escalation", async () => {
+	test("runGoalWorkflow preserves one usage block per completed round when reviewer execution rejects (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const ctx = makeMockCtx(
 			{
@@ -512,8 +522,15 @@ describe("goal convergence", () => {
 				},
 			},
 		);
-		const result = await mod.default.run(ctx);
-		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
+		await assert.rejects(async () => mod.default.run(ctx), /mock reviewer execution failure/);
+		const saved = JSON.parse(
+			readFileSync(
+				join(dirname(String(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.output)), "goal-ledger-state.json"),
+				"utf8",
+			),
+		) as {
+			readonly status: string;
+			readonly reviews: readonly { readonly turn: number }[];
 			readonly convergence: readonly {
 				readonly unresolvedBlockingCount: number;
 				readonly meanFindingConfidence: number | null;
@@ -530,9 +547,14 @@ describe("goal convergence", () => {
 					readonly cacheHitRate: number;
 				};
 			}[];
-			readonly decisions: readonly { readonly reason: string }[];
+			readonly decisions: readonly { readonly turn: number; readonly decision: string; readonly reason: string }[];
 		};
-		assert.equal(result.status, "needs_human");
+		assert.equal(saved.status, "active");
+		assert.equal(saved.decisions.length, 5);
+		assert.equal(saved.decisions.at(-1)?.turn, 5);
+		assert.equal(saved.decisions.at(-1)?.decision, "continue");
+		assert.equal(saved.reviews.length, 15);
+		assert.ok(saved.reviews.every((review) => review.turn < 6));
 		assert.equal(saved.convergence.length, 5);
 		for (const round of saved.convergence) {
 			assert.equal(round.unresolvedBlockingCount, 0);
@@ -562,9 +584,10 @@ describe("goal convergence", () => {
 				assert.equal(typeof round.usage[key], "number", key);
 			}
 		}
-		assert.match(saved.decisions.at(-1)?.reason ?? "", /5 rounds/);
-		assert.match(saved.decisions.at(-1)?.reason ?? "", /flat/);
-		assert.match(saved.decisions.at(-1)?.reason ?? "", /EVIDENCE only/);
+		const evidence = convergence_escalation_evidence(saved.convergence).join("\n");
+		assert.match(evidence, /5 rounds/);
+		assert.match(evidence, /flat/);
+		assert.match(evidence, /EVIDENCE only/);
 	});
 
 	test("runGoalWorkflow convergence ledger computes confidence and traceability arithmetic from findings", async () => {
@@ -658,7 +681,7 @@ describe("goal convergence", () => {
 		);
 	});
 
-	test("goal convergence omits a failed reviewer batch from the blocking ledger and escalation evidence", async () => {
+	test("goal convergence preserves blocking rounds without fabricating a round when reviewer execution rejects (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const reviewerPayload = goalReviewJsonWithBlockingFindings();
 		const ctx = makeMockCtx(
@@ -682,20 +705,25 @@ describe("goal convergence", () => {
 				},
 			},
 		);
-		const result = await mod.default.run(ctx);
-		const saved = JSON.parse(readFileSync(String(result.ledger_path), "utf8")) as {
-			readonly status: string;
-			readonly convergence: readonly { readonly unresolvedBlockingCount: number }[];
-			readonly decisions: readonly { readonly reason: string }[];
-		};
+		await assert.rejects(async () => mod.default.run(ctx), /mock reviewer execution failure/);
+		const saved = JSON.parse(
+			readFileSync(
+				join(dirname(String(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.output)), "goal-ledger-state.json"),
+				"utf8",
+			),
+		) as GoalLedger;
 
-		assert.equal(result.status, "needs_human");
-		assert.equal(saved.status, "needs_human");
+		assert.equal(saved.status, "active");
+		assert.equal(saved.decisions.length, 5);
+		assert.equal(saved.decisions.at(-1)?.turn, 5);
+		assert.equal(saved.decisions.at(-1)?.decision, "continue");
+		assert.equal(saved.reviews.length, 15);
+		assert.ok(saved.reviews.every((review) => review.turn < 6));
 		assert.deepEqual(
-			saved.convergence.map((round) => round.unresolvedBlockingCount),
+			(saved.convergence ?? []).map((round) => round.unresolvedBlockingCount),
 			[5, 5, 5, 5, 5],
 		);
-		const reason = saved.decisions.at(-1)?.reason ?? "";
+		const reason = convergence_escalation_evidence(saved.convergence ?? []).join("\n");
 		assert.match(reason, /5 rounds recorded/);
 		assert.match(reason, /flat/);
 		assert.match(reason, /This is escalation EVIDENCE only; it never approves or terminates anything\./);
