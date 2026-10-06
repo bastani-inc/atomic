@@ -26,6 +26,7 @@
 - Fixed hidden tools appearing in prompt rules and skill-reading hints. Codemode tool declarations now include each tool's prompt guidelines ([#10343](https://github.com/earendil-works/pi/issues/10343)).
 - Fixed interactive quit waiting on pending extension commands, which could leave connecting MCP servers running.
 - Fixed HTTP/2 pending stream cancellations being treated as user cancellations instead of retryable transport failures.
+- Updated the bundled `proxy-addr` dependency to 2.0.8, fixing IP spoofing through IPv4-mapped IPv6 trusted subnets.
 
 ## [0.9.27] - 2026-10-05
 
