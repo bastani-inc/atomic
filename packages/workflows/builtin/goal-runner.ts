@@ -11,11 +11,7 @@ import {
   workflowArtifactDirectoryPath,
 } from "../src/shared/workflow-artifacts.js";
 import { fold_usage } from "./verification-usage.js";
-import {
-  convergence_escalation_evidence,
-  record_convergence,
-  type ConvergenceEntry,
-} from "./goal-convergence.js";
+import { record_convergence } from "./goal-convergence.js";
 import { orchestratorModelConfig, reviewerModelConfig } from "./goal-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
@@ -24,7 +20,6 @@ import {
   type GoalWorkflowInputs,
   type GoalWorkflowOutputs,
   type ReviewRecord,
-  type ReducerDecision,
 } from "./goal-types.js";
 import { artifactSafeName, writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
 import { appendLifecycleEvent, createGoalLedger, writeGoalLedger } from "./goal-ledger.js";
@@ -36,9 +31,7 @@ import { formatReviewReport, renderFinalReport } from "./goal-reports.js";
 import {
   parsedReviewDecisionFromResult,
   reviewDecisionToRecord,
-  reviewerErrorDecision,
 } from "./goal-review.js";
-import { reviewerFailureText } from "./review-convergence.js";
 import { consolidateFindingsBatch } from "./review-convergence.js";
 import { reverify_consolidated_batch } from "./goal-reverify.js";
 import {
@@ -106,28 +99,6 @@ type GoalWorkflowOptions = {
   readonly workflowStartCwd: string;
 };
 
-function reviewerExecutionFailedDecision(input: {
-  readonly turn: number;
-  readonly reviewQuorum: number;
-  readonly reviews: readonly ReviewRecord[];
-  readonly reason: string;
-  readonly convergence?: readonly ConvergenceEntry[];
-}): ReducerDecision {
-  const evidence = convergence_escalation_evidence(input.convergence ?? []);
-  return {
-    turn: input.turn,
-    decision: "needs_human",
-    reason: [input.reason, ...evidence].join("\n"),
-    complete_votes: input.reviews.filter((review) => review.decision === "complete").length,
-    review_quorum: input.reviewQuorum,
-    parsed: input.reviews.every((review) => review.parsed),
-    approved: false,
-    stopReviewLoop: false,
-    nextAction: "needs_human",
-    finalActionRemaining: false,
-    diagnostics: input.reviews.flatMap((review) => review.parse_diagnostics),
-  };
-}
 
 export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkflowOptions): Promise<GoalWorkflowOutputs> {
     const inputs = ctx.inputs;
@@ -150,7 +121,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];
     let latestReviewReportPath: string | undefined;
-    let terminalRemainingWork: string | undefined;
     let previousOrchestratorSessionFile: string | undefined;
 
     // A resume reloads the ledger its source run already advanced, possibly to a
@@ -161,10 +131,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     // convergence, blocker, reverification and status history were already
     // recorded by the source run, so appending them again would duplicate the
     // authoritative history without new turn work.
-    const recordedTurns = ledger.turns;
-    for (let turn = 1; turn <= maxTurns && (ledger.status === "active" || turn <= recordedTurns); turn += 1) {
-      const replayingRecordedTurn = turn <= recordedTurns;
-      if (!replayingRecordedTurn) {
+    const recordedTurns = new Set(ledger.decisions.map((decision) => decision.turn));
+    const lastRecordedTurn = Math.max(0, ...recordedTurns);
+    for (let turn = 1; turn <= maxTurns && (ledger.status === "active" || turn <= lastRecordedTurn); turn += 1) {
+      const replayingRecordedTurn = recordedTurns.has(turn);
+      const turnAlreadyStarted = ledger.lifecycle.some((event) => event.turn === turn && event.event === "work_turn_started");
+      if (!replayingRecordedTurn && !turnAlreadyStarted) {
         appendLifecycleEvent(ledger, "work_turn_started", "Orchestrator started.", turn);
         await writeGoalLedger(ledgerPath, ledger);
       }
@@ -185,43 +157,14 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
             latestReviewArtifactPaths,
           );
 
-      let orchestrator: WorkflowTaskResult;
-      try {
-        orchestrator = await ctx.task(`orchestrator-${turn}`, {
+      const orchestrator = await ctx.task(`orchestrator-${turn}`, {
           prompt: orchestratorPrompt,
           reads: [ledgerPath, ...latestReviewArtifactPaths],
           output: orchestratorReceiptPath,
           outputMode: "file-only",
           ...orchestratorModelConfig,
           ...orchestratorForkOptions,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const baseReason = `Orchestrator failed before producing a receipt: ${message}`;
-        terminalRemainingWork = baseReason;
-        const reason = [baseReason, ...convergence_escalation_evidence(ledger.convergence ?? [])].join("\n");
-        latestReviews = [];
-        latestReviewArtifactPaths = [];
-        latestReviewReportPath = undefined;
-        ledger.turns = Math.max(ledger.turns, turn);
-        ledger.status = "needs_human";
-        ledger.decisions.push({
-          turn,
-          decision: "needs_human",
-          reason,
-          complete_votes: 0,
-          review_quorum: reviewQuorum,
-          parsed: false,
-          approved: false,
-          stopReviewLoop: false,
-          nextAction: "needs_human",
-          finalActionRemaining: false,
-          diagnostics: [baseReason],
-        });
-        appendLifecycleEvent(ledger, "status_decided", reason, turn);
-        await writeGoalLedger(ledgerPath, ledger);
-        break;
-      }
+      });
 
       previousOrchestratorSessionFile = orchestrator.sessionFile;
       if (!replayingRecordedTurn) {
@@ -280,40 +223,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ),
       ];
 
-      let reviewResults: WorkflowTaskResult[];
-      let reviewerBatchFailed = false;
-      let reviewerExecutionDiagnostic: string | undefined;
-      try {
-        reviewResults = await ctx.parallel(reviewerSteps, {
-          task: objective,
-          failFast: true,
-          group: `goal-reviewers-turn-${turn}`,
-        });
-      } catch (err) {
-        reviewerBatchFailed = true;
-        const failure = reviewerFailureText(err);
-        reviewerExecutionDiagnostic = failure.includes("referenced artifact does not exist")
-          ? `Reviewer execution failed while resolving its reads contract: ${failure}`
-          : `Reviewer execution failed before producing a decision: ${failure}`;
-        reviewResults = [
-          {
-            name: "reviewer-error",
-            stageName: "reviewer-error",
-            text: failure,
-          },
-        ];
-      }
+      const reviewResults = await ctx.parallel(reviewerSteps, {
+        task: objective,
+        failFast: true,
+        group: `goal-reviewers-turn-${turn}`,
+      });
 
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
         const normalizedReviewerName = reviewerName.replace(/-\d+$/u, "");
-        const parsed = reviewerBatchFailed
-          ? {
-              decision: reviewerErrorDecision(reviewerExecutionDiagnostic ?? "Reviewer execution failed."),
-              parsed: false,
-              diagnostics: [reviewerExecutionDiagnostic ?? "Reviewer execution failed."],
-            }
-          : parsedReviewDecisionFromResult(result, reviewerName);
+        const parsed = parsedReviewDecisionFromResult(result, reviewerName);
         const reviewArtifactPath = join(
           artifactDir,
           `review-${artifactSafeName(normalizedReviewerName)}.json`,
@@ -371,10 +290,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       const findings = latestReviews.flatMap((review) => review.findings);
       const traceability = latestReviews.flatMap((review) => review.requirements_traceability);
       ledger.convergence ??= [];
-      // A thrown reviewer batch or an all-unparsed reviewer batch produced no
-      // decisions, so recording a zero-blocker round would fabricate progress
-      // and can suppress the escalation evidence on the very escalation it triggers.
-      if (!replayingRecordedTurn && !reviewerBatchFailed && roundProducedDecisions) {
+      if (!replayingRecordedTurn && roundProducedDecisions) {
         ledger.convergence.push(record_convergence({
           unresolvedBlockingCount: reverified.batch.filter((entry) => entry.blocking).length,
           meanFindingConfidence: findings.length === 0
@@ -402,22 +318,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           `Recorded ${latestReviews.length} reviewer decisions.`,
           turn,
         );
-      }
-      if (reviewerBatchFailed) {
-        terminalRemainingWork = collectRemainingWork(latestReviews);
-        const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
-        const decision = reviewerExecutionFailedDecision({
-          turn,
-          reviewQuorum,
-          reviews: latestReviews,
-          reason,
-          convergence: ledger.convergence,
-        });
-        ledger.decisions.push(decision);
-        ledger.status = "needs_human";
-        appendLifecycleEvent(ledger, "status_decided", decision.reason, turn);
-        await writeGoalLedger(ledgerPath, ledger);
-        break;
       }
 
       // A replayed turn keeps the reloaded ledger's recorded decision and
@@ -448,7 +348,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
     const remainingWork = ledger.status === "complete"
       ? "none"
-      : terminalRemainingWork ?? collectRemainingWork(latestReviews);
+      : collectRemainingWork(latestReviews);
     const finalReport = renderFinalReport(ledger, ledgerPath, remainingWork);
     const reviewReport = formatReviewReport(latestReviews);
     let finalPrReport: string | undefined;

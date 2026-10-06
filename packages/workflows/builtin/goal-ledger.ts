@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
+import { isDeepStrictEqual } from "node:util";
+import { convergence_escalation_evidence } from "./goal-convergence.js";
+import { collectRemainingWork } from "./goal-reducer.js";
+import { reviewDecisionToRecord, reviewerErrorDecision } from "./goal-review.js";
+import { DEFAULT_REVIEW_QUORUM, LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
 
 const LEDGER_STATE_FILENAME = "goal-ledger-state.json";
 
@@ -83,6 +87,67 @@ async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | 
     return undefined;
   }
 }
+function recoverLegacyExecutionInterruption(ledger: GoalLedger): boolean {
+  const decision = ledger.decisions.at(-1);
+  const event = ledger.lifecycle.at(-1);
+  if (ledger.status !== "needs_human" || decision === undefined || event === undefined ||
+    decision.turn !== ledger.turns || !Number.isInteger(decision.turn) || decision.turn < 1 ||
+    decision.decision !== "needs_human" || decision.parsed !== false ||
+    decision.approved !== false || decision.stopReviewLoop !== false ||
+    decision.nextAction !== "needs_human" || decision.finalActionRemaining !== false ||
+    decision.complete_votes !== 0 || decision.review_quorum !== DEFAULT_REVIEW_QUORUM ||
+    decision.blocker !== undefined ||
+    event.event !== "status_decided" || event.status !== "needs_human" ||
+    event.turn !== decision.turn || event.summary !== decision.reason ||
+    ledger.decisions.slice(0, -1).some((record) => record.turn >= decision.turn || record.decision !== "continue") ||
+    ledger.lifecycle.slice(0, -1).some((record) => record.turn > decision.turn ||
+      (record.turn === decision.turn && record.event === "status_decided")) ||
+    ledger.blockers.some((record) => record.turn >= decision.turn)) {
+    return false;
+  }
+  const diagnostic = decision.diagnostics[0];
+  if (decision.diagnostics.length !== 1 || diagnostic === undefined) return false;
+  const turnReviews = ledger.reviews.filter((record) => record.turn >= decision.turn);
+  const turnReceipts = ledger.receipts.filter((record) => record.turn >= decision.turn);
+  const previousEvent = ledger.lifecycle.at(-2);
+  const orchestratorInterrupted = diagnostic.startsWith("Orchestrator failed before producing a receipt: ") &&
+    decision.reason === [diagnostic, ...convergence_escalation_evidence(ledger.convergence ?? [])].join("\n") &&
+    turnReceipts.length === 0 && turnReviews.length === 0 &&
+    previousEvent?.event === "work_turn_started" && previousEvent.turn === decision.turn &&
+    previousEvent.status === "active" && previousEvent.summary === "Orchestrator started.";
+  const review = turnReviews[0];
+  const reviewerInterrupted = (
+    diagnostic.startsWith("Reviewer execution failed before producing a decision: ") ||
+    diagnostic.startsWith("Reviewer execution failed while resolving its reads contract: ")
+  ) && turnReviews.length === 1 && review !== undefined &&
+    turnReceipts.length === 1 && turnReceipts[0]?.turn === decision.turn &&
+    previousEvent?.event === "reviews_recorded" && previousEvent.turn === decision.turn &&
+    previousEvent.status === "active" && previousEvent.summary === "Recorded 1 reviewer decisions." &&
+    isDeepStrictEqual(review, reviewDecisionToRecord({
+      turn: decision.turn,
+      reviewer: "reviewer-error",
+      artifactPath: review.artifact_path,
+      decision: reviewerErrorDecision(diagnostic),
+      parsed: false,
+      diagnostics: [diagnostic],
+      allowFinalActionRemaining: false,
+    })) && decision.reason === [
+      `Reviewer execution failed before quorum could be established. Remaining work: ${collectRemainingWork([review])}`,
+      ...convergence_escalation_evidence(ledger.convergence ?? []),
+    ].join("\n");
+  if (!orchestratorInterrupted && !reviewerInterrupted) return false;
+  ledger.decisions.pop();
+  ledger.lifecycle.pop();
+  if (reviewerInterrupted) {
+    ledger.reviews = ledger.reviews.filter((record) => record !== review);
+    ledger.lifecycle.pop();
+  } else {
+    ledger.turns = Math.max(0, ...ledger.decisions.map((record) => record.turn));
+  }
+  ledger.status = "active";
+  return true;
+}
+
 export async function createGoalLedger(
   objective: string,
   acceptanceCriteria: string,
@@ -90,7 +155,10 @@ export async function createGoalLedger(
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
   const ledgerPath = join(artifactDir, LEDGER_FILENAME);
   const existing = await readExistingGoalLedger(ledgerPath);
-  if (existing !== undefined) return { ledger: existing, ledgerPath, artifactDir };
+  if (existing !== undefined) {
+    if (recoverLegacyExecutionInterruption(existing)) await writeGoalLedger(ledgerPath, existing);
+    return { ledger: existing, ledgerPath, artifactDir };
+  }
 
   const goalId = randomUUID();
   const now = new Date().toISOString();

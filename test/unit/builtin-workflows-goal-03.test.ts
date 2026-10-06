@@ -266,7 +266,7 @@ describe("goal", () => {
 		assert.match(String(result.remaining_work), /published docs proof missing/);
 	});
 
-	test("orchestrator failures stop with needs_human and persist a decision", async () => {
+	test("orchestrator infrastructure failures leave an active ledger (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -281,42 +281,21 @@ describe("goal", () => {
 			},
 		);
 
-		const result = await d.run(ctx);
-
-		assert.equal(result.status, "needs_human");
-		assert.equal(result.approved, false);
-		assert.equal(result.turns_completed, 1);
-		assert.match(String(result.remaining_work), /provider outage/);
-		assert.equal(result.review_report, "No reviewer decisions were recorded.");
+		await assert.rejects(d.run(ctx), /provider outage/);
 		assert.equal(ctx.calls.parallel.length, 0);
-		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
-			status: string;
-			turns: number;
-			receipts: readonly unknown[];
-			reviews: readonly unknown[];
-			decisions: readonly { decision: string; reason: string }[];
-			lifecycle: readonly {
-				event: string;
-				status: string;
-				turn: number;
-			}[];
-		};
-		assert.equal(ledger.status, "needs_human");
+		const ledger = JSON.parse(readFileSync(ctx.calls.taskOptions["orchestrator-1"][0].reads[0], "utf8"));
+		assert.equal(ledger.status, "active");
 		assert.equal(Object.hasOwn(ledger, "turns"), false);
 		assert.equal(ledger.receipts.length, 0);
 		assert.equal(ledger.reviews.length, 0);
-		assert.deepEqual(
-			ledger.decisions.map((decision) => decision.decision),
-			["needs_human"],
-		);
-		assert.match(ledger.decisions[0]!.reason, /provider outage/);
+		assert.deepEqual(ledger.decisions, []);
 		assert.deepEqual(
 			ledger.lifecycle.map((event) => event.event),
-			["created", "work_turn_started", "status_decided"],
+			["created", "work_turn_started"],
 		);
 	});
 
-	test("reviewer batch failures become a synthetic continue decision", async () => {
+	test("reviewer transport failures escape without a synthetic decision (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -328,33 +307,14 @@ describe("goal", () => {
 			},
 		);
 
-		const result = await d.run(ctx);
-
-		assert.equal(result.status, "needs_human");
-		assert.equal(result.approved, false);
-		assert.equal(result.turns_completed, 1);
-		assert.match(String(result.remaining_work), /Recover reviewer execution/);
-		assert.equal(typeof result.review_report_path, "string");
-		assert.match(readFileSync(result.review_report_path as string, "utf8"), /parallel transport failed/);
-		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
-			reviews: readonly {
-				reviewer: string;
-				decision: string;
-				explanation: string;
-			}[];
-			decisions: readonly { decision: string }[];
-		};
-		assert.equal(ledger.reviews.length, 1);
-		assert.equal(ledger.reviews[0]!.reviewer, "reviewer-error");
-		assert.equal(ledger.reviews[0]!.decision, "continue");
-		assert.match(ledger.reviews[0]!.explanation, /review gate cannot safely approve/);
-		assert.deepEqual(
-			ledger.decisions.map((decision) => decision.decision),
-			["needs_human"],
-		);
+		await assert.rejects(d.run(ctx), /parallel transport failed/);
+		const ledger = JSON.parse(readFileSync(ctx.calls.taskOptions["orchestrator-1"][0].reads[0], "utf8"));
+		assert.equal(ledger.status, "active");
+		assert.deepEqual(ledger.reviews, []);
+		assert.deepEqual(ledger.decisions, []);
 	});
 
-	test("orchestrator failures clear stale reviewer reports from earlier turns", async () => {
+	test("later orchestrator interruptions preserve earlier review outcomes (#3466)", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -378,20 +338,13 @@ describe("goal", () => {
 			},
 		);
 
-		const result = await d.run(ctx);
-
-		assert.equal(result.status, "needs_human");
-		assert.equal(result.turns_completed, 2);
-		assert.match(String(result.remaining_work), /provider outage on second turn/);
-		assert.equal(result.review_report, "No reviewer decisions were recorded.");
-		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
-			reviews: readonly unknown[];
-			decisions: readonly { decision: string }[];
-		};
+		await assert.rejects(d.run(ctx), /provider outage on second turn/);
+		const ledger = JSON.parse(readFileSync(ctx.calls.taskOptions["orchestrator-2"][0].reads[0], "utf8"));
+		assert.equal(ledger.status, "active");
 		assert.equal(ledger.reviews.length, 3);
 		assert.deepEqual(
 			ledger.decisions.map((decision) => decision.decision),
-			["continue", "needs_human"],
+			["continue"],
 		);
 	});
 });

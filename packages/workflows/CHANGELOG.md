@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Goal orchestrator and reviewer execution failures incorrectly ending the goal as `needs_human`. The ledger now stays `active`, and resume retries the interrupted stage and completes its turn. Identifiable synthetic execution-failure verdicts from older versions are also recoverable ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
+
 ## [0.9.28-alpha.1] - 2026-10-05
 
 ### Fixed
