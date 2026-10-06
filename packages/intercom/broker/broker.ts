@@ -288,6 +288,7 @@ class IntercomBroker {
 
   private handleConnection(socket: net.Socket): void {
     let sessionId: string | null = null;
+    this.restartShutdownCheck();
 
     const reader = createMessageReader((msg) => {
       if (socket.destroyed || socket.writableEnded) return;
@@ -345,6 +346,13 @@ class IntercomBroker {
         this.shutdown();
       }
     }, 5000);
+  }
+
+  private restartShutdownCheck(): void {
+    if (!this.shutdownTimer) return;
+    clearTimeout(this.shutdownTimer);
+    this.shutdownTimer = null;
+    this.scheduleShutdownCheck();
   }
 
   /**

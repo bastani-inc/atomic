@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed intercom occasionally reporting `Intercom not connected: connect ENOENT …/broker.sock` when a session connected just as an idle broker was shutting down.
+
 ## [0.9.27] - 2026-10-05
 
 ### Fixed
