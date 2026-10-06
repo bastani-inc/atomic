@@ -33,6 +33,17 @@ export type { AgentIntent, OperationId, TaskId, TaskResult, WaitPolicy } from ".
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./core/tasks/owner-store.js";
 export { formatToolCallWithArgs } from "./core/tools/render-utils.ts";
+export {
+	createTranscript,
+	type Transcript,
+	type TranscriptOptions,
+	type TranscriptPart,
+	type TranscriptTextPart,
+	type TranscriptThinkingPart,
+	type TranscriptToolCallPart,
+	type TranscriptToolResult,
+	type TranscriptToolResultFormat,
+} from "./core/transcript.js";
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
 export {
 	type CodemodeToolDetails,

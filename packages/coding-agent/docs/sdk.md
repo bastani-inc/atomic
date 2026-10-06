@@ -710,6 +710,34 @@ To rebuild an assistant message from deltas, accumulate them in your own message
 
 If you subscribe part-way through a turn, seed your object from `session.agent.state.streamingMessage`, if present, to include the deltas you missed.
 
+### Collecting assistant output
+
+`createTranscript()` does that bookkeeping for you. It turns session events into the assistant's output as ordered, JSON-serializable parts:
+
+```typescript
+import { createTranscript } from "@bastani/atomic";
+
+const transcript = createTranscript();
+session.subscribe((event) => transcript.apply(event));
+
+await session.prompt("List the files here");
+console.log(JSON.stringify(transcript.parts()));
+```
+
+`parts()` returns a fresh copy of the parts of every assistant message seen so far, including one still streaming:
+
+- `{ type: "text", text }`
+- `{ type: "thinking", thinking }`. Redacted thinking is left out.
+- `{ type: "toolCall", id, name, arguments, result? }`. `result` appears once the tool reports progress or finishes. It holds `isError` and `isPartial`, which stays `true` until the tool finishes. If the message is aborted or fails, tool calls without a final result get an error result carrying the error message.
+
+Events from tools called inside other tools (those with `parentToolCallId`) are ignored. By default, `result.content` holds the result's text content. To get a tool's structured `details` instead, pass `toolResult`:
+
+```typescript
+const transcript = createTranscript({
+  toolResult: (toolName) => (toolName === "todo" ? "details" : "content"),
+});
+```
+
 ## Options Reference
 
 Moved to [SDK API reference](/sdk/reference#options-reference).
