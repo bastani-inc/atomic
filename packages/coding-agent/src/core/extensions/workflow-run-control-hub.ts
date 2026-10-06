@@ -19,6 +19,9 @@ import {
 	type WorkflowStageListFilter,
 } from "./workflow-run-control.js";
 
+/** Session disposal waits at most this long for observers to receive the final `unavailable` snapshot. */
+const OBSERVER_FINAL_DELIVERY_TIMEOUT_MS = 5_000;
+
 /** Holds the run-control implementation that the workflows extension registers for one extension generation. */
 export class WorkflowRunControlHub {
 	private control: WorkflowRunControl | undefined;
@@ -125,9 +128,16 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		const leases = [...this.observers];
 		this.observers.clear();
 		for (const lease of leases) lease.subscription.dispose();
-		await Promise.all(
-			leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {})),
-		);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			Promise.all(
+				leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {})),
+			),
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, OBSERVER_FINAL_DELIVERY_TIMEOUT_MS);
+			}),
+		]);
+		clearTimeout(timer);
 		for (const lease of leases) lease.close();
 	}
 
