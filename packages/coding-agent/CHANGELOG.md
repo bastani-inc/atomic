@@ -4,17 +4,19 @@
 
 ### Added
 
-- Added `compactionModel` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added `compactionModel` and a **Compaction model** selector in `/settings` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Added verbatim classifier compaction with registered models such as `typesafe/jev-latest`, retaining protected context and recent messages ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Added Morph verbatim compaction with `morph/morph-compactor`, authenticated through `/login morph` or `MORPH_API_KEY` ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 
 ### Changed
 
 - Compaction planners now receive structured per-message lines instead of a numbered transcript ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Compaction cards show the backend and model used, including `summary (pi fallback)` for policy-refusal summaries ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 
 ### Fixed
 
-- Provider policy refusals during compaction now try a pi-style summary on the same model before continuing through fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Chat-provider policy refusals during compaction now try a pi-style summary on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Morph compaction failures now include the HTTP status and a bounded, credential-redacted response excerpt in error diagnostics ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

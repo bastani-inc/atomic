@@ -91,3 +91,62 @@ test("Morph passes cancellation through fetch (#3470)", async () => {
 		/cancelled/,
 	);
 });
+
+test("Morph HTTP errors retain bounded credential-free body details in errors and diagnostics (#3470)", async () => {
+	const diagnostics: string[] = [];
+	const apiKey = "opaque-morph-credential";
+	const body =
+		`Quota exceeded for ${apiKey}. Authorization: Bearer opaque-bearer\n` +
+		`{"api_key":"other-opaque-key","password":"private-password"}\n` +
+		`sk-abcdefghijklmnop ${"detail ".repeat(200)} END-OF-BODY`;
+	await assert.rejects(
+		planMorphRanges(region, parameters, {
+			apiKey,
+			fetchFn: async () => new Response(body, { status: 429 }),
+			onDiagnostics: (diagnostic) => diagnostics.push(JSON.stringify(diagnostic)),
+		}),
+		(error: Error) => {
+			assert.match(error.message, /Morph compaction HTTP 429: Quota exceeded/);
+			assert.ok(error.message.length <= 550);
+			assert.doesNotMatch(
+				error.message,
+				/opaque-morph-credential|opaque-bearer|other-opaque-key|private-password|sk-abcdefghijklmnop|END-OF-BODY/,
+			);
+			return true;
+		},
+	);
+	assert.equal(diagnostics.length, 1);
+	assert.match(diagnostics[0], /Morph compaction HTTP 429: Quota exceeded/);
+	assert.match(diagnostics[0], /provider_error/);
+	assert.doesNotMatch(
+		diagnostics[0],
+		/opaque-morph-credential|opaque-bearer|other-opaque-key|private-password|sk-abcdefghijklmnop|END-OF-BODY/,
+	);
+});
+
+test("Morph bounds HTTP error body reads and does not expose a credential cut by the read cap (#3470)", async () => {
+	let reads = 0;
+	let cancelled = false;
+	const body = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			reads++;
+			const chunk =
+				reads === 1 ? `Service unavailable\n${"x".repeat(8100)} {"api_key":"cut-secret` : "cut-secret".repeat(2000);
+			controller.enqueue(new TextEncoder().encode(chunk));
+			if (reads === 10) controller.close();
+		},
+		cancel() {
+			cancelled = true;
+		},
+	});
+	await assert.rejects(
+		planMorphRanges(region, parameters, { apiKey: "key", fetchFn: async () => new Response(body, { status: 503 }) }),
+		(error: Error) => {
+			assert.match(error.message, /HTTP 503: Service unavailable/);
+			assert.doesNotMatch(error.message, /cut-secret/);
+			return true;
+		},
+	);
+	assert.equal(cancelled, true);
+	assert.ok(reads < 10);
+});

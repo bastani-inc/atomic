@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import { getModel } from "@bastani/pi-ai/compat";
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import {
 	getKeybindings,
@@ -39,6 +41,25 @@ class SelectorTerminal implements Terminal {
 
 function openSettingsSelector() {
 	const settingsManager = SettingsManager.inMemory({});
+	const chatModel = getModel("openai", "gpt-4o");
+	const compactionModel = getModel("openai", "gpt-4.1-mini");
+	const session = {
+		settingsManager,
+		model: chatModel,
+		setModel: () => assert.fail("compaction settings must not change the chat model"),
+		autoCompactionEnabled: true,
+		steeringMode: "one-at-a-time",
+		followUpMode: "one-at-a-time",
+		thinkingLevel: "off",
+		getAvailableThinkingLevels: () => ["off"],
+		isStreaming: false,
+		isCompacting: false,
+		modelRuntime: {
+			getAvailableSnapshot: () => [chatModel, compactionModel],
+			getModelsOfType: () => [],
+			hasConfiguredAuth: () => false,
+		},
+	};
 	let selector: SettingsSelectorComponent | undefined;
 	const renderer = createInteractiveTui({
 		showHardwareCursor: false,
@@ -48,17 +69,7 @@ function openSettingsSelector() {
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		runtimeHost: {
 			services: { agentDir: "/tmp" },
-			session: {
-				settingsManager,
-				autoCompactionEnabled: true,
-				steeringMode: "one-at-a-time",
-				followUpMode: "one-at-a-time",
-				thinkingLevel: "off",
-				getAvailableThinkingLevels: () => ["off"],
-				isStreaming: false,
-				isCompacting: false,
-				modelRuntime: { getAvailableSnapshot: () => [], getModelsOfType: () => [] },
-			},
+			session,
 		},
 		renderer,
 		ui: undefined as unknown as TUI,
@@ -78,7 +89,7 @@ function openSettingsSelector() {
 
 	mode.showSettingsSelector();
 	if (!selector) throw new Error("settings selector was not created");
-	return { mode, selector };
+	return { mode, selector, session, settingsManager };
 }
 
 beforeEach(() => {
@@ -105,4 +116,25 @@ test("settings selector keeps fullscreen scrollbar available", () => {
 
 	expect(rendered).toMatch(/Fullscreen scrollbar\s+auto/);
 	mode.ui.stop();
+});
+
+test("settings selector searches and saves the compaction model without changing the chat model (#3470)", () => {
+	const { mode, selector, session, settingsManager } = openSettingsSelector();
+	const chatModel = session.model;
+	try {
+		const list = selector.getSettingsList();
+		for (const character of "Compaction model") list.handleInput(character);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Compaction model\s+Auto \(current model\)/);
+		list.handleInput("\r");
+		for (const character of "openai/gpt-4.1-mini") list.handleInput(character);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /openai\/gpt-4\.1-mini/);
+		list.handleInput("\r");
+		assert.equal(settingsManager.getCompactionModel(), "openai/gpt-4.1-mini");
+		assert.equal(settingsManager.getGlobalSettings().compactionModel, "openai/gpt-4.1-mini");
+		assert.equal(settingsManager.getProjectSettings().compactionModel, undefined);
+		assert.equal(session.model, chatModel);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Compaction model\s+openai\/gpt-4\.1-mini/);
+	} finally {
+		mode.ui.stop();
+	}
 });

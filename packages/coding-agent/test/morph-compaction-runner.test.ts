@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CompactorModel } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
@@ -96,4 +99,42 @@ test("Morph HTTP errors continue to configured chat fallback (#3470)", async () 
 	assert.deepEqual(calls, ["fallback"]);
 	assert.equal(result.backend, "planner");
 	assert.equal(result.model, "test/fallback");
+});
+
+test("Morph HTTP policy failures persist safe diagnostics before the ladder continues (#3470)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-morph-diagnostic-"));
+	try {
+		const fallback = { ...model, id: "fallback" };
+		const result = await runVerbatimCompaction(preparation, model, {
+			compactionModel: { kind: "morph", fullId: "morph/morph-compactor" },
+			resolveMorphApiKey: async () => "morph-secret",
+			morphFetchFn: async () => new Response('Content policy block; {"api_key":"morph-secret"}', { status: 403 }),
+			resolveAuth: async () => ({ apiKey: "fallback-key" }),
+			streamFn: createFauxStreamFn(["1:2,10\n"]).streamFn,
+			thinkingLevel: "off",
+			urgency: "recoverable",
+			sessionFilePath: join(directory, "session.jsonl"),
+			fallback: {
+				fallbackModels: ["test/fallback"],
+				registry: {
+					getAvailableSnapshot: () => [fallback],
+					getModel: () => fallback,
+					hasConfiguredAuth: () => true,
+				},
+				preferredProvider: "test",
+				sessionThinkingLevel: "off",
+			},
+		});
+		assert.equal(result.backend, "planner");
+		assert.equal(result.model, "test/fallback");
+		const file = readdirSync(directory).find((name) => name.includes("-compaction-morph-"));
+		assert.ok(file);
+		const diagnostic = readFileSync(join(directory, file), "utf8");
+		assert.match(diagnostic, /"failureCategory": "policy_refusal"/);
+		assert.match(diagnostic, /Morph compaction HTTP 403: Content policy block/);
+		assert.match(diagnostic, /\[redacted\]/);
+		assert.doesNotMatch(diagnostic, /morph-secret|fallback-key/);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });

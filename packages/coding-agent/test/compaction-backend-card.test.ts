@@ -3,7 +3,10 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import { convertToLlm, createVerbatimCompactionMessage } from "../src/core/messages.js";
 import { buildSessionProjection, type SessionEntry } from "../src/core/session-manager.js";
-import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.js";
+import {
+	CompactionBoundaryMessageComponent,
+	compactionBoundaryFromMessage,
+} from "../src/modes/interactive/components/compaction-boundary-message.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 test("labels policy-refusal summaries and the compaction model (#3470)", () => {
@@ -67,4 +70,40 @@ test("replays the pi summary tail as separate messages with its original roles (
 		["custom", "user"],
 	);
 	assert.equal(projection.entries.find((entry) => entry.sourceEntry.id === "tail")?.messages.length, 1);
+});
+
+test("live and reloaded compaction cards show backend and model when collapsed or expanded (#3470)", () => {
+	initTheme("dark");
+	for (const backend of ["planner", "classifier", "morph", "summary"] as const) {
+		const details = {
+			rung: "planned" as const,
+			backend,
+			model: `${backend}/model`,
+			stats: {
+				linesBefore: 10,
+				linesDeleted: 5,
+				linesKept: 5,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+		};
+		const live = new CompactionBoundaryMessageComponent({ text: "retained text", ...details });
+		const reloaded = compactionBoundaryFromMessage(
+			createVerbatimCompactionMessage("retained text", 100, new Date(0).toISOString(), details),
+			false,
+		);
+		for (const component of [live, reloaded]) {
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				const output = stripVTControlCharacters(component.render(160).join("\n"));
+				assert.ok(
+					output.includes(`${backend === "summary" ? "summary (pi fallback)" : backend} · ${backend}/model`),
+				);
+				assert.ok(output.includes("Compacted from 100 tokens"));
+				assert.equal(output.includes("retained text"), expanded);
+			}
+		}
+	}
 });

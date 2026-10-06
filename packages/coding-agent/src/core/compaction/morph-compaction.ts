@@ -1,7 +1,9 @@
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import type { LineRange, NumberedRegion, VerbatimCompactionParameters } from "./compaction-types.js";
 import { validateDeletedRanges } from "./deleted-ranges.js";
+import { isProviderPolicyRefusal } from "./planner-outcome.js";
 import { buildStructuredCompactionInput, mapMessageRanges } from "./structured-compaction-input.js";
 
 const responseSchema = Type.Object({
@@ -15,6 +17,45 @@ const responseSchema = Type.Object({
 export interface MorphRangeDiagnostics {
 	droppedRangeCount: number;
 	acceptedRangeCount: number;
+	failureCategory?: "provider_error" | "policy_refusal";
+	failureMessage?: string;
+}
+
+const HTTP_ERROR_EXCERPT_MAX_CHARS = 500;
+const HTTP_ERROR_BODY_MAX_BYTES = 8192;
+
+async function readHttpErrorBody(response: Response): Promise<string> {
+	if (!response.body) return "";
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let bytes = 0;
+	let text = "";
+	try {
+		while (bytes < HTTP_ERROR_BODY_MAX_BYTES) {
+			const { done, value } = await reader.read();
+			if (done) return text + decoder.decode();
+			const remaining = HTTP_ERROR_BODY_MAX_BYTES - bytes;
+			text += decoder.decode(value.subarray(0, remaining), { stream: true });
+			bytes += value.length;
+		}
+		const completeLinesEnd = Math.max(0, text.lastIndexOf("\n"));
+		return text.slice(0, completeLinesEnd);
+	} catch {
+		return "";
+	} finally {
+		await reader.cancel().catch(() => {});
+		reader.releaseLock();
+	}
+}
+
+async function morphHttpErrorMessage(response: Response, apiKey: string): Promise<string> {
+	const body = await readHttpErrorBody(response);
+	const excerpt = redactCredentialShapes(body.replaceAll(apiKey, "[redacted]"))
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, HTTP_ERROR_EXCERPT_MAX_CHARS);
+	return `Morph compaction HTTP ${response.status}${excerpt ? `: ${excerpt}` : ""}`;
 }
 
 export async function planMorphRanges(
@@ -42,7 +83,16 @@ export async function planMorphRanges(
 		}),
 		signal: options.signal,
 	});
-	if (!response.ok) throw new Error(`Morph compaction HTTP ${response.status}`);
+	if (!response.ok) {
+		const message = await morphHttpErrorMessage(response, options.apiKey);
+		options.onDiagnostics?.({
+			droppedRangeCount: 0,
+			acceptedRangeCount: 0,
+			failureCategory: isProviderPolicyRefusal(message) ? "policy_refusal" : "provider_error",
+			failureMessage: message,
+		});
+		throw new Error(message);
+	}
 	const body: Static<typeof responseSchema> = await response.json();
 	if (!Value.Check(responseSchema, body) || body.messages.length !== input.messages.length)
 		throw new Error("Malformed Morph compaction response");

@@ -335,6 +335,60 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			},
 		},
 		{
+			id: "compaction-model",
+			label: "Compaction model",
+			description: `Saves to ${config.compactionModelScope ?? "global"} settings; changes compaction, not the chat model`,
+			currentValue:
+				config.compactionModel && config.compactionModel !== "auto"
+					? config.compactionModel
+					: "Auto (current model)",
+			submenu: (_currentValue, done) => {
+				const configured = config.compactionModel === "auto" ? "" : (config.compactionModel ?? "");
+				const permitsModel = (id: string) => config.compactionModelScope !== "project" || !id.startsWith("morph/");
+				const current = permitsModel(configured) ? configured : "";
+				const models = [
+					...(config.availableDefaultModels ?? []).filter((model) => isModelType(model, "chat")),
+					...(config.availableClassifierModels ?? []),
+					...(config.availableCompactorModels ?? []),
+				].filter((model) => permitsModel(`${model.provider}/${model.id}`));
+				const options = [
+					{ value: "", label: "Auto (current model)", description: "Use the current chat model" },
+					...models.map((model) => ({
+						value: `${model.provider}/${model.id}`,
+						label: `${model.provider}/${model.id}`,
+						description:
+							model.provider === "morph" && !config.morphAuthenticated
+								? `${model.name} · requires /login morph`
+								: model.name,
+					})),
+				];
+				if (current && !options.some((option) => option.value === current)) {
+					options.push({
+						value: current,
+						label: current,
+						description: "Configured model is not currently available",
+					});
+				}
+				return new SelectSubmenu(
+					"Compaction model",
+					`Saves to ${config.compactionModelScope ?? "global"} settings. Selected providers receive the compactable conversation.`,
+					options.map((option) => ({
+						...option,
+						label: `${option.value === current ? "✓ " : "  "}${option.label}`,
+					})),
+					current,
+					(value) => {
+						callbacks.onCompactionModelChange?.(value);
+						config.compactionModel = value;
+						done(value || "Auto (current model)");
+					},
+					() => done(),
+					undefined,
+					true,
+				);
+			},
+		},
+		{
 			id: "model-thinking",
 			label: "Default thinking level per model",
 			description: "Search models and set a startup thinking override",

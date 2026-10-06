@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -309,4 +310,121 @@ test("router menu edits the project override including Automatic without changin
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+function openCompactionSubmenu(config: SettingsConfig, change: (model: string) => void): Container {
+	const item = buildSettingsItems(config, { onCompactionModelChange: change } as SettingsCallbacks).find(
+		({ id }) => id === "compaction-model",
+	);
+	assert.equal(item?.label, "Compaction model");
+	assert.ok(item?.submenu);
+	return item.submenu(item.currentValue, () => {}) as Container;
+}
+
+test("compaction picker selects chat, classifier and Morph models without changing chat defaults (#3470)", () => {
+	const config = settingsConfig({
+		compactionModel: "auto",
+		availableDefaultModels: [
+			{ provider: "test", id: "chat", name: "Chat" },
+		] as SettingsConfig["availableDefaultModels"],
+		availableClassifierModels: [
+			{ type: "classifier", provider: "judge", id: "score", name: "Judge" },
+		] as SettingsConfig["availableClassifierModels"],
+		availableCompactorModels: [{ type: "compactor", provider: "morph", id: "morph-compactor", name: "Morph" }],
+		morphAuthenticated: false,
+	});
+	const selected: string[] = [];
+	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
+	const output = render(menu);
+	for (const label of [
+		"Auto (current model)",
+		"test/chat",
+		"judge/score",
+		"morph/morph-compactor",
+		"requires /login morph",
+	]) {
+		assert.ok(output.includes(label), label);
+	}
+	for (const id of ["test/chat", "judge/score", "morph/morph-compactor", ""]) {
+		const reopened = openCompactionSubmenu(config, (value) => selected.push(value));
+		for (const character of id || "Auto") reopened.handleInput?.(character);
+		reopened.handleInput?.("\r");
+		assert.equal(config.compactionModel, id);
+	}
+	assert.deepEqual(selected, ["test/chat", "judge/score", "morph/morph-compactor", ""]);
+	assert.equal(config.thinkingLevel, "off");
+	assert.equal(config.availableDefaultModels?.[0].id, "chat");
+});
+
+test("project compaction picker excludes Morph even from chat catalogs and configured IDs (#3470)", () => {
+	const config = settingsConfig({
+		compactionModelScope: "project",
+		compactionModel: "morph/morph-compactor",
+		availableDefaultModels: [
+			{ provider: "morph", id: "chat", name: "Morph chat" },
+		] as SettingsConfig["availableDefaultModels"],
+		availableCompactorModels: [{ type: "compactor", provider: "morph", id: "morph-compactor", name: "Morph" }],
+	});
+	const selected: string[] = [];
+	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
+	assert.ok(render(menu).includes("project settings"));
+	assert.ok(!render(menu).includes("morph/"));
+	menu.handleInput?.("\r");
+	assert.deepEqual(selected, [""]);
+});
+
+test("compaction picker persists global and project selections and Auto without changing chat settings (#3470)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-compaction-picker-"));
+	try {
+		mkdirSync(join(directory, ".atomic"));
+		const globalFile = join(directory, "settings.json");
+		const projectFile = join(directory, ".atomic", "settings.json");
+		const defaults = { defaultProvider: "test", defaultModel: "chat", theme: "dark" };
+		writeFileSync(globalFile, JSON.stringify(defaults));
+		writeFileSync(projectFile, JSON.stringify({ quietStartup: true }));
+		const manager = SettingsManager.create(directory, directory);
+		for (const scope of ["global", "project"] as const) {
+			const config = settingsConfig({
+				compactionModel: manager.getCompactionModel(),
+				compactionModelScope: scope,
+				availableClassifierModels: [
+					{ type: "classifier", provider: "judge", id: "score", name: "Judge" },
+				] as SettingsConfig["availableClassifierModels"],
+			});
+			for (const search of ["judge/score", "Auto"]) {
+				const menu = openCompactionSubmenu(config, (value) => manager.setCompactionModel(value, scope));
+				for (const character of search) menu.handleInput?.(character);
+				menu.handleInput?.("\r");
+				await manager.flush();
+				const saved = search === "Auto" ? "" : search;
+				assert.equal(SettingsManager.create(directory, directory).getCompactionModel(), saved);
+				assert.deepEqual(JSON.parse(readFileSync(globalFile, "utf8")), {
+					...defaults,
+					compactionModel: scope === "global" ? saved : "",
+				});
+				assert.deepEqual(JSON.parse(readFileSync(projectFile, "utf8")), {
+					quietStartup: true,
+					...(scope === "project" ? { compactionModel: saved } : {}),
+				});
+			}
+		}
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("compaction picker preserves unavailable IDs, cancels without saving and removes Morph login hint when authenticated (#3470)", () => {
+	const config = settingsConfig({
+		compactionModel: "missing/model",
+		morphAuthenticated: true,
+		availableCompactorModels: [{ type: "compactor", provider: "morph", id: "morph-compactor", name: "Morph" }],
+	});
+	const selected: string[] = [];
+	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
+	assert.ok(render(menu).includes("✓ missing/model"));
+	assert.ok(render(menu).includes("not currently available"));
+	assert.ok(!render(menu).includes("requires /login morph"));
+	menu.handleInput?.("\x1b");
+	assert.deepEqual(selected, []);
+	assert.equal(config.compactionModel, "missing/model");
 });
