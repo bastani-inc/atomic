@@ -1,4 +1,5 @@
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
+import { CONFIG_DIR_NAME } from "../../config.ts";
 import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
@@ -10,9 +11,11 @@ import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../i
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
+import { ThemedText } from "./components/themed-text.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
+	APP_NAME,
 	AssistantMessageComponent,
 	addChatTranscriptEntry,
 	BashExecutionComponent,
@@ -23,6 +26,7 @@ import {
 	type Component,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
+	hasTrustRequiringProjectResources,
 	parseSkillBlock,
 	recordTimeSinceReset,
 	renderChatMessageEntry,
@@ -532,8 +536,29 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
+	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
 };
+
+function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
+	if (mode.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(mode.sessionManager.getCwd())) {
+		return;
+	}
+	if (mode.chatContainer.children.length > 0) {
+		mode.chatContainer.addChild(new Spacer(1));
+	}
+	mode.chatContainer.addChild(
+		new ThemedText(
+			() =>
+				theme.fg(
+					"warning",
+					`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
+				),
+			1,
+			0,
+		),
+	);
+}
 
 InteractiveModeBase.prototype.getUserInput = async function (
 	this: InteractiveModeBase,

@@ -21,7 +21,7 @@ Trusting a project allows Atomic to load trust-gated project inputs, including:
 - missing project packages configured through project settings
 - project-local extensions and project package-managed extensions
 
-Declining trust skips protected resources, including project-local discovery of `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md`. Global context and explicitly supplied CLI resources remain available.
+Declining trust skips protected resources, including project-local discovery of `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md`. Global context and explicitly supplied CLI resources remain available. Interactive sessions in an untrusted project show a warning that project resources are ignored; use `/trust` to save a decision, then restart Atomic.
 
 Before resolving trust, Atomic loads only user/global extensions and explicit CLI `-e` package-level extensions. Those trusted extensions can handle the `project_trust` event; the first to return a yes/no decision owns it.
 

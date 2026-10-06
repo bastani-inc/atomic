@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
+
 ## [0.9.28-alpha.1] - 2026-10-05
 
 ### Added
