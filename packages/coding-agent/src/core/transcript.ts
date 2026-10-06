@@ -132,7 +132,23 @@ export function createTranscript(options: TranscriptOptions = {}): Transcript {
 					return;
 				case "message_update":
 					if (!streaming) {
-						streaming = { role: "assistant", content: [], stopReason: "stop" } as unknown as AssistantMessage;
+						streaming = {
+							role: "assistant",
+							content: [],
+							api: "",
+							provider: "",
+							model: "",
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						};
 						messages.push(streaming);
 					}
 					applyAssistantMessageDelta(streaming, event.assistantMessageEvent);

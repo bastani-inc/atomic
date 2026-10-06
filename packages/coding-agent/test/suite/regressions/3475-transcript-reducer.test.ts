@@ -1,21 +1,29 @@
 import assert from "node:assert/strict";
+import type { JsonObject, JsonValue } from "@bastani/pi-ai";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { describe, it } from "vitest";
 import { type AgentSessionEvent, createTranscript } from "../../../src/index.ts";
 
 type AssistantContent = AssistantMessage["content"][number];
 
-function assistant(content: AssistantContent[], stopReason = "stop"): AssistantMessage {
+function assistant(content: AssistantContent[], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
 	return {
 		role: "assistant",
 		content,
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason,
 		timestamp: 0,
-	} as unknown as AssistantMessage;
+	};
 }
 
 function event(value: object): AgentSessionEvent {
@@ -200,6 +208,17 @@ describe("createTranscript (#3475)", () => {
 		]);
 	});
 
+	it("builds a message from deltas when message_start was missed (#3475)", () => {
+		const transcript = createTranscript();
+		const partial = assistant([]);
+		transcript.apply(update(partial, { type: "text_start", contentIndex: 0 }));
+		transcript.apply(update(partial, { type: "text_delta", contentIndex: 0, delta: "Late" }));
+		assert.deepEqual(transcript.parts(), [{ type: "text", text: "Late" }]);
+
+		transcript.apply(event({ type: "message_end", message: assistant([{ type: "text", text: "Late join" }]) }));
+		assert.deepEqual(transcript.parts(), [{ type: "text", text: "Late join" }]);
+	});
+
 	it("returns parts that survive a JSON round trip (#3475)", () => {
 		const transcript = createTranscript({ toolResult: () => "details" });
 		const call = { type: "toolCall", id: "c", name: "bash", arguments: { command: "pwd" } } as const;
@@ -225,7 +244,7 @@ describe("createTranscript (#3475)", () => {
 
 	it("returns snapshots that callers cannot use to mutate the transcript (#3475)", () => {
 		const transcript = createTranscript({ toolResult: () => "details" });
-		const call = { type: "toolCall", id: "c", name: "todo", arguments: { items: ["a"] } };
+		const call: AssistantContent = { type: "toolCall", id: "c", name: "todo", arguments: { items: ["a"] } };
 		transcript.apply(event({ type: "message_end", message: assistant([call], "toolUse") }));
 		transcript.apply(
 			event({
@@ -236,12 +255,10 @@ describe("createTranscript (#3475)", () => {
 				isError: false,
 			}),
 		);
-		const first = transcript.parts()[0] as {
-			arguments: { items: string[] };
-			result: { details: { done: string[] } };
-		};
-		first.arguments.items.push("mutated");
-		first.result.details.done.push("mutated");
+		const first = transcript.parts()[0];
+		assert.ok(first?.type === "toolCall" && first.result);
+		(first.arguments.items as JsonValue[]).push("mutated");
+		((first.result.details as JsonObject).done as JsonValue[]).push("mutated");
 		assert.deepEqual(transcript.parts()[0], {
 			...call,
 			arguments: { items: ["a"] },
