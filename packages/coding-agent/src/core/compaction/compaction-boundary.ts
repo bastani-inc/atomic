@@ -22,7 +22,7 @@ import {
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 } from "./compaction-types.js";
-import { createNumberedRegion, serializeConversationForCompaction } from "./transcript-serialization.js";
+import { createConversationRegion } from "./transcript-serialization.js";
 
 interface VisibleEntry {
 	entry: SessionEntry;
@@ -186,11 +186,10 @@ export function prepareCompactionBoundary(
 	const regionMessages = visible.slice(0, tailStart);
 	const tailMessages = visible.slice(tailStart);
 
-	const serialized = serializeConversationForCompaction(convertToLlm(regionMessages.map((item) => item.message)));
-	const regionText = [previous?.entry.summary, serialized]
-		.filter((text): text is string => typeof text === "string" && text.length > 0)
-		.join("\n");
-	const region = createNumberedRegion(regionText);
+	const region = createConversationRegion(
+		convertToLlm(regionMessages.map((item) => item.message)),
+		previous?.entry.summary,
+	);
 	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 
 	const preparation: VerbatimCompactionPreparation = {

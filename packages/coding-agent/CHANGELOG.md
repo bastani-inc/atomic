@@ -4,13 +4,23 @@
 
 ### Added
 
+- Added `compactionModel` and a **Compaction model** selector in `/settings` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added verbatim classifier compaction with registered models such as `typesafe/jev-latest`, retaining protected context and recent messages ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added Morph verbatim compaction with `morph/morph-compactor`, authenticated through `/login morph` or `MORPH_API_KEY` ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Added `session.workflows.observe(observer)`, so SDK hosts can follow the workflow runs the agent launches without writing an extension. The observer receives a snapshot first, then changes in order. Root activity now includes an optional `graph` that lists each stage and `ctx.tool` node with its status, parents, and pending prompt, plus any run-level prompts ([#3476](https://github.com/bastani-inc/atomic/issues/3476)).
 - Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
 - Added `createTranscript()`, which turns session events into the assistant's output as ordered, JSON-serializable text, thinking, and tool call parts, with each tool call joined to its result ([#3475](https://github.com/bastani-inc/atomic/issues/3475)).
 - Added `createAgentSessionAdapter(baseOptions?)` to `@bastani/atomic/workflows`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
 
+### Changed
+
+- Compaction planners now receive structured per-message lines instead of a numbered transcript ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Compaction cards show the backend and model used, including `summary (pi fallback)` for policy-refusal summaries ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+
 ### Fixed
 
+- Policy refusals from any chat compaction model, including `auto`, explicit chat-model IDs, and borrowed fallback entries, now try pi's summary compaction on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Morph compaction failures now include the HTTP status and a bounded, credential-redacted response excerpt in error diagnostics ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
 - Fixed `@bastani/atomic/workflows` type declarations disagreeing with the runtime: `StageSnapshot` now declares `parentIds`, `executionOrder`, `model`, `startedAt`, `endedAt`, and `durationMs`; `Store` now declares `snapshot()`, `graphSnapshot()`, and `subscribe()`; and an `AgentSessionAdapter.create` can return `createAgentSession(...)` directly without a type cast ([#3473](https://github.com/bastani-inc/atomic/issues/3473)).
 - Fixed `run()` from `@bastani/atomic/workflows` failing at the first `ctx.task` or `ctx.stage` with "prompt adapter not configured" when `opts.adapters` was omitted. Stages now default to in-process `createAgentSession` sessions with in-memory session managers ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).

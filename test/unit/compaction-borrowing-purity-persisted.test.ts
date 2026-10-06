@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Context, Model } from "@bastani/pi-ai/compat";
 import { getModel } from "@bastani/pi-ai/compat";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import { test } from "vitest";
@@ -31,6 +31,10 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import {
+	messageLocalRecords,
+	plannerRequest,
+} from "../../packages/coding-agent/test/structured-planner-test-helpers.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 
 const SESSION_MODEL = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -60,14 +64,16 @@ function assistantMessage(text: string, timestamp: number): AssistantMessage {
 /** The session model always throttles; the configured fallback ranks the lines. */
 function rescueStream(): { streamFn: StreamFn; models: string[] } {
 	const models: string[] = [];
-	const streamFn = ((model: Model<Api>) => {
+	const streamFn = ((model: Model<Api>, context: Context) => {
 		models.push(`${model.provider}/${model.id}`);
 		const throttled = model.provider === "anthropic";
 		return {
 			result: async (): Promise<AssistantMessage> =>
 				({
 					role: "assistant",
-					content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
+					content: throttled
+						? []
+						: [{ type: "text", text: messageLocalRecords("3,8\n", plannerRequest(context)) }],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,

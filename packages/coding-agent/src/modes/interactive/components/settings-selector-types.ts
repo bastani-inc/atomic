@@ -1,3 +1,4 @@
+import type { CompactorModel } from "@bastani/pi-ai";
 import type { Api, ClassifierApi, ClassifierModel, Model, Transport } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ScrollViewScrollbar, WheelScrollLines } from "@earendil-works/pi-tui";
@@ -34,6 +35,10 @@ export interface SettingsConfig {
 	availableClassifierModels?: ClassifierModel<ClassifierApi>[];
 	routerModel?: string;
 	routerModelScope?: "global" | "project";
+	availableCompactorModels?: CompactorModel[];
+	compactionModel?: string;
+	compactionModelScope?: "global" | "project";
+	morphAuthenticated?: boolean;
 	modelThinkingLevels?: Record<string, ThinkingLevel>;
 	currentTheme: string;
 	terminalTheme: TerminalTheme;
@@ -76,6 +81,7 @@ export interface SettingsCallbacks {
 	onBashInterceptorEnabledChange: (enabled: boolean) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	onRouterModelChange?: (model: string) => void;
+	onCompactionModelChange?: (model: string) => void;
 	onModelThinkingLevelChange?: (provider: string, modelId: string, level: ThinkingLevel) => void;
 	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;
 	onThemeChange: (theme: string) => void;

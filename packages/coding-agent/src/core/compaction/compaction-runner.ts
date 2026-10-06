@@ -1,6 +1,16 @@
-import type { RetryCallbacks, RetryPolicy } from "@bastani/pi-ai";
+import type {
+	ClassifierApi,
+	ClassifierContext,
+	ClassifierModel,
+	ClassifierOptions,
+	ClassifierResult,
+	RetryCallbacks,
+	RetryPolicy,
+} from "@bastani/pi-ai";
 import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { SessionEntry } from "../session-manager-types.ts";
+import { planClassifierRanges } from "./classifier-compaction.js";
 import { getKeptTailTokenEstimate, hasKeptTailTokenEstimate } from "./compaction-boundary.js";
 import type {
 	BorrowedPlanner,
@@ -19,6 +29,9 @@ import {
 	type FallbackPlannerContext,
 	plannerAttemptKey,
 } from "./fallback-planner.js";
+import type { CompactionModelSelection } from "./model-resolver.js";
+import { planMorphRanges } from "./morph-compaction.js";
+import { runPiSummaryFallback } from "./pi-summary-fallback.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
 	MALFORMED_OUTPUT_MESSAGE,
@@ -27,7 +40,7 @@ import {
 	RangePlanError,
 	resolvePlannerRequest,
 } from "./range-planner.js";
-import { writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
+import { writeMorphDiagnosticSidecar, writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
 import { widenToWholeContextStats } from "./whole-context-stats.js";
 
@@ -49,6 +62,15 @@ export interface CompactionRunRequest extends CompactionPlanOptions {
 	urgency: CompactionUrgency;
 	/** Configured fallback candidates. Omitted means borrowing is impossible. */
 	fallback?: FallbackPlannerContext;
+	compactionModel?: CompactionModelSelection;
+	resolveMorphApiKey?: () => Promise<string | undefined>;
+	morphFetchFn?: typeof fetch;
+	classify?: (
+		model: ClassifierModel<ClassifierApi>,
+		context: ClassifierContext,
+		options?: ClassifierOptions,
+	) => Promise<ClassifierResult>;
+	summaryEntries?: SessionEntry[];
 }
 
 export type CompactionRungResult = CompactedTranscript & {
@@ -59,6 +81,11 @@ export type CompactionRungResult = CompactedTranscript & {
 	keptTail: boolean;
 	/** Aggregate usage across every planner request and retry in this run. */
 	usage?: Usage;
+	backend?: "planner" | "classifier" | "morph" | "summary";
+	model?: string;
+	summary?: { readFiles: string[]; modifiedFiles: string[] };
+	summaryFirstKeptEntryId?: string;
+	summaryTokensBefore?: number;
 };
 
 /** Runner-internal fresh-window build: the transcript plus the tail decision. */
@@ -188,6 +215,7 @@ function plannedResult(
 	ranges: RawLineRange[],
 	plannerModel: CompactionPlannerModel | undefined,
 	usage: Usage | undefined,
+	model: string,
 ): CompactionRungResult {
 	const reconstructed = reconstructCompactedTranscript(
 		preparation.region,
@@ -196,6 +224,8 @@ function plannedResult(
 	return {
 		...withWholeContextStats(reconstructed, preparation, true),
 		rung: "planned",
+		backend: "planner",
+		model,
 		...(plannerModel ? { plannerModel } : {}),
 		keptTail: true,
 		...(usage ? { usage } : {}),
@@ -225,7 +255,7 @@ function terminalError(outcome: TerminalPlannerOutcome | undefined): RangePlanEr
 			outcome,
 		);
 	}
-	if (outcome.kind === "providerError") {
+	if (outcome.kind === "providerError" || outcome.kind === "policyRefusal") {
 		return new RangePlanError(outcome.message, 1, "", false, outcome.diagnosticPath, outcome);
 	}
 	const message = outcome.category === "malformed_output" ? MALFORMED_OUTPUT_MESSAGE : NO_USABLE_RANGES_MESSAGE;
@@ -358,23 +388,71 @@ export async function runVerbatimCompaction(
 		return freshResult(preparation, hardInputLimit);
 	}
 
+	const selection = request.compactionModel ?? { kind: "chat", fullId: `${model.provider}/${model.id}`, model };
 	const attempted = new Set<string>();
 	// One borrower per run owns the monotonic cursor, so the configured list is
 	// walked exactly once no matter how many terminal outcomes occur.
 	const borrow: BorrowFallbackPlanner | undefined = request.fallback
-		? createFallbackPlannerBorrower(request.fallback)
+		? createFallbackPlannerBorrower({ ...request.fallback, selectedModelId: selection.fullId })
 		: undefined;
-	const primaryBudget = resolvePlannerRequest(model, request.thinkingLevel);
-	const primaryAuth = await resolvePlannerAuth(request.resolveAuth, model);
+	let backendFailure: TerminalPlannerOutcome | undefined;
+	if (selection.kind === "classifier") {
+		try {
+			const classify = request.classify;
+			if (!classify) throw new Error("Compaction classifier is unavailable");
+			const ranges = await planClassifierRanges(
+				preparation.region,
+				preparation.parameters,
+				(context) => classify(selection.model, context, { signal }),
+				plannerOptions,
+			);
+			return {
+				...plannedResult(preparation, ranges, undefined, plannerUsage, selection.fullId),
+				backend: "classifier",
+			};
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Compaction cancelled");
+			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+		}
+	}
+	if (selection.kind === "morph") {
+		try {
+			const ranges = await planMorphRanges(preparation.region, preparation.parameters, {
+				apiKey: await request.resolveMorphApiKey?.(),
+				signal,
+				fetchFn: request.morphFetchFn,
+				onDiagnostics: (diagnostics) => writeMorphDiagnosticSidecar(request.sessionFilePath, diagnostics),
+			});
+			return {
+				...plannedResult(preparation, ranges, undefined, undefined, selection.fullId),
+				backend: "morph",
+			};
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Compaction cancelled");
+			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+		}
+	}
+	const primaryModel = selection.kind === "chat" ? selection.model : undefined;
+	const primaryBudget = resolvePlannerRequest(primaryModel ?? model, request.thinkingLevel);
+	const primaryAuth = primaryModel
+		? await resolvePlannerAuth(request.resolveAuth, primaryModel)
+		: {
+				failure: {
+					kind: "providerError" as const,
+					message:
+						backendFailure?.kind === "providerError"
+							? backendFailure.message
+							: `Compaction backend ${selection.kind} is not yet available`,
+				},
+			};
 	let lastTerminal: TerminalPlannerOutcome | undefined = "failure" in primaryAuth ? primaryAuth.failure : undefined;
-	let borrowed = false;
+	let borrowed = primaryModel !== model;
 	let planner: BorrowedPlanner | undefined;
 
-	if ("auth" in primaryAuth) {
-		planner = { model, budget: primaryBudget, auth: primaryAuth.auth };
+	if (primaryModel && "auth" in primaryAuth) {
+		planner = { model: primaryModel, budget: primaryBudget, auth: primaryAuth.auth };
 	} else {
-		// No request was made, but this candidate must not be retried.
-		attempted.add(plannerAttemptKey({ model, budget: primaryBudget, auth: {} }));
+		if (primaryModel) attempted.add(plannerAttemptKey({ model: primaryModel, budget: primaryBudget, auth: {} }));
 		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 	}
@@ -394,9 +472,51 @@ export async function runVerbatimCompaction(
 					...(plannerModel.thinkingLevel === undefined ? {} : { thinkingLevel: plannerModel.thinkingLevel }),
 				});
 			}
-			return plannedResult(preparation, attempt.ranges, plannerModel, plannerUsage);
+			return plannedResult(
+				preparation,
+				attempt.ranges,
+				plannerModel,
+				plannerUsage,
+				`${planner.model.provider}/${planner.model.id}`,
+			);
 		}
 		lastTerminal = attempt.outcome;
+		if (attempt.outcome.kind === "policyRefusal" && request.summaryEntries) {
+			try {
+				const summary = await runPiSummaryFallback(
+					request.summaryEntries,
+					preparation.settings,
+					planner,
+					plannerOptions,
+				);
+				return {
+					text: summary.summary,
+					ranges: [],
+					keptRanges: [],
+					stats: {
+						linesBefore: preparation.region.lines.length,
+						linesDeleted: 0,
+						linesKept: summary.summary.split("\n").length,
+						rangeCount: 0,
+						tokensBefore: summary.tokensBefore,
+						tokensAfter: summary.tokensAfter,
+						percentReduction:
+							summary.tokensBefore > 0 ? 100 * (1 - summary.tokensAfter / summary.tokensBefore) : 0,
+					},
+					rung: "planned",
+					keptTail: true,
+					backend: "summary",
+					model: `${planner.model.provider}/${planner.model.id}`,
+					summary: { readFiles: summary.readFiles, modifiedFiles: summary.modifiedFiles },
+					summaryFirstKeptEntryId: summary.firstKeptEntryId,
+					summaryTokensBefore: summary.tokensBefore,
+					...(plannerUsage ? { usage: plannerUsage } : {}),
+				};
+			} catch (error) {
+				if (signal?.aborted) throw new Error("Compaction cancelled");
+				lastTerminal = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			}
+		}
 		attempted.add(plannerAttemptKey(planner));
 		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;

@@ -47,6 +47,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 	this.showSelector((done) => {
 		const routerModelScope =
 			this.settingsManager.getProjectSettings().routerModel !== undefined ? "project" : "global";
+		const compactionModelScope =
+			this.settingsManager.getProjectSettings().compactionModel !== undefined ? "project" : "global";
 		const component = new SettingsSelectorComponent(
 			{
 				autoCompact: this.session.autoCompactionEnabled,
@@ -68,6 +70,10 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				routerModel: this.settingsManager.getRouterModel(),
 				routerModelScope,
+				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
+				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
+				compactionModel: this.settingsManager.getCompactionModel(),
+				compactionModelScope,
 				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes: getAvailableThemes(),
@@ -151,6 +157,9 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onRouterModelChange: (model) => {
 					this.settingsManager.setRouterModel(model, routerModelScope);
+				},
+				onCompactionModelChange: (model) => {
+					this.settingsManager.setCompactionModel(model, compactionModelScope);
 				},
 				onModelThinkingLevelChange: (provider, modelId, level) => {
 					this.settingsManager.setModelThinkingLevel(provider, modelId, level);

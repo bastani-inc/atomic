@@ -33,6 +33,7 @@ import type {
 	ClassifierModel,
 	ClassifierOptions,
 	ClassifierResult,
+	CompactorModel,
 	Context,
 	DeferredCancelOptions,
 	DeferredFetchOptions,
@@ -134,7 +135,7 @@ export type ModelsDeferredCancelOptions = DeferredCancelOptions & ModelsRequestT
 export type ModelsImagesOptions = ImagesOptions & ModelsRequestTransforms;
 export type ModelsClassifierOptions = ClassifierOptions & ModelsRequestTransforms;
 
-const KNOWN_MODEL_TYPES: Record<ModelType, true> = { chat: true, image: true, classifier: true };
+const KNOWN_MODEL_TYPES: Record<ModelType, true> = { chat: true, image: true, classifier: true, compactor: true };
 
 /** Models from stores and remote sources may have types that only newer versions know. */
 function hasKnownModelType(model: AnyModel): boolean {
@@ -147,7 +148,11 @@ function withKnownModelTypes(entry: ModelsStoreEntry): ModelsStoreEntry {
 }
 
 /** Any model a provider with chat APIs `TApi` can list. */
-type ProviderModel<TApi extends Api> = Model<TApi> | ImageModel<ImageApi> | ClassifierModel<ClassifierApi>;
+type ProviderModel<TApi extends Api> =
+	| Model<TApi>
+	| ImageModel<ImageApi>
+	| ClassifierModel<ClassifierApi>
+	| CompactorModel;
 
 /**
  * A provider is the concrete runtime unit. It owns id/name/base metadata,
@@ -1075,7 +1080,7 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
  * models; an `api` map dispatches on `model.api`, and a model whose api has
  * no entry produces a stream error. One-shot operation maps dispatch on
  * `model.api` the same way. At least one concrete implementation across
- * `api`/`images`/`classifiers` is required; empty maps are rejected.
+ * `api`/`images`/`classifiers` is required unless the provider lists only dedicated compactors.
  */
 export function createProvider<TApi extends Api = Api>(input: CreateProviderOptions<TApi>): Provider<TApi> {
 	const single =
@@ -1088,7 +1093,13 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 	const streams = single ? [single] : Object.values(byApi ?? {}).filter((entry) => entry !== undefined);
 	const imageImplementations = Object.values(images ?? {}).filter((entry) => entry !== undefined);
 	const classifierImplementations = Object.values(classifiers ?? {}).filter((entry) => entry !== undefined);
-	if (streams.length === 0 && imageImplementations.length === 0 && classifierImplementations.length === 0) {
+	const compactorOnly = input.models.length > 0 && input.models.every((model) => isModelType(model, "compactor"));
+	if (
+		streams.length === 0 &&
+		imageImplementations.length === 0 &&
+		classifierImplementations.length === 0 &&
+		!compactorOnly
+	) {
 		throw new Error(`Provider ${input.id}: at least one of "api", "images", or "classifiers" is required.`);
 	}
 

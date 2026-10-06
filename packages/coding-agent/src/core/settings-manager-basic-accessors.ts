@@ -66,6 +66,8 @@ interface SettingsManagerBasicAccessors {
 	getDefaultModel(): string | undefined;
 	getRouterModel(): string;
 	getModelRouting(): ModelRoutingSettings;
+	getCompactionModel(): string;
+	setCompactionModel(model: string, scope?: "global" | "project"): void;
 	setRouterModel(model: string, scope?: "global" | "project"): void;
 	setDefaultProvider(provider: string): void;
 	setDefaultModel(modelId: string): void;
@@ -199,6 +201,36 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
 		}
 		return value;
+	},
+
+	getCompactionModel() {
+		const state = settingsInternals(this);
+		const value = state.settings.compactionModel;
+		if (value === undefined) return "";
+		if (typeof value !== "string" || value.trim() !== value) {
+			throw new Error("Invalid compactionModel: expected an exact provider/model ID, auto, or an empty string.");
+		}
+		if (state.projectSettings.compactionModel === value && value.startsWith("morph/")) {
+			throw new Error("Invalid compactionModel: project settings may not select morph/*.");
+		}
+		return value;
+	},
+
+	setCompactionModel(model, scope = "global") {
+		if (typeof model !== "string" || model.trim() !== model) {
+			throw new Error("Invalid compactionModel: expected an exact provider/model ID, auto, or an empty string.");
+		}
+		const state = settingsInternals(this);
+		if (scope === "project") {
+			if (model.startsWith("morph/"))
+				throw new Error("Invalid compactionModel: project settings may not select morph/*.");
+			state.markProjectModified("compactionModel");
+			state.saveProjectSettings({ ...state.projectSettings, compactionModel: model });
+			return;
+		}
+		state.globalSettings.compactionModel = model;
+		state.markModified("compactionModel");
+		state.save();
 	},
 
 	getModelRouting() {

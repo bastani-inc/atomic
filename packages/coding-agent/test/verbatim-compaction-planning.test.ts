@@ -23,7 +23,7 @@ import { widenToWholeContextStats } from "../src/core/compaction/whole-context-s
 import { buildSessionContext } from "../src/core/session-manager-history.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { planner, run } from "./compaction-planner-fixtures.js";
-import { createFauxStreamFn } from "./test-harness.js";
+import { createPlannerStreamFn as createFauxStreamFn, plannerRequest } from "./structured-planner-test-helpers.js";
 
 const model: Model<Api> = {
 	id: "planner-test",
@@ -253,24 +253,20 @@ describe("compaction boundary preparation", () => {
 });
 
 describe("one-pass range planner", () => {
-	it("parses bare start,end line records", () => {
-		expect(extractDeletedRanges("2,4\n8,6\n")).toEqual([
-			{ start: 2, end: 4 },
-			{ start: 8, end: 6 },
-		]);
-		expect(extractDeletedRanges("2,4\n8,6")).toEqual([
-			{ start: 2, end: 4 },
-			{ start: 8, end: 6 },
-		]);
-		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toBeUndefined();
-		expect(extractDeletedRanges("not records at all")).toBeUndefined();
+	it("parses bare message-local line records and drops invalid local ranges", () => {
+		const region = preparation().region;
+		for (const suffix of ["\n", ""]) {
+			expect(extractDeletedRanges(`1:2,4\n2:8,6${suffix}`, region)).toEqual([{ start: 2, end: 4 }]);
+		}
+		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}', region)).toBeUndefined();
+		expect(extractDeletedRanges("not records at all", region)).toBeUndefined();
 	});
 
-	it("uses the evidence-tuned one-pass contract with whole-region numbering", () => {
+	it("uses the evidence-tuned one-pass contract with message-local numbering", () => {
 		const prep = preparation();
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
 		expect(prompt).toContain("Target lines to keep: 12");
-		expect(prompt).toContain("120,180\n6,40\n300,305");
+		expect(prompt).toContain("2:120,180\n1:6,40\n3:300,305");
 		expect(prompt).toContain("Rank lines inside long tool results individually across the whole result");
 		expect(prompt).toContain("Do not truncate by position or blanket-delete merely because a result is long");
 		expect(prompt).toContain("keyword matches do not guarantee retention");
@@ -279,17 +275,18 @@ describe("one-pass range planner", () => {
 			"No category, first/last position, or top/deep stack position is automatically kept or deleted",
 		);
 		expect(prompt).toContain("Treat old filtered/truncation markers as low-priority gap anchors");
-		expect(prompt).toContain(`1→${prep.region.lines[0]}`);
-		expect(prompt).toContain(`${prep.region.lines.length}→${prep.region.lines.at(-1)}`);
+		const request = JSON.parse(prompt.split("\n")[1]);
+		expect(request.messages.flatMap((message: { lines: string[] }) => message.lines)).toEqual(prep.region.lines);
+		expect(request.messages.map((message: { id: number }) => message.id)).toEqual([1, 2, 3]);
 		expect(prompt).not.toContain("deleted_ranges");
 	});
 
 	it("puts the transcript first and the instructions after, matching pi's summarization prompt shape", () => {
 		const prep = preparation();
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
-		expect(prompt.startsWith("<numbered-transcript>\n")).toBe(true);
-		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("The numbered lines above are"));
-		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("120,180"));
+		expect(prompt.startsWith("<compaction_request>\n")).toBe(true);
+		expect(prompt.indexOf("</compaction_request>")).toBeLessThan(prompt.indexOf("The messages above are"));
+		expect(prompt.indexOf("</compaction_request>")).toBeLessThan(prompt.indexOf("2:120,180"));
 	});
 
 	it("makes exactly one request and forwards model, auth, headers, and reasoning unchanged", async () => {
@@ -401,8 +398,10 @@ describe("single planned compaction rung", () => {
 			const faux = createFauxStreamFn(["2,10\n"]);
 			await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
 			expect(faux.state.callCount).toBe(1);
-			expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
-			expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
+			expect(JSON.stringify(faux.state.contexts[0])).toContain(`<compaction_request>`);
+			expect(plannerRequest(faux.state.contexts[0]).messages.flatMap((message) => message.lines)).toEqual(
+				prep.region.lines,
+			);
 		},
 	);
 

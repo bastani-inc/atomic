@@ -127,6 +127,7 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	routerModel?: string; // default: ""; workflow-stage/subagent auto-model router inference only, never "auto"
+	compactionModel?: string;
 	modelRouting?: ModelRoutingSettings;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	modelThinkingLevels?: Record<string, "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">;

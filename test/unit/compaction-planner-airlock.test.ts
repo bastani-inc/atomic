@@ -23,18 +23,19 @@ function ranges(outcome: Awaited<ReturnType<typeof plan>>): LineRange[] {
 }
 
 test("ranked ranges come back normalized, sorted, and merged", async () => {
-	// Deliberately reversed endpoints, out of order, and overlapping.
-	const outcome = await plan("20,10\n5,8\n7,12\n", "stop");
+	// Deliberately out of order and overlapping; invalid reversed records are rejected.
+	const outcome = await plan("1:35,30\n1:10,20\n1:5,8\n1:7,12\n", "stop");
 	assert.equal(outcome.kind, "ranked");
 	assert.deepEqual(ranges(outcome), [{ start: 5, end: 20 }]);
 });
 
-test("ranked ranges are clamped to the region bounds", async () => {
-	const outcome = await plan("0,3\n30,900\n", "stop", [], 40);
-	assert.deepEqual(ranges(outcome), [
-		{ start: 1, end: 3 },
-		{ start: 30, end: 40 },
-	]);
+test("ranked ranges reject records outside the message bounds", async () => {
+	const outcome = await plan("1:0,3\n1:30,900\n1:20,10\n", "stop", [], 40);
+	assert.deepEqual(outcome, {
+		kind: "unusable",
+		category: "no_usable_ranges",
+		excerpt: "1:0,3\n1:30,900\n1:20,10\n",
+	});
 });
 
 test("ranked ranges never contain a protected line", async () => {
@@ -53,9 +54,9 @@ test("ranked ranges never contain a protected line", async () => {
 });
 
 test("recovered ranges from a truncated response are validated too", async () => {
-	// The trailing fragment is discarded, the reversed record is normalized, and
-	// the protected line is split around.
-	const outcome = await plan("30,25\n1,20\n40,", "length", [10]);
+	// The trailing fragment and reversed record are discarded; valid records are
+	// sorted and split around the protected line.
+	const outcome = await plan("1:40,35\n1:25,30\n1:1,20\n1:40,", "length", [10]);
 	assert.equal(outcome.kind, "recovered");
 	assert.deepEqual(ranges(outcome), [
 		{ start: 1, end: 9 },
@@ -67,7 +68,7 @@ test("recovered ranges from a truncated response are validated too", async () =>
 test("output that validates to nothing is unusable, never an empty success", async () => {
 	// Every named line is protected, so validation leaves no deletable range.
 	const outcome = await plan("1,3\n", "stop", [1, 2, 3]);
-	assert.deepEqual(outcome, { kind: "unusable", category: "no_usable_ranges", excerpt: "1,3\n" });
+	assert.deepEqual(outcome, { kind: "unusable", category: "no_usable_ranges", excerpt: "1:1,3\n" });
 });
 
 test("re-validating the returned ranges is a no-op", async () => {
@@ -75,7 +76,7 @@ test("re-validating the returned ranges is a no-op", async () => {
 	// pass must not move a boundary the airlock already settled.
 	const { validateDeletedRanges } = await import("../../packages/coding-agent/src/core/compaction/deleted-ranges.js");
 	const built = region(40, [5, 6, 15]);
-	const outcome = await plan("20,10\n1,20\n0,3\n", "stop", [5, 6, 15]);
+	const outcome = await plan("1:20,10\n1:1,20\n1:0,3\n", "stop", [5, 6, 15]);
 	const first = ranges(outcome);
 	const second = [...validateDeletedRanges(first, built)];
 	assert.deepEqual(second, first);

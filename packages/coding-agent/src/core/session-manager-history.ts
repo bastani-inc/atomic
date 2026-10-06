@@ -238,11 +238,14 @@ export function buildSessionProjection(
 	const edits = collectContextEdits(contextEntries);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
-	if (!boundary) {
+	if (!boundary || boundary.details?.backend === "summary") {
 		const projected = contextEntries.map(
 			(sourceEntry): ProjectedSessionEntry => ({
 				sourceEntry,
-				messages: projectContextEntry(sourceEntry, edits.get(sourceEntry.id)),
+				messages:
+					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
+						? []
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id)),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };

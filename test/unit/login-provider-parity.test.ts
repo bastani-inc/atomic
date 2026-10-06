@@ -100,16 +100,16 @@ test("login command advertises its provider argument", () => {
 	assert.equal(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "login")?.argumentHint, "<provider>");
 });
 
-test("every adopted builtin provider has a preferred default", () => {
+test("every adopted chat provider has a preferred default and non-chat catalogs do not (#3470)", () => {
 	const providers = builtinProviders();
 	const chatless = providers.filter((provider) => provider.getModels().length === 0);
-	// A chatless builtin must be a non-chat catalog (such as the TypeSafe classifier)
+	// A chatless builtin must be a non-chat catalog (such as TypeSafe or Morph)
 	// and must not carry a chat default; every chat provider needs one.
 	for (const provider of chatless) {
 		const models = provider.getAllModels?.() ?? [];
 		assert.ok(models.length > 0, `${provider.id} has no models`);
 		assert.ok(
-			models.every((model) => model.type === "classifier" || model.type === "image"),
+			models.every((model) => model.type === "classifier" || model.type === "image" || model.type === "compactor"),
 			`${provider.id} lost its chat models`,
 		);
 		assert.equal(defaultModelPerProvider[provider.id], undefined, `${provider.id} has no chat models`);
@@ -119,6 +119,14 @@ test("every adopted builtin provider has a preferred default", () => {
 		.map((provider) => provider.id)
 		.filter((providerId) => defaultModelPerProvider[providerId] === undefined);
 	assert.deepEqual(missing, []);
+	const morph = providers.find((provider) => provider.id === "morph");
+	assert.ok(morph);
+	assert.deepEqual(morph.getModels(), []);
+	assert.deepEqual(
+		morph.getAllModels?.().map((model) => model.type),
+		["compactor"],
+	);
+	assert.equal(defaultModelPerProvider.morph, undefined);
 	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
 	assert.equal(defaultModelPerProvider["qwen-token-plan-individual"], "qwen3.8-max");
 	assert.equal(defaultModelPerProvider.radius, "balanced");

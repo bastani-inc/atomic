@@ -45,6 +45,13 @@ export function trimRegionHead(region: NumberedRegion, offset: number): Numbered
 	return {
 		__brand: "NumberedRegion",
 		lines,
+		...(region.messageSpans
+			? {
+					messageSpans: region.messageSpans
+						.filter((span) => span.end > offset)
+						.map((span) => ({ ...span, start: Math.max(1, span.start - offset), end: span.end - offset })),
+				}
+			: {}),
 		headerLineNumbers: rebaseSet(region.headerLineNumbers, offset),
 		priorMarkerNs,
 		...(region.protectedLineNumbers ? { protectedLineNumbers: rebaseSet(region.protectedLineNumbers, offset) } : {}),

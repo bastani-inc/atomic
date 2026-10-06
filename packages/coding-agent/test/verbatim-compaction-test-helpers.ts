@@ -6,7 +6,7 @@ export function appendTestCompaction(manager: SessionManager, tokensBefore: numb
 	const compactedText = "[User]: retained test context\n(filtered 1 lines)";
 	return manager.appendCompaction(compactedText, firstKeptEntryId, tokensBefore, {
 		strategy: "verbatim-lines",
-		promptVersion: 3,
+		promptVersion: 4,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		stats: {
 			linesBefore: 2,

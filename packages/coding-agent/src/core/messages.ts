@@ -180,6 +180,7 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 
 export const VERBATIM_COMPACTION_PREFIX =
 	'The earlier conversation was compacted. Below is the verbatim transcript of the retained lines; elided spans are marked "(filtered N lines)".\n\n';
+export const SUMMARY_COMPACTION_PREFIX = "The following is a summary of the earlier conversation:\n\n";
 const verbatimCompactionMessages = new WeakSet<CustomMessage>();
 
 export function isVerbatimCompactionMessage(message: CustomMessage): boolean {
@@ -199,7 +200,11 @@ export function createVerbatimCompactionMessage(
 	details?: unknown,
 	retainedTail?: readonly (TextContent | ImageContent)[],
 ): CustomMessage {
-	const content: (TextContent | ImageContent)[] = [{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }];
+	const prefix =
+		typeof details === "object" && details !== null && "backend" in details && details.backend === "summary"
+			? SUMMARY_COMPACTION_PREFIX
+			: VERBATIM_COMPACTION_PREFIX;
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text: prefix + compactedText }];
 	for (const block of retainedTail ?? []) {
 		const last = content[content.length - 1];
 		if (block.type === "text" && last.type === "text") last.text += block.text;

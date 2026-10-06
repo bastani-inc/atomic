@@ -7,9 +7,9 @@ description: "Verbatim line compaction, when it runs, planning rungs, and branch
 
 LLMs have finite context windows. Atomic reduces older transcript context with **verbatim line compaction** while preserving a configured count of recent context-visible messages. Branch summarization is a separate, lossy feature used when navigating away from a branch.
 
-Compaction runs locally without an external compaction service. It normally asks the active session model to rank lines. If that model cannot rank them because of a rate limit, quota exhaustion, provider error, context overflow, or empty plan, Atomic *borrows* the next model from your configured `fallbackModels` for that planner request.
+Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal first triggers pi's summary compaction on the same model, whether selected by `auto`, an explicit chat-model ID, or a `fallbackModels` entry. If that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
 
-**A configured fallback model may therefore receive the compaction transcript**, using that provider's own credentials. Borrowing never changes the session's model or thinking level. The model only selects lines to delete. Atomic reconstructs retained text from the originals, so surviving lines are never rewritten.
+**The selected compaction model and configured fallback models may receive the compaction transcript**, using their own credentials. Borrowing never changes the session's model or thinking level. Line planners select deletions, and Atomic reconstructs surviving lines without rewriting them. The policy-refusal summary fallback is lossy and appears as `summary (pi fallback)`.
 
 ## On this page and its reference
 
@@ -19,8 +19,9 @@ This page covers the concepts and normal use of compaction and branch summarizat
 
 | Mechanism | Trigger | Model output | Durable result |
 |---|---|---|---|
-| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Bare `start,end` deletion records (one per line) | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
-| Planner fallback borrowing | Any terminal planner outcome on the current planner model | Same deletion records, from a configured `fallbackModels` entry | The same `"planned"` boundary, with `details.plannerModel` naming the borrowed model |
+| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Per-message `id:start,end` deletion records | Retained transcript text reconstructed from the originals |
+| Planner fallback borrowing | A failed selected compaction model | Same deletion records, from a configured `fallbackModels` entry | Retained text with the borrowed model recorded |
+| Policy-refusal summary fallback | A chat provider refuses compaction under its policy | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
 | Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
@@ -43,10 +44,10 @@ Atomic serializes the compactable part of the conversation into role-tagged line
 [Assistant]: The off-by-one error is fixed.
 ```
 
-The planner sees the same text numbered as `N→content` and returns only one-based, inclusive line ranges as bare records:
+The planner receives messages with their role and an array of lines. It returns inclusive per-message deletion ranges. For example, this deletes lines 2 through 5 of message 1:
 
 ```text
-2,5
+1:2,5
 ```
 
 The model selects lines to delete; it does not rewrite retained text. Retained non-marker lines stay byte-identical and in their original order.
@@ -86,6 +87,37 @@ Protection includes the tags and survives repeated compaction, even if the plann
 
 Results report protected ranges as `keptRanges`.
 
+## Compaction model
+
+Use `/settings` → **Compaction model** to choose Auto, a chat model, a registered classifier, or Morph without changing your chat model. Auto uses the current session model. The selector saves to project settings when a project override already exists; otherwise it saves globally.
+
+You can also set `compactionModel` in `~/.atomic/agent/settings.json` or a trusted project's `.atomic/settings.json`:
+
+```json
+{
+  "compactionModel": "auto",
+  "fallbackModels": ["openai-codex/gpt-6.1-sol"]
+}
+```
+
+The default, `auto`, or an empty value uses the current session model, including Anthropic models. An exact registered chat-model ID selects that model just for compaction. Registered classifiers and Morph compactors are also selectable. Project settings cannot select `morph/*`; choose Morph globally instead.
+
+An explicit compaction model can send the compactable transcript to a different provider, using that provider's credentials. Choose only providers permitted to receive your conversation. Changing `compactionModel` does not affect branch summaries.
+
+For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
+
+For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the global selector or settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript, including serialized thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
+
+The compaction card shows the backend and model that produced the result, such as `classifier · typesafe/jev-latest` or `morph · morph/morph-compactor`. A policy-refusal summary appears as `summary (pi fallback)`.
+
+### Troubleshooting policy refusals
+
+If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors. For any chat compaction model, including `auto`, it tries pi's summary compaction on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
+
+Classifier and Morph refusals skip the summary fallback and go directly to the next configured model. Anthropic remains a supported compactor. To keep verbatim compaction when a model refuses deletion planning, choose another `compactionModel`, such as a chat model, classifier, or Morph. Adding a `fallbackModels` entry gives Atomic another verbatim planner if the same-model summary fails.
+
+If every attempt fails, manual `/compact` leaves your context unchanged. Overflow recovery and post-tool preflight may instead clear older context as described below.
+
 ## Parameters
 
 Moved to [Compaction reference](/compaction/reference#parameters).
@@ -117,7 +149,7 @@ Threshold decisions and recovery use the canonical session projection. When Atom
 
 Atomic uses the session's reasoning level unless a fallback entry specifies its own level. The provider controls the planner's output limit.
 
-`settings.retry` controls retries within one model. If planning fails, Atomic tries configured `settings.fallbackModels` in order, using each model's own credentials. Unavailable credentials do not prevent trying later models. Borrowing does not change the chat model, thinking level, or model-selection events.
+`settings.retry` controls recoverable-error retries within one chat model, including a policy-refusal summary fallback. Policy refusals are not retried. If compaction fails, Atomic tries configured `settings.fallbackModels` in order, using each model's own credentials and skipping the selected compaction model if listed again. Unavailable credentials do not prevent trying later models. Borrowing does not change the chat model, thinking level, or model-selection events.
 
 When every configured model is exhausted, what happens depends on how much the caller can afford to lose:
 
@@ -262,7 +294,7 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction lets a model select numbered line ranges and reconstructs retained text mechanically.
+Branch summaries are separate from `/compact`: branch navigation generates summary prose, while normal verbatim compaction selects per-message line ranges and reconstructs retained text mechanically. A chat compaction policy refusal can trigger pi's summary compaction as described above.
 
 Use the [Compaction reference](/compaction/reference) for extension hooks and saved formats.
 

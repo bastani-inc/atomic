@@ -4,7 +4,7 @@
  * Kept out of `*.test.ts` so `bun test test/unit` does not treat it as a suite.
  */
 
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
 import { setKeptTailTokenEstimate } from "../../packages/coding-agent/src/core/compaction/compaction-boundary.js";
@@ -17,6 +17,10 @@ import type {
 	VerbatimCompactionPreparation,
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
+import {
+	messageLocalRecords,
+	plannerRequest,
+} from "../../packages/coding-agent/test/structured-planner-test-helpers.js";
 
 export const PARAMETERS: VerbatimCompactionParameters = {
 	compression_ratio: 0.5,
@@ -116,7 +120,7 @@ export interface ScriptedStream {
 export function scriptedStream(script: Record<string, ScriptedResponse[]>): ScriptedStream {
 	const calls: RecordedCall[] = [];
 	const cursors = new Map<string, number>();
-	const streamFn = ((model: Model<Api>, _context: unknown, options?: SimpleStreamOptions) => {
+	const streamFn = ((model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
 		calls.push({ model, options: options ?? ({} as SimpleStreamOptions) });
 		const key = script[model.id] ? model.id : "default";
 		const entries = script[key] ?? [{ text: "1,10\n" }];
@@ -128,7 +132,17 @@ export function scriptedStream(script: Record<string, ScriptedResponse[]>): Scri
 				if (scripted.throws) throw new Error(scripted.throws);
 				return {
 					role: "assistant",
-					content: scripted.text === undefined ? [] : [{ type: "text", text: scripted.text }],
+					content:
+						scripted.text === undefined
+							? []
+							: [
+									{
+										type: "text",
+										text: /^\d+,\d+(\n|$)/m.test(scripted.text)
+											? messageLocalRecords(scripted.text, plannerRequest(context))
+											: scripted.text,
+									},
+								],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,

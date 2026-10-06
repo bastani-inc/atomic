@@ -11,6 +11,7 @@
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import { VERBATIM_COMPACTION_PROMPT_VERSION } from "../../packages/coding-agent/src/core/compaction/index.js";
 import {
 	assert,
 	createStore,
@@ -67,14 +68,14 @@ function compactionEnd(rung: "planned" | "fresh", errorMessage?: string): AgentS
 				percentReduction: 96.1,
 			},
 			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "focus" },
-			promptVersion: 3,
+			promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 			rung,
 		},
-	} as unknown as AgentSessionEvent;
+	};
 }
 
 describe("StageChatView fresh-rung visibility", () => {
-	test("a successful fresh compaction renders the degraded notice", async () => {
+	test("a successful fresh compaction renders the degraded notice (#3470)", async () => {
 		const { view, emit } = createView(fakeFooterAgentSession(false) as AgentSession);
 
 		emit({ type: "compaction_start", reason: "threshold" } as AgentSessionEvent);
@@ -94,7 +95,7 @@ describe("StageChatView fresh-rung visibility", () => {
 		assert.ok(!body.includes("Auto-compacting"), `the compaction status stayed active:\n${body}`);
 	});
 
-	test("a planned compaction keeps the ordinary label in stage chat", async () => {
+	test("a planned compaction keeps the ordinary label in stage chat (#3470)", async () => {
 		const { view, emit } = createView(fakeFooterAgentSession(false) as AgentSession);
 
 		emit({ type: "compaction_start", reason: "threshold" } as AgentSessionEvent);
@@ -107,7 +108,7 @@ describe("StageChatView fresh-rung visibility", () => {
 		assert.ok(!body.includes("compaction degraded"), `stage chat showed the degraded notice:\n${body}`);
 	});
 
-	test("a committed fresh boundary stays visible when the final gate also errors", async () => {
+	test("a committed fresh boundary stays visible when the final gate also errors (#3470)", async () => {
 		// Attached stage chat delegates to the same ChatSessionHost, so the
 		// compound result-plus-error event must show both there too.
 		const error =

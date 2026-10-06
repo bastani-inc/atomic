@@ -746,7 +746,9 @@ export async function processResponsesStream<TApi extends Api>(
 		const status = response?.status;
 		const incompleteDetails = response?.incomplete_details as { reason?: unknown } | null | undefined;
 		const incompleteReason = typeof incompleteDetails?.reason === "string" ? incompleteDetails.reason : undefined;
-		output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
+		if (output.rawStopReason !== "refusal") {
+			output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
+		}
 		const mappedStop = mapStopReason(status, incompleteReason);
 		output.stopReason = mappedStop.stopReason;
 		output.errorMessage = mappedStop.errorMessage;
@@ -802,6 +804,7 @@ export async function processResponsesStream<TApi extends Api>(
 				partial: output,
 			});
 		} else if (event.type === "response.refusal.delta") {
+			output.rawStopReason = "refusal";
 			const slot = getSlot(event.output_index, "text");
 			if (!slot) continue;
 			slot.block.text += event.delta;
@@ -858,6 +861,7 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 				outputSlots.delete(event.output_index);
 			} else if (item.type === "message" && slot?.type === "text") {
+				if (item.content?.some((content) => content.type === "refusal")) output.rawStopReason = "refusal";
 				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
 				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
 				stream.push({

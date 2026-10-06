@@ -18,7 +18,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createFauxStreamFn } from "./test-harness.ts";
+import { createPlannerStreamFn as createFauxStreamFn, plannerRequest } from "./structured-planner-test-helpers.js";
 import { createTestResourceLoader } from "./utilities.ts";
 
 function assistant(text: string, timestamp: number): AssistantMessage {
@@ -217,7 +217,8 @@ describe("verbatim compaction extension hooks", () => {
 			faux.streamFn,
 		);
 
-		await session.compact({ preserve_recent: 0 });
+		const first = await session.compact({ preserve_recent: 0 });
+		expect(first.promptVersion).toBe(4);
 		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
 		session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
 		session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));
@@ -225,11 +226,11 @@ describe("verbatim compaction extension hooks", () => {
 
 		await session.compact({ preserve_recent: 1 });
 		expect(faux.state.callCount).toBe(2);
-		const secondRequest = JSON.stringify(faux.state.contexts[1]);
-		expect(secondRequest).toContain("1→[User]: task 0");
-		expect(secondRequest).toContain("2→(filtered 1 lines)");
-		expect(secondRequest).toContain("planner line 19");
-		expect(secondRequest).not.toContain("[Assistant]: planner tail");
+		const secondRequest = plannerRequest(faux.state.contexts[1]);
+		const lines = secondRequest.messages.flatMap((message) => message.lines);
+		expect(lines.slice(0, 2)).toEqual(["[User]: task 0", "(filtered 1 lines)"]);
+		expect(lines).toContain("planner line 19");
+		expect(lines).not.toContain("[Assistant]: planner tail");
 	});
 
 	it("cancels without persistence", async () => {

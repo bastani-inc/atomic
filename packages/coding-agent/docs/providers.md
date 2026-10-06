@@ -14,6 +14,8 @@ This page is provider setup: subscriptions, API keys, provider-specific configur
 - [Auth File](#auth-file)
 - [Provider Specific Config](#provider-specific-config)
 - [llama.cpp](#llama-cpp)
+- [TypeSafe Jev](#typesafe-jev)
+- [Morph compaction](#morph-compaction)
 - [Stop Reasons](/providers/reference#stop-reasons)
 - [Resolution Order](/providers/reference#resolution-order)
 - [Custom Providers](#custom-providers)
@@ -230,6 +232,7 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | Radius                             | `RADIUS_API_KEY`                                                          | `radius`                     |
 | Hugging Face                       | `HF_TOKEN`                                                                | `huggingface`                |
 | TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe`                   |
+| Morph                              | `MORPH_API_KEY`                                                           | `morph`                      |
 | Fireworks                          | `FIREWORKS_API_KEY`                                                       | `fireworks`                  |
 | Together AI                        | `TOGETHER_API_KEY`                                                        | `together`                   |
 | Baseten                            | `BASETEN_API_KEY`                                                         | `baseten`                    |
@@ -570,7 +573,7 @@ For router-mode discovery, load/unload management, and Hugging Face downloads wi
 
 ## TypeSafe Jev
 
-`typesafe/jev-latest` is the built-in TypeSafe classifier. Name it explicitly in `routerModel`, `structured_output`, or `generateStructuredOutput()` when you want it. An unset or `auto` router uses the current chat model; saved credentials do not select a classifier. Jev is never an execution `auto` candidate, chat `--model`, or `/model` choice. Any other classifier works the same way only when the current model registry lists it. A models.dev listing does not register a classifier.
+`typesafe/jev-latest` is the built-in TypeSafe classifier. Name it explicitly in `compactionModel`, `routerModel`, `structured_output`, or `generateStructuredOutput()` when you want it. An unset or `auto` compaction model or router uses the current chat model; saved credentials do not select a classifier. Jev is never an execution `auto` candidate, chat `--model`, or `/model` choice. Any other classifier works the same way only when the current model registry lists it. A models.dev listing does not register a classifier. See [Compaction model](/compaction#compaction-model) for verbatim classifier compaction.
 
 Use `/login typesafe` to save an API key under `typesafe` in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key. `/logout typesafe` removes the saved TypeSafe credential; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
 
@@ -581,6 +584,14 @@ An explicit `routerModel` other than `auto` selects that exact registered chat o
 Routers send one classify request for a registered classifier and can repair a malformed chat answer up to three times after the initial attempt, without a structured-decision deadline. Cancel the request to stop waiting; independent provider and enclosing tool-request limits still apply. A `structured_output` or `generateStructuredOutput()` classifier candidate is skipped, not repaired into a free-form value, when the schema is not a finite Choice. Missing credentials, an unavailable provider, an unsupported classify operation, a provider size rejection, a refusal, and a malformed classifier answer switch routing to the current chat model and advance a general structured-output chain. Cancellation does not. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
 HTTP 401 means check the key saved through `/login typesafe` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
+
+## Morph compaction
+
+Use `/login morph` to save a Morph API key under `morph` in `~/.atomic/agent/auth.json`, or set `MORPH_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key. Do not put the key in prompts or `settings.json`.
+
+Then choose `morph/morph-compactor` through `/settings` → **Compaction model**, or set `"compactionModel": "morph/morph-compactor"` in global settings. Without credentials, the selector marks it as `requires /login morph`. Morph receives the compactable transcript, including serialized thinking; the preserved recent tail is not sent. Atomic retains the original surviving lines and enforces `<keepContext>` protection. Choose Morph only if it is permitted to receive your transcript.
+
+Morph is a compactor, not a chat model. It does not appear in `/model` or automatic model routing. Project settings cannot select `morph/*`. Missing credentials, HTTP errors, policy refusals, or unusable results advance directly to your configured fallback models without a Morph summary request. `/logout morph` removes the saved credential; an environment key remains active until you unset it. See [Compaction model](/compaction#compaction-model).
 
 ## Custom Providers
 

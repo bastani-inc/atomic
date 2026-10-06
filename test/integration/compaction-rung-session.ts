@@ -4,7 +4,7 @@
  * Kept out of `*.test.ts` so `bun test test/integration` does not treat it as a suite.
  */
 
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Context, Model } from "@bastani/pi-ai/compat";
 import { getModel } from "@bastani/pi-ai/compat";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -13,6 +13,10 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import {
+	messageLocalRecords,
+	plannerRequest,
+} from "../../packages/coding-agent/test/structured-planner-test-helpers.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 
 export const SESSION_MODEL = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -50,14 +54,10 @@ function plannerUserPrompt(context: { messages: Array<{ role?: string; content: 
 export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamFn: StreamFn; calls: PlannerCall[] } {
 	const calls: PlannerCall[] = [];
 	const cursors = new Map<string, number>();
-	const streamFn = ((
-		model: Model<Api>,
-		context: { messages: Array<{ role?: string; content: unknown }> },
-		options?: { reasoning?: ThinkingLevel },
-	) => {
-		const prompt = plannerUserPrompt(context);
-		const numbered = prompt.match(/^\d+→/gm)?.length ?? 0;
-		const keepTarget = prompt.match(/^Target lines to keep: (\d+)$/m)?.[1];
+	const streamFn = ((model: Model<Api>, context: Context, options?: { reasoning?: ThinkingLevel }) => {
+		const request = plannerRequest(context);
+		const numbered = request.messages.reduce((total, message) => total + message.lines.length, 0);
+		const keepTarget = plannerUserPrompt(context).match(/^Target lines to keep: (\d+)$/m)?.[1];
 		calls.push({
 			provider: model.provider,
 			id: model.id,
@@ -73,7 +73,8 @@ export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamF
 			result: async (): Promise<AssistantMessage> =>
 				({
 					role: "assistant",
-					content: turn.text === undefined ? [] : [{ type: "text", text: turn.text }],
+					content:
+						turn.text === undefined ? [] : [{ type: "text", text: messageLocalRecords(turn.text, request) }],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,

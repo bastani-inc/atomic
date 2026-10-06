@@ -4,7 +4,7 @@ import type {
 	VerbatimCompactionResult,
 	VerbatimCompactionStats,
 } from "../../../core/compaction/index.ts";
-import { type CustomMessage, VERBATIM_COMPACTION_PREFIX } from "../../../core/messages.ts";
+import { type CustomMessage, SUMMARY_COMPACTION_PREFIX, VERBATIM_COMPACTION_PREFIX } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
 
@@ -12,6 +12,8 @@ interface BoundaryView {
 	text: string;
 	stats: VerbatimCompactionStats;
 	rung: VerbatimCompactionDetails["rung"];
+	backend?: VerbatimCompactionDetails["backend"];
+	model?: string;
 	/** Authoritative whole-context count, preferred for "Compacted from N tokens". */
 	tokensBefore?: number;
 }
@@ -29,6 +31,8 @@ export class CompactionBoundaryMessageComponent extends Box {
 				stats: result.stats,
 				rung: result.rung,
 				tokensBefore: result.tokensBefore,
+				backend: result.backend,
+				model: result.model,
 			};
 		} else {
 			this.view = result;
@@ -52,9 +56,27 @@ export class CompactionBoundaryMessageComponent extends Box {
 		// The fresh rung destroyed the compactable conversation; say so plainly.
 		const label = theme.fg(
 			"customMessageLabel",
-			theme.bold(this.view.rung === "fresh" ? "✻ Context cleared (compaction degraded)" : "✻ Context compacted"),
+			theme.bold(
+				this.view.rung === "fresh"
+					? "✻ Context cleared (compaction degraded)"
+					: this.view.backend === "summary"
+						? "✻ Context compacted · summary (pi fallback)"
+						: "✻ Context compacted",
+			),
 		);
 		content.addChild(new Text(label, 0, 0));
+		if (this.view.backend && this.view.model) {
+			content.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`${this.view.backend === "summary" ? "summary (pi fallback)" : this.view.backend} · ${this.view.model}`,
+					),
+					0,
+					0,
+				),
+			);
+		}
 		content.addChild(new Spacer(1));
 		if (this.expanded) {
 			content.addChild(
@@ -99,11 +121,14 @@ export function compactionBoundaryFromMessage(
 				.map((block) => block.text)
 				.join("\n")
 		: message.content;
+	const prefix = details.backend === "summary" ? SUMMARY_COMPACTION_PREFIX : VERBATIM_COMPACTION_PREFIX;
 	const component = new CompactionBoundaryMessageComponent({
-		text: content.startsWith(VERBATIM_COMPACTION_PREFIX) ? content.slice(VERBATIM_COMPACTION_PREFIX.length) : content,
+		text: content.startsWith(prefix) ? content.slice(prefix.length) : content,
 		stats: details.stats,
 		rung: details.rung,
 		tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
+		backend: details.backend,
+		model: details.model,
 	});
 	component.setExpanded(expanded);
 	return component;

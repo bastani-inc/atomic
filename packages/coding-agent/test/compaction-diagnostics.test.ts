@@ -177,6 +177,7 @@ describe("compaction diagnostics: metadata capture", () => {
 		expect(serialized).not.toContain("headers");
 		expect(serialized).not.toContain("prompt");
 		expect(serialized).not.toContain("numbered-transcript");
+		expect(serialized).not.toContain("compaction_request");
 		expect(serialized).not.toContain("systemPrompt");
 	});
 });

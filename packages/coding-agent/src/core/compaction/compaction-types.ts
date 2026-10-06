@@ -3,7 +3,7 @@ import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionSettings } from "./compaction.ts";
 
-export const VERBATIM_COMPACTION_PROMPT_VERSION = 3 as const;
+export const VERBATIM_COMPACTION_PROMPT_VERSION = 4 as const;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
 
 export const DEFAULT_COMPRESSION_RATIO = 0.5;
@@ -36,6 +36,7 @@ export interface RawLineRange {
 export interface NumberedRegion {
 	readonly __brand: "NumberedRegion";
 	lines: string[];
+	messageSpans?: { role: "user" | "assistant" | "tool"; start: number; end: number }[];
 	headerLineNumbers: ReadonlySet<number>;
 	priorMarkerNs: ReadonlyMap<number, number>;
 	/** Optional future protected spans, expressed as one-based line numbers. */
@@ -123,6 +124,9 @@ export interface VerbatimCompactionDetails {
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
 	rung: CompactionRung;
+	backend?: "planner" | "classifier" | "morph" | "summary";
+	model?: string;
+	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	/**
 	 * Authoritative whole-context count, projected for display only. Populated by
 	 * `createVerbatimCompactionMessage` on the rendered message; it is not
@@ -154,6 +158,9 @@ export interface VerbatimCompactionResult {
 	parameters: VerbatimCompactionParameters;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
 	rung: CompactionRung;
+	backend?: "planner" | "classifier" | "morph" | "summary";
+	model?: string;
+	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
 	/** Aggregate usage across every planner request and retry in this compaction. */

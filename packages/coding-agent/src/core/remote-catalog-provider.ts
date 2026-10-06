@@ -92,6 +92,9 @@ export function withRemoteCatalog(
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
 	localGeneratedAt?: number,
 ): Provider {
+	const models = provider.getAllModels?.() ?? provider.getModels();
+	if (models.length > 0 && !models.some(isSupportedModelType)) return provider;
+
 	let dynamicModels: readonly AnyModel[] = [];
 
 	return {

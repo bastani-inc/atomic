@@ -34,6 +34,7 @@ function context(overrides: Partial<FallbackPlannerContext> = {}): FallbackPlann
 		registry: registryOf([primary, secondary, tertiary]),
 		preferredProvider: "primary",
 		sessionThinkingLevel: "high",
+		selectedModelId: "primary/planner-a",
 		...overrides,
 	};
 }
@@ -77,22 +78,31 @@ test("candidates are returned in configured order, each at most once", async () 
 test("an unsuffixed entry naming an already-attempted effective model is skipped", async () => {
 	// The primary ran as primary/planner-a at the inherited `high`; a configured
 	// unsuffixed entry naming the same model is the identical effective request.
-	const borrow = borrower({ fallbackModels: ["primary/planner-a", "spare/planner-c"] });
+	const borrow = borrower({
+		fallbackModels: ["primary/planner-a", "spare/planner-c"],
+		selectedModelId: "backup/planner-b",
+	});
 	const attempted: ReadonlySet<string> = new Set(["primary/planner-a:high"]);
 	assert.equal((await borrow(attempted, authFor))?.model.id, "planner-c");
 });
 
 test("an explicit same-level entry for an already-attempted model is skipped", async () => {
-	const borrow = borrower({ fallbackModels: ["primary/planner-a:high", "spare/planner-c"] });
+	const borrow = borrower({
+		fallbackModels: ["primary/planner-a:high", "spare/planner-c"],
+		selectedModelId: "backup/planner-b",
+	});
 	const attempted: ReadonlySet<string> = new Set(["primary/planner-a:high"]);
 	assert.equal((await borrow(attempted, authFor))?.model.id, "planner-c");
 });
 
-test("the same model at a different explicit level stays a distinct candidate", async () => {
-	const borrow = borrower({ fallbackModels: ["primary/planner-a:low"] });
-	const found = await borrow(new Set(["primary/planner-a:high"]), authFor);
-	assert.equal(found?.model.id, "planner-a");
-	assert.equal(plannerAttemptKey(found!), "primary/planner-a:low");
+test("the selected model is skipped even at a different explicit level", async () => {
+	const { seen, resolveAuth } = trackedAuth();
+	const borrow = borrower({ fallbackModels: ["primary/planner-a:low", "spare/planner-c"] });
+	const found = await borrow(new Set(["primary/planner-a:high"]), resolveAuth);
+	assert.equal(found?.model.id, "planner-c");
+	assert.equal(plannerAttemptKey(found!), "spare/planner-c:high");
+	assert.deepEqual(seen, ["planner-c"]);
+	assert.equal(await borrow(new Set(), resolveAuth), undefined);
 });
 
 test("a non-reasoning model keeps its configured level in the budget and key", async () => {
