@@ -85,8 +85,12 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
-				const { getDurableBackend } = await import("../durable/factory.js");
-				const backend = durableBackendForRun(getDurableBackend(), context.state.runs, input.runId);
+				const { getAvailableDurableBackend } = await import("../durable/factory.js");
+				const availableBackend = getAvailableDurableBackend();
+				const backend =
+					availableBackend === undefined
+						? undefined
+						: durableBackendForRun(availableBackend, context.state.runs, input.runId);
 				const receipt = await backend?.readSettledPendingStageMessage?.(input.runId, input.message.id);
 				const result = queueStageMessage(
 					receipt === undefined

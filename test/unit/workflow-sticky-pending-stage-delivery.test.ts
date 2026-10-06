@@ -2250,3 +2250,35 @@ test("replacement readiness waits for its own sticky admission after prior succe
 	await ready;
 	assert.equal(released, true);
 });
+
+test("live message validation works without a global durable backend (#3467)", async () => {
+	setDurableBackend(undefined);
+	const store = createStore();
+	store.recordRunStart({
+		id: ROOT_RUN_ID,
+		name: "memory-validate",
+		inputs: {},
+		status: "running",
+		stages: [
+			{
+				id: "stage-id",
+				name: "stage",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+				pendingStageDeliveryAvailable: true,
+			},
+		],
+		startedAt: 1,
+	});
+	assert.deepEqual(
+		await store.validateLiveStageMessage({
+			runId: ROOT_RUN_ID,
+			stageKey: "stage-id",
+			from: { id: "planner-session", name: "planner", group: GROUP },
+			message: message("memory-live"),
+			queuedAt: "2026-09-01T00:00:00.000Z",
+		}),
+		{ outcome: "forward" },
+	);
+});
