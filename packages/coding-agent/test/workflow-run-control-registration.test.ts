@@ -235,3 +235,28 @@ test("session workflow observers stay serialized across reload rebinding and clo
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(events, ["start:old", "end", "start:new", "end", "start:new", "end"]);
 });
+
+test("unsubscribing during session close skips the queued terminal snapshot (#3476)", async () => {
+	const hub = new WorkflowActivityHub();
+	const handle = new SessionWorkflowsHandle(
+		() => undefined,
+		() => (observer) => hub.observeWorkflowActivity(observer),
+	);
+	const frames: string[] = [];
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const subscription = handle.observe(async (frame) => {
+		frames.push(frame.kind === "snapshot" ? frame.availability : frame.kind);
+		await gate;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(frames.length, 1);
+
+	const closing = handle.disposeObservers(hub.getSnapshotFrame());
+	subscription.dispose();
+	release();
+	await closing;
+	assert.equal(frames.length, 1, "the host unsubscribed before the terminal snapshot was delivered");
+});

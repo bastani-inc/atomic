@@ -90,6 +90,7 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		const lease: SessionObserverLease = {
 			deliver,
 			close: () => {
+				if (!active) return;
 				active = false;
 				lease.subscription.dispose();
 			},
@@ -97,8 +98,10 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		};
 		this.observers.add(lease);
 		return {
+			// Close even after session disposal took the lease out of the set, so a queued final callback is skipped.
 			dispose: () => {
-				if (this.observers.delete(lease)) lease.close();
+				this.observers.delete(lease);
+				lease.close();
 			},
 		};
 	}
