@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed Goal treating exhausted reviewer corrections for invalid `structured_output` inputs, including whitespace-only instructions and empty named state, as resumable infrastructure failures instead of `needs_human` ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
 - Fixed Goal reviewer corrections hiding an earlier provider failure when a later `structured_output` call has invalid inputs. If no correction succeeds, the goal remains resumable instead of becoming `needs_human` ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
 - Fixed `run()` failing at the first `ctx.task` or `ctx.stage` with "prompt adapter not configured" when `opts.adapters` was omitted. Stages now default to in-process `createAgentSession` sessions with in-memory session managers ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Fixed `resumeInFlight` having no effect at startup. `auto` now resumes eligible interrupted durable workflows, `ask` requests confirmation when a UI is available, and `never` leaves them for `/workflow resume`. Paused, quit, blocked, failed, awaiting-input, and live-owned runs are not automatically restarted ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

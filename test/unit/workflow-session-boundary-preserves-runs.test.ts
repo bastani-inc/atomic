@@ -113,6 +113,7 @@ function captureHandlers(lifecycleScope: object = {}): Map<string, SessionEventH
 		{
 			runtimeState: {
 				persistenceRef: { current: undefined },
+				configLoadRef: { current: null },
 				lifecycleNotificationState: createWorkflowLifecycleNotificationState(),
 				hilAnswerNotificationState: createWorkflowHilAnswerNotificationState(),
 				resetWorkflowDiscoveryForSession() {},

@@ -34,6 +34,7 @@ export interface ExtensionContextSource {
 	getMode(): ExtensionMode;
 	hasUI(): boolean;
 	hasHumanInput?(): boolean;
+	isPresentationOnly?(): boolean;
 	getCwd(): string;
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
@@ -188,6 +189,10 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		get hasUI() {
 			source.assertActive();
 			return source.hasUI();
+		},
+		get isPresentationOnly() {
+			source.assertActive();
+			return source.isPresentationOnly?.() ?? false;
 		},
 		get cwd() {
 			source.assertActive();

@@ -1,6 +1,7 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import type { ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
 
@@ -10,6 +11,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 	await this.session.bindExtensions({
 		uiContext,
 		mode: "tui",
+		isPresentationOnly: this.runtimeHost instanceof IsolatedInteractiveRuntime,
 		commandContextActions: {
 			waitForIdle: () => this.session.agent.waitForIdle(),
 			newSession: async (options) => {

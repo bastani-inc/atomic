@@ -240,7 +240,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.footerContainer,
 		this.widgetContainerBelow,
 	]);
-	this.ui.setFocus(this.editor);
+	this.ui.setFocus(this.extensionSelector ?? this.extensionInput ?? this.extensionEditor ?? this.editor);
 
 	this.setupKeyHandlers();
 	this.setupEditorSubmitHandler();

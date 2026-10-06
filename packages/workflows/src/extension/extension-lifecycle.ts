@@ -2,6 +2,8 @@ import { sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
+import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
@@ -15,11 +17,14 @@ import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notificati
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { formatStartupDiagnostics } from "./workflow-command-surfaces.js";
+import { prepareWorkflowResumeCatalog } from "./workflow-durable-resume-command.js";
+import { workflowPolicyFromContext } from "./workflow-policy.js";
 
 interface WorkflowLifetime {
 	readonly generations: Set<(boundary?: "quit" | "switch") => Promise<void>>;
 	release?: () => Promise<void>;
 	closing?: Promise<void>;
+	startupStarted?: boolean;
 }
 
 async function attemptAll(actions: readonly (() => unknown | Promise<unknown>)[]): Promise<void> {
@@ -175,6 +180,56 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	};
 	let startupResourcesDiscovered = false;
 
+	const resumeInFlight = async (ctx: PiCommandContext | undefined): Promise<void> => {
+		if (ctx?.isPresentationOnly === true) return;
+		const mode = runtimeState.configLoadRef.current?.config?.resumeInFlight ?? "ask";
+		if (mode === "never" || (mode === "ask" && (ctx?.hasUI === false || typeof ctx?.ui?.confirm !== "function")))
+			return;
+		try {
+			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
+			const backend = getDurableBackend();
+			const isInterrupted = (entry: ResumableWorkflowEntry): boolean =>
+				entry.status === "running" &&
+				entry.pendingPrompts === 0 &&
+				!isLiveRunningWorkflow(backend.getWorkflow(entry.workflowId) ?? entry);
+			const interrupted = catalog.filter(isInterrupted);
+			if (interrupted.length === 0) return;
+			if (
+				mode === "ask" &&
+				!(await ctx?.ui?.confirm?.(
+					"Resume interrupted workflows?",
+					`${interrupted.length} interrupted workflow(s) can resume from their durable checkpoints. Resume now? Choose No to leave them available through /workflow resume.`,
+				))
+			)
+				return;
+			await runtimeState.ensureWorkflowResourcesLoaded();
+			const runtime = runtimeState.runtimeForContext(ctx);
+			const prepared = await prepareWorkflowResumeCatalog(runtime, new Set(store.runs().map((run) => run.id)));
+			const eligibleIds = new Set(interrupted.map((entry) => entry.workflowId));
+			const availableIds = new Set(prepared.resumable.map((entry) => entry.workflowId));
+			for (const entry of interrupted) {
+				if (availableIds.has(entry.workflowId)) continue;
+				ctx?.ui?.notify?.(
+					`Workflow ${entry.workflowId} is not available for startup recovery. Enable its workflow resources, then use /workflow resume ${entry.workflowId}.`,
+					"warning",
+				);
+			}
+			for (const entry of prepared.resumable) {
+				if (!eligibleIds.has(entry.workflowId) || !isInterrupted(entry)) continue;
+				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
+					policy: workflowPolicyFromContext(ctx),
+					actor: "user",
+				});
+				ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
+			}
+		} catch (error) {
+			ctx?.ui?.notify?.(
+				`Workflow startup resume failed: ${String(error)}. Use /workflow resume to retry.`,
+				"warning",
+			);
+		}
+	};
+
 	pi.on("session_start", async (event, ctx) => {
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
@@ -183,17 +238,19 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			typeof event === "object" && event !== null && "reason" in event
 				? (event as { readonly reason?: string }).reason
 				: undefined;
+		const stopsWorkflows = replacementStopsWorkflows(reason) && !(reason === "startup" && lifetime.startupStarted);
+		if (reason === "startup") lifetime.startupStarted = true;
 		startupResourcesDiscovered = false;
 		runtimeState.resetWorkflowDiscoveryForSession();
 		await runtimeState.ensureWorkflowConfigLoaded();
-		if (replacementStopsWorkflows(reason)) {
+		if (stopsWorkflows) {
 			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
 			store.clear();
 		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
-		if (replacementStopsWorkflows(reason)) await stageControlRegistry.clear();
+		if (stopsWorkflows) await stageControlRegistry.clear();
 		else await stageControlRegistry.clearDetached();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
@@ -204,9 +261,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			deps.storeWidgetRef.current?.();
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
-		// Session JSONL contains chat transcripts only. Workflow state is loaded
-		// from DBOS on the first workflow command or run, never during startup.
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
+		if (stopsWorkflows) await resumeInFlight(ctx);
 	});
 	// A second startup discovery in one session means deferred startup (such as
 	// project trust) published a changed package set after session_start (#3354).

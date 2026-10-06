@@ -196,6 +196,7 @@ export class ExtensionRunner {
 	);
 	private onDiagnostic?: (diagnostic: HostDiagnostic) => void;
 	private mode: ExtensionMode = "print";
+	private presentationOnly = false;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -472,7 +473,8 @@ export class ExtensionRunner {
 		copyHostQuestionnaire(bridged, this.uiContext);
 	}
 
-	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
+	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print", isPresentationOnly = false): void {
+		this.presentationOnly = isPresentationOnly;
 		if (uiContext !== this.presentationUI) {
 			this.endActiveUIPrompt();
 			++this.uiPromptBinding;
@@ -813,6 +815,7 @@ export class ExtensionRunner {
 			getMode: () => this.mode,
 			hasUI: () => this.hasUI(),
 			hasHumanInput: () => this.inputBridge.available,
+			isPresentationOnly: () => this.presentationOnly,
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,

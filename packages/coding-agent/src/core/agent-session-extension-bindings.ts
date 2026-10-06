@@ -160,6 +160,7 @@ const extensionStarts = new WeakMap<ExtensionRunner, Promise<void>>();
 const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
+const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
 
 function startExtensions(
 	session: AgentSession,
@@ -222,6 +223,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	if (bindings.mode !== undefined) {
 		this._extensionMode = bindings.mode;
 	}
+	if (bindings.isPresentationOnly !== undefined) presentationOnlyBindings.set(this, bindings.isPresentationOnly);
 	if (bindings.commandContextActions !== undefined) {
 		this._extensionCommandContextActions = bindings.commandContextActions;
 	}
@@ -276,7 +278,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 		this._extensionDiagnosticListener,
 		humanInputBindingRevisions.get(this),
 	);
-	runner.setUIContext(this._extensionUIContext, this._extensionMode);
+	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(this._childSessionOptions);
 
@@ -776,7 +778,11 @@ async function reloadOwnedGeneration(
 			this._extensionDiagnosticListener,
 			humanInputBindingRevisions.get(this),
 		);
-		candidateRunner.setUIContext(this._extensionUIContext, this._extensionMode);
+		candidateRunner.setUIContext(
+			this._extensionUIContext,
+			this._extensionMode,
+			presentationOnlyBindings.get(this) ?? false,
+		);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(this._childSessionOptions);
 		if (options?.failOnExtensionErrors && errors.length > 0)

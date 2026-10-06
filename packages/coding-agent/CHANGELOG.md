@@ -11,6 +11,7 @@
 - Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
 - Added `createTranscript()`, which turns session events into the assistant's output as ordered, JSON-serializable text, thinking, and tool call parts, with each tool call joined to its result ([#3475](https://github.com/bastani-inc/atomic/issues/3475)).
 - Added `createAgentSessionAdapter(baseOptions?)` to `@bastani/atomic/workflows`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Added `ctx.isPresentationOnly` so extension lifecycle hooks can leave execution to the isolated interactive engine while retaining host-side UI ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 
 ### Changed
 
@@ -24,6 +25,7 @@
 - Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
 - Fixed `@bastani/atomic/workflows` type declarations disagreeing with the runtime: `StageSnapshot` now declares `parentIds`, `executionOrder`, `model`, `startedAt`, `endedAt`, and `durationMs`; `Store` now declares `snapshot()`, `graphSnapshot()`, and `subscribe()`; and an `AgentSessionAdapter.create` can return `createAgentSession(...)` directly without a type cast ([#3473](https://github.com/bastani-inc/atomic/issues/3473)).
 - Fixed `run()` from `@bastani/atomic/workflows` failing at the first `ctx.task` or `ctx.stage` with "prompt adapter not configured" when `opts.adapters` was omitted. Stages now default to in-process `createAgentSession` sessions with in-memory session managers ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Fixed startup extension confirmations, including workflow recovery prompts, losing keyboard focus during terminal initialization ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

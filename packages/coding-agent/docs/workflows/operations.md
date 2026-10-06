@@ -959,10 +959,12 @@ Runtime config defaults:
 | `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 80 }` | Default per-run budget declaration; `0` disables a dimension; warnings default to `80` percent |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
-| `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
+| `resumeInFlight` | `"ask"` | At process startup, `"auto"` resumes interrupted durable workflows, `"ask"` requests confirmation, and `"never"` leaves them for manual resume |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
 | `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, duration budget warnings, and attributed user `started`/`quit`/`resumed` actions on a top-level run create main-chat notices. `pause` does not attribute an actor; `awaiting_input` is tracked for dedupe/restore without waking the main agent. |
 | `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |
+
+Startup recovery uses the durable catalog, not session transcripts. Only interrupted, checkpointed workflows still marked `running` without pending human prompts are eligible. Fresh-heartbeat live owners, paused or quit runs, failed or blocked runs, and runs awaiting input are not restarted automatically. `"ask"` leaves runs untouched when no confirmation UI is available or you decline. `/workflow resume` remains available in every mode. Session switches and `/reload` do not trigger startup recovery. Workflow resources must be enabled and available at startup. If project trust or missing resources prevent recovery, enable them and use `/workflow resume`. If recovery fails, Atomic reports a warning; use `/workflow resume` to retry.
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 
