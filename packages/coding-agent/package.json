@@ -89,7 +89,7 @@
     "@earendil-works/pi-protocol": "1.0.4",
     "@earendil-works/pi-tui": "1.0.4",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@mozilla/readability": "^0.6.0",
     "@silvia-odwyer/photon-node": "0.3.4",
     "@typesafe-ai/sdk": "0.6.0",
