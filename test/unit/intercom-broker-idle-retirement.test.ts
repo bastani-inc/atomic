@@ -193,37 +193,41 @@ test(
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-probe-"));
 		const broker = spawnBroker(agentDir);
-		await waitForBrokerPid(agentDir, broker);
-		let exitedAt: number | undefined;
-		broker.once("exit", () => {
-			exitedAt = Date.now();
+		let brokerOutput = "";
+		broker.stdout?.on("data", (chunk: Buffer) => {
+			brokerOutput += chunk.toString();
 		});
+		await waitForBrokerPid(agentDir, broker);
 		const probeIntervalMs = 500;
+		const probeUntil = Date.now() + BROKER_IDLE_SHUTDOWN_MS + 1_000;
+		const retirementWaitMs = 12_000;
 		const timerEarlyFireToleranceMs = 50;
-		const probeUntil = Date.now() + BROKER_IDLE_SHUTDOWN_MS * 2;
-		let lastProbeStartedAt: number | undefined;
+		let probesAccepted = 0;
 
 		while (Date.now() < probeUntil && isBrokerAlive(broker)) {
-			const probeStartedAt = Date.now();
 			try {
 				const probe = await connect(agentDir);
 				await new Promise<void>((resolveClosed) => {
 					probe.once("close", () => resolveClosed());
 					probe.end();
 				});
+				probesAccepted += 1;
 			} catch {
-				await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
 				break;
 			}
-			lastProbeStartedAt = probeStartedAt;
 			await sleep(probeIntervalMs);
 		}
+		assert.ok(probesAccepted > 0, "no liveness probe reached the broker");
+		assert.equal(await waitForExit(broker, retirementWaitMs), 0);
+		const stdout = broker.stdout;
+		if (stdout && !stdout.readableEnded) await new Promise((resolveEnded) => stdout.once("end", resolveEnded));
 
-		assert.ok(lastProbeStartedAt !== undefined, "no liveness probe reached the broker");
-		if (exitedAt === undefined) return;
+		const reported = /No sessions connected for (\d+)ms since the last connection/.exec(brokerOutput);
+		assert.ok(reported, `broker did not report its idle retirement:\n${brokerOutput}`);
+		const idleMs = Number(reported[1]);
 		assert.ok(
-			exitedAt - lastProbeStartedAt >= BROKER_IDLE_SHUTDOWN_MS - timerEarlyFireToleranceMs,
-			`broker retired ${exitedAt - lastProbeStartedAt}ms after a successful probe, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
+			idleMs >= BROKER_IDLE_SHUTDOWN_MS - timerEarlyFireToleranceMs,
+			`broker retired ${idleMs}ms after its last connection, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
 		);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,

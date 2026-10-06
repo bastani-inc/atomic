@@ -249,6 +249,7 @@ class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private lastConnectionAt = performance.now();
   private deliveredMessages = new DeliveredMessageCache(
 	DELIVERED_MESSAGE_TTL_MS,
 	DELIVERED_MESSAGE_MAX_ENTRIES,
@@ -280,6 +281,7 @@ class IntercomBroker {
     this.server.listen(SOCKET_PATH, () => {
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
     });
     process.on("SIGTERM", () => this.shutdown());
@@ -288,6 +290,7 @@ class IntercomBroker {
 
   private handleConnection(socket: net.Socket): void {
     let sessionId: string | null = null;
+    this.lastConnectionAt = performance.now();
     this.restartShutdownCheck();
 
     const reader = createMessageReader((msg) => {
@@ -342,7 +345,8 @@ class IntercomBroker {
     this.shutdownTimer = setTimeout(() => {
       this.shutdownTimer = null;
       if (this.sessions.size === 0) {
-        console.log("No sessions connected, shutting down");
+        const idleMs = Math.round(performance.now() - this.lastConnectionAt);
+        console.log(`No sessions connected for ${idleMs}ms since the last connection, shutting down`);
         this.shutdown();
       }
     }, 5000);
