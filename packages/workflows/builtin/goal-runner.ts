@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isWorkflowStructuredOutputContractError, type WorkflowStructuredOutputContractError } from "../src/runs/foreground/stage-runner-structured-output.js";
 import type {
   WorkflowParallelOptions,
   WorkflowTaskOptions,
@@ -31,6 +32,7 @@ import { formatReviewReport, renderFinalReport } from "./goal-reports.js";
 import {
   parsedReviewDecisionFromResult,
   reviewDecisionToRecord,
+  reviewerErrorDecision,
 } from "./goal-review.js";
 import { consolidateFindingsBatch } from "./review-convergence.js";
 import { reverify_consolidated_batch } from "./goal-reverify.js";
@@ -223,16 +225,26 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         ),
       ];
 
-      const reviewResults = await ctx.parallel(reviewerSteps, {
-        task: objective,
-        failFast: true,
-        group: `goal-reviewers-turn-${turn}`,
-      });
+      let reviewResults: WorkflowTaskResult[];
+      let reviewerContractError: WorkflowStructuredOutputContractError | undefined;
+      try {
+        reviewResults = await ctx.parallel(reviewerSteps, {
+          task: objective,
+          failFast: true,
+          group: `goal-reviewers-turn-${turn}`,
+        });
+      } catch (error) {
+        if (!isWorkflowStructuredOutputContractError(error)) throw error;
+        reviewerContractError = error;
+        reviewResults = [{ name: "reviewer-error", stageName: "reviewer-error", text: error.message }];
+      }
 
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
         const normalizedReviewerName = reviewerName.replace(/-\d+$/u, "");
-        const parsed = parsedReviewDecisionFromResult(result, reviewerName);
+        const parsed = reviewerContractError === undefined
+          ? parsedReviewDecisionFromResult(result, reviewerName)
+          : { decision: reviewerErrorDecision(reviewerContractError.message), parsed: false, diagnostics: [reviewerContractError.message] };
         const reviewArtifactPath = join(
           artifactDir,
           `review-${artifactSafeName(normalizedReviewerName)}.json`,
@@ -326,21 +338,25 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
       const reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
         turn,
-        maxTurns,
+        maxTurns: reviewerContractError === undefined ? maxTurns : turn,
         reviewQuorum,
         blockerThreshold,
         nextActionOnComplete: createPr ? "pull-request" : "finish",
         convergence: ledger.convergence,
       });
+      const decision = reviewerContractError === undefined ? reducerOutcome.decision : {
+        ...reducerOutcome.decision,
+        reason: `Reviewer output contract exhausted before quorum could be established. ${reviewerContractError.message}`,
+      };
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);
       }
-      ledger.decisions.push(reducerOutcome.decision);
+      ledger.decisions.push(decision);
       ledger.status = reducerOutcome.status;
       appendLifecycleEvent(
         ledger,
         "status_decided",
-        reducerOutcome.decision.reason,
+        decision.reason,
         turn,
       );
       await writeGoalLedger(ledgerPath, ledger);

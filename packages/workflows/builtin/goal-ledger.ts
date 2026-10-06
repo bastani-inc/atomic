@@ -87,6 +87,20 @@ async function readExistingGoalLedger(ledgerPath: string): Promise<GoalLedger | 
     return undefined;
   }
 }
+function isLegacyDatabaseInterruption(diagnostic: string): boolean {
+  const failure = diagnostic.replace(/^(?:Orchestrator failed before producing a receipt|Reviewer execution failed before producing a decision|Reviewer execution failed while resolving its reads contract): /u, "");
+  return [
+    "Workflow database unavailable",
+    "Workflow database checkpoint timed out",
+    "Workflow database ownership generation changed",
+    "Managed PostgreSQL did not answer a health check in time",
+    "Managed PostgreSQL failed its live health check",
+    "managed PostgreSQL health-check failed",
+    "durable checkpoint timeout",
+    "lost DB connection",
+  ].some((prefix) => failure === prefix || failure.startsWith(`${prefix}.`) || failure.startsWith(`${prefix}:`) || failure.startsWith(`${prefix} `));
+}
+
 function recoverLegacyExecutionInterruption(ledger: GoalLedger): boolean {
   const decision = ledger.decisions.at(-1);
   const event = ledger.lifecycle.at(-1);
@@ -107,6 +121,7 @@ function recoverLegacyExecutionInterruption(ledger: GoalLedger): boolean {
   }
   const diagnostic = decision.diagnostics[0];
   if (decision.diagnostics.length !== 1 || diagnostic === undefined) return false;
+  if (!isLegacyDatabaseInterruption(diagnostic)) return false;
   const turnReviews = ledger.reviews.filter((record) => record.turn >= decision.turn);
   const turnReceipts = ledger.receipts.filter((record) => record.turn >= decision.turn);
   const previousEvent = ledger.lifecycle.at(-2);

@@ -141,9 +141,16 @@ export async function handleDurableResume(
 			return true;
 		}
 		const result = await runtime.resumeDurableWorkflow(target, { policy, actor: "user" });
-		fail(
-			allOpenable.length === 0 ? result.message : `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`,
-		);
+		if (result.ok) {
+			print(result.message);
+			if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+		} else {
+			fail(
+				allOpenable.length === 0
+					? result.message
+					: `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`,
+			);
+		}
 		return true;
 	}
 

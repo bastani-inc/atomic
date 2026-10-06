@@ -6,6 +6,32 @@ export const STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS = 3;
 export const STRUCTURED_OUTPUT_MISSING_ERROR =
 	"atomic-workflows: stage configured with schema must finish by calling structured_output.";
 
+export class WorkflowStructuredOutputContractError extends Error {
+	readonly code = "ATOMIC_WORKFLOW_STRUCTURED_OUTPUT_CONTRACT";
+	constructor(message: string) {
+		super(message);
+		this.name = "WorkflowStructuredOutputContractError";
+	}
+}
+
+export function isWorkflowStructuredOutputContractError(
+	error: unknown,
+): error is WorkflowStructuredOutputContractError {
+	return error instanceof Error && "code" in error && error.code === "ATOMIC_WORKFLOW_STRUCTURED_OUTPUT_CONTRACT";
+}
+
+export function isStructuredOutputContractFailure(message: string): boolean {
+	return (
+		message.startsWith(STRUCTURED_OUTPUT_MISSING_ERROR) ||
+		message.startsWith('Validation failed for tool "structured_output":') ||
+		message.startsWith("Invalid structured output: response does not match the decision schema.") ||
+		message.startsWith("Invalid structured output: non-JSON decision.") ||
+		message.startsWith("Structured output requires one structured_output call.") ||
+		message.startsWith("Structured output requires exactly one structured_output call and no provider fallback.") ||
+		message === "structured_output tool call failed schema validation."
+	);
+}
+
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
 export interface StructuredOutputExecutionSnapshot<TValue> {

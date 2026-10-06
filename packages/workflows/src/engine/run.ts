@@ -1111,7 +1111,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			(durableBackend.getWorkflow(runId)?.completedCheckpoints ?? 0) > 0
 		) {
 			await admittedTools.closeAndDrain();
-			activeStore.recordRunPaused(runId, undefined, { resumable: true });
+			activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
 			activeStore.recordRunExecutionState(runId, { phase: "blocked_dependency", dependencyError: err.message });
 			return {
 				runId,

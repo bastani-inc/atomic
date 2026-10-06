@@ -11,6 +11,7 @@ import {
 import { collectRemainingWork } from "../../packages/workflows/builtin/goal-reducer.js";
 import { reviewDecisionToRecord, reviewerErrorDecision } from "../../packages/workflows/builtin/goal-review.js";
 import type { GoalLedger, ReducerDecision } from "../../packages/workflows/builtin/goal-types.js";
+import { DbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 
 function interruptionDecision(reason: string): ReducerDecision {
 	return {
@@ -73,48 +74,75 @@ test("legacy orchestrator execution interruption restores active state and prese
 	}
 });
 
-test("legacy synthetic reviewer interruption restores active state without deleting the receipt (#3466)", async () => {
-	const root = await mkdtemp(join(tmpdir(), "goal-legacy-reviewer-"));
-	try {
-		const { ledger, ledgerPath } = await seedHistory(root);
-		ledger.turns = 2;
-		ledger.receipts.push({ turn: 2, stage: "orchestrator-2", artifact_path: "receipt", summary: "preserved" });
-		appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", 2);
-		const priorLifecycle = [...ledger.lifecycle];
-		const diagnostic =
-			"Reviewer execution failed before producing a decision: managed PostgreSQL health-check failed";
-		const review = reviewDecisionToRecord({
-			turn: 2,
-			reviewer: "reviewer-error",
-			artifactPath: join(root, "review-reviewer-error.json"),
-			decision: reviewerErrorDecision(diagnostic),
-			parsed: false,
-			diagnostics: [diagnostic],
-			allowFinalActionRemaining: false,
-		});
-		ledger.reviews.push(review);
-		appendLifecycleEvent(ledger, "reviews_recorded", "Recorded 1 reviewer decisions.", 2);
-		const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${collectRemainingWork([review])}`;
-		ledger.decisions.push({ ...interruptionDecision(reason), diagnostics: [diagnostic] });
-		ledger.status = "needs_human";
-		appendLifecycleEvent(ledger, "status_decided", reason, 2);
-		await writeGoalLedger(ledgerPath, ledger);
+const databaseDiagnostics = [
+	"managed PostgreSQL health-check failed",
+	new DbosDependencyError(
+		"Workflow database checkpoint timed out. Restore PostgreSQL and inspect the run before resuming; external outcomes may be unknown.",
+		null,
+	).message,
+	new DbosDependencyError("Managed PostgreSQL did not answer a health check in time.", null).message,
+	new DbosDependencyError(
+		"Workflow database unavailable: ownership connection was lost; this execution generation cannot write again",
+		null,
+	).message,
+];
 
-		const resumed = await createGoalLedger("replacement", "replacement", root);
-		assert.equal(resumed.ledger.status, "active");
-		assert.equal(resumed.ledger.turns, 2);
-		assert.deepEqual(resumed.ledger.receipts, ledger.receipts);
-		assert.deepEqual(resumed.ledger.reviews, []);
-		assert.deepEqual(
-			resumed.ledger.decisions.map((record) => record.turn),
-			[1],
-		);
-		assert.deepEqual(resumed.ledger.lifecycle, priorLifecycle);
-		assert.equal((await createGoalLedger("replacement", "replacement", root)).ledger.status, "active");
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
-});
+for (const failure of [
+	...databaseDiagnostics,
+	"atomic-workflows: stage configured with schema must finish by calling structured_output. The model produced assistant text but never called structured_output",
+	'Validation failed for tool "structured_output": instructions: Expected string',
+	"Invalid structured output: response does not match the decision schema. Structured output repair exhausted after 4 attempts.",
+	"unknown stage failure",
+] as const) {
+	test(`legacy synthetic reviewer ${failure} only restores active state with positive infrastructure evidence (#3466)`, async () => {
+		const root = await mkdtemp(join(tmpdir(), "goal-legacy-reviewer-"));
+		try {
+			const { ledger, ledgerPath } = await seedHistory(root);
+			ledger.turns = 2;
+			ledger.receipts.push({ turn: 2, stage: "orchestrator-2", artifact_path: "receipt", summary: "preserved" });
+			appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", 2);
+			const priorLifecycle = [...ledger.lifecycle];
+			const diagnostic = `Reviewer execution failed before producing a decision: ${failure}`;
+			const review = reviewDecisionToRecord({
+				turn: 2,
+				reviewer: "reviewer-error",
+				artifactPath: join(root, "review-reviewer-error.json"),
+				decision: reviewerErrorDecision(diagnostic),
+				parsed: false,
+				diagnostics: [diagnostic],
+				allowFinalActionRemaining: false,
+			});
+			ledger.reviews.push(review);
+			appendLifecycleEvent(ledger, "reviews_recorded", "Recorded 1 reviewer decisions.", 2);
+			const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${collectRemainingWork([review])}`;
+			ledger.decisions.push({ ...interruptionDecision(reason), diagnostics: [diagnostic] });
+			ledger.status = "needs_human";
+			appendLifecycleEvent(ledger, "status_decided", reason, 2);
+			await writeGoalLedger(ledgerPath, ledger);
+			const originalState = await readFile(join(root, "goal-ledger-state.json"), "utf8");
+
+			const resumed = await createGoalLedger("replacement", "replacement", root);
+			if (!databaseDiagnostics.includes(failure)) {
+				assert.equal(resumed.ledger.status, "needs_human");
+				assert.deepEqual(resumed.ledger, ledger);
+				assert.equal(await readFile(join(root, "goal-ledger-state.json"), "utf8"), originalState);
+				return;
+			}
+			assert.equal(resumed.ledger.status, "active");
+			assert.equal(resumed.ledger.turns, 2);
+			assert.deepEqual(resumed.ledger.receipts, ledger.receipts);
+			assert.deepEqual(resumed.ledger.reviews, []);
+			assert.deepEqual(
+				resumed.ledger.decisions.map((record) => record.turn),
+				[1],
+			);
+			assert.deepEqual(resumed.ledger.lifecycle, priorLifecycle);
+			assert.equal((await createGoalLedger("replacement", "replacement", root)).ledger.status, "active");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+}
 
 for (const scenario of [
 	"turn budget",

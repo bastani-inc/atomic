@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed Goal orchestrator and reviewer execution failures incorrectly ending the goal as `needs_human`. The ledger now stays `active`, and resume retries the interrupted stage and completes its turn. Identifiable synthetic execution-failure verdicts from older versions are also recoverable ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
+- Fixed Goal infrastructure failures incorrectly ending the goal as `needs_human`. The ledger now stays `active`, and direct resume in the same session retries the interrupted stage and completes its turn without quitting Atomic. Malformed reviewer output, including exhausted schema corrections, still requires human attention. Older synthetic failure verdicts with identifiable database/checkpoint diagnostics are also recoverable; ambiguous old failures remain unchanged ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 
