@@ -13,7 +13,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { bindExtensionContextPublication } from "./extensions/runner-context.ts";
+import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.js";
 import type { ExtensionRuntime, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
@@ -43,7 +43,9 @@ class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
 	private readonly effects: Array<() => void | Promise<void>> = [];
 	private readonly startEffects: Array<() => void | Promise<void>> = [];
+	private readonly commitEffects: Array<() => void> = [];
 	readonly providerTransaction: ExtensionProviderTransaction;
+	private commitsActivated = false;
 	readonly providerIds = new Set<string>();
 	private readonly isClosed: () => boolean;
 	private readonly runner: ExtensionRunner;
@@ -70,6 +72,24 @@ class ExtensionPublicationGate {
 		if (!this.discarded) this.startEffects.push(effect);
 	}
 
+	stageCommit(effect: () => void): void {
+		if (this.discarded) return;
+		if (!this.commitsActivated) {
+			this.commitEffects.push(effect);
+			return;
+		}
+		try {
+			runSynchronousExtensionContextEffect(effect);
+		} catch (error) {
+			this.report(error, "session_start");
+		}
+	}
+
+	activateCommits(): void {
+		this.commitsActivated = true;
+		for (const effect of this.commitEffects.splice(0)) this.stageCommit(effect);
+	}
+
 	async activateStarts(): Promise<void> {
 		await this.publish(this.startEffects);
 	}
@@ -82,6 +102,7 @@ class ExtensionPublicationGate {
 		this.discarded = true;
 		this.effects.length = 0;
 		this.startEffects.length = 0;
+		this.commitEffects.length = 0;
 	}
 
 	async release(): Promise<void> {
@@ -317,7 +338,11 @@ export function _bindExtensionCore(
 	publication?: ExtensionPublicationGate,
 ): void {
 	runner.bindWorkOwner(this);
-	bindExtensionContextPublication(runner.createContext(), publication && ((effect) => publication.stageStart(effect)));
+	if (publication) {
+		bindExtensionContextPublication(runner.createContext(), (effect, phase) =>
+			phase === "commit" ? publication.stageCommit(effect) : publication.stageStart(effect),
+		);
+	}
 	runner.bindTaskHost(() => this.getAgentTaskHost());
 	// A transactional successor starts before it is published. Its callbacks must inspect and
 	// activate its own definitions, never the retiring session's registry. Keep this view local;
@@ -647,7 +672,9 @@ async function cleanupReloadRunner(runner: ExtensionRunner, reason: string): Pro
 	const failures: unknown[] = [];
 	for (const cleanup of [
 		() => runner.drainWork(),
-		() => reason === "reload" && emitSessionShutdownEvent(runner, { type: "session_shutdown", reason: "reload" }),
+		() =>
+			(reason === "reload" || reason === "startup") &&
+			emitSessionShutdownEvent(runner, { type: "session_shutdown", reason: "reload" }),
 		() => runner.invalidate(),
 	]) {
 		try {
@@ -696,8 +723,12 @@ async function reloadOwnedGeneration(
 		if (options?.failOnExtensionErrors) {
 			throw new Error("Strict extension reload requires a transactional resource loader");
 		}
-		oldRunner.revokeAuthority();
 		const retiringFailures: unknown[] = [];
+		try {
+			oldRunner.revokeAuthority();
+		} catch (error) {
+			retiringFailures.push(error);
+		}
 		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason)).catch(
 			(error: unknown) => {
 				retiringFailures.push(error);
@@ -811,6 +842,7 @@ async function reloadOwnedGeneration(
 			() => rollbackPreparedResources?.(),
 			() => publication.discard(),
 			() => candidateRunner.sealHostInput(),
+			() => candidateRunner.retireObservation(),
 			() => candidateRunner.drainWork(),
 			() => emitSessionShutdownEvent(candidateRunner, { type: "session_shutdown", reason: "reload" }),
 			() => candidateRunner.invalidate(),
@@ -854,12 +886,18 @@ async function reloadOwnedGeneration(
 		failures.push(error);
 	}
 	const setupFailed = failures.length > 0;
+	publication.activateCommits();
 	try {
 		oldRunner.revokeAuthority();
+	} catch (error) {
+		failures.push(error);
+	}
+	try {
 		await retireSessionReloadGeneration(this, () => cleanupReloadRunner(oldRunner, reason));
 	} catch (error) {
 		failures.push(error);
 	}
+	bindExtensionContextPublication(candidateRunner.createContext(), undefined);
 	if (setupFailed) throw failures.length > 1 ? retiringCleanupError(failures) : failures[0];
 	if (this._disposed) throw failures.length ? failures[0] : hostInputError("SessionClosed");
 	sessionGenerationClosing.delete(this);

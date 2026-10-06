@@ -1,3 +1,4 @@
+import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
 import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
@@ -155,6 +156,11 @@ export function createWorkflowExtensionRuntimeState(
 		contextCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
 		detachHumanInput?.();
 		detachHumanInput = ctx === undefined ? undefined : bindWorkflowHumanInput(store, ctx, stageUiBroker);
+		if (ctx)
+			registerExtensionContextRetirementEffect(ctx, () => {
+				detachHumanInput?.();
+				detachHumanInput = undefined;
+			});
 	});
 	pi.on?.("session_shutdown", () => {
 		detachHumanInput?.();

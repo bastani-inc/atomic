@@ -966,6 +966,10 @@ Runtime config defaults:
 
 Startup recovery uses the durable catalog, not session transcripts. Only interrupted, checkpointed workflows still marked `running` without pending human prompts are eligible. Fresh-heartbeat live owners, paused or quit runs, failed or blocked runs, and runs awaiting input are not restarted automatically. `"ask"` leaves runs untouched when no confirmation UI is available or you decline. `/workflow resume` remains available in every mode. Session switches and `/reload` do not trigger startup recovery. Workflow resources must be enabled and available at startup. If project trust or missing resources prevent recovery, enable them and use `/workflow resume`. If recovery fails, Atomic reports a warning; use `/workflow resume` to retry.
 
+Recovered agent-owned workflows belong to the recovering session, so its agent can inspect and control them. Adoption requires the same working directory and confirmation that the previous owner has stopped. Atomic will not take ownership from a live or unverified owner or override another session's recovery.
+
+After accepting startup recovery, inspect the original run ID with `/workflow status <full-run-uuid>` to confirm its next stages progress. If an older version failed with `This extension ctx is stale`, upgrade, restart Atomic, and resume the same run ID rather than launch a duplicate workflow.
+
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 
 ## Settings

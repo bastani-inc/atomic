@@ -15,6 +15,11 @@ import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.js";
+import {
+	bindExtensionContextPublication,
+	publishExtensionContextEffect,
+	registerExtensionContextRetirementEffect,
+} from "../../packages/coding-agent/src/core/extensions/runner-context.js";
 import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/runner-ui.js";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
@@ -151,18 +156,248 @@ async function gatedWorkflowHost(prefix: string) {
 	};
 }
 
-test(
-	"a stage created after a preserving host /reload uses the live generation (#3201)",
-	async () => {
-		const host = await gatedWorkflowHost("atomic-stage-after-reload-");
-		const { session } = await host.createSession({ sessionManager: SessionManager.inMemory(host.project) });
+for (const reason of ["reload", "startup"] as const) {
+	test(
+		`a stage created after a preserving host ${reason} reload uses the live generation (${reason === "startup" ? "#3468" : "#3201"})`,
+		async () => {
+			const host = await gatedWorkflowHost("atomic-stage-after-reload-");
+			const retired: string[] = [];
+			const observerCalls: { count: number }[] = [];
+			const { session } = await host.createSession(
+				{ sessionManager: SessionManager.inMemory(host.project) },
+				(pi) => {
+					let disposeObserver: (() => void) | undefined;
+					const calls = { count: 0 };
+					pi.on("session_start", () => {
+						observerCalls.push(calls);
+						disposeObserver = currentWorkflowStore().subscribeInvalidation(() => {
+							calls.count += 1;
+							pi.events.emit("workflow:test-observer", {});
+						});
+					});
+					pi.on("session_shutdown", (event) => {
+						retired.push(event.reason);
+						disposeObserver?.();
+					});
+					workflowExtension(pi as unknown as ExtensionAPI);
+				},
+			);
+			const store = currentWorkflowStore();
+			const findRun = () => store.runs().find((run) => run.name === "stale-ctx-repro");
+			try {
+				await session.bindExtensions({});
+				const launchRunner = session.extensionRunner;
+				const command = launchRunner.getCommand("workflow");
+				assert.ok(command, "the /workflow command must be registered on the real host");
+				await command.handler("stale-ctx-repro --no-picker", launchRunner.createCommandContext());
+				await waitFor(
+					() =>
+						findRun()?.toolNodes?.some(
+							(node) => node.name === "wait-for-release" && node.status === "running",
+						) === true,
+					"the gate tool node to start",
+				);
+
+				await session.reload({ reason, failOnExtensionErrors: true });
+				assert.notEqual(session.extensionRunner, launchRunner, "the SDK transaction replaced the runner");
+				assert.equal(findRun()?.status, "running", "a preserving reload keeps the run in flight");
+				const retiredObserverCalls = observerCalls[0].count;
+
+				await host.release();
+				await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle after the reload");
+				const run = findRun();
+				assert.ok(run);
+				const stage = run.stages.find((candidate) => candidate.name === "after-reload");
+				assert.equal(
+					run.status,
+					"completed",
+					`run error=${run.error ?? ""}; stage status=${stage?.status ?? "missing"}; stage error=${stage?.error ?? ""}`,
+				);
+				assert.equal(stage?.status, "completed");
+				assert.equal(
+					observerCalls[0].count,
+					retiredObserverCalls,
+					"the retired host receives no new store invalidations",
+				);
+				assert.deepEqual(retired, ["reload"], "a committed preserving replacement retires its store observers");
+				assert.doesNotMatch(run.error ?? "", /extension ctx is stale/);
+				assert.deepEqual(
+					(stage?.warnings ?? []).filter((warning) => /model catalog unavailable/.test(warning)),
+					[],
+					"the stage model catalog must read the live registry, not the stale launch ctx",
+				);
+				assert.equal(stage?.model, "decision-test/chat");
+			} finally {
+				if (findRun()?.endedAt === undefined) await host.release().catch(() => {});
+				await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle before disposal").catch(() => {});
+				await session.dispose();
+				await host.cleanup();
+			}
+		},
+		HOST_RELOAD_STAGE_TIMEOUT_MS,
+	);
+}
+
+test.each(["before", "after"] as const)(
+	"a stage released during committed startup retirement uses the successor with cleanup registered %s workflows (#3468)",
+	async (order) => {
+		const host = await gatedWorkflowHost("atomic-stage-startup-retiring-");
+		let launchPi: HostExtensionAPI | undefined;
+		let retiring = false;
+		let observerCalls = 0;
+		let launchRunner: typeof session.extensionRunner | undefined;
+		let finishRetirement!: () => void;
+		const handoffOrder: string[] = [];
+		let defaultStartPublished = false;
+		let nestedDefaultStartPublished = false;
+		let nestedCommitPublished = false;
+		const retirementGate = new Promise<void>((resolve) => {
+			finishRetirement = resolve;
+		});
+		const { session } = await host.createSession({ sessionManager: SessionManager.inMemory(host.project) }, (pi) => {
+			pi.on("session_start", (_event, ctx) => {
+				if (launchPi) {
+					void publishExtensionContextEffect(
+						ctx,
+						() => {
+							handoffOrder.push("commit");
+							queueMicrotask(() => handoffOrder.push("microtask"));
+							void publishExtensionContextEffect(ctx, () => {
+								nestedDefaultStartPublished = true;
+							});
+							void publishExtensionContextEffect(
+								ctx,
+								() => {
+									nestedCommitPublished = true;
+								},
+								"commit",
+							);
+						},
+						"commit",
+					);
+					void publishExtensionContextEffect(ctx, () => {
+						defaultStartPublished = true;
+					});
+					return;
+				}
+				const dispose = currentWorkflowStore().subscribeInvalidation(() => {
+					observerCalls += 1;
+					pi.events.emit("workflow:test-retirement-observer", {});
+				});
+				registerExtensionContextRetirementEffect(ctx, () => {
+					dispose();
+					handoffOrder.push("retire");
+				});
+			});
+			if (order === "after") workflowExtension(pi as unknown as ExtensionAPI);
+			pi.on("session_start", () => {
+				launchPi ??= pi;
+			});
+			pi.on("session_shutdown", async (event) => {
+				if (pi !== launchPi || event.reason !== "reload") return;
+				retiring = true;
+				await retirementGate;
+			});
+			if (order === "before") workflowExtension(pi as unknown as ExtensionAPI);
+		});
 		const store = currentWorkflowStore();
 		const findRun = () => store.runs().find((run) => run.name === "stale-ctx-repro");
+		let reload: Promise<void> | undefined;
 		try {
 			await session.bindExtensions({});
+			launchRunner = session.extensionRunner;
+			const command = session.extensionRunner.getCommand("workflow");
+			assert.ok(command);
+			await command.handler("stale-ctx-repro --no-picker", session.extensionRunner.createCommandContext());
+			await waitFor(
+				() =>
+					findRun()?.toolNodes?.some((node) => node.name === "wait-for-release" && node.status === "running") ===
+					true,
+				"the gate tool node to start",
+			);
+			reload = session.reload({ reason: "startup", failOnExtensionErrors: true });
+			await waitFor(() => retiring, "committed predecessor cleanup to block");
+			const retiredObserverCalls = observerCalls;
+			assert.throws(() => launchRunner?.createContext().ui, /extension ctx is stale/);
+			assert.deepEqual(
+				handoffOrder,
+				["commit", "retire", "microtask"],
+				"handoff and observation disposal do not yield",
+			);
+			assert.equal(defaultStartPublished, false, "default startup effects wait for retirement");
+			assert.equal(nestedCommitPublished, true, "nested commit effects publish synchronously before retirement");
+			assert.equal(
+				nestedDefaultStartPublished,
+				false,
+				"default effects registered at commit also wait for retirement",
+			);
+			await host.release();
+			await waitFor(() => findRun()?.endedAt !== undefined, "the stage to settle while retirement is blocked");
+			assert.equal(findRun()?.status, "completed", findRun()?.error);
+			assert.equal(findRun()?.stages.find((stage) => stage.name === "after-reload")?.status, "completed");
+			assert.equal(
+				observerCalls,
+				retiredObserverCalls,
+				"old guarded Store observers retire before blocked shutdown",
+			);
+			finishRetirement();
+			await reload;
+			assert.equal(defaultStartPublished, true);
+			assert.equal(nestedDefaultStartPublished, true);
+		} finally {
+			finishRetirement();
+			await reload;
+			await host.release();
+			await session.dispose();
+			await host.cleanup();
+		}
+	},
+	HOST_RELOAD_STAGE_TIMEOUT_MS,
+);
+
+test(
+	"a rejected startup reload preserves the committed host generation and its in-flight stage (#3468)",
+	async () => {
+		const host = await gatedWorkflowHost("atomic-stage-startup-rollback-");
+		let resolveLaunch: ReturnType<typeof trackLiveHostGeneration> | undefined;
+		let launchPi: HostExtensionAPI | undefined;
+		const launchRetirements: string[] = [];
+		const { session } = await host.createSession({ sessionManager: SessionManager.inMemory(host.project) }, (pi) => {
+			pi.on("session_shutdown", (event) => {
+				if (pi === launchPi) launchRetirements.push(event.reason);
+			});
+			const resolve = trackLiveHostGeneration(pi as unknown as ExtensionAPI);
+			pi.on("session_start", () => {
+				resolveLaunch ??= resolve;
+				launchPi ??= pi;
+			});
+			workflowExtension(pi as unknown as ExtensionAPI);
+		});
+		const store = currentWorkflowStore();
+		const findRun = () => store.runs().find((run) => run.name === "stale-ctx-repro");
+		const prepareReload = DefaultResourceLoader.prototype.prepareReload;
+		let beforeCommit: ReturnType<NonNullable<typeof resolveLaunch>>;
+		const rejection = new Error("startup resources rejected after session_start");
+		const reload = vi.spyOn(DefaultResourceLoader.prototype, "prepareReload").mockImplementation(async function (
+			this: DefaultResourceLoader,
+			...args
+		) {
+			const transaction = await prepareReload.apply(this, args);
+			return {
+				...transaction,
+				prepareCommit: () => {
+					beforeCommit = resolveLaunch?.();
+					throw rejection;
+				},
+			};
+		});
+		try {
+			await session.bindExtensions({});
+			const launchGeneration = resolveLaunch?.();
+			assert.ok(launchGeneration);
 			const launchRunner = session.extensionRunner;
 			const command = launchRunner.getCommand("workflow");
-			assert.ok(command, "the /workflow command must be registered on the real host");
+			assert.ok(command);
 			await command.handler("stale-ctx-repro --no-picker", launchRunner.createCommandContext());
 			await waitFor(
 				() =>
@@ -170,30 +405,18 @@ test(
 					true,
 				"the gate tool node to start",
 			);
-
-			await session.reload({ reason: "reload", failOnExtensionErrors: true });
-			assert.notEqual(session.extensionRunner, launchRunner, "the SDK transaction replaced the runner");
-			assert.equal(findRun()?.status, "running", "a preserving reload keeps the run in flight");
-
+			await assert.rejects(session.reload({ reason: "startup", failOnExtensionErrors: true }), rejection);
+			assert.equal(beforeCommit === launchGeneration, true, "the uncommitted startup candidate is never published");
+			assert.equal(resolveLaunch?.() === launchGeneration, true, "rollback retains the committed predecessor");
+			assert.equal(session.extensionRunner, launchRunner);
+			assert.deepEqual(launchRetirements, [], "rollback does not retire the committed predecessor");
+			reload.mockRestore();
 			await host.release();
-			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle after the reload");
-			const run = findRun();
-			assert.ok(run);
-			const stage = run.stages.find((candidate) => candidate.name === "after-reload");
-			assert.equal(
-				run.status,
-				"completed",
-				`run error=${run.error ?? ""}; stage status=${stage?.status ?? "missing"}; stage error=${stage?.error ?? ""}`,
-			);
-			assert.equal(stage?.status, "completed");
-			assert.doesNotMatch(run.error ?? "", /extension ctx is stale/);
-			assert.deepEqual(
-				(stage?.warnings ?? []).filter((warning) => /model catalog unavailable/.test(warning)),
-				[],
-				"the stage model catalog must read the live registry, not the stale launch ctx",
-			);
-			assert.equal(stage?.model, "decision-test/chat");
+			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle after rollback");
+			assert.equal(findRun()?.status, "completed", findRun()?.error);
+			assert.equal(findRun()?.stages.find((stage) => stage.name === "after-reload")?.status, "completed");
 		} finally {
+			reload.mockRestore();
 			if (findRun()?.endedAt === undefined) await host.release().catch(() => {});
 			await waitFor(() => findRun()?.endedAt !== undefined, "the run to settle before disposal").catch(() => {});
 			await session.dispose();
@@ -292,8 +515,10 @@ function sessionContext(): SessionContext {
 function generationHost(scope: object): {
 	readonly pi: ExtensionAPI;
 	readonly emit: (event: string, payload: { readonly reason: string }, ctx?: SessionContext) => void;
+	readonly commit: () => void;
 } {
 	const handlers = new Map<string, SessionHandler[]>();
+	const commitEffects: Array<() => void | Promise<void>> = [];
 	const pi: ExtensionAPI = {
 		lifecycleScope: scope,
 		on(event, handler) {
@@ -302,7 +527,13 @@ function generationHost(scope: object): {
 	};
 	return {
 		pi,
+		commit: () => {
+			for (const effect of commitEffects.splice(0)) effect();
+		},
 		emit: (event, payload, ctx) => {
+			if (payload.reason === "reload" && event === "session_start" && ctx) {
+				bindExtensionContextPublication(ctx, (effect) => commitEffects.push(effect));
+			}
 			for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
 		},
 	};
@@ -328,7 +559,7 @@ test("a rolled-back successor generation hands the run back to its live predeces
 	assert.equal(resolve(), undefined, "with no live generation the caller keeps its launch surface");
 });
 
-test("a reload candidate is published only after its predecessor retires on commit (#3201)", () => {
+test("a reload candidate is published at commit before its predecessor retires (#3201)", () => {
 	const scope = {};
 	const predecessor = generationHost(scope);
 	const resolve = trackLiveHostGeneration(predecessor.pi);
@@ -340,30 +571,44 @@ test("a reload candidate is published only after its predecessor retires on comm
 	successor.emit("session_start", { reason: "reload" }, successorContext);
 	assert.equal(resolve()?.pi, predecessor.pi, "the predecessor stays live until the reload commits");
 
+	successor.commit();
+	assert.equal(resolve()?.pi, successor.pi, "commit hands off before predecessor shutdown");
 	predecessor.emit("session_shutdown", { reason: "reload" });
 	assert.equal(resolve()?.pi, successor.pi, "the committed successor is live once its predecessor retires");
 	assert.equal(resolve()?.modelContext, successorContext);
 });
 
-test("a session-replacing start never becomes the live generation of the session it replaced (#3201)", () => {
-	const scope = {};
-	const launch = generationHost(scope);
-	const resolveLaunch = trackLiveHostGeneration(launch.pi);
-	launch.emit("session_start", { reason: "startup" }, sessionContext());
+test.each(["new", "fork", "resume"] as const)(
+	"a %s start never becomes the live generation of the session it replaced (#3201)",
+	(reason) => {
+		const scope = {};
+		const launch = generationHost(scope);
+		const resolveLaunch = trackLiveHostGeneration(launch.pi);
+		launch.emit("session_start", { reason: "startup" }, sessionContext());
 
-	const resumed = generationHost(scope);
-	const resolveResumed = trackLiveHostGeneration(resumed.pi);
-	assert.equal(resolveLaunch()?.pi, launch.pi, "/resume prepares its successor before the launch session shuts down");
-	launch.emit("session_shutdown", { reason: "resume" });
-	const resumedContext = sessionContext();
-	resumed.emit("session_start", { reason: "resume" }, resumedContext);
-	assert.equal(resolveLaunch(), undefined, "the replaced session's run keeps its launch pi and model ctx");
-	assert.equal(resolveResumed()?.modelContext, resumedContext);
+		const resumed = generationHost(scope);
+		const resolveResumed = trackLiveHostGeneration(resumed.pi);
+		assert.equal(
+			resolveLaunch()?.pi,
+			launch.pi,
+			"replacement prepares its successor before the launch session shuts down",
+		);
+		launch.emit("session_shutdown", { reason });
+		const resumedContext = sessionContext();
+		resumed.emit("session_start", { reason }, resumedContext);
+		assert.equal(resolveLaunch(), undefined, "the replaced session's run keeps its launch pi and model ctx");
+		assert.equal(resolveResumed()?.modelContext, resumedContext);
 
-	const reloaded = generationHost(scope);
-	trackLiveHostGeneration(reloaded.pi);
-	reloaded.emit("session_start", { reason: "reload" }, sessionContext());
-	resumed.emit("session_shutdown", { reason: "reload" });
-	assert.equal(resolveResumed()?.pi, reloaded.pi, "/reload still hands the resumed session's runs to its successor");
-	assert.equal(resolveLaunch(), undefined);
-});
+		const reloaded = generationHost(scope);
+		trackLiveHostGeneration(reloaded.pi);
+		reloaded.emit("session_start", { reason: "reload" }, sessionContext());
+		reloaded.commit();
+		resumed.emit("session_shutdown", { reason: "reload" });
+		assert.equal(
+			resolveResumed()?.pi,
+			reloaded.pi,
+			"/reload still hands the resumed session's runs to its successor",
+		);
+		assert.equal(resolveLaunch(), undefined);
+	},
+);

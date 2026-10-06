@@ -23,14 +23,16 @@ import type { AtomicBuiltin, CreateAgentSessionOptions } from "../src/core/sdk-t
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { getDefaultToolNames } from "../src/core/tools/index.ts";
-import type {
-	ExtensionBindings,
-	ExtensionContext,
-	HostDiagnostic,
-	HostInput,
-	HostInputOptions,
-	QuestionnaireResult,
-	QuestionParams,
+import {
+	type ExtensionBindings,
+	type ExtensionContext,
+	type HostDiagnostic,
+	type HostInput,
+	type HostInputOptions,
+	publishExtensionContextEffect,
+	type QuestionnaireResult,
+	type QuestionParams,
+	registerExtensionContextRetirementEffect,
 } from "../src/index.js";
 import { startOAuthMcpServer } from "./mcp-client/native-oauth-server.js";
 
@@ -3345,7 +3347,7 @@ test.each(["activate", "commit", "settings", "activate-cleanup"])("reload public
 });
 
 // #3105: installing a successor must not lose retiring ownership if reconstruction throws.
-test.each(["failure", "shutdown", "invalidation", "control"])(
+test.each(["failure", "shutdown", "invalidation", "observation", "control"])(
 	"postcommit rebuild retains retiring cleanup: %s",
 	async (mode) => {
 		const cwd = mkdtempSync(join(tmpdir(), "sdk-postcommit-cleanup-"));
@@ -3355,6 +3357,7 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 		const setupError = new Error("postcommit prompt failed");
 		const shutdownError = new Error("retiring shutdown failed");
 		const invalidationError = new Error("retiring invalidation failed");
+		const observationError = new Error("retiring observation failed");
 		let committed = false;
 		let next = 0;
 		class Loader extends DefaultResourceLoader {
@@ -3387,8 +3390,13 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 			extensionFactories: [
 				(pi) => {
 					const id = ++next;
-					pi.on("session_start", () => {
+					pi.on("session_start", (_event, ctx) => {
 						active.add(id);
+						if (id === 2 && mode === "observation") {
+							registerExtensionContextRetirementEffect(ctx, () => {
+								throw observationError;
+							});
+						}
 					});
 					pi.on("session_shutdown", () => {
 						active.delete(id);
@@ -3430,13 +3438,14 @@ test.each(["failure", "shutdown", "invalidation", "control"])(
 					assert.ok(all.includes(setupError));
 					if (mode === "invalidation") assert.ok(all.includes(invalidationError));
 					if (mode === "shutdown") assert.match(all.map(String).join("\n"), /retiring shutdown failed/);
+					if (mode === "observation") assert.ok(all.includes(observationError));
 					return true;
 				});
 			assert.deepEqual([...active], [4]);
 			assert.equal(invalidated, true);
 		} finally {
 			await session.dispose().catch((error) => {
-				assert.ok(mode === "shutdown" || mode === "invalidation");
+				assert.ok(mode === "shutdown" || mode === "invalidation" || mode === "observation");
 				assert.equal(error.code, "ShutdownFailed");
 			});
 			rmSync(cwd, { recursive: true, force: true });
@@ -5258,4 +5267,24 @@ test("SDK native MCP login without a TTY does not authorize before or after call
 		await server.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("commit effects reject asynchronous callbacks without executing them (#3468)", async () => {
+	let called = false;
+	await assert.rejects(
+		publishExtensionContextEffect(
+			{},
+			async () => {
+				called = true;
+			},
+			"commit",
+		),
+		/must be synchronous/,
+	);
+	assert.equal(called, false);
+	await assert.rejects(
+		publishExtensionContextEffect({}, () => Promise.resolve(), "commit"),
+		/must be synchronous/,
+	);
+	await publishExtensionContextEffect({}, () => JSON.parse('{"then":"not a promise"}'), "commit");
 });

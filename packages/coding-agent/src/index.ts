@@ -15,6 +15,11 @@ export type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "./core/extensions/host-input.js";
+export {
+	type ExtensionContextEffectPhase,
+	publishExtensionContextEffect,
+	registerExtensionContextRetirementEffect,
+} from "./core/extensions/runner-context.js";
 export type {
 	ToolAnnotations,
 	ToolExposure,

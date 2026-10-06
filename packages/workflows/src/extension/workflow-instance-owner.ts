@@ -12,7 +12,7 @@ export class WorkflowInstanceOwnershipError extends Error {
 }
 
 /** Session IDs survive host replacement; unattributed callers retain object-local authority only. */
-export function workflowCaller(ctx: PiExecuteContext): string {
+export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessionManager">): string {
 	const sessionId = ctx.sessionId ?? ctx.sessionManager?.getSessionId?.();
 	if (sessionId) return sessionId;
 	const caller = ctx.sessionManager ?? ctx;

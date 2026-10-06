@@ -15,6 +15,7 @@ import {
 } from "../../packages/workflows/src/durable/factory.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { assertWorkflowInstanceOwner } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { cancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -143,6 +144,107 @@ export default workflow({
 }
 
 describe("workflow lazy-startup continuation fixes", () => {
+	for (const scenario of ["safe", "safe-ask", "foreign-cwd", "unknown-owner", "concurrent-claim"] as const) {
+		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
+			class ClaimBackend extends InMemoryDurableBackend {
+				override async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (scenario === "concurrent-claim" && args[6] !== undefined) {
+						const [id, expected, status, prompts, resumable, updatedAt] = args;
+						await super.transitionWorkflowStatus(
+							id,
+							expected,
+							status,
+							prompts,
+							resumable,
+							updatedAt,
+							"competing-session",
+						);
+						return false;
+					}
+					return super.transitionWorkflowStatus(...args);
+				}
+			}
+			const backend = new ClaimBackend();
+			setDurableBackend(backend);
+			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-owner-"));
+			try {
+				mkdirSync(workflowConfigDir(root), { recursive: true });
+				writeFileSync(
+					join(workflowConfigDir(root), "config.json"),
+					JSON.stringify({ resumeInFlight: scenario === "safe-ask" ? "ask" : "auto" }),
+				);
+				const workflowPath = join(root, "startup-owner.ts");
+				await writeFile(
+					workflowPath,
+					`import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: "startup-owner", description: "", inputs: {}, outputs: {},
+  run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
+});
+`,
+					"utf8",
+				);
+				process.chdir(root);
+				const runId = testRunId(`startup-owner-${scenario}`);
+				backend.registerWorkflow({
+					workflowId: runId,
+					name: "startup-owner",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+					updatedAt: 1,
+					completedCheckpoints: 1,
+					origin: "agent",
+					modelOwner: "previous-session",
+					invocationCwd: scenario === "foreign-cwd" ? join(root, "elsewhere") : root,
+					ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
+					ownerLiveness: scenario === "unknown-owner" ? "unknown" : "dead",
+				});
+				const original = backend.getWorkflow(runId);
+				const ctx = {
+					sessionManager: { getSessionId: () => "recovering-session" },
+					cwd: root,
+					hasUI: scenario === "safe-ask",
+					ui: { notify: () => undefined, confirm: async () => true },
+				};
+				const { handlers } = registerFactory({
+					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+				});
+				await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+				await cleanupJobs();
+				if (scenario === "safe" || scenario === "safe-ask") {
+					assert.equal(
+						backend.getWorkflow(runId)?.status,
+						"completed",
+						store.runs().find((run) => run.id === runId)?.error,
+					);
+					assert.equal(backend.getWorkflow(runId)?.modelOwner, ctx.sessionManager.getSessionId());
+					assert.doesNotThrow(() => assertWorkflowInstanceOwner(runId, ctx as never, store));
+					assert.throws(
+						() => assertWorkflowInstanceOwner(runId, { sessionId: "foreign-session" } as never, store),
+						/another caller\/session/,
+					);
+				} else {
+					assert.equal(
+						store.runs().some((run) => run.id === runId),
+						false,
+					);
+					if (scenario === "concurrent-claim") {
+						assert.equal(backend.getWorkflow(runId)?.modelOwner, "competing-session");
+					} else {
+						assert.deepEqual(backend.getWorkflow(runId), original);
+					}
+					assert.throws(() => assertWorkflowInstanceOwner(runId, ctx as never, store), /another caller\/session/);
+				}
+			} finally {
+				process.chdir(originalCwd);
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
 	for (const mode of ["auto", "ask"] as const) {
 		test(`repeated startup generations preserve ${mode} recovery without prompting twice (#3468)`, async () => {
 			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-generations-"));

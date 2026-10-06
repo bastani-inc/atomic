@@ -1,4 +1,4 @@
-import { sessionScopedExtensionState } from "@bastani/atomic";
+import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
@@ -15,9 +15,10 @@ import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
-import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
+import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
 import { formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 import { prepareWorkflowResumeCatalog } from "./workflow-durable-resume-command.js";
+import { workflowCaller } from "./workflow-instance-owner.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 
 interface WorkflowLifetime {
@@ -180,7 +181,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	};
 	let startupResourcesDiscovered = false;
 
-	const resumeInFlight = async (ctx: PiCommandContext | undefined): Promise<void> => {
+	const resumeInFlight = async (ctx: PiEventContext | undefined): Promise<void> => {
 		if (ctx?.isPresentationOnly === true) return;
 		const mode = runtimeState.configLoadRef.current?.config?.resumeInFlight ?? "ask";
 		if (mode === "never" || (mode === "ask" && (ctx?.hasUI === false || typeof ctx?.ui?.confirm !== "function")))
@@ -219,6 +220,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
 					policy: workflowPolicyFromContext(ctx),
 					actor: "user",
+					...(ctx === undefined ? {} : { modelOwner: workflowCaller(ctx) }),
 				});
 				ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
 			}
@@ -230,7 +232,31 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		}
 	};
 
+	const closeObservation = (): void => {
+		const errors: unknown[] = [];
+		for (const dispose of [
+			() => {
+				deps.intercomControlRef.current?.();
+				deps.intercomControlRef.current = null;
+			},
+			() => {
+				deps.storeWidgetRef.current?.();
+				deps.storeWidgetRef.current = null;
+			},
+			() => runtimeState.resetWorkflowDiscoveryForSession(),
+			() => runtimeState.setNotificationsActive(false),
+			() => deps.disposeObservation?.(),
+		]) {
+			try {
+				dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length) throw new AggregateError(errors, "Workflow observation retirement failed");
+	};
 	pi.on("session_start", async (event, ctx) => {
+		if (ctx) registerExtensionContextRetirementEffect(ctx, closeObservation);
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
 			getDurableBackendProcessOwner().injectedBackend === undefined ? acquireDbosLease() : async () => {};
@@ -279,20 +305,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	installCompactionHook(pi, store);
 	pi.on("session_shutdown", async (event) => {
 		const reason = eventReason(event);
-		const closeGeneration = () =>
-			attemptAll([
-				() => {
-					deps.intercomControlRef.current?.();
-					deps.intercomControlRef.current = null;
-				},
-				() => {
-					deps.storeWidgetRef.current?.();
-					deps.storeWidgetRef.current = null;
-				},
-				() => runtimeState.resetWorkflowDiscoveryForSession(),
-				() => runtimeState.setNotificationsActive(false),
-				() => deps.disposeObservation?.(),
-			]);
+		const closeGeneration = closeObservation;
 		if (replacementStopsWorkflows(reason)) {
 			lifetime.closing ??= attemptAll([
 				closeGeneration,

@@ -12,6 +12,7 @@
 - Added `createTranscript()`, which turns session events into the assistant's output as ordered, JSON-serializable text, thinking, and tool call parts, with each tool call joined to its result ([#3475](https://github.com/bastani-inc/atomic/issues/3475)).
 - Added `createAgentSessionAdapter(baseOptions?)` to `@bastani/atomic/workflows`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
 - Added `ctx.isPresentationOnly` so extension lifecycle hooks can leave execution to the isolated interactive engine while retaining host-side UI ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Exported `publishExtensionContextEffect(ctx, effect, phase?)` with a synchronous commit phase for generation identity handoff, and `registerExtensionContextRetirementEffect(ctx, dispose)` for observer cleanup before authority revocation ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 
 ### Changed
 

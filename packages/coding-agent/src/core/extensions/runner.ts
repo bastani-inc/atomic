@@ -47,6 +47,7 @@ import {
 	createExtensionCommandContext,
 	createExtensionContext,
 	type ExtensionCommandContextSource,
+	retireExtensionContextEffects,
 } from "./runner-context.ts";
 import {
 	type BeforeAgentStartCombinedResult,
@@ -667,16 +668,28 @@ export class ExtensionRunner {
 		return this.shortcutDiagnostics;
 	}
 
+	retireObservation(): void {
+		retireExtensionContextEffects(this.contextOwner);
+	}
+
 	revokeAuthority(): void {
-		this.authorityRevoked = true;
-		revokeExtensionAuthority(this.runtime);
+		try {
+			this.retireObservation();
+		} finally {
+			this.authorityRevoked = true;
+			revokeExtensionAuthority(this.runtime);
+		}
 	}
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
 		this.sealHostInput();
-		if (!this.staleMessage) {
-			this.staleMessage = message;
-			this.runtime.invalidate(message);
+		try {
+			this.retireObservation();
+		} finally {
+			if (!this.staleMessage) {
+				this.staleMessage = message;
+				this.runtime.invalidate(message);
+			}
 		}
 	}
 

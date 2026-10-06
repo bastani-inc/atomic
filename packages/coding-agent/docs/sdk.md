@@ -449,6 +449,24 @@ Strict transactional reload failure leaves the original generation usable. Ordin
 
 Prefer acquiring extension resources in `session_start`. If a factory acquires them earlier, register `session_shutdown` immediately, even if `extensionsOverride` may later omit that factory. Capture cleanup handles when acquiring resources rather than rereading loader getters during cleanup.
 
+Transactional reload dispatches candidate `session_start` before commit. Use `publishExtensionContextEffect(ctx, effect)` to publish shared lifecycle state only after commit and retiring-generation cleanup; rollback discards the effect. Outside a transactional candidate, it runs immediately. Awaiting the helper queues the effect, not its eventual execution, so startup must not depend on the effect's result.
+
+For synchronous identity handoff, use `publishExtensionContextEffect(ctx, effect, "commit")`. This phase runs after the transaction commits and before predecessor authority is revoked or any retirement work is awaited. It must not return a promise or start asynchronous work; asynchronous callbacks are rejected and reported. The default `"start"` phase still runs after retirement, when reporter and task-host startup is safe.
+
+Register generation-owned observer disposal with `registerExtensionContextRetirementEffect(ctx, dispose)` during `session_start`. Disposal is synchronous, runs before authority revocation and before rollback invalidation, and is independent of `session_shutdown` handler order. The returned function unregisters the effect. Keep awaited resource cleanup in `session_shutdown`; observer disposal must not quit or checkpoint preserved workflows.
+
+```typescript
+import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
+
+const extension: ExtensionFactory = (pi) => {
+  pi.on("session_start", (_event, ctx) =>
+    publishExtensionContextEffect(ctx, () => {
+      pi.events.emit("example:session-ready", { sessionId: ctx.sessionManager.getSessionId() });
+    }),
+  );
+};
+```
+
 Do not cache dialog functions across reload attempts. Retiring functions refuse new questions; after a rejected transaction, use the surviving session's current `ctx.ui`.
 
 Shared loaders, event buses, settings, and `SessionManager` instances do not share live task ownership. Closing one session leaves another session's commands and borrowed discovery resources alone.
