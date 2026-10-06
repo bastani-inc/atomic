@@ -130,9 +130,7 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		for (const lease of leases) lease.subscription.dispose();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		await Promise.race([
-			Promise.all(
-				leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {})),
-			),
+			Promise.all(leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {}))),
 			new Promise<void>((resolve) => {
 				timer = setTimeout(resolve, OBSERVER_FINAL_DELIVERY_TIMEOUT_MS);
 			}),
