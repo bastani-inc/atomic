@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
@@ -239,6 +240,38 @@ async function* createToolCallsWithoutOutputIndexEvents(): AsyncIterable<Respons
 	];
 	for (const event of events) yield event as unknown as ResponseStreamEvent;
 }
+
+it("preserves native refusal through terminal completion and JSON round-trip (#3470)", async () => {
+	for (const delta of [false, true]) {
+		async function* events(): AsyncIterable<ResponseStreamEvent> {
+			yield {
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "message", id: "refused", role: "assistant", status: "in_progress", content: [] },
+			} as ResponseStreamEvent;
+			if (delta)
+				yield { type: "response.refusal.delta", output_index: 0, delta: "I cannot help." } as ResponseStreamEvent;
+			yield {
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "message",
+					id: "refused",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "refusal", refusal: "I cannot help." }],
+				},
+			} as ResponseStreamEvent;
+			yield { type: "response.completed", response: { id: "response", status: "completed" } } as ResponseStreamEvent;
+		}
+		const model = createModel();
+		const output = createOutput(model);
+		await processResponsesStream(events(), output, new AssistantMessageEventStream(), model);
+		assert.equal(output.rawStopReason, "refusal");
+		assert.equal(JSON.parse(JSON.stringify(output)).rawStopReason, "refusal");
+		assert.equal(output.content[0].type, "text");
+	}
+});
 
 describe("OpenAI Responses terminal event handling", () => {
 	it("rejects streams that end before a terminal response event", async () => {

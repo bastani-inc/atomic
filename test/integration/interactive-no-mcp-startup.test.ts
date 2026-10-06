@@ -31,7 +31,7 @@ interface StartupSnapshot {
 }
 
 test.skipIf(!TMUX_AVAILABLE)(
-	"built interactive CLI honors --no-mcp and closes connecting servers with a pending /mcp command (#10249)",
+	"built interactive CLI waits for startup before testing --no-mcp and pending /mcp shutdown (#10249) (#3470)",
 	async () => {
 		const temp = mkdtempSync(join(tmpdir(), "atomic-no-mcp-startup-"));
 		const socket = join(temp, "tmux.sock");
@@ -69,6 +69,9 @@ export default function(pi) {
 				pid: process.pid, active: pi.getActiveTools(), commands
 			}));
 		}, 0);
+	});
+	pi.on("session_start", async () => {
+		if (process.env.STARTUP_DELAY) await new Promise(resolve => setTimeout(resolve, 1000));
 	});
 }
 `,
@@ -111,6 +114,8 @@ export default function(pi) {
 					`STARTUP_SNAPSHOT=${snapshotPath}`,
 					"-e",
 					`PENDING_MCP=${pending ? "1" : ""}`,
+					"-e",
+					`STARTUP_DELAY=${disabled ? "1" : ""}`,
 					process.execPath,
 					join(repoRoot, "packages/coding-agent/dist/cli.js"),
 					"--no-session",
@@ -144,9 +149,13 @@ export default function(pi) {
 					while (!disabled && !(await fileExists(serverMarker)) && Date.now() < deadline) await sleep(50);
 					assert.equal(await fileExists(serverMarker), !disabled, "--no-mcp must not start the server");
 					if (!disabled) serverPid = Number(await readText(serverMarker));
+					while (!tmux("capture-pane", "-p", "-t", name).includes("[Extensions]") && Date.now() < deadline)
+						await sleep(50);
+					assert.ok(
+						tmux("capture-pane", "-p", "-t", name).includes("[Extensions]"),
+						`${name}: deferred startup must finish before shutdown`,
+					);
 					if (pending) {
-						while (!tmux("capture-pane", "-p", "-t", name).includes("[Extensions]") && Date.now() < deadline)
-							await sleep(50);
 						tmux("send-keys", "-t", name, "-l", "/mcp");
 						while (!tmux("capture-pane", "-p", "-t", name).includes("/mcp") && Date.now() < deadline)
 							await sleep(50);

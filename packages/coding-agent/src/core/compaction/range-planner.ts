@@ -14,6 +14,7 @@ import type { PlannerOutcome, TerminalPlannerOutcome } from "./planner-outcome.j
 import {
 	classifyPlannerFailure,
 	isProviderPolicyRefusal,
+	isProviderPolicyRefusalResponse,
 	isReasoningStarved,
 	syntheticErrorResponse,
 } from "./planner-outcome.js";
@@ -309,10 +310,7 @@ export async function planDeletedLineRanges(
 				try {
 					const attemptResponse = await (await options.streamFn(model, context, request)).result();
 					options.onUsage?.(attemptResponse.usage);
-					if (
-						attemptResponse.stopReason === "error" &&
-						isProviderPolicyRefusal(attemptResponse.errorMessage ?? "")
-					) {
+					if (isProviderPolicyRefusalResponse(attemptResponse)) {
 						refusalResponse = attemptResponse;
 						return { ...attemptResponse, stopReason: "stop" as const };
 					}

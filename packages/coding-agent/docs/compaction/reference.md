@@ -261,7 +261,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 
 The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. Project settings may not select `morph/*`. See [Compaction model](/compaction#compaction-model).
 
-Fallback borrowing reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list used for chat fallback. It skips entries equal to the selected compaction model. A policy refusal from a chat model first tries a pi-style summary on the same model. Classifier and Morph refusals skip summary fallback and advance directly to the next configured model. Other failures and failed summaries also advance to the next configured model. Only load-bearing recovery may clear older context after all attempts fail.
+Fallback borrowing reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list used for chat fallback. It skips entries equal to the selected compaction model. A policy refusal from any chat compaction model, including `auto`, explicit chat-model IDs, and borrowed fallback entries, first tries pi's summary compaction on the same model. Classifier and Morph refusals skip summary fallback and advance directly to the next configured model. Other failures and failed summaries also advance to the next configured model. Only load-bearing recovery may clear older context after all attempts fail.
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

@@ -17,7 +17,7 @@
 
 ### Fixed
 
-- Chat-provider policy refusals during compaction now try a pi-style summary on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Policy refusals from any chat compaction model, including `auto`, explicit chat-model IDs, and borrowed fallback entries, now try pi's summary compaction on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Morph compaction failures now include the HTTP status and a bounded, credential-redacted response excerpt in error diagnostics ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
 

@@ -118,9 +118,16 @@ const HTTP_5XX_PATTERN = /(?<![\d.])5\d\d(?![\d.])/;
 export type PlannerFailureClass = "overflow" | "quota" | "rate_limited" | "policy_refusal" | "provider_error";
 
 export function isProviderPolicyRefusal(message: string): boolean {
-	return /terms of service|usage[\s_-]*policy|acceptable use policy|content[\s_-]*policy|policy violation|violat(?:e|es|ed|ion|ing)[\s\S]*policy|blocked[\s\S]*(?:policy|reverse engineering|duplicating model outputs)/i.test(
-		message,
+	return (
+		/^The model refused to complete the request[.!]?$/i.test(message) ||
+		/terms of service|usage[\s_-]*policy|acceptable use policy|content[\s_-]*policy|policy violation|violat(?:e|es|ed|ion|ing)[\s\S]*policy|blocked[\s\S]*(?:policy|reverse engineering|duplicating model outputs)/i.test(
+			message,
+		)
 	);
+}
+
+export function isProviderPolicyRefusalResponse(response: AssistantMessage): boolean {
+	return response.rawStopReason === "refusal" || isProviderPolicyRefusal(response.errorMessage ?? "");
 }
 /**
  * Classify one failed planner response.
@@ -129,7 +136,7 @@ export function isProviderPolicyRefusal(message: string): boolean {
  * Context overflow is recoverable by trimming; quota wins over throttling.
  */
 export function classifyPlannerFailure(response: AssistantMessage, contextWindow: number): PlannerFailureClass {
-	if (isProviderPolicyRefusal(response.errorMessage ?? "")) return "policy_refusal";
+	if (isProviderPolicyRefusalResponse(response)) return "policy_refusal";
 	if (isContextOverflow(response, contextWindow)) return "overflow";
 	const message = response.errorMessage ?? "";
 	if (QUOTA_EXHAUSTED_PATTERN.test(message) || LOCAL_USAGE_LIMIT_PATTERN.test(message)) return "quota";

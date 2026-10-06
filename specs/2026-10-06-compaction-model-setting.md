@@ -191,7 +191,8 @@ rung 3  fresh (load_bearing urgency only)
   (`retryAssistantCall` with the compaction run's retry policy and callbacks: rate limits, 5xx,
   overload, transport errors), with the same cancellation and diagnostics. A policy refusal of the
   summary request is not retried.
-- The pi fallback applies only when the refusing rung ran on a **chat** model. A refusal from a
+- The pi fallback applies whenever any refusing rung ran on a **chat** model, including `auto`,
+  an explicit chat `compactionModel`, and borrowed `fallbackModels` entries. A refusal from a
   classifier backend or the Morph compactor skips the pi fallback and goes straight to the next rung.
 - If the pi summary also fails (including another refusal), the ladder continues with the next
   rung. All non-refusal failures follow the existing ladder unchanged.
@@ -220,9 +221,10 @@ interface Settings {
 - **Privacy:** Morph and third-party classifiers receive the compactable region; only via an
   explicit setting.
 - **Docs:** `packages/coding-agent/docs/compaction.md` "Compaction model" section, `/login morph`
-  in providers docs, and troubleshooting for the #3470 message: Atomic falls back to a pi-style
-  summary on a policy refusal, then to `fallbackModels`; to keep verbatim compaction, add a
-  `fallbackModels` entry or choose another `compactionModel` (chat model, classifier, or Morph).
+  in providers docs, and troubleshooting for the #3470 message: Atomic falls back to pi's summary
+  compaction on a policy refusal from any chat compaction model, including `auto`, then to
+  `fallbackModels`; to keep verbatim compaction, add a `fallbackModels` entry or choose another
+  `compactionModel` (chat model, classifier, or Morph).
   Anthropic remains a supported compactor; docs must not imply otherwise.
 - **Changelog** (`packages/coding-agent/CHANGELOG.md`, Unreleased): Added `compactionModel`,
   Morph provider, classifier compaction; Changed planner input to a structured per-message format;

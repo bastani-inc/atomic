@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 import type { Component, EditorTheme } from "@earendil-works/pi-tui";
 import { beforeAll, test } from "vitest";
 import {
+	VERBATIM_COMPACTION_PROMPT_VERSION,
+	type VerbatimCompactionResult,
+} from "../../packages/coding-agent/src/core/compaction/index.js";
+import {
 	createVerbatimCompactionMessage,
 	VERBATIM_COMPACTION_PREFIX,
 } from "../../packages/coding-agent/src/core/messages.ts";
@@ -299,10 +303,10 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 	}
 });
 
-test("ChatSessionHost renders a type-safe compaction boundary when the refreshed session is unavailable", () => {
+test("ChatSessionHost renders a type-safe compaction boundary when the refreshed session is unavailable (#3470)", () => {
 	const host = makeHost({ getCwd: () => process.cwd() });
 	host.appendMessages([{ role: "user", content: "pre-compaction", timestamp: 0 }] as never);
-	const result = {
+	const result: VerbatimCompactionResult = {
 		compactedText: "[User]: retained\n(filtered 2 lines)",
 		firstKeptEntryId: "kept-1",
 		tokensBefore: 100,
@@ -316,7 +320,7 @@ test("ChatSessionHost renders a type-safe compaction boundary when the refreshed
 			percentReduction: 50,
 		},
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
-		promptVersion: 3,
+		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		rung: "planned",
 	};
 

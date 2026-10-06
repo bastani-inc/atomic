@@ -1,18 +1,18 @@
 import { normalizeContext, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { convertToLlm } from "../messages.js";
+import { convertToLlm } from "../messages.ts";
 import {
 	buildSessionProjection,
 	type ProjectedSessionEntry,
 	type SessionEntry,
 	sessionEntryToContextMessages,
-} from "../session-manager.js";
-import { applyContextEdit, buildContextEntries, collectContextEdits } from "../session-manager-history.js";
-import { combineUsage } from "../usage-totals.js";
-import { estimateProjectedContextTokens, estimateTokens } from "./compaction.js";
+} from "../session-manager.ts";
+import { applyContextEdit, buildContextEntries, collectContextEdits } from "../session-manager-history.ts";
+import { combineUsage } from "../usage-totals.ts";
+import { estimateProjectedContextTokens } from "./compaction.ts";
 import type { BorrowedPlanner } from "./compaction-types.js";
-import { classifyPlannerFailure, isProviderPolicyRefusal, syntheticErrorResponse } from "./planner-outcome.js";
+import { classifyPlannerFailure, isProviderPolicyRefusalResponse, syntheticErrorResponse } from "./planner-outcome.js";
 import { plannerRequestModel, type RangePlannerOptions } from "./range-planner.js";
 import { writeDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import {
@@ -23,7 +23,7 @@ import {
 	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
-} from "./utils.js";
+} from "./utils.ts";
 
 export interface PiSummarySettings {
 	reserveTokens: number;
@@ -47,6 +47,46 @@ export interface PiSummaryResult {
 	readFiles: string[];
 	modifiedFiles: string[];
 	usage: Usage;
+}
+
+function estimatePiContentChars(content: string | readonly { type: string; text?: string }[]): number {
+	if (typeof content === "string") return content.length;
+	let chars = 0;
+	for (const block of content) {
+		if (block.type === "text" && block.text) chars += block.text.length;
+		else if (block.type === "image") chars += 4800;
+	}
+	return chars;
+}
+
+function estimatePiTokens(message: AgentMessage): number {
+	let chars = 0;
+	switch (message.role) {
+		case "system":
+			chars = estimatePiContentChars(message.content);
+			for (const section of Object.values(message.sections ?? {})) if (section) chars += section.length;
+			if (message.toolsAdded) chars += JSON.stringify(message.toolsAdded).length;
+			break;
+		case "user":
+		case "custom":
+		case "toolResult":
+			chars = estimatePiContentChars(message.content);
+			break;
+		case "assistant":
+			for (const block of message.content) {
+				if (block.type === "text") chars += block.text.length;
+				else if (block.type === "thinking") chars += block.thinking.length;
+				else if (block.type === "toolCall") chars += block.name.length + JSON.stringify(block.arguments).length;
+			}
+			break;
+		case "bashExecution":
+			chars = message.command.length + message.output.length;
+			break;
+		case "branchSummary":
+			chars = message.summary.length;
+			break;
+	}
+	return Math.ceil(chars / 4);
 }
 
 function startsTurn(entry: ProjectedSessionEntry): boolean {
@@ -97,7 +137,7 @@ export function preparePiSummaryCompaction(
 	let tokens = 0;
 	let exceededBudget = false;
 	for (let index = entries.length - 1; index >= start; index--) {
-		const count = entries[index].messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const count = entries[index].messages.reduce((sum, message) => sum + estimatePiTokens(message), 0);
 		if (count === 0) continue;
 		tokens += count;
 		if (tokens >= (settings.keepRecentTokens ?? 20000)) {
@@ -176,7 +216,7 @@ export function preparePiSummaryCompaction(
 		keptTailTokens: entries
 			.slice(cut)
 			.flatMap((entry) => entry.messages)
-			.reduce((sum, message) => sum + estimateTokens(message), 0),
+			.reduce((sum, message) => sum + estimatePiTokens(message), 0),
 		fileOps,
 		settings,
 	};
@@ -294,6 +334,7 @@ export async function runPiSummaryFallback(
 			Math.floor((prefix ? 0.5 : 0.8) * settings.reserveTokens),
 			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 		);
+		const sessionId = uuidv7();
 		let refusal: AssistantMessage | undefined;
 		const response = await retryAssistantCall(
 			async () => {
@@ -305,7 +346,7 @@ export async function runPiSummaryFallback(
 							headers: planner.auth.headers,
 							signal: options.signal,
 							cacheRetention: "none",
-							sessionId: uuidv7(),
+							sessionId,
 							maxTokens: requestMaxTokens,
 							...(model.reasoning && planner.budget.reasoning && planner.budget.reasoning !== "off"
 								? { reasoning: planner.budget.reasoning }
@@ -317,7 +358,7 @@ export async function runPiSummaryFallback(
 					result = syntheticErrorResponse(model, error instanceof Error ? error.message : String(error));
 				}
 				options.onUsage?.(result.usage);
-				if (isProviderPolicyRefusal(result.errorMessage ?? "")) {
+				if (isProviderPolicyRefusalResponse(result)) {
 					refusal = result;
 					return { ...result, stopReason: "stop" };
 				}
@@ -330,7 +371,7 @@ export async function runPiSummaryFallback(
 		if (options.signal?.aborted || response.stopReason === "aborted") throw new Error("Compaction cancelled");
 		if (refusal || response.stopReason === "error") {
 			const failedResponse = refusal ?? response;
-			const failureMessage = `Summarization failed: ${failedResponse.errorMessage || "Unknown error"}`;
+			const failureMessage = `Summarization failed: ${failedResponse.errorMessage || (refusal ? "The model refused to complete the request" : "Unknown error")}`;
 			const failure = classifyPlannerFailure(failedResponse, model.contextWindow);
 			const diagnosticPath = writeDiagnosticSidecar({
 				sessionFilePath: options.sessionFilePath,
@@ -353,7 +394,7 @@ export async function runPiSummaryFallback(
 		const summary = response.content
 			.filter((block) => block.type === "text")
 			.map((block) => block.text)
-			.join("");
+			.join("\n");
 		if (!summary.trim()) throw new Error("Summarization returned empty text");
 		return { text: summary, usage: response.usage };
 	};

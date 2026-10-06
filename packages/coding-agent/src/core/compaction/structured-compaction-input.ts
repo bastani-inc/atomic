@@ -1,6 +1,6 @@
 import type { LineRange, NumberedRegion, VerbatimCompactionParameters } from "./compaction-types.js";
 import { ROLE_HEADER_RE } from "./transcript-serialization.js";
-import { contiguousRanges } from "./utils.js";
+import { contiguousRanges } from "./utils.ts";
 
 export interface CompactionInputMessage {
 	id: number;

@@ -283,3 +283,132 @@ test("pi summary retries thrown transport failures but never thrown policy refus
 	assert.equal(state.callCount, 2);
 	assert.match(result.summary, /history summary[\s\S]*prefix summary/);
 });
+
+test("pi summary preserves upstream budgets and cache routing across recoverable retries (#3470)", async () => {
+	const { streamFn } = createFauxStreamFn([{ error: "503 Service Unavailable" }, "history", "prefix"]);
+	const routing: (string | undefined)[] = [];
+	const budgets: (number | undefined)[] = [];
+	await runPiSummaryFallback(history(), { reserveTokens: 1000, keepRecentTokens: 10 }, planner(model, "off"), {
+		streamFn: (candidate, context, options) => {
+			routing.push(options?.sessionId);
+			budgets.push(options?.maxTokens);
+			assert.equal(options?.cacheRetention, "none");
+			return streamFn(candidate, context, options);
+		},
+		retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+	});
+	assert.deepEqual(budgets, [800, 800, 500]);
+	assert.ok(routing[0]);
+	assert.equal(routing[0], routing[1]);
+});
+
+test("pi cut point keeps a trailing tool result with its assistant call and adjacent metadata (#3470)", () => {
+	const entries = history().slice(0, 3);
+	entries.splice(2, 0, {
+		type: "thinking_level_change",
+		id: "metadata",
+		parentId: "turn",
+		timestamp: new Date(0).toISOString(),
+		thinkingLevel: "off",
+	});
+	const call = entries[3];
+	call.parentId = "metadata";
+	entries.push(
+		entry("result", {
+			role: "toolResult",
+			toolCallId: "call",
+			toolName: "read",
+			content: [{ type: "text", text: "large result".repeat(100) }],
+			isError: false,
+			timestamp: 2,
+		}),
+	);
+	entries[4].parentId = "prefix";
+	const prepared = preparePiSummaryCompaction(entries, { reserveTokens: 1000, keepRecentTokens: 10 });
+	assert.equal(prepared?.firstKeptEntryId, "metadata");
+	assert.deepEqual(prepared?.messagesToSummarize, [entries[0].type === "message" ? entries[0].message : undefined]);
+	assert.deepEqual(prepared?.turnPrefixMessages, [entries[1].type === "message" ? entries[1].message : undefined]);
+});
+
+test("pi summary serializes the conversation as text and caps both request budgets at model maxTokens (#3470)", async () => {
+	const { streamFn, state } = createFauxStreamFn(["history", "prefix"]);
+	const budgets: (number | undefined)[] = [];
+	await runPiSummaryFallback(
+		history(),
+		{ reserveTokens: 10000, keepRecentTokens: 10 },
+		planner({ ...model, maxTokens: 300 }, "off"),
+		{
+			streamFn: (candidate, context, options) => {
+				budgets.push(options?.maxTokens);
+				return streamFn(candidate, context, options);
+			},
+		},
+	);
+	assert.deepEqual(budgets, [300, 300]);
+	const prompt = JSON.stringify(state.contexts[1]);
+	assert.match(prompt, /\[User\]: request/);
+	assert.match(prompt, /\[Assistant tool calls\]: read\(path=\\"auth.ts\\"\)/);
+	assert.doesNotMatch(prompt, /retained answer/);
+});
+
+test("pi summary joins multiple summary text blocks with upstream newline separators (#3470)", async () => {
+	const { streamFn } = createFauxStreamFn(["history", "prefix"]);
+	const result = await runPiSummaryFallback(
+		history(),
+		{ reserveTokens: 1000, keepRecentTokens: 10 },
+		planner(model, "off"),
+		{
+			streamFn: (candidate, context, options) => {
+				const stream = streamFn(candidate, context, options);
+				const result = stream.result.bind(stream);
+				stream.result = async () => ({
+					...(await result()),
+					content: [
+						{ type: "text", text: "section one" },
+						{ type: "text", text: "section two" },
+					],
+				});
+				return stream;
+			},
+		},
+	);
+	assert.match(result.summary, /^section one\nsection two\n\n---/);
+	assert.match(result.summary, /Turn Context \(split turn\):\*\*\n\nsection one\nsection two/);
+});
+
+test("pi cut points count whitespace text but ignore provider fallback metadata like upstream (#3470)", () => {
+	const whitespace = history().slice(0, 2);
+	if (whitespace[1].type === "message")
+		whitespace[1].message = { role: "user", content: " ".repeat(40), timestamp: 1 };
+	assert.equal(
+		preparePiSummaryCompaction(whitespace, { reserveTokens: 1000, keepRecentTokens: 10 })?.firstKeptEntryId,
+		"turn",
+	);
+	const fallback = history();
+	if (fallback[1].type === "message")
+		fallback[1].message = { role: "user", content: "request".repeat(20), timestamp: 1 };
+	if (fallback[2].type === "message")
+		fallback[2].message = {
+			...syntheticErrorResponse(model, ""),
+			stopReason: "stop",
+			content: [{ type: "fallback", fromModel: "provider/model".repeat(100), toModel: "next" }],
+		};
+	if (fallback[3].type === "message")
+		fallback[3].message = {
+			...syntheticErrorResponse(model, ""),
+			stopReason: "stop",
+			content: [{ type: "text", text: "x".repeat(40) }],
+		};
+	assert.equal(
+		preparePiSummaryCompaction(fallback, { reserveTokens: 1000, keepRecentTokens: 20 })?.firstKeptEntryId,
+		"turn",
+	);
+});
+
+test("pi fallback keeps Atomic tokensBefore diagnostics separate from upstream whitespace tail accounting (#3470)", () => {
+	const entries = history().slice(0, 2);
+	if (entries[1].type === "message") entries[1].message = { role: "user", content: " ".repeat(40), timestamp: 1 };
+	const prepared = preparePiSummaryCompaction(entries, { reserveTokens: 1000, keepRecentTokens: 10 });
+	assert.equal(prepared?.tokensBefore, 175);
+	assert.equal(prepared?.keptTailTokens, 10);
+});

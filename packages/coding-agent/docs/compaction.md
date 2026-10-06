@@ -7,7 +7,7 @@ description: "Verbatim line compaction, when it runs, planning rungs, and branch
 
 LLMs have finite context windows. Atomic reduces older transcript context with **verbatim line compaction** while preserving a configured count of recent context-visible messages. Branch summarization is a separate, lossy feature used when navigating away from a branch.
 
-Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal first triggers a pi-style summary on the same model; if that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
+Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal first triggers pi's summary compaction on the same model, whether selected by `auto`, an explicit chat-model ID, or a `fallbackModels` entry. If that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
 
 **The selected compaction model and configured fallback models may receive the compaction transcript**, using their own credentials. Borrowing never changes the session's model or thinking level. Line planners select deletions, and Atomic reconstructs surviving lines without rewriting them. The policy-refusal summary fallback is lossy and appears as `summary (pi fallback)`.
 
@@ -21,7 +21,7 @@ This page covers the concepts and normal use of compaction and branch summarizat
 |---|---|---|---|
 | Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Per-message `id:start,end` deletion records | Retained transcript text reconstructed from the originals |
 | Planner fallback borrowing | A failed selected compaction model | Same deletion records, from a configured `fallbackModels` entry | Retained text with the borrowed model recorded |
-| Policy-refusal summary fallback | A chat provider refuses compaction under its policy | A pi-style summary from the same model | A summary boundary labeled `summary (pi fallback)` |
+| Policy-refusal summary fallback | A chat provider refuses compaction under its policy | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
 | Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
@@ -112,7 +112,7 @@ The compaction card shows the backend and model that produced the result, such a
 
 ### Troubleshooting policy refusals
 
-If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors. For a chat model, it tries a pi-style summary on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
+If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors. For any chat compaction model, including `auto`, it tries pi's summary compaction on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
 
 Classifier and Morph refusals skip the summary fallback and go directly to the next configured model. Anthropic remains a supported compactor. To keep verbatim compaction when a model refuses deletion planning, choose another `compactionModel`, such as a chat model, classifier, or Morph. Adding a `fallbackModels` entry gives Atomic another verbatim planner if the same-model summary fails.
 
@@ -294,7 +294,7 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-Branch summaries are separate from `/compact`: branch navigation generates summary prose, while normal verbatim compaction selects per-message line ranges and reconstructs retained text mechanically. A compaction policy refusal can trigger the pi-style summary fallback described above.
+Branch summaries are separate from `/compact`: branch navigation generates summary prose, while normal verbatim compaction selects per-message line ranges and reconstructs retained text mechanically. A chat compaction policy refusal can trigger pi's summary compaction as described above.
 
 Use the [Compaction reference](/compaction/reference) for extension hooks and saved formats.
 

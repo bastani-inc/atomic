@@ -179,3 +179,36 @@ test("classifier and Morph policy refusals skip pi summary and advance directly 
 		assert.doesNotMatch(JSON.stringify(state.contexts[0]), /structured context checkpoint summary/);
 	}
 });
+
+for (const rung of ["explicit", "borrowed"] as const) {
+	test(`${rung} chat compaction model native refusal uses pi summary on that model (#3470)`, async () => {
+		const calls: string[] = [];
+		const { streamFn, state } = createFauxStreamFn(
+			rung === "borrowed" ? ["invalid", "refused", "checkpoint"] : ["refused", "checkpoint"],
+		);
+		const result = await runVerbatimCompaction(preparation, model, {
+			compactionModel: rung === "explicit" ? { kind: "chat", fullId: "test/fallback", model: fallback } : undefined,
+			streamFn: (candidate, context, options) => {
+				calls.push(candidate.id);
+				const stream = streamFn(candidate, context, options);
+				const call = calls.length;
+				const result = stream.result.bind(stream);
+				stream.result = async () => ({
+					...(await result()),
+					...(call === (rung === "borrowed" ? 2 : 1) ? { rawStopReason: "refusal" } : {}),
+				});
+				return stream;
+			},
+			summaryEntries,
+			resolveAuth: async () => ({ apiKey: "key" }),
+			thinkingLevel: "off",
+			urgency: "recoverable",
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 },
+			fallback: fallbackContext(),
+		});
+		assert.deepEqual(calls, rung === "explicit" ? ["fallback", "fallback"] : ["primary", "fallback", "fallback"]);
+		assert.equal(result.backend, "summary");
+		assert.equal(result.model, "test/fallback");
+		assert.match(JSON.stringify(state.contexts.at(-1)), /structured context checkpoint summary/);
+	});
+}

@@ -9,7 +9,7 @@ import type {
 } from "@bastani/pi-ai";
 import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { SessionEntry } from "../session-manager-types.js";
+import type { SessionEntry } from "../session-manager-types.ts";
 import { planClassifierRanges } from "./classifier-compaction.js";
 import { getKeptTailTokenEstimate, hasKeptTailTokenEstimate } from "./compaction-boundary.js";
 import type {
