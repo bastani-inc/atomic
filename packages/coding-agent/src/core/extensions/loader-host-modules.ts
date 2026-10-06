@@ -129,7 +129,7 @@ export async function getWorkflowHostModules(): Promise<
 	Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
 > {
 	const [atomic, piAi, providers] = await Promise.all([
-		import("../../index.js"),
+		import("../../index.ts"),
 		import("@bastani/pi-ai/compat"),
 		import("@bastani/pi-ai/providers/all"),
 	]);
