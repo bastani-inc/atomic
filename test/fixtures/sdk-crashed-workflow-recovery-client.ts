@@ -172,6 +172,9 @@ for await (const line of createInterface({ input: process.stdin })) {
 			const host = await ready();
 			const outcome = await host.workflows.resume(runId);
 			await until(async () => (await host.workflows.getRun(runId)).status === "completed", "adopted run did not complete");
+			const backend = getDurableBackend();
+			await until(async () => backend.getWorkflow(runId)?.status === "completed", "adopted durable run did not complete");
+			await backend.flush(runId);
 			const tool = host.agent.state.tools.find((entry) => entry.name === "workflow");
 			assert.ok(tool);
 			const ownedInspection = await tool.execute("sdk-recovery-owner-check", { action: "status", runId });

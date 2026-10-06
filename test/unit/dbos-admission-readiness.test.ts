@@ -35,6 +35,7 @@ vi.mock("@dbos-inc/dbos-sdk", () => ({
 			if (!fake.healthy) throw new DbosDependencyError();
 			return { getResult: async () => undefined };
 		},
+		listWorkflows: async () => [],
 		shutdown: async () => {
 			fake.shutdowns++;
 		},

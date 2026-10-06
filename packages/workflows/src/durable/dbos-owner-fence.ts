@@ -184,6 +184,41 @@ export class DbosOwnerFence {
 		return await rowContext.run(authority, callback);
 	}
 
+	async compactMetadata(authority: DbosRowAuthority, retainedId: string): Promise<void> {
+		if (this.lost) throw this.fail();
+		const metadataId = `${authority.root}:checkpoint:__atomic_metadata`;
+		if (retainedId !== metadataId && !retainedId.startsWith(`${metadataId}:`))
+			throw new Error("Metadata compaction requires a metadata checkpoint");
+		const client = await this.pool().connect();
+		try {
+			await installDbosRowGuard(client);
+			await client.query("BEGIN");
+			await client.query("SELECT pg_advisory_xact_lock_shared($1, $2)", [...lockKey(this.executorId)]);
+			await client.query("SELECT set_config('atomic.row_authority', $1, true)", [JSON.stringify(authority)]);
+			if (this.lost) throw this.fail();
+			const retained = await client.query(
+				"UPDATE dbos.workflow_status SET inputs = NULL WHERE workflow_uuid = $1 AND status = 'SUCCESS' RETURNING workflow_uuid",
+				[retainedId],
+			);
+			if (retained.rowCount !== 1) throw new Error("Latest workflow metadata is unavailable for compaction");
+			await client.query(
+				"DELETE FROM dbos.workflow_status WHERE (workflow_uuid = $1 OR starts_with(workflow_uuid, $1 || ':')) AND workflow_uuid <> $2",
+				[metadataId, retainedId],
+			);
+			await client.query(
+				"DELETE FROM dbos.atomic_guard_rows WHERE root = $1 AND (workflow_uuid = $2 OR starts_with(workflow_uuid, $2 || ':')) AND NOT EXISTS (SELECT 1 FROM dbos.workflow_status WHERE workflow_status.workflow_uuid = atomic_guard_rows.workflow_uuid)",
+				[authority.root, metadataId],
+			);
+			if (this.lost) throw this.fail();
+			await client.query("COMMIT");
+		} catch (error) {
+			await client.query("ROLLBACK");
+			throw error;
+		} finally {
+			client.release(true);
+		}
+	}
+
 	protectPool(pool: Pool): Pool {
 		const connect = pool.connect.bind(pool);
 		const acquire = async (): Promise<PoolClient> => {

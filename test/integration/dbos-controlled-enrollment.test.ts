@@ -4,7 +4,11 @@ import { Pool } from "pg";
 import { test, vi } from "vitest";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
-import { encodeMetadata } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import {
+	classifyLatestMetadata,
+	encodeMetadata,
+	isMetadataStep,
+} from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { DbosOwnerFence } from "../../packages/workflows/src/durable/dbos-owner-fence.js";
 import { createRealDbosHandle, type DbosStatic } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
@@ -281,11 +285,22 @@ test(
 				true,
 			);
 			assert.equal(resumed.getWorkflow(id)?.legacyRecoveryPending, undefined);
-			for (const record of priorRecords)
+			const resumedRecords = await raw.listStepRecords(id);
+			for (const record of priorRecords.filter((record) => !isMetadataStep(record.stepName)))
 				assert.deepEqual(
-					(await raw.listStepRecords(id)).find((saved) => saved.stepName === record.stepName),
+					resumedRecords.find((saved) => saved.stepName === record.stepName),
 					record,
 				);
+			const latest = classifyLatestMetadata(resumedRecords, id);
+			assert.ok(latest.kind === "current");
+			assert.equal(latest.metadata.status, "running");
+			assert.equal(latest.metadata.ownerExecutorId, successorActor);
+			assert.equal(latest.metadata.modelOwner, "successor-session");
+			assert.equal(latest.metadata.legacyRecoveryPending, undefined);
+			assert.equal(latest.metadata.promptReservationEpoch, "epoch");
+			assert.equal(latest.metadata.createdAt, 1);
+			assert.equal(latest.metadata.name, "legacy");
+			assert.deepEqual(latest.metadata.inputs, {});
 		} finally {
 			try {
 				if (launched) await DBOS.shutdown({ deregister: true });

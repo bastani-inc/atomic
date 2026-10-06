@@ -1,6 +1,6 @@
 /** Durable workflow backend seam for DBOS and explicit in-memory tests. */
 
-import type { PendingStageMessage } from "../shared/store-types.js";
+import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { withCurrentStageTopology } from "./dbos-envelope.js";
 import {
@@ -115,7 +115,34 @@ export interface DurableWorkflowBackend {
 		messages: readonly PendingStageMessage[],
 		logicalRunId?: string,
 	): Promise<boolean>;
+	archivePendingStageMessage?(workflowId: string, entry: PendingStageMessage): Promise<void>;
+	readSettledPendingStageMessage?(
+		workflowId: string,
+		messageId: string,
+		logicalRunId?: string,
+	): Promise<PendingStageMessage | undefined>;
 
+	getPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): number;
+	readPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): Promise<number>;
+	archivePendingStageDeliveryReceipt?(
+		workflowId: string,
+		messageId: string,
+		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+	): Promise<void>;
+	hasCachedPendingStageDeliveryReceipt?(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		anySession?: boolean,
+		logicalRunId?: string,
+	): boolean;
+	hasPendingStageDeliveryReceipt?(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId?: string,
+	): Promise<boolean>;
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
 
@@ -257,6 +284,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	private readonly workflows = new Map<string, InMemoryWorkflowRecord>();
 	private readonly promptReservations = new Map<string, PromptReservationState>();
 	private readonly deletedWorkflowIds = new Set<string>();
+	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
+	private readonly stickyReceipts = new Map<string, Set<string>>();
 
 	registerWorkflow(handle: WorkflowRegistrationInput, authoritativeOwner = false): void {
 		this.deletedWorkflowIds.delete(handle.workflowId);
@@ -333,6 +362,95 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
 		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
 	}
+	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
+		let receipts = this.pendingReceipts.get(workflowId);
+		if (receipts === undefined) {
+			receipts = new Map();
+			this.pendingReceipts.set(workflowId, receipts);
+		}
+		const key = JSON.stringify([entry.runId, entry.id]);
+		if (!receipts.has(key)) receipts.set(key, entry);
+	}
+
+	async readSettledPendingStageMessage(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<PendingStageMessage | undefined> {
+		return this.pendingReceipts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId]));
+	}
+
+	private readonly stickyDeliveryCounts = new Map<string, Map<string, number>>();
+
+	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
+		return this.stickyDeliveryCounts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId])) ?? 0;
+	}
+
+	async archivePendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+	): Promise<void> {
+		let receipts = this.stickyReceipts.get(workflowId);
+		if (receipts === undefined) {
+			receipts = new Set();
+			this.stickyReceipts.set(workflowId, receipts);
+		}
+		const receiptKey = pendingDeliveryReceiptKey(messageId, delivery, accounting?.messageRunId);
+		const existing = receipts.has(receiptKey);
+		receipts.add(receiptKey);
+		receipts.add(
+			pendingDeliveryReceiptKey(
+				messageId,
+				{ ...delivery, sessionId: undefined, admission: undefined },
+				accounting?.messageRunId,
+			),
+		);
+		if (delivery.admission === "context" && delivery.sessionId !== undefined)
+			receipts.add(
+				`${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, accounting?.messageRunId)}:context-any-session`,
+			);
+		if (accounting !== undefined && !existing) {
+			let counts = this.stickyDeliveryCounts.get(workflowId);
+			if (counts === undefined) {
+				counts = new Map();
+				this.stickyDeliveryCounts.set(workflowId, counts);
+			}
+			const key = JSON.stringify([accounting.messageRunId, messageId]);
+			counts.set(key, Math.max(counts.get(key) ?? 0, accounting.deliveryCount));
+		}
+	}
+
+	async hasPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId = workflowId,
+	): Promise<boolean> {
+		return [logicalRunId, undefined].some(
+			(logicalId) =>
+				this.stickyReceipts.get(workflowId)?.has(pendingDeliveryReceiptKey(messageId, delivery, logicalId)) ??
+				false,
+		);
+	}
+
+	hasCachedPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		anySession = false,
+		logicalRunId = workflowId,
+	): boolean {
+		return [logicalRunId, undefined].some((logicalId) => {
+			const name =
+				anySession && delivery.admission === "context"
+					? `${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, logicalId)}:context-any-session`
+					: pendingDeliveryReceiptKey(messageId, delivery, logicalId);
+			return this.stickyReceipts.get(workflowId)?.has(name) ?? false;
+		});
+	}
+
 	async persistPendingStageMessages(
 		workflowId: string,
 		messages: readonly PendingStageMessage[],
@@ -624,6 +742,9 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
 	async deleteWorkflow(workflowId: string): Promise<void> {
 		this.workflows.delete(workflowId);
+		this.pendingReceipts.delete(workflowId);
+		this.stickyReceipts.delete(workflowId);
+		this.stickyDeliveryCounts.delete(workflowId);
 		this.promptReservations.delete(workflowId);
 		this.deletedWorkflowIds.add(workflowId);
 	}
@@ -642,6 +763,9 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
 	reset(): void {
 		this.workflows.clear();
+		this.pendingReceipts.clear();
+		this.stickyReceipts.clear();
+		this.stickyDeliveryCounts.clear();
 		this.promptReservations.clear();
 		this.deletedWorkflowIds.clear();
 	}
@@ -722,4 +846,13 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 
 function nextMetadataTimestamp(previous: number): number {
 	return Math.max(Date.now(), previous + 1);
+}
+
+function pendingDeliveryReceiptKey(
+	messageId: string,
+	delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+	logicalRunId?: string,
+): string {
+	const identity = [messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission];
+	return JSON.stringify(logicalRunId === undefined ? identity : ["counted", logicalRunId, ...identity]);
 }

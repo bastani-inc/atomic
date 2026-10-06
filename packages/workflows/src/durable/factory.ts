@@ -31,14 +31,18 @@ function isMemoizedBackendUsable(backend: DurableWorkflowBackend): boolean {
 
 /** Return the injected test backend or the process-wide initialized backend. */
 export function getDurableBackend(): DurableWorkflowBackend {
+	const backend = getAvailableDurableBackend();
+	if (backend === undefined) throw new DbosNotReadyError();
+	return backend;
+}
+
+export function getAvailableDurableBackend(): DurableWorkflowBackend | undefined {
 	const owner = getDurableBackendProcessOwner();
 	const memoized =
 		owner.initializedBackend !== undefined && isMemoizedBackendUsable(owner.initializedBackend)
 			? owner.initializedBackend
 			: undefined;
-	const backend = owner.injectedBackend ?? memoized ?? getReadyDbosBackendSync();
-	if (backend === undefined) throw new DbosNotReadyError();
-	return backend;
+	return owner.injectedBackend ?? memoized ?? getReadyDbosBackendSync();
 }
 
 /** Internal injection seam. Production initialization uses DBOS. */

@@ -19,6 +19,7 @@
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
+import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type {
 	DurableInactiveDeleteResult,
@@ -68,6 +69,75 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		this.inner = inner;
 		this.scope = scope;
 		this.persistent = inner.persistent;
+	}
+
+	async archivePendingStageMessage(_workflowId: string, entry: PendingStageMessage): Promise<void> {
+		await this.inner.archivePendingStageMessage?.(this.scope.rootWorkflowId, entry);
+	}
+
+	async readSettledPendingStageMessage(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<PendingStageMessage | undefined> {
+		return this.inner.readSettledPendingStageMessage?.(this.scope.rootWorkflowId, messageId, logicalRunId);
+	}
+
+	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
+		return this.inner.getPendingStageMessageDeliveryCount?.(this.scope.rootWorkflowId, messageId, logicalRunId) ?? 0;
+	}
+
+	async readPendingStageMessageDeliveryCount(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<number> {
+		return this.inner.readPendingStageMessageDeliveryCount === undefined
+			? this.getPendingStageMessageDeliveryCount(workflowId, messageId, logicalRunId)
+			: await this.inner.readPendingStageMessageDeliveryCount(this.scope.rootWorkflowId, messageId, logicalRunId);
+	}
+
+	async archivePendingStageDeliveryReceipt(
+		_workflowId: string,
+		messageId: string,
+		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+	): Promise<void> {
+		await this.inner.archivePendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery, accounting);
+	}
+
+	hasCachedPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		anySession = false,
+		logicalRunId = workflowId,
+	): boolean {
+		return (
+			this.inner.hasCachedPendingStageDeliveryReceipt?.(
+				this.scope.rootWorkflowId,
+				messageId,
+				delivery,
+				anySession,
+				logicalRunId,
+			) ?? false
+		);
+	}
+
+	async hasPendingStageDeliveryReceipt(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId = workflowId,
+	): Promise<boolean> {
+		return (
+			(await this.inner.hasPendingStageDeliveryReceipt?.(
+				this.scope.rootWorkflowId,
+				messageId,
+				delivery,
+				logicalRunId,
+			)) ?? false
+		);
 	}
 
 	registerWorkflow(_handle: WorkflowRegistrationInput): void {

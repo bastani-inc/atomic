@@ -1,4 +1,5 @@
-import { durableRootRunIdForRun } from "../durable/run-owner-backend.js";
+import { getAvailableDurableBackend } from "../durable/factory.js";
+import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { stageMatchesPathPattern, workflowBoundaryHops } from "./pending-stage-status.js";
 import type { RunSnapshot } from "./store-types.js";
 import { parseWorkflowStageTarget } from "./workflow-stage-target.js";
@@ -27,6 +28,8 @@ export function stickyStageDeliveryStatuses(
 	const root = runs.find((run) => run.id === rootRunId);
 	const entries = (root?.pendingStageMessages ?? []).filter((entry) => entry.sticky === true);
 	const result: StickyStageDeliveryStatus[] = [];
+	const availableBackend = getAvailableDurableBackend();
+	const backend = availableBackend === undefined ? undefined : durableBackendForRun(availableBackend, runs, rootRunId);
 	for (const run of runs) {
 		if (run.id !== rootRunId && run.rootRunId !== rootRunId && durableRootRunIdForRun(runs, run.id) !== rootRunId)
 			continue;
@@ -49,12 +52,24 @@ export function stickyStageDeliveryStatuses(
 				const receipts = (entry.deliveries ?? []).filter(
 					(delivery) => delivery.runId === run.id && delivery.stageId === stage.id,
 				);
-				const delivered = receipts.some(
-					(delivery) =>
-						delivery.admission === "context" &&
-						delivery.sessionId !== undefined &&
-						(stage.sessionId === undefined || delivery.sessionId === stage.sessionId),
-				);
+				const delivered =
+					backend?.hasCachedPendingStageDeliveryReceipt?.(
+						rootRunId,
+						entry.id,
+						{
+							runId: run.id,
+							stageId: stage.id,
+							sessionId: stage.sessionId,
+							admission: "context",
+						},
+						stage.sessionId === undefined,
+					) === true ||
+					receipts.some(
+						(delivery) =>
+							delivery.admission === "context" &&
+							delivery.sessionId !== undefined &&
+							(stage.sessionId === undefined || delivery.sessionId === stage.sessionId),
+					);
 				let state: StickyStageDeliveryStatus["state"];
 				let reason: string;
 				if (!resolved || !hops) {

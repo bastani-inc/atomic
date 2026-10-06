@@ -54,6 +54,11 @@ for (const ownerState of ["own-dead", "own-alive", "foreign-dead", "foreign-aliv
 					return lost.has(executorId);
 				},
 				close: async () => {},
+				compactMetadata: async (_authority: object, retainedId: string) => {
+					for (const id of rows.keys()) {
+						if (id.startsWith("same-id:checkpoint:__atomic_metadata") && id !== retainedId) rows.delete(id);
+					}
+				},
 				withRowAuthority: async (_authority: object, callback: () => Promise<unknown>) => callback(),
 				write: async (_id: string, callback: () => Promise<unknown>) => {
 					if (unavailable || lost.has(executorId)) {

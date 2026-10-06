@@ -4,6 +4,7 @@ import type { Message } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import {
 	markPendingStageMessageDelivered,
@@ -14,6 +15,7 @@ import {
 	queuedPendingStageMessageCount,
 	queueStageMessage,
 } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
+import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
@@ -43,6 +45,160 @@ function pendingMessage(id: string, overrides: Partial<PendingStageMessageInput>
 }
 
 describe("workflow stage messages store", () => {
+	test("terminal sticky status survives bounded metadata and cold archive hydration (#3467)", async () => {
+		const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		await store.queueStickyStageMessage(
+			{
+				...pendingMessage("sticky"),
+				runId: RUN_ID,
+				stageKey: `workflow:${RUN_ID}/**`,
+				targetPath: `workflow:${RUN_ID}/**`,
+			},
+			RUN_GROUP,
+			RUN_GROUP,
+			backend,
+		);
+		try {
+			setDurableBackend(backend);
+			for (let index = 0; index < 20; index++) {
+				const stageId = `stage-${index}`;
+				store.recordStageStart(RUN_ID, {
+					id: stageId,
+					name: stageId,
+					status: index % 2 ? "skipped" : "completed",
+					sessionId: `session-${index}`,
+					parentIds: [],
+					toolEvents: [],
+				});
+				await store.recordPendingStageMessageDeliveries(
+					RUN_ID,
+					"sticky",
+					[{ runId: RUN_ID, stageId, sessionId: `session-${index}`, admission: "context" }],
+					"now",
+					backend,
+				);
+			}
+			assert.equal(store.runs()[0]!.pendingStageMessages![0]!.deliveries?.length, 0);
+			assert.equal(
+				stickyStageDeliveryStatuses(store.runs(), RUN_ID).filter(({ state }) => state === "delivered").length,
+				20,
+			);
+			assert.equal((await backend.hydrateWorkflowForInspection(RUN_ID)).kind, "current");
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(RUN_ID);
+			setDurableBackend(resumed);
+			const restored = createStore();
+			restored.recordRunStart({
+				...store.runs()[0]!,
+				pendingStageMessages: [...(resumed.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			assert.equal(restored.runs()[0]!.pendingStageMessages![0]!.deliveries?.length, 0);
+			assert.equal(
+				stickyStageDeliveryStatuses(restored.runs(), RUN_ID).filter(({ state }) => state === "delivered").length,
+				20,
+			);
+			const stage = restored.runs()[0]!.stages[0]!;
+			delete stage.sessionId;
+			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID)[0]!.state, "delivered");
+			stage.sessionId = "replacement";
+			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID)[0]!.state, "stage-terminal");
+		} finally {
+			setDurableBackend(undefined);
+		}
+	});
+
+	test("sticky status remains readable before durable backend initialization (#3467)", () => {
+		setDurableBackend(undefined);
+		assert.deepEqual(stickyStageDeliveryStatuses([], RUN_ID), []);
+	});
+
+	test("bounds settled payloads and deduplicates old delivered IDs after DBOS reload (#3467)", async () => {
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		for (let index = 0; index < 100; index++) {
+			await store.queueStageMessage(pendingMessage(String(index)), RUN_GROUP, RUN_GROUP, backend);
+			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, String(index), "now", backend);
+		}
+		assert.ok((backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length ?? 0) <= 50);
+		assert.ok((store.runs()[0]?.pendingStageMessages?.length ?? 0) <= 50);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(RUN_ID);
+		const restored = createStore();
+		restored.recordRunStart({
+			...store.runs()[0]!,
+			pendingStageMessages: [...(resumed.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		const retry = await restored.queueStageMessage(pendingMessage("0"), RUN_GROUP, RUN_GROUP, resumed);
+		assert.equal(retry?.ok, true);
+		if (!retry?.ok) return;
+		assert.equal(retry.deduplicated, true);
+		assert.equal(retry.entry.status, "delivered");
+		assert.equal(restored.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
+		const conflict = await restored.queueStageMessage(
+			pendingMessage("0", { message: message("0", "changed") }),
+			RUN_GROUP,
+			RUN_GROUP,
+			resumed,
+		);
+		assert.equal(conflict?.ok, false);
+	});
+
+	test("preserves settled retry identity across interrupted archival and metadata writes (#3467)", async () => {
+		const sdk = createMockSdk();
+		let failedPrefix: string | undefined;
+		const backend = new DbosDurableBackend({
+			...sdk,
+			recordStepOutput: async (runId, stepName, output) => {
+				if (failedPrefix !== undefined && stepName.startsWith(failedPrefix))
+					throw new Error("interrupted persistence");
+				await sdk.recordStepOutput(runId, stepName, output);
+			},
+		});
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const store = createStore();
+		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		for (let index = 0; index < 50; index++) {
+			await store.queueStageMessage(pendingMessage(String(index)), RUN_GROUP, RUN_GROUP, backend);
+			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, String(index), "now", backend);
+		}
+		await store.queueStageMessage(pendingMessage("50"), RUN_GROUP, RUN_GROUP, backend);
+		for (const prefix of ["__atomic_pending_receipt:", "__atomic_metadata:"]) {
+			failedPrefix = prefix;
+			await assert.rejects(
+				store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "50", "now", backend),
+				/interrupted persistence/,
+			);
+			assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 1);
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(RUN_ID);
+			const restored = createStore();
+			restored.recordRunStart({
+				...store.runs()[0]!,
+				pendingStageMessages: [...(resumed.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			const retry = await restored.queueStageMessage(pendingMessage("0"), RUN_GROUP, RUN_GROUP, resumed);
+			assert.ok(retry?.ok);
+			assert.equal(retry.deduplicated, true);
+			assert.equal(retry.entry.status, "delivered");
+		}
+		failedPrefix = undefined;
+		await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "50", "now", backend);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 50);
+		assert.equal((await backend.readSettledPendingStageMessage(RUN_ID, "0"))?.status, "delivered");
+	});
+
 	test("assigns durable FIFO admission order independently of sender timestamps", () => {
 		const first = pendingMessage("1", {
 			message: { ...message("1", "scope changed"), timestamp: 200 },

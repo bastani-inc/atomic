@@ -776,14 +776,33 @@ async function deliverStickyTarget(
 	// send would never re-forward to it. A dedup retry therefore re-forwards exactly the
 	// live matches the ledger has not confirmed yet.
 	const recordedDeliveries = result.entry.deliveries ?? [];
-	const forwardTargets = liveMatches
-		.filter(
-			(match) =>
-				!recordedDeliveries.some(
-					(delivery) => delivery.runId === match.run.id && delivery.stageId === match.stage.id,
-				),
-		)
-		.map((match) => match.target);
+	const forwardTargets: string[] = [];
+	for (const match of liveMatches) {
+		if (
+			recordedDeliveries.some(
+				(delivery) =>
+					delivery.runId === match.run.id &&
+					delivery.stageId === match.stage.id &&
+					delivery.sessionId === match.stage.sessionId &&
+					(delivery.admission === "transport" || delivery.admission === "context"),
+			) ||
+			(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, result.entry.id, {
+				runId: match.run.id,
+				stageId: match.stage.id,
+				...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
+				admission: "transport",
+			})) ||
+			(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, result.entry.id, {
+				runId: match.run.id,
+				stageId: match.stage.id,
+				...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
+				admission: "context",
+			}))
+		) {
+			continue;
+		}
+		forwardTargets.push(match.target);
+	}
 	return {
 		outcome: "queued",
 		position: result.position ?? 1,
@@ -838,10 +857,26 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	if (records.length === 0) return false;
 	const backend = durableBackendForRun(getDurableBackend(), runs, rootRunId);
 	if (backend === undefined) return false;
+	const unconfirmedRecords = [];
+	for (const record of records) {
+		if (
+			!entry.deliveries?.some(
+				(delivery) =>
+					delivery.runId === record.runId &&
+					delivery.stageId === record.stageId &&
+					delivery.sessionId === record.sessionId &&
+					(delivery.admission === "context" || delivery.admission === "transport"),
+			) &&
+			!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, record)) &&
+			!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, { ...record, admission: "context" }))
+		) {
+			unconfirmedRecords.push(record);
+		}
+	}
 	return activeStore.recordPendingStageMessageDeliveries(
 		rootRunId,
 		entry.id,
-		records,
+		unconfirmedRecords,
 		new Date().toISOString(),
 		backend,
 	);
@@ -977,12 +1012,7 @@ export async function settleUndeliverablePendingStageMessages(
 		}
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
-			if (
-				entry.status === "queued" &&
-				entry.sticky === true &&
-				(entry.deliveryCount ?? 0) > 0 &&
-				isTerminalRunStatus(run.status)
-			) {
+			if (entry.status === "queued" && entry.sticky === true && isTerminalRunStatus(run.status)) {
 				if (
 					await activeStore.settleStickyPendingStageMessageDelivered(
 						run.id,
@@ -992,8 +1022,8 @@ export async function settleUndeliverablePendingStageMessages(
 					)
 				) {
 					settled += 1;
+					continue;
 				}
-				continue;
 			}
 			if (entry.status === "queued") {
 				const reason = pendingStageUndeliverableReason(run, entry);

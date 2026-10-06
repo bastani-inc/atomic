@@ -10,7 +10,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DbosSdkHandle, DbosStepRecord, DbosWorkflowInfo } from "./dbos-backend.js";
-import { claimMetadataStepName, classifyLatestMetadata, encodeMetadata, metadataStepName } from "./dbos-metadata.js";
+import {
+	claimMetadataStepName,
+	classifyLatestMetadata,
+	encodeMetadata,
+	isMetadataStep,
+	metadataStepName,
+} from "./dbos-metadata.js";
 import { type DbosOwnerFence, isDatabaseExecutor } from "./dbos-owner-fence.js";
 import { getDbosProcessOwner } from "./dbos-process-owner.js";
 import type { DbosRowAuthority } from "./dbos-row-guard.js";
@@ -108,6 +114,20 @@ export function createRealDbosHandle(
 				: status.output;
 		return { stepName, output, completedAt: status.createdAt };
 	}
+	async function metadataRecords(workflowId: string): Promise<readonly DbosStepRecord[]> {
+		const prefix = `${workflowId}:checkpoint:`;
+		const statuses = await dbos.listWorkflows({
+			workflow_id_prefix: `${prefix}__atomic_metadata`,
+			loadOutput: true,
+			sortDesc: false,
+		});
+		const records: DbosStepRecord[] = [];
+		for (const status of statuses) {
+			const record = await stepRecord(status, prefix);
+			if (record !== undefined && isMetadataStep(record.stepName)) records.push(record);
+		}
+		return records;
+	}
 	const raw: DbosSdkHandle = {
 		launch: () => dbos.launch(),
 		shutdown: () => dbos.shutdown(),
@@ -191,6 +211,34 @@ export function createRealDbosHandle(
 			// Await completion so the record is durable and readable before the
 			// caller's flush boundary; duplicates resolve to the first stored output.
 			await handle.getResult();
+			if (isMetadataStep(stepName)) {
+				const records = await metadataRecords(workflowId);
+				const latest = classifyLatestMetadata(records, workflowId);
+				if (latest.kind !== "current") return;
+				const retained = [...records]
+					.reverse()
+					.find(
+						(record) =>
+							isMetadataStep(record.stepName) &&
+							classifyLatestMetadata([record], workflowId).kind === "current" &&
+							isDeepStrictEqual(classifyLatestMetadata([record], workflowId), latest),
+					);
+				if (retained === undefined) return;
+				if (fence !== undefined) {
+					if (latest.metadata.ownerExecutorId !== fence.executorId) return;
+					await fence.compactMetadata(
+						rowAuthority(workflowId, latest),
+						checkpointId(workflowId, retained.stepName),
+					);
+				} else {
+					await dbos.deleteWorkflows(
+						records
+							.filter((record) => isMetadataStep(record.stepName) && record !== retained)
+							.map((record) => checkpointId(workflowId, record.stepName)),
+						false,
+					);
+				}
+			}
 		},
 		async deleteWorkflowData(workflowId) {
 			const prefix = `${workflowId}:checkpoint:`;
@@ -224,7 +272,7 @@ export function createRealDbosHandle(
 		step?: { name: string; output: WorkflowSerializableValue },
 	): Promise<void> =>
 		fence.write(workflowId, async () => {
-			const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+			const current = classifyLatestMetadata(await metadataRecords(workflowId), workflowId);
 			const claimed = claims.getStore();
 			if (
 				claimed === undefined &&
@@ -294,7 +342,7 @@ export function createRealDbosHandle(
 			return await fence.write(
 				workflowId,
 				async () => {
-					const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					const current = classifyLatestMetadata(await metadataRecords(workflowId), workflowId);
 					if (current.kind !== "current" || current.metadata.ownerExecutorId === fence.executorId)
 						return undefined;
 					const previousExecutorId = current.metadata.ownerExecutorId;
@@ -332,7 +380,7 @@ export function createRealDbosHandle(
 			fence.write(
 				workflowId,
 				async () => {
-					const current = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					const current = classifyLatestMetadata(await metadataRecords(workflowId), workflowId);
 					if (
 						current.kind !== "current" ||
 						(isDatabaseExecutor(current.metadata.ownerExecutorId) &&
@@ -385,7 +433,7 @@ export function createRealDbosHandle(
 			fence.write(
 				workflowId,
 				async () => {
-					const authoritative = classifyLatestMetadata(await raw.listStepRecords(workflowId), workflowId);
+					const authoritative = classifyLatestMetadata(await metadataRecords(workflowId), workflowId);
 					const claim = () =>
 						claims.run(
 							{ authority: { ...rowAuthority(workflowId, authoritative), claim: crypto.randomUUID() } },

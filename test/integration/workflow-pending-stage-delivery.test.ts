@@ -4367,11 +4367,11 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 			assert.deepEqual(firstTurnContexts, [true]);
 			assert.equal(later.session.messages.filter((message) => getMessageText(message).includes(marker)).length, 1);
 			const receipts = store.runs()[0]?.pendingStageMessages?.[0]?.deliveries ?? [];
+			assert.equal(receipts.filter((receipt) => receipt.admission === "context").length, 0);
 			assert.equal(
-				receipts.filter((receipt) => receipt.admission === "context").length,
+				store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount,
 				scenario === "startup replacement" ? 2 : 1,
 			);
-			assert.equal(receipts.at(-1)?.sessionId, later.session.sessionId);
 			assert.ok(transcript.indexOf(marker) < transcript.indexOf('"role":"assistant"'));
 		} finally {
 			acknowledgment.mockRestore();
