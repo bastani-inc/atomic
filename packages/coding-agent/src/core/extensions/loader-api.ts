@@ -44,7 +44,7 @@ import type {
 	ToolDefinition,
 	ToolRendererResolver,
 } from "./types.ts";
-import type { SessionWorkflows } from "./workflow-run-control.js";
+import type { WorkflowRunControl } from "./workflow-run-control.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -194,7 +194,7 @@ export function createExtensionAPI(
 			const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 			return { ...publisher, dispose: trackRelease(() => publisher.dispose()) };
 		},
-		registerWorkflowRunControl(control: SessionWorkflows) {
+		registerWorkflowRunControl(control: WorkflowRunControl) {
 			assertActive();
 			const registration = runtime.workflowRunControlHub.register(control);
 			return { dispose: trackRelease(() => registration.dispose()) };

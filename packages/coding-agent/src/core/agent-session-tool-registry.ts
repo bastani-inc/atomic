@@ -252,6 +252,7 @@ export function _buildRuntime(
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
+		this._workflows?.rebindObservers();
 	}
 
 	const defaultActiveToolNames = this._baseToolsOverride

@@ -1,6 +1,12 @@
+import type {
+	WorkflowActivityObserver,
+	WorkflowActivitySnapshotFrame,
+	WorkflowActivitySubscription,
+} from "./workflow-events.js";
 import {
 	type SessionWorkflows,
 	type WorkflowRunAllTarget,
+	type WorkflowRunControl,
 	type WorkflowRunControlOutcome,
 	type WorkflowRunControlRegistration,
 	WorkflowRunControlUnavailableError,
@@ -13,12 +19,15 @@ import {
 	type WorkflowStageListFilter,
 } from "./workflow-run-control.js";
 
+/** Session disposal waits at most this long for observers to receive the final `unavailable` snapshot. */
+const OBSERVER_FINAL_DELIVERY_TIMEOUT_MS = 5_000;
+
 /** Holds the run-control implementation that the workflows extension registers for one extension generation. */
 export class WorkflowRunControlHub {
-	private control: SessionWorkflows | undefined;
+	private control: WorkflowRunControl | undefined;
 	private disposed = false;
 
-	register(control: SessionWorkflows): WorkflowRunControlRegistration {
+	register(control: WorkflowRunControl): WorkflowRunControlRegistration {
 		if (this.disposed) return { dispose: () => {} };
 		this.control = control;
 		return {
@@ -28,7 +37,7 @@ export class WorkflowRunControlHub {
 		};
 	}
 
-	current(): SessionWorkflows | undefined {
+	current(): WorkflowRunControl | undefined {
 		return this.control;
 	}
 
@@ -38,18 +47,99 @@ export class WorkflowRunControlHub {
 	}
 }
 
+export type ObserveWorkflowActivity = (observer: WorkflowActivityObserver) => WorkflowActivitySubscription;
+
+interface SessionObserverLease {
+	/** Serialized delivery shared by every generation this observer is bound to. */
+	readonly deliver: WorkflowActivityObserver;
+	readonly close: () => void;
+	subscription: WorkflowActivitySubscription;
+}
+
 /** Stable per-session handle that follows the current extension generation across reloads. */
 export class SessionWorkflowsHandle implements SessionWorkflows {
-	private readonly resolve: () => SessionWorkflows | undefined;
+	private readonly resolve: () => WorkflowRunControl | undefined;
+	private readonly resolveObserve: () => ObserveWorkflowActivity | undefined;
+	private readonly observers = new Set<SessionObserverLease>();
 
-	constructor(resolve: () => SessionWorkflows | undefined) {
+	constructor(
+		resolve: () => WorkflowRunControl | undefined,
+		resolveObserve: () => ObserveWorkflowActivity | undefined,
+	) {
 		this.resolve = resolve;
+		this.resolveObserve = resolveObserve;
 	}
 
-	private control(): SessionWorkflows {
+	private control(): WorkflowRunControl {
 		const control = this.resolve();
 		if (control === undefined) throw new WorkflowRunControlUnavailableError();
 		return control;
+	}
+
+	observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription {
+		const observe = this.resolveObserve();
+		if (observe === undefined) throw new WorkflowRunControlUnavailableError();
+		let active = true;
+		let previous: Promise<void> = Promise.resolve();
+		// Each generation delivers independently; chain them so a reload never overlaps two callbacks.
+		const deliver: WorkflowActivityObserver = (frame) => {
+			const delivery = previous.then(() => (active ? observer(frame) : undefined));
+			previous = delivery.catch(() => {});
+			return delivery;
+		};
+		const lease: SessionObserverLease = {
+			deliver,
+			close: () => {
+				if (!active) return;
+				active = false;
+				lease.subscription.dispose();
+			},
+			subscription: observe(deliver),
+		};
+		this.observers.add(lease);
+		return {
+			// Close even after session disposal took the lease out of the set, so a queued final callback is skipped.
+			dispose: () => {
+				this.observers.delete(lease);
+				lease.close();
+			},
+		};
+	}
+
+	/** Move every observer to the current extension generation; each receives that generation's snapshot first. */
+	rebindObservers(): void {
+		const observe = this.resolveObserve();
+		for (const lease of this.observers) {
+			lease.subscription.dispose();
+			lease.subscription = observe?.(lease.deliver) ?? { dispose: () => {} };
+		}
+	}
+
+	/**
+	 * Release every observer when the session closes. Each first receives `last` as an `unavailable`
+	 * snapshot, after any callback already in flight, so hosts never keep showing a closed session's runs.
+	 */
+	async disposeObservers(last: WorkflowActivitySnapshotFrame): Promise<void> {
+		const terminal: WorkflowActivitySnapshotFrame =
+			last.availability === "unavailable"
+				? last
+				: {
+						kind: "snapshot",
+						cursor: { ...last.cursor, revision: last.cursor.revision + 1 },
+						availability: "unavailable",
+					};
+		const leases = [...this.observers];
+		this.observers.clear();
+		for (const lease of leases) lease.subscription.dispose();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			Promise.all(leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {}))),
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, OBSERVER_FINAL_DELIVERY_TIMEOUT_MS);
+			}),
+		]);
+		clearTimeout(timer);
+		for (const lease of leases) lease.close();
 	}
 
 	async listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]> {

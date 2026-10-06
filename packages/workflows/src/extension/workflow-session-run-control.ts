@@ -1,6 +1,6 @@
 import {
-	type SessionWorkflows,
 	type WorkflowRunAllTarget,
+	type WorkflowRunControl,
 	WorkflowRunControlError,
 	type WorkflowRunControlFailedRun,
 	type WorkflowRunControlOutcome,
@@ -148,7 +148,7 @@ function rejectUnknownRunPrefix(store: Pick<Store, "runs">, runId: string): void
 }
 
 /** Typed run control for one session, delegating every action to the workflow tool's own executor. */
-export function createSessionRunControl(host: SessionRunControlHost): SessionWorkflows {
+export function createSessionRunControl(host: SessionRunControlHost): WorkflowRunControl {
 	const request = async (args: WorkflowToolArgs): Promise<WorkflowToolResult> => {
 		try {
 			const ctx = executeContext(host.context());

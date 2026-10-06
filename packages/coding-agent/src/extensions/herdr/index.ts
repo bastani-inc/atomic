@@ -43,17 +43,15 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 		let availability: "ready" | "unavailable" | "recovering" = "unavailable";
 		const roots = new Map<string, WorkflowRootActivity>();
 		const acknowledgedBlocks = new Map<string, WorkflowRootActivity>();
+		const sameSummary = (left: WorkflowRootActivity, right: WorkflowRootActivity) =>
+			left.state === right.state &&
+			left.reason === right.reason &&
+			left.actionableBlockCount === right.actionableBlockCount &&
+			left.activeExecutionCount === right.activeExecutionCount &&
+			left.needsAttention === right.needsAttention;
 		const updateRoot = (root: WorkflowRootActivity) => {
 			const acknowledged = acknowledgedBlocks.get(root.rootRunId);
-			if (
-				acknowledged &&
-				(root.state !== acknowledged.state ||
-					root.reason !== acknowledged.reason ||
-					root.actionableBlockCount !== acknowledged.actionableBlockCount ||
-					root.activeExecutionCount !== acknowledged.activeExecutionCount ||
-					root.needsAttention !== acknowledged.needsAttention)
-			)
-				acknowledgedBlocks.delete(root.rootRunId);
+			if (acknowledged && !sameSummary(root, acknowledged)) acknowledgedBlocks.delete(root.rootRunId);
 			roots.set(root.rootRunId, root);
 		};
 		const seenDiagnostics = new Set<string>();
@@ -132,8 +130,12 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 						for (const root of frame.roots) updateRoot(root);
 						for (const id of acknowledgedBlocks.keys()) if (!roots.has(id)) acknowledgedBlocks.delete(id);
 					}
-				} else if (frame.kind === "changed") updateRoot(frame.root);
-				else {
+				} else if (frame.kind === "changed") {
+					const previous = roots.get(frame.root.rootRunId);
+					updateRoot(frame.root);
+					// Graph-only changes do not alter the pane state; skip the redundant report.
+					if (previous && sameSummary(previous, frame.root)) return;
+				} else {
 					roots.delete(frame.rootRunId);
 					acknowledgedBlocks.delete(frame.rootRunId);
 				}

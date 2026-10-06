@@ -32,6 +32,53 @@ export type WorkflowStageStatus =
 export type WorkflowToolNodeStatus = "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
 export type WorkflowControlAction = "quit" | "kill" | "pause" | "resume";
 
+/** Snapshot-safe descriptor of a human-input prompt waiting on a workflow graph node. */
+export interface WorkflowGraphNodePrompt {
+	id: string;
+	kind: "input" | "confirm" | "select" | "editor" | "custom";
+	message: string;
+	choices?: readonly string[];
+	createdAt: number;
+}
+interface WorkflowGraphNodeBase {
+	/** Graph-unique node id: run-local in the root run, `${runId}:${nodeId}` inside nested child runs. */
+	id: string;
+	/** Run that owns the node. */
+	runId: string;
+	/** Run-local stage id or tool node id. */
+	nodeId: string;
+	name: string;
+	/** Graph-unique ids of the node's parents. */
+	parentIds: readonly string[];
+	/** Admission order shared by stages and tool nodes within one run. */
+	executionOrder?: number;
+	/** Nested workflow depth; 0 for the root run. */
+	depth: number;
+}
+export interface WorkflowGraphStageNode extends WorkflowGraphNodeBase {
+	kind: "stage";
+	status: WorkflowStageStatus;
+	pendingPrompt?: WorkflowGraphNodePrompt;
+}
+export interface WorkflowGraphToolNode extends WorkflowGraphNodeBase {
+	kind: "tool";
+	status: WorkflowToolNodeStatus;
+	/** Invocation ordinal of this `ctx.tool` call within its run. */
+	ordinal: number;
+}
+export type WorkflowGraphNode = WorkflowGraphStageNode | WorkflowGraphToolNode;
+/** A human-input prompt raised by a run itself rather than by one of its stages. */
+export interface WorkflowGraphRunPrompt extends WorkflowGraphNodePrompt {
+	/** Run that owns the prompt. */
+	runId: string;
+}
+/** Expanded graph of one root run, including nested child workflow runs. */
+export interface WorkflowRootGraph {
+	nodes: readonly WorkflowGraphNode[];
+	/** Run-level prompts awaiting an answer; absent when there are none. */
+	runPrompts?: readonly WorkflowGraphRunPrompt[];
+}
+
 export interface WorkflowRootActivity {
 	rootRunId: string;
 	ownerSessionId: string;
@@ -40,6 +87,8 @@ export interface WorkflowRootActivity {
 	activeExecutionCount: number;
 	actionableBlockCount: number;
 	needsAttention: boolean;
+	/** Graph topology and node statuses; absent when the publisher reports no graph. */
+	graph?: WorkflowRootGraph;
 }
 export interface WorkflowObservationCursor {
 	epoch: string;

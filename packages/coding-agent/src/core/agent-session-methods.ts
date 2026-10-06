@@ -59,6 +59,7 @@ import type {
 	ToolInfo,
 } from "./extensions/index.js";
 import type { SessionWorkflows } from "./extensions/workflow-run-control.js";
+import type { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -553,7 +554,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
 	_extensionRunner: ExtensionRunner;
-	_workflows?: SessionWorkflows;
+	_workflows?: SessionWorkflowsHandle;
 	_turnIndex: number;
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;

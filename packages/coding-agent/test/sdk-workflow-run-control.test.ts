@@ -11,6 +11,8 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import {
+	type WorkflowActivityFrame,
+	type WorkflowGraphNode,
 	WorkflowRunControlError,
 	WorkflowRunControlUnavailableError,
 	WorkflowRunNotFoundError,
@@ -24,7 +26,7 @@ const UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS = 15_000;
 const UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000";
 const UNKNOWN_RUN_PREFIX = "deadbeef";
 
-type Scenario = "pause" | "quit" | "reload" | "prefix" | "guard";
+type Scenario = "pause" | "quit" | "reload" | "observe" | "prefix" | "guard";
 
 interface Markers {
 	readonly reached: string;
@@ -46,7 +48,7 @@ function workflowSource(scenario: Scenario, files: Markers): string {
 	const gate = JSON.stringify(files.gate);
 	const finished = JSON.stringify(files.finished);
 	const hold =
-		scenario === "quit"
+		scenario === "quit" || scenario === "observe"
 			? `await ctx.tool("hold", {}, async ({ signal }) => {
 await writeFile(${reached}, "reached");
 while (!existsSync(${gate}) && !signal.aborted) await delay(25);
@@ -77,7 +79,7 @@ beforeAll(async () => {
 	const workflowsDir = join(packageDir, "workflows");
 	mkdirSync(join(cwd, ".atomic"), { recursive: true });
 	mkdirSync(workflowsDir, { recursive: true });
-	const scenarios: readonly Scenario[] = ["pause", "quit", "reload", "prefix", "guard"];
+	const scenarios: readonly Scenario[] = ["pause", "quit", "reload", "observe", "prefix", "guard"];
 	const markersFor = (scenario: Scenario): Markers => ({
 		reached: join(root, `${scenario}-reached`),
 		gate: join(root, `${scenario}-gate`),
@@ -87,6 +89,7 @@ beforeAll(async () => {
 		pause: markersFor("pause"),
 		quit: markersFor("quit"),
 		reload: markersFor("reload"),
+		observe: markersFor("observe"),
 		prefix: markersFor("prefix"),
 		guard: markersFor("guard"),
 	};
@@ -284,6 +287,76 @@ test(
 );
 
 test(
+	"SDK hosts observe agent-launched runs: snapshot first, then graph changes across reloads (#3476)",
+	async () => {
+		const files = markers.observe;
+		const frames: WorkflowActivityFrame[] = [];
+		const subscription = owner.workflows.observe((frame) => {
+			frames.push(frame);
+		});
+		try {
+			await eventually(() => frames[0], "initial snapshot");
+			assert.equal(frames[0]?.kind, "snapshot");
+			const runId = await launchThroughSessionTool(owner, "observe");
+			await waitForFile(files.reached);
+
+			const nodesFor = (frame: WorkflowActivityFrame): readonly WorkflowGraphNode[] | undefined => {
+				if (frame.kind === "changed") return frame.root.rootRunId === runId ? frame.root.graph?.nodes : undefined;
+				if (frame.kind === "snapshot" && frame.availability === "ready")
+					return frame.roots.find((root) => root.rootRunId === runId)?.graph?.nodes;
+				return undefined;
+			};
+			const changedNodes = (from: number, ready: (nodes: readonly WorkflowGraphNode[]) => boolean) =>
+				eventually(
+					() =>
+						frames
+							.slice(from)
+							.filter((frame) => frame.kind === "changed")
+							.map(nodesFor)
+							.find((nodes) => nodes !== undefined && ready(nodes)),
+					"changed graph frame",
+				);
+			const node = (nodes: readonly WorkflowGraphNode[], name: string) => nodes.find((entry) => entry.name === name);
+
+			const holding = await changedNodes(1, (nodes) => node(nodes, "hold")?.status === "running");
+			const prepare = node(holding, "prepare");
+			assert.equal(prepare?.kind, "tool");
+			assert.equal(prepare?.status, "completed");
+			assert.equal(prepare?.runId, runId);
+			assert.deepEqual(node(holding, "hold")?.parentIds, [prepare?.id]);
+
+			const beforeReload = frames.length;
+			await owner.reload({ failOnExtensionErrors: true });
+			const resnapshot = await eventually(
+				() =>
+					frames.slice(beforeReload).find((frame) => frame.kind === "snapshot" && nodesFor(frame) !== undefined),
+				"post-reload ready snapshot",
+			);
+			assert.notEqual(resnapshot.cursor.epoch, frames[0]?.cursor.epoch, "a reload starts a new epoch");
+
+			const afterReload = frames.length;
+			writeFileSync(files.gate, "release");
+			const finished = await changedNodes(afterReload, (nodes) => node(nodes, "finish")?.status === "completed");
+			assert.deepEqual(
+				finished.map((entry) => [entry.name, entry.status]),
+				[
+					["prepare", "completed"],
+					["hold", "completed"],
+					["finish", "completed"],
+				],
+			);
+			await completed(owner, runId);
+		} finally {
+			subscription.dispose();
+		}
+		const settled = frames.length;
+		await delay(100);
+		assert.equal(frames.length, settled, "a disposed subscription receives no further frames");
+	},
+	REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS,
+);
+
+test(
 	"SDK run control rejects unknown and foreign run prefixes promptly and stays usable (#3377)",
 	async () => {
 		const files = markers.prefix;
@@ -362,11 +435,23 @@ test(
 		writeFileSync(files.gate, "release");
 		await completed(owner, runId);
 
+		const closingFrames: WorkflowActivityFrame[] = [];
+		owner.workflows.observe((frame) => {
+			closingFrames.push(frame);
+		});
+		await eventually(
+			() => closingFrames.find((frame) => frame.kind === "snapshot" && frame.availability === "ready"),
+			"ready snapshot before dispose",
+		);
 		await owner.dispose();
+		const terminal = closingFrames.at(-1);
+		assert.ok(terminal?.kind === "snapshot", "dispose() delivers a terminal snapshot before releasing observers");
+		assert.equal(terminal.availability, "unavailable");
 		const unavailable = await rejection(owner.workflows.listRuns());
 		assert.ok(unavailable instanceof WorkflowRunControlUnavailableError, unavailable.message);
 		assert.ok(unavailable instanceof WorkflowRunControlError);
 		assert.equal(unavailable.code, "WORKFLOW_RUN_CONTROL_UNAVAILABLE");
+		assert.throws(() => owner.workflows.observe(() => {}), WorkflowRunControlUnavailableError);
 	},
 	REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS,
 );
