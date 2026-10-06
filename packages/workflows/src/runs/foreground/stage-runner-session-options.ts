@@ -9,6 +9,19 @@ interface StageSessionOptionsInput {
 	readonly restoreSavedModel?: boolean;
 	readonly reattachSessionFile: string | undefined;
 	readonly sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
+	/** Directory for stages without an explicit cwd, applied before any session manager is created. */
+	readonly defaultCwd?: string;
+}
+
+const adapterDefaultCwds = new WeakMap<object, string>();
+
+/** Stages created through `adapter` without an explicit cwd run, and record their sessions, in `cwd`. */
+export function setAgentSessionAdapterDefaultCwd(adapter: object, cwd: string): void {
+	adapterDefaultCwds.set(adapter, cwd);
+}
+
+export function agentSessionAdapterDefaultCwd(adapter: object | undefined): string | undefined {
+	return adapter === undefined ? undefined : adapterDefaultCwds.get(adapter);
 }
 
 export function buildStageSessionOptions(input: StageSessionOptionsInput): StageOptions | undefined {
@@ -22,6 +35,7 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
 						? { thinkingLevel: input.candidate.reasoningLevel }
 						: {}),
 				};
+	if (options.cwd === undefined && input.defaultCwd !== undefined) options.cwd = input.defaultCwd;
 	if (input.ownsFallbackChain) {
 		options.fallbackModels = [];
 		options.fallbackThinkingLevels = undefined;

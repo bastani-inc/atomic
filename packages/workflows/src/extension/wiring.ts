@@ -35,6 +35,7 @@ import type {
 	StageSessionRuntime,
 } from "../runs/foreground/stage-runner.js";
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
+import { setAgentSessionAdapterDefaultCwd } from "../runs/foreground/stage-runner-session-options.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
@@ -634,7 +635,8 @@ export function buildRuntimeAdapters(
  * `@bastani/atomic` (imported lazily on first stage), with the same stage
  * policy as the workflows extension. `baseOptions` apply to every stage and
  * stage options override them. Each stage gets its own session manager:
- * stages without one get `SessionManager.inMemory(cwd)`.
+ * stages without one get `SessionManager.inMemory(cwd)`. Stages without their
+ * own `cwd` use `baseOptions.cwd`, including any session file they record.
  */
 export function createAgentSessionAdapter(
 	baseOptions: Omit<CreateAgentSessionOptions, "sessionManager"> = {},
@@ -652,5 +654,7 @@ export function createAgentSessionAdapter(
 		},
 		{ createAgentSession: (options, prepareOptions) => createPiSdkAgentSession(options, prepareOptions) },
 	);
+	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.
+	if (baseOptions.cwd !== undefined) setAgentSessionAdapterDefaultCwd(agentSession!, baseOptions.cwd);
 	return agentSession!;
 }

@@ -1301,7 +1301,7 @@ interface AgentSessionAdapter {
 }
 ```
 
-Call `createAgentSessionAdapter(baseOptions)` yourself to apply the same `createAgentSession` options, such as `agentDir`, `modelRuntime`, or `settingsManager`, to every stage. Options set on an individual stage override `baseOptions`. `baseOptions` cannot set `sessionManager`, because every stage needs its own.
+Call `createAgentSessionAdapter(baseOptions)` yourself to apply the same `createAgentSession` options, such as `agentDir`, `modelRuntime`, or `settingsManager`, to every stage. Options set on an individual stage override `baseOptions`. `baseOptions` cannot set `sessionManager`, because every stage needs its own. A `cwd` in `baseOptions` applies to every stage that doesn't set its own, and session files saved through `sessionDir` record that directory.
 
 A custom adapter's `create(options, meta)` receives the stage's session options, including any session manager Atomic opened for `sessionDir`, resume, or fork. It must resolve to `{ session }` or to the session itself, where `session` implements `StageSessionRuntime`. To change options per stage while keeping the stage policy that `createAgentSessionAdapter` applies, such as hiding the `workflow` tool from stage sessions, delegate to it:
 
