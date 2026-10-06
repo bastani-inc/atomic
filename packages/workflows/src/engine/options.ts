@@ -10,6 +10,7 @@ export type EngineStageRuntimeOptions = Pick<
 	| "onStageStart"
 	| "onStageEnd"
 	| "onStageSession"
+	| "onStageSessionEvent"
 	| "confirmStageReadiness"
 	| "usePromptNodesForUi"
 >;
@@ -39,6 +40,7 @@ export type EngineChildRunOptions = Pick<
 	| "onStageStart"
 	| "onStageEnd"
 	| "onStageSession"
+	| "onStageSessionEvent"
 	| "durableBackend"
 	| "durableRootBackend"
 	| "rootBudget"
