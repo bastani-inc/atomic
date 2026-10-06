@@ -395,6 +395,15 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly id: string;
 	readonly name: string;
 	readonly status: StageStatus;
+	/** Parent stage ids. Do not cache this array across store updates; the runtime may replace it before a stage starts. */
+	readonly parentIds: readonly string[];
+	/** Shared admission order with tool nodes in this run. */
+	readonly executionOrder?: number;
+	/** Effective model id selected for this stage after fallback resolution. */
+	readonly model?: string;
+	readonly startedAt?: number;
+	readonly endedAt?: number;
+	readonly durationMs?: number;
 	readonly result?: WorkflowSerializableValue;
 	readonly error?: string;
 	/** Immutable automatic model selection, separate from the actual execution model. */

@@ -1163,12 +1163,21 @@ interface StageSnapshot extends WorkflowSerializableObject {
   readonly id: string;
   readonly name: string;
   readonly status: StageStatus;
+  readonly parentIds: readonly string[];
+  readonly executionOrder?: number;
+  readonly model?: string;
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly durationMs?: number;
   readonly result?: WorkflowSerializableValue;
   readonly error?: string;
+  readonly routerSelection?: ModelRouterOutput;
 }
 ```
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
+
+Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
 ## Programmatic usage
 
@@ -1456,12 +1465,23 @@ interface Store {
   removeRun(runId: string): boolean;
   recordNotice(notice: WorkflowNotice): void;
   ackNotice(id: string): boolean;
+  snapshot(): StoreSnapshot;
+  graphSnapshot(): StoreSnapshot;
+  subscribe(listener: (snapshot: StoreSnapshot) => void): () => void;
+}
+
+interface StoreSnapshot {
+  readonly runs: readonly RunSnapshot[];
+  readonly notices: readonly WorkflowNotice[];
+  readonly version: number;
 }
 ```
 
 `createStore()` returns an isolated workflow state store. `store` is the default singleton exported by the SDK authoring surface.
 
-This is the stable core exposed by the standalone authoring declaration. Atomic's runtime store also has graph, prompt, session, pause/resume, snapshot, and subscription methods used by embedded integrations; those richer runtime controls are not part of the lean workflow-package `Store` contract shown here.
+`snapshot()` returns a JSON copy of every run and notice; `version` increases on every store change. `graphSnapshot()` returns a cached, size-bounded copy for graph rendering that stays the same object until the store changes. `subscribe(listener)` calls `listener` with a fresh `snapshot()` after each change and returns an unsubscribe function.
+
+Atomic's runtime store also has prompt, session, and pause/resume methods used by embedded integrations; those controls are not part of the published `Store` contract shown here.
 
 ### `createCancellationRegistry()` / `cancellationRegistry`
 

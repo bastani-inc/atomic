@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
+- Fixed `@bastani/atomic/workflows` type declarations disagreeing with the runtime: `StageSnapshot` now declares `parentIds`, `executionOrder`, `model`, `startedAt`, `endedAt`, and `durationMs`; `Store` now declares `snapshot()`, `graphSnapshot()`, and `subscribe()`; and an `AgentSessionAdapter.create` can return `createAgentSession(...)` directly without a type cast ([#3473](https://github.com/bastani-inc/atomic/issues/3473)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

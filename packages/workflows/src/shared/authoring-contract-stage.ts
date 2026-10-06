@@ -1,6 +1,13 @@
 /** Workflow authoring primitives, stage/session contracts, and task option types. */
 
-import type { ModelConstraints, ModelRoute, ModelRouterOutput, TaskNeeds } from "@bastani/atomic";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	ModelConstraints,
+	ModelRoute,
+	ModelRouterOutput,
+	TaskNeeds,
+} from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 
 export type { Static, TSchema };
@@ -259,10 +266,12 @@ export type StageSessionEvent =
 	  };
 
 export interface StageSessionRuntime {
-	prompt(text: string, options?: PromptOptions): Promise<string | undefined>;
+	/** Resolves when the prompted turn settles. The runtime ignores any resolved value; Atomic's `AgentSession` resolves `void`. */
+	prompt(text: string, options?: PromptOptions): Promise<void> | Promise<string | undefined>;
 	sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
-	steer(text: string): Promise<void>;
-	followUp(text: string): Promise<void>;
+	/** Atomic's `AgentSession` reports whether the text was handled immediately or queued. */
+	steer(text: string): Promise<void> | Promise<"handled" | "queued">;
+	followUp(text: string): Promise<void> | Promise<"handled" | "queued">;
 	/** True when this runtime implements a native queued-message pause gate. */
 	readonly queuedMessagesPaused?: boolean;
 	/** Optional native optimization that synchronously holds queued steer/follow-up work. */
@@ -275,19 +284,22 @@ export interface StageSessionRuntime {
 	 * synchronously; synchronous untagged replays are snapshots only. An adapter
 	 * that can emit a later end for a replayed turn while a newer turn is active
 	 * must provide the same stable `turnId` on that replayed start and its end.
-	 * After registration returns, starts must represent new turns.
+	 * After registration returns, starts must represent new turns. Atomic's
+	 * `AgentSession` may deliver its full event stream; turn ownership only reads
+	 * `agent_start` and `agent_end`.
 	 */
-	subscribe(listener: (event: StageSessionEvent) => void): () => void;
+	subscribe(listener: (event: StageSessionEvent | AgentSessionEvent) => void): () => void;
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
-	setModel(model: WorkflowSerializableValue): Promise<void>;
+	/** Atomic's `AgentSession` members are accepted alongside serializable stand-ins for custom adapters. */
+	setModel(model: WorkflowSerializableValue | Parameters<AgentSession["setModel"]>[0]): Promise<void>;
 	setThinkingLevel(level: WorkflowThinkingLevel): void;
-	cycleModel(): WorkflowSerializableValue;
+	cycleModel(): WorkflowSerializableValue | ReturnType<AgentSession["cycleModel"]>;
 	cycleThinkingLevel(): WorkflowThinkingLevel | undefined;
-	readonly agent: WorkflowSerializableValue;
-	readonly model: WorkflowSerializableValue;
+	readonly agent: WorkflowSerializableValue | AgentSession["agent"];
+	readonly model: WorkflowSerializableValue | AgentSession["model"];
 	readonly thinkingLevel: WorkflowThinkingLevel | undefined;
-	readonly messages: readonly WorkflowSerializableValue[];
+	readonly messages: readonly WorkflowSerializableValue[] | AgentSession["messages"];
 	readonly isStreaming: boolean;
 	readonly pendingMessageCount?: number;
 	navigateTree(
