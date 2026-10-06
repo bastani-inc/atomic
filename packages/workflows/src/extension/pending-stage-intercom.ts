@@ -873,7 +873,6 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 			unconfirmedRecords.push(record);
 		}
 	}
-	if (unconfirmedRecords.length === 0) return false;
 	return activeStore.recordPendingStageMessageDeliveries(
 		rootRunId,
 		entry.id,
@@ -1013,12 +1012,7 @@ export async function settleUndeliverablePendingStageMessages(
 		}
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
-			if (
-				entry.status === "queued" &&
-				entry.sticky === true &&
-				(entry.deliveryCount ?? 0) > 0 &&
-				isTerminalRunStatus(run.status)
-			) {
+			if (entry.status === "queued" && entry.sticky === true && isTerminalRunStatus(run.status)) {
 				if (
 					await activeStore.settleStickyPendingStageMessageDelivered(
 						run.id,
@@ -1028,8 +1022,8 @@ export async function settleUndeliverablePendingStageMessages(
 					)
 				) {
 					settled += 1;
+					continue;
 				}
-				continue;
 			}
 			if (entry.status === "queued") {
 				const reason = pendingStageUndeliverableReason(run, entry);

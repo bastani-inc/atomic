@@ -5,6 +5,7 @@ import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packa
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import {
 	registerPendingStageIntercomBridge,
@@ -318,6 +319,241 @@ function rootFixture(
 }
 
 describe("pre-start sticky drain", () => {
+	test("recovers nested logical-message counts under the root durable owner (#3467)", async () => {
+		const { store } = rootFixture();
+		store.recordRunStart({
+			id: CHILD_RUN_ID,
+			name: "child",
+			inputs: {},
+			status: "running",
+			startedAt: 2,
+			parentRunId: ROOT_RUN_ID,
+			rootRunId: ROOT_RUN_ID,
+			stages: [baseStage({ id: "child-stage", status: "failed" })],
+		});
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const scoped = new ScopedDurableBackend(backend, { rootWorkflowId: ROOT_RUN_ID, scopePrefix: "child" });
+		await store.queueStickyStageMessage(
+			stickyInput("nested-count", `workflow:${CHILD_RUN_ID}/**`, { runId: CHILD_RUN_ID }),
+			GROUP,
+			GROUP,
+			scoped,
+		);
+		const persist = backend.persistPendingStageMessages.bind(backend);
+		backend.persistPendingStageMessages = async () => {
+			throw new Error("nested metadata fault");
+		};
+		const receipt = { runId: CHILD_RUN_ID, stageId: "child-stage" };
+		await assert.rejects(
+			store.recordPendingStageMessageDeliveries(CHILD_RUN_ID, "nested-count", [receipt], "now", scoped),
+			/nested metadata fault/,
+		);
+		backend.persistPendingStageMessages = persist;
+		assert.equal(store.runs().find((run) => run.id === CHILD_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		assert.equal(scoped.getPendingStageMessageDeliveryCount(CHILD_RUN_ID, "nested-count"), 1);
+		assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "nested-count"), 0);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		const restored = resumed
+			.getWorkflow(ROOT_RUN_ID)
+			?.pendingStageMessages?.find((entry) => entry.id === "nested-count");
+		assert.equal(restored?.runId, CHILD_RUN_ID);
+		assert.equal(restored?.deliveryCount, 1);
+		assert.equal(
+			await store.recordPendingStageMessageDeliveries(CHILD_RUN_ID, "nested-count", [receipt], "now", scoped),
+			false,
+		);
+	});
+	test("recovers only immutable archived counts and recognizes legacy boolean receipts (#3467)", async () => {
+		const sdk = createMockSdk();
+		const firstWriteSdk = {
+			...sdk,
+			recordStepOutput: async (
+				runId: string,
+				stepName: string,
+				output: Parameters<typeof sdk.recordStepOutput>[2],
+			) => {
+				if (!sdk.state.steps.has(`${runId}:checkpoint:${stepName}`))
+					await sdk.recordStepOutput(runId, stepName, output);
+			},
+		};
+		const backend = new DbosDurableBackend(firstWriteSdk);
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		const receipt = { runId: CHILD_RUN_ID, stageId: "child-stage", deliveredAt: "now" };
+		await backend.archivePendingStageDeliveryReceipt(ROOT_RUN_ID, "legacy", receipt);
+		await backend.archivePendingStageDeliveryReceipt(ROOT_RUN_ID, "legacy", receipt, {
+			messageRunId: CHILD_RUN_ID,
+			deliveryCount: 99,
+		});
+		assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "legacy", CHILD_RUN_ID), 99);
+		await backend.archivePendingStageDeliveryReceipt(ROOT_RUN_ID, "counted", receipt, {
+			messageRunId: CHILD_RUN_ID,
+			deliveryCount: 3,
+		});
+		await backend.archivePendingStageDeliveryReceipt(ROOT_RUN_ID, "counted", receipt, {
+			messageRunId: CHILD_RUN_ID,
+			deliveryCount: 99,
+		});
+		assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "counted", CHILD_RUN_ID), 3);
+		assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "counted", ROOT_RUN_ID), 0);
+		const resumed = new DbosDurableBackend(firstWriteSdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		assert.equal(await resumed.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "legacy", receipt), true);
+		assert.equal(await resumed.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "counted", receipt, CHILD_RUN_ID), true);
+		assert.equal(await resumed.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "counted", receipt, ROOT_RUN_ID), false);
+		assert.equal(resumed.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "counted", CHILD_RUN_ID), 3);
+		assert.equal(resumed.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "legacy", CHILD_RUN_ID), 99);
+	});
+	test("does not repeat an optional-recipient callback after the first metadata save fails (#3467)", async () => {
+		const { store } = rootFixture(baseStage({ status: "failed" }));
+		const sdk = createMockSdk();
+		let failMetadata = false;
+		const backend = new DbosDurableBackend({
+			...sdk,
+			recordStepOutput: async (runId, stepName, output) => {
+				if (failMetadata && stepName.startsWith("__atomic_metadata:")) throw new Error("metadata-only fault");
+				await sdk.recordStepOutput(runId, stepName, output);
+			},
+		});
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.flush();
+		setDurableBackend(backend);
+		await store.queueStickyStageMessage(
+			stickyInput("callback-fault", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		let callbacks = 0;
+		const drain = () =>
+			createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(() => {
+				callbacks += 1;
+			});
+		failMetadata = true;
+		await assert.rejects(drain(), /metadata-only fault/);
+		failMetadata = false;
+		await drain();
+		assert.equal(callbacks, 1);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		assert.equal(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		setDurableBackend(resumed);
+		const restored = createStore();
+		restored.recordRunStart({
+			...store.runs()[0]!,
+			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		const delivery = createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
+		await delivery.deliverPending(() => {
+			callbacks += 1;
+		});
+		assert.equal(callbacks, 1);
+		await delivery.deliverPending(
+			() => {
+				callbacks += 1;
+			},
+			{ sessionId: "new-recipient", receivedMessageIds: [] },
+		);
+		assert.equal(callbacks, 2);
+		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
+	});
+	test.each([
+		[true, false],
+		[false, false],
+		[true, true],
+		[false, true],
+	])(
+		"heals post-write receipt read failures before settlement (retry=%s, explicit initial recipient=%s) (#3467)",
+		async (retry, explicitRecipient) => {
+			const { store } = rootFixture(baseStage({ status: "failed" }));
+			const sdk = createMockSdk();
+			let failReceiptRead = false;
+			const backend = new DbosDurableBackend({
+				...sdk,
+				readStepRecord: async (runId, stepName) => {
+					const record = (await sdk.listStepRecords(runId)).find((candidate) => candidate.stepName === stepName);
+					if (
+						failReceiptRead &&
+						stepName.startsWith("__atomic_pending_delivery_receipt:") &&
+						record !== undefined
+					) {
+						failReceiptRead = false;
+						throw new Error("post-write receipt read fault");
+					}
+					return record;
+				},
+			});
+			backend.registerWorkflow({
+				workflowId: ROOT_RUN_ID,
+				name: "flow",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+			});
+			await backend.flush();
+			setDurableBackend(backend);
+			await store.queueStickyStageMessage(
+				stickyInput("read-fault", `workflow:${ROOT_RUN_ID}/**`),
+				GROUP,
+				GROUP,
+				backend,
+			);
+			let callbacks = 0;
+			const drain = (initialRecipient = false) =>
+				createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(
+					() => {
+						callbacks += 1;
+					},
+					initialRecipient ? { sessionId: "initial-recipient", receivedMessageIds: [] } : undefined,
+				);
+			failReceiptRead = true;
+			await assert.rejects(drain(explicitRecipient), /post-write receipt read fault/);
+			assert.equal(callbacks, 1);
+			assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "read-fault"), 0);
+			if (retry) {
+				await drain();
+				assert.equal(callbacks, 1);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			}
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			const restored = createStore();
+			restored.recordRunStart({
+				...store.runs()[0]!,
+				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			setDurableBackend(resumed);
+			await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(
+				() => {
+					callbacks += 1;
+				},
+			);
+			assert.equal(callbacks, 1);
+			for (const [candidate, owner] of [
+				[store, backend],
+				[restored, resumed],
+			] as const) {
+				setDurableBackend(owner);
+				candidate.recordRunEnd(ROOT_RUN_ID, "completed");
+				let notices = 0;
+				assert.equal(
+					await settleUndeliverablePendingStageMessages(candidate, async () => {
+						notices += 1;
+						return true;
+					}),
+					1,
+				);
+				assert.equal(notices, 0);
+				assert.equal(candidate.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+				assert.equal(candidate.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
+			}
+		},
+	);
 	test("bounds sticky session receipts while retaining old-session deduplication (#3467)", async () => {
 		const { store } = rootFixture();
 		const sdk = createMockSdk();
@@ -1274,6 +1510,266 @@ describe("pending-stage bridge sticky delivery", () => {
 				if (repeated.result?.outcome === "queued") assert.equal(repeated.result.forwardTargets, undefined);
 			} finally {
 				restored.dispose();
+			}
+		},
+	);
+
+	test.each(["metadata", "second-before", "second-after"] as const)(
+		"preserves running-recipient proof in a mixed batch after %s failure (#3467)",
+		async (failure) => {
+			const sdk = createMockSdk();
+			let failMetadata = false;
+			const backend = new DbosDurableBackend({
+				...sdk,
+				recordStepOutput: async (runId, stepName, output) => {
+					if (failMetadata && stepName.startsWith("__atomic_metadata:")) throw new Error("mixed metadata fault");
+					await sdk.recordStepOutput(runId, stepName, output);
+				},
+			});
+			const stages = [
+				baseStage({ id: "running-a", status: "running", sessionId: "session-a" }),
+				baseStage({ id: "failed-b", status: "failed", sessionId: "session-b" }),
+			];
+			const harness = stickyBridgeFixture(stages, { backend });
+			const target = `workflow:${ROOT_RUN_ID}/**`;
+			const records = stages.map((stage) => ({
+				runId: ROOT_RUN_ID,
+				stageId: stage.id,
+				sessionId: stage.sessionId,
+				admission: "transport" as const,
+			}));
+			try {
+				await harness.request("mixed-batch", { target });
+				const archive = backend.archivePendingStageDeliveryReceipt.bind(backend);
+				backend.archivePendingStageDeliveryReceipt = async (runId, messageId, receipt, accounting) => {
+					if (failure !== "metadata" && receipt.stageId === "failed-b") {
+						if (failure === "second-after") await archive(runId, messageId, receipt, accounting);
+						throw new Error("mixed receipt fault");
+					}
+					await archive(runId, messageId, receipt, accounting);
+				};
+				failMetadata = failure === "metadata";
+				await assert.rejects(
+					harness.store.recordPendingStageMessageDeliveries(ROOT_RUN_ID, "mixed-batch", records, "now", backend),
+					/mixed (metadata|receipt) fault/,
+				);
+			} finally {
+				harness.dispose();
+			}
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			const expectedCount = failure === "second-before" ? 1 : 2;
+			assert.equal(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, expectedCount);
+			const store = createStore();
+			store.recordRunStart({
+				...harness.store.runs()[0]!,
+				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			const restored = stickyBridgeFixture(stages, { backend: resumed, store });
+			try {
+				assert.equal(await restored.confirm("mixed-batch", target, [`${GROUP}/running-a`]), false);
+				const retry = await restored.request("mixed-batch", { target });
+				assert.equal(retry.result?.outcome, "queued");
+				if (retry.result?.outcome === "queued") assert.equal(retry.result.forwardTargets, undefined);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, expectedCount);
+			} finally {
+				restored.dispose();
+			}
+		},
+	);
+
+	test("recovers sticky delivery accounting after receipt archival outlives metadata persistence (#3467)", async () => {
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
+		const harness = stickyBridgeFixture(stage, { backend });
+		const target = `workflow:${ROOT_RUN_ID}/**`;
+		const record = {
+			runId: ROOT_RUN_ID,
+			stageId: stage.id,
+			sessionId: stage.sessionId,
+			admission: "context" as const,
+		};
+		try {
+			await harness.request("interrupted-context", { target });
+			harness.store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+			const persist = backend.persistPendingStageMessages.bind(backend);
+			backend.persistPendingStageMessages = async (runId, messages) => {
+				if (await backend.hasPendingStageDeliveryReceipt(runId, "interrupted-context", record)) {
+					throw new Error("interrupted compact metadata");
+				}
+				return persist(runId, messages);
+			};
+			await assert.rejects(
+				harness.store.recordPendingStageMessageDeliveries(
+					ROOT_RUN_ID,
+					"interrupted-context",
+					[record],
+					"now",
+					backend,
+				),
+				/interrupted compact metadata/,
+			);
+			backend.persistPendingStageMessages = persist;
+			assert.equal(await backend.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "interrupted-context", record), true);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			assert.equal(
+				await harness.store.recordPendingStageMessageDeliveries(
+					ROOT_RUN_ID,
+					"interrupted-context",
+					[record],
+					"now",
+					backend,
+				),
+				false,
+			);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			assert.equal(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			const store = createStore();
+			store.recordRunStart({
+				...harness.store.runs()[0]!,
+				stages: [{ ...stage, status: "running" }],
+				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+			});
+			const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+			try {
+				const retry = await restored.request("interrupted-context", { target });
+				assert.equal(retry.result?.outcome, "queued");
+				if (retry.result?.outcome === "queued") assert.equal(retry.result.forwardTargets, undefined);
+				assert.equal(await restored.confirm("interrupted-context", target, [`${GROUP}/live-id`]), false);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+				store.recordRunEnd(ROOT_RUN_ID, "completed");
+				const notified: string[] = [];
+				assert.equal(
+					await settleUndeliverablePendingStageMessages(store, async (entry) => {
+						notified.push(entry.id);
+						return true;
+					}),
+					1,
+				);
+				assert.deepEqual(notified, []);
+				assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "delivered");
+			} finally {
+				restored.dispose();
+			}
+		} finally {
+			harness.dispose();
+		}
+	});
+
+	test("preserves sticky receipts and counts when the first metadata save fails (#3467)", async () => {
+		const sdk = createMockSdk();
+		let failMetadata = false;
+		const backend = new DbosDurableBackend({
+			...sdk,
+			recordStepOutput: async (runId, stepName, output) => {
+				if (failMetadata && stepName.startsWith("__atomic_metadata:"))
+					throw new Error("interrupted ledger metadata");
+				await sdk.recordStepOutput(runId, stepName, output);
+			},
+		});
+		const stage = baseStage({ id: "live-id", status: "failed", sessionId: "same-session" });
+		const harness = stickyBridgeFixture(stage, { backend });
+		const record = {
+			runId: ROOT_RUN_ID,
+			stageId: stage.id,
+			sessionId: stage.sessionId,
+			admission: "context" as const,
+		};
+		try {
+			await harness.request("unwritten-context", { target: `workflow:${ROOT_RUN_ID}/**` });
+			failMetadata = true;
+			await assert.rejects(
+				harness.store.recordPendingStageMessageDeliveries(
+					ROOT_RUN_ID,
+					"unwritten-context",
+					[record],
+					"now",
+					backend,
+				),
+				/interrupted ledger metadata/,
+			);
+			assert.equal(await backend.hasPendingStageDeliveryReceipt(ROOT_RUN_ID, "unwritten-context", record), true);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			const resumed = new DbosDurableBackend(sdk);
+			await resumed.hydrateWorkflow(ROOT_RUN_ID);
+			assert.equal(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			failMetadata = false;
+			assert.equal(
+				await harness.store.recordPendingStageMessageDeliveries(
+					ROOT_RUN_ID,
+					"unwritten-context",
+					[record],
+					"now",
+					backend,
+				),
+				false,
+			);
+			assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		} finally {
+			harness.dispose();
+		}
+	});
+
+	test.each(["before", "after"] as const)(
+		"preserves sticky counts when receipt archival fails %s its durable write (#3467)",
+		async (failure) => {
+			const sdk = createMockSdk();
+			const backend = new DbosDurableBackend(sdk);
+			const stage = baseStage({ id: "live-id", status: "failed", sessionId: "same-session" });
+			const harness = stickyBridgeFixture(stage, { backend });
+			const record = {
+				runId: ROOT_RUN_ID,
+				stageId: stage.id,
+				sessionId: stage.sessionId,
+				admission: "context" as const,
+			};
+			try {
+				await harness.request("unarchived-context", { target: `workflow:${ROOT_RUN_ID}/**` });
+				const archive = backend.archivePendingStageDeliveryReceipt.bind(backend);
+				backend.archivePendingStageDeliveryReceipt = async (runId, messageId, receipt, accounting) => {
+					if (failure === "after") await archive(runId, messageId, receipt, accounting);
+					throw new Error("interrupted receipt archival");
+				};
+				await assert.rejects(
+					harness.store.recordPendingStageMessageDeliveries(
+						ROOT_RUN_ID,
+						"unarchived-context",
+						[record],
+						"now",
+						backend,
+					),
+					/interrupted receipt archival/,
+				);
+				backend.archivePendingStageDeliveryReceipt = archive;
+				assert.equal(
+					harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount,
+					failure === "after" ? 1 : 0,
+				);
+				assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries?.length, 0);
+				const resumed = new DbosDurableBackend(sdk);
+				await resumed.hydrateWorkflow(ROOT_RUN_ID);
+				assert.equal(
+					resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages?.[0]?.deliveryCount,
+					failure === "after" ? 1 : 0,
+				);
+				assert.equal(
+					await harness.store.recordPendingStageMessageDeliveries(
+						ROOT_RUN_ID,
+						"unarchived-context",
+						[record],
+						"now",
+						backend,
+					),
+					failure === "before",
+				);
+				await harness.request("archive-repair", { target: `workflow:${ROOT_RUN_ID}/**` });
+				assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+				assert.deepEqual(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+			} finally {
+				harness.dispose();
 			}
 		},
 	);

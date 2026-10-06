@@ -248,8 +248,18 @@ async function deliverPendingStageMessages(
 						stageId,
 						...(recipient === undefined ? {} : { sessionId: recipient.sessionId, admission: "context" as const }),
 					})
-				)
+				) {
+					if (entryBackend !== undefined) {
+						await activeStore.recordPendingStageMessageDeliveries(
+							entry.runId,
+							entry.id,
+							[],
+							new Date().toISOString(),
+							entryBackend,
+						);
+					}
 					continue;
+				}
 			}
 			if (!recipient?.receivedMessageIds.includes(entry.message.id))
 				await deliver(toPendingStageSender(entry), entry.message);

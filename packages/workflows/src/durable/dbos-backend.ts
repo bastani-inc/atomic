@@ -248,6 +248,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	public readonly persistent = true;
 	private readonly mem = new InMemoryDurableBackend();
 	private readonly stickyReceiptCache = new Map<string, Set<string>>();
+	private readonly stickyDeliveryCounts = new Map<string, Map<string, number>>();
 	private sdk: DbosSdkHandle;
 	private readonly invalid = new Set<string>();
 	private readonly current = new Set<string>();
@@ -503,38 +504,80 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return entry;
 	}
 
+	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
+		return this.stickyDeliveryCounts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId])) ?? 0;
+	}
+
+	async readPendingStageMessageDeliveryCount(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<number> {
+		for (const record of await this.sdk.listStepRecords(workflowId)) {
+			if (
+				record.stepName.startsWith("__atomic_pending_delivery_receipt:") &&
+				isStickyReceiptAccounting(record.output)
+			) {
+				this.cacheStickyReceipt(workflowId, record.stepName, record.output);
+			}
+		}
+		return this.getPendingStageMessageDeliveryCount(workflowId, messageId, logicalRunId);
+	}
+
 	async archivePendingStageDeliveryReceipt(
 		workflowId: string,
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
+		const name = stickyReceiptStep(messageId, delivery, accounting?.messageRunId);
 		await this.enqueueWrite(workflowId, async () => {
-			await this.sdk.recordStepOutput(workflowId, stickyReceiptStep(messageId, delivery), true);
-			this.cacheStickyReceipt(workflowId, stickyReceiptStep(messageId, delivery));
+			const output = accounting === undefined ? true : { messageId, ...accounting };
+			await this.sdk.recordStepOutput(workflowId, name, output);
 		});
 		if (delivery.sessionId !== undefined || delivery.admission !== undefined) {
-			const summary = stickyReceiptStep(messageId, { ...delivery, sessionId: undefined, admission: undefined });
+			const summary = stickyReceiptStep(
+				messageId,
+				{ ...delivery, sessionId: undefined, admission: undefined },
+				accounting?.messageRunId,
+			);
 			await this.enqueueWrite(workflowId, async () => {
 				await this.sdk.recordStepOutput(workflowId, summary, true);
 				this.cacheStickyReceipt(workflowId, summary);
 			});
 		}
 		if (delivery.admission === "context" && delivery.sessionId !== undefined) {
-			const summary = `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined })}:context-any-session`;
+			const summary = `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined }, accounting?.messageRunId)}:context-any-session`;
 			await this.enqueueWrite(workflowId, async () => {
 				await this.sdk.recordStepOutput(workflowId, summary, true);
 				this.cacheStickyReceipt(workflowId, summary);
 			});
 		}
+		await this.enqueueWrite(workflowId, async () => {
+			const persisted =
+				this.sdk.readStepRecord === undefined
+					? (await this.sdk.listStepRecords(workflowId)).find((record) => record.stepName === name)
+					: await this.sdk.readStepRecord(workflowId, name);
+			if (persisted !== undefined) this.cacheStickyReceipt(workflowId, name, persisted.output);
+		});
 	}
 
-	private cacheStickyReceipt(workflowId: string, stepName: string): void {
+	private cacheStickyReceipt(workflowId: string, stepName: string, output: unknown = true): void {
 		let receipts = this.stickyReceiptCache.get(workflowId);
 		if (receipts === undefined) {
 			receipts = new Set();
 			this.stickyReceiptCache.set(workflowId, receipts);
 		}
 		receipts.add(stepName);
+		if (isStickyReceiptAccounting(output)) {
+			let counts = this.stickyDeliveryCounts.get(workflowId);
+			if (counts === undefined) {
+				counts = new Map();
+				this.stickyDeliveryCounts.set(workflowId, counts);
+			}
+			const key = JSON.stringify([output.messageRunId, output.messageId]);
+			counts.set(key, Math.max(counts.get(key) ?? 0, output.deliveryCount));
+		}
 	}
 
 	hasCachedPendingStageDeliveryReceipt(
@@ -542,28 +585,42 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		anySession = false,
+		logicalRunId = workflowId,
 	): boolean {
-		const name =
-			anySession && delivery.admission === "context"
-				? `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined })}:context-any-session`
-				: stickyReceiptStep(messageId, delivery);
-		return this.stickyReceiptCache.get(workflowId)?.has(name) ?? false;
+		return [logicalRunId, undefined].some((logicalId) => {
+			const name =
+				anySession && delivery.admission === "context"
+					? `${stickyReceiptStep(messageId, { ...delivery, sessionId: undefined }, logicalId)}:context-any-session`
+					: stickyReceiptStep(messageId, delivery, logicalId);
+			return this.stickyReceiptCache.get(workflowId)?.has(name) ?? false;
+		});
 	}
 
 	async hasPendingStageDeliveryReceipt(
 		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId = workflowId,
 	): Promise<boolean> {
-		const names = [stickyReceiptStep(messageId, delivery)];
-		if (delivery.sessionId === undefined && delivery.admission === undefined)
-			names.push(`${stickyReceiptStep(messageId, { ...delivery, admission: "context" })}:context-any-session`);
-		if (this.sdk.readStepRecord === undefined) {
-			const records = await this.sdk.listStepRecords(workflowId);
-			return records.some((record) => names.includes(record.stepName) && record.output === true);
-		}
-		for (const name of names) {
-			if ((await this.sdk.readStepRecord(workflowId, name))?.output === true) return true;
+		const names = [logicalRunId, undefined].flatMap((logicalId) => [
+			stickyReceiptStep(messageId, delivery, logicalId),
+			...(delivery.sessionId === undefined && delivery.admission === undefined
+				? [`${stickyReceiptStep(messageId, { ...delivery, admission: "context" }, logicalId)}:context-any-session`]
+				: []),
+		]);
+		const records =
+			this.sdk.readStepRecord === undefined
+				? await this.sdk.listStepRecords(workflowId)
+				: await Promise.all(names.map((name) => this.sdk.readStepRecord!(workflowId, name)));
+		for (const record of records) {
+			if (
+				record !== undefined &&
+				names.includes(record.stepName) &&
+				(record.output === true || isStickyReceiptAccounting(record.output))
+			) {
+				this.cacheStickyReceipt(workflowId, record.stepName, record.output);
+				return true;
+			}
 		}
 		return false;
 	}
@@ -693,7 +750,20 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return this.mem.listCheckpoints(workflowId);
 	}
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
-		const handle = this.mem.getWorkflow(workflowId);
+		let handle = this.mem.getWorkflow(workflowId);
+		if (handle?.pendingStageMessages !== undefined) {
+			let changed = false;
+			const pendingStageMessages = handle.pendingStageMessages.map((entry) => {
+				const count = this.getPendingStageMessageDeliveryCount(workflowId, entry.id, entry.runId);
+				if (count <= (entry.deliveryCount ?? entry.deliveries?.length ?? 0)) return entry;
+				changed = true;
+				return { ...entry, deliveryCount: count };
+			});
+			if (changed) {
+				this.mem.registerWorkflow({ ...handle, pendingStageMessages }, true);
+				handle = this.mem.getWorkflow(workflowId);
+			}
+		}
 		return handle === undefined || this.sdk.ownerLiveness === undefined
 			? handle
 			: { ...handle, ownerLiveness: this.ownerLiveness.get(handle.ownerExecutorId ?? "") ?? "unknown" };
@@ -888,6 +958,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.admissionRecoveryControllers.get(workflowId)?.abort(new Error("Workflow deleted during recovery."));
 		this.invalid.add(workflowId);
 		this.stickyReceiptCache.delete(workflowId);
+		this.stickyDeliveryCounts.delete(workflowId);
 		this.current.delete(workflowId);
 		this.locallyRegistered.delete(workflowId);
 		this.unavailableCheckpoints.delete(workflowId);
@@ -916,6 +987,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		) {
 			this.current.delete(workflowId);
 			this.stickyReceiptCache.delete(workflowId);
+			this.stickyDeliveryCounts.delete(workflowId);
 			this.locallyRegistered.delete(workflowId);
 			this.admissionSettlements.delete(workflowId);
 			this.promptReservations.delete(workflowId);
@@ -942,6 +1014,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.admissionRecoveryControllers.clear();
 		this.mem.reset();
 		this.stickyReceiptCache.clear();
+		this.stickyDeliveryCounts.clear();
 		this.invalid.clear();
 		this.current.clear();
 		this.locallyRegistered.clear();
@@ -981,9 +1054,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		if (this.locallyRegistered.has(workflowId)) {
 			const records = await this.sdk.listStepRecords(workflowId);
 			this.stickyReceiptCache.delete(workflowId);
+			this.stickyDeliveryCounts.delete(workflowId);
 			for (const record of records) {
-				if (record.stepName.startsWith("__atomic_pending_delivery_receipt:") && record.output === true)
-					this.cacheStickyReceipt(workflowId, record.stepName);
+				if (
+					record.stepName.startsWith("__atomic_pending_delivery_receipt:") &&
+					(record.output === true || isStickyReceiptAccounting(record.output))
+				)
+					this.cacheStickyReceipt(workflowId, record.stepName, record.output);
 			}
 			for (const record of records) {
 				if (
@@ -1096,9 +1173,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	): Promise<DurableWorkflowHydrationResult> {
 		const records = await this.sdk.listStepRecords(info.workflowId);
 		this.stickyReceiptCache.delete(info.workflowId);
+		this.stickyDeliveryCounts.delete(info.workflowId);
 		for (const record of records) {
-			if (record.stepName.startsWith("__atomic_pending_delivery_receipt:") && record.output === true)
-				this.cacheStickyReceipt(info.workflowId, record.stepName);
+			if (
+				record.stepName.startsWith("__atomic_pending_delivery_receipt:") &&
+				(record.output === true || isStickyReceiptAccounting(record.output))
+			)
+				this.cacheStickyReceipt(info.workflowId, record.stepName, record.output);
 		}
 		dbosAdmissionContext.getStore()?.throwIfAborted();
 		const deletion = classifyDbosDeletionTombstone(records, info.workflowId);
@@ -1174,6 +1255,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private async suppressWorkflow(workflowId: string): Promise<void> {
 		this.invalid.add(workflowId);
 		this.stickyReceiptCache.delete(workflowId);
+		this.stickyDeliveryCounts.delete(workflowId);
 		this.current.delete(workflowId);
 		this.pendingRecoveryAdmissions.delete(workflowId);
 		this.promptReservations.delete(workflowId);
@@ -1251,6 +1333,25 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.
 
-function stickyReceiptStep(messageId: string, delivery: Omit<PendingStageMessageDelivery, "deliveredAt">): string {
-	return `__atomic_pending_delivery_receipt:${durableHash(JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]))}`;
+function stickyReceiptStep(
+	messageId: string,
+	delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+	logicalRunId?: string,
+): string {
+	const identity = [messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission];
+	return `__atomic_pending_delivery_receipt:${durableHash(JSON.stringify(logicalRunId === undefined ? identity : ["counted", logicalRunId, ...identity]))}`;
+}
+
+function isStickyReceiptAccounting(
+	value: unknown,
+): value is { messageRunId: string; messageId: string; deliveryCount: number } {
+	if (typeof value !== "object" || value === null) return false;
+	const receipt = value as Record<string, unknown>;
+	return (
+		typeof receipt.messageRunId === "string" &&
+		typeof receipt.messageId === "string" &&
+		typeof receipt.deliveryCount === "number" &&
+		Number.isSafeInteger(receipt.deliveryCount) &&
+		receipt.deliveryCount > 0
+	);
 }

@@ -122,21 +122,26 @@ export interface DurableWorkflowBackend {
 		logicalRunId?: string,
 	): Promise<PendingStageMessage | undefined>;
 
+	getPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): number;
+	readPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): Promise<number>;
 	archivePendingStageDeliveryReceipt?(
 		workflowId: string,
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void>;
 	hasCachedPendingStageDeliveryReceipt?(
 		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		anySession?: boolean,
+		logicalRunId?: string,
 	): boolean;
 	hasPendingStageDeliveryReceipt?(
 		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId?: string,
 	): Promise<boolean>;
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
 	recordCheckpoint(checkpoint: DurableCheckpoint): void;
@@ -375,35 +380,58 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		return this.pendingReceipts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId]));
 	}
 
+	private readonly stickyDeliveryCounts = new Map<string, Map<string, number>>();
+
+	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
+		return this.stickyDeliveryCounts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId])) ?? 0;
+	}
+
 	async archivePendingStageDeliveryReceipt(
 		workflowId: string,
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
 		let receipts = this.stickyReceipts.get(workflowId);
 		if (receipts === undefined) {
 			receipts = new Set();
 			this.stickyReceipts.set(workflowId, receipts);
 		}
+		const receiptKey = pendingDeliveryReceiptKey(messageId, delivery, accounting?.messageRunId);
+		const existing = receipts.has(receiptKey);
+		receipts.add(receiptKey);
 		receipts.add(
-			JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]),
+			pendingDeliveryReceiptKey(
+				messageId,
+				{ ...delivery, sessionId: undefined, admission: undefined },
+				accounting?.messageRunId,
+			),
 		);
-		receipts.add(JSON.stringify([messageId, delivery.runId, delivery.stageId, undefined, undefined]));
 		if (delivery.admission === "context" && delivery.sessionId !== undefined)
-			receipts.add(JSON.stringify([messageId, delivery.runId, delivery.stageId, "context-any-session"]));
+			receipts.add(
+				`${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, accounting?.messageRunId)}:context-any-session`,
+			);
+		if (accounting !== undefined && !existing) {
+			let counts = this.stickyDeliveryCounts.get(workflowId);
+			if (counts === undefined) {
+				counts = new Map();
+				this.stickyDeliveryCounts.set(workflowId, counts);
+			}
+			const key = JSON.stringify([accounting.messageRunId, messageId]);
+			counts.set(key, Math.max(counts.get(key) ?? 0, accounting.deliveryCount));
+		}
 	}
 
 	async hasPendingStageDeliveryReceipt(
 		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId = workflowId,
 	): Promise<boolean> {
-		return (
-			this.stickyReceipts
-				.get(workflowId)
-				?.has(
-					JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]),
-				) ?? false
+		return [logicalRunId, undefined].some(
+			(logicalId) =>
+				this.stickyReceipts.get(workflowId)?.has(pendingDeliveryReceiptKey(messageId, delivery, logicalId)) ??
+				false,
 		);
 	}
 
@@ -412,20 +440,15 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		anySession = false,
+		logicalRunId = workflowId,
 	): boolean {
-		if (anySession && delivery.admission === "context")
-			return (
-				this.stickyReceipts
-					.get(workflowId)
-					?.has(JSON.stringify([messageId, delivery.runId, delivery.stageId, "context-any-session"])) ?? false
-			);
-		return (
-			this.stickyReceipts
-				.get(workflowId)
-				?.has(
-					JSON.stringify([messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission]),
-				) ?? false
-		);
+		return [logicalRunId, undefined].some((logicalId) => {
+			const name =
+				anySession && delivery.admission === "context"
+					? `${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, logicalId)}:context-any-session`
+					: pendingDeliveryReceiptKey(messageId, delivery, logicalId);
+			return this.stickyReceipts.get(workflowId)?.has(name) ?? false;
+		});
 	}
 
 	async persistPendingStageMessages(
@@ -721,6 +744,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		this.workflows.delete(workflowId);
 		this.pendingReceipts.delete(workflowId);
 		this.stickyReceipts.delete(workflowId);
+		this.stickyDeliveryCounts.delete(workflowId);
 		this.promptReservations.delete(workflowId);
 		this.deletedWorkflowIds.add(workflowId);
 	}
@@ -741,6 +765,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		this.workflows.clear();
 		this.pendingReceipts.clear();
 		this.stickyReceipts.clear();
+		this.stickyDeliveryCounts.clear();
 		this.promptReservations.clear();
 		this.deletedWorkflowIds.clear();
 	}
@@ -821,4 +846,13 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 
 function nextMetadataTimestamp(previous: number): number {
 	return Math.max(Date.now(), previous + 1);
+}
+
+function pendingDeliveryReceiptKey(
+	messageId: string,
+	delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+	logicalRunId?: string,
+): string {
+	const identity = [messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission];
+	return JSON.stringify(logicalRunId === undefined ? identity : ["counted", logicalRunId, ...identity]);
 }

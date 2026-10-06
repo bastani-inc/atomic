@@ -83,19 +83,35 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return this.inner.readSettledPendingStageMessage?.(this.scope.rootWorkflowId, messageId, logicalRunId);
 	}
 
+	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
+		return this.inner.getPendingStageMessageDeliveryCount?.(this.scope.rootWorkflowId, messageId, logicalRunId) ?? 0;
+	}
+
+	async readPendingStageMessageDeliveryCount(
+		workflowId: string,
+		messageId: string,
+		logicalRunId = workflowId,
+	): Promise<number> {
+		return this.inner.readPendingStageMessageDeliveryCount === undefined
+			? this.getPendingStageMessageDeliveryCount(workflowId, messageId, logicalRunId)
+			: await this.inner.readPendingStageMessageDeliveryCount(this.scope.rootWorkflowId, messageId, logicalRunId);
+	}
+
 	async archivePendingStageDeliveryReceipt(
 		_workflowId: string,
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
+		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
-		await this.inner.archivePendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery);
+		await this.inner.archivePendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery, accounting);
 	}
 
 	hasCachedPendingStageDeliveryReceipt(
-		_workflowId: string,
+		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		anySession = false,
+		logicalRunId = workflowId,
 	): boolean {
 		return (
 			this.inner.hasCachedPendingStageDeliveryReceipt?.(
@@ -103,17 +119,24 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 				messageId,
 				delivery,
 				anySession,
+				logicalRunId,
 			) ?? false
 		);
 	}
 
 	async hasPendingStageDeliveryReceipt(
-		_workflowId: string,
+		workflowId: string,
 		messageId: string,
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId = workflowId,
 	): Promise<boolean> {
 		return (
-			(await this.inner.hasPendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery)) ?? false
+			(await this.inner.hasPendingStageDeliveryReceipt?.(
+				this.scope.rootWorkflowId,
+				messageId,
+				delivery,
+				logicalRunId,
+			)) ?? false
 		);
 	}
 

@@ -248,7 +248,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(runId, async () => {
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
-				const current = run.pendingStageMessages ?? [];
+				if (records.length === 0) await backend.readPendingStageMessageDeliveryCount?.(runId, messageId, runId);
+				let current = reconcileDeliveryCounts(backend, runId, run.pendingStageMessages ?? []);
 				const unconfirmedRecords = [];
 				for (const record of records) {
 					const contextReceipt =
@@ -269,6 +270,11 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					) {
 						unconfirmedRecords.push(record);
 					}
+				}
+				current = reconcileDeliveryCounts(backend, runId, current);
+				if (current !== run.pendingStageMessages) {
+					run.pendingStageMessages = [...current];
+					context.bumpAndNotify();
 				}
 				const next = recordPendingStageMessageDeliveries(
 					current,
@@ -294,7 +300,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(runId, async () => {
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
-				const current = run.pendingStageMessages ?? [];
+				await backend.readPendingStageMessageDeliveryCount?.(runId, messageId, runId);
+				const current = reconcileDeliveryCounts(backend, runId, run.pendingStageMessages ?? []);
 				const next = settleStickyPendingStageMessageDelivered(current, runId, messageId, settledAt);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
@@ -329,55 +336,89 @@ async function persistTransition(
 	messages: readonly PendingStageMessage[],
 	context: StoreContext,
 ): Promise<readonly PendingStageMessage[]> {
-	let retained = messages;
-	if (
-		backend.archivePendingStageDeliveryReceipt !== undefined &&
-		backend.hasPendingStageDeliveryReceipt !== undefined
-	) {
-		const compacted: PendingStageMessage[] = [];
-		for (const entry of retained) {
-			if (entry.sticky !== true || entry.deliveries === undefined) {
-				compacted.push(entry);
-				continue;
-			}
-			const latest = new Map<string, number>();
-			entry.deliveries.forEach((delivery, index) => {
-				latest.set(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission]), index);
-			});
-			const deliveries = [];
-			for (let index = 0; index < entry.deliveries.length; index++) {
-				const delivery = entry.deliveries[index]!;
-				const stage = context.state.runs
-					.find((run) => run.id === delivery.runId)
-					?.stages.find((stage) => stage.id === delivery.stageId);
-				if (
-					entry.status !== "queued" ||
-					stage?.status === "completed" ||
-					stage?.status === "skipped" ||
-					stage?.status === "failed"
-				) {
-					await backend.archivePendingStageDeliveryReceipt(runId, entry.id, delivery);
+	let retained = reconcileDeliveryCounts(backend, runId, messages);
+	try {
+		if (
+			backend.archivePendingStageDeliveryReceipt !== undefined &&
+			backend.hasPendingStageDeliveryReceipt !== undefined
+		) {
+			const compacted: PendingStageMessage[] = [];
+			for (const entry of retained) {
+				if (entry.sticky !== true || entry.deliveries === undefined) {
+					compacted.push(entry);
 					continue;
 				}
-				if (
-					latest.get(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission])) === index ||
-					delivery.sessionId === undefined
-				)
-					deliveries.push(delivery);
-				else await backend.archivePendingStageDeliveryReceipt(runId, entry.id, delivery);
+				const latest = new Map<string, number>();
+				entry.deliveries.forEach((delivery, index) => {
+					latest.set(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission]), index);
+				});
+				const deliveries = [];
+				let archivedThrough = -1;
+				for (let index = 0; index < entry.deliveries.length; index++) {
+					const delivery = entry.deliveries[index]!;
+					const stage = context.state.runs
+						.find((run) => run.id === delivery.runId)
+						?.stages.find((stage) => stage.id === delivery.stageId);
+					if (
+						entry.status !== "queued" ||
+						stage?.status === "completed" ||
+						stage?.status === "skipped" ||
+						stage?.status === "failed" ||
+						(latest.get(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission])) !== index &&
+							delivery.sessionId !== undefined)
+					) {
+						while (archivedThrough < index) {
+							const prefixIndex = archivedThrough + 1;
+							await backend.archivePendingStageDeliveryReceipt(runId, entry.id, entry.deliveries[prefixIndex]!, {
+								messageRunId: entry.runId,
+								deliveryCount:
+									(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
+							});
+							archivedThrough = prefixIndex;
+						}
+					} else {
+						deliveries.push(delivery);
+					}
+				}
+				compacted.push(deliveries.length === entry.deliveries.length ? entry : { ...entry, deliveries });
 			}
-			compacted.push(deliveries.length === entry.deliveries.length ? entry : { ...entry, deliveries });
+			retained = compacted;
 		}
-		retained = compacted;
+		retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
+		if (backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined) {
+			retained = await retainPendingStageMessages(retained, (entry) =>
+				backend.archivePendingStageMessage!(runId, entry),
+			);
+		}
+		if (!(await backend.persistPendingStageMessages(runId, retained))) {
+			throw new Error(`atomic-workflows: durable workflow ${runId} is unavailable for pending-stage persistence`);
+		}
+		return retained;
+	} finally {
+		const run = context.findRun(runId);
+		if (run !== undefined) {
+			const current = run.pendingStageMessages ?? [];
+			const recovered = reconcileDeliveryCounts(backend, runId, current);
+			if (recovered !== current) {
+				run.pendingStageMessages = [...recovered];
+				context.bumpAndNotify();
+			}
+		}
 	}
-	retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
-	if (backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined) {
-		retained = await retainPendingStageMessages(retained, (entry) =>
-			backend.archivePendingStageMessage!(runId, entry),
-		);
-	}
-	if (!(await backend.persistPendingStageMessages(runId, retained))) {
-		throw new Error(`atomic-workflows: durable workflow ${runId} is unavailable for pending-stage persistence`);
-	}
-	return retained;
+}
+
+function reconcileDeliveryCounts(
+	backend: DurableWorkflowBackend,
+	runId: string,
+	messages: readonly PendingStageMessage[],
+): readonly PendingStageMessage[] {
+	let changed = false;
+	const recovered = messages.map((entry) => {
+		if (entry.sticky !== true) return entry;
+		const count = backend.getPendingStageMessageDeliveryCount?.(runId, entry.id, entry.runId) ?? 0;
+		if (count <= (entry.deliveryCount ?? entry.deliveries?.length ?? 0)) return entry;
+		changed = true;
+		return { ...entry, deliveryCount: count };
+	});
+	return changed ? recovered : messages;
 }
