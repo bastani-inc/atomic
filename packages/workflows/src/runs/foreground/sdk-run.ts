@@ -5,6 +5,7 @@ import { readDbosFailureDetail } from "../../durable/dbos-registration-diagnosti
 import { requestDbosSystemDatabaseUrl } from "../../durable/dbos-system-database-url.js";
 import { initializeDurableBackend, initializeRequiredDurableBackend } from "../../durable/factory.js";
 import { run as engineRun } from "../../engine/run.js";
+import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import { WorkflowDurabilityRequiredError } from "../../shared/workflow-durability.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
@@ -23,8 +24,9 @@ export function run<
 export async function run<TInputs extends WorkflowInputValues, TRunInputs extends WorkflowInputValues = TInputs>(
 	def: WorkflowDefinition<TInputs, WorkflowOutputValues, TRunInputs>,
 	inputs: WorkflowRunInputArgument,
-	opts: RunOpts = {},
+	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
+	const opts = withDefaultAgentSessionAdapter(callerOpts);
 	const durability = opts.durability;
 	if (durability?.mode === "memory") {
 		return await engineRun(def, inputs, { ...opts, durableBackend: new InMemoryDurableBackend() });
@@ -46,6 +48,18 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	} finally {
 		await releaseLease();
 	}
+}
+
+/** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
+function withDefaultAgentSessionAdapter(opts: RunOpts): RunOpts {
+	if (opts.adapters?.agentSession !== undefined || opts.adapters?.prompt !== undefined) return opts;
+	return {
+		...opts,
+		adapters: {
+			...opts.adapters,
+			agentSession: createAgentSessionAdapter(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+		},
+	};
 }
 
 async function initializeRequired(workflowName: string): Promise<void> {

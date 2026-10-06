@@ -26,8 +26,14 @@ import {
 	type DefaultResourceLoaderInheritanceSnapshot,
 	isStaleExtensionContextError,
 	resolveRestoredModelReference,
+	SessionManager,
 } from "@bastani/atomic";
-import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import type {
+	AgentSessionAdapter,
+	StageAdapters,
+	StageSessionCreateResult,
+	StageSessionRuntime,
+} from "../runs/foreground/stage-runner.js";
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -126,8 +132,11 @@ export interface RuntimeWiringSurface {
 }
 
 export interface RuntimeAdapterBuildOptions {
-	/** Test seam for SDK session creation. */
-	createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
+	/** Session factory override; receives stage startup cancellation and phase hooks. */
+	createAgentSession?: (
+		options?: CreateAgentSessionOptions,
+		prepareOptions?: PrepareAtomicStageSessionOptions,
+	) => Promise<StageSessionCreateResult>;
 	/** Test seam: exercise production preparation and binding with an injected SDK. */
 	sdk?: PiCodingAgentSdk;
 	/** Broker that routes stage-local custom UI into attached workflow nodes. */
@@ -616,4 +625,32 @@ export function buildRuntimeAdapters(
 	};
 
 	return adapters;
+}
+
+/**
+ * Public SDK factory for the default workflow stage adapter.
+ *
+ * Each stage gets an in-process `createAgentSession` session from
+ * `@bastani/atomic` (imported lazily on first stage), with the same stage
+ * policy as the workflows extension. `baseOptions` apply to every stage and
+ * stage options override them. Each stage gets its own session manager:
+ * stages without one get `SessionManager.inMemory(cwd)`.
+ */
+export function createAgentSessionAdapter(
+	baseOptions: Omit<CreateAgentSessionOptions, "sessionManager"> = {},
+): AgentSessionAdapter {
+	const { agentSession } = buildRuntimeAdapters(
+		{
+			getChildSessionOptions: (stageOptions) => {
+				const options: CreateAgentSessionOptions = { ...baseOptions };
+				for (const [key, value] of Object.entries(stageOptions)) {
+					if (value !== undefined) Object.assign(options, { [key]: value });
+				}
+				options.sessionManager ??= SessionManager.inMemory(options.cwd ?? process.cwd());
+				return options;
+			},
+		},
+		{ createAgentSession: (options, prepareOptions) => createPiSdkAgentSession(options, prepareOptions) },
+	);
+	return agentSession!;
 }

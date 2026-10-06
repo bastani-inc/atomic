@@ -7,6 +7,7 @@
  * typebox directly.
  */
 
+import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import type {} from "./authoring/typebox-defaults.js";
 
@@ -216,6 +217,15 @@ export declare function run<
 	inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
+/**
+ * Build the default stage-session adapter: each stage runs an in-process Atomic
+ * `createAgentSession` session. `baseOptions` apply to every stage; stage options
+ * override them. Each stage gets its own session manager, in-memory unless the
+ * stage sets `sessionDir` or resumes or forks a session.
+ */
+export declare function createAgentSessionAdapter(
+	baseOptions?: Omit<CreateAgentSessionOptions, "sessionManager">,
+): AuthoringContract.AgentSessionAdapter;
 export declare function resolveInputs<TInputs extends WorkflowInputValues>(
 	schema: Readonly<Record<keyof TInputs & string, TSchema>>,
 	provided: Partial<TInputs>,
