@@ -188,6 +188,29 @@ test(
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
+test(
+	"a liveness probe late in the idle window keeps the broker up for the client that follows it",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-probe-"));
+		const broker = spawnBroker(agentDir);
+		await waitForBrokerPid(agentDir, broker);
+		const probeLeadMs = 1_000;
+		await sleep(BROKER_IDLE_SHUTDOWN_MS - probeLeadMs);
+
+		const probe = await connect(agentDir);
+		await new Promise<void>((resolveClosed) => {
+			probe.once("close", () => resolveClosed());
+			probe.end();
+		});
+		await sleep(probeLeadMs * 2);
+
+		assert.equal(isBrokerAlive(broker), true, "broker retired between a successful probe and the client connect");
+		const client = await connect(agentDir);
+		client.end();
+	},
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+);
+
 // #2765
 unixEvictionTest(
 	"an evicted idle broker does not unlink a successor's socket or pid",
