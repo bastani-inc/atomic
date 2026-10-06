@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import type { SessionInfo } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -1072,7 +1072,7 @@ function senderInfo(group = GROUP): SessionInfo {
 
 interface StickyBridgeHarness {
 	readonly store: ReturnType<typeof createStore>;
-	readonly backend: InMemoryDurableBackend;
+	readonly backend: DurableWorkflowBackend;
 	readonly emitted: Array<{ event: string; payload: Record<string, unknown> }>;
 	request(
 		id: string,
@@ -1102,19 +1102,26 @@ interface StickyBridgeHarness {
 
 function stickyBridgeFixture(
 	stages: Parameters<typeof rootFixture>[0] | Parameters<typeof rootFixture>[0][],
-	options: { readonly possibleStages?: readonly string[]; readonly childRun?: boolean } = {},
+	options: {
+		readonly possibleStages?: readonly string[];
+		readonly childRun?: boolean;
+		readonly backend?: DurableWorkflowBackend;
+		readonly store?: ReturnType<typeof createStore>;
+	} = {},
 ): StickyBridgeHarness {
-	const store = createStore();
+	const store = options.store ?? createStore();
 	const stageList = Array.isArray(stages) ? stages : [stages];
-	store.recordRunStart({
-		id: ROOT_RUN_ID,
-		name: "flow",
-		inputs: {},
-		status: "running",
-		stages: stageList as never,
-		startedAt: 1,
-		...(options.possibleStages === undefined ? {} : { possibleStages: options.possibleStages }),
-	});
+	if (options.store === undefined) {
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			stages: stageList as never,
+			startedAt: 1,
+			...(options.possibleStages === undefined ? {} : { possibleStages: options.possibleStages }),
+		});
+	}
 	if (options.childRun) {
 		store.recordRunStart({
 			id: CHILD_RUN_ID,
@@ -1128,8 +1135,10 @@ function stickyBridgeFixture(
 			startedAt: 2,
 		});
 	}
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	const backend = options.backend ?? new InMemoryDurableBackend();
+	if (backend.getWorkflow(ROOT_RUN_ID) === undefined) {
+		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	}
 	setDurableBackend(backend);
 	const listeners = new Map<string, (payload: unknown) => void>();
 	const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
@@ -1203,6 +1212,56 @@ function stickyBridgeFixture(
 }
 
 describe("pending-stage bridge sticky delivery", () => {
+	test("suppresses archived live transport retries after failed-stage cold hydration (#3467)", async () => {
+		const sdk = createMockSdk();
+		const backend = new DbosDurableBackend(sdk);
+		const stage = baseStage({ id: "live-id", status: "running", sessionId: "original-session" });
+		const harness = stickyBridgeFixture(stage, { backend });
+		const target = `workflow:${ROOT_RUN_ID}/**`;
+		const deliveredTargets = [`${GROUP}/live-id`];
+		try {
+			const sent = await harness.request("archived-transport", { target });
+			assert.equal(sent.result?.outcome, "queued");
+			if (sent.result?.outcome === "queued") assert.deepEqual(sent.result.forwardTargets, deliveredTargets);
+			assert.equal(await harness.confirm("archived-transport", target, deliveredTargets), true);
+			harness.store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "failed" });
+			await harness.request("archive-trigger", { target });
+			assert.deepEqual(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveries, []);
+		} finally {
+			harness.dispose();
+		}
+		const resumed = new DbosDurableBackend(sdk);
+		await resumed.hydrateWorkflow(ROOT_RUN_ID);
+		const store = createStore();
+		store.recordRunStart({
+			...harness.store.runs()[0]!,
+			stages: [{ ...stage, status: "running" }],
+			pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
+		});
+		const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+		try {
+			const retried = await restored.request("archived-transport", { target });
+			assert.equal(retried.result?.outcome, "queued");
+			if (retried.result?.outcome === "queued") assert.equal(retried.result.forwardTargets, undefined);
+			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
+			assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+			store.recordStageSession(ROOT_RUN_ID, stage.id, { sessionId: "new-session" });
+			const newRecipient = await restored.request("archived-transport", { target });
+			assert.equal(newRecipient.result?.outcome, "queued");
+			if (newRecipient.result?.outcome === "queued") {
+				assert.deepEqual(newRecipient.result.forwardTargets, deliveredTargets);
+			}
+			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), true);
+			assert.equal(await restored.confirm("archived-transport", target, deliveredTargets), false);
+			assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
+			const repeated = await restored.request("archived-transport", { target });
+			assert.equal(repeated.result?.outcome, "queued");
+			if (repeated.result?.outcome === "queued") assert.equal(repeated.result.forwardTargets, undefined);
+		} finally {
+			restored.dispose();
+		}
+	});
+
 	test("keeps transport retries deduplicated when older session receipts are archived (#3467)", async () => {
 		const harness = stickyBridgeFixture(baseStage({ id: "live-id", status: "running", sessionId: "session-0" }));
 		try {

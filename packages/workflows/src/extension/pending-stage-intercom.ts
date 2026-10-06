@@ -776,14 +776,27 @@ async function deliverStickyTarget(
 	// send would never re-forward to it. A dedup retry therefore re-forwards exactly the
 	// live matches the ledger has not confirmed yet.
 	const recordedDeliveries = result.entry.deliveries ?? [];
-	const forwardTargets = liveMatches
-		.filter(
-			(match) =>
-				!recordedDeliveries.some(
-					(delivery) => delivery.runId === match.run.id && delivery.stageId === match.stage.id,
-				),
-		)
-		.map((match) => match.target);
+	const forwardTargets: string[] = [];
+	for (const match of liveMatches) {
+		if (
+			recordedDeliveries.some(
+				(delivery) =>
+					delivery.runId === match.run.id &&
+					delivery.stageId === match.stage.id &&
+					delivery.sessionId === match.stage.sessionId &&
+					delivery.admission === "transport",
+			) ||
+			(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, result.entry.id, {
+				runId: match.run.id,
+				stageId: match.stage.id,
+				...(match.stage.sessionId === undefined ? {} : { sessionId: match.stage.sessionId }),
+				admission: "transport",
+			}))
+		) {
+			continue;
+		}
+		forwardTargets.push(match.target);
+	}
 	return {
 		outcome: "queued",
 		position: result.position ?? 1,
@@ -838,10 +851,17 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	if (records.length === 0) return false;
 	const backend = durableBackendForRun(getDurableBackend(), runs, rootRunId);
 	if (backend === undefined) return false;
+	const unconfirmedRecords = [];
+	for (const record of records) {
+		if (!(await backend.hasPendingStageDeliveryReceipt?.(rootRunId, entry.id, record))) {
+			unconfirmedRecords.push(record);
+		}
+	}
+	if (unconfirmedRecords.length === 0) return false;
 	return activeStore.recordPendingStageMessageDeliveries(
 		rootRunId,
 		entry.id,
-		records,
+		unconfirmedRecords,
 		new Date().toISOString(),
 		backend,
 	);
