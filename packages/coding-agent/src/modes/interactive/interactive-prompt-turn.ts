@@ -1,6 +1,7 @@
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
@@ -29,14 +30,16 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		if (deferredStartupNeedsPromptGate) {
 			await this.ensureDeferredStartupComplete();
 		}
-		// The public facade omits prototype-installed command methods, but the
-		// interactive runtime always owns the concrete AgentSession dispatcher.
-		const handledSlashCommand = await tryExecuteSessionSlashCommand(
-			this.session as typeof this.session & Pick<AgentSessionInternalSurface, "_tryExecuteExtensionCommand">,
-			userInput,
-		);
+		const handledSlashCommand =
+			!(this.runtimeHost instanceof IsolatedInteractiveRuntime) &&
+			(await tryExecuteSessionSlashCommand(
+				this.session as typeof this.session & Pick<AgentSessionInternalSurface, "_tryExecuteExtensionCommand">,
+				userInput,
+			));
 		if (!handledSlashCommand) {
-			await this.session.resumeQueuedMessages();
+			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) || !this.isExtensionCommand(userInput)) {
+				await this.session.resumeQueuedMessages();
+			}
 			await this.session.prompt(userInput);
 		}
 	} catch (error) {

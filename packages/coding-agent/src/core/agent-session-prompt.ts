@@ -387,6 +387,7 @@ export async function _runAgentPrompt(
 		if (this.isStreaming) promptStarted?.();
 		await turn;
 		await this.waitForRetry();
+		if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 		if (
 			this._agentRunAbortRequested &&
 			!this._queuedMessagesPaused &&
@@ -461,7 +462,7 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
-	if (this._agentRunAbortRequested) return;
+	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
 	await this.agent.continue();
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
@@ -492,8 +493,13 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 }
 
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
+	const lifetime = sessionLifetime(this);
+	const closing = () => this._disposed || lifetime.aborted || sessionGenerationClosing.has(this);
+	if (closing()) return;
 	await this._agentEventQueue;
+	if (closing()) return;
 	await preparePriorityContinuation(this);
+	if (closing()) return;
 
 	if (
 		!this._agentRunAbortRequested &&
@@ -503,6 +509,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 	) {
 		while (
 			!this._agentRunAbortRequested &&
+			!closing() &&
 			!this._stopAfterTurnBlockedContinuation &&
 			!this._queuedMessagesPaused &&
 			this.agent.hasQueuedMessages()
@@ -514,6 +521,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 		}
 	}
 	if (this._stopAfterTurnBlockedContinuation) return;
+	if (closing()) return;
 
 	await answerAdmittedQueuedMessage(this);
 }

@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 
 type WorkingLoader = Text & { stop: () => void };
 
@@ -14,6 +15,8 @@ type PromptTurnContext = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
 	options: { deferredModelScopePatterns?: string[] };
+	runtimeHost?: IsolatedInteractiveRuntime;
+	isExtensionCommand?: (text: string) => boolean;
 	session: {
 		isStreaming: boolean;
 		subscribe: (listener: (event: { type: string }) => void) => () => void;
@@ -164,6 +167,19 @@ describe("prompt turn working indicator continuity", () => {
 		expect(indicatorVisible(context)).toBe(false);
 		expect(context.loadingAnimation).toBeUndefined();
 		expect(context.promptTurnWorkingLoaderActive).toBe(false);
+	});
+
+	it("routes isolated slash commands to the engine without resuming held messages (#3468)", async () => {
+		const context = createContext({ slashHandled: true });
+		context.runtimeHost = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
+		context.isExtensionCommand = (text) => text.startsWith("/workflow");
+
+		await context.runUserPromptTurn.call(context, "/workflow status");
+
+		expect(context.session.prompt).toHaveBeenCalledWith("/workflow status");
+		expect(context.session.resumeQueuedMessages).not.toHaveBeenCalled();
+		expect(context.session._tryExecuteExtensionCommand).not.toHaveBeenCalled();
+		expect(indicatorVisible(context)).toBe(false);
 	});
 
 	it("keeps the indicator through failed deferred startup until prompt preflight, then clears it when no turn starts", async () => {

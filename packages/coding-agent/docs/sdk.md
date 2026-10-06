@@ -437,6 +437,8 @@ A `ShutdownFailed` error contains component failures in `errors`; cleanup still 
 
 Captured extension APIs also refuse new execution, mutations and registrations as soon as close or reload begins. Already-admitted `pi.exec()` calls remain part of the awaited drain; provide `signal` or `timeout` when invoking subprocesses that might not finish on their own. `abort()` alone does not retire the API. A rejected transactional reload restores the surviving generation's action admission.
 
+Custom messages queued with `persistWhenStreaming: true` survive a successful reload and receive their model turn through the replacement extensions. An explicitly paused queue remains paused; call `resumeQueuedMessages()` before sending the next prompt. A rejected transactional reload retains the notices for the next prompt on the surviving generation.
+
 #### Finishing admitted work
 
 Disposal and reload wait for admitted callbacks, resource refreshes, and subprocesses. Ensure callbacks can settle independently of disposal, including work started by cleanup handlers. Give `pi.exec()` calls a timeout or cancellation signal, and await them in the handler so you can inspect failures. Never make cleanup wait for disposal itself.

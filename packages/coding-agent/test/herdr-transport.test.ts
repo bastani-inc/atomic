@@ -101,6 +101,39 @@ test("an identical snapshot preserves an explicit refresh queued during delivery
 	}
 });
 
+for (const queuedDuringFlight of [false, true]) {
+	test(`returning to an earlier snapshot retries after lost delivery ${queuedDuringFlight ? "during" : "after"} the flight (#3468)`, async () => {
+		const fake = await fakeHerdr('if (args.includes("working")) setInterval(() => {}, 1000); else finish();');
+		const diagnostics: HerdrDiagnostic[] = [];
+		const owner = await claimPaneReporting(
+			fake.environment,
+			{ id: "parent" },
+			{
+				timeoutMs: 1000,
+				diagnostic: (value) => diagnostics.push(value),
+			},
+		);
+		try {
+			const idle = { state: "idle", reason: "quiescent" } as const;
+			reportPaneActivity(owner, idle, true);
+			await owner.flush();
+			reportPaneActivity(owner, { state: "working", reason: "executing" }, true);
+			await fake.waitForStarted(2);
+			if (!queuedDuringFlight) await owner.flush();
+			reportPaneActivity(owner, idle, true);
+			await owner.flush();
+			assert.deepEqual(diagnostics, [{ kind: "timeout" }]);
+			assert.deepEqual(
+				(await fake.calls()).filter((call) => call.phase === "start").map((call) => arg(call.args, "--state")),
+				["idle", "working", "idle"],
+			);
+		} finally {
+			await releasePaneReporting(owner);
+			await fake.dispose();
+		}
+	});
+}
+
 // #2891: failed delivery must not consume the claim's parent identity.
 test("pane reporting retries identity until success", async () => {
 	const fake = await fakeHerdr('finish(args.includes("working") ? 1 : 0);');

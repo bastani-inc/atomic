@@ -119,6 +119,8 @@ export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, 
 			if (await send(owner, args)) {
 				owner.identitySent = true;
 				owner.lastDeliveredActivity = next;
+			} else {
+				owner.lastDeliveredActivity = undefined;
 			}
 		}
 	})().finally(() => {

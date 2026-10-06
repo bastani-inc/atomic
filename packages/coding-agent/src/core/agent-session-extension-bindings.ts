@@ -648,6 +648,22 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 		replaceSessionTaskOwner(this);
 		if (this._disposed) throw hostInputError("SessionClosed");
 		await reloadGeneration.call(this, options);
+		if (
+			!this._disposed &&
+			!sessionGenerationClosing.has(this) &&
+			!this.isStreaming &&
+			!this._queuedMessagesPaused &&
+			this._protectedStreamingCustomMessages?.some((entry) => entry.phase === "queued")
+		) {
+			this._agentRunAbortRequested = false;
+			void trackSessionWork(this, () => this._runAgentPrompt([])).catch((error) => {
+				this._extensionRunner.emitError({
+					extensionPath: "session:reload",
+					event: "reload",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+		}
 	} catch (error) {
 		if (!this._disposed && this._extensionRunner === retiringRunner) retiringRunner.resumeAfterRejectedReload();
 		throw error;
