@@ -1,6 +1,6 @@
 /** Workflow authoring UI, builder, run, and result contract types. */
 
-import type { KeybindingsManager, ModelRouterOutput, Theme } from "@bastani/atomic";
+import type { AgentSessionEvent, KeybindingsManager, ModelRouterOutput, Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type {
@@ -337,6 +337,12 @@ export interface RunOpts {
 	readonly onRunStart?: (snapshot: RunSnapshot) => void;
 	readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
 	readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
+	/**
+	 * Receives every event from each stage's agent session, tagged with the stage's run and stage ids.
+	 * The stream continues across fallback-model replacement sessions and includes nested child
+	 * workflow stages, which report their child run id. Listener exceptions and rejections are ignored.
+	 */
+	readonly onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
 	readonly onRunEnd?: (
 		runId: string,
 		status: RunStatus,

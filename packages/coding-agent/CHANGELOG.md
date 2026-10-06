@@ -7,6 +7,8 @@
 - Added `compactionModel` and a **Compaction model** selector in `/settings` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Added verbatim classifier compaction with registered models such as `typesafe/jev-latest`, retaining protected context and recent messages ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Added Morph verbatim compaction with `morph/morph-compactor`, authenticated through `/login morph` or `MORPH_API_KEY` ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added `session.workflows.observe(observer)`, so SDK hosts can follow the workflow runs the agent launches without writing an extension. The observer receives a snapshot first, then changes in order. Root activity now includes an optional `graph` that lists each stage and `ctx.tool` node with its status, parents, and pending prompt, plus any run-level prompts ([#3476](https://github.com/bastani-inc/atomic/issues/3476)).
+- Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
 
 ### Changed
 
@@ -17,6 +19,7 @@
 
 - Chat-provider policy refusals during compaction now try a pi-style summary on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
 - Morph compaction failures now include the HTTP status and a bounded, credential-redacted response excerpt in error diagnostics ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

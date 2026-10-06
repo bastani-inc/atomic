@@ -201,3 +201,55 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 		await fake.dispose();
 	}
 });
+
+test("graph-only workflow activity changes do not re-report the pane (#3476)", async () => {
+	const fake = await fakeHerdr();
+	const runtime = createExtensionRuntime();
+	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
+	const session = SessionManager.inMemory();
+	const extension = await loadExtensionFromFactory(
+		createHerdrExtension({ env: fake.env, enabled: () => true }),
+		fake.dir,
+		createEventBus(),
+		runtime,
+		"herdr",
+	);
+	const runner = new ExtensionRunner([extension], runtime, fake.dir, session, {} as never);
+	runner.setUIContext({ ...noOpUIContext }, "tui");
+	const root: WorkflowRootActivity = {
+		rootRunId: "root",
+		ownerSessionId: session.getSessionId(),
+		state: "working",
+		reason: "executing",
+		activeExecutionCount: 1,
+		actionableBlockCount: 0,
+		needsAttention: false,
+	};
+	const node = {
+		kind: "stage",
+		id: "plan",
+		runId: "root",
+		nodeId: "plan",
+		name: "plan",
+		parentIds: [],
+		depth: 0,
+	} as const;
+	try {
+		await runner.emit({ type: "session_start" });
+		publisher.publishSnapshot({ availability: "ready", roots: [] });
+		await fake.waitFor(1);
+		publisher.publishChanged({ ...root, graph: { nodes: [{ ...node, status: "running" }] } });
+		const [, working] = await fake.waitFor(2);
+		assert.equal(arg(working!.args, "--state"), "working");
+		publisher.publishChanged({ ...root, graph: { nodes: [{ ...node, status: "completed" }] } });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal((await fake.calls()).filter((call) => call.phase === "start").length, 2);
+		publisher.publishChanged({ ...root, state: "idle", reason: "quiescent", activeExecutionCount: 0 });
+		const calls = await fake.waitFor(3);
+		assert.equal(arg(calls[2]!.args, "--state"), "idle");
+	} finally {
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		runner.invalidate();
+		await fake.dispose();
+	}
+});

@@ -4,10 +4,16 @@ import { test } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
-	projectWorkflowActivity,
+	projectWorkflowActivity as projectWithGraph,
+	type WorkflowActivityInput,
 	type WorkflowActivityOwnership,
 	workflowActivityNodeKey,
 } from "../../packages/workflows/src/shared/workflow-activity.js";
+
+/** Root state semantics only; graph topology has its own coverage below. */
+function projectWorkflowActivity(input: WorkflowActivityInput): WorkflowRootActivity[] {
+	return projectWithGraph(input).map(({ graph, ...root }) => root);
+}
 
 function stage(id: string, status: StageSnapshot["status"] = "running", parentIds: string[] = []): StageSnapshot {
 	return { id, name: id, status, parentIds, toolEvents: [] };
@@ -667,4 +673,99 @@ test("workflow activity reports stopping only after independent sibling executio
 		assert.deepEqual({ snapshot, ownership: owned }, before);
 		assert.deepEqual(store.graphSnapshot(), before.snapshot);
 	}
+});
+
+test("workflow activity projects each root's expanded graph with nested child runs (#3476)", () => {
+	const root = run({
+		stages: [
+			{ ...stage("plan", "completed"), executionOrder: 0 },
+			{
+				...stage("child", "running", ["plan"]),
+				executionOrder: 2,
+				workflowChildRun: { runId: "child-run", alias: "child", workflow: "child" },
+			},
+			{
+				...stage("ask", "awaiting_input", ["plan"]),
+				executionOrder: 3,
+				pendingPrompt: { ...prompt, kind: "select", choices: ["a"] },
+			},
+		],
+		toolNodes: [{ ...tool("fetch"), parentIds: ["plan"], executionOrder: 1, ordinal: 4 }],
+	});
+	const child = run({
+		id: "child-run",
+		parentRunId: "root",
+		parentStageId: "child",
+		rootRunId: "root",
+		stages: [stage("inner", "pending")],
+	});
+	const [activity] = projectWithGraph({
+		snapshot: { runs: [root, child], notices: [], version: 0 },
+		ownership: ownership(),
+	});
+	assert.deepEqual(activity?.graph, {
+		nodes: [
+			{
+				kind: "stage",
+				id: "plan",
+				runId: "root",
+				nodeId: "plan",
+				name: "plan",
+				status: "completed",
+				parentIds: [],
+				executionOrder: 0,
+				depth: 0,
+			},
+			{
+				kind: "tool",
+				id: "fetch",
+				runId: "root",
+				nodeId: "fetch",
+				name: "fetch",
+				status: "running",
+				parentIds: ["plan"],
+				executionOrder: 1,
+				depth: 0,
+				ordinal: 4,
+			},
+			{
+				kind: "stage",
+				id: "child-run:inner",
+				runId: "child-run",
+				nodeId: "inner",
+				name: "inner",
+				status: "pending",
+				parentIds: ["plan"],
+				depth: 1,
+			},
+			{
+				kind: "stage",
+				id: "ask",
+				runId: "root",
+				nodeId: "ask",
+				name: "ask",
+				status: "awaiting_input",
+				parentIds: ["plan"],
+				executionOrder: 3,
+				depth: 0,
+				pendingPrompt: { id: "prompt", kind: "select", message: "Private prompt", choices: ["a"], createdAt: 0 },
+			},
+		],
+	});
+	assert.deepEqual(JSON.parse(JSON.stringify(activity?.graph)), activity?.graph, "graph must be JSON-serializable");
+});
+
+test("workflow activity graph carries run-level prompts with their owning run (#3476)", () => {
+	const child = run({ id: "child-run", parentRunId: "root", rootRunId: "root", pendingPrompt: prompt });
+	const [withPrompt] = projectWithGraph({
+		snapshot: { runs: [run({ stages: [stage("plan")] }), child], notices: [], version: 0 },
+		ownership: ownership(),
+	});
+	assert.deepEqual(withPrompt?.graph?.runPrompts, [{ ...prompt, runId: "child-run" }]);
+
+	const [withoutPrompt] = projectWithGraph({
+		snapshot: { runs: [run({ stages: [stage("plan")] })], notices: [], version: 0 },
+		ownership: ownership(),
+	});
+	assert.equal(withoutPrompt?.graph !== undefined && "runPrompts" in withoutPrompt.graph, false);
 });

@@ -4,8 +4,18 @@
  * stopping and acknowledgement ownership uses plain run ids.
  */
 
-import type { WorkflowRootActivity } from "@bastani/atomic";
-import type { RunSnapshot, StoreSnapshot } from "./store-types.js";
+import type {
+	WorkflowGraphNode,
+	WorkflowGraphNodePrompt,
+	WorkflowRootActivity,
+	WorkflowRootGraph,
+} from "@bastani/atomic";
+import {
+	createWorkflowGraphExpander,
+	type ExpandedWorkflowGraph,
+	type ExpandedWorkflowNode,
+} from "./expanded-workflow-graph.js";
+import type { PendingPrompt, RunSnapshot, StoreSnapshot } from "./store-types.js";
 
 /**
  * Runtime execution ownership for one session. executingStageIds,
@@ -167,6 +177,57 @@ function projectRoot(
 	};
 }
 
+function projectPrompt(prompt: PendingPrompt): WorkflowGraphNodePrompt {
+	return {
+		id: prompt.id,
+		kind: prompt.kind,
+		message: prompt.message,
+		...(prompt.choices === undefined ? {} : { choices: [...prompt.choices] }),
+		createdAt: prompt.createdAt,
+	};
+}
+
+function projectGraphNode(node: ExpandedWorkflowNode): WorkflowGraphNode {
+	if (node.kind === "stage") {
+		const { stage } = node;
+		const target = stage.workflowGraphTarget;
+		return {
+			kind: "stage",
+			id: stage.id,
+			runId: target.runId,
+			nodeId: target.stageId,
+			name: stage.name,
+			status: stage.status,
+			parentIds: [...stage.parentIds],
+			...(stage.executionOrder === undefined ? {} : { executionOrder: stage.executionOrder }),
+			depth: target.depth,
+			...(stage.pendingPrompt === undefined ? {} : { pendingPrompt: projectPrompt(stage.pendingPrompt) }),
+		};
+	}
+	const { tool } = node;
+	return {
+		kind: "tool",
+		id: tool.id,
+		runId: tool.runId,
+		// Only the root run (depth 0) keeps run-local ids in the expanded graph.
+		nodeId: tool.depth === 0 ? tool.id : tool.id.slice(tool.runId.length + 1),
+		name: tool.name,
+		status: tool.status,
+		parentIds: [...tool.parentIds],
+		...(tool.executionOrder === undefined ? {} : { executionOrder: tool.executionOrder }),
+		depth: tool.depth,
+		ordinal: tool.ordinal,
+	};
+}
+
+/** JSON-serializable expanded graph of one root, including nested child workflow runs. */
+function projectGraph(graph: ExpandedWorkflowGraph, runs: readonly RunSnapshot[]): WorkflowRootGraph {
+	const runPrompts = runs.flatMap((run) =>
+		run.pendingPrompt === undefined ? [] : [{ ...projectPrompt(run.pendingPrompt), runId: run.id }],
+	);
+	return { nodes: graph.nodes.map(projectGraphNode), ...(runPrompts.length === 0 ? {} : { runPrompts }) };
+}
+
 /** Full root replacements in first-root-occurrence order; inputs and stored outcomes are unchanged. */
 export function projectWorkflowActivity({ snapshot, ownership }: WorkflowActivityInput): WorkflowRootActivity[] {
 	const byId = new Map(snapshot.runs.map((run) => [run.id, run]));
@@ -177,5 +238,9 @@ export function projectWorkflowActivity({ snapshot, ownership }: WorkflowActivit
 		if (group) group.push(run);
 		else roots.set(id, [run]);
 	}
-	return [...roots].map(([id, runs]) => projectRoot(id, runs, byId, ownership));
+	const expand = createWorkflowGraphExpander(snapshot);
+	return [...roots].map(([id, runs]) => ({
+		...projectRoot(id, runs, byId, ownership),
+		graph: projectGraph(expand(id), runs),
+	}));
 }

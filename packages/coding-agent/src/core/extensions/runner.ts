@@ -128,7 +128,12 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
-import type { SessionWorkflows } from "./workflow-run-control.js";
+import type {
+	WorkflowActivityObserver,
+	WorkflowActivitySnapshotFrame,
+	WorkflowActivitySubscription,
+} from "./workflow-events.js";
+import type { WorkflowRunControl } from "./workflow-run-control.js";
 
 export type {
 	ExtensionErrorListener,
@@ -210,8 +215,16 @@ export class ExtensionRunner {
 		this.runtime.getChildSessionOptions = resolver;
 	}
 	/** The run-control implementation registered by the current extension generation, if any. */
-	getWorkflowRunControl(): SessionWorkflows | undefined {
+	getWorkflowRunControl(): WorkflowRunControl | undefined {
 		return this.runtime.workflowRunControlHub.current();
+	}
+	/** Observe this generation's workflow activity: snapshot first, then FIFO changes. */
+	observeWorkflowActivity(observer: WorkflowActivityObserver): WorkflowActivitySubscription {
+		return this.runtime.workflowActivityHub.observeWorkflowActivity(observer);
+	}
+	/** This generation's current workflow activity snapshot. */
+	getWorkflowActivitySnapshot(): WorkflowActivitySnapshotFrame {
+		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		return {

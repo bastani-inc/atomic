@@ -145,7 +145,14 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		workflows: {
 			get() {
-				this._workflows ??= new SessionWorkflowsHandle(() => this._extensionRunner?.getWorkflowRunControl());
+				this._workflows ??= new SessionWorkflowsHandle(
+					() => this._extensionRunner?.getWorkflowRunControl(),
+					() => {
+						const runner = this._extensionRunner;
+						if (this._disposed || runner === undefined) return undefined;
+						return (observer) => runner.observeWorkflowActivity(observer);
+					},
+				);
 				return this._workflows;
 			},
 		},

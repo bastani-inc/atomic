@@ -27,7 +27,38 @@ export type PublicContracts = [
 	Assert<Equal<Extensions.WorkflowEvent, Host.WorkflowEvent>>,
 	Assert<Equal<Extensions.WorkflowActivitySnapshotInput, Host.WorkflowActivitySnapshotInput>>,
 	Assert<Equal<Extensions.WorkflowActivitySnapshotFrame, Host.WorkflowActivitySnapshotFrame>>,
+	Assert<Equal<Host.WorkflowRootGraph, Contracts.WorkflowRootGraph>>,
+	Assert<Equal<Host.WorkflowGraphNode, Contracts.WorkflowGraphNode>>,
+	Assert<Equal<Host.WorkflowGraphNodePrompt, Contracts.WorkflowGraphNodePrompt>>,
+	Assert<Equal<Host.WorkflowGraphRunPrompt, Contracts.WorkflowGraphRunPrompt>>,
 ];
+
+export function sessionWorkflowObservation(workflows: Host.SessionWorkflows): void {
+	const lease: Host.WorkflowActivitySubscription = workflows.observe((frame) => {
+		if (frame.kind !== "changed") return;
+		for (const node of frame.root.graph?.nodes ?? []) {
+			const parents: readonly string[] = node.parentIds;
+			void parents;
+			if (node.kind === "tool") {
+				const ordinal: number = node.ordinal;
+				const status: Host.WorkflowToolNodeStatus = node.status;
+				void [ordinal, status];
+			} else {
+				const prompt: string | undefined = node.pendingPrompt?.message;
+				const status: Host.WorkflowStageStatus = node.status;
+				void [prompt, status];
+			}
+		}
+	});
+	lease.dispose();
+}
+
+export function runControlRegistration(pi: Extensions.ExtensionAPI, control: Host.WorkflowRunControl): void {
+	pi.registerWorkflowRunControl(control);
+	// @ts-expect-error Observation belongs to the session handle; registered controls do not implement it.
+	const observe: Host.SessionWorkflows = control;
+	void observe;
+}
 
 export function workflowHooks(pi: Extensions.ExtensionAPI, ctx: Host.ExtensionContext): void {
 	pi.on("workflow_lifecycle", (event) => {

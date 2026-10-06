@@ -1,4 +1,9 @@
-import type { WorkflowRunStatus, WorkflowStageStatus } from "./workflow-events.js";
+import type {
+	WorkflowActivityObserver,
+	WorkflowActivitySubscription,
+	WorkflowRunStatus,
+	WorkflowStageStatus,
+} from "./workflow-events.js";
 
 export type WorkflowRunJsonValue =
 	| string
@@ -126,8 +131,8 @@ export interface WorkflowRunControlOutcome {
 	readonly failedRuns?: readonly WorkflowRunControlFailedRun[];
 }
 
-/** Typed run management for the workflow runs owned by one session. */
-export interface SessionWorkflows {
+/** Typed run management for the workflow runs owned by one session, as registered by the workflows extension. */
+export interface WorkflowRunControl {
 	listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]>;
 	getRun(runId: string): Promise<WorkflowRunDetail>;
 	getStages(runId: string, filter?: WorkflowStageListFilter): Promise<readonly WorkflowRunStageSummary[]>;
@@ -135,6 +140,15 @@ export interface SessionWorkflows {
 	pause(target: WorkflowRunAllTarget): Promise<WorkflowRunControlOutcome>;
 	quit(target: string | WorkflowRunAllTarget): Promise<WorkflowRunControlOutcome>;
 	resume(runId: string, options?: WorkflowRunResumeOptions): Promise<WorkflowRunControlOutcome>;
+}
+
+/** `session.workflows`: run management plus observation of the workflow runs owned by one session. */
+export interface SessionWorkflows extends WorkflowRunControl {
+	/**
+	 * Follow root activity and graph changes. Delivers a snapshot frame first, then FIFO
+	 * `changed` and `removed` frames; the subscription follows extension reloads.
+	 */
+	observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
 }
 
 export interface WorkflowRunControlRegistration {

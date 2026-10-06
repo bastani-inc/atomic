@@ -15,11 +15,13 @@ import {
 } from "./stage-runner-output.js";
 import {
 	formatStructuredOutputCorrectionPrompt,
+	isStructuredOutputContractFailure,
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 	STRUCTURED_OUTPUT_MISSING_ERROR,
 	type StructuredOutputExecutionCapture,
 	stageOptionsWithStructuredOutput,
 	stringifyStructuredOutputValue,
+	WorkflowStructuredOutputContractError,
 } from "./stage-runner-structured-output.js";
 import type { InternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
 
@@ -134,6 +136,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			}
 			if (structuredOutputCapture) {
 				let structuredOutputError = STRUCTURED_OUTPUT_MISSING_ERROR;
+				let executionFailure: string | undefined;
 				// One correction budget per model candidate. A candidate that spends
 				// the whole budget without capturing a structured result has failed,
 				// however clean its turns looked, so it fails over on the same chain
@@ -149,6 +152,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 						await controller.promptWithFallback(nextPrompt, sdkOptions, "prompt", newSessionPrompt);
 						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
+						executionFailure ??= controller.structuredOutputExecutionFailure();
+						if (!isStructuredOutputContractFailure(structuredOutputError))
+							executionFailure ??= structuredOutputError;
 						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
 						correctiveAttempts += 1;
 						nextPrompt = formatStructuredOutputCorrectionPrompt(
@@ -162,7 +168,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					}
 					if (structuredOutputCapture.called) break;
 					if (!(await controller.failCandidateForStructuredOutputExhaustion(structuredOutputError))) {
-						throw new Error(structuredOutputError);
+						throw executionFailure === undefined
+							? new WorkflowStructuredOutputContractError(structuredOutputError)
+							: new Error(executionFailure);
 					}
 				}
 				const sessionMessages = controller.currentSession?.messages;

@@ -849,8 +849,17 @@ type EditDiffResult
 SessionManager
 SettingsManager
 
-// Workflow run control (session.workflows)
+// Workflow run control and observation (session.workflows)
 type SessionWorkflows
+type WorkflowRunControl
+type WorkflowActivityFrame
+type WorkflowActivityObserver
+type WorkflowActivitySubscription
+type WorkflowRootActivity
+type WorkflowRootGraph
+type WorkflowGraphNode
+type WorkflowGraphNodePrompt
+type WorkflowGraphRunPrompt
 type WorkflowRunSummary
 type WorkflowRunDetail
 type WorkflowRunControlOutcome

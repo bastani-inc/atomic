@@ -1,3 +1,4 @@
+import type { AgentSessionEvent } from "@bastani/atomic";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
@@ -56,6 +57,7 @@ export interface RunOpts
 		| "onRunStart"
 		| "onStageStart"
 		| "onStageEnd"
+		| "onStageSessionEvent"
 		| "onRunEnd"
 		| "ui"
 	> {
@@ -158,6 +160,8 @@ export interface RunOpts
 	onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
 	onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
 	onStageSession?: (runId: string, snapshot: StageSnapshot, options?: StageSessionCheckpointOptions) => unknown;
+	/** Receives every stage agent-session event, including fallback replacement and child workflow stages. */
+	onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
 	onRunEnd?: (
 		runId: string,
 		status: RunStatus,
