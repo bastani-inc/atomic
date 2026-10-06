@@ -59,6 +59,8 @@ export interface SessionScopedAdoptOptions<T extends object> {
 	 * Never applies to a scope being seen for the first time.
 	 */
 	readonly preserveCurrentWhenTargetExists?: (current: T, target: T) => boolean;
+	/** Builds the instance for a newly seen scope once the pre-adoption local is claimed. */
+	readonly create?: () => T;
 }
 
 export interface SessionScopedAdoptResult<T extends object> {
@@ -90,7 +92,7 @@ export function createSessionScopedSingleton<T extends object>(
 		let targetCreated = false;
 		const target = sessionScopedExtensionState(scope, key, () => {
 			targetCreated = true;
-			if (shared.localClaimed) return createLocal();
+			if (shared.localClaimed) return (options?.create ?? createLocal)();
 			shared.localClaimed = true;
 			return shared.local;
 		});

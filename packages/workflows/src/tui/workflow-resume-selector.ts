@@ -32,6 +32,8 @@ export interface WorkflowResumeSelectorOptions {
 	readonly refresh?: WorkflowResumeRefresh;
 	/** Cross-session polling cadence while the picker is open. 0 disables. */
 	readonly refreshIntervalMs?: number;
+	/** The owning session's runs, used to follow resume sources of live rows. */
+	readonly sessionRuns?: () => readonly RunSnapshot[];
 }
 
 export type WorkflowResumeRefresh = () => Promise<{
@@ -57,8 +59,8 @@ function completedStageCount(run: RunSnapshot): number {
 	return run.stages.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
 }
 
-function isResumePickerLiveRun(run: RunSnapshot): boolean {
-	return isWorkflowRunResumable(workflowRunResumeCandidate(run));
+function isResumePickerLiveRun(run: RunSnapshot, sessionRuns: readonly RunSnapshot[] | undefined): boolean {
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns));
 }
 interface WorkflowStatusPresentation {
 	readonly label: string;
@@ -138,8 +140,9 @@ export function workflowResumeSelectorItems(
 	liveRuns: readonly RunSnapshot[],
 	durableEntries: readonly ResumableWorkflowEntry[],
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
+	sessionRuns?: readonly RunSnapshot[],
 ): WorkflowResumeSelectorItem[] {
-	const classifiedLiveRuns = liveRuns.map((run) => ({ run, resumable: isResumePickerLiveRun(run) }));
+	const classifiedLiveRuns = liveRuns.map((run) => ({ run, resumable: isResumePickerLiveRun(run, sessionRuns) }));
 	const eligibleLiveRuns = classifiedLiveRuns.filter(({ resumable }) => resumable).map(({ run }) => run);
 	const visibleLiveIds = new Set(eligibleLiveRuns.map((run) => run.id));
 	// An actively executing live snapshot is intentionally not resumable here, but its durable
@@ -229,7 +232,7 @@ export function openWorkflowResumeSelector(
 
 	let currentLiveRuns = liveRuns;
 	let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
-	const liveItems = workflowResumeSelectorItems(currentLiveRuns, [], []);
+	const liveItems = workflowResumeSelectorItems(currentLiveRuns, [], [], options.sessionRuns?.());
 	let sessions = liveItems.map((item) => item.session);
 	let resultByPath = new Map(liveItems.map((item) => [item.session.path, item.result]));
 	let settled = false;
@@ -239,7 +242,12 @@ export function openWorkflowResumeSelector(
 
 	const applyRows = (catalog: WorkflowResumeCatalogRows): void => {
 		resolvedCatalog = catalog;
-		const items = workflowResumeSelectorItems(currentLiveRuns, catalog.durable, catalog.completed);
+		const items = workflowResumeSelectorItems(
+			currentLiveRuns,
+			catalog.durable,
+			catalog.completed,
+			options.sessionRuns?.(),
+		);
 		sessions = items.map((item) => item.session);
 		resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
 	};

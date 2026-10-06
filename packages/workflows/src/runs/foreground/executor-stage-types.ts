@@ -1,5 +1,6 @@
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageNotice, StageSnapshot } from "../../shared/store-types.js";
 import type { StageContext } from "../../shared/types.js";
@@ -45,6 +46,7 @@ export interface LiveStageRuntime {
 	readonly activeStore: Store;
 	readonly opts: EngineStageRuntimeOptions;
 	readonly stageRegistry: StageControlRegistry;
+	readonly stageUiBroker: StageUiBroker;
 	readonly scheduler: StageScheduler;
 	readonly signal: AbortSignal;
 	readonly exit: WorkflowExitManager;

@@ -1,6 +1,7 @@
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type {
 	RunSnapshot,
@@ -114,6 +115,8 @@ export interface RunOpts
 	stageControlRegistry?: StageControlRegistry;
 	/** Live tool-node control registry used to abort in-flight `ctx.tool` calls. */
 	toolControlRegistry?: ToolControlRegistry;
+	/** Broker that routes this run's stage questions to its owning session's host. */
+	stageUiBroker?: StageUiBroker;
 	/**
 	 * Root-shared `ctx.tool` admission boundary. Set only by the engine when it
 	 * hands a nested run the boundary its root created.

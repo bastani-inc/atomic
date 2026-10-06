@@ -289,7 +289,7 @@ export async function handleRunControlCommand(
 						run !== undefined &&
 						!isPaused &&
 						run.exitReason !== "quit" &&
-						isWorkflowRunResumable(workflowRunResumeCandidate(run));
+						isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
 					if (isDurableAuthorExit) {
 						return await handleDurableResume(resolved.runId, ctx, reporter, deps);
 					}
@@ -427,7 +427,7 @@ export async function handleRunControlCommand(
 						backend.isWorkflowLoadable(run.id) &&
 						!reconcileDurableResumeShadow(run, store, { ...shadowDeps, backend }),
 				);
-				const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, completed);
+				const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, completed, store.runs());
 				if (combined.kind === "malformed" || combined.kind === "ambiguous") {
 					fail(combined.message);
 					return true;
@@ -493,7 +493,7 @@ export async function handleRunControlCommand(
 			run !== undefined &&
 			!isPaused &&
 			run.exitReason !== "quit" &&
-			isWorkflowRunResumable(workflowRunResumeCandidate(run));
+			isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&

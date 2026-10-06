@@ -34,6 +34,7 @@ export type EngineChildRunOptions = Pick<
 	| "registry"
 	| "stageControlRegistry"
 	| "toolControlRegistry"
+	| "stageUiBroker"
 	| "toolAdmissionBoundary"
 	| "onStageStart"
 	| "onStageEnd"

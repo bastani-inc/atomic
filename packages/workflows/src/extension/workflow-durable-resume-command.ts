@@ -199,6 +199,7 @@ export function resolveWorkflowResumeTarget(
 	liveRuns: readonly RunSnapshot[],
 	resumable: readonly ResumableWorkflowEntry[],
 	completed: readonly ResumableWorkflowEntry[],
+	sessionRuns?: readonly RunSnapshot[],
 ): WorkflowResumeTargetResolution {
 	const targets = new Map<string, WorkflowResumeTarget>();
 	for (const entry of resumable) {
@@ -210,7 +211,7 @@ export function resolveWorkflowResumeTarget(
 		}
 	}
 	// Nested children stay reachable by exact id; prefix resume uses the top-level namespace.
-	for (const run of topLevelWorkflowRuns(liveRuns).filter(isExplicitResumeCandidate)) {
+	for (const run of topLevelWorkflowRuns(liveRuns).filter((live) => isExplicitResumeCandidate(live, sessionRuns))) {
 		targets.set(run.id, {
 			kind: run.status === "completed" ? "completed" : "live",
 			workflowId: run.id,
@@ -224,10 +225,11 @@ export function resolveWorkflowResumeTarget(
 	return targets.get(resolution.runId) ?? { kind: "not_found" };
 }
 
-function isExplicitResumeCandidate(run: RunSnapshot): boolean {
+function isExplicitResumeCandidate(run: RunSnapshot, sessionRuns: readonly RunSnapshot[] | undefined): boolean {
 	if (run.status === "completed") return true;
 	return (
-		isWorkflowRunResumable(workflowRunResumeCandidate(run)) || (run.endedAt === undefined && run.status === "running")
+		isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns)) ||
+		(run.endedAt === undefined && run.status === "running")
 	);
 }
 

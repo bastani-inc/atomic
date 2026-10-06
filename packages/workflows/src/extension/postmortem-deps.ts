@@ -18,22 +18,26 @@ import {
 	ensurePostMortemStageHandle,
 	type PostMortemStageChatDeps,
 } from "../runs/foreground/postmortem-stage-chat.js";
-import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
-import { store } from "../shared/store.js";
+import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
 	readonly resolveDefaultStageSessionDir: () => string | undefined;
+	/** The owning session's store; defaults to the current one. */
+	readonly store?: Store;
+	/** The owning session's stage-control registry; defaults to the current one. */
+	readonly stageControlRegistry?: StageControlRegistry;
 }
 
 /** Persisted original/resolved cwd for a durable run tree, when still available. */
-function resolveStageCwd(runId: string): string | undefined {
+function resolveStageCwd(runId: string, runStore: Store): string | undefined {
 	try {
 		const backend = getDurableBackend();
 		const owningHandle = backend.getWorkflow(runId);
-		const run = readGraphStoreSnapshot(store).runs.find((candidate) => candidate.id === runId);
+		const run = readGraphStoreSnapshot(runStore).runs.find((candidate) => candidate.id === runId);
 		const rootRunId = run?.rootRunId ?? owningHandle?.rootWorkflowId;
 		const cwdHandle = rootRunId === undefined ? owningHandle : (backend.getWorkflow(rootRunId) ?? owningHandle);
 		return cwdHandle?.workflowCwd ?? cwdHandle?.invocationCwd ?? undefined;
@@ -45,9 +49,9 @@ function resolveStageCwd(runId: string): string | undefined {
 /** Resolver deps for a specific run, keyed so revived handles use the real run cwd. */
 export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps): PostMortemStageChatDeps {
 	return {
-		registry: stageControlRegistry,
+		registry: deps.stageControlRegistry ?? stageControlRegistry,
 		adapters: deps.adapters,
-		cwd: resolveStageCwd(runId),
+		cwd: resolveStageCwd(runId, deps.store ?? store),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
 	};
 }
@@ -61,7 +65,7 @@ export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
 ): (runId: string, stageId: string) => EnsurePostMortemStageHandleResult | undefined {
 	return (runId, stageId) => {
-		const run = readGraphStoreSnapshot(store).runs.find((candidate) => candidate.id === runId);
+		const run = readGraphStoreSnapshot(deps.store ?? store).runs.find((candidate) => candidate.id === runId);
 		const stage = run?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined) return undefined;
 		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));

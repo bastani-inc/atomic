@@ -235,7 +235,7 @@ describe("askReadinessViaStageBroker (real broker + tool resolution)", () => {
 			},
 		});
 		try {
-			return await askReadinessViaStageBroker(runId, stageId, controller.signal);
+			return await askReadinessViaStageBroker(runId, stageId, controller.signal, stageUiBroker);
 		} finally {
 			unregister();
 		}

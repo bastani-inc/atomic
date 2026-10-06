@@ -1,7 +1,6 @@
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
-import { currentWorkflowStore } from "../shared/store-factory.js";
 import { registerChatSurfaceRenderer } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
@@ -23,7 +22,7 @@ import { buildRuntimeAdapters } from "./wiring.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
 import { createWorkflowObservation } from "./workflow-observation.js";
-import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
+import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
@@ -44,10 +43,14 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 
 function buildWorkflowOverlay(
 	pi: ExtensionAPI,
-	store: Store,
+	owner: WorkflowOwnerResources,
 	resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
 ): GraphOverlayPort {
-	return buildGraphOverlayAdapter(pi, store, { resolvePostMortemHandle });
+	return buildGraphOverlayAdapter(pi, owner.store, {
+		resolvePostMortemHandle,
+		stageControlRegistry: owner.stageControlRegistry,
+		stageUiBroker: owner.stageUiBroker,
+	});
 }
 
 function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort, store: Store): void {
@@ -95,9 +98,9 @@ function factory(pi: ExtensionAPI): void {
 	// A child AgentSession is not a workflow owner. Loading this lifecycle there
 	// would rebind process-shared run state away from the parent host session.
 	if (pi.subagentPolicy !== undefined) return;
-	adoptWorkflowSessionRunState(pi.lifecycleScope ?? pi.events, pi.lifecycleScope !== undefined);
-	const store = currentWorkflowStore();
-	const owner = captureWorkflowOwnerResources();
+	const runState = adoptWorkflowSessionRunState(pi.lifecycleScope ?? pi.events, pi.lifecycleScope !== undefined);
+	const { store } = runState;
+	const owner = captureWorkflowOwnerResources(runState);
 	let disposeObservation: (() => void) | undefined;
 	if (pi.registerWorkflowActivityPublisher) {
 		const publisher = pi.registerWorkflowActivityPublisher();
@@ -116,16 +119,22 @@ function factory(pi: ExtensionAPI): void {
 	}
 
 	const liveGeneration = trackLiveHostGeneration(pi);
-	const adapters = buildRuntimeAdapters(pi, { resolveSurface: () => liveGeneration()?.pi ?? pi });
+	const adapters = buildRuntimeAdapters(pi, {
+		resolveSurface: () => liveGeneration()?.pi ?? pi,
+		stageUiBroker: runState.stageUiBroker,
+	});
 	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters, {
 		resolveLiveModelContext: () => liveGeneration()?.modelContext,
+		runState,
 	});
 	const postMortemResolverDeps = {
 		adapters,
 		resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
+		store,
+		stageControlRegistry: runState.stageControlRegistry,
 	};
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
-	const overlay = buildWorkflowOverlay(pi, store, postMortemHandleResolver);
+	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver);
 	registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
 	registerPendingStageIntercomBridge(pi, store);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
@@ -181,7 +190,13 @@ function factory(pi: ExtensionAPI): void {
 		},
 	});
 	registerWorkflowMessageRenderers(pi);
-	registerWorkflowLifecycleHandlers(pi, { runtimeState, storeWidgetRef, intercomControlRef, disposeObservation });
+	registerWorkflowLifecycleHandlers(pi, {
+		runtimeState,
+		storeWidgetRef,
+		intercomControlRef,
+		disposeObservation,
+		runState,
+	});
 
 	storeWidgetRef.current = installStoreWidget(pi, store);
 	installToolExecutionHooks(pi, store);

@@ -358,7 +358,7 @@ test("already-aborted readiness signal rejects without mounting or approving", a
 	const reason = new Error("already stopped");
 	root.abort(reason);
 	await assert.rejects(
-		askReadinessViaStageBroker(crypto.randomUUID(), "ready", root.signal),
+		askReadinessViaStageBroker(crypto.randomUUID(), "ready", root.signal, broker),
 		(error) => error === reason,
 	);
 });

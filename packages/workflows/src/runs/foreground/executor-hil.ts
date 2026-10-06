@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createAskUserQuestionToolDefinition } from "@bastani/atomic";
 import { currentPromptCallerStack } from "../../shared/prompt-callsite-context.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
-import { stageUiBroker } from "../../shared/stage-ui-broker.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { CustomPromptIdentitySource, PendingPrompt } from "../../shared/store-types.js";
 import type {
 	WorkflowCustomUiFactory,
@@ -364,6 +364,7 @@ export async function askReadinessViaStageBroker(
 	runId: string,
 	stageId: string,
 	signal: AbortSignal,
+	stageUiBroker: StageUiBroker,
 ): Promise<ReadinessDecision> {
 	const execute = readinessGateTool().execute;
 	if (execute === undefined) return { action: "advance" };
@@ -374,8 +375,8 @@ export async function askReadinessViaStageBroker(
 				stageUiBroker.requestCustomUi(
 					runId,
 					stageId,
-					factory as Parameters<typeof stageUiBroker.requestCustomUi>[2],
-					options as Parameters<typeof stageUiBroker.requestCustomUi>[3],
+					factory as Parameters<StageUiBroker["requestCustomUi"]>[2],
+					options as Parameters<StageUiBroker["requestCustomUi"]>[3],
 					signal,
 				),
 		},
