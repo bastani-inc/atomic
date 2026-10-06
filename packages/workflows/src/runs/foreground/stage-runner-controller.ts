@@ -61,6 +61,7 @@ import {
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
+	isStructuredOutputContractFailure,
 	STRUCTURED_OUTPUT_MISSING_ERROR,
 	structuredOutputToolErrorFromEvent,
 } from "./stage-runner-structured-output.js";
@@ -249,6 +250,7 @@ export class StageSessionController {
 	};
 	private readonly terminatingToolCallIds = new Set<string>();
 	private latestStructuredOutputToolErrorValue: string | undefined;
+	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
 	private unresolvedContextOverflowMessage: string | undefined;
@@ -335,6 +337,10 @@ export class StageSessionController {
 
 	resetStructuredOutputToolError(): void {
 		this.latestStructuredOutputToolErrorValue = undefined;
+	}
+
+	structuredOutputExecutionFailure(): string | undefined {
+		return this.structuredOutputExecutionFailureValue;
 	}
 
 	/**
@@ -1710,8 +1716,12 @@ export class StageSessionController {
 			if (terminatingId !== undefined) this.terminatingToolCallIds.add(terminatingId);
 			this.unresolvedContextOverflowMessage =
 				unresolvedContextOverflowMessage(event) ?? this.unresolvedContextOverflowMessage;
-			this.latestStructuredOutputToolErrorValue =
-				structuredOutputToolErrorFromEvent(event) ?? this.latestStructuredOutputToolErrorValue;
+			const structuredOutputToolError = structuredOutputToolErrorFromEvent(event);
+			if (structuredOutputToolError !== undefined) {
+				this.latestStructuredOutputToolErrorValue = structuredOutputToolError;
+				if (!isStructuredOutputContractFailure(structuredOutputToolError))
+					this.structuredOutputExecutionFailureValue ??= structuredOutputToolError;
+			}
 		});
 		return result.session;
 	}

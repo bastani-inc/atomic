@@ -851,7 +851,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 		assert.match(meta.warnings?.[0] ?? "", /^\[fallback\] anthropic\/primary failed: /);
 	});
 
-	test("a successful correction on the current candidate never reaches the fallback", async () => {
+	test("a successful correction after mixed provider and validation errors never reaches the fallback (#3466)", async () => {
 		const calls: string[] = [];
 		const disposed: string[] = [];
 		let createOptions: StageSessionCreateOptions | undefined;
@@ -865,11 +865,25 @@ describe("createStageContext — structured_output correction exhaustion and mod
 						: `${String(options.model?.provider)}/${options.model?.id}`;
 				calls.push(model);
 				const messages = [] as AgentSession["messages"];
-				const { session } = makeMockSession({
+				const mock = makeMockSession({
 					messages,
 					async prompt() {
 						promptCount += 1;
-						if (promptCount === 1) return skippedStructuredOutputTurn(messages);
+						if (promptCount === 1) {
+							skippedStructuredOutputTurn(messages);
+							for (const text of [
+								"Structured output provider request failed. Check provider configuration and connectivity.",
+								'Validation failed for tool "structured_output": instructions: Expected string',
+							]) {
+								mock.emit({
+									type: "tool_execution_end",
+									toolName: "structured_output",
+									isError: true,
+									result: { content: [{ type: "text", text }] },
+								});
+							}
+							return;
+						}
 						const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
 						assert.ok(structuredTool);
 						await executeWorkflowDecision(structuredTool, "structured-call-corrected", { ok: true });
@@ -878,7 +892,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 						disposed.push(model);
 					},
 				});
-				return session;
+				return mock.session;
 			},
 		};
 		const ctx = createStageContext(
