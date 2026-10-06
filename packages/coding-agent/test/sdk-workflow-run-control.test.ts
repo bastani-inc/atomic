@@ -435,7 +435,18 @@ test(
 		writeFileSync(files.gate, "release");
 		await completed(owner, runId);
 
+		const closingFrames: WorkflowActivityFrame[] = [];
+		owner.workflows.observe((frame) => {
+			closingFrames.push(frame);
+		});
+		await eventually(
+			() => closingFrames.find((frame) => frame.kind === "snapshot" && frame.availability === "ready"),
+			"ready snapshot before dispose",
+		);
 		await owner.dispose();
+		const terminal = closingFrames.at(-1);
+		assert.ok(terminal?.kind === "snapshot", "dispose() delivers a terminal snapshot before releasing observers");
+		assert.equal(terminal.availability, "unavailable");
 		const unavailable = await rejection(owner.workflows.listRuns());
 		assert.ok(unavailable instanceof WorkflowRunControlUnavailableError, unavailable.message);
 		assert.ok(unavailable instanceof WorkflowRunControlError);

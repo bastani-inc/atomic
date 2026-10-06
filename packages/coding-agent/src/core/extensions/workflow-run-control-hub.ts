@@ -1,4 +1,8 @@
-import type { WorkflowActivityObserver, WorkflowActivitySubscription } from "./workflow-events.js";
+import type {
+	WorkflowActivityObserver,
+	WorkflowActivitySnapshotFrame,
+	WorkflowActivitySubscription,
+} from "./workflow-events.js";
 import {
 	type SessionWorkflows,
 	type WorkflowRunAllTarget,
@@ -105,10 +109,26 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		}
 	}
 
-	/** Release every observer when the session closes. */
-	disposeObservers(): void {
-		for (const lease of this.observers) lease.close();
+	/**
+	 * Release every observer when the session closes. Each first receives `last` as an `unavailable`
+	 * snapshot, after any callback already in flight, so hosts never keep showing a closed session's runs.
+	 */
+	async disposeObservers(last: WorkflowActivitySnapshotFrame): Promise<void> {
+		const terminal: WorkflowActivitySnapshotFrame =
+			last.availability === "unavailable"
+				? last
+				: {
+						kind: "snapshot",
+						cursor: { ...last.cursor, revision: last.cursor.revision + 1 },
+						availability: "unavailable",
+					};
+		const leases = [...this.observers];
 		this.observers.clear();
+		for (const lease of leases) lease.subscription.dispose();
+		await Promise.all(
+			leases.map((lease) => Promise.resolve(lease.deliver(structuredClone(terminal))).catch(() => {})),
+		);
+		for (const lease of leases) lease.close();
 	}
 
 	async listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]> {

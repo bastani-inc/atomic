@@ -621,10 +621,10 @@ export function closeAgentSession(
 			ownedSettingsManagers.delete(session.settingsManager);
 		await attempt("host subscriptions", () => beforeInvalidate?.());
 		await attempt("generation", () => session._extensionRunner.invalidate(STALE_EXTENSION_CONTEXT_MESSAGE));
-		await attempt("subscriptions", () => {
+		await attempt("subscriptions", async () => {
 			session._disconnectFromAgent();
 			session._eventListeners = [];
-			session._workflows?.disposeObservers();
+			await session._workflows?.disposeObservers(session._extensionRunner.getWorkflowActivitySnapshot());
 		});
 		await attempt("provider", () => cleanupSessionResources(session.sessionId));
 		await attempt("storage", () => {

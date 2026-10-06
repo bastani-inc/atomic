@@ -345,7 +345,7 @@ const subscription = session.workflows.observe((frame) => {
 subscription.dispose();
 ```
 
-Observation can start before the workflows package has finished loading; the first snapshot then reports `availability: "unavailable"`, and a `ready` snapshot follows. The subscription survives `session.reload()`. After a reload, the observer receives a new snapshot with a new cursor `epoch`, so replace everything you knew. `observe()` throws `WorkflowRunControlUnavailableError` after the session is disposed. This stream reports root activity and graph state. It does not carry the events inside each stage.
+Observation can start before the workflows package has finished loading; the first snapshot then reports `availability: "unavailable"`, and a `ready` snapshot follows. The subscription survives `session.reload()`. After a reload, the observer receives a new snapshot with a new cursor `epoch`, so replace everything you knew. When the session is disposed, each observer receives a final `snapshot` with `availability: "unavailable"` before `dispose()` resolves; after that, `observe()` throws `WorkflowRunControlUnavailableError`. This stream reports root activity and graph state. It does not carry the events inside each stage.
 
 ### Workflow and subagent children
 

@@ -225,8 +225,13 @@ test("session workflow observers stay serialized across reload rebinding and clo
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(events, ["start:old", "end", "start:new", "end"]);
 
-	handle.disposeObservers();
+	await handle.disposeObservers(hub.getSnapshotFrame());
+	assert.deepEqual(
+		events,
+		["start:old", "end", "start:new", "end", "start:new", "end"],
+		"close delivers a terminal snapshot",
+	);
 	hub.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.deepEqual(events, ["start:old", "end", "start:new", "end"]);
+	assert.deepEqual(events, ["start:old", "end", "start:new", "end", "start:new", "end"]);
 });
