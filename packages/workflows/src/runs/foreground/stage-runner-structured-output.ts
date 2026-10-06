@@ -28,6 +28,11 @@ export function isStructuredOutputContractFailure(message: string): boolean {
 		message.startsWith("Invalid structured output: non-JSON decision.") ||
 		message.startsWith("Structured output requires one structured_output call.") ||
 		message.startsWith("Structured output requires exactly one structured_output call and no provider fallback.") ||
+		message === "Structured output requires complete judgment instructions." ||
+		message ===
+			"Structured output requires a nonempty named state object containing the task and relevant context text." ||
+		message === "Structured output inputs must be finite, acyclic JSON data." ||
+		message === "Structured output inputs must be plain JSON objects." ||
 		message === "structured_output tool call failed schema validation."
 	);
 }

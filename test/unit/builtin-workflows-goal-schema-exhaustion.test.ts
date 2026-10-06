@@ -6,15 +6,20 @@ import { test, vi } from "vitest";
 import { runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import type { GoalLedger } from "../../packages/workflows/builtin/goal-types.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner-context.js";
+import { toolContext } from "../helpers/tool-context.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 import type { StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import { makeMockSession, makeOpts, skippedStructuredOutputTurn } from "./stage-runner-helpers.js";
-import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
+import { executeWorkflowDecision, workflowDecisionContext } from "./structured-output-workflow-fixture.js";
 
 for (const failure of [
 	"missing tool",
 	"invalid arguments",
 	"invalid decision schema",
+	"whitespace instructions",
+	"empty state",
+	"nonfinite state",
+	"nonplain state",
 	"provider failure",
 	"provider then missing tool",
 ] as const) {
@@ -36,6 +41,51 @@ for (const failure of [
 								skippedStructuredOutputTurn(mock.session.messages);
 								if (failure === "missing tool" || (failure === "provider then missing tool" && attempts > 1))
 									return;
+								if (
+									failure === "whitespace instructions" ||
+									failure === "empty state" ||
+									failure === "nonfinite state" ||
+									failure === "nonplain state"
+								) {
+									const tool = createOptions?.customTools?.find(
+										(candidate) => candidate.name === "structured_output",
+									);
+									assert.ok(tool);
+									const state =
+										failure === "empty state"
+											? {}
+											: failure === "nonfinite state"
+												? { task: Number.POSITIVE_INFINITY }
+												: failure === "nonplain state"
+													? { task: new Date(0) }
+													: { task: "finish" };
+									try {
+										await tool.execute(
+											`invalid-input-${attempts}`,
+											{
+												instructions: failure === "whitespace instructions" ? "   " : "Judge completion.",
+												state,
+											},
+											undefined,
+											undefined,
+											toolContext(workflowDecisionContext),
+										);
+										assert.fail("invalid inference inputs must fail validation");
+									} catch (error) {
+										assert.ok(error instanceof Error);
+										assert.match(
+											error.message,
+											/Structured output (requires (complete judgment instructions|a nonempty named state object)|inputs must be (finite, acyclic JSON data|plain JSON objects))/,
+										);
+										mock.emit({
+											type: "tool_execution_end",
+											toolName: "structured_output",
+											isError: true,
+											result: { content: [{ type: "text", text: error.message }] },
+										});
+									}
+									return;
+								}
 								if (failure === "invalid decision schema") {
 									const tool = createOptions?.customTools?.find(
 										(candidate) => candidate.name === "structured_output",
