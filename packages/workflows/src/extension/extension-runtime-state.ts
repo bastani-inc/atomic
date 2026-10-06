@@ -117,6 +117,7 @@ export interface WorkflowExtensionRuntimeState {
 	/** Seed lifecycle notification state before completed historical snapshots are inserted. */
 	beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
 	runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime;
+	resolveInvocationCwd(): string;
 	resetWorkflowDiscoveryForSession(): void;
 	ensureWorkflowConfigLoaded(): Promise<void>;
 	ensureWorkflowResourcesLoaded(): Promise<void>;
@@ -717,6 +718,7 @@ export function createWorkflowExtensionRuntimeState(
 		workflowHeartbeatSchedulerState,
 		beforeRestoreCompleted,
 		runtimeForContext,
+		resolveInvocationCwd: resolveCwd,
 		resetWorkflowDiscoveryForSession,
 		ensureWorkflowConfigLoaded,
 		ensureWorkflowResourcesLoaded,

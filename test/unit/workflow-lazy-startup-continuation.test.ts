@@ -143,7 +143,135 @@ export default workflow({
 	);
 }
 
+async function writeTrackedWorkflowFixture(filePath: string, name: string): Promise<void> {
+	await writeFile(
+		filePath,
+		`import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: ${JSON.stringify(name)}, description: "", inputs: {}, outputs: {},
+  run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
+});
+`,
+		"utf8",
+	);
+}
+
 describe("workflow lazy-startup continuation fixes", () => {
+	test("session_start revalidates project scope after ask confirmation (#3468)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-project-race-"));
+		try {
+			mkdirSync(workflowConfigDir(root), { recursive: true });
+			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
+			const workflowPath = join(root, "shared.ts");
+			await writeTrackedWorkflowFixture(workflowPath, "shared");
+			process.chdir(root);
+			const backend = getDurableBackend();
+			const runId = testRunId("startup-project-confirmation-race");
+			const handle = {
+				workflowId: runId,
+				name: "shared",
+				inputs: {},
+				status: "running" as const,
+				createdAt: 1,
+				updatedAt: 1,
+				completedCheckpoints: 1,
+				invocationCwd: root,
+			};
+			backend.registerWorkflow(handle);
+			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			let prompts = 0;
+			let changedHandle = backend.getWorkflow(runId);
+			await handlers.get("session_start")?.(
+				{ reason: "startup" },
+				{
+					cwd: root,
+					hasUI: true,
+					ui: {
+						notify: () => undefined,
+						confirm: async () => {
+							prompts += 1;
+							backend.registerWorkflow({ ...handle, invocationCwd: join(root, "elsewhere") });
+							changedHandle = backend.getWorkflow(runId);
+							return true;
+						},
+					},
+				},
+			);
+			await cleanupJobs();
+			assert.equal(prompts, 1);
+			assert.equal(store.runs().length, 0);
+			assert.deepEqual(backend.getWorkflow(runId), changedHandle);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const mode of ["auto", "ask"] as const) {
+		for (const ownership of ["user", "agent", "legacy"] as const) {
+			test(`session_start ${mode} excludes ${ownership} runs from another project sharing a database (#3468)`, async () => {
+				const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-project-"));
+				try {
+					const projectA = join(root, "a");
+					const projectB = join(root, "b");
+					mkdirSync(projectA);
+					mkdirSync(workflowConfigDir(projectB), { recursive: true });
+					writeFileSync(
+						join(workflowConfigDir(projectB), "config.json"),
+						JSON.stringify({ resumeInFlight: mode }),
+					);
+					const workflowPath = join(projectB, "shared.ts");
+					await writeTrackedWorkflowFixture(workflowPath, "shared");
+					await writeTrackedWorkflowFixture(join(projectA, "shared.ts"), "shared");
+					process.chdir(projectA);
+					const backend = getDurableBackend();
+					const runId = testRunId(`startup-project-${mode}-${ownership}`);
+					backend.registerWorkflow({
+						workflowId: runId,
+						name: "shared",
+						inputs: {},
+						status: "running",
+						createdAt: 1,
+						updatedAt: 1,
+						completedCheckpoints: 1,
+						...(ownership === "legacy" ? {} : { invocationCwd: projectA }),
+						...(ownership === "agent" ? { origin: "agent", modelOwner: "previous-session" } : {}),
+					});
+					const before = backend.getWorkflow(runId);
+					let prompts = 0;
+					const ctx = {
+						cwd: projectB,
+						hasUI: true,
+						ui: {
+							notify: () => undefined,
+							confirm: async () => {
+								prompts += 1;
+								return true;
+							},
+						},
+					};
+					const { handlers, commands } = registerFactory({
+						sessionManager: { getCwd: () => projectB } as ExtensionAPI["sessionManager"],
+						getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					});
+					await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+					await cleanupJobs();
+					assert.equal(prompts, 0);
+					assert.deepEqual(backend.getWorkflow(runId), before);
+					assert.equal(store.runs().length, 0);
+					if (ownership !== "agent") {
+						await commands.find((entry) => entry.name === "workflow")?.options.handler?.(`resume ${runId}`, ctx);
+						await cleanupJobs();
+						assert.equal(backend.getWorkflow(runId)?.status, "completed", backend.getWorkflow(runId)?.error);
+					}
+				} finally {
+					process.chdir(originalCwd);
+					rmSync(root, { recursive: true, force: true });
+				}
+			});
+		}
+	}
+
 	for (const scenario of ["safe", "safe-ask", "foreign-cwd", "unknown-owner", "concurrent-claim"] as const) {
 		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
 			class ClaimBackend extends InMemoryDurableBackend {
@@ -267,6 +395,7 @@ export default workflow({
 					createdAt: 1,
 					updatedAt: 1,
 					completedCheckpoints: 1,
+					invocationCwd: root,
 				});
 				const lifecycleScope = {};
 				const overrides = {
@@ -379,6 +508,7 @@ export default workflow({
 					createdAt: 1,
 					updatedAt: 1,
 					completedCheckpoints: 1,
+					invocationCwd: root,
 				});
 				const originalHandle = backend.getWorkflow(runId);
 				const notices: string[] = [];
@@ -438,6 +568,7 @@ export default workflow({
 					createdAt: 1,
 					updatedAt: status === "running" ? Date.now() : 1,
 					completedCheckpoints: 1,
+					invocationCwd: root,
 				});
 			}
 			backend.registerWorkflow({
@@ -448,6 +579,7 @@ export default workflow({
 				createdAt: 1,
 				updatedAt: 1,
 				pendingPrompts: 1,
+				invocationCwd: root,
 			});
 			backend.registerWorkflow({
 				workflowId: testRunId("startup-live-quiet-owner"),
@@ -457,6 +589,7 @@ export default workflow({
 				createdAt: 1,
 				updatedAt: 1,
 				completedCheckpoints: 1,
+				invocationCwd: root,
 				ownerLiveness: "alive",
 			});
 			const before = backend.listResumableWorkflows();
@@ -515,6 +648,7 @@ export default workflow({
 					createdAt: 1,
 					updatedAt: 1,
 					completedCheckpoints: 1,
+					invocationCwd: root,
 				});
 				const before = backend.listResumableWorkflows();
 				let prompts = 0;

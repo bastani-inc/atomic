@@ -10,7 +10,7 @@ import type { EventBus } from "../src/core/event-bus.ts";
 import { sessionScopedExtensionState } from "../src/core/extension-session-state.ts";
 import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";

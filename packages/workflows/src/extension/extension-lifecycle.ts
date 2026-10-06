@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
@@ -189,11 +190,18 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		try {
 			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
 			const backend = getDurableBackend();
-			const isInterrupted = (entry: ResumableWorkflowEntry): boolean =>
-				entry.status === "running" &&
-				entry.pendingPrompts === 0 &&
-				!isLiveRunningWorkflow(backend.getWorkflow(entry.workflowId) ?? entry);
-			const interrupted = catalog.filter(isInterrupted);
+			const isInterruptedInProject = (entry: ResumableWorkflowEntry): boolean => {
+				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
+				return (
+					handle.invocationCwd !== undefined &&
+					resolve(handle.invocationCwd) ===
+						resolve(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd()) &&
+					handle.status === "running" &&
+					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
+					!isLiveRunningWorkflow(handle)
+				);
+			};
+			const interrupted = catalog.filter(isInterruptedInProject);
 			if (interrupted.length === 0) return;
 			if (
 				mode === "ask" &&
@@ -216,7 +224,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				);
 			}
 			for (const entry of prepared.resumable) {
-				if (!eligibleIds.has(entry.workflowId) || !isInterrupted(entry)) continue;
+				if (!eligibleIds.has(entry.workflowId) || !isInterruptedInProject(entry)) continue;
 				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
 					policy: workflowPolicyFromContext(ctx),
 					actor: "user",
