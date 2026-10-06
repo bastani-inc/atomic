@@ -52,6 +52,7 @@ export type DiagnosticFailureCategory =
 	| "malformed_output"
 	| "no_usable_ranges"
 	| "provider_error"
+	| "policy_refusal"
 	| "stream_error"
 	/** Length stop, no usable record, and billed reasoning tokens. */
 	| "starved"

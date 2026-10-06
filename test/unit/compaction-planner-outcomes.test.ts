@@ -69,7 +69,7 @@ test("a length stop whose records are all unusable is not starved without reason
 		5,
 		{ streamFn: stream.streamFn },
 	);
-	assert.deepEqual(outcome, { kind: "unusable", category: "no_usable_ranges", excerpt: "1,5\n" });
+	assert.deepEqual(outcome, { kind: "unusable", category: "no_usable_ranges", excerpt: "1:1,5\n" });
 });
 
 test("transient throttling after the retry budget produces rateLimited/exhausted", async () => {

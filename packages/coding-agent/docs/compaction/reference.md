@@ -20,6 +20,8 @@ The effective parameters appear in extension events and successful results:
 
 Atomic carries the recent tail with the compaction boundary rather than replaying it as separate assistant and tool-result messages. Tail text, tool calls, and tool results remain lossless; images remain image blocks. If `query` is absent, Atomic uses the last visible user message.
 
+The policy-refusal summary fallback instead keeps a token-based recent tail, replayed as separate messages. Its checkpoint is lossy rather than a verbatim transcript.
+
 Compaction resets Claude's signed reasoning chain: `thinking` and `redacted_thinking` blocks do not survive the boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
 
 The query is never truncated. An oversized planner request reports overflow rather than silently dropping part of it. Use `keepContext` tags, not a longer query, to guarantee protection.
@@ -75,8 +77,10 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
   "tokensBefore": 51234,
   "details": {
     "strategy": "verbatim-lines",
-    "promptVersion": 3,
+    "promptVersion": 4,
     "rung": "planned",
+    "backend": "planner",
+    "model": "openai-codex/gpt-6.1-sol",
     "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the failing test"},
     "stats": {"linesBefore": 812, "linesDeleted": 417, "linesKept": 395, "rangeCount": 63, "tokensBefore": 51234, "tokensAfter": 24980, "percentReduction": 51.2}
   }
@@ -85,12 +89,12 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 
 The entry's `tokensBefore` is the provider-aware whole-context count used for budgeting and the Compacted from display. `details.stats.tokensBefore`, `tokensAfter`, and `percentReduction` are heuristic estimates of the compactable region plus the kept tail. Those stats can differ from the entry count, and `percentReduction` is negative when the reconstructed estimate is larger. The display count is not stored again under `details.tokensBefore`.
 
-`details.rung` is one of `"planned"` (a model ranked the lines — the session model **or** a borrowed fallback, including silent partial recovery), `"extension"` (a `session_before_compact` override), or `"fresh"` (the compactable conversation was discarded and a new context window started). `details.plannerModel` is present **only** when a borrowed fallback model ranked the lines:
+`details.rung` is `"planned"` for successful model compaction, `"extension"` for a `session_before_compact` override, or `"fresh"` when older context was discarded. `details.backend` and `details.model` identify the successful compactor. A policy-refusal fallback records `backend: "summary"`, the same model that refused, and file lists in `details.summary`. Its card says `summary (pi fallback)`. `details.plannerModel` identifies a borrowed chat planner:
 
 ```json
 "details": {
   "strategy": "verbatim-lines",
-  "promptVersion": 3,
+  "promptVersion": 4,
   "rung": "planned",
   "plannerModel": {"provider": "openai", "id": "gpt-5.1", "thinkingLevel": "high"}
 }
@@ -255,7 +259,9 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
 | `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
 
-Compaction has no configuration key of its own for fallback borrowing: it reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list that main-chat model fallback walks. With no `fallbackModels` configured, compaction behaves as before: one planner model, then either an honest failure (recoverable) or a fresh context window (load-bearing).
+The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. Project settings may not select `morph/*`. See [Compaction model](/compaction#compaction-model).
+
+Fallback borrowing reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list used for chat fallback. It skips entries equal to the selected compaction model. A policy refusal first tries a pi-style summary on the same model; other failures, and failed summaries, advance to the next configured model. Only load-bearing recovery may clear older context after all attempts fail.
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

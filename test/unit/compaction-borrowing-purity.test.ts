@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Context, Model } from "@bastani/pi-ai/compat";
 import { getModel } from "@bastani/pi-ai/compat";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import { test } from "vitest";
@@ -19,6 +19,10 @@ import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/comp
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import {
+	messageLocalRecords,
+	plannerRequest,
+} from "../../packages/coding-agent/test/structured-planner-test-helpers.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { preparation, registryOf, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
 
@@ -47,14 +51,16 @@ function assistantMessage(text: string, timestamp: number): AssistantMessage {
 /** Session model always 429s; the configured fallback ranks the lines. */
 function rescueStream(): { streamFn: StreamFn; models: string[] } {
 	const models: string[] = [];
-	const streamFn = ((model: Model<Api>) => {
+	const streamFn = ((model: Model<Api>, context: Context) => {
 		models.push(`${model.provider}/${model.id}`);
 		const throttled = model.provider === "anthropic";
 		return {
 			result: async (): Promise<AssistantMessage> =>
 				({
 					role: "assistant",
-					content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
+					content: throttled
+						? []
+						: [{ type: "text", text: messageLocalRecords("3,8\n", plannerRequest(context)) }],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,

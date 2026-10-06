@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `compactionModel` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+
+### Changed
+
+- Compaction planners now receive structured per-message lines instead of a numbered transcript ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+
+### Fixed
+
+- Provider policy refusals during compaction now try a pi-style summary on the same model before continuing through fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+
 ## [0.9.28-alpha.1] - 2026-10-05
 
 ### Added

@@ -39,12 +39,13 @@ export type PlannerOutcome =
 	  }
 	| { kind: "unusable"; category: DiagnosticFailureCategory; excerpt: string; diagnosticPath?: string }
 	| { kind: "overflowed"; diagnosticPath?: string }
+	| { kind: "policyRefusal"; message: string; diagnosticPath?: string }
 	| { kind: "providerError"; message: string; diagnosticPath?: string };
 
 /** A planner outcome that cannot produce a boundary and must advance the ladder. */
 export type TerminalPlannerOutcome = Extract<
 	PlannerOutcome,
-	{ kind: "rateLimited" | "unusable" | "overflowed" | "providerError" }
+	{ kind: "rateLimited" | "unusable" | "overflowed" | "providerError" | "policyRefusal" }
 >;
 
 /** Whether this outcome produced validated deletion ranges. */
@@ -114,17 +115,21 @@ const RATE_LIMITED_PATTERN = buildProviderErrorPattern([
 const HTTP_5XX_PATTERN = /(?<![\d.])5\d\d(?![\d.])/;
 
 /** How a failed planner response is classified before an outcome is built. */
-export type PlannerFailureClass = "overflow" | "quota" | "rate_limited" | "provider_error";
+export type PlannerFailureClass = "overflow" | "quota" | "rate_limited" | "policy_refusal" | "provider_error";
 
+export function isProviderPolicyRefusal(message: string): boolean {
+	return /terms of service|usage[\s_-]*policy|acceptable use policy|content[\s_-]*policy|policy violation|violat(?:e|es|ed|ion|ing)[\s\S]*policy|blocked[\s\S]*(?:policy|reverse engineering|duplicating model outputs)/i.test(
+		message,
+	);
+}
 /**
  * Classify one failed planner response.
  *
- * Context overflow wins first because pi-ai's `isContextOverflow` already
- * excludes rate/throttle text, and overflow is recoverable by trimming.
- * Quota/billing exhaustion then wins over transient throttling, matching pi-ai's
- * own precedence.
+ * Policy refusal wins before overflow, quota, and retryable-provider matching.
+ * Context overflow is recoverable by trimming; quota wins over throttling.
  */
 export function classifyPlannerFailure(response: AssistantMessage, contextWindow: number): PlannerFailureClass {
+	if (isProviderPolicyRefusal(response.errorMessage ?? "")) return "policy_refusal";
 	if (isContextOverflow(response, contextWindow)) return "overflow";
 	const message = response.errorMessage ?? "";
 	if (QUOTA_EXHAUSTED_PATTERN.test(message) || LOCAL_USAGE_LIMIT_PATTERN.test(message)) return "quota";

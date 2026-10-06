@@ -21,6 +21,7 @@ import {
 	type VerbatimCompactionStats,
 	widenToWholeContextStats,
 } from "./compaction/index.ts";
+import { resolveCompactionModel } from "./compaction/model-resolver.js";
 import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
@@ -140,6 +141,11 @@ export async function _applyVerbatimCompaction(
 				plannerModel?: CompactionPlannerModel;
 				keptTail: boolean;
 				usage?: Usage;
+				backend?: "planner" | "summary";
+				model?: string;
+				summary?: { readFiles: string[]; modifiedFiles: string[] };
+				summaryFirstKeptEntryId?: string;
+				summaryTokensBefore?: number;
 		  }
 		| undefined;
 
@@ -197,6 +203,12 @@ export async function _applyVerbatimCompaction(
 			thinkingLevel: this.thinkingLevel,
 			urgency: options.urgency,
 			fallback,
+			compactionModel: resolveCompactionModel(
+				this.settingsManager.getCompactionModel(),
+				model,
+				this._modelRuntime.getAllModels(),
+			),
+			summaryEntries: pathEntries,
 		});
 		compacted = {
 			text: run.text,
@@ -205,13 +217,20 @@ export async function _applyVerbatimCompaction(
 			...(run.plannerModel ? { plannerModel: run.plannerModel } : {}),
 			...(run.usage ? { usage: run.usage } : {}),
 			keptTail: run.keptTail,
+			...(run.backend ? { backend: run.backend } : {}),
+			...(run.model ? { model: run.model } : {}),
+			...(run.summary ? { summary: run.summary } : {}),
+			...(run.summaryFirstKeptEntryId ? { summaryFirstKeptEntryId: run.summaryFirstKeptEntryId } : {}),
+			...(run.summaryTokensBefore !== undefined ? { summaryTokensBefore: run.summaryTokensBefore } : {}),
 		};
 	}
 	assertCompactionOpen(this);
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
 
 	// A fresh rung that had to drop the protected tail persists no tail boundary.
-	const firstKeptEntryId = compacted.keptTail ? preparation.firstKeptEntryId : null;
+	const firstKeptEntryId =
+		compacted.summaryFirstKeptEntryId ?? (compacted.keptTail ? preparation.firstKeptEntryId : null);
+	const tokensBefore = compacted.summaryTokensBefore ?? preparation.tokensBefore;
 	const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
@@ -220,12 +239,15 @@ export async function _applyVerbatimCompaction(
 		stats: compacted.stats,
 		rung: compacted.rung,
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
+		...(compacted.backend ? { backend: compacted.backend } : {}),
+		...(compacted.model ? { model: compacted.model } : {}),
+		...(compacted.summary ? { summary: compacted.summary } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const entryId = this.sessionManager.appendCompaction(
 		compacted.text,
 		firstKeptEntryId,
-		preparation.tokensBefore,
+		tokensBefore,
 		details,
 		compacted.usage,
 	);
@@ -233,12 +255,15 @@ export async function _applyVerbatimCompaction(
 	const result: VerbatimCompactionResult = {
 		compactedText: compacted.text,
 		firstKeptEntryId,
-		tokensBefore: preparation.tokensBefore,
+		tokensBefore,
 		stats: compacted.stats,
 		parameters: preparation.parameters,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		rung: compacted.rung,
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
+		...(compacted.backend ? { backend: compacted.backend } : {}),
+		...(compacted.model ? { model: compacted.model } : {}),
+		...(compacted.summary ? { summary: compacted.summary } : {}),
 		...(compacted.usage ? { usage: compacted.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};

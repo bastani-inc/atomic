@@ -73,11 +73,20 @@ function region(lineCount = 100): NumberedRegion {
 	} as NumberedRegion;
 }
 
+// This fixture has one message, so global fixture coordinates are local to id 1.
+function localText(text: string): string {
+	return text.replace(/(^|\n)(?=[0-9])/g, "$11:");
+}
+
 function stream(text: string | string[], stopReason: string) {
 	return async () => ({
-		result: async () => resp(text, stopReason),
+		result: async () => resp(Array.isArray(text) ? text.map(localText) : localText(text), stopReason),
 		events: async function* () {
-			yield { type: "done" as const, reason: stopReason as "stop" | "length", message: resp(text, stopReason) };
+			yield {
+				type: "done" as const,
+				reason: stopReason as "stop" | "length",
+				message: resp(Array.isArray(text) ? text.map(localText) : localText(text), stopReason),
+			};
 		},
 	});
 }
@@ -322,12 +331,7 @@ describe("truncated recovery: validation integration", () => {
 			// lines 1-3 are protected
 			error = e as RangePlanError;
 		}
-		// With only one complete line that's all protected, recovery may succeed
-		// but validation produces zero usable ranges → falls through to error
-		// Actually: on "length" stop, "1,3\n" has last newline at index 3,
-		// completed portion is "1,3", fragment is empty. So recovery yields [1,3].
-		// But wait — for normal path, "1,3\n" is parseable by extractDeletedRanges.
-		// Let me check: extractDeletedRanges("1,3\n") → [{start:1,end:3}] → validated → all protected → no usable → error
+		// The complete local record is parsed, but all selected lines are protected.
 		expect(error).toBeInstanceOf(RangePlanError);
 	});
 
@@ -338,13 +342,9 @@ describe("truncated recovery: validation integration", () => {
 		expect(result).toEqual([{ start: 10, end: 20 }]);
 	});
 
-	it("out-of-bounds ranges are clamped through validation", async () => {
-		// The region is 50 lines, so 40,60 comes back clamped to the region bound.
+	it("drops out-of-bounds message-local ranges while retaining valid records", async () => {
 		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50 });
-		expect(result).toEqual([
-			{ start: 10, end: 20 },
-			{ start: 40, end: 50 },
-		]);
+		expect(result).toEqual([{ start: 10, end: 20 }]);
 	});
 });
 
@@ -390,7 +390,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 		const content = JSON.parse(readFileSync(files[0], "utf-8")) as RecoveryDiagnostic;
 		expect(content.version).toBe(1);
 		expect(content.recoveryCategory).toBe("partial_length_recovery");
-		expect(content.rawResponse).toBe(truncatedText);
+		expect(content.rawResponse).toBe(localText(truncatedText));
 		expect(content.stopReason).toBe("length");
 		expect(content.usage).toBeDefined();
 		expect(content.requestMaxTokens).toBeUndefined();
@@ -455,14 +455,14 @@ describe("buildRangePlannerPrompt: examples and contract", () => {
 	it("contains the required concrete example in priority order", () => {
 		const r = region(500);
 		const prompt = buildRangePlannerPrompt(r, params, 250);
-		expect(prompt).toContain("120,180\n6,40\n300,305");
+		expect(prompt).toContain("2:120,180\n1:6,40\n3:300,305");
 	});
 
 	it("explains the bare-line format and explicitly forbids fences/prose", () => {
 		const r = region(100);
 		const prompt = buildRangePlannerPrompt(r, params, 50);
-		expect(prompt).toContain("Each line is one inclusive `start,end` range");
-		expect(prompt).toContain("no spaces, blank lines, header, count, Markdown fence, prose, or reasoning");
+		expect(prompt).toContain("Each line is one inclusive `id:start,end` range");
+		expect(prompt).toContain("No spaces, blank lines, header, count, Markdown fence, prose, or reasoning");
 	});
 
 	it("explains descending deletion confidence ordering", () => {

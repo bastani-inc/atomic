@@ -36,6 +36,7 @@ export interface FallbackPlannerContext {
 	/** Session level inherited when a candidate carries no `:level` suffix. */
 	readonly sessionThinkingLevel: ThinkingLevel | undefined;
 	readonly isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
+	readonly selectedModelId?: string;
 }
 
 /**
@@ -95,6 +96,7 @@ export function createFallbackPlannerBorrower(context: FallbackPlannerContext): 
 
 			const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
 			if (!candidate) continue;
+			if (`${candidate.model.provider}/${candidate.model.id}` === context.selectedModelId) continue;
 			// Resolve the budget first: the identity depends on the effective
 			// reasoning level, which inheritance may supply.
 			const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);

@@ -254,6 +254,31 @@ export function createNumberedRegion(text: string, protectedLineNumbers?: Readon
 	};
 }
 
+export function createConversationRegion(messages: Message[], previousSummary?: string): NumberedRegion {
+	const sections: { role: "user" | "assistant" | "tool"; text: string }[] = [];
+	if (previousSummary) sections.push({ role: "assistant", text: previousSummary });
+	for (const message of messages) {
+		const text = serializeConversationForCompaction([message]);
+		if (text)
+			sections.push({
+				role: message.role === "toolResult" ? "tool" : message.role === "user" ? "user" : "assistant",
+				text,
+			});
+	}
+	const lines: string[] = [];
+	const messageSpans: NonNullable<NumberedRegion["messageSpans"]> = [];
+	for (let index = 0; index < sections.length; index++) {
+		const section = sections[index];
+		const start = lines.length + 1;
+		lines.push(...section.text.split("\n"));
+		if (index < sections.length - 1 && !(index === 0 && previousSummary)) lines.push("");
+		messageSpans.push({ role: section.role, start, end: lines.length });
+	}
+	const region = createNumberedRegion(lines.join("\n"));
+	region.messageSpans = messageSpans.length > 0 ? messageSpans : [{ role: "assistant", start: 1, end: 1 }];
+	return region;
+}
+
 export function numberRegionLines(region: NumberedRegion, start = 1, end = region.lines.length): string {
 	const first = Math.max(1, Math.trunc(start));
 	const last = Math.min(region.lines.length, Math.trunc(end));

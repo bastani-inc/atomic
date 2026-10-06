@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
 	type CustomMessage,
 	convertToLlm,
 	isVerbatimCompactionMessage,
+	SUMMARY_COMPACTION_PREFIX,
 	VERBATIM_COMPACTION_PREFIX,
 } from "../../src/core/messages.js";
 import { buildSessionContext, type SessionEntry, SessionManager } from "../../src/core/session-manager.js";
@@ -304,6 +306,67 @@ describe("verbatim compaction persistence and resume", () => {
 		expect(serialized).toContain("middle tail");
 		expect(serialized).toContain("after latest");
 	});
+
+	it.each(["planner", "summary"] as const)(
+		"(#3470) replays only the latest summary across a retained %s boundary after reopen",
+		(previousBackend) => {
+			const cwd = mkdtempSync(join(tmpdir(), "atomic-summary-replay-"));
+			tempDirs.push(cwd);
+			const manager = SessionManager.create(cwd, cwd);
+			manager.appendMessage(userMsg("compacted history"));
+			const retainedId = manager.appendMessage(assistantMsg("raw retained answer"));
+			const obsoleteId = manager.appendCompaction("obsolete checkpoint", retainedId, 100, {
+				...details(),
+				backend: previousBackend,
+			});
+			const middleId = manager.appendMessage(userMsg("middle raw tail"));
+			const editId = manager.appendContextEdit(retainedId, { content: "edited retained answer" });
+			const latestId = manager.appendCompaction("latest checkpoint", retainedId, 100, {
+				...details(),
+				backend: "summary",
+			});
+			manager.appendMessage(userMsg("latest user"));
+
+			const verify = (session: SessionManager) => {
+				const projection = session.buildSessionProjection();
+				assert.deepEqual(
+					projection.messages.map((message) => ({ role: message.role, content: message.content })),
+					[
+						{
+							role: "custom",
+							content: [{ type: "text", text: `${SUMMARY_COMPACTION_PREFIX}latest checkpoint` }],
+						},
+						{ role: "assistant", content: [{ type: "text", text: "edited retained answer" }] },
+						{ role: "user", content: "middle raw tail" },
+						{ role: "user", content: "latest user" },
+					],
+				);
+				assert.ok(projection.entries.some((entry) => entry.sourceEntry.id === middleId));
+				assert.ok(projection.entries.some((entry) => entry.sourceEntry.id === editId));
+				assert.deepEqual(
+					projection.entries
+						.filter((entry) => entry.sourceEntry.type === "compaction")
+						.map((entry) => ({
+							id: entry.sourceEntry.id,
+							messageCount: entry.messages.length,
+						})),
+					[
+						{ id: latestId, messageCount: 1 },
+						{ id: obsoleteId, messageCount: 0 },
+					],
+				);
+				const rawRetained = session.getEntry(retainedId);
+				assert.ok(rawRetained?.type === "message" && rawRetained.message.role === "assistant");
+				assert.deepEqual(rawRetained.message.content, [{ type: "text", text: "raw retained answer" }]);
+				return projection.messages;
+			};
+
+			const messages = verify(manager);
+			const file = manager.getSessionFile();
+			assert.ok(file);
+			assert.deepEqual(verify(SessionManager.open(file)), messages);
+		},
+	);
 
 	it("rejects persistence when firstKeptEntryId is not in the session tree", () => {
 		const manager = SessionManager.inMemory();
