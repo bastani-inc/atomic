@@ -64,7 +64,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			else console.error(`[Herdr] ${value.kind}${value.owner ? `: deferring to ${value.owner}` : ""}`);
 		};
 		const tasksRunning = () => taskStore?.tasks.some((task) => task.execution.kind !== "settled") ?? false;
-		const report = () => {
+		const report = (skipUnchanged = false) => {
 			if (!owner) return;
 			const activity = deriveSessionActivity({
 				agentRunning,
@@ -73,7 +73,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 				roots: [...roots.values()].filter((root) => !acknowledgedBlocks.has(root.rootRunId)),
 				availability,
 			});
-			if (activity) reportPaneActivity(owner, activity);
+			if (activity) reportPaneActivity(owner, activity, skipUnchanged);
 		};
 		const start = async (ctx: ExtensionContext) => {
 			const runner = getExtensionContextOwner(ctx);
@@ -139,7 +139,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 					roots.delete(frame.rootRunId);
 					acknowledgedBlocks.delete(frame.rootRunId);
 				}
-				report();
+				report(frame.kind === "snapshot");
 			});
 		};
 		pi.on("session_start", (_event, ctx) => publishExtensionContextEffect(ctx, () => start(ctx)));

@@ -13,7 +13,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.js";
+import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
 import type { ExtensionRuntime, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";

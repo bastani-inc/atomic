@@ -62,6 +62,45 @@ test("pane ownership serializes and coalesces reports across replacement and clo
 	}
 });
 
+test("skipping a delivered snapshot does not discard the next explicit activity report (#3468)", async () => {
+	const fake = await fakeHerdr();
+	const owner = await claimPaneReporting(fake.environment, { id: "parent" });
+	try {
+		const idle = { state: "idle", reason: "quiescent" } as const;
+		reportPaneActivity(owner, idle);
+		await owner.flush();
+		reportPaneActivity(owner, idle, true);
+		reportPaneActivity(owner, { state: "working", reason: "executing" });
+		await owner.flush();
+		assert.deepEqual(
+			(await fake.calls()).filter((call) => call.phase === "start").map((call) => arg(call.args, "--state")),
+			["idle", "working"],
+		);
+	} finally {
+		await releasePaneReporting(owner);
+		await fake.dispose();
+	}
+});
+
+test("an identical snapshot preserves an explicit refresh queued during delivery (#3468)", async () => {
+	const fake = await fakeHerdr();
+	const owner = await claimPaneReporting(fake.environment, { id: "parent" });
+	try {
+		const working = { state: "working", reason: "executing" } as const;
+		reportPaneActivity(owner, working);
+		reportPaneActivity(owner, working);
+		reportPaneActivity(owner, working, true);
+		await owner.flush();
+		assert.deepEqual(
+			(await fake.calls()).filter((call) => call.phase === "start").map((call) => arg(call.args, "--state")),
+			["working", "working"],
+		);
+	} finally {
+		await releasePaneReporting(owner);
+		await fake.dispose();
+	}
+});
+
 // #2891: failed delivery must not consume the claim's parent identity.
 test("pane reporting retries identity until success", async () => {
 	const fake = await fakeHerdr('finish(args.includes("working") ? 1 : 0);');

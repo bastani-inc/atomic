@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";
@@ -11,6 +11,8 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
+import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
+import { publishExtensionContextEffect, registerExtensionContextRetirementEffect } from "../src/index.js";
 import { arg, fakeHerdr } from "./helpers/herdr.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
@@ -68,9 +70,136 @@ test.each([
 	},
 );
 
+test("recovery snapshots retain unchanged pane activity but a new claim republishes identity (#3468)", async () => {
+	const fake = await fakeHerdr();
+	const loaded = await createTestExtensionsResult(
+		[createHerdrExtension({ env: fake.env, enabled: () => true })],
+		fake.dir,
+	);
+	const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
+	publisher.publishSnapshot({ availability: "ready", roots: [] });
+	const manager = SessionManager.create(fake.dir, fake.dir);
+	const runners = [0, 1].map(() => {
+		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
+		runner.setUIContext({ ...noOpUIContext }, "tui");
+		return runner;
+	});
+	try {
+		await runners[0].emit({ type: "session_start" });
+		await fake.waitFor(1);
+		publisher.publishSnapshot({ availability: "recovering" });
+		publisher.publishSnapshot({ availability: "ready", roots: [] });
+		await runners[0].drainWork();
+		await runners[0].emit({ type: "session_shutdown", reason: "reload" });
+		assert.equal(
+			(await fake.calls()).filter((call) => call.phase === "start").length,
+			1,
+			"recovery returning to unchanged activity must retain the existing pane report",
+		);
+		await runners[1].emit({ type: "session_start", reason: "reload" });
+		await fake.waitFor(2);
+		await runners[1].emit({ type: "session_shutdown", reason: "quit" });
+		const calls = (await fake.calls()).filter((call) => call.phase === "start");
+		assert.deepEqual(
+			calls.map((call) => call.args[1]),
+			["report-agent", "report-agent", "release-agent"],
+		);
+		for (const call of calls.slice(0, 2)) {
+			assert.equal(arg(call.args, "--state"), "idle");
+			assert.equal(arg(call.args, "--agent-session-id"), manager.getSessionId());
+			assert.equal(arg(call.args, "--agent-session-path"), manager.getSessionFile());
+		}
+	} finally {
+		for (const runner of runners) {
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			runner.invalidate();
+		}
+		await fake.dispose();
+	}
+});
+
+test.each([
+	{ established: false, queuedDuringFlight: false },
+	{ established: true, queuedDuringFlight: false },
+	{ established: false, queuedDuringFlight: true },
+	{ established: true, queuedDuringFlight: true },
+])(
+	"identical snapshot retries failed delivery (established: $established, queued during flight: $queuedDuringFlight) (#3468)",
+	async ({ established, queuedDuringFlight }) => {
+		const fake = await fakeHerdr(`
+if (fs.existsSync(args[2] + "/healthy")) finish();
+else {
+	const timer = setInterval(() => {
+		if (fs.existsSync(args[2] + "/allow-failure")) {
+			clearInterval(timer);
+			finish(1);
+		}
+	}, 5);
+}`);
+		const healthy = join(fake.dir, "healthy");
+		const allowFailure = join(fake.dir, "allow-failure");
+		const diagnostics: HerdrDiagnostic[] = [];
+		const failedReport = Promise.withResolvers<void>();
+		if (established) await writeFile(healthy, "");
+		const loaded = await createTestExtensionsResult(
+			[
+				createHerdrExtension({
+					env: fake.env,
+					enabled: () => true,
+					diagnostic: (value) => {
+						diagnostics.push(value);
+						failedReport.resolve();
+					},
+				}),
+			],
+			fake.dir,
+		);
+		const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
+		publisher.publishSnapshot({ availability: "ready", roots: [] });
+		const manager = SessionManager.create(fake.dir, fake.dir);
+		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
+		runner.setUIContext({ ...noOpUIContext }, "tui");
+		try {
+			await runner.emit({ type: "session_start" });
+			if (established) {
+				await fake.waitFor(1);
+				await rm(healthy);
+				await runner.emit({ type: "agent_start" });
+			}
+			await fake.waitForStarted(established ? 2 : 1);
+			if (queuedDuringFlight) {
+				publisher.publishSnapshot({ availability: "ready", roots: [] });
+				await runner.drainWork();
+			}
+			await writeFile(healthy, "");
+			await writeFile(allowFailure, "");
+			await failedReport.promise;
+			assert.deepEqual(diagnostics, [{ kind: "protocol_rejected" }]);
+			if (!queuedDuringFlight) publisher.publishSnapshot({ availability: "ready", roots: [] });
+			await fake.waitFor(established ? 3 : 2);
+			await runner.emit({ type: "session_shutdown", reason: "reload" });
+			const reports = (await fake.calls()).filter(
+				(call) => call.phase === "start" && call.args[1] === "report-agent",
+			);
+			assert.equal(reports.length, established ? 3 : 2);
+			for (const report of reports.slice(established ? 1 : 0)) {
+				assert.equal(arg(report.args, "--state"), established ? "working" : "idle");
+				assert.equal(arg(report.args, "--agent-session-id"), established ? undefined : manager.getSessionId());
+				assert.equal(arg(report.args, "--agent-session-path"), established ? undefined : manager.getSessionFile());
+			}
+			assert.ok(Number(arg(reports.at(-1)!.args, "--seq")) > Number(arg(reports.at(-2)!.args, "--seq")));
+		} finally {
+			await writeFile(allowFailure, "");
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			runner.invalidate();
+			await fake.dispose();
+		}
+	},
+);
+
 // PR #2925: a supplied transactional loader may retain the loaded reporter closure.
 test(
-	"SDK transactional reload retains the new reporter through retiring shutdown and final quit",
+	"SDK transactional reload retains the new reporter through retiring shutdown and final quit (#3468)",
 	async () => {
 		const fake = await fakeHerdr();
 		try {
@@ -323,17 +452,30 @@ if (args.includes("working")) {
 
 // PR #2925: a rejected candidate must not retire the runner that reload keeps alive.
 test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
-	"SDK rejected %s preserves live reporting, approval state and owning quit",
+	"SDK rejected %s preserves live reporting, approval state and owning quit (#3468)",
 	async (failure) => {
 		const fake = await fakeHerdr();
 		try {
 			let candidateContext: ExtensionContext | undefined;
+			let candidatePublished = false;
+			let candidateRetired = false;
 			const loaded = await createTestExtensionsResult(
 				[
 					createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 }),
 					(pi) => {
-						pi.on("session_start", (event, ctx) => {
-							if (event.reason === "reload") candidateContext = ctx;
+						pi.on("session_start", async (event, ctx) => {
+							if (event.reason !== "reload") return;
+							candidateContext = ctx;
+							registerExtensionContextRetirementEffect(ctx, () => {
+								candidateRetired = true;
+							});
+							await publishExtensionContextEffect(
+								ctx,
+								() => {
+									candidatePublished = true;
+								},
+								"commit",
+							);
 						});
 						pi.on("resources_discover", (event) =>
 							event.reason === "reload" && failure === "extendResources"
@@ -425,6 +567,8 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 					new RegExp(`${failure} rejected`),
 				);
 				assert.equal(session.extensionRunner, live);
+				assert.equal(candidatePublished, false, "SDK-exported effects must not publish a rejected candidate");
+				assert.equal(candidateRetired, true, "SDK-exported observers retire on candidate rollback");
 				assert.deepEqual(
 					(await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args[1]),
 					["report-agent", "report-agent"],

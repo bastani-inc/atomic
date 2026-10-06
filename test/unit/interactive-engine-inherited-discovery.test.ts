@@ -233,13 +233,16 @@ async function waitForCommand(driver: InteractiveDriver): Promise<Set<string>> {
 }
 
 serialTest(
-	"isolated interactive mode discovers and runs compatible inherited Pi extensions",
+	"isolated interactive mode discovers and runs compatible inherited Pi extensions without durable recovery (#3468)",
 	async () => {
 		const temp = mkdtempSync(join(tmpdir(), "atomic-inherited-tui-"));
 		const home = join(temp, "home");
 		const logFile = writeLegacyCommandExtension(home);
 		mkdirSync(join(home, ".atomic", "agent"), { recursive: true });
 		writeFileSync(join(home, ".atomic", "agent", "settings.json"), "{}\n");
+		const workflowConfigDir = join(home, ".atomic", "agent", "extensions", "workflow");
+		mkdirSync(workflowConfigDir, { recursive: true });
+		writeFileSync(join(workflowConfigDir, "config.json"), JSON.stringify({ resumeInFlight: "never" }));
 		const driver = new InteractiveDriver(args(), {
 			HOME: home,
 			USERPROFILE: undefined,

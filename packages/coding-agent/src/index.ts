@@ -19,7 +19,7 @@ export {
 	type ExtensionContextEffectPhase,
 	publishExtensionContextEffect,
 	registerExtensionContextRetirementEffect,
-} from "./core/extensions/runner-context.js";
+} from "./core/extensions/runner-context.ts";
 export type {
 	ToolAnnotations,
 	ToolExposure,
