@@ -22,6 +22,8 @@ const rowContextBag = globalThis as typeof globalThis & { [rowContextKey]?: Asyn
 rowContextBag[rowContextKey] ??= new AsyncLocalStorage<DbosRowAuthority>();
 const rowContext = rowContextBag[rowContextKey];
 
+const CLIENT_TERMINATION_TIMEOUT_MS = 5_000;
+
 function lockKey(identity: string): readonly [number, number] {
 	const digest = createHash("sha256").update(`atomic-workflow-fence:${identity}`).digest();
 	return [digest.readInt32BE(0), digest.readInt32BE(4)];
@@ -33,6 +35,9 @@ export function isDatabaseExecutor(executorId: string | undefined): executorId i
 
 export class DbosOwnerFence {
 	private lifetime: Promise<PoolClient> | undefined;
+	private readonly endedClients = new WeakSet<PoolClient>();
+	private readonly terminatingClients = new Set<Promise<void>>();
+	private terminationError: Error | undefined;
 	private lost = false;
 	private closing: Promise<void> | undefined;
 	closed = false;
@@ -61,6 +66,7 @@ export class DbosOwnerFence {
 				this.fail();
 			});
 			client.on("end", () => {
+				this.endedClients.add(client);
 				this.fail();
 			});
 			try {
@@ -74,7 +80,7 @@ export class DbosOwnerFence {
 				return client;
 			} catch (error) {
 				this.fail();
-				client.release(true);
+				await this.retireClient(client);
 				throw error;
 			}
 		})().catch((error: Error) => {
@@ -235,6 +241,7 @@ export class DbosOwnerFence {
 			}
 			if (active === undefined) return client;
 			const fence = active.fence;
+			client.once("end", () => fence.endedClients.add(client));
 			try {
 				if (fence.lost) throw fence.fail();
 				await client.query("SELECT set_config('application_name', $1, false)", [
@@ -257,14 +264,14 @@ export class DbosOwnerFence {
 				}
 				if (fence.lost) throw fence.fail();
 			} catch (error) {
-				client.release(true);
+				void fence.retireClient(client);
 				throw error;
 			}
 			let released = false;
 			const release = (): void => {
 				if (released) return;
 				released = true;
-				client.release(true);
+				void fence.retireClient(client);
 			};
 			const query = new Proxy(client.query, {
 				apply: (target, _receiver, args: Parameters<PoolClient["query"]>) => {
@@ -312,15 +319,58 @@ export class DbosOwnerFence {
 		return pool;
 	}
 
+	private retireClient(client: PoolClient): Promise<void> {
+		const pending = this.releaseClient(client)
+			.catch((error: Error) => {
+				this.terminationError ??= error;
+			})
+			.finally(() => this.terminatingClients.delete(pending));
+		this.terminatingClients.add(pending);
+		return pending;
+	}
+
+	private async releaseClient(client: PoolClient): Promise<void> {
+		if (this.endedClients.has(client)) {
+			client.release(true);
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onEnd = () => {};
+		try {
+			await new Promise<void>((resolve, reject) => {
+				onEnd = resolve;
+				client.once("end", onEnd);
+				timer = setTimeout(
+					() =>
+						reject(
+							new Error(
+								`Workflow ownership connection did not terminate within ${CLIENT_TERMINATION_TIMEOUT_MS}ms`,
+							),
+						),
+					CLIENT_TERMINATION_TIMEOUT_MS,
+				);
+				client.release(true);
+			});
+		} finally {
+			clearTimeout(timer);
+			client.removeListener("end", onEnd);
+		}
+	}
+
 	close(): Promise<void> {
 		this.closed = true;
 		this.lost = true;
 		this.closing ??= (async () => {
-			if (this.lifetime !== undefined) {
-				const client = await this.lifetime.catch(() => undefined);
-				client?.release(true);
+			try {
+				if (this.lifetime !== undefined) {
+					const client = await this.lifetime.catch(() => undefined);
+					if (client !== undefined) await this.retireClient(client);
+				}
+			} finally {
+				await this.endPool();
 			}
-			await this.endPool();
+			while (this.terminatingClients.size > 0) await Promise.all(this.terminatingClients);
+			if (this.terminationError !== undefined) throw this.terminationError;
 		})();
 		return this.closing;
 	}
