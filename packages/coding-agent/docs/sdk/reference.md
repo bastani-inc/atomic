@@ -845,6 +845,12 @@ generateDiffString
 generateUnifiedPatch
 type EditDiffResult
 
+// Session output
+createTranscript
+type Transcript
+type TranscriptOptions
+type TranscriptPart
+
 // Session management
 SessionManager
 SettingsManager

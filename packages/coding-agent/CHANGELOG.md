@@ -5,6 +5,7 @@
 ### Added
 
 - Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
+- Added `createTranscript()`, which turns session events into the assistant's output as ordered, JSON-serializable text, thinking, and tool call parts, with each tool call joined to its result ([#3475](https://github.com/bastani-inc/atomic/issues/3475)).
 
 ### Fixed
 
