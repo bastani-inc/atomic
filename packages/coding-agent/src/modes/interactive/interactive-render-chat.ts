@@ -1,5 +1,5 @@
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
-import { CONFIG_DIR_NAME } from "../../config.ts";
+import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
@@ -11,7 +11,7 @@ import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../i
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
-import { ThemedText } from "./components/themed-text.ts";
+import { ThemedText } from "./components/themed-text.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
