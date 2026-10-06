@@ -36,6 +36,8 @@ export function isDatabaseExecutor(executorId: string | undefined): executorId i
 export class DbosOwnerFence {
 	private lifetime: Promise<PoolClient> | undefined;
 	private readonly endedClients = new WeakSet<PoolClient>();
+	private readonly protectedClients = new Set<PoolClient>();
+	private readonly retirements = new WeakMap<PoolClient, Promise<void>>();
 	private readonly terminatingClients = new Set<Promise<void>>();
 	private terminationError: Error | undefined;
 	private lost = false;
@@ -230,18 +232,23 @@ export class DbosOwnerFence {
 		const acquire = async (): Promise<PoolClient> => {
 			const active = writeContext.getStore();
 			const client = await connect();
+			if (active !== undefined) {
+				active.fence.protectedClients.add(client);
+				client.once("end", () => active.fence.endedClients.add(client));
+			}
 			try {
+				if (active?.fence.lost) throw active.fence.fail();
 				await installDbosRowGuard(client);
 				await client.query("SELECT set_config('atomic.row_authority', $1, false)", [
 					JSON.stringify(rowContext.getStore() ?? null),
 				]);
 			} catch (error) {
-				client.release(true);
+				if (active === undefined) client.release(true);
+				else void active.fence.retireClient(client);
 				throw error;
 			}
 			if (active === undefined) return client;
 			const fence = active.fence;
-			client.once("end", () => fence.endedClients.add(client));
 			try {
 				if (fence.lost) throw fence.fail();
 				await client.query("SELECT set_config('application_name', $1, false)", [
@@ -251,6 +258,7 @@ export class DbosOwnerFence {
 					fence.executorId,
 					...[...active.workflows].filter(([, claim]) => !claim).map(([id]) => `sql:${id}`),
 				]) {
+					if (fence.lost) throw fence.fail();
 					const held = await client.query<{ held: boolean }>(
 						"SELECT pg_try_advisory_lock_shared($1, $2) AS held",
 						[...lockKey(identity)],
@@ -320,12 +328,18 @@ export class DbosOwnerFence {
 	}
 
 	private retireClient(client: PoolClient): Promise<void> {
+		const existing = this.retirements.get(client);
+		if (existing !== undefined) return existing;
 		const pending = this.releaseClient(client)
 			.catch((error: Error) => {
 				this.terminationError ??= error;
 			})
-			.finally(() => this.terminatingClients.delete(pending));
+			.finally(() => {
+				this.terminatingClients.delete(pending);
+				this.protectedClients.delete(client);
+			});
 		this.terminatingClients.add(pending);
+		this.retirements.set(client, pending);
 		return pending;
 	}
 
@@ -362,6 +376,7 @@ export class DbosOwnerFence {
 		this.lost = true;
 		this.closing ??= (async () => {
 			try {
+				for (const client of this.protectedClients) void this.retireClient(client);
 				if (this.lifetime !== undefined) {
 					const client = await this.lifetime.catch(() => undefined);
 					if (client !== undefined) await this.retireClient(client);

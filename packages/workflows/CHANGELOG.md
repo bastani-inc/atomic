@@ -25,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed recovered workflows disconnecting Intercom with pending-stage authorization errors when workflow extension modules load more than once ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 - Fixed recovered agent stages failing with a stale extension context after accepted startup recovery. Committed host generations hand off synchronously and retired Store observers detach before authority revocation, independently of shutdown handler order ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 - Fixed startup recovery offering or restarting another project's workflows when projects share a database. Automatic recovery now requires the original invocation directory to match the current working directory; cross-project recovery remains available through `/workflow resume` ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
-- Fixed durable-workflow shutdown returning before the ownership PostgreSQL connection terminated, so immediate recovery no longer races a stale executor lock ([#3489](https://github.com/bastani-inc/atomic/issues/3489)).
+- Fixed durable-workflow shutdown returning before ownership and protected SQL connections terminated, including pending SQL acquisitions, so immediate recovery no longer races a stale executor lock ([#3489](https://github.com/bastani-inc/atomic/issues/3489)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

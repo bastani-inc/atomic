@@ -172,3 +172,53 @@ test("close waits for destroyed protected SQL clients holding executor locks (#3
 		await Promise.all([pool.end(), sqlPool.end()]);
 	}
 });
+
+test.each([1, 2])("close terminates protected SQL while shared lock %s is pending (#3489)", async (pendingLock) => {
+	const { owner, pool, fence } = await acquiredOwnerFence();
+	const sql = Object.assign(new Client(), { release: vi.fn() });
+	const sqlPool = new Pool();
+	vi.spyOn(sqlPool, "connect").mockImplementation(async (): Promise<PoolClient> => sql);
+	fence.protectPool(sqlPool);
+	let resumeLock = () => {};
+	let lockStarted = () => {};
+	const started = new Promise<void>((resolve) => {
+		lockStarted = resolve;
+	});
+	const resumed = new Promise<void>((resolve) => {
+		resumeLock = resolve;
+	});
+	let locks = 0;
+	vi.spyOn(sql, "query").mockImplementation(async (text: string): Promise<QueryResult<{ held: boolean }>> => {
+		if (text.includes("pg_try_advisory_lock_shared") && ++locks === pendingLock) {
+			lockStarted();
+			await resumed;
+		}
+		return { rows: [{ held: true }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+	});
+	owner.release.mockImplementation(() => owner.emit("end"));
+	const writing = assert.rejects(
+		fence.write("run", async () => {
+			await sqlPool.connect();
+		}),
+		/ownership connection was lost/,
+	);
+	await started;
+	let closed = false;
+	const closing = fence.close().then(() => {
+		closed = true;
+	});
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(closed, false, "pending lock SQL must not escape the close termination barrier");
+		assert.deepEqual(sql.release.mock.calls, [[true]]);
+		sql.emit("end");
+		await closing;
+		assert.equal(closed, true, "close must not depend on delivery of the pending lock result");
+	} finally {
+		resumeLock();
+		sql.emit("end");
+		await Promise.all([writing, closing]);
+		await Promise.all([pool.end(), sqlPool.end()]);
+	}
+	assert.deepEqual(sql.release.mock.calls, [[true]], "late acquisition failure must not release twice");
+});
