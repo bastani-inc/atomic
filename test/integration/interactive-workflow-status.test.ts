@@ -6,7 +6,13 @@ import { test } from "vitest";
 import { fileExists, moduleDir, sleep, spawnSyncCollect, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const repoRoot = join(moduleDir(import.meta.url), "../..");
-const TMUX_AVAILABLE = spawnSyncCollect(["tmux", "-V"]).exitCode === 0;
+const TMUX_AVAILABLE = (() => {
+	try {
+		return spawnSyncCollect(["tmux", "-V"]).exitCode === 0;
+	} catch {
+		return false;
+	}
+})();
 const REAL_INTERACTIVE_COMMAND_TIMEOUT_MS = 120_000;
 const ENGINE_STARTUP_BUDGET_MS = 45_000;
 const COMMAND_RENDER_BUDGET_MS = 30_000;

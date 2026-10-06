@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, getApiProvider, registerApiProvider } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
-import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
-import type { ExtensionFactory } from "../src/index.ts";
-import { createHarness, getMessageText } from "./suite/harness.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.js";
+import type { ExtensionFactory } from "../src/index.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 test.each([
 	{ transactional: false, outcome: "success" },

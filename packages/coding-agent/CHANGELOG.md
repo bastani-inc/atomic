@@ -31,6 +31,7 @@
 - Fixed startup extension confirmations, including workflow recovery prompts, losing keyboard focus during terminal initialization ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 - Fixed queued protected workflow notices producing `SessionClosed` replies during reload. Successful reload now preserves those notices for the replacement extensions without releasing an explicitly paused queue ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 - Fixed idle workflow status and control commands not displaying their output in isolated interactive sessions, including after `/reload` ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed extension reload skipping remaining commit effects and predecessor shutdown when a commit effect and an SDK error observer both throw. Reload now retains both failures while keeping the replacement extensions active ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

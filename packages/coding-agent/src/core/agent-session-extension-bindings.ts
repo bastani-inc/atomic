@@ -44,6 +44,7 @@ class ExtensionPublicationGate {
 	private readonly effects: Array<() => void | Promise<void>> = [];
 	private readonly startEffects: Array<() => void | Promise<void>> = [];
 	private readonly commitEffects: Array<() => void> = [];
+	private readonly commitFailures: unknown[] = [];
 	readonly providerTransaction: ExtensionProviderTransaction;
 	private commitsActivated = false;
 	readonly providerIds = new Set<string>();
@@ -81,13 +82,25 @@ class ExtensionPublicationGate {
 		try {
 			runSynchronousExtensionContextEffect(effect);
 		} catch (error) {
-			this.report(error, "session_start");
+			this.commitFailures.push(error);
+			try {
+				this.report(error, "session_start");
+			} catch (reportingError) {
+				this.commitFailures.push(reportingError);
+			}
 		}
 	}
 
 	activateCommits(): void {
 		this.commitsActivated = true;
 		for (const effect of this.commitEffects.splice(0)) this.stageCommit(effect);
+		this.drainCommitFailures();
+	}
+
+	drainCommitFailures(): void {
+		if (this.commitFailures.length) {
+			throw new AggregateError(this.commitFailures.splice(0), "Extension commit activation failed");
+		}
 	}
 
 	async activateStarts(): Promise<void> {
@@ -902,7 +915,11 @@ async function reloadOwnedGeneration(
 		failures.push(error);
 	}
 	const setupFailed = failures.length > 0;
-	publication.activateCommits();
+	try {
+		publication.activateCommits();
+	} catch (error) {
+		failures.push(error);
+	}
 	try {
 		oldRunner.revokeAuthority();
 	} catch (error) {
@@ -914,6 +931,11 @@ async function reloadOwnedGeneration(
 		failures.push(error);
 	}
 	bindExtensionContextPublication(candidateRunner.createContext(), undefined);
+	try {
+		publication.drainCommitFailures();
+	} catch (error) {
+		failures.push(error);
+	}
 	if (setupFailed) throw failures.length > 1 ? retiringCleanupError(failures) : failures[0];
 	if (this._disposed) throw failures.length ? failures[0] : hostInputError("SessionClosed");
 	sessionGenerationClosing.delete(this);
@@ -921,7 +943,7 @@ async function reloadOwnedGeneration(
 	// retiring callbacks are invalidated, then publish reporters before queued user effects.
 	await publication.activateStarts();
 	await publication.release();
-	if (failures.length) throw failures[0];
+	if (failures.length) throw failures.length > 1 ? retiringCleanupError(failures) : failures[0];
 }
 
 /** Publish approved startup resources without replacing the session or restarting safe reporters. */
