@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
-import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import type { RunOpts, RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -14,7 +14,7 @@ const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: fal
 interface StageRunOutcome {
 	readonly status: string;
 	readonly error?: string;
-	readonly reply: unknown;
+	readonly reply: RunResult<{ reply: string }>["result"];
 	readonly callCount: number;
 	readonly sessionFile: string | undefined;
 }
