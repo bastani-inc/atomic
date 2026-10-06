@@ -189,24 +189,42 @@ test(
 );
 
 test(
-	"a liveness probe late in the idle window keeps the broker up for the client that follows it",
+	"every liveness probe restarts the idle window so the client behind it can still connect",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-probe-"));
 		const broker = spawnBroker(agentDir);
 		await waitForBrokerPid(agentDir, broker);
-		const probeLeadMs = 1_000;
-		await sleep(BROKER_IDLE_SHUTDOWN_MS - probeLeadMs);
-
-		const probe = await connect(agentDir);
-		await new Promise<void>((resolveClosed) => {
-			probe.once("close", () => resolveClosed());
-			probe.end();
+		let exitedAt: number | undefined;
+		broker.once("exit", () => {
+			exitedAt = Date.now();
 		});
-		await sleep(probeLeadMs * 2);
+		const probeIntervalMs = 500;
+		const timerEarlyFireToleranceMs = 50;
+		const probeUntil = Date.now() + BROKER_IDLE_SHUTDOWN_MS * 2;
+		let lastProbeStartedAt: number | undefined;
 
-		assert.equal(isBrokerAlive(broker), true, "broker retired between a successful probe and the client connect");
-		const client = await connect(agentDir);
-		client.end();
+		while (Date.now() < probeUntil && isBrokerAlive(broker)) {
+			const probeStartedAt = Date.now();
+			try {
+				const probe = await connect(agentDir);
+				await new Promise<void>((resolveClosed) => {
+					probe.once("close", () => resolveClosed());
+					probe.end();
+				});
+			} catch {
+				await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS);
+				break;
+			}
+			lastProbeStartedAt = probeStartedAt;
+			await sleep(probeIntervalMs);
+		}
+
+		assert.ok(lastProbeStartedAt !== undefined, "no liveness probe reached the broker");
+		if (exitedAt === undefined) return;
+		assert.ok(
+			exitedAt - lastProbeStartedAt >= BROKER_IDLE_SHUTDOWN_MS - timerEarlyFireToleranceMs,
+			`broker retired ${exitedAt - lastProbeStartedAt}ms after a successful probe, inside the ${BROKER_IDLE_SHUTDOWN_MS}ms idle window`,
+		);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
