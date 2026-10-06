@@ -38,6 +38,7 @@ export type {
 } from "./authoring/workflow.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
+export { createAgentSessionAdapter } from "./extension/wiring.js";
 export type { ActiveRunEntry, CancellationRegistry } from "./runs/background/cancellation-registry.js";
 // Phase D — cancellation registry
 export { cancellationRegistry, createCancellationRegistry } from "./runs/background/cancellation-registry.js";

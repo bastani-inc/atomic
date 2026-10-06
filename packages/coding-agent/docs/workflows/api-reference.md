@@ -1284,6 +1284,52 @@ function run<
 
 Executes a compiled definition programmatically with validated inputs. Empty-input workflows accept an empty readonly record.
 
+#### Stage sessions and adapters
+
+When `opts.adapters` supplies neither `agentSession` nor `prompt`, `run()` uses `createAgentSessionAdapter({ cwd: opts.cwd })`. Each stage then runs its own in-process Atomic `createAgentSession` session with an in-memory `SessionManager`, unless the stage sets `sessionDir` or resumes or forks a session. Stage sessions resolve models, credentials, settings, and resources the same way `createAgentSession` does. A `prompt` adapter on its own answers stage prompts itself, so `run()` adds no default session adapter beside it.
+
+```typescript
+function createAgentSessionAdapter(
+  baseOptions?: Omit<CreateAgentSessionOptions, "sessionManager">,
+): AgentSessionAdapter;
+
+interface AgentSessionAdapter {
+  create(
+    options: StageSessionCreateOptions,
+    meta?: StageExecutionMeta,
+  ): Promise<StageSessionRuntime | StageSessionCreateResult>;
+}
+```
+
+Call `createAgentSessionAdapter(baseOptions)` yourself to apply the same `createAgentSession` options, such as `agentDir`, `modelRuntime`, or `settingsManager`, to every stage. Options set on an individual stage override `baseOptions`. `baseOptions` cannot set `sessionManager`, because every stage needs its own. A `cwd` in `baseOptions` applies to every stage that doesn't set its own, and session files saved through `sessionDir` record that directory.
+
+A custom adapter's `create(options, meta)` receives the stage's session options, including any session manager Atomic opened for `sessionDir`, resume, or fork. It must resolve to `{ session }` or to the session itself, where `session` implements `StageSessionRuntime`. To change options per stage while keeping the stage policy that `createAgentSessionAdapter` applies, such as hiding the `workflow` tool from stage sessions, delegate to it:
+
+```ts
+import { createAgentSessionAdapter, run } from "@bastani/atomic/workflows";
+
+// Default: in-process stage sessions with in-memory session managers.
+await run(helloWorld, { name: "Atomic" }, { cwd: process.cwd() });
+
+// Shared options for every stage.
+await run(helloWorld, { name: "Atomic" }, {
+  adapters: { agentSession: createAgentSessionAdapter({ agentDir: "/srv/atomic-agent" }) },
+});
+
+// Per-stage options on top of the default adapter.
+const stageSessions = createAgentSessionAdapter();
+await run(helloWorld, { name: "Atomic" }, {
+  adapters: {
+    agentSession: {
+      create: (options, meta) =>
+        stageSessions.create(meta?.stageName === "review" ? { ...options, cwd: "/srv/review" } : options, meta),
+    },
+  },
+});
+```
+
+Without an attached workflow UI, a stage that calls `ask_user_question` waits for an answer until the run is aborted through `opts.signal`. For unattended runs, pass `executionMode: "non_interactive"`; stages then run without `ask_user_question`.
+
 ### `RunOpts`
 
 ```typescript
@@ -1355,11 +1401,10 @@ One process uses one workflow database: DBOS runs a single executor per process,
 ```ts
 import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";
 
-await run(helloWorld, { name: "Atomic" }, { adapters, durability: { mode: "memory" } });
+await run(helloWorld, { name: "Atomic" }, { durability: { mode: "memory" } });
 
 try {
   await run(helloWorld, { name: "Atomic" }, {
-    adapters,
     durability: { mode: "durable", systemDatabaseUrl: process.env.WORKFLOW_DATABASE_URL },
   });
 } catch (error) {
