@@ -13,6 +13,7 @@ import { uuidv7 } from "@bastani/pi-ai";
 import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat";
 import { chmodSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
+import type { MorphRangeDiagnostics } from "./morph-compaction.js";
 
 /**
  * Write one private sidecar, never replacing an existing record.
@@ -283,3 +284,17 @@ export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): st
 }
 
 export { buildSuccessPayload };
+
+export function writeMorphDiagnosticSidecar(
+	sessionFilePath: string | undefined,
+	diagnostics: MorphRangeDiagnostics,
+): string | undefined {
+	if (!sessionFilePath) return undefined;
+	return writeSidecar(sessionFilePath, "morph", {
+		version: 1,
+		timestamp: new Date().toISOString(),
+		backend: "morph",
+		model: "morph/morph-compactor",
+		...diagnostics,
+	});
+}

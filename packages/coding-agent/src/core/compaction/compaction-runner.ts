@@ -30,6 +30,7 @@ import {
 	plannerAttemptKey,
 } from "./fallback-planner.js";
 import type { CompactionModelSelection } from "./model-resolver.js";
+import { planMorphRanges } from "./morph-compaction.js";
 import { runPiSummaryFallback } from "./pi-summary-fallback.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
@@ -39,7 +40,7 @@ import {
 	RangePlanError,
 	resolvePlannerRequest,
 } from "./range-planner.js";
-import { writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
+import { writeMorphDiagnosticSidecar, writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
 import { widenToWholeContextStats } from "./whole-context-stats.js";
 
@@ -62,6 +63,8 @@ export interface CompactionRunRequest extends CompactionPlanOptions {
 	/** Configured fallback candidates. Omitted means borrowing is impossible. */
 	fallback?: FallbackPlannerContext;
 	compactionModel?: CompactionModelSelection;
+	resolveMorphApiKey?: () => Promise<string | undefined>;
+	morphFetchFn?: typeof fetch;
 	classify?: (
 		model: ClassifierModel<ClassifierApi>,
 		context: ClassifierContext,
@@ -78,7 +81,7 @@ export type CompactionRungResult = CompactedTranscript & {
 	keptTail: boolean;
 	/** Aggregate usage across every planner request and retry in this run. */
 	usage?: Usage;
-	backend?: "planner" | "classifier" | "summary";
+	backend?: "planner" | "classifier" | "morph" | "summary";
 	model?: string;
 	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	summaryFirstKeptEntryId?: string;
@@ -392,7 +395,7 @@ export async function runVerbatimCompaction(
 	const borrow: BorrowFallbackPlanner | undefined = request.fallback
 		? createFallbackPlannerBorrower({ ...request.fallback, selectedModelId: selection.fullId })
 		: undefined;
-	let classifierFailure: TerminalPlannerOutcome | undefined;
+	let backendFailure: TerminalPlannerOutcome | undefined;
 	if (selection.kind === "classifier") {
 		try {
 			const classify = request.classify;
@@ -409,7 +412,24 @@ export async function runVerbatimCompaction(
 			};
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			classifierFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+		}
+	}
+	if (selection.kind === "morph") {
+		try {
+			const ranges = await planMorphRanges(preparation.region, preparation.parameters, {
+				apiKey: await request.resolveMorphApiKey?.(),
+				signal,
+				fetchFn: request.morphFetchFn,
+				onDiagnostics: (diagnostics) => writeMorphDiagnosticSidecar(request.sessionFilePath, diagnostics),
+			});
+			return {
+				...plannedResult(preparation, ranges, undefined, undefined, selection.fullId),
+				backend: "morph",
+			};
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Compaction cancelled");
+			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
 		}
 	}
 	const primaryModel = selection.kind === "chat" ? selection.model : undefined;
@@ -420,8 +440,8 @@ export async function runVerbatimCompaction(
 				failure: {
 					kind: "providerError" as const,
 					message:
-						classifierFailure?.kind === "providerError"
-							? classifierFailure.message
+						backendFailure?.kind === "providerError"
+							? backendFailure.message
 							: `Compaction backend ${selection.kind} is not yet available`,
 				},
 			};

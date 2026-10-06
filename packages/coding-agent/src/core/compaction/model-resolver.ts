@@ -20,7 +20,8 @@ export function resolveCompactionModel(
 	const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === configured);
 	if (model && isModelType(model, "chat")) return { kind: "chat", fullId: configured, model };
 	if (model && isModelType(model, "classifier")) return { kind: "classifier", fullId: configured, model };
-	if (configured === "morph/morph-compactor") return { kind: "morph", fullId: configured };
+	if (model && isModelType(model, "compactor") && configured === "morph/morph-compactor")
+		return { kind: "morph", fullId: configured };
 	throw new Error(
 		"Invalid compactionModel: the exact model is not in the current chat, classifier, or compactor catalog.",
 	);

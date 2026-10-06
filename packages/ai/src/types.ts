@@ -36,6 +36,8 @@ export type KnownClassifierApi = "typesafe-system-one" | "cloudflare-workers-ai-
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
+export type CompactorApi = "morph-compact";
+
 export type KnownProvider =
 	| "amazon-bedrock"
 	| "ant-ling"
@@ -48,6 +50,7 @@ export type KnownProvider =
 	| "openai-codex"
 	| "radius"
 	| "typesafe"
+	| "morph"
 	| "nvidia"
 	| "deepseek"
 	| "github-copilot"
@@ -1327,11 +1330,17 @@ export interface ClassifierModel<TApi extends ClassifierApi> extends BaseModel<T
 	contextWindow: number;
 }
 
+/** Dedicated compaction model, excluded from chat model selection. */
+export interface CompactorModel<TApi extends CompactorApi = CompactorApi> extends BaseModel<TApi> {
+	type: "compactor";
+}
+
 /** Model shape for each model type. */
 export interface ModelTypeMap {
 	chat: Model<Api>;
 	image: ImageModel<ImageApi>;
 	classifier: ClassifierModel<ClassifierApi>;
+	compactor: CompactorModel;
 }
 
 /** What a catalog entry is for. Decides which `Models` operation accepts it. */

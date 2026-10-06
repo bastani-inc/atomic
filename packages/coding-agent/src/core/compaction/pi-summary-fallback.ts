@@ -12,8 +12,9 @@ import { applyContextEdit, buildContextEntries, collectContextEdits } from "../s
 import { combineUsage } from "../usage-totals.js";
 import { estimateProjectedContextTokens, estimateTokens } from "./compaction.js";
 import type { BorrowedPlanner } from "./compaction-types.js";
-import { isProviderPolicyRefusal } from "./planner-outcome.js";
+import { classifyPlannerFailure, isProviderPolicyRefusal, syntheticErrorResponse } from "./planner-outcome.js";
 import { plannerRequestModel, type RangePlannerOptions } from "./range-planner.js";
+import { writeDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import {
 	computeFileLists,
 	createFileOps,
@@ -289,25 +290,32 @@ export async function runPiSummaryFallback(
 			systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
 			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 		});
+		const requestMaxTokens = Math.min(
+			Math.floor((prefix ? 0.5 : 0.8) * settings.reserveTokens),
+			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+		);
 		let refusal: AssistantMessage | undefined;
 		const response = await retryAssistantCall(
 			async () => {
-				const result = await (
-					await options.streamFn(model, context, {
-						apiKey: planner.auth.apiKey,
-						headers: planner.auth.headers,
-						signal: options.signal,
-						cacheRetention: "none",
-						sessionId: uuidv7(),
-						maxTokens: Math.min(
-							Math.floor((prefix ? 0.5 : 0.8) * settings.reserveTokens),
-							model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-						),
-						...(model.reasoning && planner.budget.reasoning && planner.budget.reasoning !== "off"
-							? { reasoning: planner.budget.reasoning }
-							: {}),
-					})
-				).result();
+				let result: AssistantMessage;
+				try {
+					result = await (
+						await options.streamFn(model, context, {
+							apiKey: planner.auth.apiKey,
+							headers: planner.auth.headers,
+							signal: options.signal,
+							cacheRetention: "none",
+							sessionId: uuidv7(),
+							maxTokens: requestMaxTokens,
+							...(model.reasoning && planner.budget.reasoning && planner.budget.reasoning !== "off"
+								? { reasoning: planner.budget.reasoning }
+								: {}),
+						})
+					).result();
+				} catch (error) {
+					if (options.signal?.aborted) throw new Error("Compaction cancelled");
+					result = syntheticErrorResponse(model, error instanceof Error ? error.message : String(error));
+				}
 				options.onUsage?.(result.usage);
 				if (isProviderPolicyRefusal(result.errorMessage ?? "")) {
 					refusal = result;
@@ -320,8 +328,24 @@ export async function runPiSummaryFallback(
 			options.callbacks,
 		);
 		if (options.signal?.aborted || response.stopReason === "aborted") throw new Error("Compaction cancelled");
-		if (refusal || response.stopReason === "error")
-			throw new Error(`Summarization failed: ${(refusal ?? response).errorMessage || "Unknown error"}`);
+		if (refusal || response.stopReason === "error") {
+			const failedResponse = refusal ?? response;
+			const failureMessage = `Summarization failed: ${failedResponse.errorMessage || "Unknown error"}`;
+			const failure = classifyPlannerFailure(failedResponse, model.contextWindow);
+			const diagnosticPath = writeDiagnosticSidecar({
+				sessionFilePath: options.sessionFilePath,
+				model,
+				requestMaxTokens,
+				response: failedResponse,
+				rawResponseText: failedResponse.content
+					.filter((block) => block.type === "text")
+					.map((block) => block.text)
+					.join(""),
+				failureCategory: failure === "overflow" ? "context_overflow" : failure,
+				failureMessage,
+			});
+			throw new Error(diagnosticPath ? `${failureMessage} (diagnostic: ${diagnosticPath})` : failureMessage);
+		}
 		if (response.stopReason === "length")
 			throw new Error("Summarization failed: generation hit the token cap and the summary is incomplete");
 		if (response.content.some((block) => block.type === "toolCall"))

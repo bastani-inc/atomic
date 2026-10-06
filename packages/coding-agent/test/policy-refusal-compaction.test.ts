@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { test } from "vitest";
@@ -184,4 +187,99 @@ test("pi summary does not retry a thrown policy block with an incidental 500 (#3
 		/Content policy block 500/,
 	);
 	assert.equal(calls, 1);
+});
+
+test("pi summary and turn-prefix calls retry rate limits and 5xx with shared callbacks (#3470)", async () => {
+	const { streamFn, state } = createFauxStreamFn([
+		{ stopReason: "error", error: "429 Too Many Requests" },
+		"history summary",
+		{ stopReason: "error", error: "503 Service Unavailable" },
+		"prefix summary",
+	]);
+	let usages = 0;
+	let retries = 0;
+	const result = await runPiSummaryFallback(
+		history(),
+		{ reserveTokens: 1000, keepRecentTokens: 10 },
+		planner(model, "off"),
+		{
+			streamFn,
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 },
+			onUsage: () => {
+				usages++;
+			},
+			callbacks: {
+				onRetryScheduled: () => {
+					retries++;
+				},
+			},
+		},
+	);
+	assert.equal(state.callCount, 4);
+	assert.equal(usages, 4);
+	assert.equal(retries, 2);
+	assert.deepEqual(state.contexts[0], state.contexts[1]);
+	assert.deepEqual(state.contexts[2], state.contexts[3]);
+	assert.match(result.summary, /history summary[\s\S]*prefix summary/);
+});
+
+test("pi summary exhausted retries preserve private failure diagnostics (#3470)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-summary-diagnostics-"));
+	try {
+		const { streamFn, state } = createFauxStreamFn([
+			{ stopReason: "error", error: "503 Service Unavailable" },
+			{ stopReason: "error", error: "503 Service Unavailable" },
+		]);
+		await assert.rejects(
+			runPiSummaryFallback(
+				history(),
+				{ reserveTokens: 1000, keepRecentTokens: 10 },
+				planner(model, "off", { apiKey: "secret-key" }),
+				{
+					streamFn,
+					sessionFilePath: join(directory, "session.jsonl"),
+					retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+				},
+			),
+			/503/,
+		);
+		assert.equal(state.callCount, 2);
+		const files = readdirSync(directory);
+		assert.equal(files.length, 1);
+		const filePath = join(directory, files[0]);
+		const body = readFileSync(filePath, "utf8");
+		assert.match(body, /rate_limited/);
+		assert.match(body, /503 Service Unavailable/);
+		assert.doesNotMatch(body, /secret-key/);
+		if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("pi summary retries thrown transport failures but never thrown policy refusals (#3470)", async () => {
+	const { streamFn, state } = createFauxStreamFn(["history summary", "prefix summary"]);
+	let calls = 0;
+	let retries = 0;
+	const result = await runPiSummaryFallback(
+		history(),
+		{ reserveTokens: 1000, keepRecentTokens: 10 },
+		planner(model, "off"),
+		{
+			streamFn: (candidate, context, options) => {
+				if (++calls === 1) throw new Error("fetch failed: socket hang up");
+				return streamFn(candidate, context, options);
+			},
+			retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+			callbacks: {
+				onRetryScheduled: () => {
+					retries++;
+				},
+			},
+		},
+	);
+	assert.equal(calls, 3);
+	assert.equal(retries, 1);
+	assert.equal(state.callCount, 2);
+	assert.match(result.summary, /history summary[\s\S]*prefix summary/);
 });

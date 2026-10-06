@@ -141,7 +141,7 @@ export async function _applyVerbatimCompaction(
 				plannerModel?: CompactionPlannerModel;
 				keptTail: boolean;
 				usage?: Usage;
-				backend?: "planner" | "classifier" | "summary";
+				backend?: "planner" | "classifier" | "morph" | "summary";
 				model?: string;
 				summary?: { readFiles: string[]; modifiedFiles: string[] };
 				summaryFirstKeptEntryId?: string;
@@ -203,6 +203,8 @@ export async function _applyVerbatimCompaction(
 			thinkingLevel: this.thinkingLevel,
 			urgency: options.urgency,
 			fallback,
+			resolveMorphApiKey: async () =>
+				(await this._modelRuntime.getAuth("morph", { signal: options.abortController.signal }))?.auth.apiKey,
 			classify: (classifierModel, context, classifierOptions) =>
 				this._modelRuntime.classify(classifierModel, context, classifierOptions),
 			compactionModel: resolveCompactionModel(

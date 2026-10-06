@@ -130,3 +130,52 @@ test("non-refusal errors bypass pi summary and keep the existing ladder (#3470)"
 	assert.equal(result.backend, "planner");
 	assert.doesNotMatch(JSON.stringify(state.contexts[1]), /structured context checkpoint summary/);
 });
+
+test("classifier and Morph policy refusals skip pi summary and advance directly to chat fallback (#3470)", async () => {
+	for (const kind of ["classifier", "morph"] as const) {
+		const calls: string[] = [];
+		const { streamFn, state } = createFauxStreamFn(["1:1,5"]);
+		const result = await runVerbatimCompaction(preparation, model, {
+			compactionModel:
+				kind === "morph"
+					? { kind, fullId: "morph/morph-compactor" }
+					: {
+							kind,
+							fullId: "typesafe/jev-latest",
+							model: {
+								...model,
+								type: "classifier",
+								api: "typesafe-system-one",
+								provider: "typesafe",
+								id: "jev-latest",
+							},
+						},
+			classify: async () => ({
+				api: "typesafe-system-one",
+				provider: "typesafe",
+				model: "jev-latest",
+				answers: {},
+				stopReason: "error",
+				errorMessage: "Content policy block 500",
+				timestamp: 0,
+			}),
+			resolveMorphApiKey: async () => "morph-key",
+			morphFetchFn: async () => new Response("Content policy block 500", { status: 403 }),
+			streamFn: (candidate, context, options) => {
+				calls.push(candidate.id);
+				return streamFn(candidate, context, options);
+			},
+			summaryEntries,
+			resolveAuth: async () => ({ apiKey: "fallback-key" }),
+			thinkingLevel: "off",
+			urgency: "recoverable",
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 },
+			fallback: fallbackContext(),
+		});
+		assert.deepEqual(calls, ["fallback"]);
+		assert.equal(state.callCount, 1);
+		assert.equal(result.backend, "planner");
+		assert.equal(result.model, "test/fallback");
+		assert.doesNotMatch(JSON.stringify(state.contexts[0]), /structured context checkpoint summary/);
+	}
+});

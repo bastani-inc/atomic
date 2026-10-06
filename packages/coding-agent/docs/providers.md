@@ -230,6 +230,7 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | Radius                             | `RADIUS_API_KEY`                                                          | `radius`                     |
 | Hugging Face                       | `HF_TOKEN`                                                                | `huggingface`                |
 | TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe`                   |
+| Morph                              | `MORPH_API_KEY`                                                           | `morph`                      |
 | Fireworks                          | `FIREWORKS_API_KEY`                                                       | `fireworks`                  |
 | Together AI                        | `TOGETHER_API_KEY`                                                        | `together`                   |
 | Baseten                            | `BASETEN_API_KEY`                                                         | `baseten`                    |
@@ -581,6 +582,12 @@ An explicit `routerModel` other than `auto` selects that exact registered chat o
 Routers send one classify request for a registered classifier and can repair a malformed chat answer up to three times after the initial attempt, without a structured-decision deadline. Cancel the request to stop waiting; independent provider and enclosing tool-request limits still apply. A `structured_output` or `generateStructuredOutput()` classifier candidate is skipped, not repaired into a free-form value, when the schema is not a finite Choice. Missing credentials, an unavailable provider, an unsupported classify operation, a provider size rejection, a refusal, and a malformed classifier answer switch routing to the current chat model and advance a general structured-output chain. Cancellation does not. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
 HTTP 401 means check the key saved through `/login typesafe` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
+
+## Morph compaction
+
+Use `/login morph` to save a Morph API key in `auth.json`, or set `MORPH_API_KEY`. Then set `"compactionModel": "morph/morph-compactor"` in your global settings. Morph receives the compactable transcript, including serialized thinking; the preserved recent tail is not sent. Atomic retains the original surviving lines and enforces `<keepContext>` protection.
+
+Morph is a compactor, not a chat model: it does not appear in `/model` or automatic model routing. Project settings cannot select `morph/*`. Missing credentials, HTTP errors, or unusable results advance to your configured fallback models. See [Compaction model](/compaction#compaction-model).
 
 ## Custom Providers
 

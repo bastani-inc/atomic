@@ -158,10 +158,12 @@ Missing credentials for an explicit backend are backend failures (§4.6).
 - Map each returned message's `compacted_line_ranges` to global lines; drop out-of-range records
   (counted in diagnostics); validate. Atomic reconstructs the result itself; Morph's text is ignored.
 - `packages/ai/src/providers/morph.ts`: `createProvider({ id: "morph", name: "Morph", auth: {
-  apiKey: envApiKeyAuth("Morph API key", ["MORPH_API_KEY"]) }, compactors: { "morph-compact": … } })`,
-  following `typesafe.ts`. New `compactor` model type in `ModelTypeMap`/`isModelType`;
-  compactors never appear in `/model` or auto routing. `env-api-keys.ts`: `morph: "MORPH_API_KEY"`;
-  `/login morph` stores the key in `auth.json`.
+  apiKey: envApiKeyAuth("Morph API key", ["MORPH_API_KEY"]) }, models: [morph-compactor] })` with a
+  catalog-only compactor model `morph/morph-compactor` and no provider operation (`createProvider`
+  accepts operation-less registration only for a nonempty all-compactor catalog). The `/v1/compact`
+  HTTP client lives in the coding-agent compaction backend, its only caller. New `compactor` model
+  type in `ModelTypeMap`/`isModelType`; compactors never appear in `/model` or auto routing.
+  `env-api-keys.ts`: `morph: "MORPH_API_KEY"`; `/login morph` stores the key in `auth.json`.
 
 ### 4.6 Fallback ladder
 
@@ -185,6 +187,12 @@ rung 3  fresh (load_bearing urgency only)
   `readFiles`/`modifiedFiles` details. It reuses Atomic's existing `SUMMARIZATION_SYSTEM_PROMPT` and
   `serializeConversation` where they match pi, runs on the model that refused, and persists a
   summary compaction (`backend: "summary"`). The card labels it "summary (pi fallback)".
+- The pi summary request uses the same recoverable-error retry policy as the verbatim planner
+  (`retryAssistantCall` with the compaction run's retry policy and callbacks: rate limits, 5xx,
+  overload, transport errors), with the same cancellation and diagnostics. A policy refusal of the
+  summary request is not retried.
+- The pi fallback applies only when the refusing rung ran on a **chat** model. A refusal from a
+  classifier backend or the Morph compactor skips the pi fallback and goes straight to the next rung.
 - If the pi summary also fails (including another refusal), the ladder continues with the next
   rung. All non-refusal failures follow the existing ladder unchanged.
 - Known risk: pi's summary request also sends the serialized conversation as text; on Anthropic it
@@ -234,7 +242,9 @@ interface Settings {
   pi summary failure → next rung, non-refusal error → existing ladder, manual `/compact` never
   reaches `fresh`; refusal text with "500" is not retried as 5xx.
 - pi fallback port: cut point and `keepRecentTokens`, initial vs update prompt, turn-prefix
-  summary, persisted summary entry and file-operation details.
+  summary, persisted summary entry and file-operation details; recoverable errors retried with the
+  planner's retry policy (rate limit then success), refusal not retried; classifier and Morph
+  refusals skip the pi fallback.
 - Quality check on the investigation fixture with GPT-6.1 Sol: structured-input planner vs the
   old numbered prompt (deleted lines by kind, token reduction) — no regression beyond 5 points.
 - Live checks: `/compact` with `compactionModel=auto` on an Opus session with a non-Anthropic
