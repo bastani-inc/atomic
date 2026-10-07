@@ -7,8 +7,11 @@ import { join } from "node:path";
 import { vi } from "vitest";
 import type { HerdrEnvironment } from "../../src/extensions/herdr/environment.js";
 
-// Each fake Herdr call spawns a real child process; give it process-level headroom.
-const FAKE_HERDR_WAIT_MS = 5_000;
+// Each fake Herdr call spawns a real Node child process. On a loaded Windows runner its startup
+// alone can exceed the product's 5 s kill timeout, so fixtures that run beside real SDK reloads
+// pass FAKE_HERDR_CHILD_TIMEOUT_MS as `timeoutMs`, and waits outlast that kill budget.
+export const FAKE_HERDR_CHILD_TIMEOUT_MS = 15_000;
+const FAKE_HERDR_WAIT_MS = FAKE_HERDR_CHILD_TIMEOUT_MS + 5_000;
 
 export interface HerdrCall {
 	phase: "start" | "end";

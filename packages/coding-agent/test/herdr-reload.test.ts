@@ -13,7 +13,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
 import { publishExtensionContextEffect, registerExtensionContextRetirementEffect } from "../src/index.js";
-import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, fakeHerdr } from "./helpers/herdr.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
@@ -204,7 +204,14 @@ test(
 		const fake = await fakeHerdr();
 		try {
 			let loaded = await createTestExtensionsResult(
-				[createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 })],
+				[
+					createHerdrExtension({
+						env: fake.env,
+						enabled: () => true,
+						clock: () => 100,
+						timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+					}),
+				],
 				fake.dir,
 			);
 			loaded.runtime.workflowActivityHub
@@ -354,7 +361,14 @@ if (args.includes("working")) {
 	}, 5);
 } else finish();`);
 	const loaded = await createTestExtensionsResult(
-		[createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 })],
+		[
+			createHerdrExtension({
+				env: fake.env,
+				enabled: () => true,
+				clock: () => 100,
+				timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+			}),
+		],
 		fake.dir,
 	);
 	loaded.runtime.workflowActivityHub
@@ -461,7 +475,12 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 			let candidateRetired = false;
 			const loaded = await createTestExtensionsResult(
 				[
-					createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 }),
+					createHerdrExtension({
+						env: fake.env,
+						enabled: () => true,
+						clock: () => 100,
+						timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+					}),
 					(pi) => {
 						pi.on("session_start", async (event, ctx) => {
 							if (event.reason !== "reload") return;
