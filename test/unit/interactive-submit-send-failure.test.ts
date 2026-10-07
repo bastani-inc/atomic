@@ -30,7 +30,6 @@ interface SubmitStub {
 	editorText: string;
 	errors: string[];
 	history: string[];
-	startupCookedInputRecovered: boolean;
 	prompted: Array<{ text: string; streamingBehavior?: string }>;
 	bashCommands: string[];
 	compactions: number;
@@ -52,7 +51,6 @@ function makeSubmitStub(options?: {
 		editorText: "",
 		errors: [] as string[],
 		history: [] as string[],
-		startupCookedInputRecovered: false,
 		prompted: [] as Array<{ text: string; streamingBehavior?: string }>,
 		bashCommands: [] as string[],
 		compactions: 0,
@@ -85,12 +83,6 @@ function makeSubmitStub(options?: {
 		editorContainer: { children: options?.editorMounted === false ? [] : [editor] },
 		ui: { setFocus: () => {}, requestRender: () => {} },
 		pendingUserInputs: [],
-		get startupCookedInputRecovered(): boolean {
-			return state.startupCookedInputRecovered;
-		},
-		set startupCookedInputRecovered(value: boolean) {
-			state.startupCookedInputRecovered = value;
-		},
 		manualCompactionTakeoverPending: false,
 		get compactionActive(): boolean {
 			return this.session.isCompacting || this.manualCompactionTakeoverPending;
@@ -164,10 +156,8 @@ for (const branch of DIRECT_BRANCHES) {
 		const stub = makeSubmitStub({ ...branch.options, failSend: true });
 		await stub.submit(branch.text);
 		assert.equal(stub.editorText, branch.text, `${branch.name} discarded the submission`);
-		// A restored draft plus the recovery status is the whole story; a red
-		// transport error beside them is duplicate noise.
 		assert.deepEqual(stub.errors, [], `${branch.name} added a red error next to the restored draft`);
-		assert.equal(stub.startupCookedInputRecovered, true, "a restored draft must not be replayed as startup input");
+		assert.deepEqual(stub.mode.pendingUserInputs, [], "a restored draft must not remain queued");
 	});
 
 	test(`${branch.name}: an accepted send still clears the editor`, async () => {
@@ -218,7 +208,7 @@ test("Alt+Enter streaming follow-up returns the draft when the send fails", asyn
 	await stub.followUp();
 	assert.equal(stub.editorText, "follow up while streaming");
 	assert.deepEqual(stub.errors, [], "a restored follow-up must not also show a red error");
-	assert.equal(stub.startupCookedInputRecovered, true);
+	assert.deepEqual(stub.mode.pendingUserInputs, []);
 });
 
 test("Alt+Enter extension command during compaction returns the draft when the send fails", async () => {
@@ -253,7 +243,6 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 		editorText: raw,
 		errors: [] as string[],
 		prompted: [] as string[],
-		startupCookedInputRecovered: false,
 		renders: 0,
 	};
 	const editor = {
@@ -284,12 +273,6 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 			},
 		},
 		pendingUserInputs: [],
-		get startupCookedInputRecovered(): boolean {
-			return state.startupCookedInputRecovered;
-		},
-		set startupCookedInputRecovered(value: boolean) {
-			state.startupCookedInputRecovered = value;
-		},
 		session: {
 			isCompacting: false,
 			isStreaming: false,
@@ -332,7 +315,7 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 	assert.deepEqual(state.prompted, ["draft with outer spaces"], "the agent must still receive normalized text");
 	assert.equal(state.editorText, raw, "the restored draft lost the whitespace the user typed");
 	assert.deepEqual(state.errors, [], "a restored draft must not also raise a red transport error");
-	assert.equal(state.startupCookedInputRecovered, true);
+	assert.deepEqual(mode.pendingUserInputs, []);
 	assert.ok(state.renders > 0);
 });
 

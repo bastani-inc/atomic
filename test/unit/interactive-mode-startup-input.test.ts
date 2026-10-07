@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { afterAll, describe, test } from "vitest";
 import { computeStartupInputCaptureEnabled } from "../../packages/coding-agent/src/main-deferred-startup.js";
-import type { EarlyInputCapture } from "../../packages/coding-agent/src/main-early-input.js";
+import {
+	applyEarlyInputChunk,
+	type EarlyInputCapture,
+	type EarlyInputState,
+} from "../../packages/coding-agent/src/main-early-input.js";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.js";
 import { seedStartupInput } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.js";
 import type { InteractiveSubmission } from "../../packages/coding-agent/src/modes/interactive/interactive-submission.js";
@@ -30,7 +34,6 @@ interface DraftEditor {
 }
 
 interface StartupInputContext {
-	startupCookedInputRecovered: boolean;
 	pendingUserInputs: InteractiveSubmission[];
 	startupReplayInputs: string[];
 	startupReplayActiveInput?: string;
@@ -43,11 +46,13 @@ interface StartupInputContext {
 	autocompleteProvider?: AutocompleteProvider;
 	createBaseAutocompleteProvider(): AutocompleteProvider;
 	deliverStartupReplayPrompt(text: string): void;
+	inputHandlerReadyRecorded: boolean;
+	onInputCallback?: (submission: InteractiveSubmission) => void;
 }
 
 const interactivePrototype = InteractiveMode.prototype as unknown as {
 	setupAutocompleteProvider(this: StartupInputContext): void;
-	recoverCookedStartupInput(this: StartupInputContext): boolean;
+	getUserInput(this: StartupInputContext): Promise<InteractiveSubmission>;
 	drainStartupReplayCommands(this: StartupInputContext): Promise<void>;
 	advanceStartupInputReplay(this: StartupInputContext, submittedText: string): void;
 };
@@ -106,9 +111,9 @@ function createStartupContext(
 		},
 	};
 	const context: StartupInputContext = {
-		startupCookedInputRecovered: false,
 		pendingUserInputs: [],
 		startupReplayInputs: [],
+		inputHandlerReadyRecorded: true,
 		options: { startupInputCapture: capture },
 		defaultEditor: editor,
 		editor,
@@ -125,11 +130,22 @@ function createStartupContext(
 	};
 
 	if (capture) {
-		seedStartupInput(context.pendingUserInputs, editor, capture.consume());
+		seedStartupInput(
+			context.pendingUserInputs,
+			editor,
+			capture.consume(),
+			context.startupReplayInputs,
+			(text) => {
+				context.startupDraftText = text;
+			},
+			(text) => {
+				context.startupReplayActiveInput = text;
+			},
+		);
 	} else {
-		// Without raw capture, terminal-cooked bytes eventually appear in the editor.
 		editor.setText(draft);
 	}
+	Object.setPrototypeOf(context, InteractiveMode.prototype);
 	return { context, providerInstallations, submitted };
 }
 
@@ -143,7 +159,6 @@ describe("interactive startup input with explicit packages", () => {
 
 			// Package completion publishes the new command catalog and rebuilds autocomplete.
 			interactivePrototype.setupAutocompleteProvider.call(context);
-			assert.equal(interactivePrototype.recoverCookedStartupInput.call(context), false);
 			await interactivePrototype.drainStartupReplayCommands.call(context);
 
 			assert.deepEqual(providerInstallations, [draft]);
@@ -180,4 +195,36 @@ describe("interactive startup input with explicit packages", () => {
 		assert.deepEqual(context.startupReplayInputs, []);
 		assert.deepEqual(context.pendingUserInputs, []);
 	});
+});
+
+describe("startup input submission boundaries", () => {
+	for (const draft of ["/", "!", "/model", "!cmd", "/model\nunfinished", "!cmd\nunfinished"]) {
+		test(`keeps ${JSON.stringify(draft)} as an editor draft without early capture`, async () => {
+			const { context, submitted } = createStartupContext(draft, undefined);
+			const input = interactivePrototype.getUserInput.call(context);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			await interactivePrototype.drainStartupReplayCommands.call(context);
+			assert.equal(context.editor.getText(), draft);
+			assert.deepEqual(submitted, []);
+			assert.deepEqual(context.pendingUserInputs, []);
+			assert.ok(context.onInputCallback);
+			context.onInputCallback({ text: "cleanup", draft: "cleanup" });
+			await input;
+		});
+	}
+
+	for (const { keys, submissions, draft } of [
+		{ keys: "/model\r", submissions: ["/model"], draft: "" },
+		{ keys: "/settings\r!pwd\r/model", submissions: ["/settings", "!pwd"], draft: "/model" },
+	]) {
+		test(`submits only captured Enter events in ${JSON.stringify(keys)}`, async () => {
+			const captured: EarlyInputState = { text: "", submissions: [] };
+			applyEarlyInputChunk(captured, keys);
+			const { context, submitted } = createStartupContext("", { consume: () => captured });
+			await interactivePrototype.drainStartupReplayCommands.call(context);
+			assert.deepEqual(submitted, submissions);
+			assert.equal(context.editor.getText(), draft);
+			assert.deepEqual(context.pendingUserInputs, []);
+		});
+	}
 });

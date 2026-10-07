@@ -1,4 +1,6 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
+import { applyEarlyInputChunk, type EarlyInputState } from "../src/main-early-input.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import type { InteractiveSubmission } from "../src/modes/interactive/interactive-submission.ts";
@@ -29,7 +31,6 @@ type SubmitContext = {
 	deliverStartupReplayPrompt: (text: string) => void;
 	advanceStartupInputReplay: (text: string) => void;
 	drainStartupReplayCommands: () => Promise<void>;
-	recoverCookedStartupInput: () => boolean;
 	handleModelCommand: (searchTerm?: string) => Promise<void>;
 	showSettingsSelector: () => void;
 	onInputCallback?: (submission: InteractiveSubmission) => void;
@@ -37,6 +38,7 @@ type SubmitContext = {
 	startupReplayInputs: string[];
 	startupReplayActiveInput?: string;
 	startupDraftText?: string;
+	inputHandlerReadyRecorded: boolean;
 	options: { startupInputCapture?: { consume(): { text: string; submissions: string[] } } };
 };
 type InputContext = {
@@ -45,7 +47,6 @@ type InputContext = {
 	pendingUserInputs: InteractiveSubmission[];
 	startupReplayActiveInput?: string;
 	drainStartupReplayCommands?: () => Promise<void>;
-	recoverCookedStartupInput?: () => boolean;
 };
 
 type InteractiveModePrivate = {
@@ -56,12 +57,15 @@ type InteractiveModePrivate = {
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
 
 function createSubmitContext(): SubmitContext {
-	return {
+	let editorText = "";
+	const context: SubmitContext = {
 		defaultEditor: {},
 		editor: {
 			addToHistory: vi.fn(),
-			setText: vi.fn(),
-			getText: vi.fn(() => ""),
+			setText: vi.fn((text: string) => {
+				editorText = text;
+			}),
+			getText: vi.fn(() => editorText),
 		},
 		ui: {
 			requestRender: vi.fn(),
@@ -73,6 +77,7 @@ function createSubmitContext(): SubmitContext {
 			prompt: vi.fn(async () => {}),
 		},
 		options: {},
+		inputHandlerReadyRecorded: true,
 		deferredStartupPending: false,
 		handleBashCommand: vi.fn(async () => {}),
 		ensureDeferredStartupComplete: vi.fn(async () => {}),
@@ -84,12 +89,30 @@ function createSubmitContext(): SubmitContext {
 		deliverStartupReplayPrompt: InteractiveMode.prototype.deliverStartupReplayPrompt,
 		advanceStartupInputReplay: InteractiveMode.prototype.advanceStartupInputReplay,
 		drainStartupReplayCommands: InteractiveMode.prototype.drainStartupReplayCommands,
-		recoverCookedStartupInput: InteractiveMode.prototype.recoverCookedStartupInput,
 		handleModelCommand: vi.fn(async () => {}),
 		showSettingsSelector: vi.fn(),
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 	};
+	Object.setPrototypeOf(context, InteractiveMode.prototype);
+	return context;
+}
+
+function seedCapturedKeys(context: SubmitContext, keys: string): void {
+	const capture: EarlyInputState = { text: "", submissions: [] };
+	applyEarlyInputChunk(capture, keys);
+	seedStartupInput(
+		context.pendingUserInputs,
+		context.editor,
+		capture,
+		context.startupReplayInputs,
+		(text) => {
+			context.startupDraftText = text;
+		},
+		(text) => {
+			context.startupReplayActiveInput = text;
+		},
+	);
 }
 
 describe("InteractiveMode startup input", () => {
@@ -407,115 +430,86 @@ describe("InteractiveMode startup input", () => {
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
 	});
 
-	it("recovers cooked immediate launch input as separate startup submissions", () => {
+	it("replays captured immediate launch input as separate startup submissions", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
-			"!pwd\nordinary prompt after command\n/exit",
-		);
-
-		context.recoverCookedStartupInput();
-
-		expect(context.startupReplayActiveInput).toBe("!pwd");
-		expect(context.startupReplayInputs).toEqual(["ordinary prompt after command", "/exit"]);
-		expect(context.editor.setText).toHaveBeenCalledWith("");
+		seedCapturedKeys(context, "!pwd\rordinary prompt after command\r/exit\r");
+		assert.equal(context.startupReplayActiveInput, "!pwd");
+		assert.deepEqual(context.startupReplayInputs, ["ordinary prompt after command", "/exit"]);
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
 	});
 
-	it("preserves cooked unfinished draft text after submitted startup input", () => {
+	it("preserves captured unfinished draft text after submitted startup input", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("first submitted\nunfinished draft");
-
-		context.recoverCookedStartupInput();
-
-		expect(context.pendingUserInputs).toEqual([{ text: "first submitted", draft: "first submitted" }]);
-		expect(context.startupReplayActiveInput).toBeUndefined();
-		expect(context.editor.setText).toHaveBeenCalledWith("");
+		seedCapturedKeys(context, "first submitted\runfinished draft");
+		assert.deepEqual(context.pendingUserInputs, [{ text: "first submitted", draft: "first submitted" }]);
+		assert.equal(context.startupReplayActiveInput, undefined);
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
 	});
 
-	it("replays cooked command-like input after submitted startup input", () => {
+	it("replays captured command-like input after submitted startup input", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("first submitted\n/settings");
-
-		context.recoverCookedStartupInput();
-
-		expect(context.pendingUserInputs).toEqual([{ text: "first submitted", draft: "first submitted" }]);
-		expect(context.startupReplayActiveInput).toBe("/settings");
+		seedCapturedKeys(context, "first submitted\r/settings\r");
+		assert.deepEqual(context.pendingUserInputs, [{ text: "first submitted", draft: "first submitted" }]);
+		assert.equal(context.startupReplayActiveInput, "/settings");
 		expect(context.editor.setText).toHaveBeenCalledWith("/settings");
 	});
 
-	it("preserves cooked draft text behind an active command-like submission", async () => {
+	it("preserves captured draft text behind an active command-like submission", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
-			"ordinary prompt after command\nunfinished draft",
-		);
-		context.startupReplayActiveInput = "!pwd";
+		seedCapturedKeys(context, "!pwd\rordinary prompt after command\runfinished draft");
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
-
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+		assert.deepEqual(await interactiveModePrototype.getUserInput.call(context), {
 			text: "ordinary prompt after command",
 			draft: "ordinary prompt after command",
 		});
-
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
-		expect(context.startupReplayActiveInput).toBeUndefined();
+		assert.equal(context.startupReplayActiveInput, undefined);
 	});
 
-	it("preserves cooked draft text after a command-like startup submission", () => {
+	it("preserves captured draft text after a command-like startup submission", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd\nordinary prompt\nunfinished draft");
-
-		context.recoverCookedStartupInput();
-
-		expect(context.startupReplayActiveInput).toBe("!pwd");
-		expect(context.startupReplayInputs).toEqual(["ordinary prompt"]);
-		expect(context.startupDraftText).toBe("unfinished draft");
+		seedCapturedKeys(context, "!pwd\rordinary prompt\runfinished draft");
+		assert.equal(context.startupReplayActiveInput, "!pwd");
+		assert.deepEqual(context.startupReplayInputs, ["ordinary prompt"]);
+		assert.equal(context.startupDraftText, "unfinished draft");
 	});
 
-	it("retries cooked startup recovery until editor text arrives", async () => {
+	it("does not submit multiline editor text without a captured Enter event", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>)
-			.mockReturnValueOnce("")
-			.mockReturnValueOnce("first submitted\nunfinished draft");
-
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
-			text: "first submitted",
-			draft: "first submitted",
-		});
-
-		expect(context.editor.getText).toHaveBeenCalledTimes(2);
-		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("/model\nunfinished draft");
+		const input = interactiveModePrototype.getUserInput.call(context);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(context.editor.setText).not.toHaveBeenCalled();
+		assert.deepEqual(context.pendingUserInputs, []);
+		assert.equal(context.startupReplayActiveInput, undefined);
+		assert.ok(context.onInputCallback);
+		context.onInputCallback({ text: "cleanup", draft: "cleanup" });
+		await input;
 	});
 
-	it("recovers a single cooked command-like startup submission", async () => {
+	it("replays a single captured command-like startup submission", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd");
+		seedCapturedKeys(context, "!pwd\r");
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
-
-		context.recoverCookedStartupInput();
 		await context.drainStartupReplayCommands();
-
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
 		expect(context.editor.setText).toHaveBeenCalledWith("");
-		expect(context.startupReplayActiveInput).toBeUndefined();
+		assert.equal(context.startupReplayActiveInput, undefined);
 	});
 
-	it("queues cooked submissions behind an active raw-captured command", async () => {
+	it("queues captured submissions behind an active startup command", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\n/exit");
-		context.startupReplayActiveInput = "!pwd";
+		seedCapturedKeys(context, "!pwd\rordinary prompt after command\r/exit\r");
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
-
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+		assert.deepEqual(await interactiveModePrototype.getUserInput.call(context), {
 			text: "ordinary prompt after command",
 			draft: "ordinary prompt after command",
 		});
-
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
-		expect(context.startupReplayActiveInput).toBe("/exit");
-		expect(context.startupReplayInputs).toEqual([]);
+		assert.equal(context.startupReplayActiveInput, "/exit");
+		assert.deepEqual(context.startupReplayInputs, []);
 	});
 
 	it("submits replayed bash commands separately from later normal prompts", async () => {

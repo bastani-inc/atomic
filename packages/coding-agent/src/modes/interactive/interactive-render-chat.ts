@@ -563,10 +563,6 @@ function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
 InteractiveModeBase.prototype.getUserInput = async function (
 	this: InteractiveModeBase,
 ): Promise<InteractiveSubmission> {
-	for (let attempt = 0; !this.startupCookedInputRecovered && attempt < 10; attempt += 1) {
-		await yieldToEventLoop();
-		if (this.recoverCookedStartupInput?.()) break;
-	}
 	while (true) {
 		const queuedInput = this.pendingUserInputs.shift();
 		if (queuedInput !== undefined) {

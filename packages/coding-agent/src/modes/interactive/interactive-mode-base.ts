@@ -311,8 +311,6 @@ export class InteractiveModeBase {
 	startupDraftText: string | undefined = undefined;
 	workingIndicatorEmbedded = false;
 
-	startupCookedInputRecovered = false;
-
 	deferredRenderedUserInputs: string[] = [];
 
 	deferredRenderedUserInputComponents = new Map<string, Component[][]>();

@@ -47,7 +47,6 @@ interface PromptTurnStub {
 	errors: string[];
 	discarded: string[];
 	queued: Array<{ text: string; draft: string }>;
-	startupCookedInputRecovered: boolean;
 }
 
 function makeStub(options: {
@@ -71,7 +70,6 @@ function makeStub(options: {
 		errors: [],
 		discarded: [],
 		queued: options.queued ?? [],
-		startupCookedInputRecovered: false,
 	};
 	const host = {
 		promptTurnWorkingLoaderActive: false,
@@ -88,12 +86,6 @@ function makeStub(options: {
 			},
 		},
 		pendingUserInputs: state.queued,
-		get startupCookedInputRecovered(): boolean {
-			return state.startupCookedInputRecovered;
-		},
-		set startupCookedInputRecovered(value: boolean) {
-			state.startupCookedInputRecovered = value;
-		},
 		session: {
 			isStreaming: false,
 			subscribe: options.subscribe ?? (() => () => {}),
@@ -229,7 +221,7 @@ test("resource-readiness failure restores the exact draft without a duplicate pr
 	assert.equal(stub.editorText, "  exact draft\n");
 	assert.deepEqual(stub.discarded, ["exact draft"]);
 	assert.deepEqual(stub.errors, []);
-	assert.equal(stub.startupCookedInputRecovered, true);
+	assert.deepEqual(stub.queued, []);
 });
 
 /**
@@ -267,7 +259,7 @@ test("a raw EPIPE from the writer restores the draft instead of reporting a red 
 			`draft was not restored for ${raw.message}`,
 		);
 		assert.deepEqual(stub.errors, [], `a red error accompanied the restored draft for ${raw.message}`);
-		assert.equal(stub.startupCookedInputRecovered, true);
+		assert.deepEqual(stub.queued, []);
 		assert.ok(stub.renders > 0);
 	}
 });
@@ -428,13 +420,7 @@ test("multiline text typed during the pending send is preserved verbatim", async
 	assert.equal(stub.editorText, "first\nsecond\n\nthird\nfourth");
 });
 
-/**
- * Reproduced live: restoring a command-like draft used to be re-read by
- * `recoverCookedStartupInput()` on the next `getUserInput()` and replayed as a
- * submission, which re-ran the very command whose send had just failed (a fresh
- * engine then re-mounted the stale custom UI).
- */
-test("a restored draft is a draft, never cooked startup input", async () => {
+test("a restored command draft stays unsubmitted", async () => {
 	const { stub, run } = makeStub({
 		draft: "/freeze-test",
 		prompt: async () => {
@@ -443,10 +429,10 @@ test("a restored draft is a draft, never cooked startup input", async () => {
 	});
 	await run("/freeze-test");
 	assert.equal(stub.editorText, "/freeze-test");
-	assert.equal(stub.startupCookedInputRecovered, true, "a restored command draft would be replayed as a submission");
+	assert.deepEqual(stub.queued, []);
 });
 
-test("a failure that does not restore anything leaves startup-input recovery alone", async () => {
+test("a provider failure does not resurrect the submitted draft", async () => {
 	const { stub, run } = makeStub({
 		draft: "/freeze-test",
 		prompt: async () => {
@@ -454,7 +440,7 @@ test("a failure that does not restore anything leaves startup-input recovery alo
 		},
 	});
 	await run("/freeze-test");
-	assert.equal(stub.startupCookedInputRecovered, false);
+	assert.equal(stub.editorText, "");
 });
 
 test("a failure after the agent turn started keeps the text in the transcript", async () => {
