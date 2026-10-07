@@ -2402,9 +2402,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
-				// Models with effort values use `reasoning_effort` with these levels.
-				// Reasoning models without them (Magistral) use `prompt_mode`.
-				const thinkingLevelMap = getEffortThinkingLevelMap(m.reasoning_options ?? []);
+				const thinkingLevelMap = modelId.startsWith("magistral-")
+					? undefined
+					: getEffortThinkingLevelMap(m.reasoning_options ?? []);
 
 				models.push({
 					id: modelId,

@@ -12,6 +12,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Moved the GPT-6 Luna Decisions classifier to the `openai-decisions` provider (`openaiDecisionsProvider()`), with its own API-key credential. The `openai` provider no longer lists classifiers.
 
+### Fixed
+
+- Fixed Magistral models retaining Mistral's `prompt_mode` reasoning controls when catalog metadata advertises effort levels.
+
 ## [0.9.28-alpha.3] - 2026-10-07
 
 ### Added
