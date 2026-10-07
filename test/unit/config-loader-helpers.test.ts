@@ -35,7 +35,7 @@ describe("withWorkflowDefaults — empty config applies all defaults", () => {
 		assert.equal(withWorkflowDefaults({}).statusFile, WORKFLOW_CONFIG_DEFAULTS.statusFile);
 	});
 
-	test("resumeInFlight defaults to 'ask'", () => {
+	test("resumeInFlight defaults to 'never'", () => {
 		assert.equal(withWorkflowDefaults({}).resumeInFlight, WORKFLOW_CONFIG_DEFAULTS.resumeInFlight);
 	});
 
@@ -166,8 +166,8 @@ describe("withWorkflowDefaults — WORKFLOW_CONFIG_DEFAULTS constants", () => {
 		assert.equal(WORKFLOW_CONFIG_DEFAULTS.statusFile, false);
 	});
 
-	test("WORKFLOW_CONFIG_DEFAULTS.resumeInFlight is 'ask'", () => {
-		assert.equal(WORKFLOW_CONFIG_DEFAULTS.resumeInFlight, "ask");
+	test("WORKFLOW_CONFIG_DEFAULTS.resumeInFlight is 'never'", () => {
+		assert.equal(WORKFLOW_CONFIG_DEFAULTS.resumeInFlight, "never");
 	});
 
 	test("WORKFLOW_CONFIG_DEFAULTS.workflowNotifications enables all lifecycle steer notices", () => {

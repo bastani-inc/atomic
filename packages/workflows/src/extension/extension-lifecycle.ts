@@ -13,6 +13,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
+import { WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
@@ -197,7 +198,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	const resumeInFlight = async (ctx: PiEventContext | undefined, generation: number): Promise<void> => {
 		const isCurrent = () => generation === recoveryGeneration;
 		if (ctx?.isPresentationOnly === true) return;
-		const mode = runtimeState.configLoadRef.current?.config?.resumeInFlight ?? "ask";
+		const mode =
+			runtimeState.configLoadRef.current?.config?.resumeInFlight ?? WORKFLOW_CONFIG_DEFAULTS.resumeInFlight;
 		if (mode === "never" || (mode === "ask" && (ctx?.hasUI === false || typeof ctx?.ui?.confirm !== "function")))
 			return;
 		try {

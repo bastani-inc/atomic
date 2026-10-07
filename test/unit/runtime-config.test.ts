@@ -185,6 +185,6 @@ describe("WorkflowRuntimeConfig — WORKFLOW_CONFIG_DEFAULTS alignment", () => {
 		assert.equal(config.defaultConcurrency, 3);
 		assert.equal(config.persistRuns, true);
 		assert.equal(config.statusFile, false);
-		assert.equal(config.resumeInFlight, "ask");
+		assert.equal(config.resumeInFlight, "never");
 	});
 });

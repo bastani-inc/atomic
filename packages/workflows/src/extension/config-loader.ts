@@ -188,7 +188,7 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 	defaultConcurrency: 3,
 	persistRuns: true,
 	statusFile: false,
-	resumeInFlight: "ask" as const,
+	resumeInFlight: "never" as const,
 	budget: {
 		maxDurationMs: 0,
 		maxTokens: 0,
