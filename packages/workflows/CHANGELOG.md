@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Atomic hanging at startup, never accepting input, when the current directory had interrupted durable workflows and `resumeInFlight` was `ask` (the default). Startup no longer waits for workflow recovery; the "Resume interrupted workflows?" prompt now appears after the session is ready.
+- Fixed startup recovery and SDK crash recovery skipping interrupted workflows when the project directory was reached through a symlink, such as `/tmp` or `/var` on macOS.
+
 ## [0.9.28-alpha.2] - 2026-10-07
 
 ### Added
