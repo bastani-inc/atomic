@@ -6,15 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.28-alpha.3] - 2026-10-07
+
 ### Changed
 
 - Changed the `resumeInFlight` default from `"ask"` to `"never"`. Atomic no longer prompts at startup to resume interrupted durable workflows; resume them with `/workflow resume`, or set `resumeInFlight` to `"ask"` or `"auto"` in the workflow config to restore startup recovery.
 
-## [0.9.28-alpha.3] - 2026-10-07
-
 ### Fixed
 
-- Fixed Atomic hanging at startup, never accepting input, when the current directory had interrupted durable workflows and `resumeInFlight` was `ask` (the default). Startup no longer waits for workflow recovery; the "Resume interrupted workflows?" prompt now appears after the session is ready.
+- Fixed Atomic hanging at startup, never accepting input, when the current directory had interrupted durable workflows and `resumeInFlight` was `ask`. Startup no longer waits for workflow recovery; the "Resume interrupted workflows?" prompt now appears after the session is ready.
 - Fixed startup recovery and SDK crash recovery skipping interrupted workflows when the project directory was reached through a symlink, such as `/tmp` or `/var` on macOS.
 
 ## [0.9.28-alpha.2] - 2026-10-07
