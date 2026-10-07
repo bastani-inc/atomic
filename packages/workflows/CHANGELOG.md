@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.28-alpha.2] - 2026-10-07
+
 ### Added
 
 - Added `createAgentSessionAdapter(baseOptions?)`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
