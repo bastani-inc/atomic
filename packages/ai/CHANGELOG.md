@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Reduced context-limit request failures by estimating new input at 3.5 characters per token when calculating output limits.
+
 ## [0.9.28-alpha.1] - 2026-10-05
 
 ### Added
