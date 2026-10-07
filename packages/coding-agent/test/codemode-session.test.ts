@@ -898,7 +898,7 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 	});
 	try {
 		const description = harness.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description ?? "";
-		assert.match(description, /ALL_TOOLS, searchTools\(\), and describeTool\(\) cover only script-callable tools/);
+		assert.match(description, /tools, ALL_TOOLS and searchTools\(\) matches cover only script-callable tools/);
 		harness.setResponses([
 			fauxAssistantMessage(
 				[

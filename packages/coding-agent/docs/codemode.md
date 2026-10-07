@@ -58,7 +58,7 @@ While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decid
 
 ### Model-only tools
 
-`ALL_TOOLS`, `searchTools()`, `describeTool()`, and `tools` cover only tools a script can call. Model-only tools, such as `subagent`, `workflow`, `intercom`, and `ask_user_question`, never appear in them, but the model can still call them directly. An empty `ALL_TOOLS` filter does not mean such a tool is missing. `searchTools("subagent")` and `describeTool("subagent")` answer with a hint to call it directly while the tool is active.
+Model-only tools, such as `subagent`, `workflow`, `intercom`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. Scripts cannot call them, but the model can call them directly, so a missing entry does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")`, with a hint to call it directly. The hint does not make the tool callable from scripts.
 
 ## Store values
 
