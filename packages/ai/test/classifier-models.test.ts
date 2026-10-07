@@ -206,14 +206,14 @@ describe("Models with classifier models", () => {
 			expires: Date.now() + 3_600_000,
 		}));
 
-		const withApiKey = builtinModels({ credentials: apiKeyStore });
-		const withOAuth = builtinModels({ credentials: oauthStore });
+		const keyCredentialModels = builtinModels({ credentials: apiKeyStore });
+		const subscriptionModels = builtinModels({ credentials: oauthStore });
 
-		assert.deepEqual((await withApiKey.getAvailableOfType("classifier", "openai")).map((model) => model.id), [
+		assert.deepEqual((await keyCredentialModels.getAvailableOfType("classifier", "openai")).map((model) => model.id), [
 			"gpt-6-luna",
 		]);
-		assert.deepEqual(await withOAuth.getAvailableOfType("classifier", "openai"), []);
-		assert((await withOAuth.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
+		assert.deepEqual(await subscriptionModels.getAvailableOfType("classifier", "openai"), []);
+		assert((await subscriptionModels.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
 	});
 
 	it("routes OpenRouter classifier models through the System One API", () => {
