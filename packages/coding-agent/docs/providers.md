@@ -194,6 +194,8 @@ Run `/login meta`, then select **Sign in with Meta** to open the device authoriz
 
 Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
 
+Once a fetched or cached Radius catalog is available, it replaces the bundled defaults. Models disabled by your organization no longer appear; an empty gateway catalog leaves no Radius models to select. Ask your organization owner to enable models if the list is empty.
+
 ## API Keys
 
 ### Environment Variables or Auth File
