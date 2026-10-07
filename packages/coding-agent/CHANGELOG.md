@@ -14,6 +14,7 @@
 - Fixed extension `session_shutdown` handlers being cut off when you quit the interactive CLI. The engine now gets up to 5 seconds to finish extension shutdown, instead of about 750 ms, before it is force-stopped.
 - Fixed slow extension loading and `/reload` on Windows. Imports such as `./helper.js` that point at TypeScript sources no longer make the loader try hundreds of missing files before finding `helper.ts`.
 - Fixed `/mcp` waiting for startup connections before opening. The manager now updates live and stays usable while enabling, disabling, or reconnecting servers.
+- Fixed images being dropped as unresizable under `node --watch` when Node sends its own messages on the image resize worker channel.
 
 ## [0.9.28-alpha.2] - 2026-10-07
 
