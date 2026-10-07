@@ -68,6 +68,17 @@ async function capturePayload(
 }
 
 describe("Bedrock thinking payload", () => {
+	it.each(["high", "xhigh", "max"] as const)(
+		"uses adaptive thinking and native %s effort for Claude Haiku 5.5",
+		async (reasoning) => {
+			const model = getModel("amazon-bedrock", "global.anthropic.claude-haiku-5-5");
+			const payload = await capturePayload(model, { reasoning });
+			expect(payload.additionalModelRequestFields?.thinking).toEqual(ADAPTIVE_WITH_BINDING);
+			expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: reasoning });
+			expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual([THINKING_BINDING_CONTROLS_BETA]);
+		},
+	);
+
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
 		const model: Model<"bedrock-converse-stream"> = {
@@ -359,42 +370,45 @@ describe("Application inference profile support", () => {
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
 	});
 
-	it("injects cache points when model.name identifies a supported Claude model", async () => {
-		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
-		const model: Model<"bedrock-converse-stream"> = {
-			...baseModel,
-			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
-			name: "Claude Sonnet 4.6",
-		};
+	it.each(["Claude Sonnet 4.6", "Claude Haiku 5.5"])(
+		"injects cache points when model.name identifies %s",
+		async (modelName) => {
+			const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+			const model: Model<"bedrock-converse-stream"> = {
+				...baseModel,
+				id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
+				name: modelName,
+			};
 
-		let capturedPayload: any;
-		const s = streamBedrock(
-			model,
-			normalizeContext({
-				systemPrompt: "You are helpful.",
-				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
-			}),
-			{
-				onPayload: (payload) => {
-					capturedPayload = payload;
-					throw new PayloadCaptured();
+			let capturedPayload: any;
+			const s = streamBedrock(
+				model,
+				normalizeContext({
+					systemPrompt: "You are helpful.",
+					messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
+				}),
+				{
+					onPayload: (payload) => {
+						capturedPayload = payload;
+						throw new PayloadCaptured();
+					},
 				},
-			},
-		);
+			);
 
-		for await (const event of s) {
-			if (event.type === "error") break;
-		}
+			for await (const event of s) {
+				if (event.type === "error") break;
+			}
 
-		// System prompt should have a cache point
-		expect(capturedPayload.system).toHaveLength(2);
-		expect(capturedPayload.system[1]).toHaveProperty("cachePoint");
+			// System prompt should have a cache point
+			expect(capturedPayload.system).toHaveLength(2);
+			expect(capturedPayload.system[1]).toHaveProperty("cachePoint");
 
-		// Last user message should have a cache point
-		const lastMsg = capturedPayload.messages[capturedPayload.messages.length - 1];
-		const lastContent = lastMsg.content[lastMsg.content.length - 1];
-		expect(lastContent).toHaveProperty("cachePoint");
-	});
+			// Last user message should have a cache point
+			const lastMsg = capturedPayload.messages[capturedPayload.messages.length - 1];
+			const lastContent = lastMsg.content[lastMsg.content.length - 1];
+			expect(lastContent).toHaveProperty("cachePoint");
+		},
+	);
 
 	it("falls back to fixed-budget thinking for non-adaptive Claude via model.name", async () => {
 		const baseModel = getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0");

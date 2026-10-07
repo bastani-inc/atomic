@@ -7,6 +7,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Added `openaiApiProvider()` (`openai-api`) and `anthropicApiProvider()` (`anthropic-api`): API-key-only twins of `openai` and `anthropic` that list the same chat models under their own provider ID, so a subscription login on the source provider no longer displaces the API key.
+- Added Claude Haiku 5.5 with adaptive thinking, `xhigh`/`max` effort, prompt-length pricing tiers, and mid-conversation effort, system-message, and tool changes. Bedrock supports adaptive thinking, native `xhigh`, thinking block binding, and prompt caching for Haiku 5.5.
 
 ### Changed
 
@@ -14,6 +15,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
+- Fixed Kimi K3 cost estimates on Moonshot providers to use official pricing without cache-write charges.
 - Fixed Magistral models retaining Mistral's `prompt_mode` reasoning controls when catalog metadata advertises effort levels.
 
 ## [0.9.28-alpha.3] - 2026-10-07
