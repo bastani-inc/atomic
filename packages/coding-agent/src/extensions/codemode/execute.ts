@@ -29,6 +29,7 @@ import { Bm25Ranker, createToolSearchDocument, DEFAULT_TOOL_SEARCH_LIMIT } from 
 import {
 	CODEMODE_DOCS_PATH,
 	CODEMODE_STORE_ENTRY_TYPE,
+	CODEMODE_TOOL_NAME,
 	type CodemodeNestedCall,
 	type CodemodeToolDetails,
 	type CodemodeToolInput,
@@ -243,6 +244,19 @@ function discoveryGlobals(
 	options: CodemodeToolOptions,
 ): CodemodeTool[] {
 	const entry = (name: string) => ({ name: toCodemodeIdentifier(name), description: samples.get(name) ?? "" });
+	const modelOnly = (query: string) => {
+		const wanted = query.trim().toLowerCase();
+		const name = options
+			.getModelOnlyTools?.()
+			.find(
+				(name) =>
+					name !== CODEMODE_TOOL_NAME &&
+					[name, toCodemodeIdentifier(name)].some((candidate) => candidate.toLowerCase() === wanted),
+			);
+		return name
+			? { name, description: `\`${name}\` is model-only: call it directly, not from a script.` }
+			: undefined;
+	};
 	return [
 		{
 			name: "searchTools",
@@ -261,7 +275,9 @@ function discoveryGlobals(
 						? []
 						: [createToolSearchDocument(tool, namespace)];
 				});
-				return new Bm25Ranker().rank(query, docs, limit).map((match) => entry(match.name));
+				const hint = config?.namespace ? undefined : modelOnly(query);
+				const matches = new Bm25Ranker().rank(query, docs, limit).map((match) => entry(match.name));
+				return hint ? [hint, ...matches].slice(0, limit) : matches;
 			},
 		},
 		{
@@ -271,7 +287,7 @@ function discoveryGlobals(
 				const [name] = args as unknown[];
 				if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
 				const tool = tools.find((tool) => tool.name === name || toCodemodeIdentifier(tool.name) === name);
-				return tool ? samples.get(tool.name) : undefined;
+				return tool ? samples.get(tool.name) : modelOnly(name)?.description;
 			},
 		},
 		{

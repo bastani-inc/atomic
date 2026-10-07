@@ -18,6 +18,13 @@ export function createCodemodeExtension(options: CodemodeExtensionOptions = {}):
 					new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
 				getMode: () => options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : "on"),
 				getInlineBudget: () => options.inlineBudget ?? pi.getSettings().codemode?.inlineBudget,
+				getModelOnlyTools: () => {
+					const active = new Set(pi.getActiveTools());
+					return pi
+						.getAllTools()
+						.filter((tool) => tool.exposure === "model-only" && active.has(tool.name))
+						.map((tool) => tool.name);
+				},
 			}),
 		);
 	};

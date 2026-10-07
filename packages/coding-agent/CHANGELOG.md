@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))
+
 ### Fixed
 
 - Updated the sandbox example extension's lockfile to `shell-quote` 1.12.0, resolving the `quote()` command-injection advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) in its `@anthropic-ai/sandbox-runtime` dependency.
