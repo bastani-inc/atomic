@@ -7,7 +7,7 @@ import {
 	resizeImageInProcess,
 } from "./image-resize-core.js";
 
-export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.ts";
+export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.js";
 
 function toTransferableBytes(input: Uint8Array): Uint8Array<ArrayBuffer> {
 	// Transfer detaches the buffer, so transfer a worker-owned copy and leave the
