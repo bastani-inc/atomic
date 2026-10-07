@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.28-alpha.3] - 2026-10-07
+
 ### Added
 
 - Added `LoginOptions.agentName` for apps to identify themselves during OpenAI ChatGPT and Codex browser login.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.28-alpha.3] - 2026-10-07
+
 ### Added
 
 - Added OpenAI's GPT-6 Luna classifier through the Decisions API with `OPENAI_API_KEY`, and image input for codemode's `models.classify()` context. See [Classifier models](docs/models.md#use-classifier-models).
