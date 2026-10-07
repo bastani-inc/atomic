@@ -26,7 +26,11 @@ const DBOS_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/dbos-process-owner@1
 const DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const durableGraph = join(repoRoot, "test/unit/dbos-process-global-ownership-graph.ts");
-const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url);
+const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(
+	createJiti,
+	import.meta.url,
+	extensionLoaderTestHooks.getTranspileCacheDir,
+);
 
 type DurableGraph = typeof import("./dbos-process-global-ownership-graph.ts");
 type RegisteredWrapper = (...args: readonly WorkflowSerializableValue[]) => Promise<WorkflowSerializableValue>;
@@ -137,7 +141,7 @@ async function evaluateDurabilityGraph(sdk: SharedFakeDbos): Promise<DurableGrap
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		tryNative: false,
-		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		fsCache: false,
 		transform: hostLoaderTransform,
 		alias: aliases,
 		virtualModules: {

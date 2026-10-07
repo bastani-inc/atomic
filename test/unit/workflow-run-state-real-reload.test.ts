@@ -47,7 +47,11 @@ const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
 const graphEntry = join(repoRoot, "test/helpers/workflow-graph-generation.ts");
-const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url);
+const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(
+	createJiti,
+	import.meta.url,
+	extensionLoaderTestHooks.getTranspileCacheDir,
+);
 
 const SINGLETON_SOURCES = {
 	store: join(workflowsSrc, "shared/store-factory.ts"),
@@ -178,7 +182,7 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		tryNative: false,
-		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		fsCache: false,
 		transform: hostLoaderTransform,
 		alias: hostAliases(),
 		virtualModules: { "@bastani/atomic": atomic },
@@ -200,7 +204,7 @@ async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		tryNative: false,
-		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		fsCache: false,
 		transform: hostLoaderTransform,
 		alias: extensionLoaderTestHooks.getAliases(),
 	});

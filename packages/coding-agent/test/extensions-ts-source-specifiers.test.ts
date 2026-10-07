@@ -98,4 +98,62 @@ describe("transformed extension TypeScript source specifiers", () => {
 
 		expect(await loadValue(entry)).toBe("js:b:a");
 	});
+
+	function writeImporter(root: string, specifier: string): string {
+		const entry = path.join(root, "extension.ts");
+		fs.writeFileSync(entry, `import { value } from "${specifier}";\nexport default () => value;\n`);
+		return entry;
+	}
+
+	it("loads the TypeScript source a .mjs specifier names, not another extension's sibling", async () => {
+		const root = fixtureRoot();
+		const entry = writeImporter(root, "./helper.mjs");
+		fs.writeFileSync(path.join(root, "helper.mts"), `export const value = "mts";\n`);
+		fs.writeFileSync(path.join(root, "helper.js"), `export const value = "js";\n`);
+
+		expect(await loadValue(entry)).toBe("mts");
+	});
+
+	it("loads the TypeScript source a .js specifier names, not a .mjs sibling", async () => {
+		const root = fixtureRoot();
+		const entry = writeImporter(root, "./helper.js");
+		fs.writeFileSync(path.join(root, "helper.ts"), `export const value = "ts";\n`);
+		fs.writeFileSync(path.join(root, "helper.mjs"), `export const value = "mjs";\n`);
+
+		expect(await loadValue(entry)).toBe("ts");
+	});
+
+	it("loads a JavaScript file created after its importer was cached", async () => {
+		const root = fixtureRoot();
+		const entry = writeImporter(root, "./helper.js");
+		fs.writeFileSync(path.join(root, "helper.ts"), `export const value = "ts";\n`);
+		expect(await loadValue(entry)).toBe("ts");
+
+		fs.writeFileSync(path.join(root, "helper.js"), `export const value = "js";\n`);
+
+		expect(await loadValue(entry)).toBe("js");
+	});
+
+	it("leaves a locally bound require to resolve against its own base", async () => {
+		const root = fixtureRoot();
+		const entry = path.join(root, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			[
+				`import { createRequire } from "node:module";`,
+				`import { dirname, join } from "node:path";`,
+				`import { fileURLToPath } from "node:url";`,
+				`function load(require: (id: string) => string): string {`,
+				`\treturn require("./helper.js");`,
+				`}`,
+				`export default () => load(createRequire(join(dirname(fileURLToPath(import.meta.url)), "other", "anchor.js")));`,
+				"",
+			].join("\n"),
+		);
+		fs.writeFileSync(path.join(root, "helper.ts"), `export default "local-ts";\n`);
+		fs.mkdirSync(path.join(root, "other"));
+		fs.writeFileSync(path.join(root, "other", "helper.js"), `module.exports = "other-js";\n`);
+
+		expect(await loadValue(entry)).toBe("other-js");
+	});
 });
