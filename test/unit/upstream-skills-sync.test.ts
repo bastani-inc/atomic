@@ -65,7 +65,7 @@ const cuaDriverTree = ["SKILL.md", ...cuaDriverCompanionTree.map(([path]) => pat
 const cuaDriverUpstreamSkillBodySha256 = "2ed5d656232f32af46ff9f96316a754be783d4e0a5ced2b7752b77765c2dc91f";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.3.1 at cd12f8660e2dde57b9615c8a6b8ea674101f9cfc (engine 0.1.5)
+// skill-v4.5.0 at 508d7e8955de3b3caf2d8676e85206723d41a887 (engine 0.1.11)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -81,6 +81,7 @@ reference/audit.native.md
 reference/bolder.md
 reference/clarify.md
 reference/colorize.md
+reference/component-review.md
 reference/craft-floor.md
 reference/craft.md
 reference/critique.md
@@ -93,6 +94,7 @@ reference/distill.md
 reference/doctor.md
 reference/document.md
 reference/extract.md
+reference/generate.md
 reference/harden.md
 reference/hooks.md
 reference/init.md
@@ -100,6 +102,9 @@ reference/ios.md
 reference/layout.md
 reference/live-setup.md
 reference/live.md
+reference/mode-operate.md
+reference/mode-persuade.md
+reference/mode-read.md
 reference/new-work.md
 reference/onboard.md
 reference/operate.md
@@ -107,6 +112,7 @@ reference/optimize.md
 reference/overdrive.md
 reference/polish.md
 reference/quieter.md
+reference/region-map.md
 reference/routing.md
 reference/shape.md
 reference/typeset.md
@@ -126,7 +132,7 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.5";
+const IMPECCABLE_ENGINE_VERSION = "0.1.11";
 
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
@@ -298,7 +304,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.3\.1\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.5\.0\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -334,13 +340,22 @@ describe("synced upstream skill trees", () => {
 		]);
 	});
 
-	test("ships the exact Impeccable 4.3.1 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.5.0 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
 		// pins shortcuts under the `/` command prefix; `.agents` would print
 		// `.agents/...` paths and `$` shortcuts into every agent transcript.
 		const skill = readFileSync(join(skillRoot, "SKILL.md"), "utf8");
+		const { frontmatter } = splitFrontmatter(canonicalText(skill));
+		for (const [key, value] of [
+			["github-repo", "https://github.com/pbakaus/impeccable"],
+			["github-path", ".pi/skills/impeccable"],
+			["github-ref", "refs/tags/skill-v4.5.0"],
+			["github-tree-sha", "2493a4daa753fb20fdab53a51fb89ba8f5157496"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
+		}
 		assert.match(skill, /`<skill-base-dir>\/scripts\/impeccable context`/u);
 		assert.match(skill, /\.pi\/skills\/impeccable\/scripts\/impeccable <verb>/u);
 		assert.match(skill, /creates or removes a standalone `\/<command>` shortcut/u);

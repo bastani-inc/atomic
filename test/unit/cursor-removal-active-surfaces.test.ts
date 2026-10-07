@@ -37,9 +37,11 @@ describe("removed provider active surfaces", () => {
 			`${skill}/scripts/live-browser-dom.js`,
 			`${skill}/scripts/live-browser-session.js`,
 			`${skill}/scripts/live-browser-ignores.js`,
+			`${skill}/reference/generate.md`,
 			`${skill}/reference/hooks.md`,
 			`${skill}/reference/live.md`,
 			`${skill}/reference/live-setup.md`,
+			`${skill}/reference/new-work.md`,
 			`${skill}/reference/routing.md`,
 		]) {
 			const content = read(path);
