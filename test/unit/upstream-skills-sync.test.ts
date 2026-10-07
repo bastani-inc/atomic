@@ -394,6 +394,34 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
+	test("pins the unchanged agent-browser v0.38.2 discovery stub and provenance", () => {
+		const skillRoot = join(subagentSkills, "agent-browser");
+		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["SKILL.md"]);
+		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
+		assert.equal(
+			sha256(body.replace(/^\n/u, "")),
+			"62969c6661e7c3f62c155d23420bcf453e1786538a9d277398175330fb996a46",
+		);
+		assert.match(frontmatter, /^name: agent-browser$/mu);
+		assert.match(frontmatter, /^hidden: true$/mu);
+		assert.match(frontmatter, /^allowed-tools: Bash\(agent-browser:\*\), Bash\(npx agent-browser:\*\)$/mu);
+		for (const [key, value] of [
+			["github-repo", "https://github.com/vercel-labs/agent-browser"],
+			["github-path", "skills/agent-browser"],
+			["github-ref", "refs/tags/v0.38.2"],
+			["github-tree-sha", "82def67855a0d2aad7794207951820fa5422fdb0"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
+		}
+		assert.deepEqual(trackedModes("packages/subagents/skills/agent-browser"), [
+			"100644 packages/subagents/skills/agent-browser/SKILL.md",
+		]);
+		assert.deepEqual(
+			packedPaths(join(root, "packages/subagents")).filter((path) => path.startsWith("skills/agent-browser/")),
+			["skills/agent-browser/SKILL.md"],
+		);
+	});
+
 	test("ships the exact canonical LiteParse tree with no undocumented drift", () => {
 		assert.deepEqual(
 			collectFiles(liteparseSkill, [], liteparseSkill).sort(),
