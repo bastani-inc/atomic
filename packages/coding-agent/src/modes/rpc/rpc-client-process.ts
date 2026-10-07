@@ -89,6 +89,24 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 	return child;
 }
 
+/**
+ * How long a SIGTERMed interactive engine may spend running extension
+ * `session_shutdown` handlers before its guardian and then a tree kill take over.
+ * Builtin shutdown (MCP servers, durable workflow storage) routinely exceeds a
+ * few hundred milliseconds on a loaded machine.
+ */
+export const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
+const RPC_CHILD_SHUTDOWN_GRACE_MS = 250;
+
+async function exitsWithin(exited: Promise<void>, ms: number): Promise<boolean> {
+	const deadline = new AbortController();
+	try {
+		return await Promise.race([exited.then(() => true), sleep(ms, deadline.signal).then(() => false)]);
+	} finally {
+		deadline.abort();
+	}
+}
+
 export async function terminateRpcClientProcess(child: ChildProcess, processTree: boolean): Promise<void> {
 	removeOwnedInteractiveEngineBootstrap(bootstrapHandles.get(child));
 	if (child.exitCode !== null || child.signalCode !== null) return;
@@ -99,20 +117,20 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 	child.once("exit", resolveExit);
 	const guardianFile = guardianFiles.get(child);
 	child.kill("SIGTERM");
-	if (await Promise.race([exited.then(() => true), sleep(250).then(() => false)])) {
+	if (await exitsWithin(exited, processTree ? ENGINE_SHUTDOWN_GRACE_MS : RPC_CHILD_SHUTDOWN_GRACE_MS)) {
 		if (guardianFile) await rm(guardianFile, { force: true });
 		return;
 	}
 	if (processTree && guardianFile) {
 		await writeFile(guardianFile, "stop");
-		if (await Promise.race([exited.then(() => true), sleep(500).then(() => false)])) {
+		if (await exitsWithin(exited, 500)) {
 			await rm(guardianFile, { force: true });
 			return;
 		}
 	}
 	if (processTree && child.pid) killProcessTree(child.pid);
 	else child.kill("SIGKILL");
-	if (!(await Promise.race([exited.then(() => true), sleep(250).then(() => false)]))) {
+	if (!(await exitsWithin(exited, 250))) {
 		throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 	}
 	if (guardianFile) await rm(guardianFile, { force: true });
