@@ -4,10 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `LoginOptions.agentName` for apps to identify themselves during OpenAI ChatGPT and Codex browser login.
+
 ### Fixed
 
 - Reduced context-limit request failures by estimating new input at 3.5 characters per token when calculating output limits.
 - Fixed transient `server_busy`, `servers are currently busy`, and Mistral `finish_reason: "error"` responses ending the turn instead of being retried.
+- Fixed Anthropic browser login when port 53692 is reserved or in use by falling back to a free loopback port. Copy-code login remains available for headless use.
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

@@ -202,6 +202,8 @@ export interface ApiKeyAuth {
 export interface LoginOptions {
 	/** Stable UUID for this installation, created lazily by the app. */
 	getDeviceId?: () => string;
+	/** App name used for OpenAI's agent name hint and Codex browser login originator. */
+	agentName?: string;
 }
 
 /**

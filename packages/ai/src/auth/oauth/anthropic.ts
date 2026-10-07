@@ -137,22 +137,28 @@ async function exchangeAuthorizationCode(
 
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
-	const callback = await startOAuthCallbackServer({
-		providerName: "Anthropic",
-		host: CALLBACK_HOST,
-		port: CALLBACK_PORT,
-		path: CALLBACK_PATH,
-		state: verifier,
-		complete: async (code) => code,
-		signal: interaction.signal,
-	}).catch(() => undefined);
+	const startCallbackServer = (port: number) =>
+		startOAuthCallbackServer({
+			providerName: "Anthropic",
+			host: CALLBACK_HOST,
+			port,
+			path: CALLBACK_PATH,
+			redirectHost: "localhost",
+			state: verifier,
+			complete: async (code) => code,
+			signal: interaction.signal,
+		});
+	const callback = await startCallbackServer(CALLBACK_PORT)
+		.catch(() => startCallbackServer(0))
+		.catch(() => undefined);
+	const redirectUri = callback?.redirectUri ?? REDIRECT_URI;
 
 	try {
 		const authParams = new URLSearchParams({
 			code: "true",
 			client_id: CLIENT_ID,
 			response_type: "code",
-			redirect_uri: REDIRECT_URI,
+			redirect_uri: redirectUri,
 			scope: SCOPES,
 			code_challenge: challenge,
 			code_challenge_method: "S256",
@@ -167,7 +173,7 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 
 		const result = await waitForCallbackOrManualInput(interaction, callback, {
 			message: "Complete login in your browser, or paste the authorization code / redirect URL here:",
-			placeholder: REDIRECT_URI,
+			placeholder: redirectUri,
 		});
 		let code: string | undefined;
 		let state = verifier;
@@ -182,7 +188,7 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 
 		if (!code) throw new Error("Missing authorization code");
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-		return await exchangeAuthorizationCode(code, state, verifier, REDIRECT_URI, interaction.signal);
+		return await exchangeAuthorizationCode(code, state, verifier, redirectUri, interaction.signal);
 	} finally {
 		callback?.close();
 	}
