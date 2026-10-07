@@ -1,11 +1,15 @@
+import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
+import { afterEach, describe, it } from "vitest";
+import { createEventBus } from "../src/core/event-bus.js";
+import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
+import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
 
 const fsModule = createRequire(import.meta.url)("node:fs") as typeof fs;
+const PROBE_CHANNEL = "ts-source-specifier-probe";
 
 /**
  * Each failed resolution probe throws a native ENOENT, which costs tens of
@@ -14,10 +18,21 @@ const fsModule = createRequire(import.meta.url)("node:fs") as typeof fs;
  */
 const MAX_FAILED_STATS_PER_IMPORT = 10;
 
+function probeExtension(valueExpression: string): string {
+	return `export default function (pi) {\n\tpi.events.emit(${JSON.stringify(PROBE_CHANNEL)}, ${valueExpression});\n}\n`;
+}
+
 async function loadValue(entry: string): Promise<string> {
 	const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry);
-	if (typeof factory !== "function") throw new Error("extension factory did not load");
-	return (factory as unknown as () => string)();
+	assert.ok(factory, "extension factory did not load");
+	const bus = createEventBus();
+	const observed: string[] = [];
+	bus.on(PROBE_CHANNEL, (value) => {
+		if (typeof value === "string") observed.push(value);
+	});
+	await loadExtensionFromFactory(factory, path.dirname(entry), bus, createExtensionRuntime(), entry);
+	assert.equal(observed.length, 1, "the extension must report exactly one value");
+	return observed[0]!;
 }
 
 async function countFailedStats(load: () => Promise<string>): Promise<{ value: string; failedStats: number }> {
@@ -54,12 +69,17 @@ describe("transformed extension TypeScript source specifiers", () => {
 		return root;
 	}
 
-	function writeChain(root: string): { entry: string; leaf: string } {
+	function writeImporter(root: string, specifier: string): string {
 		const entry = path.join(root, "extension.ts");
-		fs.writeFileSync(entry, `import { valueA } from "./chain-a.js";\nexport default () => valueA;\n`);
+		fs.writeFileSync(entry, `import { value } from "${specifier}";\n${probeExtension("value")}`);
+		return entry;
+	}
+
+	function writeChain(root: string): { entry: string; leaf: string } {
+		const entry = writeImporter(root, "./chain-a.js");
 		fs.writeFileSync(
 			path.join(root, "chain-a.ts"),
-			`import { valueB } from "./chain-b.js";\nexport const valueA = valueB + ":a";\n`,
+			`import { valueB } from "./chain-b.js";\nexport const value = valueB + ":a";\n`,
 		);
 		fs.writeFileSync(
 			path.join(root, "chain-b.ts"),
@@ -75,35 +95,31 @@ describe("transformed extension TypeScript source specifiers", () => {
 
 		const { value, failedStats } = await countFailedStats(() => loadValue(entry));
 
-		expect(value).toBe("ts:b:a");
-		expect(failedStats).toBeLessThanOrEqual(3 * MAX_FAILED_STATS_PER_IMPORT);
+		assert.equal(value, "ts:b:a");
+		assert.ok(
+			failedStats <= 3 * MAX_FAILED_STATS_PER_IMPORT,
+			`${failedStats} failed stat probes for three TypeScript imports`,
+		);
 	});
 
 	it("keeps an existing JavaScript file ahead of its TypeScript sibling", async () => {
 		const root = fixtureRoot();
-		const entry = path.join(root, "extension.ts");
-		fs.writeFileSync(entry, `import { value } from "./dual.js";\nexport default () => value;\n`);
+		const entry = writeImporter(root, "./dual.js");
 		fs.writeFileSync(path.join(root, "dual.js"), `export const value = "js";\n`);
 		fs.writeFileSync(path.join(root, "dual.ts"), `export const value = "ts";\n`);
 
-		expect(await loadValue(entry)).toBe("js");
+		assert.equal(await loadValue(entry), "js");
 	});
 
 	it("loads a cached importer after its TypeScript dependency becomes JavaScript", async () => {
 		const { entry, leaf } = writeChain(fixtureRoot());
-		expect(await loadValue(entry)).toBe("ts:b:a");
+		assert.equal(await loadValue(entry), "ts:b:a");
 
 		fs.rmSync(leaf);
 		fs.writeFileSync(leaf.replace(/\.ts$/, ".js"), `export const valueC = "js";\n`);
 
-		expect(await loadValue(entry)).toBe("js:b:a");
+		assert.equal(await loadValue(entry), "js:b:a");
 	});
-
-	function writeImporter(root: string, specifier: string): string {
-		const entry = path.join(root, "extension.ts");
-		fs.writeFileSync(entry, `import { value } from "${specifier}";\nexport default () => value;\n`);
-		return entry;
-	}
 
 	it("loads the TypeScript source a .mjs specifier names, not another extension's sibling", async () => {
 		const root = fixtureRoot();
@@ -111,7 +127,7 @@ describe("transformed extension TypeScript source specifiers", () => {
 		fs.writeFileSync(path.join(root, "helper.mts"), `export const value = "mts";\n`);
 		fs.writeFileSync(path.join(root, "helper.js"), `export const value = "js";\n`);
 
-		expect(await loadValue(entry)).toBe("mts");
+		assert.equal(await loadValue(entry), "mts");
 	});
 
 	it("loads the TypeScript source a .js specifier names, not a .mjs sibling", async () => {
@@ -120,18 +136,18 @@ describe("transformed extension TypeScript source specifiers", () => {
 		fs.writeFileSync(path.join(root, "helper.ts"), `export const value = "ts";\n`);
 		fs.writeFileSync(path.join(root, "helper.mjs"), `export const value = "mjs";\n`);
 
-		expect(await loadValue(entry)).toBe("ts");
+		assert.equal(await loadValue(entry), "ts");
 	});
 
 	it("loads a JavaScript file created after its importer was cached", async () => {
 		const root = fixtureRoot();
 		const entry = writeImporter(root, "./helper.js");
 		fs.writeFileSync(path.join(root, "helper.ts"), `export const value = "ts";\n`);
-		expect(await loadValue(entry)).toBe("ts");
+		assert.equal(await loadValue(entry), "ts");
 
 		fs.writeFileSync(path.join(root, "helper.js"), `export const value = "js";\n`);
 
-		expect(await loadValue(entry)).toBe("js");
+		assert.equal(await loadValue(entry), "js");
 	});
 
 	it("leaves a locally bound require to resolve against its own base", async () => {
@@ -146,14 +162,14 @@ describe("transformed extension TypeScript source specifiers", () => {
 				`function load(require: (id: string) => string): string {`,
 				`\treturn require("./helper.js");`,
 				`}`,
-				`export default () => load(createRequire(join(dirname(fileURLToPath(import.meta.url)), "other", "anchor.js")));`,
-				"",
+				`const value = load(createRequire(join(dirname(fileURLToPath(import.meta.url)), "other", "anchor.js")));`,
+				probeExtension("value"),
 			].join("\n"),
 		);
 		fs.writeFileSync(path.join(root, "helper.ts"), `export default "local-ts";\n`);
 		fs.mkdirSync(path.join(root, "other"));
 		fs.writeFileSync(path.join(root, "other", "helper.js"), `module.exports = "other-js";\n`);
 
-		expect(await loadValue(entry)).toBe("other-js");
+		assert.equal(await loadValue(entry), "other-js");
 	});
 });

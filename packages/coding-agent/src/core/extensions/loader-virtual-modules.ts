@@ -11,7 +11,7 @@ import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
-import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.ts";
+import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";

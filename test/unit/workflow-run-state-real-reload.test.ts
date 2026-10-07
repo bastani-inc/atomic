@@ -16,7 +16,7 @@ import { createEventBus, type EventBusController } from "../../packages/coding-a
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
-import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.ts";
+import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.js";
 import type {
 	Extension,
 	ExtensionFactory,

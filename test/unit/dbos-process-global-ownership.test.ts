@@ -10,7 +10,7 @@ import { createJiti } from "jiti/static";
 import pg from "pg";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
-import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.ts";
+import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	DbosShutdownError,
