@@ -509,7 +509,8 @@ jobs:
   # Bun 1.4.0 Windows bytecode executables must be compiled on a Windows host:
   # the same compile cross-run from Linux segfaults before user code runs. This
   # job therefore builds the release's actual Windows archives, smokes the x64
-  # one, and hands both to the payload build, whose Linux leg skips Windows.
+  # one, and hands both to draft staging, which joins them with the Linux and
+  # macOS archives from the payload build.
   windows-binary-smoke:
     name: Build and smoke Windows archives
     needs: [integrity, native-artifacts]
@@ -591,12 +592,13 @@ jobs:
           $env:POSTGRES_EXE = Join-Path $runtime "bin/postgres.exe"
           bun -e 'import { readPortableExecutableMachine } from "./scripts/probe-windows-bytecode.ts"; const machine = readPortableExecutableMachine(process.env.POSTGRES_EXE); if (machine !== 0x8664) throw new Error(`PostgreSQL PE machine 0x${machine.toString(16)} is not x64`); console.log("Windows ARM64 archive carries x64 PostgreSQL for emulation");'
       - name: Upload Windows release archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
           name: atomic-windows-archives
           path: packages/coding-agent/binaries/atomic-windows-*.zip
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   # Build and run each musl archive on the matching stock Alpine architecture.
   # The native binding is downloaded rather than rebuilt, so these legs prove
@@ -658,7 +660,7 @@ jobs:
 
   build:
     name: Build release payload
-    needs: [integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke]
+    needs: [integrity, native-artifacts]
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 15
     steps:
@@ -709,13 +711,6 @@ jobs:
         run: npm run hydrate:model-data
       - name: Build release archives
         run: ./scripts/build-binaries.sh --skip-install --offline-model-data --skip-windows
-      # The Windows archives are compiled on the Windows runner because Bun
-      # 1.4.0 cross-compiled Windows bytecode launchers crash at startup.
-      - name: Stage Windows-built release archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: atomic-windows-archives
-          path: packages/coding-agent/binaries
       - name: Validate package metadata and prepare payload
         env:
           VERSION: ${{ needs.integrity.outputs.version }}
@@ -747,9 +742,8 @@ jobs:
           JAVASCRIPT
           rm -rf release-assets npm-packages
           mkdir release-assets npm-packages
-          cp packages/coding-agent/binaries/atomic-*.tar.gz packages/coding-agent/binaries/atomic-*.zip release-assets/
+          cp packages/coding-agent/binaries/atomic-*.tar.gz release-assets/
           bun run scripts/build-release-notes.ts "$VERSION" --out release-assets/RELEASE_NOTES.md
-          (cd release-assets && sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS)
           bun run --cwd packages/ai build
           for dir in packages/natives/npm/* packages/natives packages/ai packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 11
@@ -781,12 +775,13 @@ jobs:
             const actual = Object.keys(root.optionalDependencies ?? {});
             if (actual.length !== 8 || actual.some((name) => !expected.has(name) || root.optionalDependencies[name] !== process.env.VERSION)) throw new Error("native optionalDependencies must be the eight exact-version platform packages");'
       - name: Upload GitHub release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
           name: release-assets-${{ env.RELEASE_TAG }}
           path: release-assets
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
       - name: Upload npm packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -794,10 +789,13 @@ jobs:
           path: npm-packages
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   stage-github-release:
     name: Stage draft GitHub Release
-    needs: [integrity, build]
+    needs: [integrity, build, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke]
+    # Release archives move through Namespace artifact storage, which only
+    # Namespace runners can read, so this job must stay on a Namespace runner.
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
     timeout-minutes: 30
     permissions:
@@ -806,9 +804,13 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
         with:
           name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+      - uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        with:
+          name: atomic-windows-archives
           path: release-assets
       - name: Validate and stage draft release
         env:
@@ -816,7 +818,7 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          sha256sum -c SHA256SUMS
+          sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           [[ "$existing" != false ]] || { echo "GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release." >&2; exit 1; }
           [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes
@@ -864,13 +866,33 @@ jobs:
           done
           packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-arm64-musl @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-linux-x64-musl @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/pi-ai @bastani/atomic)
           [[ "${#tarballs[@]}" -eq "${#packages[@]}" ]] || { echo "Expected exactly eleven npm packages" >&2; exit 1; }
-          for name in "${packages[@]}"; do
-            [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; exit 1; }
+          publish_package() {
+            local name=$1
+            [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; return 1; }
             if npm view "$name@$VERSION" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
               echo "$name@$VERSION already exists; skipping."
             else
               npm publish "${tarballs[$name]}" --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
             fi
+          }
+          platform_leaves=() dependents=()
+          for name in "${packages[@]}"; do
+            if [[ "$name" == @bastani/atomic-natives-* ]]; then platform_leaves+=("$name"); else dependents+=("$name"); fi
+          done
+          logs=$(mktemp -d)
+          pids=()
+          for name in "${platform_leaves[@]}"; do
+            publish_package "$name" > "$logs/${name##*/}.log" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          for index in "${!pids[@]}"; do
+            wait "${pids[$index]}" || failed=1
+            cat "$logs/${platform_leaves[$index]##*/}.log"
+          done
+          (( failed == 0 )) || { echo "A native platform package failed to publish; dependents were not published." >&2; exit 1; }
+          for name in "${dependents[@]}"; do
+            publish_package "$name"
           done
 
   publish-github-release:

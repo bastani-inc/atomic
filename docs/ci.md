@@ -21,12 +21,15 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
    │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
    │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
-   ├─ build: shrinkwrap/package validation, target PostgreSQL staging in all eight
-   │  native npm leaves, six non-Windows archives plus the Windows-built pair,
-   │  eleven npm tarballs, release notes, and SHA256SUMS
-   ├─ stage-github-release: create a verified draft and refuse to change a
-   │  published release
-   ├─ publish-npm: tokenless OIDC publication, skipping existing versions
+   ├─ build (after native-artifacts, in parallel with the smoke jobs):
+   │  shrinkwrap/package validation, target PostgreSQL staging in all eight
+   │  native npm leaves, six non-Windows archives, eleven npm tarballs, and
+   │  release notes
+   ├─ stage-github-release (after build and every smoke job): join the
+   │  Windows-built pair, write SHA256SUMS, create a verified draft, and refuse
+   │  to change a published release
+   ├─ publish-npm: tokenless OIDC publication of the eight native leaves in
+   │  parallel, then natives, pi-ai, and atomic in order, skipping existing versions
    ├─ publish-github-release: undraft only after npm succeeds
    ├─ register-published-version: register the published version with a GitHub OIDC JWT
    └─ cleanup-draft-github-release: delete a draft when later work fails
@@ -47,6 +50,21 @@ Push or manual dispatch on `main`
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
 
 The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. All eight native npm leaves receive a `postgres-runtime` payload. Pack verification extracts each tarball and validates target provenance, executable architecture/libc, required libraries/catalog/licenses, and the payload file checksums; missing or wrong payloads fail packaging. Every standalone archive independently stages its target under the archive-local `@bastani/atomic-natives` package rather than relying on host-installed optional leaves. Existing native Linux glibc and macOS runners exercise scriptless pack/install and SQL persistence across restart; Linux and Windows x64 archive jobs do the same against extracted runtime paths. The Alpine smoke legs execute initdb, protocol queries, restart, and persisted-row checks on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
+
+### Release artifact storage
+
+Release archives move between jobs through Namespace artifact storage (`namespace-actions/upload-artifact` and `namespace-actions/download-artifact`, pinned by SHA). Pulling the single 1.56 GB GitHub artifact onto a Namespace runner took 2.7–8.6 minutes in the four releases before 0.9.28-alpha.3, and over 10 minutes twice on 2026-10-07, which cancelled both 0.9.28-alpha.3 staging attempts. GitHub-hosted `publish-npm` pulled the same artifact in 20–77 s.
+
+Namespace artifact storage is readable only from Namespace runners, so it cannot serve `publish-npm`, which must stay GitHub-hosted (see below). The release therefore uses two stores:
+
+| Artifact | Producer | Consumer | Store |
+| --- | --- | --- | --- |
+| `atomic-windows-archives` | windows-binary-smoke | stage-github-release | Namespace |
+| `release-assets-<tag>` (non-Windows archives, release notes) | build | stage-github-release | Namespace |
+| `npm-packages-<tag>` | build | publish-npm (`ubuntu-latest`) | GitHub |
+| `atomic-natives-*` (native bindings) | native-artifacts | smoke jobs, build | GitHub |
+
+`stage-github-release` must stay on a Namespace runner. Namespace artifacts do not appear in the GitHub run's artifact list; they expire after the same 14-day retention. Every upload of an already-compressed archive uses `compression-level: 0`.
 
 ## Runners
 
