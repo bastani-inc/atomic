@@ -79,14 +79,20 @@ function wireInput(context: ClassifierContext): unknown {
 	];
 }
 
-function choiceProbabilities(value: unknown, id: string): Record<string, number> {
+function unitInterval(value: unknown, field: string): number {
+	const number = requiredNumber(LABEL, value, field);
+	if (number < 0 || number > 1) throw new Error(`${LABEL} returned invalid ${field}`);
+	return number;
+}
+
+function choiceProbabilities(value: unknown, id: string, criteria: Record<string, string>): Record<string, number> {
 	if (!Array.isArray(value)) throw new Error(`${LABEL} returned invalid probabilities for ${id}`);
 	return Object.fromEntries(
 		value.map((entry) => {
-			if (!isRecord(entry) || typeof entry.value !== "string") {
+			if (!isRecord(entry) || typeof entry.value !== "string" || !Object.hasOwn(criteria, entry.value)) {
 				throw new Error(`${LABEL} returned invalid probabilities for ${id}`);
 			}
-			return [entry.value, requiredNumber(LABEL, entry.probability, `probability for ${id}.${entry.value}`)];
+			return [entry.value, unitInterval(entry.probability, `probability for ${id}.${entry.value}`)];
 		}),
 	);
 }
@@ -94,26 +100,28 @@ function choiceProbabilities(value: unknown, id: string): Record<string, number>
 function parseAnswer(id: string, question: ClassifierQuestion, answer: Record<string, unknown>): ClassifierAnswer {
 	if (answer.type === "refusal") throw new Error(`${LABEL} refused to answer ${id}`);
 	if (question.type === "choice") {
-		if (answer.type !== "choice" || typeof answer.choice !== "string") {
+		if (answer.type !== "choice" || typeof answer.choice !== "string" || !Object.hasOwn(question.criteria, answer.choice)) {
 			throw new Error(`${LABEL} did not return a choice answer for ${id}`);
 		}
 		return {
 			type: "choice",
 			choice: answer.choice,
-			probabilities: choiceProbabilities(answer.probabilities, id),
-			confidence: requiredNumber(LABEL, answer.confidence, `confidence for ${id}`),
+			probabilities: choiceProbabilities(answer.probabilities, id, question.criteria),
+			confidence: unitInterval(answer.confidence, `confidence for ${id}`),
 		};
 	}
 	if (question.type === "score") {
 		if (answer.type !== "score") throw new Error(`${LABEL} did not return a score answer for ${id}`);
+		const score = requiredNumber(LABEL, answer.score, `score for ${id}`);
+		if (score < 0 || score > question.criteria.length - 1) throw new Error(`${LABEL} returned invalid score for ${id}`);
 		return {
 			type: "score",
-			score: requiredNumber(LABEL, answer.score, `score for ${id}`),
-			confidence: requiredNumber(LABEL, answer.confidence, `confidence for ${id}`),
+			score,
+			confidence: unitInterval(answer.confidence, `confidence for ${id}`),
 		};
 	}
 	if (answer.type !== "predicate") throw new Error(`${LABEL} did not return a predicate answer for ${id}`);
-	return { type: "bool", probability: requiredNumber(LABEL, answer.probability, `probability for ${id}`) };
+	return { type: "bool", probability: unitInterval(answer.probability, `probability for ${id}`) };
 }
 
 function parseAnswers(value: unknown, context: ClassifierContext): Record<string, ClassifierAnswer> {
@@ -139,7 +147,7 @@ function parseAnswers(value: unknown, context: ClassifierContext): Record<string
 const NO_RETRY_STATUSES = [504];
 
 function errorMessage(error: unknown): string {
-	if ((error as Partial<ClassifierHttpError>).status === 504) {
+	if ((error as Partial<ClassifierHttpError> | null | undefined)?.status === 504) {
 		return `${LABEL} error (504): the request timed out at the gateway. Very large inputs (above roughly 600K tokens) currently exceed its time limit.`;
 	}
 	return formatProviderError(normalizeProviderError(error), `${LABEL} error`);

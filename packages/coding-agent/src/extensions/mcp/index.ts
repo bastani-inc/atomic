@@ -778,7 +778,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				server.attempt = undefined;
 				server.connection = undefined;
 				if (connection) {
-					server.closing = Promise.all([connection.close(), server.ready]).then(() => undefined);
+					server.closing = connection.close();
 				}
 				const closing = server.closing;
 				hideTools(server.entry.name);

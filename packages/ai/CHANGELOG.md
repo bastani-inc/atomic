@@ -22,6 +22,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed Codex requests ignoring caller and model overrides for `originator` and `User-Agent` headers; authentication headers remain authoritative.
 - Fixed the selected reasoning effort not reaching OpenAI GPT models on Bedrock Converse. GPT-oss effort is clamped to `low`, `medium`, or `high`; Astra keeps its existing payload.
 - Fixed Radius models disabled by an organization still appearing in the catalog. Fetched or cached gateway catalogs now replace the bundled defaults, including empty catalogs.
+- Fixed OpenAI Decisions accepting unknown choices or out-of-range probabilities, confidence, and scores as successful answers, and failing to return error results when request hooks or fetch throw null or undefined.
 
 ## [0.9.28-alpha.1] - 2026-10-05
 

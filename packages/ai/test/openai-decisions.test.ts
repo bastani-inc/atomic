@@ -235,6 +235,74 @@ describe("OpenAI Decisions", () => {
 		assert.deepEqual(result.answers.__proto__, { type: "bool", probability: 0.75 });
 	});
 
+	it.each([
+		["unknown choice", 0, { choice: "unknown" }],
+		["inherited choice", 0, { choice: "toString" }],
+		["unknown probability key", 0, { probabilities: [{ value: "unknown", probability: 0.5 }] }],
+		["inherited probability key", 0, { probabilities: [{ value: "toString", probability: 0.5 }] }],
+		["negative choice probability", 0, { probabilities: [{ value: "success", probability: -0.1 }] }],
+		["excess choice probability", 0, { probabilities: [{ value: "success", probability: 1.1 }] }],
+		["negative choice confidence", 0, { confidence: -0.1 }],
+		["excess choice confidence", 0, { confidence: 1.1 }],
+		["negative score", 1, { score: -0.1 }],
+		["excess score", 1, { score: 2.1 }],
+		["negative score confidence", 1, { confidence: -0.1 }],
+		["excess score confidence", 1, { confidence: 1.1 }],
+		["negative predicate probability", 2, { probability: -0.1 }],
+		["excess predicate probability", 2, { probability: 1.1 }],
+	] as const)("rejects %s and retains billed usage", async (_name, index, patch) => {
+		const answers = wireAnswers.map((answer, i) => (i === index ? { ...answer, ...patch } : answer));
+		const result = await classify(model, context, {
+			apiKey: "secret",
+			fetch: async () => Response.json({ answers, usage: wireUsage }),
+		});
+		assert.equal(result.stopReason, "error");
+		assert.deepEqual(result.answers, {});
+		assert.equal(result.usage?.input, 164);
+		assert.equal(result.usage?.totalTokens, 164);
+	});
+
+	it.each([0, 1])("accepts probability/confidence boundary %s and score boundaries", async (boundary) => {
+		const result = await classify(model, context, {
+			apiKey: "secret",
+			fetch: async () => Response.json({ answers: [
+				{ ...wireAnswers[0], probabilities: [{ value: "success", probability: boundary }], confidence: boundary },
+				{ ...wireAnswers[1], score: boundary * 2, confidence: boundary },
+				{ ...wireAnswers[2], probability: boundary },
+			] }),
+		});
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(result.answers, {
+			category: { type: "choice", choice: "success", probabilities: { success: boundary }, confidence: boundary },
+			satisfaction: { type: "score", score: boundary * 2, confidence: boundary },
+			approved: { type: "bool", probability: boundary },
+		});
+	});
+
+	it.each([
+		["fetch", null], ["fetch", undefined],
+		["onPayload", null], ["onPayload", undefined],
+		["onResponse", null], ["onResponse", undefined],
+	] as const)("normalizes %s throwing %s without rejecting", async (source, thrown) => {
+		const result = await classify(model, context, {
+			apiKey: "secret",
+			maxRetries: 0,
+			fetch: async () => {
+				if (source === "fetch") throw thrown;
+				return Response.json({ answers: wireAnswers });
+			},
+			onPayload: () => {
+				if (source === "onPayload") throw thrown;
+			},
+			onResponse: () => {
+				if (source === "onResponse") throw thrown;
+			},
+		});
+		assert.equal(result.stopReason, "error");
+		assert.deepEqual(result.answers, {});
+		assert.equal(result.errorMessage, String(thrown));
+	});
+
 	it("does not retry gateway timeouts and explains them instead of returning the HTML page", async () => {
 		const fetch = vi.fn(
 			async () =>

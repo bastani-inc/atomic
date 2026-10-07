@@ -17,6 +17,7 @@
 - Fixed images being dropped as unresizable under `node --watch` when Node sends its own messages on the image resize worker channel.
 - Fixed codemode's tool description omitting `await` for `searchTools()`, `describeTool()`, and `describeNamespace()`, which could make scripts return unresolved promises instead of tool information.
 - Fixed slash commands and shell-command drafts typed during interactive startup running before Enter, including when launching with `--model` or `--provider`. Enter-terminated input stays ordered and unfinished text remains in the editor.
+- Fixed a stuck MCP server startup blocking re-enabling the server or shutting down after it was disabled.
 
 ## [0.9.28-alpha.2] - 2026-10-07
 
