@@ -1,4 +1,5 @@
 import {
+	type AnyModel,
 	type ApiKeyCredential,
 	type AuthContext,
 	type AuthResult,
@@ -10,6 +11,7 @@ import {
 	type RefreshModelsContext,
 } from "@bastani/pi-ai";
 import { llamaCppClassifyApi } from "@bastani/pi-ai/api/llama-cpp-classify.lazy";
+import { typesafeSystemOneApi } from "@bastani/pi-ai/api/typesafe-system-one.lazy";
 import { stream, streamSimple } from "@bastani/pi-ai/compat";
 import {
 	LlamaClient,
@@ -70,23 +72,39 @@ function contextWindowOf(model: LlamaModelInfo, cachedContextWindow?: number): n
 	return model.meta?.n_ctx_train && model.meta.n_ctx_train > 0 ? model.meta.n_ctx_train : 128000;
 }
 
-/** The same llama.cpp model used as a classifier: answers are read from next-token label probabilities. */
+type LlamaClassifierApi = "llama-cpp-classify" | "typesafe-system-one";
+
+function isDecisionModel(model: LlamaModelInfo): boolean {
+	return model.architecture?.output_modalities?.includes("decisions") === true;
+}
+
+function isChatModel(model: LlamaModelInfo): boolean {
+	return !isDecisionModel(model) || model.architecture?.output_modalities?.includes("text") === true;
+}
+
 function toPiClassifierModel(
 	model: LlamaModelInfo,
 	serverUrl: string,
 	cachedContextWindow?: number,
-): ClassifierModel<"llama-cpp-classify"> {
+): ClassifierModel<LlamaClassifierApi> {
+	const decision = isDecisionModel(model);
 	return {
 		type: "classifier",
 		id: model.id,
 		name: model.id,
-		api: "llama-cpp-classify",
+		api: decision ? "typesafe-system-one" : "llama-cpp-classify",
 		provider: LLAMA_PROVIDER_ID,
-		baseUrl: serverUrl,
+		baseUrl: decision ? llamaInferenceUrl(serverUrl) : serverUrl,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: contextWindowOf(model, cachedContextWindow),
 	};
+}
+
+function isLlamaClassifierModel(model: AnyModel): model is ClassifierModel<LlamaClassifierApi> {
+	return (
+		isModelType(model, "classifier") && (model.api === "llama-cpp-classify" || model.api === "typesafe-system-one")
+	);
 }
 
 function toPiModel(
@@ -130,8 +148,9 @@ export interface LlamaProviderController {
 
 export function createLlamaProvider(): LlamaProviderController {
 	let models: readonly Model<"openai-completions">[] = [];
-	let classifiers: readonly ClassifierModel<"llama-cpp-classify">[] = [];
-	const classifier = llamaCppClassifyApi();
+	let classifiers: readonly ClassifierModel<LlamaClassifierApi>[] = [];
+	const fallbackClassifier = llamaCppClassifyApi();
+	const decisionClassifier = typesafeSystemOneApi();
 
 	const setCatalog = (
 		catalog: readonly LlamaModelInfo[],
@@ -139,7 +158,7 @@ export function createLlamaProvider(): LlamaProviderController {
 		options: { routerAutoload?: boolean } = {},
 	): void => {
 		const selectable = catalog.filter((model) => modelIsSelectable(model, options.routerAutoload === true));
-		models = selectable.map((model) => toPiModel(model, serverUrl));
+		models = selectable.filter(isChatModel).map((model) => toPiModel(model, serverUrl));
 		classifiers = selectable.map((model) => toPiClassifierModel(model, serverUrl));
 	};
 
@@ -200,10 +219,7 @@ export function createLlamaProvider(): LlamaProviderController {
 					(model): model is Model<"openai-completions"> =>
 						isModelType(model, "chat") && model.api === "openai-completions",
 				);
-				const restoredClassifiers = stored.filter(
-					(model): model is ClassifierModel<"llama-cpp-classify"> =>
-						isModelType(model, "classifier") && model.api === "llama-cpp-classify",
-				);
+				const restoredClassifiers = stored.filter(isLlamaClassifierModel);
 				for (const model of [...restored, ...restoredClassifiers])
 					cachedContextWindows.set(model.id, model.contextWindow);
 				if (
@@ -228,7 +244,7 @@ export function createLlamaProvider(): LlamaProviderController {
 			if (context.signal.aborted) return;
 			const selectable = catalog.filter((model) => modelIsSelectable(model, routerAutoload));
 			const refreshed = await Promise.all(
-				selectable.map(async (model) => {
+				selectable.filter(isChatModel).map(async (model) => {
 					// Query only loaded models: sleeping and autoload presets must not be woken by discovery.
 					const cachedContextWindow = cachedContextWindows.get(model.id);
 					if (model.status.value !== "loaded") return toPiModel(model, serverUrl, undefined, cachedContextWindow);
@@ -254,7 +270,12 @@ export function createLlamaProvider(): LlamaProviderController {
 		},
 		stream: (model, context, options) => stream(model, context, options as ProviderStreamOptions | undefined),
 		streamSimple: (model, context, options) => streamSimple(model, context, options),
-		classify: (model, context, options) => classifier.classify(model, context, options),
+		classify: (model, context, options) =>
+			(model.api === "typesafe-system-one" ? decisionClassifier : fallbackClassifier).classify(
+				model,
+				context,
+				options,
+			),
 	};
 
 	return { provider, setCatalog };
