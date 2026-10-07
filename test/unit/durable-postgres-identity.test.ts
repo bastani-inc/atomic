@@ -5,6 +5,7 @@ import {
 	chmodSync,
 	cpSync,
 	existsSync,
+	linkSync,
 	lstatSync,
 	mkdirSync,
 	readdirSync,
@@ -716,7 +717,10 @@ test("occupied preferred port is persisted atomically and rediscovered after rel
 	vi.stubEnv("ATOMIC_POSTGRES_PORT", String(foreign.port));
 	const f = fixture();
 	const path = join(f.root, "v18.shared", "cluster.json");
-	const inode = statSync(path).ino;
+	const original = join(f.root, "original-cluster.json");
+	linkSync(path, original);
+	const inode = statSync(original).ino;
+	const originalText = readTextSync(original, "utf8");
 	let starts = 0,
 		signals = 0;
 	hooks.setRetainedPostgresSpawner((options) => {
@@ -745,7 +749,8 @@ test("occupied preferred port is persisted atomically and rediscovered after rel
 	await Promise.all([hooks.ensureCluster(f.options), reloaded.embeddedPostgresTestHooks.ensureCluster(f.options)]);
 	const published = managedPostgresMetadata(f.root, 18, false);
 	assert.ok(published.server);
-	assert.notEqual(statSync(path).ino, inode);
+	assert.notEqual(statSync(path).ino, inode, "the metadata is replaced by rename, not rewritten in place");
+	assert.equal(readTextSync(original, "utf8"), originalText, "the replaced metadata inode is never modified");
 	assert.equal(new URL(embeddedDbosSystemDatabaseUrl()).port, String(published.server.port));
 	assert.equal(published.clusterId, f.metadata.clusterId);
 	await shutdownEmbeddedDbosPostgres();
