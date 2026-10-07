@@ -74,6 +74,8 @@ Apps using `@bastani/pi-ai` directly can pass `{ agentName: "my-app" }` as the f
 
 If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
 
+For Codex requests, `models.json` headers or per-request SDK headers can override `originator` and `User-Agent`. The transport still supplies the authenticated bearer token and ChatGPT account ID.
+
 GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Access can still depend on the account, rollout, and minimum client policy even though Atomic lists the model.
 
 GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`. Each has a derived `-fast` choice, such as `openai-codex/gpt-6-sol-fast`, that sends the base upstream model with `service_tier: priority`. Copilot's bundled catalog and account policy determine which Sol models are available; fast siblings require an exact advertised ID.
@@ -417,6 +419,8 @@ us.openai.gpt-6-astra
 ```
 
 Select them under the single `amazon-bedrock` provider. Atomic passes the chosen ID unchanged to Bedrock Converse and sends the selected `low`, `medium`, `high`, `xhigh`, or `max` setting as the OpenAI `reasoning_effort` field. The unprefixed ID is Codex's direct/Mantle entry; `global.` and `us.` are Bedrock Runtime inference profiles. Bedrock does not advertise Astra Fast, so Atomic derives no fast sibling for these models. AWS's public region and pricing pages did not list Astra when this catalog entry was added. Availability can vary by account and region, and Atomic records zero catalog cost until AWS publishes an authoritative rate.
+
+Other Bedrock GPT models receive the selected thinking level as `reasoning.effort`; `minimal` maps to `low`. GPT-oss uses `reasoning_effort` and maps `minimal` to `low` and `xhigh` or `max` to `high`. For a custom application inference profile, give the model a recognizable GPT name in `models.json` so the reasoning setting is sent.
 
 Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:
 

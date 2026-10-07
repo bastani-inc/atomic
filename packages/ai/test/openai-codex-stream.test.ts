@@ -491,6 +491,49 @@ describe("openai-codex advertised service tiers", () => {
 });
 
 describe("openai-codex streaming", () => {
+	it("lets model and caller headers override originator and User-Agent (#10429)", async () => {
+		const token = mockToken();
+		let capturedHeaders: Headers | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL, init?: RequestInit) => {
+				capturedHeaders = init?.headers instanceof Headers ? init.headers : undefined;
+				return new Response(buildSSEPayload({ status: "completed" }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+			headers: { originator: "my-app" },
+		};
+		await streamOpenAICodexResponses(
+			model,
+			normalizeContext({
+				messages: [{ role: "user", content: "Say hello", timestamp: 1 }],
+			}),
+			{
+				apiKey: token,
+				transport: "sse",
+				headers: { "user-agent": "my-app/1.0", Authorization: "Bearer ignored", "chatgpt-account-id": "ignored" },
+			},
+		).result();
+		assert.equal(capturedHeaders?.get("originator"), "my-app");
+		assert.equal(capturedHeaders?.get("User-Agent"), "my-app/1.0");
+		assert.equal(capturedHeaders?.get("Authorization"), `Bearer ${token}`);
+		assert.equal(capturedHeaders?.get("chatgpt-account-id"), "acc_test");
+	});
+
 	it("streams SSE responses and forwards raw provider events", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		process.env.PI_CODING_AGENT_DIR = tempDir;
