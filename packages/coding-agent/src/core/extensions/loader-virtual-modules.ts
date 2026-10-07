@@ -11,6 +11,7 @@ import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
+import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.ts";
 import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";
@@ -19,12 +20,23 @@ const require = createRequire(import.meta.url);
 let _aliases: Record<string, string> | null = null;
 let _transpileCacheDir: string | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
+let typeScriptSourceSpecifierTransform: ReturnType<typeof createTypeScriptSourceSpecifierTransform> | undefined;
 
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
 		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
 	).then((module) => module.createJiti);
 	return createJitiPromise;
+}
+
+function getTypeScriptSourceSpecifierTransform(
+	createJitiImpl: typeof createJiti,
+): ReturnType<typeof createTypeScriptSourceSpecifierTransform> {
+	typeScriptSourceSpecifierTransform ??= createTypeScriptSourceSpecifierTransform(
+		createJitiImpl,
+		resolutionBaseUrl(import.meta.url),
+	);
+	return typeScriptSourceSpecifierTransform;
 }
 
 /**
@@ -503,6 +515,7 @@ async function importExtensionModule(
 	const createJitiImpl = await getCreateJiti();
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
+		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl),
 		...(forceTransformedImports
 			? { fsCache: getTranspileCacheDir(), tryNative: false }
 			: isWindows

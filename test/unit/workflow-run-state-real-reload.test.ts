@@ -16,6 +16,7 @@ import { createEventBus, type EventBusController } from "../../packages/coding-a
 import { loadExtensionFromFactory } from "../../packages/coding-agent/src/core/extensions/loader-core.ts";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
+import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.ts";
 import type {
 	Extension,
 	ExtensionFactory,
@@ -46,6 +47,7 @@ const WORKFLOW_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowsSrc = join(repoRoot, "packages/workflows/src");
 const graphEntry = join(repoRoot, "test/helpers/workflow-graph-generation.ts");
+const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url);
 
 const SINGLETON_SOURCES = {
 	store: join(workflowsSrc, "shared/store-factory.ts"),
@@ -177,6 +179,7 @@ async function evaluateWorkflowGraph(): Promise<WorkflowGeneration> {
 		moduleCache: false,
 		tryNative: false,
 		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		transform: hostLoaderTransform,
 		alias: hostAliases(),
 		virtualModules: { "@bastani/atomic": atomic },
 	});
@@ -198,6 +201,7 @@ async function evaluateInstalledWorkflowGraph(): Promise<WorkflowGeneration> {
 		moduleCache: false,
 		tryNative: false,
 		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		transform: hostLoaderTransform,
 		alias: extensionLoaderTestHooks.getAliases(),
 	});
 	return (await jiti.import(cacheBustedHref(graphEntry, cacheKey))) as WorkflowGeneration;

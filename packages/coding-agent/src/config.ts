@@ -440,12 +440,15 @@ export function getBinDir(): string {
 	return join(getAgentDir(), "bin");
 }
 
+const EXTENSION_TRANSPILE_CACHE_FORMAT = "ts-source-specifiers";
+
 /**
  * Get path to the extension transpile cache directory (jiti fsCache).
- * Scoped by version so release upgrades never read stale transpiled output.
+ * Scoped by version and transform format so neither a release upgrade nor a
+ * loader transform change reads stale transpiled output.
  */
 export function getExtensionTranspileCacheDir(): string {
-	return join(getAgentDir(), "cache", "jiti", VERSION);
+	return join(getAgentDir(), "cache", "jiti", `${VERSION}+${EXTENSION_TRANSPILE_CACHE_FORMAT}`);
 }
 
 /** Get path to prompt templates directory */

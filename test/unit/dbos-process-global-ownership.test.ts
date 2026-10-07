@@ -10,6 +10,7 @@ import { createJiti } from "jiti/static";
 import pg from "pg";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.ts";
+import { createTypeScriptSourceSpecifierTransform } from "../../packages/coding-agent/src/core/extensions/ts-source-specifiers.ts";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	DbosShutdownError,
@@ -25,6 +26,7 @@ const DBOS_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/dbos-process-owner@1
 const DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS = 120_000;
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const durableGraph = join(repoRoot, "test/unit/dbos-process-global-ownership-graph.ts");
+const hostLoaderTransform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url);
 
 type DurableGraph = typeof import("./dbos-process-global-ownership-graph.ts");
 type RegisteredWrapper = (...args: readonly WorkflowSerializableValue[]) => Promise<WorkflowSerializableValue>;
@@ -136,6 +138,7 @@ async function evaluateDurabilityGraph(sdk: SharedFakeDbos): Promise<DurableGrap
 		moduleCache: false,
 		tryNative: false,
 		fsCache: extensionLoaderTestHooks.getTranspileCacheDir(),
+		transform: hostLoaderTransform,
 		alias: aliases,
 		virtualModules: {
 			"@bastani/atomic": atomic,
