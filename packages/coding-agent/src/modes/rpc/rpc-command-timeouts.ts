@@ -29,6 +29,7 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"login_provider",
 	"steer",
 	"follow_up",
+	"resume_queued_messages",
 	"bash",
 	"user_bash",
 	"compact",
