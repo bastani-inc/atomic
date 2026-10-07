@@ -50,6 +50,7 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;

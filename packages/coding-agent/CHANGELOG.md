@@ -15,6 +15,7 @@
 ### Fixed
 
 - Updated the sandbox example extension's lockfile to `shell-quote` 1.12.0, resolving the `quote()` command-injection advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) in its `@anthropic-ai/sandbox-runtime` dependency.
+- Fixed hyperlinks being disabled in Herdr panes, while keeping image protocols off even when outer-terminal environment variables are inherited ([#10573](https://github.com/earendil-works/pi/issues/10573)).
 
 ## [0.9.28-alpha.3] - 2026-10-07
 

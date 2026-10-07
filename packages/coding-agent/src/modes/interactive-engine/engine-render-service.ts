@@ -54,6 +54,7 @@ class RenderTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 export class EngineRenderService {

@@ -64,6 +64,8 @@ export class RecordingTerminal implements Terminal {
 
 	setProgress(_active: boolean): void {}
 
+	setProgramStatus(): void {}
+
 	input(data: string): void {
 		this.onInput?.(data);
 	}
