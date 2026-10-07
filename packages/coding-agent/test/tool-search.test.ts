@@ -78,3 +78,10 @@ test("deferred tools do not change codemode or tool-search descriptions (#10212)
 	}
 	assert.equal(createToolSearchDescription([...namespaces.values()]), createToolSearchDescription());
 });
+
+test("codemode describes all lookup helpers as async (#10555)", () => {
+	const description = createCodemodeDescription([]);
+	assert(description.includes("await searchTools(query, {limit?, namespace?})"));
+	assert(description.includes("await describeTool(name)"));
+	assert(description.includes("await describeNamespace(name)"));
+});

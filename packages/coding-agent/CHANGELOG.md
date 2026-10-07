@@ -15,6 +15,7 @@
 - Fixed slow extension loading and `/reload` on Windows. Imports such as `./helper.js` that point at TypeScript sources no longer make the loader try hundreds of missing files before finding `helper.ts`.
 - Fixed `/mcp` waiting for startup connections before opening. The manager now updates live and stays usable while enabling, disabling, or reconnecting servers.
 - Fixed images being dropped as unresizable under `node --watch` when Node sends its own messages on the image resize worker channel.
+- Fixed codemode's tool description omitting `await` for `searchTools()`, `describeTool()`, and `describeNamespace()`, which could make scripts return unresolved promises instead of tool information.
 
 ## [0.9.28-alpha.2] - 2026-10-07
 
