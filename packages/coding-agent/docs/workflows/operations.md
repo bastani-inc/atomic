@@ -939,7 +939,7 @@ Example config:
   "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 80 },
   "persistRuns": true,
   "statusFile": false,
-  "resumeInFlight": "ask",
+  "resumeInFlight": "never",
   "workflowNotifications": {
     "enabled": true,
     "notifyOn": ["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]
@@ -959,7 +959,7 @@ Runtime config defaults:
 | `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 80 }` | Default per-run budget declaration; `0` disables a dimension; warnings default to `80` percent |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
-| `resumeInFlight` | `"ask"` | At process startup, `"auto"` resumes interrupted durable workflows, `"ask"` requests confirmation, and `"never"` leaves them for manual resume |
+| `resumeInFlight` | `"never"` | At process startup, `"never"` leaves interrupted durable workflows for manual `/workflow resume`, `"ask"` requests confirmation, and `"auto"` resumes them |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
 | `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "budget_warning", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, duration budget warnings, and attributed user `started`/`quit`/`resumed` actions on a top-level run create main-chat notices. `pause` does not attribute an actor; `awaiting_input` is tracked for dedupe/restore without waking the main agent. |
 | `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |

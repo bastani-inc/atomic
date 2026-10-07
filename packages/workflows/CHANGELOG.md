@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the `resumeInFlight` default from `"ask"` to `"never"`. Atomic no longer prompts at startup to resume interrupted durable workflows; resume them with `/workflow resume`, or set `resumeInFlight` to `"ask"` or `"auto"` in the workflow config to restore startup recovery.
+
 ## [0.9.28-alpha.3] - 2026-10-07
 
 ### Fixed

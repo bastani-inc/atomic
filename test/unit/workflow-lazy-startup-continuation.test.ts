@@ -618,6 +618,52 @@ export default workflow({
 		}
 	});
 
+	test("session_start leaves interrupted workflows untouched without a resumeInFlight setting", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-default-never-"));
+		try {
+			const workflowPath = join(root, "shared.ts");
+			await writeTrackedWorkflowFixture(workflowPath, "shared");
+			process.chdir(root);
+			const backend = getDurableBackend();
+			const runId = testRunId("startup-default-never");
+			backend.registerWorkflow({
+				workflowId: runId,
+				name: "shared",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				completedCheckpoints: 1,
+				invocationCwd: root,
+			});
+			const originalHandle = backend.getWorkflow(runId);
+			let confirmations = 0;
+			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			await handlers.get("session_start")?.(
+				{ reason: "startup" },
+				{
+					cwd: root,
+					hasUI: true,
+					ui: {
+						notify: () => undefined,
+						confirm: async () => {
+							confirmations += 1;
+							return true;
+						},
+					},
+				},
+			);
+			await settleStartupWorkflowRecoveries();
+			await cleanupJobs();
+			assert.equal(confirmations, 0);
+			assert.equal(store.runs().length, 0);
+			assert.deepEqual(backend.getWorkflow(runId), originalHandle);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("a recovery prompt answered after session_shutdown does not resume (startup stall from #3487)", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-retired-"));
 		try {
