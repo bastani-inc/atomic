@@ -15,7 +15,7 @@ import type {
 	SearchToolDetails,
 	SearchToolInput,
 	WriteToolInput,
-} from "../tools/index.ts";
+} from "../tools/index.js";
 
 // ============================================================================
 // Tool Events

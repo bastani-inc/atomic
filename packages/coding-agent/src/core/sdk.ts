@@ -46,7 +46,7 @@ import { ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
-import { allToolNames, getDefaultToolNames } from "./tools/index.ts";
+import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export * from "./sdk-exports.ts";

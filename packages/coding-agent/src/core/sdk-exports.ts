@@ -39,7 +39,7 @@ export type {
 	StructuredOutputFileCapture,
 	StructuredOutputToolOptions,
 	Tool,
-} from "./tools/index.ts";
+} from "./tools/index.js";
 export {
 	BASH_SHELL_PRESENTATION,
 	createBashTool,
@@ -60,4 +60,4 @@ export {
 	createWriteTool,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 	withFileMutationQueue,
-} from "./tools/index.ts";
+} from "./tools/index.js";

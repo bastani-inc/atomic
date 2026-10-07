@@ -1,5 +1,5 @@
 import type { Settings } from "./settings-types.ts";
-import { getDefaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.js";
 
 export function isToolModifier(entry: string): boolean {
 	return entry.startsWith("+") || entry.startsWith("-");

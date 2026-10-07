@@ -38,7 +38,7 @@ import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.js";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;

@@ -4,7 +4,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import { resolveDefaultTools } from "./settings-merge.ts";
+import { resolveDefaultTools } from "./settings-merge.js";
 import type {
 	CompactionModelOverride,
 	CompactionSettings,
