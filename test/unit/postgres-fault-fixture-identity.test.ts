@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { closeSync, constants, openSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { postmasterIdentityChanged } from "../helpers/postgres-process-identity.js";
@@ -25,3 +26,31 @@ test("fault fixture observes the captured postmaster, not its replacement", () =
 		removeTempDirectory(home);
 	}
 });
+
+const windowsFsConstants = constants as typeof constants & { readonly UV_FS_O_TEMPORARY: number };
+
+test.runIf(process.platform === "win32")(
+	"fault fixture keeps polling while Windows still holds the deleted pidfile",
+	() => {
+		const home = makeTempDirectory("atomic-postmaster-delete-pending-");
+		const pidfile = join(home, "postmaster.pid");
+		const expected = { pid: 123, started: 456 };
+		try {
+			writeTextSync(pidfile, "123\nowned-data\n456\n5439\n");
+			const postmasterHandle = openSync(pidfile, "r");
+			closeSync(openSync(pidfile, constants.O_RDONLY | windowsFsConstants.UV_FS_O_TEMPORARY));
+			try {
+				assert.equal(
+					postmasterIdentityChanged(pidfile, expected),
+					false,
+					"a delete-pending pidfile is not yet gone",
+				);
+			} finally {
+				closeSync(postmasterHandle);
+			}
+			assert.equal(postmasterIdentityChanged(pidfile, expected), true, "the released pidfile completes shutdown");
+		} finally {
+			removeTempDirectory(home);
+		}
+	},
+);
