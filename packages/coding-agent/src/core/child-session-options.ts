@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { CreateAgentSessionOptions } from "./sdk-types.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { createToolNameMatcher, isMcpToolName } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.js";
+import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 
 /** Internal owner-bound adapter seam. Does not admit work or transfer parent authority. */
 export type ChildSessionOptionsResolver = (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
@@ -26,11 +26,18 @@ export function inheritChildSessionOptions(
 	const parentNamesMcp = createToolNameMatcher((ceiling ?? []).filter((entry) => entry.startsWith("mcp__")));
 	const toolListError = child.tools ? getToolListError(child.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
+	const codingToolNames = new Set<string>(allToolNames);
+	const inheritedCustomToolNames = [...new Set([...availableToolNames, ...(ceiling ?? [])])].filter(
+		(name) => !name.includes("*") && !codingToolNames.has(name) && parentAllows(name),
+	);
 	const childToolNames = child.tools?.some(isToolModifier)
 		? applyToolModifiers(
-				(child.noTools ?? parent.noTools)
-					? []
-					: ((child.settingsManager ?? parent.settingsManager)?.getDefaultTools() ?? getDefaultToolNames()),
+				[
+					...((child.noTools ?? parent.noTools)
+						? []
+						: ((child.settingsManager ?? parent.settingsManager)?.getDefaultTools() ?? getDefaultToolNames())),
+					...inheritedCustomToolNames,
+				],
 				child.tools,
 			)
 		: child.tools;

@@ -65,7 +65,7 @@ test("child modifiers resolve default tools before intersecting the parent ceili
 			{ tools: ["-bash"] },
 			available,
 		).tools,
-		["read"],
+		["read", "subagent"],
 	);
 	assert.deepEqual(
 		inheritChildSessionOptions(
@@ -94,7 +94,11 @@ test("child modifiers use inherited settings or child settings without widening 
 		tools: ["read", "bash", "subagent", "read_extra"],
 		settingsManager: SettingsManager.inMemory({ defaultTools: ["read", "bash"] }),
 	};
-	assert.deepEqual(inheritChildSessionOptions(parent, { tools: ["-bash"] }, available).tools, ["read"]);
+	assert.deepEqual(inheritChildSessionOptions(parent, { tools: ["-bash"] }, available).tools, [
+		"read",
+		"read_extra",
+		"subagent",
+	]);
 	assert.deepEqual(
 		inheritChildSessionOptions(
 			parent,
