@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall, retryDelayMs } from "../src/utils/retry.ts";
@@ -131,6 +132,19 @@ describe("retryDelayMs", () => {
 describe("retryAssistantCall", () => {
 	const disabled: RetryPolicy = { enabled: false, maxRetries: 3, baseDelayMs: 0 };
 	const enabled: RetryPolicy = { enabled: true, maxRetries: 3, baseDelayMs: 0 };
+
+	it.each(["server_busy", "Our servers are currently busy. Please try again later."])(
+		"retries transient provider busy errors (#10543): %s",
+		async (errorMessage) => {
+			const produce = vi
+				.fn()
+				.mockResolvedValueOnce(fauxAssistantMessage("", { stopReason: "error", errorMessage }))
+				.mockResolvedValueOnce(fauxAssistantMessage("ok"));
+			const result = await retryAssistantCall(produce, enabled, undefined);
+			assert.equal(result.stopReason, "stop");
+			assert.equal(produce.mock.calls.length, 2);
+		},
+	);
 
 	it("returns a successful response immediately without retrying", async () => {
 		const produce = vi.fn(async () => fauxAssistantMessage("ok"));

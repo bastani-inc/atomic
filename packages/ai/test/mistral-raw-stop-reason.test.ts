@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { FetchFunction } from "../src/types.ts";
+import { isRetryableAssistantError } from "../src/utils/retry.js";
 
 const model = getModel("mistral", "devstral-medium-latest");
 const context = normalizeContext({
@@ -43,7 +45,7 @@ describe("Mistral raw stop reasons", () => {
 		expect(message.errorMessage).toBeUndefined();
 	});
 
-	it("preserves raw Mistral finish reasons for provider error stops", async () => {
+	it("retries Mistral provider error stops while preserving raw finish reasons (#10487)", async () => {
 		const message = await streamMistral(model, context, {
 			apiKey: "test",
 			fetch: createFetch("error"),
@@ -51,7 +53,8 @@ describe("Mistral raw stop reasons", () => {
 
 		expect(message.stopReason).toBe("error");
 		expect(message.rawStopReason).toBe("error");
-		expect(message.errorMessage).toBe("Provider stopped with: error");
+		assert.equal(message.errorMessage, "Provider stopped with: error (server error)");
+		assert.equal(isRetryableAssistantError(message), true);
 	});
 
 	it("treats unknown Mistral finish reasons as provider error stops", async () => {
@@ -63,5 +66,6 @@ describe("Mistral raw stop reasons", () => {
 		expect(message.stopReason).toBe("error");
 		expect(message.rawStopReason).toBe("unmapped_error");
 		expect(message.errorMessage).toBe("Provider stopped with: unmapped_error");
+		assert.equal(isRetryableAssistantError(message), false);
 	});
 });
