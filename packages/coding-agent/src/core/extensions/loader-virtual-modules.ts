@@ -11,6 +11,7 @@ import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
+import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";
@@ -19,6 +20,7 @@ const require = createRequire(import.meta.url);
 let _aliases: Record<string, string> | null = null;
 let _transpileCacheDir: string | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
+let typeScriptSourceSpecifierTransform: ReturnType<typeof createTypeScriptSourceSpecifierTransform> | undefined;
 
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
@@ -27,11 +29,21 @@ function getCreateJiti(): Promise<typeof createJiti> {
 	return createJitiPromise;
 }
 
+function getTypeScriptSourceSpecifierTransform(
+	createJitiImpl: typeof createJiti,
+): ReturnType<typeof createTypeScriptSourceSpecifierTransform> {
+	typeScriptSourceSpecifierTransform ??= createTypeScriptSourceSpecifierTransform(
+		createJitiImpl,
+		resolutionBaseUrl(import.meta.url),
+		getTranspileCacheDir,
+	);
+	return typeScriptSourceSpecifierTransform;
+}
+
 /**
- * Persistent on-disk cache for jiti-transpiled extension modules.
- * jiti keys cache entries by source-content hash, so entries self-invalidate
- * when extension sources change; stale sibling version dirs are pruned
- * in the background.
+ * Persistent on-disk cache for transpiled extension modules. Entries are keyed
+ * by source content and resolved TypeScript siblings, so they self-invalidate
+ * when either changes; stale sibling version dirs are pruned in the background.
  */
 function getTranspileCacheDir(): string {
 	if (_transpileCacheDir) return _transpileCacheDir;
@@ -503,11 +515,9 @@ async function importExtensionModule(
 	const createJitiImpl = await getCreateJiti();
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
-		...(forceTransformedImports
-			? { fsCache: getTranspileCacheDir(), tryNative: false }
-			: isWindows
-				? { fsCache: getTranspileCacheDir() }
-				: {}),
+		fsCache: false,
+		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl),
+		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
