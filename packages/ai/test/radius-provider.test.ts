@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { createModels } from "../src/models.ts";
@@ -49,7 +50,7 @@ describe("Radius provider catalogs", () => {
 		expect(provider.getModels()).toEqual([]);
 	});
 
-	it("overlays refreshed models on the static public catalog", async () => {
+	it("replaces the static public catalog with refreshed models", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify(radiusConfig()), {
 				status: 200,
@@ -70,10 +71,13 @@ describe("Radius provider catalogs", () => {
 			contextWindow: 424242,
 		});
 		expect(models.getModel("radius", "organization-only")).toBeDefined();
-		expect(models.getModels("radius").length).toBeGreaterThan(radiusConfig().models.length);
+		assert.deepEqual(
+			models.getModels("radius").map((model) => model.id),
+			["balanced", "organization-only"],
+		);
 	});
 
-	it("overlays a cached effective catalog without network access", async () => {
+	it("replaces the static public catalog with a cached catalog without network access", async () => {
 		const store = new InMemoryModelsStore();
 		await store.write("radius", {
 			models: getRadiusModelsFromConfig("radius", radiusConfig()),
@@ -86,5 +90,27 @@ describe("Radius provider catalogs", () => {
 
 		expect(models.getModel("radius", "balanced")?.name).toBe("Fresh Balanced");
 		expect(models.getModel("radius", "organization-only")).toBeDefined();
+		assert.deepEqual(
+			models.getModels("radius").map((model) => model.id),
+			["balanced", "organization-only"],
+		);
+	});
+
+	it.each([false, true])("exposes no models for an empty catalog, cached=%s", async (cached) => {
+		const store = new InMemoryModelsStore();
+		if (cached) await store.write("radius", { models: [], checkedAt: Date.now() });
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ baseUrl: "https://radius.example/v1", models: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("radius", async () => ({ type: "api_key", key: "radius-key" }));
+		const models = createModels({ credentials, modelsStore: store });
+		models.setProvider(radiusProvider());
+		const result = await models.refresh({ providers: ["radius"], allowNetwork: !cached });
+		assert.deepEqual(result.errors, new Map());
+		assert.deepEqual(models.getModels("radius"), []);
 	});
 });

@@ -34,7 +34,6 @@ interface DraftEditor {
 }
 
 interface DraftProbeContext {
-	startupCookedInputRecovered: boolean;
 	pendingUserInputs: InteractiveSubmission[];
 	startupReplayInputs: string[];
 	startupReplayActiveInput?: string;
@@ -49,7 +48,6 @@ interface DraftProbeContext {
 	autocompleteProvider?: AutocompleteProvider;
 	createBaseAutocompleteProvider(): AutocompleteProvider;
 	advanceStartupInputReplay(submittedText: string): void;
-	recoverCookedStartupInput(): boolean;
 	drainStartupReplayCommands(): Promise<void>;
 }
 
@@ -64,7 +62,6 @@ interface DraftProbe {
 const interactivePrototype = InteractiveMode.prototype as unknown as {
 	getUserInput(this: DraftProbeContext): Promise<InteractiveSubmission>;
 	advanceStartupInputReplay(this: DraftProbeContext, submittedText: string): void;
-	recoverCookedStartupInput(this: DraftProbeContext): boolean;
 	drainStartupReplayCommands(this: DraftProbeContext): Promise<void>;
 	setupAutocompleteProvider(this: DraftProbeContext): void;
 	completeDeferredStartup(this: DeferredStartupProbeContext): Promise<void>;
@@ -119,7 +116,6 @@ function createDraftProbe(draft: string, projectTrustOverride: true | undefined)
 	const userMessages: string[] = [];
 	const slashCommandExecutions: string[] = [];
 	const context: DraftProbeContext = {
-		startupCookedInputRecovered: false,
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 		inputHandlerReadyRecorded: true,
@@ -130,7 +126,6 @@ function createDraftProbe(draft: string, projectTrustOverride: true | undefined)
 		autocompleteProviderWrappers: [],
 		createBaseAutocompleteProvider: () => baseProvider,
 		advanceStartupInputReplay: interactivePrototype.advanceStartupInputReplay,
-		recoverCookedStartupInput: interactivePrototype.recoverCookedStartupInput,
 		drainStartupReplayCommands: interactivePrototype.drainStartupReplayCommands,
 	};
 	editor.onSubmit = async (submittedText) => {
@@ -149,12 +144,6 @@ function createDraftProbe(draft: string, projectTrustOverride: true | undefined)
 	};
 }
 
-async function settleStartupRecovery(): Promise<void> {
-	for (let attempt = 0; attempt < 12; attempt += 1) {
-		await new Promise<void>((resolve) => setImmediate(resolve));
-	}
-}
-
 async function observeDraftAfterEvent(
 	draft: string,
 	projectTrustOverride: true | undefined,
@@ -166,7 +155,6 @@ async function observeDraftAfterEvent(
 }> {
 	const probe = createDraftProbe(draft, projectTrustOverride);
 	await event(probe);
-	await settleStartupRecovery();
 	const observed = {
 		editorText: probe.context.editor.getText(),
 		userMessages: [...probe.userMessages],

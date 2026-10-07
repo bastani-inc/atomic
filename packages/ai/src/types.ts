@@ -32,7 +32,11 @@ export type KnownImageApi = "openrouter-images";
 
 export type ImageApi = KnownImageApi | (string & {});
 
-export type KnownClassifierApi = "typesafe-system-one" | "cloudflare-workers-ai-system-one" | "llama-cpp-classify";
+export type KnownClassifierApi =
+	| "typesafe-system-one"
+	| "cloudflare-workers-ai-system-one"
+	| "llama-cpp-classify"
+	| "openai-decisions";
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
@@ -721,6 +725,11 @@ export type ClassifierQuestion = ClassifierChoiceQuestion | ClassifierScoreQuest
 
 export interface ClassifierContext {
 	state: JsonObject;
+	/**
+	 * Images judged together with `state`. Only models whose `input` includes `"image"` accept them;
+	 * other models return an error result.
+	 */
+	images?: ImageContent[];
 	questions: Record<string, ClassifierQuestion>;
 }
 

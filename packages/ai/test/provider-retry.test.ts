@@ -62,6 +62,14 @@ describe("provider request retries", () => {
 		expect(request).toHaveBeenCalledTimes(1);
 	});
 
+	it("does not retry statuses listed in noRetryStatuses", async () => {
+		const error = providerError(504, { "retry-after-ms": "0" });
+		const request = vi.fn<() => Promise<string>>().mockRejectedValue(error);
+
+		await assert.rejects(retryProviderRequest(request, { maxRetries: 2, noRetryStatuses: [504] }), (failure) => failure === error);
+		assert.equal(request.mock.calls.length, 1);
+	});
+
 	it("rejects a provider-requested retry delay above the limit", async () => {
 		const request = vi.fn<() => Promise<string>>().mockRejectedValue(providerError(429, { "retry-after": "277403" }));
 

@@ -70,11 +70,18 @@ Each llama model uses the router-reported loaded context (`meta.n_ctx`, then tra
 
 ## Classification
 
-Every model listed for chat is also listed as a classifier model with the same ID and the `llama-cpp-classify` API. Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can make `model: "auto"` routing decisions. Classifier models never appear in `/model`.
+Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can make `model: "auto"` routing decisions. Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models). Atomic lists llama.cpp models as classifiers in two ways:
+
+- **Decision models** such as Julia-1, Laya, Kev, lev, and OpenJev answer natively through llama.cpp's `/v1/systemone` endpoint with the `typesafe-system-one` API. Decision-only models do not appear in `/model`.
+- **Chat models** are also listed as classifiers with the same ID and the `llama-cpp-classify` API, which reads answers from next-token probabilities as described below.
+
+llama.cpp 0.6.0 and later report decision models through `architecture.output_modalities` containing `decisions`. Atomic recognizes these models even when sleeping or unloaded, without loading them during discovery. Unloaded presets are selectable only when router autoload is enabled. Older servers omit this metadata, so their models use the chat-model fallback.
+
+### Chat models as classifiers
 
 The model does not generate an answer. Each question becomes one chat prompt: the state, every question of the request, the state again, and then the question with its answers under single-token labels. Labels are letters for a choice (up to 62 options), `Yes`/`No` for a bool, and digits for a score (up to 10 levels). Atomic reads the probabilities of the labels as the next token and normalizes them. A choice returns every option's probability and a confidence of `(n * peak - 1) / (n - 1)`; a score returns the expected level.
 
-- An explicit [`routerModel`](/settings#routermodel) resolves a classifier before a chat model, so `routerModel: "llama.cpp/<id>"` routes with the classifier, not the chat model. A routing shortlist with more than 62 models fails on the classifier, and routing switches to the current chat model. The **Router model** picker lists each llama.cpp model twice, once as a classifier and once as a chat model; both rows save the same ID.
+- An explicit [`routerModel`](/settings#routermodel) resolves a classifier before a chat model, so `routerModel: "llama.cpp/<id>"` routes with the classifier, not the chat model. A routing shortlist with more than 62 models fails on the chat-model classifier, and routing switches to the current chat model. The **Router model** picker lists each chat-capable llama.cpp model twice, once as a classifier and once as a chat model; both rows save the same ID. Decision-only models have only a classifier row.
 - The `structured_output` tool and `generateStructuredOutput()` resolve the chat model first when a chat and a classifier model share an ID, so naming `llama.cpp/<id>` there keeps using the chat model.
 - Raw label probabilities are usually overconfident. The `temperature` option of SDK `classify()` calls divides the label logits before normalizing; values above 1 soften the distribution. It changes no answer.
 - Questions run one after another. Everything before the final question is the same for all questions of a request, so the server's prompt cache evaluates it once. The state appears twice, so it needs twice its size in context.

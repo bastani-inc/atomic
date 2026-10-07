@@ -178,9 +178,19 @@ export default function(pi) {
 							await sleep(50);
 						assert.ok(tmux("capture-pane", "-p", "-t", name).includes("/mcp"));
 						tmux("send-keys", "-t", name, "Enter");
-						await sleep(1000);
-						const pane = tmux("capture-pane", "-p", "-S", "-", "-t", name);
-						assert.ok(pane.includes("Working"), pane);
+						const managerDeadline = Date.now() + 5000;
+						while (
+							!tmux("capture-pane", "-p", "-t", name).includes("MCP servers") &&
+							Date.now() < managerDeadline
+						)
+							await sleep(50);
+						const pane = tmux("capture-pane", "-p", "-t", name);
+						assert.ok(pane.includes("MCP servers"), pane);
+						assert.ok(pane.includes("connecting"), pane);
+						tmux("send-keys", "-t", name, "Escape");
+						while (tmux("capture-pane", "-p", "-t", name).includes("MCP servers") && Date.now() < managerDeadline)
+							await sleep(50);
+						assert.ok(!tmux("capture-pane", "-p", "-t", name).includes("MCP servers"));
 					}
 				} finally {
 					try {

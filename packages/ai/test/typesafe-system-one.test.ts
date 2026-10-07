@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { classify } from "../src/api/typesafe-system-one.ts";
 import type { ClassifierContext, ClassifierModel } from "../src/types.ts";
@@ -102,6 +103,19 @@ describe("TypeSafe System One", () => {
 		expect(fetch).not.toHaveBeenCalled();
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("Unsupported classifier API: cloudflare-workers-ai-system-one");
+	});
+
+	it("rejects image input before sending", async () => {
+		const fetch = vi.fn(async () => Response.json({ answers: wireAnswers }));
+		const result = await classify(
+			{ ...model, input: ["text", "image"] },
+			{ ...context, images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] },
+			{ apiKey: "secret", fetch },
+		);
+
+		assert.equal(fetch.mock.calls.length, 0);
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "System One API does not support image input");
 	});
 
 	it("merges headers case-insensitively and supports null suppression", async () => {

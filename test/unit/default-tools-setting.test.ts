@@ -237,6 +237,37 @@ describe("defaultTools setting", () => {
 		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
 	);
 
+	test(
+		"tool modifiers preserve bundled, custom and extension activation without an allowlist",
+		async () => {
+			const session = await createSession(
+				["read", "write"],
+				{
+					tools: ["-write", "+ls"],
+					customTools: [
+						{
+							name: "sdk_tool",
+							label: "SDK Tool",
+							description: "SDK custom tool",
+							parameters: Type.Object({}),
+							execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+						},
+					],
+				},
+				[staticExtensionTool("static_tool")],
+			);
+			try {
+				assert.deepEqual(
+					session.getActiveToolNames().sort(),
+					["read", "ls", "sdk_tool", "static_tool", ...BUILTIN_EXTENSION_TOOLS].sort(),
+				);
+			} finally {
+				await session.dispose();
+			}
+		},
+		BUILTIN_PACKAGE_SESSION_TIMEOUT_MS,
+	);
+
 	// One session per test: each session loads every builtin extension package,
 	// and the CI duration gate scores tests individually.
 	test(

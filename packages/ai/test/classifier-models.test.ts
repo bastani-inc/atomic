@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { describe, expect, it } from "vitest";
 import { createModels, createProvider, getModelType } from "../src/models.ts";
 import {
@@ -125,6 +127,93 @@ describe("Models with classifier models", () => {
 		const models = builtinModels();
 		expect(models.getModel("typesafe", "jev-latest")).toBeUndefined();
 		expect(models.getModelOfType("classifier", "typesafe", "jev-latest")).toEqual(jev);
+	});
+
+	it("rejects images for classifier models without image input before calling the provider", async () => {
+		const classifier = classifierModel("test", "text-only");
+		let calls = 0;
+		const models = createModels();
+		models.setProvider(
+			createProvider({
+				id: "test",
+				auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+				models: [classifier],
+				classifiers: {
+					"test-classifier": {
+						classify: async (): Promise<ClassifierResult> => {
+							calls++;
+							return {
+								api: classifier.api,
+								provider: classifier.provider,
+								model: classifier.id,
+								answers: {},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+						},
+					},
+				},
+			}),
+		);
+
+		const result = await models.classify(classifier, {
+			...context,
+			images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+		});
+		const withoutImages = await models.classify(classifier, { ...context, images: [] });
+
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "Model test/text-only does not accept image input");
+		assert.equal(withoutImages.stopReason, "stop");
+		assert.equal(calls, 1);
+	});
+
+	it("routes OpenAI GPT-6 Luna through the Decisions API with images", async () => {
+		const models = builtinModels();
+		const luna = models.getModelOfType("classifier", "openai", "gpt-6-luna");
+		assert(luna);
+		assert.equal(luna.api, "openai-decisions");
+		assert.deepEqual(luna.input, ["text", "image"]);
+		assert.equal(luna.contextWindow, 922000);
+		assert.equal(models.getModel("openai", "gpt-6-luna")?.api, "openai-responses");
+
+		const urls: string[] = [];
+		const result = await models.classify(
+			luna,
+			{ ...context, images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] },
+			{
+				apiKey: "secret",
+				fetch: async (input) => {
+					urls.push(String(input));
+					return Response.json({ answers: [{ type: "predicate", name: "approved", probability: 0.8 }] });
+				},
+			},
+		);
+
+		assert.deepEqual(urls, ["https://api.openai.com/v1/decisions"]);
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(result.answers.approved, { type: "bool", probability: 0.8 });
+	});
+
+	it("lists OpenAI Decisions models only for API key credentials", async () => {
+		const apiKeyStore = new InMemoryCredentialStore();
+		await apiKeyStore.modify("openai", async () => ({ type: "api_key", key: "secret" }));
+		const oauthStore = new InMemoryCredentialStore();
+		await oauthStore.modify("openai", async () => ({
+			type: "oauth",
+			access: "access",
+			refresh: "refresh",
+			expires: Date.now() + 3_600_000,
+		}));
+
+		const keyCredentialModels = builtinModels({ credentials: apiKeyStore });
+		const subscriptionModels = builtinModels({ credentials: oauthStore });
+
+		assert.deepEqual((await keyCredentialModels.getAvailableOfType("classifier", "openai")).map((model) => model.id), [
+			"gpt-6-luna",
+		]);
+		assert.deepEqual(await subscriptionModels.getAvailableOfType("classifier", "openai"), []);
+		assert((await subscriptionModels.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
 	});
 
 	it("routes OpenRouter classifier models through the System One API", () => {

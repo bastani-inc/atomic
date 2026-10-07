@@ -21,6 +21,16 @@ This page shows minimal and full `models.json` examples you can copy. Every fiel
 
 For choosing which model to use rather than how to declare one, see [Model selection](/models/model-selection).
 
+## Use classifier models
+
+Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
+
+OpenAI's `gpt-6-luna` classifier uses the [Decisions API](https://developers.openai.com/api/docs/guides/decisions) and requires `OPENAI_API_KEY`. Sign in with ChatGPT credentials do not work with it. While `openai` uses `/login` credentials, the classifier is not listed as available, even if the environment key is set. Log out of `openai` to use the API key.
+
+GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON state. Other classifiers reject images unless their catalog input and API support them. Refused answers produce an error result. The endpoint rejects inputs above 922K tokens; very large inputs, currently above roughly 600K tokens, can hit its gateway time limit. These 504 responses are not retried, so reduce the input before trying again.
+
+TypeSafe Jev and Cloudflare Clef classifiers are also available through their providers. [Local llama.cpp models](/llama-cpp#classification) support native decision models and a next-token-probability fallback for chat models.
+
 ## Table of Contents
 
 - [Minimal Example](/models#minimal-example)

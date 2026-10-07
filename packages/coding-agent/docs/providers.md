@@ -65,12 +65,16 @@ Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. The Ch
 
 Complete the browser callback, or paste the full callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the final URL from its address bar, including `code`, `state`, and `client_id`, and paste it into Atomic. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
 
+Apps using `@bastani/pi-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex browser-login originator. ChatGPT sign-in keeps `Atomic` as its default name.
+
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
 If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
+
+For Codex requests, `models.json` headers or per-request SDK headers can override `originator` and `User-Agent`. The transport still supplies the authenticated bearer token and ChatGPT account ID.
 
 GPT-6-Astra is selectable as `openai-codex/gpt-6-astra`. Atomic also derives the canonical `openai-codex/gpt-6-astra-fast` choice. The fast choice sends upstream model `gpt-6-astra` with `service_tier: priority` and keeps the first-party Codex transport identity described below. Access can still depend on the account, rollout, and minimum client policy even though Atomic lists the model.
 
@@ -127,6 +131,8 @@ Anthropic fast mode delivers up to 2.5x higher output tokens per second at twice
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
 
 Run `/login anthropic` and choose subscription authentication. **Browser login (default)** uses a local callback and still accepts a pasted redirect URL. Choose **Copy code login (headless)** when your browser runs on another machine: complete sign-in in that browser, then paste the `code#state` value Anthropic displays into Atomic. This method does not need a reachable local callback.
+
+Browser login tries loopback port `53692` first and uses a free port if it is unavailable. For SSH or container port forwarding, forward `53692` when it is free; otherwise use **Copy code login (headless)** or paste the final redirect URL.
 
 For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. A populated bearer token counts as configured Anthropic authentication, so `/model`, saved/default selection, cycling, RPC catalogs, and isolated model pickers keep Anthropic models available. Atomic sends it as `Authorization: Bearer …` for normal turns, branch summaries, and Verbatim Compaction without replacing caller-supplied custom headers.
 
@@ -187,6 +193,8 @@ Run `/login meta`, then select **Sign in with Meta** to open the device authoriz
 ### Radius
 
 Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
+
+Once a fetched or cached Radius catalog is available, it replaces the bundled defaults. Models disabled by your organization no longer appear; an empty gateway catalog leaves no Radius models to select. Ask your organization owner to enable models if the list is empty.
 
 ## API Keys
 
@@ -413,6 +421,8 @@ us.openai.gpt-6-astra
 ```
 
 Select them under the single `amazon-bedrock` provider. Atomic passes the chosen ID unchanged to Bedrock Converse and sends the selected `low`, `medium`, `high`, `xhigh`, or `max` setting as the OpenAI `reasoning_effort` field. The unprefixed ID is Codex's direct/Mantle entry; `global.` and `us.` are Bedrock Runtime inference profiles. Bedrock does not advertise Astra Fast, so Atomic derives no fast sibling for these models. AWS's public region and pricing pages did not list Astra when this catalog entry was added. Availability can vary by account and region, and Atomic records zero catalog cost until AWS publishes an authoritative rate.
+
+Other Bedrock GPT models receive the selected thinking level as `reasoning.effort`; `minimal` maps to `low`. GPT-oss uses `reasoning_effort` and maps `minimal` to `low` and `xhigh` or `max` to `high`. For a custom application inference profile, give the model a recognizable GPT name in `models.json` so the reasoning setting is sent.
 
 Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:
 

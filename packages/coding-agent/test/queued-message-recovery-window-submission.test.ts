@@ -57,7 +57,6 @@ type SubmitHost = {
 	firstSubmitRecorded: boolean;
 	startupReplayActiveInput: string | undefined;
 	startupReplayInputs: string[];
-	startupCookedInputRecovered: boolean;
 	isCompacting: boolean;
 	flushPendingBashComponents(): void;
 	onInputCallback: ((submission: { text: string; draft: string }) => void) | undefined;
@@ -132,7 +131,6 @@ function createSubmitHost(session: AgentSession): SubmitHost {
 		firstSubmitRecorded: true,
 		startupReplayActiveInput: undefined,
 		startupReplayInputs: [],
-		startupCookedInputRecovered: false,
 		isCompacting: false,
 		flushPendingBashComponents() {},
 		onInputCallback: undefined,

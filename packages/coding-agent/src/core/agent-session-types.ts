@@ -161,6 +161,7 @@ export interface AgentSessionConfig {
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	initialActiveToolNames?: string[];
 	usesDefaultTools?: boolean;
+	defaultToolModifiers?: string[];
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	baseToolsOverride?: Record<string, AgentTool>;

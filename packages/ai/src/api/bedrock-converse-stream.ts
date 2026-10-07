@@ -1361,8 +1361,40 @@ function buildAdditionalModelRequestFields(
 		return { reasoning_effort: mapThinkingLevelToEffort(model, options.reasoning) };
 	}
 
+	const candidates = getModelMatchCandidates(model.id, model.name);
+	if (candidates.some((candidate) => candidate.includes("gpt-oss"))) {
+		return { reasoning_effort: OPENAI_GPT_OSS_EFFORT[options.reasoning] };
+	}
+	if (candidates.some((candidate) => candidate.includes("gpt-"))) {
+		const mapped = model.thinkingLevelMap?.[options.reasoning];
+		return {
+			reasoning: { effort: typeof mapped === "string" ? mapped : OPENAI_GPT_EFFORT[options.reasoning] },
+		};
+	}
+
 	return undefined;
 }
+
+type OpenAIGptEffort = "low" | "medium" | "high" | "xhigh" | "max";
+type OpenAIGptOssEffort = "low" | "medium" | "high";
+
+const OPENAI_GPT_EFFORT: Record<ThinkingLevel, OpenAIGptEffort> = {
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
+};
+
+const OPENAI_GPT_OSS_EFFORT: Record<ThinkingLevel, OpenAIGptOssEffort> = {
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "high",
+	max: "high",
+};
 
 /**
  * Build a Bedrock `DocumentBlock`. Three things differ from the Anthropic path:

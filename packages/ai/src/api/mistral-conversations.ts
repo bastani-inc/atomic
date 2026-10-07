@@ -946,7 +946,7 @@ function mapChatStopReason(reason: string | null): { stopReason: StopReason; err
 		case "tool_calls":
 			return { stopReason: "toolUse" };
 		case "error":
-			return { stopReason: "error", errorMessage: "Provider stopped with: error" };
+			return { stopReason: "error", errorMessage: "Provider stopped with: error (server error)" };
 		default:
 			return { stopReason: "error", errorMessage: `Provider stopped with: ${reason}` };
 	}

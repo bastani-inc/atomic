@@ -17,7 +17,7 @@ import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 import { isPhysicalCtrlC, isPhysicalEscape, isSafetyKeyRelease } from "./interactive-key-identity.ts";
-import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
+import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
@@ -159,63 +159,6 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function (this: Inter
 	} else {
 		this.pendingUserInputs.push({ text, draft: text });
 	}
-};
-
-InteractiveModeBase.prototype.recoverCookedStartupInput = function (this: InteractiveModeBase): boolean {
-	if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return true;
-	const text = this.editor.getText();
-	const cookedLines = text
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter(Boolean);
-	const isCommandLike = (line: string | undefined) =>
-		line !== undefined && (line.startsWith("/") || line.startsWith("!"));
-	// A raw startup capture distinguishes drafts from Enter-terminated submissions.
-	// Never reinterpret its visible command-like draft (including a bare "/") as
-	// submitted merely because header/chat initialization is now draining input.
-	const singleCommandLike =
-		this.options.startupInputCapture === undefined && cookedLines.length === 1 && isCommandLike(cookedLines[0]);
-	if (cookedLines.length < 2 && !singleCommandLike) return false;
-
-	this.startupCookedInputRecovered = true;
-	const activeInput = this.startupReplayActiveInput?.trim();
-	let draftText = "";
-	let submissions = cookedLines;
-	if (
-		activeInput === undefined &&
-		cookedLines.length > 1 &&
-		!isCommandLike(cookedLines[cookedLines.length - 1]) &&
-		(!isCommandLike(cookedLines[0]) || cookedLines.length > 2)
-	) {
-		draftText = cookedLines[cookedLines.length - 1] ?? "";
-		submissions = cookedLines.slice(0, -1);
-	} else if (activeInput && cookedLines.length > 1 && !isCommandLike(cookedLines[cookedLines.length - 1])) {
-		draftText = cookedLines[cookedLines.length - 1] ?? "";
-		submissions = cookedLines.slice(0, -1);
-	}
-	if (submissions.length === 0) return true;
-
-	if (activeInput) {
-		const queuedSubmissions = submissions[0] === activeInput ? submissions.slice(1) : submissions;
-		this.editor.setText(draftText);
-		this.startupReplayInputs.push(...queuedSubmissions);
-		return true;
-	}
-
-	this.editor.setText("");
-	seedStartupInput(
-		this.pendingUserInputs,
-		this.editor,
-		{ text: draftText, submissions },
-		this.startupReplayInputs,
-		(draft) => {
-			this.startupDraftText = draft;
-		},
-		(active) => {
-			this.startupReplayActiveInput = active;
-		},
-	);
-	return true;
 };
 
 InteractiveModeBase.prototype.drainStartupReplayCommands = async function (this: InteractiveModeBase): Promise<void> {

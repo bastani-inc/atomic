@@ -15,6 +15,7 @@ import {
 	ENV_TELEMETRY,
 } from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
+import { getToolListError } from "../core/settings-merge.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -160,10 +161,13 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
 			result.noBuiltinTools = true;
 		} else if ((arg === "--tools" || arg === "-t") && i + 1 < args.length) {
-			result.tools = args[++i]
+			const tools = args[++i]
 				.split(",")
 				.map((s) => s.trim())
 				.filter((name) => name.length > 0);
+			const error = getToolListError(tools);
+			if (error) result.diagnostics.push({ type: "error", message: `${arg}: ${error}` });
+			else result.tools = tools;
 		} else if ((arg === "--exclude-tools" || arg === "-xt") && i + 1 < args.length) {
 			result.excludeTools = args[++i]
 				.split(",")
@@ -310,6 +314,7 @@ ${chalk.bold("Options:")}
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
   --tools, -t <tools>            Comma-separated allowlist of tool names or patterns (*)
                                  Keeps MCP tools unless an entry starts with mcp__
+                                 Only +name/-name entries change the default selection
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names or patterns (*), including MCP tools
                                  Intercom follows the allowlist and exclusions
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max

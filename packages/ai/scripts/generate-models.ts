@@ -3081,6 +3081,20 @@ const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-worke
 	},
 ];
 
+const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
+	{
+		type: "classifier",
+		id: "gpt-6-luna",
+		name: "GPT-6 Luna",
+		api: "openai-decisions",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+		input: ["text", "image"],
+		cost: withOpenAiLongContextPricing({ input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0 }),
+		contextWindow: 922000,
+	},
+];
+
 async function generateModels() {
 	// Fetch models from all upstream catalogs.
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
@@ -3858,6 +3872,7 @@ async function generateModels() {
 		...aiGatewayCatalog.classifiers,
 		...OPENCODE_CLASSIFIER_MODELS,
 		...CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS,
+		...OPENAI_CLASSIFIER_MODELS,
 	];
 	for (const model of classifierModels) {
 		providers[model.provider] ??= { chat: {}, image: {}, classifier: {} };

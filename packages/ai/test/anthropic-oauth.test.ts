@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { afterEach, describe, it, vi } from "vitest";
 import { anthropicOAuth } from "../src/auth/oauth/anthropic.js";
 import type { AuthEvent, AuthPrompt } from "../src/auth/types.js";
@@ -243,8 +244,14 @@ describe.sequential("Anthropic OAuth", () => {
 			signal: neverAbortedSignal,
 			notify: (event) => {
 				if (event.type !== "auth_url") return;
-				const state = new URL(event.url).searchParams.get("state") ?? "";
-				callbackPage = nativeFetch(`http://127.0.0.1:53692/callback?code=browser-code&state=${state}`);
+				const params = new URL(event.url).searchParams;
+				const callbackUrl = new URL(params.get("redirect_uri")!);
+				callbackUrl.hostname = "127.0.0.1";
+				callbackUrl.search = new URLSearchParams({
+					code: "browser-code",
+					state: params.get("state") ?? "",
+				}).toString();
+				callbackPage = nativeFetch(callbackUrl);
 			},
 			prompt: (prompt) =>
 				prompt.type === "select"
@@ -258,5 +265,58 @@ describe.sequential("Anthropic OAuth", () => {
 		const response = await callbackPage;
 		assert.equal(response?.status, 200);
 		assert.match(await response!.text(), /Signed in to Anthropic\./);
+	});
+
+	it("falls back to a free callback port when the preferred port cannot be bound (#10571)", async () => {
+		const blocker = createServer();
+		await new Promise<void>((resolve, reject) => {
+			blocker.once("error", reject);
+			blocker.listen(53692, "127.0.0.1", () => {
+				blocker.off("error", reject);
+				resolve();
+			});
+		});
+		const nativeFetch = globalThis.fetch;
+		let exchangedRedirectUri: string | undefined;
+		vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+			if (getUrl(input) !== "https://platform.claude.com/v1/oauth/token") return nativeFetch(input, init);
+			exchangedRedirectUri = getJsonBody(init).redirect_uri;
+			return jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
+		});
+		let redirectUri = "";
+		let callbackPage: Promise<Response> | undefined;
+		try {
+			const credential = await anthropicOAuth.login({
+				signal: neverAbortedSignal,
+				notify: (event) => {
+					if (event.type !== "auth_url") return;
+					const params = new URL(event.url).searchParams;
+					redirectUri = params.get("redirect_uri") ?? "";
+					const callbackUrl = new URL(redirectUri);
+					assert.equal(callbackUrl.hostname, "localhost");
+					assert.equal(callbackUrl.pathname, "/callback");
+					assert.notEqual(callbackUrl.port, "53692");
+					callbackUrl.hostname = "127.0.0.1";
+					callbackUrl.search = new URLSearchParams({
+						code: "browser-code",
+						state: params.get("state") ?? "",
+					}).toString();
+					callbackPage = nativeFetch(callbackUrl);
+				},
+				prompt: (prompt) => {
+					if (prompt.type === "select") return Promise.resolve("browser");
+					assert.equal(prompt.type, "manual_code");
+					assert.equal(prompt.placeholder, redirectUri);
+					return new Promise((_resolve, reject) => {
+						prompt.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+					});
+				},
+			});
+			assert.equal(credential.access, "access");
+			assert.equal(exchangedRedirectUri, redirectUri);
+			assert.equal((await callbackPage)?.status, 200);
+		} finally {
+			await new Promise<void>((resolve) => blocker.close(() => resolve()));
+		}
 	});
 });

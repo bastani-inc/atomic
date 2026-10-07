@@ -36,10 +36,8 @@ type InputContext = {
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 	startupReplayActiveInput?: string;
-	startupCookedInputRecovered?: boolean;
 	inputHandlerReadyRecorded?: boolean;
 	drainStartupReplayCommands?: () => Promise<void>;
-	recoverCookedStartupInput?: () => boolean;
 	showStartupNoticesIfNeeded?: (container: unknown) => void;
 	startupNoticesContainer?: unknown;
 	footerDataProvider: { startGitWatcher: () => void };
@@ -161,7 +159,6 @@ describe("InteractiveMode startup latency hooks", () => {
 		timingMock.labels.length = 0;
 		const context: InputContext = {
 			pendingUserInputs: [],
-			startupCookedInputRecovered: true,
 			inputHandlerReadyRecorded: false,
 			footerDataProvider: { startGitWatcher: vi.fn() },
 			showStartupNoticesIfNeeded: vi.fn(),
@@ -188,7 +185,6 @@ describe("InteractiveMode startup latency hooks", () => {
 		});
 		const context: InputContext = {
 			pendingUserInputs: [],
-			startupCookedInputRecovered: true,
 			inputHandlerReadyRecorded: false,
 			footerDataProvider: { startGitWatcher: vi.fn() },
 			showStartupNoticesIfNeeded: vi.fn(),
@@ -217,7 +213,6 @@ describe("InteractiveMode startup latency hooks", () => {
 		timingMock.labels.length = 0;
 		const context: InputContext = {
 			pendingUserInputs: ["queued prompt"],
-			startupCookedInputRecovered: true,
 			inputHandlerReadyRecorded: false,
 			footerDataProvider: { startGitWatcher: vi.fn() },
 		};

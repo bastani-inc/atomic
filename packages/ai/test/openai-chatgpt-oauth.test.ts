@@ -56,6 +56,18 @@ test("ChatGPT registers Atomic and persists the issued client and direct-use sco
 	assert.deepEqual(credential.scopes, SCOPE.split(" "));
 });
 
+test("ChatGPT uses the app's agent name as the name hint (#10433)", async () => {
+	vi.stubGlobal("fetch", async () => Response.json(token));
+	let authorizeUrl: URL | undefined;
+	await openaiChatGPTOAuth.login(
+		interaction("oaiapp_issued", (url) => {
+			authorizeUrl = url;
+		}),
+		{ getDeviceId: () => DEVICE_ID, agentName: "my-app" },
+	);
+	assert.equal(authorizeUrl?.searchParams.get("agent_name_hint"), "my-app");
+});
+
 test("ChatGPT requires the issued client ID before exchanging credentials", async () => {
 	const fetch = vi.fn();
 	vi.stubGlobal("fetch", fetch);

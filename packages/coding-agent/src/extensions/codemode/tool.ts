@@ -86,7 +86,7 @@ const INTRO = `Run JavaScript that composes tool calls in a fresh QuickJS worker
 Top-level await and return work. Use tools.name(args), or tools["raw-name"](args). Tool names normalize to JavaScript identifiers.
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw. Scripts have a 256 MB memory limit.
-Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), searchTools(query, {limit?, namespace?}), describeTool(name), describeNamespace(name).
+Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), await searchTools(query, {limit?, namespace?}), await describeTool(name), await describeNamespace(name).
 image() also saves each image to a temp file and the result names its path before the image.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
 Optional first line: // @options: {"max_output_tokens": 1000, "timeout_ms": 60000}. Output defaults to 10000 tokens; there is no default deadline.`;
@@ -135,7 +135,7 @@ export function createCodemodeDescription(
 		});
 	const sections = [
 		INTRO,
-		"Some nested tools may be omitted, including deferred tools. They remain available through tools and ALL_TOOLS. Use await searchTools(query), describeTool(name), or describeNamespace(name) to discover them.",
+		"Some nested tools may be omitted, including deferred tools. They remain available through tools and ALL_TOOLS. Use await searchTools(query), await describeTool(name), or await describeNamespace(name) to discover them.",
 	];
 	if (options.models)
 		sections.push(

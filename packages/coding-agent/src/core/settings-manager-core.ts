@@ -2,7 +2,7 @@ import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
-import { deepMergeSettings } from "./settings-merge.ts";
+import { deepMergeSettings } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
 	Settings,

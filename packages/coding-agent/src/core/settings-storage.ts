@@ -5,7 +5,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
-import { deepMergeSettings } from "./settings-merge.ts";
+import { deepMergeSettings } from "./settings-merge.js";
 import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
 export class FileSettingsStorage implements SettingsStorage {

@@ -80,7 +80,7 @@ Installed [packages](/packages/authoring#mcp-servers) and extensions can contrib
 
 ## Manage servers
 
-`/mcp` opens a server manager with connection state, tool count, exposure, and source. Select a server to inspect tools and connection details, sign in or out, reconnect, enable or disable it, or change exposure. Servers that need attention appear first.
+`/mcp` opens a server manager with connection state, tool count, exposure, and source, even while startup connections are pending. Select a server to inspect tools and connection details, sign in or out, reconnect, enable or disable it, or change exposure. Servers that need attention appear first. Enable, disable, and reconnect run in the background; the manager updates live and you can keep navigating or close it while they finish.
 
 | Command | Action |
 | --- | --- |

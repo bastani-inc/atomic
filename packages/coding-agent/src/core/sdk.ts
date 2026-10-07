@@ -41,11 +41,12 @@ import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./s
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
-import { allToolNames, getDefaultToolNames } from "./tools/index.ts";
+import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export * from "./sdk-exports.ts";
@@ -292,9 +293,19 @@ async function constructAgentSession(
 	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
 	// and SDK custom tool (workflow, subagent, intercom, mcp, web_search, ...)
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
-	const configuredDefaultToolNames = settingsManager.getDefaultTools();
+	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
+	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
+	const defaultToolNames = options.noTools ? [] : (settingsManager.getDefaultTools() ?? getDefaultToolNames());
+	const toolModifiers = options.tools?.some(isToolModifier) ? options.tools : undefined;
+	const selectedToolNames = toolModifiers ? applyToolModifiers(defaultToolNames, toolModifiers) : options.tools;
 	const allowedToolNames =
-		options.noTools === "all" ? [] : options.tools === undefined ? undefined : [...options.tools];
+		options.noTools === "all"
+			? []
+			: toolModifiers
+				? undefined
+				: options.tools === undefined
+					? undefined
+					: [...options.tools];
 	const subagentPolicy =
 		options.subagentPolicy && (options.subagentPolicy.depth ?? 0) >= 1
 			? {
@@ -307,13 +318,9 @@ async function constructAgentSession(
 				}
 			: options.subagentPolicy;
 	const isExcludedTool = options.excludedTools ? createToolNameMatcher(options.excludedTools) : undefined;
-	const initialActiveToolNames: string[] = (
-		allowedToolNames
-			? [...allowedToolNames]
-			: options.noTools
-				? []
-				: [...(configuredDefaultToolNames ?? getDefaultToolNames())]
-	).filter((name) => !isExcludedTool?.(name));
+	const initialActiveToolNames = (options.noTools === "all" ? [] : (selectedToolNames ?? defaultToolNames)).filter(
+		(name) => !isExcludedTool?.(name),
+	);
 	const childBuiltins = { ...options.builtins };
 	const childExcludedTools = [
 		...(options.excludedTools ?? []),
@@ -620,7 +627,8 @@ async function constructAgentSession(
 			modelRuntime,
 			cacheWarmer,
 			initialActiveToolNames,
-			usesDefaultTools: options.tools === undefined && !options.noTools,
+			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
+			defaultToolModifiers: toolModifiers,
 			allowedToolNames,
 			excludedToolNames: options.excludedTools,
 			extensionRunnerRef,

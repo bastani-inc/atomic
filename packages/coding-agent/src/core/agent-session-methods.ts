@@ -574,6 +574,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_initialActiveToolNames?: string[];
 	_pendingToolNames: Set<string>;
 	_usesDefaultTools: boolean;
+	_defaultToolModifiers: string[];
 	_appliedDefaultTools: Set<string>;
 	_allowedToolNames?: Set<string>;
 	_excludedToolNames?: Set<string>;

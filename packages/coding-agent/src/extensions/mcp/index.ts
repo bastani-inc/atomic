@@ -114,8 +114,10 @@ interface McpServer {
 	connection?: McpServerConnection;
 	/** For servers extensions registered: the config as registered, to detect re-registrations. */
 	registeredConfig?: string;
+	attempt?: symbol;
 	/** Result of the last `/mcp` action that failed, shown in the manager. */
 	message?: string;
+	closing?: Promise<void>;
 	/** Settles when the connection started for the server connected or failed. */
 	ready?: Promise<void>;
 }
@@ -329,6 +331,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					override: entry.override !== undefined,
 				}));
 
+		const backgroundActions = new Set<Promise<void>>();
 		const listeners = new Set<() => void>();
 		const emitChange = () => {
 			for (const listener of listeners) listener();
@@ -468,8 +471,20 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					exposure,
 					namespace,
 					timeoutMs: connection.timeoutMs,
-					getClient: async () => connection,
-					readableResources: () => resourceServers().includes(connection),
+					getClient: async () => {
+						const current = findServer(server);
+						if (!current || !isEnabled(current)) throw new Error(`MCP server "${server}" is disabled.`);
+						const client = current.connection;
+						if (!client) throw new Error(`MCP server "${server}" is still starting.`);
+						if (
+							getMcpToolExposure(current.entry.config, tool.name) === "hidden" ||
+							(client.state === "connected" && !client.tools.some((offered) => offered.name === tool.name))
+						) {
+							throw new Error(`MCP tool "${server}/${tool.name}" is no longer available.`);
+						}
+						return client;
+					},
+					readableResources: () => resourceServers().some((current) => current.name === server),
 				});
 				markNativeMcpToolDefinition(definition, { server, tool: tool.name });
 				definitions.set(definition.name, definition);
@@ -603,54 +618,62 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				credentials: getCredentials(runtime),
 				providerToken: async (provider) => modelRegistry?.getApiKeyForProvider(provider),
 				log: getServerLog(runtime),
-				onTools: registerTools,
-				onChange: onConnectionChange,
+				onTools: (connection) => {
+					if (isCurrent()) registerTools(connection);
+				},
+				onChange: (connection) => {
+					if (isCurrent()) onConnectionChange(connection);
+					else tokensAtSignIn.delete(connection);
+				},
 			});
 			server.connection = connection;
 			emitChange();
 			return connection;
 		};
 
-		/**
-		 * Connect the server in the background. `server.ready` settles when it connected or failed;
-		 * failures show in its state. It starts after `after`; `isCurrent` stops it when the session ended
-		 * meanwhile. The returned promise rejects when the MCP runtime cannot be loaded.
-		 */
-		const startConnection = (
-			server: McpServer,
-			isCurrent: () => boolean,
-			after?: Promise<unknown>,
-		): Promise<void> => {
-			// A contribution can be replaced without changing the session generation.
-			const ownsServer = () => isCurrent() && servers.includes(server) && isEnabled(server);
+		const startConnection = (server: McpServer, after?: Promise<unknown>): Promise<void> => {
+			const current = generation;
+			const attempt = Symbol();
+			server.attempt = attempt;
+			const isCurrent = () =>
+				current === generation && server.attempt === attempt && isEnabled(server) && servers.includes(server);
 			const ready = (async () => {
 				await after;
-				if (!ownsServer()) return;
-				const connection = await createConnection(server, ownsServer);
-				if (!connection) return;
-				if (!ownsServer()) {
-					await connection.close();
-					return;
-				}
+				if (!isCurrent()) return;
+				const connection = await createConnection(server, isCurrent);
+				if (!connection || !isCurrent()) return;
 				await connection.getClient().catch(() => undefined);
 			})();
 			server.ready = ready.catch(() => undefined);
 			return ready;
 		};
 
-		/** Wait for servers still connecting, until they settle or `signal` aborts. */
 		const waitForServers = async (waiting: readonly McpServer[], signal: AbortSignal | undefined) => {
-			const ready = waiting.flatMap((server) => (server.ready ? [server.ready] : []));
-			if (ready.length === 0 || signal?.aborted) return;
-			let onAbort: (() => void) | undefined;
-			await Promise.race([
-				Promise.all(ready),
-				new Promise<void>((resolve) => {
-					onAbort = () => resolve();
-					signal?.addEventListener("abort", onAbort, { once: true });
-				}),
-			]);
-			if (onAbort) signal?.removeEventListener("abort", onAbort);
+			for (;;) {
+				const ready = waiting.flatMap((server) =>
+					isEnabled(server) && servers.includes(server) && server.ready ? [{ server, ready: server.ready }] : [],
+				);
+				if (ready.length === 0 || signal?.aborted) return;
+				let onAbort: (() => void) | undefined;
+				await Promise.race([
+					Promise.all(ready.map((attempt) => attempt.ready)),
+					new Promise<void>((resolve) => {
+						onAbort = () => resolve();
+						signal?.addEventListener("abort", onAbort, { once: true });
+					}),
+				]);
+				if (onAbort) signal?.removeEventListener("abort", onAbort);
+				if (
+					signal?.aborted ||
+					ready.every(
+						(attempt) =>
+							!isEnabled(attempt.server) ||
+							!servers.includes(attempt.server) ||
+							attempt.ready === attempt.server.ready,
+					)
+				)
+					return;
+			}
 		};
 
 		/**
@@ -728,8 +751,14 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const reconnect = async (server: McpServer): Promise<string | undefined> => {
 			const connection = server.connection;
 			if (!connection) return `MCP server "${server.entry.name}" is disabled.`;
-			try {
+			const previous = server.ready;
+			const ready = (async () => {
+				await previous;
 				await connection.reconnect();
+			})();
+			server.ready = ready.catch(() => undefined);
+			try {
+				await ready;
 				return undefined;
 			} catch (error) {
 				return errorMessage(error);
@@ -746,13 +775,22 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (failed) return failed;
 			if (!enabled) {
 				const connection = server.connection;
+				server.attempt = undefined;
 				server.connection = undefined;
+				if (connection) {
+					server.closing = connection.close();
+				}
+				const closing = server.closing;
 				hideTools(server.entry.name);
 				emitChange();
-				await connection?.close();
+				try {
+					await closing;
+				} finally {
+					if (server.closing === closing) server.closing = undefined;
+				}
 				return undefined;
 			}
-			await startConnection(server, () => true);
+			await startConnection(server, server.closing);
 			return undefined;
 		};
 
@@ -925,17 +963,37 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			});
 		};
 
+		const runInBackground = (
+			ctx: ExtensionContext,
+			server: McpServer,
+			operation: () => Promise<string | undefined>,
+		) => {
+			const ready = operation();
+			const attempt = server.attempt;
+			const current = generation;
+			const finish = (message: string | undefined) => {
+				if (current !== generation || server.attempt !== attempt || !servers.includes(server)) return;
+				server.message = message;
+				ensureDiscoveryActive(ctx);
+				emitChange();
+			};
+			const task = ready
+				.then(finish, (error) => finish(errorMessage(error)))
+				.finally(() => backgroundActions.delete(task));
+			backgroundActions.add(task);
+		};
+
 		const runAction = async (ui: McpUi, ctx: ExtensionContext, server: McpServer, action: string) => {
-			const { name } = server.entry;
 			let message: string | undefined;
 			switch (action) {
 				case "signin":
 					message = await signInWithUi(ui, server);
 					break;
 				case "reconnect":
-					// A failure shows as the connection's state and error.
-					ui.status(`MCP server ${name}`, "Reconnecting…");
-					await reconnect(server);
+					runInBackground(ctx, server, async () => {
+						await reconnect(server);
+						return undefined;
+					});
 					break;
 				case "signout":
 					await signOut(server);
@@ -951,8 +1009,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				case "enable-project":
 				case "disable-project": {
 					const enable = action.startsWith("enable");
-					ui.status(`MCP server ${name}`, enable ? "Connecting…" : "Disconnecting…");
-					message = await setEnabled(server, enable, action.endsWith("-project"));
+					runInBackground(ctx, server, () => setEnabled(server, enable, action.endsWith("-project")));
 					break;
 				}
 			}
@@ -1104,7 +1161,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			// event loop turn lets the first render happen before loading and connecting.
 			const runtime = new Promise((resolve) => setImmediate(resolve)).then(() => loadMcpRuntime());
 			const isCurrent = () => current === generation;
-			pending = Promise.all(enabled.map((server) => startConnection(server, isCurrent, runtime)))
+			pending = Promise.all(enabled.map((server) => startConnection(server, runtime)))
 				.then(() => {
 					if (isCurrent()) reportProblems(ctx);
 				})
@@ -1159,17 +1216,18 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.on("tool_call", async (event, ctx) => {
 			const tool = pi.getAllTools().find((candidate) => candidate.name === event.toolName);
 			if (!tool) return;
-			const pendingServers = servers.filter(
-				(server) => isEnabled(server) && server.connection?.state !== "connected" && server.ready,
-			);
-			if (pendingServers.length === 0) return;
+			const readyServers = servers.filter((server) => isEnabled(server) && server.ready);
+			if (readyServers.length === 0) return;
 			let waiting: McpServer[] = [];
 			if (isCodemodeDiscoveryTool(tool)) {
 				const { code } = event.input as { code?: unknown };
 				const source = typeof code === "string" ? code : "";
-				waiting = pendingServers.filter((server) => scriptNeedsServer(source, server.entry.name));
+				waiting = readyServers.filter((server) => scriptNeedsServer(source, server.entry.name));
 			} else if (isToolSearchDiscoveryTool(tool) || RESOURCE_TOOL_NAMES.has(tool.name)) {
-				waiting = pendingServers;
+				waiting = readyServers;
+			} else {
+				const owner = toolOwners.get(event.toolName)?.split("\0", 1)[0];
+				waiting = readyServers.filter((server) => server.entry.name === owner);
 			}
 			await waitForServers(waiting, ctx.signal);
 		});
@@ -1201,7 +1259,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				const connecting = added.filter(isEnabled);
 				if (current !== generation || connecting.length === 0) return;
 				try {
-					await Promise.all(connecting.map((server) => startConnection(server, () => current === generation)));
+					await Promise.all(connecting.map((server) => startConnection(server)));
 					if (current === generation) reportProblems(latestContext!, connecting);
 				} catch (error) {
 					if (current === generation)
@@ -1225,7 +1283,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			servers = [];
 			latestContext = undefined;
 			subagentMcpDirectTools = undefined;
-			await Promise.all(closing.map((connection) => connection.close()));
+			await Promise.all([...backgroundActions, ...closing.map((connection) => connection.close())]);
 		});
 
 		pi.registerCommand("mcp", {
@@ -1252,17 +1310,20 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				return items.length > 0 ? items : null;
 			},
 			handler: async (args, ctx) => {
-				await pending;
 				const [action, name, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 				if (action === undefined) {
 					if (ctx.mode === "tui") await showMcpManager(ctx, (ui) => manage(ui, ctx));
-					else ctx.ui.notify(formatStatus(), "info");
+					else {
+						await pending;
+						ctx.ui.notify(formatStatus(), "info");
+					}
 					return;
 				}
 				if (extra.length > 0) {
 					ctx.ui.notify(MCP_USAGE, "warning");
 					return;
 				}
+				await pending;
 				switch (action) {
 					case "login": {
 						const server = await pickServer(name, ctx, oauthPick);

@@ -33,11 +33,12 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
+import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.js";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -766,7 +767,10 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
-		const defaultTools = this.settingsManager.getDefaultTools() ?? getDefaultToolNames();
+		const defaultTools = applyToolModifiers(
+			this.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+			this._defaultToolModifiers,
+		);
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
 		this._buildRuntime({
 			activeToolNames: activeToolsAfterReload(defaultTools),
@@ -797,7 +801,10 @@ async function reloadOwnedGeneration(
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
-	const defaultTools = settingsTransaction.settingsManager.getDefaultTools() ?? getDefaultToolNames();
+	const defaultTools = applyToolModifiers(
+		settingsTransaction.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+		this._defaultToolModifiers,
+	);
 	const errors = resourceTransaction.loader.getExtensions().errors;
 	const extensionsResult = resourceTransaction.loader.getExtensions();
 	for (const [name, value] of previousFlagValues) {

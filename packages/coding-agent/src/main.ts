@@ -384,21 +384,28 @@ export async function main(argv: string[], options?: MainOptions) {
 		resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates),
 		resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
-	let startupEarlyInputCapture: EarlyInputCapture | undefined = startEarlyInputCapture({
-		enabled: computeStartupInputCaptureEnabled({
-			appMode,
-			stdinIsTTY: process.stdin.isTTY === true,
-			parsed,
-			sessionCwd: cwd,
-			projectTrustStore,
-			resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
-			resolvedResourcePathCount:
-				(resolvedSkillPaths?.length ?? 0) +
-				(resolvedPromptTemplatePaths?.length ?? 0) +
-				(resolvedThemePaths?.length ?? 0),
-			deprecationWarningCount: 0,
-		}),
-	});
+	const beginStartupInputCapture = (
+		sessionCwd: string,
+		sessionSelectionComplete = false,
+		deprecationWarningCount = 0,
+	): EarlyInputCapture | undefined =>
+		startEarlyInputCapture({
+			enabled: computeStartupInputCaptureEnabled({
+				appMode,
+				stdinIsTTY: process.stdin.isTTY === true,
+				parsed,
+				sessionCwd,
+				projectTrustStore,
+				resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+				resolvedResourcePathCount:
+					(resolvedSkillPaths?.length ?? 0) +
+					(resolvedPromptTemplatePaths?.length ?? 0) +
+					(resolvedThemePaths?.length ?? 0),
+				deprecationWarningCount,
+				sessionSelectionComplete,
+			}),
+		});
+	let startupEarlyInputCapture = beginStartupInputCapture(cwd);
 	// Run migrations after computing startup project trust so project-local migrations
 	// cannot read or mutate untrusted project config before approval.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd, {
@@ -454,6 +461,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		const name = parsed.name.trim();
 		if (!name) {
 			console.error(chalk.red("Error: --name requires a non-empty value"));
+			startupEarlyInputCapture?.consume();
 			process.exit(1);
 		}
 		sessionManager.appendSessionInfo(name);
@@ -461,6 +469,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	time("createSessionManager");
 
 	const sessionCwd = sessionManager.getCwd();
+	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
@@ -534,9 +543,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				}));
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions || deferStartupTrust;
-			startupEarlyInputCapture ??= startEarlyInputCapture({
-				enabled: appMode === "interactive" && deferExtensions && deprecationWarnings.length === 0,
-			});
 		}
 		const getProjectTrustContext = () =>
 			startupTrustContext ??
@@ -839,6 +845,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	if (appMode === "interactive" && deprecationWarnings.length > 0) {
 		await showDeprecationWarnings(deprecationWarnings);
 	}
+	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true);
 
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");

@@ -64,6 +64,9 @@ export interface CreateAgentSessionOptions {
 	 * an entry starts with `mcp__`; only matching tools are declared directly.
 	 * `excludedTools` applies afterwards. `noTools: "all"` overrides this selection.
 	 * Intercom follows the same selection and suppression rules as other extension tools.
+	 * A list of only `+name`/`-name` entries changes the resolved defaults instead
+	 * of allowlisting tools, and is reapplied on reload. Modifiers take exact names;
+	 * mixing them with plain names or patterns throws. Total suppression still wins.
 	 */
 	tools?: string[];
 	/**

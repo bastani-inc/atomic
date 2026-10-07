@@ -41,12 +41,12 @@ import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
 	applyServiceTierPricing,
 	assertPayloadPreservesFastRoute,
+	codexServiceTierForRequest,
 	convertResponsesMessages,
 	convertResponsesTools,
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
-	codexServiceTierForRequest,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -1644,7 +1644,10 @@ function buildBaseCodexHeaders(
 	accountId: string,
 	token: string,
 ): Headers {
-	const headers = new Headers(initHeaders);
+	const headers = new Headers({ originator: "pi", "User-Agent": getPiUserAgent() });
+	for (const [key, value] of Object.entries(initHeaders || {})) {
+		headers.set(key, value);
+	}
 	for (const [key, value] of Object.entries(additionalHeaders || {})) {
 		if (value === null) {
 			headers.delete(key);
@@ -1654,8 +1657,6 @@ function buildBaseCodexHeaders(
 	}
 	headers.set("Authorization", `Bearer ${token}`);
 	headers.set("chatgpt-account-id", accountId);
-	headers.set("originator", "pi");
-	headers.set("User-Agent", getPiUserAgent());
 	return headers;
 }
 

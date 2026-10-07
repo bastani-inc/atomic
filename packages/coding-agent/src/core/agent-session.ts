@@ -55,10 +55,11 @@ import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import { applyToolModifiers } from "./settings-merge.js";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
@@ -191,6 +192,7 @@ class AgentSessionBase {
 	protected _initialActiveToolNames?: string[];
 	protected _pendingToolNames = new Set<string>();
 	protected _usesDefaultTools: boolean;
+	protected _defaultToolModifiers: string[];
 	/** Resolved defaults last applied here, independent of shared settings publication. */
 	protected _appliedDefaultTools: Set<string>;
 	protected _subagentPolicy?: SubagentChildPolicy;
@@ -262,8 +264,14 @@ class AgentSessionBase {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
+		this._defaultToolModifiers = config.defaultToolModifiers ?? [];
 		this._appliedDefaultTools = new Set(
-			this._usesDefaultTools ? (this.settingsManager.getDefaultTools() ?? getDefaultToolNames()) : [],
+			this._usesDefaultTools
+				? applyToolModifiers(
+						this.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+						this._defaultToolModifiers,
+					)
+				: [],
 		);
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;

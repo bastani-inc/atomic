@@ -493,7 +493,7 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 	writeToolSystemPromptContribution,
-} from "./core/tools/index.ts";
+} from "./core/tools/index.js";
 export {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,

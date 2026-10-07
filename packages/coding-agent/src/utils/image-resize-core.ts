@@ -18,6 +18,12 @@ export interface ResizedImage {
 	wasResized: boolean;
 }
 
+export const IMAGE_RESIZE_WORKER_RESPONSE_TYPE = "pi:image-resize-response";
+
+export type ResizeImageWorkerResponse =
+	| { type: typeof IMAGE_RESIZE_WORKER_RESPONSE_TYPE; result: ResizedImage | null }
+	| { type: typeof IMAGE_RESIZE_WORKER_RESPONSE_TYPE; error: string };
+
 // 4.5MB of base64 payload. Provides headroom below Anthropic's 5MB limit.
 const DEFAULT_MAX_BYTES = 4.5 * 1024 * 1024;
 

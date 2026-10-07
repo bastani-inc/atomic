@@ -2,11 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenAI's GPT-6 Luna classifier through the Decisions API with `OPENAI_API_KEY`, and image input for codemode's `models.classify()` context. See [Classifier models](docs/models.md#use-classifier-models).
+- Added native classification for llama.cpp decision models through `/v1/systemone`. Decision-only models stay out of the chat selector, while chat models keep the next-token classifier fallback. Cached native classifiers remain available after restart.
+- Added exact-name `+name` and `-name` modifiers to CLI `--tools` and SDK `tools`, for example `atomic --tools +codemode,-write`. They change the resolved defaults instead of replacing them and persist across `/reload`.
+
 ### Fixed
 
 - Fixed a false `Timeout waiting for response to resume_queued_messages` error when you send a message while a paused queue is still waiting for the agent's current turn to finish, and the follow-up `Agent is already processing` error caused by the stale paused state. The resume now waits for the turn instead of giving up after 30 seconds ([#3493](https://github.com/bastani-inc/atomic/issues/3493)).
 - Fixed extension `session_shutdown` handlers being cut off when you quit the interactive CLI. The engine now gets up to 5 seconds to finish extension shutdown, instead of about 750 ms, before it is force-stopped.
 - Fixed slow extension loading and `/reload` on Windows. Imports such as `./helper.js` that point at TypeScript sources no longer make the loader try hundreds of missing files before finding `helper.ts`.
+- Fixed `/mcp` waiting for startup connections before opening. The manager now updates live and stays usable while enabling, disabling, or reconnecting servers.
+- Fixed images being dropped as unresizable under `node --watch` when Node sends its own messages on the image resize worker channel.
+- Fixed codemode's tool description omitting `await` for `searchTools()`, `describeTool()`, and `describeNamespace()`, which could make scripts return unresolved promises instead of tool information.
+- Fixed slash commands and shell-command drafts typed during interactive startup running before Enter, including when launching with `--model` or `--provider`. Enter-terminated input stays ordered and unfinished text remains in the editor.
+- Fixed a stuck MCP server startup blocking re-enabling the server or shutting down after it was disabled.
 
 ## [0.9.28-alpha.2] - 2026-10-07
 

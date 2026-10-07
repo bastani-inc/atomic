@@ -180,9 +180,9 @@ Specify which tools to expose by name:
 - Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `builtins` selects shipped packages independently of tools: keys are `workflows`, `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
-- `tools` is an allowlist of coding, extension, and custom tool names. `tools: []` exposes none, including Intercom.
+- `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes none, including Intercom. A list containing only `+name`/`-name` entries instead changes the resolved defaults, for example `tools: ["+codemode", "-write"]`. Modifiers take exact names, cannot be mixed with plain entries, and apply to reloaded defaults too. Invalid lists throw. Extension/custom tools and MCP exposure retain their default behavior with modifiers.
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
-- `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist. It does not remove package resources or authorize services.
+- `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist or modifiers. It does not remove package resources or authorize services.
 - `noTools: "builtin"` suppresses coding-tool defaults when `tools` is omitted, keeping extension/custom tools except exclusions. An explicit `tools` list still wins over this mode.
 - Configured `defaultTools` selects initial coding tools when `tools` and `noTools` are omitted. Plain names replace the defaults; modifier-only lists such as `["-bash", "+ls"]` change the defaults, and project modifier-only lists layer over the global selection. Extension/custom tools retain their own activation behavior. See [defaultTools](/settings#tools).
 
@@ -298,7 +298,7 @@ Use `defineTool()` for standalone definitions and arrays like `customTools: [myT
 
 Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
 
-If you pass `tools`, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Use `excludedTools` to remove a custom or extension tool by name from the final exposed set.
+If you pass a plain-name `tools` allowlist, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Modifier-only lists retain default activation and can enable inactive registered tools with `+name`. Use `excludedTools` to remove a custom or extension tool by name from the final exposed set.
 
 `ToolDefinition.constrainedSampling` is part of the public SDK and survives `defineTool()`, `customTools`, tool wrappers, session/staged inspection, and isolated execution. Use `{ type: "json_schema", strict: "prefer" | "require" }`, `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`, or `false`. `prefer` can fall back; `require` fails when the active model cannot enforce strict JSON Schema. Grammar constraints require one required string parameter and capable model metadata. Public inspection preserves optional-property identity exactly: an omitted key stays absent, an explicitly present `undefined` stays present, and `false` or a config object remains unchanged. The exported `ConstrainedSamplingConfig` type and [extension reference](/extensions/authoring#constrained-sampling) define the exact shape. Typed RPC clients receive the four model capability flags through optional `ModelInfo.compat`; see [RPC](/rpc/protocol#get_available_models).
 

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openaiCodexOAuth } from "../src/auth/oauth/openai-codex.ts";
 
@@ -482,5 +483,27 @@ describe("OpenAI Codex OAuth", () => {
 			),
 		).rejects.toThrow(/OpenAI Codex token refresh failed \(401\).*Could not validate your token/);
 		expect(consoleError).not.toHaveBeenCalled();
+	});
+	it("uses the app's agent name as the browser login originator (#10433)", async () => {
+		vi.stubGlobal("fetch", async () =>
+			jsonResponse({ access_token: createAccessToken("acct"), refresh_token: "refresh", expires_in: 3600 }),
+		);
+		let authUrl = "";
+		await openaiCodexOAuth.login(
+			{
+				signal: neverAbortedSignal,
+				notify: (event) => {
+					if (event.type === "auth_url") authUrl = event.url;
+				},
+				prompt: async (prompt) => {
+					if (prompt.type === "select") return "browser";
+					assert.equal(prompt.type, "manual_code");
+					const state = new URL(authUrl).searchParams.get("state");
+					return `http://localhost:1455/auth/callback?code=pasted-code&state=${state}`;
+				},
+			},
+			{ agentName: "my-app" },
+		);
+		assert.equal(new URL(authUrl).searchParams.get("originator"), "my-app");
 	});
 });

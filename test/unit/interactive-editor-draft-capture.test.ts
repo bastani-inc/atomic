@@ -110,7 +110,6 @@ test("the submit handler falls back to the callback text for editors without cap
 		editorContainer: { children: [editor] },
 		ui: { setFocus: () => {}, requestRender: () => {} },
 		pendingUserInputs: [],
-		startupCookedInputRecovered: false,
 		session: {
 			isCompacting: false,
 			isStreaming: false,

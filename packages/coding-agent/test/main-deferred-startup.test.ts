@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,11 +194,28 @@ describe("computeStartupInputCaptureEnabled", () => {
 		}
 	});
 
+	it.each(["systemPrompt", "appendSystemPrompt", "unknownFlags"] as const)(
+		"captures early input while resolving %s",
+		(flag) => {
+			const input = baseStartupCaptureInput();
+			if (flag === "systemPrompt") input.parsed.systemPrompt = "System prompt";
+			else if (flag === "appendSystemPrompt") input.parsed.appendSystemPrompt = ["Additional prompt"];
+			else input.parsed.unknownFlags.set("extension-option", "value");
+			try {
+				assert.equal(computeStartupInputCaptureEnabled(input), true);
+			} finally {
+				removeTempDir(input.sessionCwd);
+			}
+		},
+	);
+
 	it("does not start pre-session input capture for resume picker startup", () => {
 		const input = baseStartupCaptureInput();
 		input.parsed.resume = true;
 		try {
 			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
+			input.sessionSelectionComplete = true;
+			assert.equal(computeStartupInputCaptureEnabled(input), true);
 		} finally {
 			removeTempDir(input.sessionCwd);
 		}
@@ -208,19 +226,21 @@ describe("computeStartupInputCaptureEnabled", () => {
 		input.parsed.session = "other-project-session";
 		try {
 			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
+			input.sessionSelectionComplete = true;
+			assert.equal(computeStartupInputCaptureEnabled(input), true);
 		} finally {
 			removeTempDir(input.sessionCwd);
 		}
 	});
 
-	it("does not start pre-session input capture for explicit provider or model selection", () => {
+	it("captures early input during explicit provider or model selection", () => {
 		const providerInput = baseStartupCaptureInput();
 		providerInput.parsed.provider = "extension-provider";
 		const modelInput = baseStartupCaptureInput();
 		modelInput.parsed.model = "extension-model";
 		try {
-			expect(computeStartupInputCaptureEnabled(providerInput)).toBe(false);
-			expect(computeStartupInputCaptureEnabled(modelInput)).toBe(false);
+			expect(computeStartupInputCaptureEnabled(providerInput)).toBe(true);
+			expect(computeStartupInputCaptureEnabled(modelInput)).toBe(true);
 		} finally {
 			removeTempDir(providerInput.sessionCwd);
 			removeTempDir(modelInput.sessionCwd);

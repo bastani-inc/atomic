@@ -1,13 +1,21 @@
 import type { Settings } from "./settings-types.ts";
-import { getDefaultToolNames } from "./tools/index.ts";
+import { getDefaultToolNames } from "./tools/index.js";
 
-function isToolModifier(entry: string): boolean {
+export function isToolModifier(entry: string): boolean {
 	return entry.startsWith("+") || entry.startsWith("-");
 }
 
-export function resolveDefaultTools(entries: string[], inherited: readonly string[] = getDefaultToolNames()): string[] {
-	const plain = entries.filter((entry) => !isToolModifier(entry));
-	const tools = plain.length > 0 || entries.length === 0 ? plain : [...inherited];
+export function getToolListError(entries: readonly string[]): string | undefined {
+	const modifiers = entries.filter(isToolModifier);
+	if (modifiers.length === 0) return undefined;
+	if (modifiers.length < entries.length) return "tool names cannot be mixed with +name or -name entries";
+	const pattern = modifiers.find((entry) => entry.includes("*"));
+	if (pattern) return `+name and -name entries take exact tool names, not patterns: ${pattern}`;
+	return undefined;
+}
+
+export function applyToolModifiers(base: readonly string[], entries: readonly string[]): string[] {
+	const tools = [...base];
 	for (const entry of entries) {
 		if (!isToolModifier(entry)) continue;
 		const name = entry.slice(1);
@@ -16,6 +24,11 @@ export function resolveDefaultTools(entries: string[], inherited: readonly strin
 		else if (entry.startsWith("-") && index !== -1) tools.splice(index, 1);
 	}
 	return tools;
+}
+
+export function resolveDefaultTools(entries: string[], inherited: readonly string[] = getDefaultToolNames()): string[] {
+	const plain = entries.filter((entry) => !isToolModifier(entry));
+	return applyToolModifiers(plain.length > 0 || entries.length === 0 ? plain : inherited, entries);
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {

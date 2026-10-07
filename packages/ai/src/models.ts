@@ -61,6 +61,7 @@ import type {
 import { operationSignal, raceWithAbortSignal } from "./utils/abort.ts";
 import {
 	assertChatModel,
+	assertClassifierInputSupported,
 	assertClassifierModel,
 	assertImageModel,
 	classifierErrorResult,
@@ -1021,6 +1022,7 @@ class ModelsImpl implements MutableModels {
 	): Promise<ClassifierResult> {
 		try {
 			assertClassifierModel(model);
+			assertClassifierInputSupported(model, context);
 			const provider = this.requireProvider(model);
 			if (!provider.classify) {
 				throw new ModelsError("provider", `Provider ${model.provider} does not support classification`);

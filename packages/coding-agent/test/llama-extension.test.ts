@@ -382,6 +382,168 @@ describe("llama.cpp extension", () => {
 		assert.ok(models.every((model) => model === "qwen"));
 	});
 
+	it("discovers, dispatches and restores native decision classifiers (#10382)", async () => {
+		const propsModels: string[] = [];
+		const systemOneRequests: { model: string; questions: Record<string, { type: string }> }[] = [];
+		const { url } = await listen((request, response) => {
+			let body = "";
+			request.on("data", (chunk) => {
+				body += chunk;
+			});
+			request.on("end", () => {
+				const requestUrl = new URL(request.url ?? "", "http://localhost");
+				if (requestUrl.pathname === "/models") {
+					json(response, {
+						data: [
+							{ id: "legacy", status: { value: "loaded" } },
+							{
+								id: "kev",
+								status: { value: "loaded" },
+								architecture: { output_modalities: ["decisions"] },
+								meta: { n_ctx: 8192 },
+							},
+							{ id: "laya", status: { value: "sleeping" }, architecture: { output_modalities: ["decisions"] } },
+							{
+								id: "hybrid",
+								status: { value: "loaded" },
+								architecture: { output_modalities: ["text", "decisions"] },
+							},
+							{
+								id: "unloaded",
+								source: "preset",
+								status: { value: "unloaded" },
+								architecture: { output_modalities: ["decisions"] },
+							},
+						],
+					});
+				} else if (requestUrl.pathname === "/props") {
+					const model = requestUrl.searchParams.get("model");
+					if (model) propsModels.push(model);
+					json(response, { models_autoload: true });
+				} else if (requestUrl.pathname === "/v1/systemone") {
+					const payload = JSON.parse(body) as { model: string; questions: Record<string, { type: string }> };
+					systemOneRequests.push(payload);
+					json(response, {
+						model: payload.model,
+						answers: { angry: { type: "noul", noul: 0.82 } },
+						usage: { input_tokens: 42, output_tokens: 0 },
+					});
+				} else response.writeHead(404).end();
+			});
+		});
+		let stored: ModelsStoreEntry | undefined;
+		const publish = async (publication: ModelsPublication): Promise<boolean> => {
+			if (publication.persist) stored = structuredClone(publication.persist);
+			publication.update?.();
+			return true;
+		};
+		const credential = { type: "api_key" as const, key: "local", env: { LLAMA_BASE_URL: url } };
+		const controller = createLlamaProvider();
+		await controller.provider.refreshModels?.({
+			credential,
+			stored,
+			publish,
+			allowNetwork: true,
+			signal: new AbortController().signal,
+		});
+		assert.deepEqual(systemOneRequests, []);
+		assert.deepEqual(propsModels.sort(), ["hybrid", "legacy"]);
+		assert.deepEqual(
+			controller.provider.getModels().map((model) => model.id),
+			["legacy", "hybrid"],
+		);
+		const expectedClassifiers = [
+			["legacy", "llama-cpp-classify", url],
+			["kev", "typesafe-system-one", `${url}/v1`],
+			["laya", "typesafe-system-one", `${url}/v1`],
+			["hybrid", "typesafe-system-one", `${url}/v1`],
+			["unloaded", "typesafe-system-one", `${url}/v1`],
+		];
+		assert.deepEqual(
+			stored?.models
+				.filter((model) => model.type === "classifier")
+				.map((model) => [model.id, model.api, model.baseUrl]),
+			expectedClassifiers,
+		);
+		const kev = controller.provider.getAllModels?.().find((model) => model.id === "kev");
+		if (kev?.type !== "classifier") throw new Error("missing native classifier");
+		assert.equal(kev.contextWindow, 8192);
+		const result = await controller.provider.classify!(
+			kev,
+			{
+				state: { message: "I was charged twice." },
+				questions: {
+					angry: {
+						type: "bool",
+						instructions: "Is the customer angry?",
+						criteria: { true: "angry", false: "calm" },
+					},
+				},
+			},
+			{ apiKey: "local" },
+		);
+		assert.equal(result.errorMessage, undefined);
+		assert.deepEqual(result.answers.angry, { type: "bool", probability: 0.82 });
+		assert.equal(result.usage.input, 42);
+		assert.deepEqual(systemOneRequests, [
+			{
+				model: "kev",
+				state: { message: "I was charged twice." },
+				questions: {
+					angry: {
+						type: "noul",
+						instructions: "Is the customer angry?",
+						criteria: { true: "angry", false: "calm" },
+					},
+				},
+			},
+		]);
+		const restored = createLlamaProvider();
+		await restored.provider.refreshModels?.({
+			credential,
+			stored,
+			publish,
+			allowNetwork: false,
+			signal: new AbortController().signal,
+		});
+		assert.deepEqual(
+			restored.provider.getModels().map((model) => model.id),
+			["legacy", "hybrid"],
+		);
+		assert.deepEqual(
+			restored.provider
+				.getAllModels?.()
+				.filter((model) => model.type === "classifier")
+				.map((model) => [model.id, model.api, model.baseUrl]),
+			expectedClassifiers,
+		);
+	});
+
+	it("keeps decision-only models out of the direct chat catalog (#10382)", () => {
+		const controller = createLlamaProvider();
+		controller.setCatalog(
+			[
+				{ id: "decide", status: { value: "sleeping" }, architecture: { output_modalities: ["decisions"] } },
+				{ id: "hybrid", status: { value: "loaded" }, architecture: { output_modalities: ["text", "decisions"] } },
+			],
+			"http://localhost:8080",
+		);
+		assert.deepEqual(
+			controller.provider.getModels().map((model) => model.id),
+			["hybrid"],
+		);
+		assert.deepEqual(
+			controller.provider
+				.getAllModels?.()
+				.filter((model) => model.type === "classifier")
+				.map((model) => [model.id, model.api]),
+			[
+				["decide", "typesafe-system-one"],
+				["hybrid", "typesafe-system-one"],
+			],
+		);
+	});
+
 	it("stays dormant until configured and stores URL plus optional key", async () => {
 		const { provider } = createLlamaProvider();
 		const auth = provider.auth.apiKey!;

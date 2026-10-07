@@ -95,13 +95,8 @@ export function restoreFailedSubmissionDraft(
 		focusEditor: () => mode.ui.setFocus(mode.editor),
 		requestRender: () => mode.ui.requestRender(),
 	});
-	// A draft the host itself put back is a draft, never cooked startup input.
-	// Without this, the next getUserInput() would run the startup-input recovery
-	// over the restored text and replay a command-like draft as a submission —
-	// re-running the very command whose send just failed.
 	if (restored) {
 		queued.length = 0;
-		mode.startupCookedInputRecovered = true;
 	}
 	return restored;
 }
