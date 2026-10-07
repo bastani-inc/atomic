@@ -425,6 +425,10 @@ function getAliases(): Record<string, string> {
 		"ai/dist/api/llama-cpp-classify.lazy.js",
 		"@bastani/pi-ai",
 	);
+	const piAiTypesafeSystemOneEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/typesafe-system-one.lazy.js",
+		"@bastani/pi-ai",
+	);
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
 	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
@@ -445,6 +449,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@bastani/pi-ai/api/llama-cpp-classify.lazy": piAiLlamaCppClassifyEntry,
+		"@bastani/pi-ai/api/typesafe-system-one.lazy": piAiTypesafeSystemOneEntry,
 		"@bastani/pi-ai/oauth": piAiOauthEntry,
 		"@bastani/pi-ai/models": piAiModelsEntry,
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,

@@ -70,7 +70,7 @@ Each llama model uses the router-reported loaded context (`meta.n_ctx`, then tra
 
 ## Classification
 
-Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can make `model: "auto"` routing decisions. Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](models.md#use-classifier-models). Atomic lists llama.cpp models as classifiers in two ways:
+Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can make `model: "auto"` routing decisions. Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models). Atomic lists llama.cpp models as classifiers in two ways:
 
 - **Decision models** such as Julia-1, Laya, Kev, lev, and OpenJev answer natively through llama.cpp's `/v1/systemone` endpoint with the `typesafe-system-one` API. Decision-only models do not appear in `/model`.
 - **Chat models** are also listed as classifiers with the same ID and the `llama-cpp-classify` API, which reads answers from next-token probabilities as described below.
