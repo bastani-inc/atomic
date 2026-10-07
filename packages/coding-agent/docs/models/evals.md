@@ -5,7 +5,7 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 # Evals
 
-Last Accessed: 2026-09-25.
+Last Accessed: 2026-10-07 (Claude Haiku 5.5 additions; earlier rows retain their snapshot dates below).
 
 Key:
 
@@ -46,12 +46,19 @@ Key:
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28 and 5 GPT-6.1 Sol rows accessed 2026-09-29.
+Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28, 5 GPT-6.1 Sol rows accessed 2026-09-29, and 5 Claude Haiku 5.5 rows accessed 2026-10-07.
 
 GPT-6.1 Sol's five effort rows were accessed 2026-09-29 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and [model page](https://artificialanalysis.ai/models/gpt-6-1-sol). The release date is not an evaluation run date; run dates are unpublished. AA's [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) uses mini-swe-agent for TB4, all 66 tasks, pass@1 averaged over three repeats, a 500-step cap and no context compaction.
 
+Claude Haiku 5.5 rows were accessed 2026-10-07 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low) model pages. AA labels these configurations "with fallback". All five pages publish non-estimated indices and twelve component measurements in their public structured data, although their text rendering says "Not publicly available". Evaluation run dates are unpublished; the release date is not an evaluation run date. These are AA measurements, not Anthropic's launch-table results. Missing `ONH` remains unknown; the published hallucination rate is a different metric.
+
 | slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| claude-haiku-5-5 | Claude Haiku 5.5 (Adaptive Reasoning, Max Effort, With Fallback) | 2026-10-07 | 43.4 | 53.9 | 56.0 | 35.4 | 32.8 | 55.0 | 44.4 | 20.8 | 18.9 | 36.4 | ∅ | 82.7 | 10.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.9 | ∅ | ∅ | ∅ |
+| claude-haiku-5-5-xhigh | Claude Haiku 5.5 (Adaptive Reasoning, Xhigh Effort, With Fallback) | 2026-10-07 | 41.2 | 51.6 | 50.5 | 36.0 | 29.3 | 51.7 | 42.7 | 18.2 | 22.6 | 35.0 | ∅ | 78.3 | 6.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.9 | ∅ | ∅ | ∅ |
+| claude-haiku-5-5-high | Claude Haiku 5.5 (Adaptive Reasoning, High Effort, With Fallback) | 2026-10-07 | 37.8 | 47.1 | 46.0 | 33.7 | 21.7 | 48.7 | 37.3 | 17.2 | 18.6 | 34.8 | ∅ | 77.3 | 5.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.5 | ∅ | ∅ | ∅ |
+| claude-haiku-5-5-medium | Claude Haiku 5.5 (Adaptive Reasoning, Medium Effort, With Fallback) | 2026-10-07 | 34.5 | 43.6 | 38.8 | 28.6 | 15.2 | 49.0 | 33.8 | 15.2 | 12.9 | 34.0 | ∅ | 77.3 | 4.5 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 89.2 | ∅ | ∅ | ∅ |
+| claude-haiku-5-5-low | Claude Haiku 5.5 (Adaptive Reasoning, Low Effort, With Fallback) | 2026-10-07 | 29.4 | 30.6 | 31.2 | 22.9 | 12.6 | 49.2 | 27.0 | 11.2 | 9.1 | 33.3 | ∅ | 72.0 | 3.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 87.9 | ∅ | ∅ | ∅ |
 | gpt-6-1-sol | GPT-6.1 Sol (max) | 2026-09-29 | 51.8 | 53.2 | 53.8 | 64.9 | 56.1 | 54.2 | 52.9 | 31 | 31.7 | 62.1 | 45.7 | 83 | 41.5 | ∅ | ∅ | ∅ | ∅ | 86 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 33.9 | ∅ | ∅ |
 | gpt-6-1-sol-xhigh | GPT-6.1 Sol (xhigh) | 2026-09-29 | 51 | 50.3 | 50.5 | 66.6 | 54 | 55.7 | 52.6 | 31.8 | 31.7 | 60.8 | 49.1 | 79.7 | 40.9 | ∅ | ∅ | ∅ | ∅ | 85.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-sol-high | GPT-6.1 Sol (high) | 2026-09-29 | 50.2 | 48.6 | 49.3 | 64.5 | 51.5 | 55.8 | 51.4 | 32 | 30 | 60.8 | 50.6 | 82.3 | 41.5 | ∅ | ∅ | ∅ | ∅ | 84.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
@@ -780,6 +787,8 @@ Source: [FrontierCode leaderboard](https://cognition.com/frontiercode) by Cognit
 
 GPT-6.1 Sol was added 2026-09-29 and accessed that day in the [primary JSON](https://cognition.com/data/frontiercode-leaderboard/data.json). Its best score on both sets is medium effort under the `codex` harness. The Codex revision and run date are unpublished. Main averages 11,365 output tokens and 14.42 minutes per rollout.
 
+Claude Haiku 5.5 was added and accessed 2026-10-07 in the [primary JSON](https://cognition.com/data/frontiercode-leaderboard/data.json). Its best score on both sets is max effort under the Claude Code harness; the run date is unpublished. No unfair-internet-use flag rate is recorded here. Mean cost per Main rollout is $1.33.
+
 Key:
 
 - FrontierCode: mergeability of agent-written pull requests on tasks built by open-source maintainers, graded by rubrics, unit tests and other verifiers for correctness, test quality, scope discipline, style and codebase conventions. Runs that consult solution-bearing sources such as the original pull request score zero.
@@ -802,6 +811,7 @@ Key:
 | grok-4-7 | Grok 4.7 | high | 47.6 | 53.1 | 59.4 | 65.2 | 1.3 | $6.65 |
 | gpt-5-6-sol | GPT-5.6 Sol | max | 47.5 | 52.9 | 60.6 | 66.6 | 0.0 | $5.19 |
 | claude-opus-4-8 | Opus 4.8 | max | 46.5 | 51.6 | 59.6 | 65.5 | 0.6 | $9.62 |
+| claude-haiku-5-5 | Haiku 5.5 | max | 46.4 | 51.7 | 58.4 | 64.7 | ∅ | $1.33 |
 | kimi-k3 | Kimi K3 | ∅ | 44.2 | 48.9 | 58.2 | 63.6 | 0.2 | $3.82 |
 | gemini-3-7-flash | Gemini 3.7 Flash | medium | 43.6 | 48.9 | 56.3 | 62.3 | 0.0 | $1.82 |
 | gpt-5-5 | GPT-5.5 | xhigh | 43.0 | 48.2 | 56.7 | 62.8 | 0.4 | $4.03 |
@@ -834,7 +844,7 @@ Key:
 
 ## Published benchmark results
 
-Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25; Claude Sonnet 5.5 rows accessed 2026-09-28. Values are percent. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
+Scores published by model vendors and benchmark owners for recent frontier models, accessed 2026-09-25; Claude Sonnet 5.5 rows accessed 2026-09-28 and Claude Haiku 5.5 rows accessed 2026-10-07. Values are percent unless the setting names another unit. Each row names its source; the same benchmark can appear once per source because vendors run different harnesses, grading and effort levels. Internal vendor evaluations are excluded.
 
 Sources: OpenAI = [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/); Anthropic = [Claude Fable 5.1 announcement](https://www.anthropic.com/claude-fable-and-mythos-5-1), [Claude Sonnet 5.5 announcement](https://www.anthropic.com/claude-sonnet-5-5) and [system card](https://www.anthropic.com/claude-sonnet-5-5-system-card); Google = [Gemini 3.8 Flash model card](https://deepmind.google/models/model-cards/gemini-3-8-flash/); ARC Prize = [arcprize.org results](https://arcprize.org/results/google-gemini-3-8-flash); TB-Science leaderboard = [terminal-bench-science.ai](https://www.terminal-bench-science.ai/); Zapier = [AutomationBench leaderboard](https://zapier.com/benchmarks).
 
@@ -842,10 +852,18 @@ GPT-6.1 Sol rows were accessed 2026-09-29. OpenAI = [Sol 6.1 announcement](https
 
 No matching Sol 6.1 row was retrieved from the DeepSWE, TB-Science, Zapier, Surge GDP.pdf, OSWorld or ARC Prize owner leaderboards on that date. These gaps are unknown, not zero. No `minimal` effort is measured here, and no Fast or Ultrafast tier has a separate benchmark or latency measurement for any model. Atomic's derived `-fast` and `-ultrafast` routes use explicit base-model metadata to reuse capability evidence, not a separately measured tier score or latency result.
 
+Claude Haiku 5.5: Anthropic = [launch announcement](https://www.anthropic.com/claude-haiku-5-5), published and accessed 2026-10-07. These launch-table results are vendor-reported; effort, harness revisions, and evaluation run dates are not stated unless shown in the setting. GDPval-AA and AA-Briefcase are raw Elo, not the normalized AA columns above. No Haiku 5.5 result was published on the checked [DeepSWE leaderboard](https://deepswe.datacurve.ai/) on 2026-10-07; no row is added to that table.
+
+Artificial Analysis independently measures Haiku 5.5 Terminal-Bench-Science in its **with-fallback** configuration. Sources accessed 2026-10-07: effort-specific model pages for [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low), the [evaluation page](https://artificialanalysis.ai/evaluations/terminal-bench-science), and [AA's general methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking). That methodology specifies version 0.1.0, 70 tasks, mini-swe-agent, pass@1 averaged over three repeats, and a 1,000-step cap. These are AA's general settings, not a separately documented Haiku-specific harness revision. Evaluation run dates are unpublished; these are not Anthropic launch-table results.
+
 Key:
 
 - `DSWE`: DeepSWE v1.1, vendor-reported software-engineering results; distinct from Datacurve's independent table above.
 - `GDPpdf`: GDP.pdf All-pass, satisfying every criterion on professional-document tasks.
+- `GDPElo`, `BriefElo`: GDPval-AA v2.1 and AA-Briefcase v1.1, raw Elo ratings.
+- `OSW21`: OSWorld 2.1, computer-use workflows; the Haiku result covers the offline subset.
+- `FC11`: FrontierCode 1.1 Main, weighted rubric score; distinct from all-blocking-criteria pass rate.
+- `Chart`: Chartography, chart understanding without tools.
 
 - `ALE`: [Agents' Last Exam](https://agents-last-exam.org/), long-horizon professional tasks in real software, from financial modeling to engineering and media production.
 - `OSW2`, `OSW2s`: [OSWorld 2.0](https://osworld-v2.xlang.ai/), long-horizon computer-use workflows operating desktop applications through the screen; partial credit and strict all-pass scoring.
@@ -864,6 +882,19 @@ Key:
 
 | slug | Model | Benchmark | Score | Setting | Source |
 | --- | --- | --- | ---: | --- | --- |
+| claude-haiku-5-5 | Claude Haiku 5.5 | GDPElo | 1620 | v2.1; raw Elo; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | BriefElo | 1578 | v1.1; raw Elo; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | OSW21 | 72.4 | v2.1, offline subset; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | HLE | 45.9 | no tools; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | HLEt | 57.4 | with tools; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | TB4 | 39.2 | v4.0; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | FC11 | 46.4 | v1.1 Main; effort not stated in launch table | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | Chart | 46.4 | no tools; effort not stated | Anthropic |
+| claude-haiku-5-5 | Claude Haiku 5.5 | TBSci | 20.0 | max effort; with-fallback; AA general settings above | Artificial Analysis |
+| claude-haiku-5-5-xhigh | Claude Haiku 5.5 | TBSci | 18.1 | xhigh effort; with-fallback; AA general settings above | Artificial Analysis |
+| claude-haiku-5-5-high | Claude Haiku 5.5 | TBSci | 10.0 | high effort; with-fallback; AA general settings above | Artificial Analysis |
+| claude-haiku-5-5-medium | Claude Haiku 5.5 | TBSci | 7.1 | medium effort; with-fallback; AA general settings above | Artificial Analysis |
+| claude-haiku-5-5-low | Claude Haiku 5.5 | TBSci | 1.9 | low effort; with-fallback; AA general settings above | Artificial Analysis |
 | gpt-6-1-sol | GPT-6.1 Sol | TBSci | 58.1 | max effort; v0.1.0, 70 tasks, mini-swe-agent, pass@1 over 3 repeats, 1000-step cap | Artificial Analysis |
 | gpt-6-1-sol-low | GPT-6.1 Sol | DSWE | 64.4 | low effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
 | gpt-6-1-sol-medium | GPT-6.1 Sol | DSWE | 73 | medium effort; v1.1; OpenAI-reported, harness not stated | OpenAI |
