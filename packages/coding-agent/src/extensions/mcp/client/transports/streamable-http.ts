@@ -195,6 +195,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	private sessionIdValue: string | undefined;
 	private protocolVersion: string | undefined;
 	private getStreamStarted = false;
+	/** Access token of the latest request, which `close()` reuses instead of asking the auth provider. */
+	private lastToken: string | undefined;
 
 	constructor(options: StreamableHttpTransportOptions) {
 		super();
@@ -258,18 +260,16 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		this.closed = true;
 		this.controller.abort();
 		if (this.started && this.sessionIdValue) {
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), 1_000);
+			// Best effort: the session expires on the server anyway. The auth provider may refresh tokens
+			// over the network, so it is not asked here and closing never waits for a refresh.
 			try {
-				const { headers } = await this.headers();
-				await this.fetch(this.url, { method: "DELETE", headers, signal: controller.signal })
-					.then(discard)
-					.catch(() => undefined);
-			} catch {
-				// Resolving auth headers failed; the session will expire on the server.
-			} finally {
-				clearTimeout(timeout);
-			}
+				const response = await this.fetch(this.url, {
+					method: "DELETE",
+					headers: this.buildHeaders({}, this.lastToken),
+					signal: AbortSignal.timeout(1_000),
+				});
+				await discard(response);
+			} catch {}
 		}
 		this.emitClose();
 	}
@@ -301,13 +301,18 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	}
 
 	private async headers(extra: Record<string, string> = {}): Promise<{ headers: Headers; token?: string }> {
+		const token = await this.options.authProvider?.token();
+		this.lastToken = token;
+		return { headers: this.buildHeaders(extra, token), ...(token ? { token } : {}) };
+	}
+
+	private buildHeaders(extra: Record<string, string>, token: string | undefined): Headers {
 		const headers = new Headers(this.options.headers);
 		for (const [name, value] of Object.entries(extra)) headers.set(name, value);
 		if (this.sessionIdValue) headers.set("Mcp-Session-Id", this.sessionIdValue);
 		if (this.protocolVersion) headers.set("MCP-Protocol-Version", this.protocolVersion);
-		const token = await this.options.authProvider?.token();
 		if (token) headers.set("Authorization", `Bearer ${token}`);
-		return { headers, ...(token ? { token } : {}) };
+		return headers;
 	}
 
 	private captureSession(response: Response): void {

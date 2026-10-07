@@ -8,6 +8,10 @@
 - Added native classification for llama.cpp decision models through `/v1/systemone`. Decision-only models stay out of the chat selector, while chat models keep the next-token classifier fallback. Cached native classifiers remain available after restart.
 - Added exact-name `+name` and `-name` modifiers to CLI `--tools` and SDK `tools`, for example `atomic --tools +codemode,-write`. They change the resolved defaults instead of replacing them and persist across `/reload`.
 
+### Changed
+
+- Changed `atomic mcp login --timeout` to limit the whole sign-in, including requests to the authorization server, instead of only the wait for the browser.
+
 ### Fixed
 
 - Fixed a false `Timeout waiting for response to resume_queued_messages` error when you send a message while a paused queue is still waiting for the agent's current turn to finish, and the follow-up `Agent is already processing` error caused by the stale paused state. The resume now waits for the turn instead of giving up after 30 seconds ([#3493](https://github.com/bastani-inc/atomic/issues/3493)).
@@ -18,6 +22,10 @@
 - Fixed codemode's tool description omitting `await` for `searchTools()`, `describeTool()`, and `describeNamespace()`, which could make scripts return unresolved promises instead of tool information.
 - Fixed slash commands and shell-command drafts typed during interactive startup running before Enter, including when launching with `--model` or `--provider`. Enter-terminated input stays ordered and unfinished text remains in the editor.
 - Fixed a stuck MCP server startup blocking re-enabling the server or shutting down after it was disabled.
+- Fixed clipboard paste doing nothing in Termux, and failed copies there omitting the Termux:API install hint.
+- Fixed `!` and RPC `bash` output keeping fragments of color codes, such as a stray `m`, when a code was split across output chunks.
+- Fixed MCP OAuth sign-ins that could not be cancelled while waiting on the authorization server and kept running after the session ended. The sign-in screen now cancels with Esc at every step, session shutdown aborts a running sign-in, and each request to the authorization server times out after 15 seconds.
+- Fixed shutdown waiting up to 15 seconds to refresh an MCP OAuth token that was about to expire, only to close the server's session.
 
 ## [0.9.28-alpha.2] - 2026-10-07
 

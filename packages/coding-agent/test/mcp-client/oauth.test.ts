@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { McpClient, StreamableHttpTransport } from "../../src/extensions/mcp/client/index.js";
 import {
 	adaptOAuthProvider,
@@ -590,6 +590,45 @@ describe("MCP OAuth", () => {
 		// Servers that do not promise the parameter may omit it.
 		assert.equal(await exchange("omitted", undefined, false), "AUTHORIZED");
 		assert.deepEqual(codes, ["matching", "omitted"]);
+	});
+
+	it("stops when its signal aborts, without falling back to a redirect", async () => {
+		const stalled: string[] = [];
+		const origin = await listen(async (request, _response, serverOrigin) => {
+			stalled.push(new URL(request.url ?? "/", serverOrigin).pathname);
+		});
+		const run = async (provider: TestOAuthProvider) => {
+			const controller = new AbortController();
+			const count = stalled.length;
+			const settled = authorizeMcp(provider, { serverUrl: `${origin}/mcp`, signal: controller.signal }).then(
+				() => assert.fail("the flow should reject"),
+				(error: Error) => error,
+			);
+			await vi.waitFor(() => assert.equal(stalled.length, count + 1));
+			controller.abort();
+			assert.equal((await settled).name, "AbortError");
+			assert.equal(provider.authorizationUrl, undefined);
+			return stalled.at(-1);
+		};
+
+		assert.equal(
+			await run(new TestOAuthProvider("http://127.0.0.1/callback")),
+			"/.well-known/oauth-protected-resource/mcp",
+		);
+
+		const refreshing = new TestOAuthProvider("http://127.0.0.1/callback");
+		refreshing.client = { client_id: "client" };
+		refreshing.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer" };
+		refreshing.discovery = {
+			authorizationServerUrl: origin,
+			authorizationServerMetadata: {
+				issuer: origin,
+				authorization_endpoint: `${origin}/authorize`,
+				token_endpoint: `${origin}/token`,
+				response_types_supported: ["code"],
+			},
+		};
+		assert.equal(await run(refreshing), "/token");
 	});
 });
 

@@ -108,7 +108,7 @@ atomic mcp logout <server>
 
 `add` replaces an existing entry of the same name. `add` and `remove` accept `--local` (`-l`) for the project file. For stdio, use repeatable `--env KEY=VALUE` and `--cwd`. For HTTP, use repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Run `atomic mcp --help` for usage.
 
-`list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login waits up to 300 seconds by default; `--timeout` changes that browser-login budget, not the server request timeout. A running session uses new credentials on its next turn.
+`list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login gives up after 300 seconds by default; `--timeout` limits the whole sign-in, including requests to the authorization server, but not the MCP server request timeout. A running session uses new credentials on its next turn.
 
 ## Find and call tools
 
@@ -165,7 +165,7 @@ MCP Apps resources (`ui://` URIs or `text/html;profile=mcp-app`) are omitted bec
 
 ## Authentication
 
-For a remote OAuth server, configure its URL and run `/mcp login my-server`, or select **Sign in** in `/mcp`. Atomic opens the authorization page and displays a clickable URL. If the browser runs on another machine, paste the complete URL it was redirected to into the sign-in prompt. Treat authorization and redirect URLs as sensitive.
+For a remote OAuth server, configure its URL and run `/mcp login my-server`, or select **Sign in** in `/mcp`. Atomic opens the authorization page and displays a clickable URL. If the browser runs on another machine, paste the complete URL it was redirected to into the sign-in prompt. Press Esc to cancel a sign-in at any step; requests to the authorization server time out after 15 seconds. Treat authorization and redirect URLs as sensitive.
 
 Atomic registers OAuth clients as `atomic`, stores credentials in `~/.atomic/agent/mcp-auth.json`, and refreshes tokens when they expire or are rejected. A successful sign-in reconnects the server. If additional scope is required, sign in again. `/mcp logout my-server` or `atomic mcp logout my-server` deletes stored credentials. Old adapter credential files are not imported; sign in through the native client.
 

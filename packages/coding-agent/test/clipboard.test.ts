@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync, execSync, spawn } from "child_process";
+import { execFile, execFileSync, execSync, spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import type * as OsModule from "os";
 import { platform } from "os";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { copyToClipboard } from "../src/utils/clipboard.js";
+import { copyToClipboard, readClipboardText } from "../src/utils/clipboard.js";
 
 const mocks = vi.hoisted(() => {
 	return {
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
 			setText: vi.fn<(text: string) => Promise<void>>(),
 		},
 		execSync: vi.fn(),
+		execFile: vi.fn(),
 		execFileSync: vi.fn<(file: string, args: string[], options?: object) => Buffer>(),
 		spawn: vi.fn(),
 		platform: vi.fn<() => NodeJS.Platform>(),
@@ -28,6 +29,7 @@ vi.mock("../src/utils/clipboard-native.js", () => {
 vi.mock("child_process", () => {
 	return {
 		execSync: mocks.execSync,
+		execFile: mocks.execFile,
 		execFileSync: mocks.execFileSync,
 		spawn: mocks.spawn,
 	};
@@ -47,6 +49,7 @@ vi.mock("../src/utils/clipboard-image.js", () => {
 });
 
 const mockedExecSync = vi.mocked(execSync);
+const mockedExecFile = vi.mocked(execFile);
 const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedSpawn = vi.mocked(spawn);
 const mockedPlatform = vi.mocked(platform);
@@ -110,6 +113,7 @@ beforeEach(() => {
 	nativeResolved = false;
 	mocks.clipboard.setText.mockReset();
 	mocks.execSync.mockReset();
+	mocks.execFile.mockReset();
 	mocks.execFileSync.mockReset();
 	mocks.spawn.mockReset();
 	mocks.platform.mockReset();
@@ -134,6 +138,48 @@ beforeEach(() => {
 afterEach(() => {
 	process.stdout.write = originalWrite;
 	vi.unstubAllEnvs();
+});
+
+function mockTermuxClipboardGet(result: { stdout: string } | Error): void {
+	mockedExecFile.mockImplementation(((
+		_file: string,
+		_args: string[],
+		_options: object,
+		callback: (error: Error | null, stdout: string) => void,
+	) => {
+		if (result instanceof Error) callback(result, "");
+		else callback(null, result.stdout);
+	}) as unknown as typeof execFile);
+}
+
+describe("readClipboardText", () => {
+	test.each(["clipboard text", ""])("Termux reads termux-clipboard-get result %j on Android", async (text) => {
+		// Regression test for earendil-works/pi#10391: Termux reports platform "android".
+		mockedPlatform.mockReturnValue("android");
+		vi.stubEnv("TERMUX_VERSION", "0.119");
+		mockTermuxClipboardGet({ stdout: text });
+		const source = { getText: vi.fn(async () => "native text") };
+
+		assert.equal(await readClipboardText(source), text || null);
+
+		assert.deepEqual(
+			mockedExecFile.mock.calls.map(([file, args]) => [file, args]),
+			[["termux-clipboard-get", []]],
+		);
+		assert.equal(source.getText.mock.calls.length, 0);
+	});
+
+	test("falls back to the native clipboard when termux-clipboard-get fails", async () => {
+		vi.stubEnv("TERMUX_VERSION", "0.119");
+		mockTermuxClipboardGet(new Error("termux-clipboard-get: not found"));
+
+		assert.equal(await readClipboardText({ getText: async () => "native text" }), "native text");
+	});
+
+	test("does not run termux-clipboard-get outside Termux", async () => {
+		assert.equal(await readClipboardText({ getText: async () => "native text" }), "native text");
+		assert.equal(mockedExecFile.mock.calls.length, 0);
+	});
 });
 
 describe("copyToClipboard", () => {
@@ -388,10 +434,23 @@ describe("copyToClipboard", () => {
 		assert.equal(osc52Writes().length, 1);
 	});
 
+	test("Termux on Android writes through termux-clipboard-set", async () => {
+		mockedPlatform.mockReturnValue("android");
+		vi.stubEnv("TERMUX_VERSION", "0.119");
+		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(execSyncCommands(), ["termux-clipboard-set"]);
+		assert.equal(osc52Writes().length, 0);
+	});
+
 	test.each([
 		["darwin", "", "", "", "Clipboard unavailable"],
 		["win32", "", "", "", "Clipboard unavailable"],
 		["linux", "1", "wayland-1", ":0", "Clipboard unavailable: install the Termux:API app and `termux-api` package"],
+		["android", "0.119", "", "", "Clipboard unavailable: install the Termux:API app and `termux-api` package"],
 		[
 			"linux",
 			"",

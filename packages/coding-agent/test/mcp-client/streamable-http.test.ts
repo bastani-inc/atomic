@@ -355,6 +355,28 @@ describe("StreamableHttpTransport", () => {
 		await client.close();
 	});
 
+	it("closes the session with the last request's token, without asking the auth provider", async () => {
+		const { url, requests } = await startServer(protocolHandler);
+		let calls = 0;
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(
+			new StreamableHttpTransport({
+				url,
+				openGetStream: false,
+				authProvider: { token: async () => `token-${++calls}` },
+			}),
+		);
+		const before = calls;
+		await client.close();
+		assert.equal(calls, before);
+		const deletes = requests.filter((entry) => entry.method === "DELETE");
+		assert.deepEqual(
+			deletes.map((entry) => entry.headers.authorization),
+			[`Bearer token-${before}`],
+		);
+		assert.equal(deletes[0]?.headers["mcp-session-id"], "session-1");
+	});
+
 	// #10188: Cloudflare Workers reject the platform fetch when called with a receiver other than globalThis.
 	it("calls fetch without a receiver", async () => {
 		const realFetch = globalThis.fetch;

@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
-import { stripAnsi } from "../utils/ansi.js";
+import { splitIncompleteAnsiSuffix, stripAnsi } from "../utils/ansi.js";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations, BashOutputChannel } from "./tools/bash.js";
 import { PersistedOutputFile } from "./tools/persisted-output-file.ts";
@@ -114,11 +114,14 @@ export async function executeBashWithOperations(
 	};
 
 	const decoders: Record<BashOutputChannel, TextDecoder> = { stdout: new TextDecoder(), stderr: new TextDecoder() };
-	const onData = (data: Buffer, channel: BashOutputChannel = "stdout") => {
-		totalBytes += data.length;
+	const pendingAnsi: Record<BashOutputChannel, string> = { stdout: "", stderr: "" };
 
+	const appendText = (rawText: string, channel: BashOutputChannel) => {
 		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
-		const text = sanitizeBinaryOutput(stripAnsi(decoders[channel].decode(data, { stream: true }))).replace(/\r/g, "");
+		const text = sanitizeBinaryOutput(stripAnsi(rawText)).replace(/\r/g, "");
+		if (!text) {
+			return;
+		}
 
 		// Start writing to temp file if exceeds threshold
 		if (totalBytes > DEFAULT_MAX_BYTES) {
@@ -143,6 +146,23 @@ export async function executeBashWithOperations(
 		}
 	};
 
+	const onData = (data: Buffer, channel: BashOutputChannel = "stdout") => {
+		totalBytes += data.length;
+		const { complete, pending } = splitIncompleteAnsiSuffix(
+			pendingAnsi[channel] + decoders[channel].decode(data, { stream: true }),
+		);
+		pendingAnsi[channel] = pending;
+		appendText(complete, channel);
+	};
+
+	const flushOutput = () => {
+		for (const channel of ["stdout", "stderr"] as const) {
+			const rest = pendingAnsi[channel] + decoders[channel].decode();
+			pendingAnsi[channel] = "";
+			appendText(rest, channel);
+		}
+	};
+
 	try {
 		const result = await operations.exec(command, cwd, {
 			onData,
@@ -151,6 +171,7 @@ export async function executeBashWithOperations(
 			pty: options?.pty,
 		});
 
+		flushOutput();
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);
 		if (truncationResult.truncated) {
@@ -169,6 +190,7 @@ export async function executeBashWithOperations(
 	} catch (err) {
 		// Check if it was an abort
 		if (options?.signal?.aborted) {
+			flushOutput();
 			const fullOutput = outputChunks.join("");
 			const truncationResult = truncateTail(fullOutput);
 			if (truncationResult.truncated) {

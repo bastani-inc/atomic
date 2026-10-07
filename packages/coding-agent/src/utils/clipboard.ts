@@ -74,9 +74,21 @@ function copyViaWindowsClipboard(text: string): boolean {
 	}
 }
 
+function readTermuxClipboardText(): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		execFile("termux-clipboard-get", [], { timeout: 5000, env: createChildProcessEnvironment() }, (error, stdout) =>
+			resolve(error ? undefined : stdout),
+		);
+	});
+}
+
 export async function readClipboardText(
 	source: { getText(): Promise<string> } | null = clipboard,
 ): Promise<string | null> {
+	if (process.env.TERMUX_VERSION) {
+		const text = await readTermuxClipboardText();
+		if (text !== undefined) return text || null;
+	}
 	try {
 		if (!source) return null;
 		return await source.getText();
@@ -254,10 +266,10 @@ export async function copyToClipboard(text: string): Promise<void> {
 	}
 	if (copied) return;
 	if (oversized) throw new Error("Clipboard unavailable: text exceeds the OSC 52 size limit");
+	if (env.TERMUX_VERSION) {
+		throw new Error("Clipboard unavailable: install the Termux:API app and `termux-api` package");
+	}
 	if (p === "linux") {
-		if (env.TERMUX_VERSION) {
-			throw new Error("Clipboard unavailable: install the Termux:API app and `termux-api` package");
-		}
 		if (env.WAYLAND_DISPLAY) {
 			throw new Error("Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access");
 		}

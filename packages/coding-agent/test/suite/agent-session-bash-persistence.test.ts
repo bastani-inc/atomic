@@ -241,4 +241,74 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(result.output).toContain("hello from custom ops");
 		expect(harness.session.messages[harness.session.messages.length - 1]?.role).toBe("bashExecution");
 	});
+
+	describe("escape sequences split across output chunks (earendil-works/pi#10504)", () => {
+		async function runChunks(
+			chunks: Array<string | Buffer | [string, "stdout" | "stderr"]>,
+			beforeExit?: (streamed: string) => void,
+		) {
+			const harness = await createHarness();
+			harnesses.push(harness);
+			const deltas: string[] = [];
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, options) => {
+					for (const chunk of chunks) {
+						if (Array.isArray(chunk)) options.onData(Buffer.from(chunk[0]), chunk[1]);
+						else options.onData(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+					}
+					beforeExit?.(deltas.join(""));
+					return { exitCode: 0 };
+				},
+			};
+			const result = await harness.session.executeBash("custom", (delta) => deltas.push(delta), { operations });
+			const recorded = harness.session.messages[harness.session.messages.length - 1];
+			return {
+				output: result.output,
+				streamed: deltas.join(""),
+				recorded: recorded?.role === "bashExecution" ? recorded.output : undefined,
+			};
+		}
+
+		it("strips a color reset split inside its parameters", async () => {
+			const { output, streamed, recorded } = await runChunks(["\x1b[31mERROR: file.py:1\x1b[0", "m\n"]);
+			expect(output).toBe("ERROR: file.py:1\n");
+			expect(streamed).toBe("ERROR: file.py:1\n");
+			expect(recorded).toBe("ERROR: file.py:1\n");
+		});
+
+		it("strips a color code split right after ESC", async () => {
+			const { output, streamed } = await runChunks(["before\x1b", "[32mafter\n"]);
+			expect(output).toBe("beforeafter\n");
+			expect(streamed).toBe("beforeafter\n");
+		});
+
+		it("strips an OSC sequence split before its terminator", async () => {
+			const { output } = await runChunks(["a\x1b]0;window ", "title\x1b", "\\b\n"]);
+			expect(output).toBe("ab\n");
+		});
+
+		it("keeps a sequence split on stderr separate from interleaved stdout", async () => {
+			const { output } = await runChunks([
+				["err\x1b[3", "stderr"],
+				["out\n", "stdout"],
+				["1m!\n", "stderr"],
+			]);
+			expect(output).toBe("errout\n!\n");
+		});
+
+		it("flushes an incomplete multi-byte character at the end of output", async () => {
+			const { output, streamed } = await runChunks(["ok", Buffer.from("\u00e9").subarray(0, 1)]);
+			expect(output).toBe("ok\uFFFD");
+			expect(streamed).toBe("ok\uFFFD");
+		});
+
+		it("does not hold back output behind a long unterminated sequence", async () => {
+			const long = "x".repeat(300);
+			let streamedBeforeExit = "";
+			await runChunks([`\x1b]${long}`], (streamed) => {
+				streamedBeforeExit = streamed;
+			});
+			expect(streamedBeforeExit).toBe(`]${long}`);
+		});
+	});
 });

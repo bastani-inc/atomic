@@ -359,15 +359,13 @@ Use `--list-models` or `/model` to check the current catalog and replace a missi
 
 ### Azure
 
-Use the `azure` provider for OpenAI Responses models and Azure Foundry Chat Completions, including `azure/deepseek-v4-pro`:
+Use the `azure` provider for OpenAI Responses models and Microsoft Foundry Chat Completions models, including `azure/deepseek-v4-pro`. The provider ID `azure` is the key in `auth.json`, `models.json`, and `settings.json`, and the prefix in model references:
 
 ```bash
 atomic --model azure/deepseek-v4-pro:high
 ```
 
 DeepSeek V4 Pro supports `low`, `medium`, and `high` reasoning effort. Azure OpenAI models keep the `azure-openai-responses` API ID; Chat Completions models use `openai-completions`.
-
-Custom Azure deployments in `models.json` or extension registrations default to the Responses API when no API is specified and the model ID is not in the catalog. Set `api: "openai-completions"` at the provider or model level to use Chat Completions.
 
 ```bash
 export AZURE_OPENAI_API_KEY=...
@@ -383,9 +381,24 @@ export AZURE_OPENAI_API_VERSION=2024-02-01
 export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-4=my-gpt4,gpt-4o=my-gpt4o
 ```
 
-`AZURE_OPENAI_API_VERSION` configures Responses requests. Chat Completions uses the normalized `/openai/v1` endpoint.
+`AZURE_OPENAI_API_VERSION` configures Responses requests and defaults to `v1`. Chat Completions uses the normalized `/openai/v1` endpoint.
 
 Deployment names default to model IDs. Set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` when your deployments have different names; it applies to both APIs without changing the model ID shown in sessions.
+
+Custom Azure deployments in `models.json` or extension registrations default to the Responses API when no API is specified and the model ID is not in the catalog. Set `api: "openai-completions"` at the provider or model level to use Chat Completions, for example for a Foundry model that Atomic does not include. Custom models require a `baseUrl`; `AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_RESOURCE_NAME` take priority over it when set:
+
+```json
+{
+  "providers": {
+    "azure": {
+      "baseUrl": "https://your-resource.services.ai.azure.com",
+      "models": [
+        { "id": "your-deployment", "api": "openai-completions" }
+      ]
+    }
+  }
+}
+```
 
 The former provider name `azure-openai-responses` remains accepted in model selections, saved sessions, and SDK lookups. Startup renames that provider in `auth.json`, `settings.json`, and `models.json`, including legacy Pi configuration paths. Existing `azure` entries win on collisions. Project configuration is migrated only after the project is trusted; session files are not rewritten. Use `azure` in new configuration.
 
