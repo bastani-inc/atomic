@@ -15,14 +15,15 @@ describe("provider request retries", () => {
 		vi.restoreAllMocks();
 	});
 
-	it.each([
+	it.each<Record<string, string>>([
 		{ "retry-after": "not a date" },
 		{ "retry-after": "Infinity" },
 		{ "retry-after-ms": "Infinity" },
 	])("uses exponential backoff for invalid retry headers %j (#9571)", async (headers) => {
 		vi.useFakeTimers();
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		const request = vi.fn<() => Promise<string>>()
+		const request = vi
+			.fn<() => Promise<string>>()
 			.mockRejectedValueOnce(providerError(429, headers))
 			.mockRejectedValueOnce(providerError(429, headers))
 			.mockResolvedValue("ok");

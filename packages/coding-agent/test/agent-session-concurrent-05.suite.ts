@@ -2,13 +2,12 @@
  * Tests for AgentSession concurrent prompt guard.
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AssistantMessage,
-	type AssistantMessageEvent,
-	EventStream,
+	createAssistantMessageEventStream,
 	getModel,
 	type TextContent,
 } from "@bastani/pi-ai/compat";
@@ -21,20 +20,6 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
-
-// Mock stream that mimics AssistantMessageEventStream
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createAssistantMessage(text: string): AssistantMessage {
 	return {
@@ -106,8 +91,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-concurrent-test-${Date.now()}`);
-		mkdirSync(tempDir, { recursive: true });
+		tempDir = mkdtempSync(join(tmpdir(), "pi-concurrent-test-"));
 	});
 
 	afterEach(async () => {
@@ -135,7 +119,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			},
 			streamFn: (_model, _context, options) => {
 				abortSignal = options?.signal;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					stream.push({ type: "start", partial: createAssistantMessage("") });
 					const checkAbort = () => {
@@ -200,7 +184,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				tools: [tool],
 			},
 			streamFn: async (_model, context) => {
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					const hasToolResult = context.messages.some((message) => message.role === "toolResult");
 

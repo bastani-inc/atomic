@@ -246,6 +246,7 @@ it("preserves native refusal through terminal completion and JSON round-trip (#3
 		async function* events(): AsyncIterable<ResponseStreamEvent> {
 			yield {
 				type: "response.output_item.added",
+				sequence_number: 0,
 				output_index: 0,
 				item: { type: "message", id: "refused", role: "assistant", status: "in_progress", content: [] },
 			} as ResponseStreamEvent;

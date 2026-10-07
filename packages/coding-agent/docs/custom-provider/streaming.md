@@ -24,6 +24,10 @@ Per-vendor provider configurations (base URLs, auth, model catalogs) live under 
 
 All providers follow the same pattern:
 
+Return a stream from `createAssistantMessageEventStream()` or construct `AssistantMessageEventStream` directly. A plain `EventStream` subclass does not satisfy the response stream type.
+
+The stream sets optional `durationMs` on the final assistant message using a monotonic clock. Set `timestamp` when the request starts. Existing durations are preserved; messages whose timestamps predate the stream, such as fetched deferred results, remain untimed.
+
 ```typescript
 import {
   type AssistantMessage,

@@ -645,6 +645,7 @@ export interface AssistantMessage {
 	 */
 	endTurn?: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
+	durationMs?: number;
 }
 
 /** A tool call made by another tool, such as a codemode script. */
@@ -680,6 +681,7 @@ export type ToolResultMessage<TDetails = JsonValue> =
 				nestedCalls?: NestedToolCalls;
 				isError: boolean;
 				timestamp: number; // Unix timestamp in milliseconds
+				durationMs?: number;
 			}
 		: never;
 
