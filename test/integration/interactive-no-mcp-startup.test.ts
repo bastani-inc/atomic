@@ -23,6 +23,7 @@ const TMUX_AVAILABLE = (() => {
 	}
 })();
 const REAL_INTERACTIVE_STARTUP_TIMEOUT_MS = 120_000;
+const SLOW_EXTENSION_SHUTDOWN_MS = 1_000;
 
 interface StartupSnapshot {
 	pid: number;
@@ -55,7 +56,10 @@ await import(${JSON.stringify(pathToFileURL(fixtureServer).href)});
 			observer,
 			`import { writeFileSync } from "node:fs";
 export default function(pi) {
-	pi.on("session_shutdown", () => writeFileSync(process.env.STARTUP_SNAPSHOT + ".closed", "closed"));
+	pi.on("session_shutdown", async () => {
+		await new Promise(resolve => setTimeout(resolve, ${SLOW_EXTENSION_SHUTDOWN_MS}));
+		writeFileSync(process.env.STARTUP_SNAPSHOT + ".closed", "closed");
+	});
 	pi.registerCommand("startup-ready", {
 		handler: async (_args, ctx) => {
 			if (ctx.isPresentationOnly) return;
