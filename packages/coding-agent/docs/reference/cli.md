@@ -144,14 +144,14 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist tool names or `*` patterns; keeps MCP tools unless an entry starts with `mcp__` |
+| `--tools <list>`, `-t <list>` | Allowlist tool names or `*` patterns, or modify defaults with only `+name`/`-name` entries; an allowlist keeps MCP tools unless an entry starts with `mcp__` |
 | `--exclude-tools <list>`, `-xt <list>` | Exclude tool names or `*` patterns, including MCP tools and Intercom |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable every tool, including Intercom, even with `--tools` |
 
 Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, plus `powershell` on native Windows when a PowerShell executable is available. `ls` remains available but is not a default. `defaultTools` selects initial coding tools without narrowing extension/custom tools. `--tools` selects an explicit allowlist; `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. The bundled Intercom extension remains loaded with `--no-extensions`, but its tool follows the allowlist, exclusions, and `--no-tools` like other extension tools.
 
-To add opt-in [codemode](/tools#codemode) or [tool search](/tools#tool_search) alongside defaults, use `"defaultTools": ["+codemode", "+tool_search"]` in settings. With `--tools`, include their names and every other tool you want available.
+To add opt-in [codemode](/tools#codemode) or [tool search](/tools#tool_search) alongside defaults, use `atomic --tools +codemode,+tool_search` for one invocation, or `"defaultTools": ["+codemode", "+tool_search"]` in settings. `atomic --tools +codemode,-write` keeps the other defaults and disables `write`. Modifier entries take exact names, not `*` patterns, and cannot be mixed with plain allowlist entries. Use `--exclude-tools` for pattern exclusions. On `/reload`, modifiers apply to the reloaded `defaultTools` setting too, so tools removed with `-name` stay removed. Modifiers do not narrow extension/custom tools or filter MCP exposure; `--no-tools` still disables every tool.
 
 ### MCP tools
 

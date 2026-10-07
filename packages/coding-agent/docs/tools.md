@@ -22,7 +22,7 @@ Codemode lets the model compose permitted tool calls in JavaScript and return on
 { "defaultTools": ["+codemode"] }
 ```
 
-For one invocation, `--tools` is a replacement allowlist: `atomic --tools read,search,find,codemode`. Include every tool you want available, including `intercom` when needed. `codemode({ code: "..." })` accepts top-level `await` and `return`, for example:
+For one invocation, use `atomic --tools +codemode` to keep the defaults and add codemode. Plain-name lists remain replacement allowlists, for example `atomic --tools read,search,find,codemode`; include every tool you want available, including `intercom` when needed. `codemode({ code: "..." })` accepts top-level `await` and `return`, for example:
 
 ```js
 const files = await Promise.all([

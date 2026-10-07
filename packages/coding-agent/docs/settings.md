@@ -468,7 +468,7 @@ On Windows, select `powershell` instead of `bash`, or include both:
 }
 ```
 
-An empty array starts with no coding tools while preserving extension/custom tools. `--tools` replaces this behavior with an allowlist including Intercom; `--no-tools` disables every tool even with an allowlist. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--exclude-tools` filters the result, including Intercom.
+An empty array starts with no coding tools while preserving extension/custom tools. `--tools` with plain names replaces this behavior with an allowlist including Intercom; modifier-only lists change the resolved selection instead. `--no-tools` disables every tool even with an allowlist or modifiers. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. `--exclude-tools` filters the result, including Intercom.
 
 A list containing only modifiers starts from Atomic's standard defaults. Modifiers are applied in order; adding an existing name or removing an absent one has no effect:
 
@@ -478,7 +478,7 @@ A list containing only modifiers starts from Atomic's standard defaults. Modifie
 
 Plain names establish a replacement list before its modifiers apply. A project list of only modifiers layers over the global selection. A project list with plain names, or an empty list, replaces the global selection. For example, global `["read", "bash"]` plus project `["-bash", "+ls"]` resolves to `["read", "ls"]`.
 
-`/reload` enables tools newly added to `defaultTools`. It does not disable removed tools or re-enable unchanged tools you turned off during the session. Explicit `--tools`, `--no-tools`, and `--no-builtin-tools` choices override the setting on reload too; excluded tools remain excluded.
+`/reload` enables tools newly added to `defaultTools`. It does not disable removed tools or re-enable unchanged tools you turned off during the session. `--tools` with plain names, `--no-tools`, and `--no-builtin-tools` override the setting on reload too; excluded tools remain excluded. Modifier-only `--tools` lists apply on top of the reloaded setting, so a tool removed with `-name` stays removed.
 
 `codemode` and `tool_search` are built-in extension tools registered inactive. Add `"+codemode"` or `"+tool_search"` to `defaultTools` to activate them alongside ordinary defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
 

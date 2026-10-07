@@ -102,6 +102,15 @@ for (const transactional of [true, false]) {
 			[...defaults.filter((name) => name !== "bash"), "inactive_tool", "ls"].sort(),
 		);
 	});
+
+	test(`reload preserves CLI tool modifiers with transactional=${transactional}`, async () => {
+		writeSettings({ defaultTools: ["read"] });
+		const session = await createFileSession({ tools: ["-bash", "+ls"] }, transactional);
+		assert.deepEqual(session.getActiveToolNames(), ["read", "ls"]);
+		writeSettings({ defaultTools: ["read", "bash", "inactive_tool"] });
+		await session.reload();
+		assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
+	});
 }
 
 test("reload respects explicit tool options and exclusions (#10245)", async () => {
@@ -124,4 +133,20 @@ test("reload respects explicit tool options and exclusions (#10245)", async () =
 	writeSettings({ defaultTools: ["+ls", "+inactive_tool"] });
 	await excluded.reload();
 	assert.deepEqual(excluded.getActiveToolNames().sort(), [...getDefaultToolNames(), "inactive_tool"].sort());
+});
+
+test("SDK tool modifiers retain custom activation and total suppression", async () => {
+	writeSettings({ defaultTools: ["read", "write"] });
+	const session = await createFileSession({ tools: ["+inactive_tool", "-write"] });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "read"]);
+	const suppressed = await createFileSession({ noTools: "all", tools: ["+inactive_tool", "+read"] });
+	assert.deepEqual(suppressed.getAllTools(), []);
+	writeSettings({ defaultTools: ["read", "inactive_tool"] });
+	await suppressed.reload();
+	assert.deepEqual(suppressed.getAllTools(), []);
+});
+
+test("SDK rejects mixed tool lists and modifier patterns", async () => {
+	await assert.rejects(createFileSession({ tools: ["read", "+ls"] }), /tool names cannot be mixed/);
+	await assert.rejects(createFileSession({ tools: ["-mcp__docs__*"] }), /take exact tool names, not patterns/);
 });
