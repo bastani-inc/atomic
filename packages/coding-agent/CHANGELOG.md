@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.28-alpha.2] - 2026-10-07
+
 ### Added
 
 - Added `compactionModel` and a **Compaction model** selector in `/settings` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
