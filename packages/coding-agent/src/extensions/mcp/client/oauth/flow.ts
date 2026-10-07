@@ -76,6 +76,8 @@ export interface OAuthFlowOptions {
 	 */
 	authorizationServerMetadataUrl?: URL;
 	fetch?: McpFetch;
+	/** Aborts every request of the flow. Requests have no time limit of their own; combine with a timeout as needed. */
+	signal?: AbortSignal;
 	skipIssuerValidation?: boolean;
 	/**
 	 * Go straight to the authorization redirect instead of refreshing stored tokens, for example when the
@@ -93,6 +95,7 @@ export interface TokenRequestOptions {
 	resource?: string;
 	addClientAuthentication?: AddClientAuthentication;
 	fetch?: McpFetch;
+	signal?: AbortSignal;
 }
 
 function loopback(hostname: string): boolean {
@@ -209,7 +212,12 @@ async function tokenRequest(
 			params,
 		);
 	}
-	const response = await (options.fetch ?? globalThis.fetch)(url, { method: "POST", headers, body: params });
+	const response = await (options.fetch ?? globalThis.fetch)(url, {
+		method: "POST",
+		headers,
+		body: params,
+		signal: options.signal,
+	});
 	const text = await response.text();
 	let value: unknown;
 	try {
@@ -234,6 +242,7 @@ export async function registerClient(
 		clientMetadata: OAuthClientMetadata;
 		scope?: string;
 		fetch?: McpFetch;
+		signal?: AbortSignal;
 	},
 ): Promise<OAuthClientInformationFull> {
 	const endpoint = options.metadata?.registration_endpoint;
@@ -250,6 +259,7 @@ export async function registerClient(
 					options.clientMetadata.application_type ?? applicationType(options.clientMetadata.redirect_uris),
 				...(options.scope ? { scope: options.scope } : {}),
 			}),
+			signal: options.signal,
 		},
 	);
 	if (!response.ok) throw new OAuthRegistrationError(response.status, await response.text());
@@ -313,6 +323,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 					(await discoverAuthorizationServerMetadata(cached.authorizationServerUrl, {
 						fetch: options.fetch,
 						skipIssuerValidation: options.skipIssuerValidation,
+						signal: options.signal,
 					})),
 				resourceMetadata: cached.resourceMetadata,
 			}
@@ -321,6 +332,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 				authorizationServerMetadataUrl: metadataUrl,
 				fetch: options.fetch,
 				skipIssuerValidation: options.skipIssuerValidation,
+				signal: options.signal,
 			});
 	if (!metadataUrl) {
 		await provider.saveDiscoveryState?.({
@@ -350,6 +362,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			clientMetadata: provider.clientMetadata,
 			scope,
 			fetch: options.fetch,
+			signal: options.signal,
 		});
 		await provider.saveClientInformation(client);
 	}
@@ -360,6 +373,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 		resource,
 		addClientAuthentication: provider.addClientAuthentication,
 		fetch: options.fetch,
+		signal: options.signal,
 	};
 	if (options.authorizationCode) {
 		// RFC 9207: never send a code from another authorization server to this one.
@@ -389,7 +403,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			await provider.saveTokens(withScope(tokens, existing.scope));
 			return "AUTHORIZED";
 		} catch (error) {
-			if (error instanceof OAuthInsecureEndpointError) throw error;
+			if (options.signal?.aborted || error instanceof OAuthInsecureEndpointError) throw error;
 			if (error instanceof OAuthError && error.code !== "server_error") throw error;
 		}
 	}

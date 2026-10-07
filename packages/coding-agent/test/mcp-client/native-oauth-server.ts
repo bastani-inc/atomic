@@ -15,10 +15,15 @@ function json(response: ServerResponse, status: number, body: unknown, headers: 
 /**
  * MCP server protected by OAuth, with its own authorization server (discovery, DCR, PKCE, refresh).
  * `iss` is sent as the `iss` parameter of authorization responses (RFC 9207).
+ * The MCP endpoint assigns a session, so closing a connection sends a DELETE. Paths added to `stall`
+ * accept requests and never answer them, like an unresponsive server.
  */
 export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 	const log: string[] = [];
 	const registrations: Record<string, unknown>[] = [];
+	const deletes: (string | undefined)[] = [];
+	const stall = new Set<string>();
+	const stalled: { path: string; request: IncomingMessage }[] = [];
 	const validTokens = new Set<string>();
 	const refreshTokens = new Set<string>();
 	const challenges = new Map<string, string>();
@@ -34,11 +39,12 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 	};
 
 	const handleMcp = async (request: IncomingMessage, response: ServerResponse) => {
+		const token = request.headers.authorization?.replace(/^Bearer /, "");
+		if (request.method === "DELETE") deletes.push(token);
 		if (request.method !== "POST") {
 			response.writeHead(request.method === "GET" ? 405 : 200).end();
 			return;
 		}
-		const token = request.headers.authorization?.replace(/^Bearer /, "");
 		if (!token || !validTokens.has(token)) {
 			log.push(`401 ${token ?? "none"}`);
 			response
@@ -68,11 +74,15 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 		} else {
 			result = {};
 		}
-		json(response, 200, { jsonrpc: "2.0", id: message.id, result });
+		json(response, 200, { jsonrpc: "2.0", id: message.id, result }, { "mcp-session-id": "session-1" });
 	};
 
 	const handle = async (request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", origin);
+		if (stall.has(url.pathname)) {
+			stalled.push({ path: url.pathname, request });
+			return;
+		}
 		switch (url.pathname) {
 			case "/mcp":
 				return handleMcp(request, response);
@@ -140,6 +150,11 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 		log,
 		/** Client metadata of dynamic client registrations. */
 		registrations,
+		/** Access tokens of session DELETE requests. */
+		deletes,
+		stall,
+		/** Requests to stalled paths, still open unless the client gave up. */
+		stalled,
 		/** Simulates access token expiry. */
 		expireAccessTokens: () => validTokens.clear(),
 		close: () =>

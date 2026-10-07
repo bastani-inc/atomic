@@ -9,6 +9,7 @@ import { hyperlink, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.ts";
 import type { ExtensionMode } from "../../src/core/extensions/context-types.ts";
+import { emitSessionShutdownEvent } from "../../src/core/extensions/runner.ts";
 import type { ExtensionCustomComponent, ExtensionUIContext } from "../../src/core/extensions/types.js";
 import { KeybindingsManager } from "../../src/core/keybindings.js";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.ts";
@@ -211,6 +212,42 @@ describe("AgentSession MCP OAuth", () => {
 		expect(server.log).toContain("token code");
 	});
 
+	async function shutdown(harness: Harness): Promise<number> {
+		const start = Date.now();
+		await emitSessionShutdownEvent(harness.session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+		return Date.now() - start;
+	}
+
+	for (const path of ["/.well-known/oauth-authorization-server", "/token"]) {
+		it(`cancels a sign-in waiting on ${path} when the session shuts down`, async () => {
+			const { harness, server, notifications } = await setup("follow");
+			server.stall.add(path);
+			const login = harness.session.prompt("/mcp login issues");
+			await vi.waitFor(() => expect(server.stalled).toHaveLength(1), { timeout: 5_000 });
+
+			expect(await shutdown(harness)).toBeLessThan(2_000);
+			await login;
+			await vi.waitFor(() => expect(server.stalled[0]?.request.socket.destroyed).toBe(true));
+			expect(notifications.filter((message) => message.startsWith("Sign-in"))).toEqual([]);
+		});
+	}
+
+	it("closes the session without refreshing an expiring token", async () => {
+		const { harness, server, notifications, backend } = await setup("follow");
+		await harness.session.prompt("/mcp login issues");
+		expect(notifications.at(-1)).toBe('Signed in to MCP server "issues" (1 tools).');
+		backend.withLock((current) => {
+			const states = JSON.parse(current ?? "{}") as Record<string, { tokensExpireAt?: number }>;
+			for (const state of Object.values(states)) state.tokensExpireAt = Date.now() + 10_000;
+			return { result: undefined, next: JSON.stringify(states) };
+		});
+		server.stall.add("/token");
+
+		expect(await shutdown(harness)).toBeLessThan(2_000);
+		expect(server.stalled).toEqual([]);
+		expect(server.deletes).toEqual(["access-1"]);
+	});
+
 	async function freePort(): Promise<number> {
 		return new Promise<number>((resolve) => {
 			const probe = createServer().listen(0, "127.0.0.1", () => {
@@ -253,6 +290,35 @@ describe("AgentSession MCP OAuth", () => {
 		const fixed = await setup("follow", { callbackUrl: "http://127.0.0.1/oauth/done", callbackPort: port });
 		await fixed.harness.session.prompt("/mcp login issues");
 		expect(fixed.opened[0].searchParams.get("redirect_uri")).toBe(`http://127.0.0.1:${port}/oauth/done`);
+	});
+
+	it("gives up on atomic mcp login after --timeout, also while the authorization server hangs", async () => {
+		const server = await startOAuthMcpServer();
+		cleanups.push(server.close);
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-login-"));
+		cleanups.push(() => rmSync(agentDir, { recursive: true, force: true }));
+		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { issues: { url: server.url } } }));
+		const login = async () => {
+			const output: string[] = [];
+			const exitCode = await runMcpCommand(["login", "issues", "--timeout", "0.5"], {
+				cwd: agentDir,
+				agentDir,
+				credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+				openUrl: () => {},
+				log: (line) => output.push(line),
+				error: (line) => output.push(line),
+			});
+			return { exitCode, output };
+		};
+
+		const unapproved = await login();
+		expect(unapproved.exitCode).toBe(1);
+		expect(unapproved.output.at(-1)).toContain("was cancelled or not completed within");
+
+		server.stall.add("/.well-known/oauth-authorization-server");
+		const stalled = await login();
+		expect(stalled.exitCode).toBe(1);
+		expect(stalled.output.at(-1)).toContain("was cancelled or not completed within");
 	});
 
 	it("uses credentials from pi mcp login on the next turn", async () => {
