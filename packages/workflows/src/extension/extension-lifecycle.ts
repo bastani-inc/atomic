@@ -1,9 +1,9 @@
-import { resolve } from "node:path";
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
+import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
 import { quitAllRuns } from "../runs/background/quit.js";
@@ -27,6 +27,17 @@ interface WorkflowLifetime {
 	release?: () => Promise<void>;
 	closing?: Promise<void>;
 	startupStarted?: boolean;
+}
+
+const startupRecoveries = new Set<Promise<void>>();
+
+function trackStartupRecovery(recovery: Promise<void>): void {
+	const tracked = recovery.catch(() => undefined).finally(() => startupRecoveries.delete(tracked));
+	startupRecoveries.add(tracked);
+}
+
+export async function settleStartupWorkflowRecoveries(): Promise<void> {
+	while (startupRecoveries.size > 0) await Promise.all([...startupRecoveries]);
 }
 
 async function attemptAll(actions: readonly (() => unknown | Promise<unknown>)[]): Promise<void> {
@@ -182,23 +193,28 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	};
 	let startupResourcesDiscovered = false;
 
-	const resumeInFlight = async (ctx: PiEventContext | undefined): Promise<void> => {
+	let recoveryGeneration = 0;
+	const resumeInFlight = async (ctx: PiEventContext | undefined, generation: number): Promise<void> => {
+		const isCurrent = () => generation === recoveryGeneration;
 		if (ctx?.isPresentationOnly === true) return;
 		const mode = runtimeState.configLoadRef.current?.config?.resumeInFlight ?? "ask";
 		if (mode === "never" || (mode === "ask" && (ctx?.hasUI === false || typeof ctx?.ui?.confirm !== "function")))
 			return;
 		try {
 			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
+			if (!isCurrent()) return;
 			const backend = getDurableBackend();
+			const currentCwd = canonicalDirectory(
+				ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd(),
+			);
 			const isInterruptedInProject = (entry: ResumableWorkflowEntry): boolean => {
 				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
 				return (
-					handle.invocationCwd !== undefined &&
-					resolve(handle.invocationCwd) ===
-						resolve(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd()) &&
 					handle.status === "running" &&
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
-					!isLiveRunningWorkflow(handle)
+					!isLiveRunningWorkflow(handle) &&
+					handle.invocationCwd !== undefined &&
+					canonicalDirectory(handle.invocationCwd) === currentCwd
 				);
 			};
 			const interrupted = catalog.filter(isInterruptedInProject);
@@ -211,6 +227,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				))
 			)
 				return;
+			if (!isCurrent()) return;
 			await runtimeState.ensureWorkflowResourcesLoaded();
 			const runtime = runtimeState.runtimeForContext(ctx);
 			const prepared = await prepareWorkflowResumeCatalog(runtime, new Set(store.runs().map((run) => run.id)));
@@ -224,6 +241,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				);
 			}
 			for (const entry of prepared.resumable) {
+				if (!isCurrent()) return;
 				if (!eligibleIds.has(entry.workflowId) || !isInterruptedInProject(entry)) continue;
 				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
 					policy: workflowPolicyFromContext(ctx),
@@ -233,6 +251,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
 			}
 		} catch (error) {
+			if (!isCurrent()) return;
 			ctx?.ui?.notify?.(
 				`Workflow startup resume failed: ${String(error)}. Use /workflow resume to retry.`,
 				"warning",
@@ -296,7 +315,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
-		if (stopsWorkflows) await resumeInFlight(ctx);
+		const generation = ++recoveryGeneration;
+		if (stopsWorkflows) trackStartupRecovery(resumeInFlight(ctx, generation));
 	});
 	// A second startup discovery in one session means deferred startup (such as
 	// project trust) published a changed package set after session_start (#3354).
@@ -313,6 +333,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	installCompactionHook(pi, store);
 	pi.on("session_shutdown", async (event) => {
 		const reason = eventReason(event);
+		recoveryGeneration += 1;
 		const closeGeneration = closeObservation;
 		if (replacementStopsWorkflows(reason)) {
 			lifetime.closing ??= attemptAll([
