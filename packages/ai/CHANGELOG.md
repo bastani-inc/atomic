@@ -8,6 +8,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Added `LoginOptions.agentName` for apps to identify themselves during OpenAI ChatGPT and Codex browser login.
 
+### Changed
+
+- The faux provider compares prompt-cache prefixes message by message without changing simulated usage counts.
+
 ### Fixed
 
 - Reduced context-limit request failures by estimating new input at 3.5 characters per token when calculating output limits.

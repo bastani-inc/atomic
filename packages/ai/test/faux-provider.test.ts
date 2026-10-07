@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	complete,
@@ -337,6 +338,40 @@ describe("faux provider", () => {
 		});
 		expect(second.usage.cacheRead).toBeGreaterThan(0);
 		expect(second.usage.input + second.usage.cacheRead).toBeGreaterThan(second.usage.input);
+	});
+
+	it("preserves joined prompt cache counts through append, edit, truncate and empty prompts", async () => {
+		const registration = registerFauxProvider();
+		registrations.push(registration);
+		registration.setResponses(Array.from({ length: 6 }, () => fauxAssistantMessage("a")));
+		const options = { sessionId: "session-1", cacheRetention: "short" } as const;
+		const user = (content: string) => ({ role: "user" as const, content, timestamp: 1 });
+		const prompts = [
+			[user("hello world")],
+			[user("hello world"), user("next")],
+			[user("hello wide"), user("next")],
+			[user("hello wide")],
+			[],
+			[user("hello")],
+		];
+		let previous = "";
+		for (const messages of prompts) {
+			const prompt = messages.map((message) => `user:${message.content}`).join("\n\n");
+			let cachedChars = 0;
+			while (
+				cachedChars < previous.length &&
+				cachedChars < prompt.length &&
+				previous[cachedChars] === prompt[cachedChars]
+			)
+				cachedChars++;
+			const cacheRead = Math.ceil(cachedChars / 4);
+			const cacheWrite = Math.ceil((prompt.length - cachedChars) / 4);
+			const result = await complete(registration.getModel(), { messages }, options);
+			assert.equal(result.usage.cacheRead, cacheRead);
+			assert.equal(result.usage.cacheWrite, cacheWrite);
+			assert.equal(result.usage.input, Math.max(0, Math.ceil(prompt.length / 4) - cacheRead));
+			previous = prompt;
+		}
 	});
 
 	it("does not simulate caching when cacheRetention is none", async () => {
