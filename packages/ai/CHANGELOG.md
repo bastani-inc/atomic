@@ -7,6 +7,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Added `LoginOptions.agentName` for apps to identify themselves during OpenAI ChatGPT and Codex browser login.
+- Added OpenAI's Decisions classifier API and the `openai/gpt-6-luna` classifier, available with an API key but not Sign in with ChatGPT credentials.
+- Added optional `images` to classifier contexts. Unsupported models and classifier APIs return an error result instead of ignoring images.
 
 ### Changed
 

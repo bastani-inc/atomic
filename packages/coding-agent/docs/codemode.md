@@ -64,7 +64,7 @@ The store is for small state such as IDs, cursors, or summaries. One value may h
 
 ## Models
 
-`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev) and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models. Neither kind appears in `/model`.
+`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models. Neither kind appears in `/model`.
 
 ```ts
 type ModelType = "chat" | "image" | "classifier";
@@ -105,6 +105,7 @@ Model IDs differ between providers. Use `models.getAvailableOfType(type)` to fin
 interface ClassifierContext {
   /** The data to classify. */
   state: Record<string, unknown>;
+  images?: { type: "image"; data: string; mimeType: string }[];
   /** Questions by ID. One call answers all of them. */
   questions: Record<string, ClassifierQuestion>;
 }
@@ -166,6 +167,25 @@ return results.map((result, i) =>
     ? { message: messages[i], sentiment: result.answers.sentiment.choice, urgency: result.answers.urgency.score }
     : { message: messages[i], error: result.errorMessage },
 );
+```
+
+Classifiers whose `input` includes `"image"` can judge images alongside the state. `tools.read()` returns image blocks that `images` accepts. Text-only classifiers and APIs that cannot send images return an error result for nonempty `images`.
+
+```js
+const luna = await models.getModelOfType("classifier", "openai", "gpt-6-luna");
+const photo = await tools.read({ path: "screenshot.png" });
+const result = await models.classify(luna, {
+  state: { task: "Settings page redesign" },
+  images: [photo],
+  questions: {
+    broken: {
+      type: "bool",
+      instructions: "Does the screenshot show a broken layout?",
+      criteria: { true: "Overlapping, cut-off, or misaligned elements", false: "Clean layout" },
+    },
+  },
+});
+return result.stopReason === "stop" ? result.answers : result.errorMessage;
 ```
 
 ### Generate images

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
 	answerFromProbabilities,
@@ -403,3 +404,15 @@ function completionDepths(requests: RecordedRequest[]): number[] {
 		.filter((request) => request.url.endsWith("/completion"))
 		.map((request) => Number(request.body.n_probs));
 }
+
+it("rejects classifier images before calling llama.cpp", async () => {
+	const server = fakeServer();
+	const result = await classify(
+		{ ...model(), input: ["text", "image"] },
+		{ ...context, images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] },
+		{ fetch: server.fetch },
+	);
+	assert.equal(server.requests.length, 0);
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.errorMessage, "llama.cpp classification does not support image input");
+});

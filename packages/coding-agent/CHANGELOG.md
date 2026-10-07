@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenAI's GPT-6 Luna classifier through the Decisions API with `OPENAI_API_KEY`, and image input for codemode's `models.classify()` context. See [Classifier models](docs/models.md#use-classifier-models).
+
 ### Fixed
 
 - Fixed a false `Timeout waiting for response to resume_queued_messages` error when you send a message while a paused queue is still waiting for the agent's current turn to finish, and the follow-up `Agent is already processing` error caused by the stale paused state. The resume now waits for the turn instead of giving up after 30 seconds ([#3493](https://github.com/bastani-inc/atomic/issues/3493)).

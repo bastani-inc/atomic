@@ -747,6 +747,8 @@ test("codemode model calls fail with the expected argument shape and a way back"
 					noModel: await attempt(() => models.classify("judge", {})),
 					undefinedModel: await attempt(() => models.classify(undefined, {})),
 					noState: await attempt(() => models.classify(model, { questions: ${questions} })),
+					badClassifierImages: await attempt(() => models.classify(model, { state: {}, images: {}, questions: ${questions} })),
+					badClassifierImage: await attempt(() => models.classify(model, { state: {}, images: [{ data: "aW1hZ2U=" }], questions: ${questions} })),
 					badQuestion: await attempt(() =>
 						models.classify(model, { state: {}, questions: { kind: { type: "choice", instructions: "Kind?", criteria: ["a", "b"] } } }),
 					),
@@ -772,6 +774,14 @@ test("codemode model calls fail with the expected argument shape and a way back"
 		);
 		assert.match(value.noState ?? "", /models\.classify\(\) context\.state must be an object, got undefined\./);
 		assert(value.noState?.includes(CODEMODE_DOCS_PATH));
+		assert.match(
+			value.badClassifierImages ?? "",
+			/models\.classify\(\) context\.images must be an array, got \{\}\./,
+		);
+		assert.match(
+			value.badClassifierImage ?? "",
+			/models\.classify\(\) context\.images\[0\] must be an image block, got \{ data \}\./,
+		);
 		assert(
 			value.badQuestion?.includes(
 				'context.questions.kind is a "choice" question, so criteria must map each label to its meaning.',
@@ -782,6 +792,36 @@ test("codemode model calls fail with the expected argument shape and a way back"
 			/models\.generateImages\(\) context\.input must be a non-empty array of blocks, got undefined\./,
 		);
 		assert(value.badSplit?.includes("The provider and the id are separate arguments"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode returns a classifier error for images on text-only models", async () => {
+	const { harness } = await createModelsHarness();
+	try {
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("classifier", "scorer");
+				const result = await models.classify(model, {
+					state: { text: "good" },
+					images: [{ type: "image", data: "${TINY_PNG_BASE64}", mimeType: "image/png" }],
+					questions: { ok: { type: "bool", instructions: "Fine?", criteria: { true: "yes", false: "no" } } },
+				});
+				return [result.stopReason, result.errorMessage];
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		assert.deepEqual(JSON.parse(getMessageText(result).split("Output:\n")[1] ?? "[]"), [
+			"error",
+			"Model scorer/judge does not accept image input",
+		]);
+		assert.deepEqual(
+			(result.details as CodemodeToolDetails).calls.map((call) => [call.name, call.status, call.error]),
+			[["models.classify", "error", "Model scorer/judge does not accept image input"]],
+		);
 	} finally {
 		await harness.cleanup();
 	}
