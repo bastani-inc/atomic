@@ -14,8 +14,13 @@ export class SkillInvocationMessageComponent extends Box {
 	private markdownTheme: MarkdownTheme;
 	private renderLatex: boolean;
 
-	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme(), renderLatex = true) {
-		super(1, 1, (t) => theme.bg("customMessageBg", t));
+	constructor(
+		skillBlock: ParsedSkillBlock,
+		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		renderLatex = true,
+		outputPad = 1,
+	) {
+		super(outputPad, 1, (t) => theme.bg("customMessageBg", t));
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
 		this.renderLatex = renderLatex;
@@ -25,6 +30,10 @@ export class SkillInvocationMessageComponent extends Box {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
 	}
 
 	override invalidate(): void {

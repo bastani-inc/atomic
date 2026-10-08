@@ -158,6 +158,7 @@ export interface AgentBeforeSettleEvent extends BoundaryState {
 /** Fired when the agent has fully settled after retries, compaction, and queued continuations. */
 export interface AgentSettledEvent {
 	type: "agent_settled";
+	aborted: boolean;
 }
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
@@ -240,6 +241,7 @@ export interface ToolExecutionEndEvent {
 	toolName: string;
 	result: unknown;
 	isError: boolean;
+	durationMs?: number;
 }
 
 // ============================================================================

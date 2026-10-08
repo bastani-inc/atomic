@@ -791,3 +791,37 @@ describe("clear-on-shrink working status spacing", () => {
 		assert.deepEqual(setMessage.mock.calls, [["Working (esc Interrupt)"]]);
 	});
 });
+
+test("drops fullscreen text selection when rebuilding session entries (#9311)", () => {
+	const terminal = new RecordingTerminal();
+	terminal.columns = 40;
+	terminal.rows = 4;
+	const ui = createFullscreenTui({
+		showHardwareCursor: false,
+		logDirectory: "/tmp",
+		terminal,
+		fullscreenCopyOnSelect: false,
+	});
+	ui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+	const context = Object.assign(Object.create(InteractiveMode.prototype), {
+		renderer: ui,
+		ui,
+		pendingTools: new Map(),
+		deferredRenderedUserInputs: [],
+		deferredRenderedUserInputComponents: new Map(),
+		runtimeHost: { session: { settingsManager: { getShowCacheMissNotices: () => false } } },
+	});
+	ui.start();
+	try {
+		ui.renderNow();
+		terminal.input("\x1b[<0;1;1M");
+		terminal.input("\x1b[<32;4;2M");
+		terminal.input("\x1b[<0;4;2m");
+		ui.renderNow();
+		expect(ui.hasActiveSelection()).toBe(true);
+		context.renderSessionEntries([]);
+		expect(ui.hasActiveSelection()).toBe(false);
+	} finally {
+		ui.stop();
+	}
+});

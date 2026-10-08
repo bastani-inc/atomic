@@ -80,6 +80,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 			message,
 		};
 		const mode = {
+			resetTranscriptSelection: vi.fn(),
 			pendingTools: new Map(),
 			deferredRenderedUserInputs: [],
 			deferredRenderedUserInputComponents: new Map(),

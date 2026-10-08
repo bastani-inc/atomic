@@ -8,14 +8,16 @@ import { theme } from "../theme/theme.js";
 export class CustomEntryComponent extends Container {
 	private customComponent?: Component;
 	private expanded = false;
+	private outputPad: number;
 
 	private readonly entry: CustomEntry<unknown>;
 	private readonly renderer: EntryRenderer;
 
-	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer) {
+	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1) {
 		super();
 		this.entry = entry;
 		this.renderer = renderer;
+		this.outputPad = outputPad;
 		this.rebuild();
 	}
 
@@ -26,6 +28,11 @@ export class CustomEntryComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
+		this.rebuild();
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.outputPad = outputPad;
 		this.rebuild();
 	}
 
@@ -42,7 +49,7 @@ export class CustomEntryComponent extends Container {
 			component = this.renderer(this.entry, { expanded: this.expanded }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			const box = new Box(this.outputPad, 1, (text) => theme.bg("customMessageBg", text));
 			box.addChild(new Text(theme.fg("error", `[${this.entry.customType}] renderer failed: ${message}`), 0, 0));
 			component = box;
 		}

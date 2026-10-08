@@ -24,7 +24,7 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSumm
 
 export type AgentSessionEvent =
 	| (AgentEvent & { parentToolCallId?: string })
-	| { type: "agent_settled" }
+	| { type: "agent_settled"; aborted: boolean }
 	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
 	| {
 			type: "queue_update";

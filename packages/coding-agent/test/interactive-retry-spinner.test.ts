@@ -25,6 +25,7 @@ afterEach(() => {
 function makeMode() {
 	return {
 		isInitialized: true,
+		programStatus: { handleEvent: vi.fn() },
 		footer: { invalidate: () => {} },
 		defaultEditor: { onEscape: vi.fn() },
 		statusContainer: new Container(),

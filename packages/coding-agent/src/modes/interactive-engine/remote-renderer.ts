@@ -92,12 +92,13 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private expanded = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
+	private outputPad: number;
 
 	constructor(
 		toolName: string,
 		toolCallId: string,
 		args: unknown,
-		options: { showImages?: boolean; imageWidthCells?: number },
+		options: { showImages?: boolean; imageWidthCells?: number; outputPad?: number },
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
 	) {
@@ -107,8 +108,13 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.args = args;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
+		this.outputPad = options.outputPad ?? 1;
 	}
 
+	setOutputPad(outputPad: number): void {
+		this.outputPad = outputPad;
+		this.changed();
+	}
 	updateArgs(args: unknown): void {
 		this.args = args;
 		this.changed();
@@ -155,6 +161,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			expanded: this.expanded,
 			showImages: this.showImages,
 			imageWidthCells: this.imageWidthCells,
+			outputPad: this.outputPad,
 		};
 	}
 }

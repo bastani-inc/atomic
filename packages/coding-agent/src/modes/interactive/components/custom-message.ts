@@ -132,6 +132,7 @@ export class CustomMessageComponent extends Container {
 		this.addChild(this.spacer);
 		this.addChild(this.box);
 		this.box.clear();
+		this.box.setPaddingX(this.outputPad);
 
 		// Default rendering: label + content
 		const label = theme.fg("customMessageLabel", `\x1b[1m[${this.message.customType}]\x1b[22m`);

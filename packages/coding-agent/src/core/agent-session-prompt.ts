@@ -409,10 +409,11 @@ export async function _runAgentPrompt(
 		this._flushPendingCustomMessages();
 		this._isEmittingAgentSettled = true;
 		try {
+			const aborted = this._agentRunAbortRequested === true;
 			if (typeof this._extensionRunner?.emit === "function") {
-				await this._extensionRunner.emit({ type: "agent_settled" });
+				await this._extensionRunner.emit({ type: "agent_settled", aborted });
 			}
-			this._emit?.({ type: "agent_settled" });
+			this._emit?.({ type: "agent_settled", aborted });
 		} finally {
 			this._isEmittingAgentSettled = false;
 		}

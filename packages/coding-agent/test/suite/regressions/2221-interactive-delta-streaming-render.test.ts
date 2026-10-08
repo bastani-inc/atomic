@@ -46,6 +46,7 @@ function makeMode() {
 	});
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		isInitialized: true,
+		programStatus: { handleEvent: vi.fn() },
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() },
 		chatContainer: { addChild: vi.fn() },

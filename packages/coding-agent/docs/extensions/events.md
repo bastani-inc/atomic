@@ -459,9 +459,11 @@ pi.on("tool_execution_update", async (event, ctx) => {
 });
 
 pi.on("tool_execution_end", async (event, ctx) => {
-  // event.toolCallId, event.toolName, event.result, event.isError
+  // event.toolCallId, event.toolName, event.result, event.isError, event.durationMs
 });
 ```
+
+`durationMs` is the time spent in the tool's `execute()`, measured with a monotonic clock. It is absent when the tool did not run.
 
 #### context
 

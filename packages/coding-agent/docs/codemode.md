@@ -20,7 +20,7 @@ A script may start with an options line:
 - `max_output_tokens` (default 10000) limits the output. Longer output keeps its start and end, and the full text is written to a temp file whose path is included in the result.
 - `timeout_ms` is a hard deadline for the whole script. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
 
-The result starts with `Script completed` or `Script failed`, the wall time, and the output. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
+The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order. When output has multiple text items (from `text()` or `return`), each starts with a `==> text N/M <==` line. Console calls follow the other output in one `<console_output>` block, with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
 
 ## Globals
 
@@ -29,7 +29,7 @@ The result starts with `Script completed` or `Script failed`, the wall time, and
 | `tools.<name>(args)` | Call a tool. See [Call tools](#call-tools). |
 | `text(value)` | Add a text item to the output. Strings are added as is, other values as JSON. |
 | `image(value)` | Add an image to the output: a base64 `data:` URL, an `{ image_url }` object, or an image block `{ type: "image", data, mimeType }` such as those returned by MCP tools and `models.generateImages()`. Remote URLs are not supported. PNG, JPEG, GIF, and WebP are accepted. Each image is also saved to a temp file, and the result names the path before the image. |
-| `console.log(...)` | Like `text()`; `info`, `warn`, `error`, and `debug` do the same. |
+| `console.log(...)` | Add a line to the `<console_output>` block after other output. Arguments are joined with spaces; `info`, `warn`, `error`, and `debug` do the same. |
 | `return value` | A top-level `return` adds the value like `text()`. |
 | `exit()` | End the script successfully. |
 | `store(key, value)` / `load(key)` | Keep small JSON values across `codemode` calls. See [Store values](#store-values). |

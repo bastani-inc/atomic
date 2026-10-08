@@ -35,6 +35,7 @@ describe("interactive API-key login persistence failures", () => {
 			throw saveError;
 		});
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: { loginApiKeyProvider },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
@@ -51,6 +52,10 @@ describe("interactive API-key login persistence failures", () => {
 			providerName: string,
 		) => Promise<void>;
 		await showApiKeyLoginDialog.call(harness, "example", "Example Provider");
+		expect(harness.programStatus.setBlocked.mock.calls).toEqual([
+			["login", { kind: "auth", message: "Log in to Example Provider" }],
+			["login", undefined],
+		]);
 
 		expect(loginApiKeyProvider).toHaveBeenCalledWith(
 			"example",
@@ -71,6 +76,7 @@ describe("interactive API-key login persistence failures", () => {
 		const loginApiKeyProvider = vi.fn(async () => ({ modelsRefreshed: true }));
 		const editor = {};
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: { loginApiKeyProvider },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
@@ -101,6 +107,7 @@ describe("interactive OAuth cancellation", () => {
 		const completeProviderAuthentication = vi.fn();
 		const editor = {};
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: {
 				loginOAuthProvider: async () => {
@@ -131,6 +138,7 @@ describe("interactive OAuth cancellation", () => {
 		const completeProviderAuthentication = vi.fn(async () => {});
 		const editor = {};
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: true }) },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
@@ -174,6 +182,7 @@ describe("interactive OAuth cancellation", () => {
 			},
 		);
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: {
 				model: undefined,
 				modelRuntime: {
@@ -253,6 +262,7 @@ describe("interactive OAuth cancellation", () => {
 				},
 			);
 			const harness = {
+				programStatus: { setBlocked: vi.fn() },
 				session: {
 					model: undefined,
 					modelRuntime: {
@@ -292,6 +302,7 @@ describe("interactive OAuth cancellation", () => {
 		const showError = vi.fn();
 		const editor = {};
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: false }) },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
@@ -318,6 +329,7 @@ describe("interactive OAuth cancellation", () => {
 		const showError = vi.fn();
 		const editor = {};
 		const harness = {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: {
 				loginOAuthProvider: async () => {

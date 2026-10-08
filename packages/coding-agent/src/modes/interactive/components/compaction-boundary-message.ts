@@ -23,8 +23,8 @@ export class CompactionBoundaryMessageComponent extends Box {
 	private expanded = false;
 	private readonly view: BoundaryView;
 
-	constructor(result: VerbatimCompactionResult | BoundaryView) {
-		super(1, 1, (text) => theme.bg("customMessageBg", text));
+	constructor(result: VerbatimCompactionResult | BoundaryView, outputPad = 1) {
+		super(outputPad, 1, (text) => theme.bg("customMessageBg", text));
 		if ("compactedText" in result) {
 			this.view = {
 				text: result.compactedText,
@@ -44,6 +44,10 @@ export class CompactionBoundaryMessageComponent extends Box {
 		this.expanded = expanded;
 		this.updateDisplay();
 	}
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
@@ -113,6 +117,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 export function compactionBoundaryFromMessage(
 	message: CustomMessage,
 	expanded: boolean,
+	outputPad = 1,
 ): CompactionBoundaryMessageComponent {
 	const details = message.details as VerbatimCompactionDetails;
 	const content = Array.isArray(message.content)
@@ -122,14 +127,17 @@ export function compactionBoundaryFromMessage(
 				.join("\n")
 		: message.content;
 	const prefix = details.backend === "summary" ? SUMMARY_COMPACTION_PREFIX : VERBATIM_COMPACTION_PREFIX;
-	const component = new CompactionBoundaryMessageComponent({
-		text: content.startsWith(prefix) ? content.slice(prefix.length) : content,
-		stats: details.stats,
-		rung: details.rung,
-		tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
-		backend: details.backend,
-		model: details.model,
-	});
+	const component = new CompactionBoundaryMessageComponent(
+		{
+			text: content.startsWith(prefix) ? content.slice(prefix.length) : content,
+			stats: details.stats,
+			rung: details.rung,
+			tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
+			backend: details.backend,
+			model: details.model,
+		},
+		outputPad,
+	);
 	component.setExpanded(expanded);
 	return component;
 }

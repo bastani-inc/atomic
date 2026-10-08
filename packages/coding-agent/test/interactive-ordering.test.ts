@@ -69,6 +69,7 @@ describe("interactive ordering", () => {
 		const removeChild = vi.spyOn(chatContainer, "removeChild");
 		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 			isInitialized: true,
+			programStatus: { handleEvent: vi.fn() },
 			footer: { invalidate: vi.fn() },
 			chatContainer,
 			streamingComponent: streaming,
@@ -98,6 +99,7 @@ describe("interactive ordering", () => {
 		chatContainer.addChild(before);
 		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 			isInitialized: true,
+			programStatus: { handleEvent: vi.fn() },
 			footer: { invalidate: vi.fn() },
 			chatContainer,
 			streamingComponent: undefined,

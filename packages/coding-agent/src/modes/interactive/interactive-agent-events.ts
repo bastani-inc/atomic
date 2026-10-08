@@ -51,6 +51,7 @@ function createToolComponent(
 	const options = {
 		showImages: mode.settingsManager.getShowImages(),
 		imageWidthCells: mode.settingsManager.getImageWidthCells(),
+		outputPad: mode.outputPad,
 	};
 	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
 		? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () =>
@@ -88,6 +89,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 	}
 
 	this.footer.invalidate();
+	this.programStatus.handleEvent(event);
 
 	switch (event.type) {
 		case "agent_start":
@@ -355,7 +357,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (event.isError) this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
-				component.updateResult({ ...event.result, isError: event.isError });
+				component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });
 				this.pendingTools.delete(event.toolCallId);
 				this.ui.requestRender();
 			}

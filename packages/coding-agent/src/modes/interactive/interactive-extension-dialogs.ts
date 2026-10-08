@@ -11,12 +11,14 @@ import {
 	getEditorTheme,
 	type MissingSessionCwdError,
 } from "./interactive-mode-deps.ts";
+import type { BlockedStatus } from "./program-status-reporter.ts";
 
 InteractiveModeBase.prototype.showExtensionSelector = function (
 	this: InteractiveModeBase,
 	title: string,
 	options: string[],
 	opts?: ExtensionUIDialogOptions,
+	blocked: BlockedStatus = { kind: "question", message: title },
 ): Promise<string | undefined> {
 	return new Promise((resolve) => {
 		if (opts?.signal?.aborted) {
@@ -55,6 +57,7 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 		this.editorContainer.clear();
 		this.editorContainer.addChild(selector);
 		this.ui.setFocus(selector);
+		this.programStatus.setBlocked("extension-dialog", blocked);
 		this.ui.requestRender();
 	});
 };
@@ -73,6 +76,7 @@ InteractiveModeBase.prototype.hideExtensionSelector = function (
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
 	this.extensionSelector = undefined;
+	this.programStatus.setBlocked("extension-dialog", undefined);
 	this.ui.setFocus(this.editor);
 	this.ui.requestRender();
 };
@@ -83,7 +87,10 @@ InteractiveModeBase.prototype.showExtensionConfirm = async function (
 	message: string,
 	opts?: ExtensionUIDialogOptions,
 ): Promise<boolean> {
-	const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
+	const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts, {
+		kind: "permission",
+		message: title,
+	});
 	return result === "Yes";
 };
 
@@ -137,6 +144,7 @@ InteractiveModeBase.prototype.showExtensionInput = function (
 		this.editorContainer.clear();
 		this.editorContainer.addChild(input);
 		this.ui.setFocus(input);
+		this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
 		this.ui.requestRender();
 	});
 };
@@ -151,6 +159,7 @@ InteractiveModeBase.prototype.hideExtensionInput = function (
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
 	this.extensionInput = undefined;
+	this.programStatus.setBlocked("extension-dialog", undefined);
 	this.ui.setFocus(this.editor);
 	this.ui.requestRender();
 };
@@ -197,6 +206,7 @@ InteractiveModeBase.prototype.showExtensionEditor = function (
 		this.editorContainer.clear();
 		this.editorContainer.addChild(editor);
 		this.ui.setFocus(editor);
+		this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
 		this.ui.requestRender();
 	});
 };
@@ -210,6 +220,7 @@ InteractiveModeBase.prototype.hideExtensionEditor = function (
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
 	this.extensionEditor = undefined;
+	this.programStatus.setBlocked("extension-dialog", undefined);
 	this.ui.setFocus(this.editor);
 	this.ui.requestRender();
 };

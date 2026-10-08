@@ -143,6 +143,7 @@ export type InteractiveEngineCommand =
 			expanded: boolean;
 			showImages: boolean;
 			imageWidthCells: number;
+			outputPad?: number;
 	  }
 	| {
 			type: "engine_message_render";
@@ -609,6 +610,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			expanded: value.expanded,
 			showImages: value.showImages,
 			imageWidthCells: value.imageWidthCells,
+			outputPad: typeof value.outputPad === "number" ? value.outputPad : undefined,
 		};
 	}
 	if (

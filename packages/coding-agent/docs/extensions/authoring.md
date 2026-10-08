@@ -628,6 +628,8 @@ pi.registerTool({
 - `lastComponent` - the previously returned component for that slot, if any
 - `invalidate()` - request a rerender of this tool row
 - `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`
+- `durationMs` - recorded execution time of the final result; `undefined` while running, when the tool did not run, or for older saved results
+- `outputPad` - configured horizontal padding; renderers with `renderShell: "self"` apply it themselves
 
 Use `context.state` for cross-slot shared state. Keep slot-local caches on the returned component instance when you want to reuse and mutate the same component across renders.
 

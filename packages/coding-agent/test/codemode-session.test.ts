@@ -13,6 +13,27 @@ import {
 } from "../src/extensions/codemode/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
+test("codemode separates text items and groups console calls after other output", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const result = await runScript(
+			harness,
+			'text("one\\ntwo"); console.log("a"); console.log("b"); text("three\\n"); return 4;',
+		);
+		assert.equal(result.isError, false);
+		assert.equal(result.content.length, 2);
+		assert.deepEqual(result.content[1], {
+			type: "text",
+			text: "==> text 1/3 <==\none\ntwo\n==> text 2/3 <==\nthree\n==> text 3/3 <==\n4\n<console_output>\na\nb\n</console_output>",
+		});
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode executes nested tools in a worker and persists successful branch-local store writes", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
@@ -422,10 +443,12 @@ test("codemode read returns text and image blocks accepted by image() (#10251)",
 			'text(await tools.read({ path: "notes.txt:raw" })); const shot = await tools.read({ path: "pixel.png" }); text(shot.note); image(shot);',
 		);
 		assert.equal(result.isError, false);
-		assert.deepEqual(result.content[1], { type: "text", text: "hello" });
-		assert.deepEqual(result.content[2], { type: "text", text: "Read image file [image/png]" });
-		assert.ok(result.content[3].type === "text");
-		savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(result.content[3].text)?.[1];
+		assert.ok(result.content[1].type === "text");
+		assert.match(
+			result.content[1].text,
+			/^==> text 1\/2 <==\nhello\n==> text 2\/2 <==\nRead image file \[image\/png\]\n/,
+		);
+		savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/m.exec(result.content[1].text)?.[1];
 		assert.ok(savedPath);
 		assert.deepEqual(result.content.at(-1), { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 	} finally {
@@ -459,14 +482,14 @@ test("codemode saves duplicate images once and labels each image in output order
 		const items = result.content.slice(1);
 		assert.deepEqual(
 			items.map((item) => item.type),
-			["text", "text", "image", "text", "image", "text"],
+			["text", "image", "text", "image", "text"],
 		);
-		assert.deepEqual(items[0], { type: "text", text: "before" });
-		assert.deepEqual(items[5], { type: "text", text: "after" });
-		assert.ok(items[1].type === "text");
-		path = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(items[1].text)?.[1];
+		assert.ok(items[0].type === "text");
+		assert.match(items[0].text, /^==> text 1\/2 <==\nbefore\n/);
+		assert.deepEqual(items[4], { type: "text", text: "==> text 2/2 <==\nafter" });
+		path = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/m.exec(items[0].text)?.[1];
 		assert.ok(path);
-		assert.deepEqual(items[3], items[1]);
+		assert.deepEqual(items[2], { type: "text", text: items[0].text.split("\n").at(-1) });
 		assert.equal(readFileSync(path).toString("base64"), TINY_PNG_BASE64);
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 	} finally {
@@ -497,10 +520,9 @@ test("image save failures keep successful script output and images (#3429)", asy
 		const result = harness.session.messages.find((message) => message.role === "toolResult");
 		assert.ok(result?.role === "toolResult");
 		assert.equal(result.isError, false);
-		assert.deepEqual(result.content[1], { type: "text", text: "kept verbatim" });
-		assert.ok(result.content[2].type === "text");
-		assert.match(result.content[2].text, /^\[Image \(image\/png, \d+B\) could not be saved: /);
-		assert.deepEqual(result.content[3], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+		assert.ok(result.content[1].type === "text");
+		assert.match(result.content[1].text, /^kept verbatim\n\[Image \(image\/png, \d+B\) could not be saved: /);
+		assert.deepEqual(result.content[2], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 	} finally {
 		vi.unstubAllEnvs();
 		await harness.cleanup();
@@ -532,7 +554,7 @@ test("truncation keeps saved image labels next to images and outside the text bu
 		assert.deepEqual(result.content.at(-1), { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 		const label = result.content.at(-2);
 		assert.ok(label?.type === "text");
-		const imagePath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(label.text)?.[1];
+		const imagePath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/m.exec(label.text)?.[1];
 		assert.ok(imagePath);
 		paths.push(imagePath);
 		assert.equal(readFileSync(imagePath).toString("base64"), TINY_PNG_BASE64);
@@ -670,16 +692,16 @@ test("codemode generates images with catalog credentials and attaches them throu
 			result.content.filter((block) => block.type === "image"),
 			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		);
-		const label = result.content[2];
+		const label = result.content[1];
 		assert.ok(label.type === "text");
-		const savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/.exec(label.text)?.[1];
+		const savedPath = /^\[Image saved to (\S+\.png) \(image\/png, \d+B\)\]$/m.exec(label.text)?.[1];
 		assert.ok(savedPath);
 		try {
 			assert.equal(readFileSync(savedPath).toString("base64"), TINY_PNG_BASE64);
 		} finally {
 			rmSync(savedPath, { force: true });
 		}
-		assert.deepEqual(result.content[3], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
+		assert.deepEqual(result.content[2], { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 		assert.deepEqual(
 			requests.map((request) => [request.baseUrl, request.apiKey]),
 			[

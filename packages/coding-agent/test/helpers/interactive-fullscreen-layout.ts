@@ -189,6 +189,7 @@ export function createProductionFullscreenContext(
 	};
 	const context = Object.assign(Object.create(InteractiveMode.prototype), {
 		isInitialized: false,
+		programStatus: { report: () => {} },
 		ui: tui,
 		runtimeHost: { session, services: { agentDir: "/tmp" } },
 		options: { deferredExtensionLoad: true, verbose: true },

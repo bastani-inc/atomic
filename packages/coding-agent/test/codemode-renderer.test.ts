@@ -23,6 +23,8 @@ function context(expanded: boolean): ToolRenderContext {
 		expanded,
 		showImages: false,
 		isError: false,
+		durationMs: undefined,
+		outputPad: 1,
 	};
 }
 function render(result: AgentToolResult<CodemodeToolDetails | undefined>, expanded = true, width = 200): string {

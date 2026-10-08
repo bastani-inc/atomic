@@ -116,6 +116,8 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 	startupNoticesContainer.addChild(new Text("startup notice", 0, 0));
 	const mode = {
 		isInitialized: true,
+		programStatus: { handleEvent: vi.fn() },
+		resetTranscriptSelection: vi.fn(),
 		footer: { invalidate: vi.fn() },
 		autoCompactionEscapeHandler: undefined,
 		autoCompactionLoader: undefined,

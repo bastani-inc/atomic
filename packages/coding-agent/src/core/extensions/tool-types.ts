@@ -44,6 +44,8 @@ export interface ToolRenderContext<TState = unknown, TArgs = unknown> {
 	showImages: boolean;
 	/** Whether the current result is an error. */
 	isError: boolean;
+	durationMs: number | undefined;
+	outputPad: number;
 }
 
 type ToolRenderCall<TParams extends TSchema, TState> = {

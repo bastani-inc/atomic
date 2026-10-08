@@ -126,6 +126,7 @@ InteractiveModeBase.prototype.rebindCurrentSession = async function (this: Inter
 
 	this.unsubscribe?.();
 	this.unsubscribe = undefined;
+	this.programStatus.reset();
 	this.applyRuntimeSettings();
 	await this.bindCurrentSessionExtensions();
 

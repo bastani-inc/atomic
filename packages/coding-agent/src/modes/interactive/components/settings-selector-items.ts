@@ -113,7 +113,7 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	insertAfter(items, "editor-padding", {
 		id: "output-padding",
 		label: "Output padding",
-		description: "Horizontal padding for rendered chat output (0-1)",
+		description: "Horizontal padding for messages, tool output, and command output",
 		currentValue: String(config.outputPad),
 		values: ["0", "1"],
 	});
