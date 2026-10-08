@@ -10,7 +10,7 @@ type PackageMcpServerSource = Pick<WorkflowResourceProvider, "getMcpServers">;
 export class McpServerRegistry {
 	private readonly packageSources = new Set<PackageMcpServerSource>();
 	private readonly registrations = new Map<string, McpServerContribution>();
-	private readonly listeners = new Set<() => void>();
+	private readonly listeners = new Map<() => void, boolean>();
 
 	/** Resource providers of the loaders whose extensions share this runtime. */
 	addPackageSource(source: PackageMcpServerSource): void {
@@ -48,14 +48,18 @@ export class McpServerRegistry {
 		return [...contributions.values()];
 	}
 
-	subscribe(listener: () => void): () => void {
-		this.listeners.add(listener);
+	subscribe(listener: () => void, options: { consumer?: boolean } = {}): () => void {
+		this.listeners.set(listener, options.consumer !== false);
 		return () => {
 			this.listeners.delete(listener);
 		};
 	}
 
+	hasConsumers(): boolean {
+		return [...this.listeners.values()].some((consumer) => consumer);
+	}
+
 	private notify(): void {
-		for (const listener of [...this.listeners]) listener();
+		for (const listener of [...this.listeners.keys()]) listener();
 	}
 }

@@ -1,7 +1,12 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@bastani/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	createAssistantMessageEventStream,
+	getModel,
+} from "@bastani/pi-ai/compat";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -10,19 +15,6 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
-
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createAssistantMessage(text: string, overrides?: Partial<AssistantMessage>): AssistantMessage {
 	return {
@@ -63,7 +55,7 @@ describe("AgentSession safety-refusal retry", () => {
 		}
 	});
 
-	async function createSession(streamFn: () => MockAssistantStream) {
+	async function createSession(streamFn: () => AssistantMessageEventStream) {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -101,7 +93,7 @@ describe("AgentSession safety-refusal retry", () => {
 		let callCount = 0;
 		await createSession(() => {
 			callCount++;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				if (callCount <= 2) {
 					const msg = createAssistantMessage("I'm sorry, but I cannot assist with that request.", {
@@ -144,7 +136,7 @@ describe("AgentSession safety-refusal retry", () => {
 	});
 
 	it("only detects tightly-guarded canned safety refusals", async () => {
-		await createSession(() => new MockAssistantStream());
+		await createSession(() => createAssistantMessageEventStream());
 		const probe = session as unknown as {
 			_isSafetyRefusal(message: AssistantMessage): boolean;
 		};

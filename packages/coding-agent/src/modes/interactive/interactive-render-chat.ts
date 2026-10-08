@@ -214,6 +214,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 						{
 							showImages: this.settingsManager.getShowImages(),
 							imageWidthCells: this.settingsManager.getImageWidthCells(),
+							outputPad: this.outputPad,
 						},
 						this.runtimeHost as IsolatedInteractiveRuntime,
 						() => this.ui.requestRender(),
@@ -252,7 +253,7 @@ InteractiveModeBase.prototype.addCompactionBoundaryToChat = function (
 	result: VerbatimCompactionResult,
 ): void {
 	this.chatContainer.addChild(new Spacer(1));
-	const component = new CompactionBoundaryMessageComponent(result);
+	const component = new CompactionBoundaryMessageComponent(result, this.outputPad);
 	component.setExpanded(this.toolOutputExpanded);
 	this.chatContainer.addChild(component);
 };
@@ -276,7 +277,11 @@ InteractiveModeBase.prototype.addCustomEntryToChat = function (this: Interactive
 	const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
 	if (!renderer) return;
 	const runner = this.session.extensionRunner;
-	const component = new CustomEntryComponent(entry, (...args) => runner.renderEntry(entry.customType, ...args));
+	const component = new CustomEntryComponent(
+		entry,
+		(...args) => runner.renderEntry(entry.customType, ...args),
+		this.outputPad,
+	);
 	component.setExpanded(this.toolOutputExpanded);
 	if (!component.hasContent()) return;
 	const streamingIndex = this.streamingComponent ? this.chatContainer.children.indexOf(this.streamingComponent) : -1;
@@ -292,7 +297,12 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 	const markdownTransformers = this.getMarkdownTransformers();
 	switch (message.role) {
 		case "bashExecution": {
-			const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
+			const component = new BashExecutionComponent(
+				message.command,
+				this.ui,
+				message.excludeFromContext,
+				this.outputPad,
+			);
 			if (message.output) {
 				component.appendOutput(message.output);
 			}
@@ -333,6 +343,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				message,
 				this.getMarkdownThemeWithSettings(),
 				this.settingsManager.getLatexRenderingEnabled(),
+				this.outputPad,
 			);
 			component.setExpanded(this.toolOutputExpanded);
 			this.chatContainer.addChild(component);
@@ -351,6 +362,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						skillBlock,
 						this.getMarkdownThemeWithSettings(),
 						this.settingsManager.getLatexRenderingEnabled(),
+						this.outputPad,
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -446,6 +458,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 	} = {},
 ): void {
+	this.resetTranscriptSelection();
 	this.pendingTools.clear();
 	const deferredInputs = [...this.deferredRenderedUserInputs];
 	this.deferredRenderedUserInputs = [];

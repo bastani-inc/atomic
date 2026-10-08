@@ -1,5 +1,5 @@
-import { envApiKeyAuth } from "../auth/helpers.js";
-import { createProvider, type Provider } from "../models.js";
+import { envApiKeyAuth } from "../auth/helpers.ts";
+import { createProvider, type Provider } from "../models.ts";
 
 export function morphProvider(): Provider {
 	return createProvider({

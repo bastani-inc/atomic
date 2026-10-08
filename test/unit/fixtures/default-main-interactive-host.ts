@@ -66,6 +66,7 @@ class RecordingTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 	inject(data: string): void {
 		report({ type: "input_received", data });
 		this.onInput?.(data);

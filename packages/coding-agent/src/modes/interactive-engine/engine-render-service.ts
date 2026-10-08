@@ -54,6 +54,7 @@ class RenderTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 export class EngineRenderService {
@@ -134,7 +135,7 @@ export class EngineRenderService {
 				command.toolName,
 				command.toolCallId,
 				command.args,
-				{ showImages: command.showImages, imageWidthCells: command.imageWidthCells },
+				{ showImages: command.showImages, imageWidthCells: command.imageWidthCells, outputPad: command.outputPad },
 				session.extensionRunner.resolveToolRenderers(command.toolName, () =>
 					session.getToolDefinition(command.toolName),
 				),
@@ -149,6 +150,7 @@ export class EngineRenderService {
 			record.component.updateArgs(command.args);
 			record.component.setShowImages(command.showImages);
 			record.component.setImageWidthCells(command.imageWidthCells);
+			record.component.setOutputPad(command.outputPad ?? 1);
 		}
 		const tool = record.component;
 		if (command.executionStarted) tool.markExecutionStarted();

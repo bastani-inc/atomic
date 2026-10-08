@@ -23,6 +23,7 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
+	setProgramStatus(): void {}
 }
 
 const activeLoaders: AtomicWorkingLoader[] = [];

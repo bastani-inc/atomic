@@ -94,6 +94,7 @@ describe("login method menu", () => {
 describe("cancelled sign-in", () => {
 	function loginHarness(loginError: Error) {
 		return {
+			programStatus: { setBlocked: vi.fn() },
 			session: { model: undefined },
 			runtimeHost: {
 				loginOAuthProvider: async () => {

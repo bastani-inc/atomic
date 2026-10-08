@@ -304,35 +304,49 @@ runTest(
 		fs.writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
 		const npmCli = process.env.npm_execpath;
 		assert.ok(npmCli && /npm-cli\.js$/.test(npmCli), "run this integration suite through npm");
-		const execute = (args: string[], cwd: string, name: string) => {
+		const consumerEnv: NodeJS.ProcessEnv = {
+			...process.env,
+			HOME: join(consumer, "atomic-real-postgres-home"),
+			USERPROFILE: join(consumer, "atomic-real-postgres-home"),
+			ATOMIC_CODING_AGENT_DIR: join(consumer, "atomic-real-postgres-home", ".atomic", "agent"),
+			DBOS_SYSTEM_DATABASE_URL: undefined,
+			ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
+			ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: sharedPostgresRuntimeCache(),
+			ATOMIC_INTERCOM_SESSION_ID: undefined,
+		};
+		const execute = (args: string[], cwd: string, name: string, env = consumerEnv) => {
+			const started = performance.now();
 			const result = spawnSync(nodeExe, args, {
 				cwd,
 				encoding: "utf8",
 				timeout: PACKED_NODE_CONSUMER_TIMEOUT_MS,
 				maxBuffer: 64 * 1024 * 1024,
-				env: {
-					...process.env,
-					HOME: join(consumer, "atomic-real-postgres-home"),
-					USERPROFILE: join(consumer, "atomic-real-postgres-home"),
-					ATOMIC_CODING_AGENT_DIR: join(consumer, "atomic-real-postgres-home", ".atomic", "agent"),
-					DBOS_SYSTEM_DATABASE_URL: undefined,
-					ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
-					ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: sharedPostgresRuntimeCache(),
-					ATOMIC_INTERCOM_SESSION_ID: undefined,
-				},
+				env,
 			});
+			fs.writeSync(
+				process.stdout.fd,
+				`[packed-node-consumer] ${name}: ${Math.round(performance.now() - started)}ms (status=${result.status})\n`,
+			);
+			for (const line of (result.stdout ?? "").split("\n")) {
+				if (line.startsWith("[packed-node-consumer]")) fs.writeSync(process.stdout.fd, `${line}\n`);
+			}
 			assert.equal(result.status, 0, `${name}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
 			return result;
 		};
-		execute(
-			[npmCli, "pack", "--workspace=@bastani/atomic", "--ignore-scripts", "--pack-destination", packedRoot],
-			repoRoot,
-			"pack atomic",
+		const cacheArgs = [npmCli, "config", "get", "cache"];
+		const repositoryCache = execute(cacheArgs, repoRoot, "repository npm cache", process.env).stdout.trim();
+		const isolatedCache = execute(cacheArgs, consumer, "isolated npm cache").stdout.trim();
+		assert.ok(repositoryCache, "npm must resolve the repository installation cache");
+		fs.writeSync(
+			process.stdout.fd,
+			`[packed-node-consumer] npm cache: isolated=${isolatedCache}; reused=${repositoryCache}\n`,
 		);
+		consumerEnv.npm_config_cache = repositoryCache;
 		execute(
 			[
 				npmCli,
 				"pack",
+				"--workspace=@bastani/atomic",
 				"--workspace=@bastani/pi-ai",
 				"--workspace=@bastani/atomic-natives",
 				"--ignore-scripts",
@@ -340,7 +354,7 @@ runTest(
 				packedRoot,
 			],
 			repoRoot,
-			"pack dependencies",
+			"pack consumer closure",
 		);
 		const archives = fs
 			.readdirSync(packedRoot)
@@ -352,6 +366,7 @@ runTest(
 				npmCli,
 				"install",
 				"--ignore-scripts",
+				"--prefer-offline",
 				"--no-audit",
 				"--no-fund",
 				"--save-exact",

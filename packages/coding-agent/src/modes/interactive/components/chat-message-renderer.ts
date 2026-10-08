@@ -168,6 +168,7 @@ export interface LiveChatEventLike {
 	readonly partialResult?: unknown;
 	readonly result?: unknown;
 	readonly isError?: unknown;
+	readonly durationMs?: unknown;
 }
 type LiveChatEntry = ChatMessageEntry | { role: string };
 export class LiveChatEntriesController {
@@ -265,7 +266,13 @@ export class LiveChatEntriesController {
 			case "tool_execution_end": {
 				const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
 				if (!toolCallId) return false;
-				return this.updateToolResult(toolCallId, event.result, false, event.isError === true);
+				return this.updateToolResult(
+					toolCallId,
+					event.result,
+					false,
+					event.isError === true,
+					typeof event.durationMs === "number" ? event.durationMs : undefined,
+				);
 			}
 			default:
 				return false;
@@ -375,12 +382,19 @@ export class LiveChatEntriesController {
 		this.pendingToolIndexes.set(toolCallId, index >= 0 ? index : this.entries.length - 1);
 		return true;
 	}
-	private updateToolResult(toolCallId: string, result: unknown, isPartial: boolean, isError: boolean): boolean {
+	private updateToolResult(
+		toolCallId: string,
+		result: unknown,
+		isPartial: boolean,
+		isError: boolean,
+		durationMs?: number,
+	): boolean {
 		const index = this.pendingToolIndexes.get(toolCallId) ?? this.findToolEntryIndex(toolCallId);
 		if (index < 0) return false;
 		const entry = this.entries[index];
 		if (!this.isToolEntry(entry)) return false;
 		const resultObject = toolResultFromUnknown(result, entry.toolName, toolCallId, isError);
+		if (durationMs !== undefined) resultObject.durationMs = durationMs;
 		this.entries[index] = { ...entry, result: resultObject, isPartial };
 		if (!isPartial) this.pendingToolIndexes.delete(toolCallId);
 		return true;
@@ -500,6 +514,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				{
 					showImages: options.showImages ?? true,
 					imageWidthCells: options.imageWidthCells,
+					outputPad: options.outputPad,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),
 				options.ui as TUI,
@@ -514,6 +529,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				messageEntry.message.command,
 				options.ui as TUI,
 				messageEntry.message.excludeFromContext,
+				options.outputPad,
 			);
 			if (messageEntry.message.output) component.appendOutput(messageEntry.message.output);
 			if (messageEntry.isPartial !== true) {
@@ -539,7 +555,11 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 			);
 		case "custom": {
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
-				return compactionBoundaryFromMessage(messageEntry.message, options.toolOutputExpanded ?? false);
+				return compactionBoundaryFromMessage(
+					messageEntry.message,
+					options.toolOutputExpanded ?? false,
+					options.outputPad,
+				);
 			}
 			if (options.createCustomMessageComponent) return options.createCustomMessageComponent(messageEntry.message);
 			const component = new CustomMessageComponent(
@@ -553,14 +573,27 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 			return component;
 		}
 		case "branchSummary": {
-			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme, options.renderLatex);
+			const component = new BranchSummaryMessageComponent(
+				messageEntry.message,
+				markdownTheme,
+				options.renderLatex,
+				options.outputPad,
+			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
 		case "system":
-			return new Text(theme.fg("dim", messageEntry.text), 1, 0);
+			return new Text(theme.fg("dim", messageEntry.text), options.outputPad ?? 1, 0);
 	}
 }
+class SkillMessageContainer extends Container {
+	setOutputPad(outputPad: number): void {
+		for (const child of this.children) {
+			if ("setOutputPad" in child && typeof child.setOutputPad === "function") child.setOutputPad(outputPad);
+		}
+	}
+}
+
 function userMessageComponent(
 	text: string,
 	markdownTheme: MarkdownTheme,
@@ -571,8 +604,8 @@ function userMessageComponent(
 ): Component {
 	const skillBlock = parseSkillBlock(text);
 	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers, renderLatex);
-	const container = new Container();
-	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex);
+	const container = new SkillMessageContainer();
+	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex, outputPad);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {

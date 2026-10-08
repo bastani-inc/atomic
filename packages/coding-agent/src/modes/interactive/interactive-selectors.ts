@@ -234,7 +234,14 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				onOutputPadChange: (padding) => {
 					this.settingsManager.setOutputPad(padding);
 					this.outputPad = padding;
-					this.rebuildChatFromMessages();
+					for (const container of [this.chatContainer, this.pendingMessagesContainer]) {
+						for (const child of container.children) {
+							if ("setOutputPad" in child && typeof child.setOutputPad === "function") {
+								child.setOutputPad(padding);
+							}
+						}
+					}
+					this.ui.requestRender();
 				},
 				onShowCacheMissNoticesChange: (enabled) => {
 					this.settingsManager.setShowCacheMissNotices(enabled);

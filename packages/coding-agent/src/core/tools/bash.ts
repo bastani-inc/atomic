@@ -372,6 +372,7 @@ function rebuildBashResultRenderComponent(
 	showImages: boolean,
 	startedAt: number | undefined,
 	endedAt: number | undefined,
+	durationMs: number | undefined,
 ): void {
 	component.clear();
 	let output = getTextOutput(result, showImages).trim();
@@ -433,7 +434,10 @@ function rebuildBashResultRenderComponent(
 		}
 		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
 	}
-	if (startedAt !== undefined) {
+	if (!options.isPartial && durationMs !== undefined) {
+		const label = observation?.kind === "yielded" ? "Observed for" : "Took";
+		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(durationMs)}`)}`, 0, 0));
+	} else if (startedAt !== undefined) {
 		const label = options.isPartial ? "Elapsed" : observation?.kind === "yielded" ? "Observed for" : "Took";
 		const endTime = endedAt ?? Date.now();
 		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`, 0, 0));
@@ -761,6 +765,7 @@ export function createBashToolDefinition(
 				context.showImages,
 				state.startedAt,
 				state.endedAt,
+				context.durationMs,
 			);
 			component.invalidate();
 			return component;

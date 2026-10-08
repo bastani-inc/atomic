@@ -13,8 +13,13 @@ export class BranchSummaryMessageComponent extends Box {
 	private markdownTheme: MarkdownTheme;
 	private renderLatex: boolean;
 
-	constructor(message: BranchSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme(), renderLatex = true) {
-		super(1, 1, (t) => theme.bg("customMessageBg", t));
+	constructor(
+		message: BranchSummaryMessage,
+		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		renderLatex = true,
+		outputPad = 1,
+	) {
+		super(outputPad, 1, (t) => theme.bg("customMessageBg", t));
 		this.message = message;
 		this.markdownTheme = markdownTheme;
 		this.renderLatex = renderLatex;
@@ -24,6 +29,10 @@ export class BranchSummaryMessageComponent extends Box {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
 	}
 
 	override invalidate(): void {

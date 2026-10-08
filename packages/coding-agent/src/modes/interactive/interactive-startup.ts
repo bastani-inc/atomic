@@ -275,6 +275,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	this.ui.start();
+	this.programStatus.report();
 	ensurePngTranscoder(() => {
 		this.ui.invalidate();
 		this.ui.requestRender();

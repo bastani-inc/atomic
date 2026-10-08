@@ -36,6 +36,7 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
+	setProgramStatus(): void {}
 }
 
 function createClient(agentDir: string, env: Record<string, string> = {}): RpcClient {

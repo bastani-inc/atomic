@@ -90,6 +90,7 @@ No Node, filesystem, network, timers, modules or credentials are available direc
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw. Scripts have a 256 MB memory limit.
 Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), await searchTools(query, {limit?, namespace?}), await describeTool(name), await describeNamespace(name).
 tools, ALL_TOOLS and searchTools() matches cover only script-callable tools. Model-only tools such as subagent, workflow, intercom, and ask_user_question are excluded from them, but you can still call them directly. searchTools() and describeTool() answer the exact name of an active model-only tool with a hint to call it directly, not from a script.
+With several text items, each starts with a ==> text N/M <== line. Console calls follow the other output in one <console_output> block, with one line per call.
 image() also saves each image to a temp file and the result names its path before the image.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
 Optional first line: // @options: {"max_output_tokens": 1000, "timeout_ms": 60000}. Output defaults to 10000 tokens; there is no default deadline.`;

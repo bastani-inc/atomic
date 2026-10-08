@@ -312,6 +312,8 @@ Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` bo
 
 `agent_start` begins a low-level run. `agent_end` fires when that run ends, but Atomic may still retry, compact and retry, or deliver queued follow-ups. `agent_before_settle` is the final actionable boundary: it can append session entries and request one continuation. `agent_settled` is final and notification-only; use it when a status integration needs to know Atomic has no automatic continuation left, including a chain of repeated output-cap continuations. Silence during a provider request or between these runs is not settlement.
 
+`agent_settled` includes `aborted: true` when the prompt was cancelled, including cancellation during `agent_before_settle`. Otherwise it is `false`. Use this field to distinguish cancellation from normal completion; an aborted prompt still emits the final settlement notification.
+
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
 pi.on("agent_end", async (event, ctx) => {
@@ -459,9 +461,11 @@ pi.on("tool_execution_update", async (event, ctx) => {
 });
 
 pi.on("tool_execution_end", async (event, ctx) => {
-  // event.toolCallId, event.toolName, event.result, event.isError
+  // event.toolCallId, event.toolName, event.result, event.isError, event.durationMs
 });
 ```
+
+`durationMs` is the time spent in the tool's `execute()`, measured with a monotonic clock. It is absent when the tool did not run.
 
 #### context
 

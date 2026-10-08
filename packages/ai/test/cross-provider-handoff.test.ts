@@ -107,7 +107,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// Hugging Face
 	{ provider: "huggingface", model: "moonshotai/Kimi-K2.5", label: "huggingface-kimi-k2.5" },
 	// Together AI
-	{ provider: "together", model: "moonshotai/Kimi-K2.6", label: "together-kimi-k2.6" },
+	{ provider: "together", model: "moonshotai/Kimi-K3", label: "together-kimi-k3" },
 	// Baseten
 	{ provider: "baseten", model: "zai-org/GLM-5.2", label: "baseten-glm-5.2" },
 	// Kimi For Coding

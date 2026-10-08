@@ -32,6 +32,7 @@ Events are defined in [`AgentSessionEvent`](https://github.com/bastani-inc/atomi
 ```typescript
 type AgentSessionEvent =
   | AgentEvent
+  | { type: "agent_settled"; aborted: boolean }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
   | { type: "session_info_changed"; name: string | undefined }
@@ -47,6 +48,8 @@ type AgentSessionEvent =
 ```
 
 `queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text.
+
+`agent_end` closes one low-level agent run; retries, compaction recovery, or queued work may still continue. `agent_settled` means no automatic work remains for the session-level run. Its `aborted` field is `true` when the run was cancelled.
 
 For automatic compaction, `compaction_end.willRetry === true` means the interrupted turn will retry; `AgentSession.prompt()` waits for that continuation. This includes overflow and retry-worthy threshold recovery, such as output-token truncation or OpenAI Responses output-budget underflow. Generic `invalid_request_body` failures still use `willRetry: false` when threshold compaction is warranted.
 
@@ -73,8 +76,10 @@ type AgentEvent =
   // Tool execution
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean; durationMs?: number };
 ```
+
+Final assistant and tool-result messages include optional `durationMs` timing. On `tool_execution_end`, it records how long the tool's `execute()` took using a monotonic clock; it is absent when the tool did not run.
 
 On the wire, each `message_update` record carries:
 

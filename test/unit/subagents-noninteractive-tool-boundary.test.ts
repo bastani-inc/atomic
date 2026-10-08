@@ -372,6 +372,8 @@ describe("programmatic subagent tool boundary", () => {
 				expanded: false,
 				showImages: false,
 				isError: false,
+				durationMs: undefined,
+				outputPad: 1,
 			});
 			const rendered = component.render(120).join("\n");
 			assert.match(rendered, /subagent /);

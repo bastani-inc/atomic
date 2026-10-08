@@ -34,7 +34,7 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 		const result = eventResult.result;
 
 		// Create UI component for display
-		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext, this.outputPad);
 		if (this.session.isStreaming) {
 			this.pendingMessagesContainer.addChild(this.bashComponent);
 			this.pendingBashComponents.push(this.bashComponent);
@@ -62,7 +62,7 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 
 	// Normal execution path (possibly with custom operations)
 	const isDeferred = this.session.isStreaming;
-	this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+	this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext, this.outputPad);
 
 	if (isDeferred) {
 		// Show in pending area when agent is streaming

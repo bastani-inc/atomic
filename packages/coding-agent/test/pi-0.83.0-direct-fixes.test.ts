@@ -124,6 +124,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		let bindCount = 0;
 
 		const context = {
+			programStatus: { reset: vi.fn() },
 			session: startupSession as object,
 			unsubscribe: undefined as (() => void) | undefined,
 			applyRuntimeSettings: () => {},

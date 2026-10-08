@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	detectCapabilities,
 	getCapabilities,
@@ -9,6 +10,7 @@ import { type Settings, SettingsManager } from "../src/core/settings-manager.ts"
 
 const capabilityEnvironment = [
 	"TERM",
+	"TMUX",
 	"TERM_PROGRAM",
 	"COLORTERM",
 	"KITTY_WINDOW_ID",
@@ -73,4 +75,13 @@ describe("pi-tui 0.85.0 settings", () => {
 		setCapabilityOverrides(manager.getTerminalCapabilityOverrides());
 		expect(getCapabilities()).toEqual({ images: null, trueColor: false, hyperlinks: false });
 	});
+});
+
+test("Herdr enables hyperlinks without inheriting the outer terminal's image protocol (#10573)", () => {
+	for (const key of capabilityEnvironment) delete process.env[key];
+	process.env.TERM = "xterm-256color";
+	process.env.TERM_PROGRAM = "herdr";
+	process.env.COLORTERM = "truecolor";
+	process.env.KITTY_WINDOW_ID = "outer-kitty-window";
+	assert.deepEqual(detectCapabilities(), { images: null, trueColor: true, hyperlinks: true });
 });

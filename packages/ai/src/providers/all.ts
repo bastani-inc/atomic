@@ -25,7 +25,7 @@ import { minimaxCnProvider } from "./minimax-cn.ts";
 import { mistralProvider } from "./mistral.ts";
 import { moonshotaiProvider } from "./moonshotai.ts";
 import { moonshotaiCnProvider } from "./moonshotai-cn.ts";
-import { morphProvider } from "./morph.js";
+import { morphProvider } from "./morph.ts";
 import { nvidiaProvider } from "./nvidia.ts";
 import { openaiApiProvider, openaiProvider } from "./openai.ts";
 import { openaiCodexProvider } from "./openai-codex.ts";

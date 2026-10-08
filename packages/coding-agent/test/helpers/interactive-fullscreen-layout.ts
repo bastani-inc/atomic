@@ -64,6 +64,8 @@ export class RecordingTerminal implements Terminal {
 
 	setProgress(_active: boolean): void {}
 
+	setProgramStatus(): void {}
+
 	input(data: string): void {
 		this.onInput?.(data);
 	}
@@ -187,6 +189,7 @@ export function createProductionFullscreenContext(
 	};
 	const context = Object.assign(Object.create(InteractiveMode.prototype), {
 		isInitialized: false,
+		programStatus: { report: () => {} },
 		ui: tui,
 		runtimeHost: { session, services: { agentDir: "/tmp" } },
 		options: { deferredExtensionLoad: true, verbose: true },

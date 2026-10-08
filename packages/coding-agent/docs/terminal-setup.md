@@ -182,3 +182,17 @@ The built-in terminal has limited escape sequence support. SHIFT+Enter cannot be
 If you want the hardware cursor visible, set `ATOMIC_HARDWARE_CURSOR=1` before running Atomic. The legacy `PI_HARDWARE_CURSOR=1` alias also works; the hardware cursor is disabled by default for compatibility.
 
 Consider using a dedicated terminal emulator for the best experience.
+
+## Program status
+
+Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status), so supporting terminals and dashboards can show whether it is working, waiting for you, done, or failed:
+
+| State | When |
+|---|---|
+| `working` | An agent run or compaction is in progress. The message is the session name, or `Compacting context`. |
+| `blocked` | An extension dialog or login waits for you. The message is the dialog title. |
+| `done` | A run finished. The message is the session name. |
+| `error` | A run ended with an error that is not retried. The message is the first line of the error. |
+| `idle` | Atomic started, or you cancelled the run. |
+
+Reports never contain prompts or model output. Atomic sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to disable reports.

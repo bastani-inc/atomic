@@ -24,6 +24,8 @@ function render(details: { delivered: boolean; queued?: boolean }, text: string)
 		expanded: false,
 		showImages: false,
 		isError: false,
+		durationMs: undefined,
+		outputPad: 1,
 	})
 		.render(200)
 		.join("\n");

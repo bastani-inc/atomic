@@ -48,7 +48,11 @@ describe.sequential("Anthropic OAuth", () => {
 			const body = getJsonBody(init);
 			assert.equal(body.grant_type, "authorization_code");
 			assert.equal(body.code, "manual-code");
-			assert.equal(body.redirect_uri, "http://localhost:53692/callback");
+			const redirectUri = new URL(authUrl).searchParams.get("redirect_uri");
+			assert.ok(redirectUri);
+			assert.equal(new URL(redirectUri).hostname, "localhost");
+			assert.equal(new URL(redirectUri).pathname, "/callback");
+			assert.equal(body.redirect_uri, redirectUri);
 			return jsonResponse({
 				access_token: "access-token",
 				refresh_token: "refresh-token",
@@ -270,11 +274,11 @@ describe.sequential("Anthropic OAuth", () => {
 	it("falls back to a free callback port when the preferred port cannot be bound (#10571)", async () => {
 		const blocker = createServer();
 		await new Promise<void>((resolve, reject) => {
-			blocker.once("error", reject);
-			blocker.listen(53692, "127.0.0.1", () => {
-				blocker.off("error", reject);
-				resolve();
+			blocker.once("error", (error: NodeJS.ErrnoException) => {
+				if (error.code === "EADDRINUSE") resolve();
+				else reject(error);
 			});
+			blocker.listen(53692, "127.0.0.1", resolve);
 		});
 		const nativeFetch = globalThis.fetch;
 		let exchangedRedirectUri: string | undefined;

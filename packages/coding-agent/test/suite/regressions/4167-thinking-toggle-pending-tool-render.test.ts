@@ -32,6 +32,7 @@ const EMPTY_USAGE: Usage = {
 };
 
 type RenderSessionContextThis = {
+	programStatus: { handleEvent(event: AgentSessionEvent): void };
 	pendingTools: Map<string, ToolExecutionComponent>;
 	deferredRenderedUserInputs: string[];
 	deferredRenderedUserInputComponents: Map<string, Component[][]>;
@@ -80,6 +81,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		addRenderedChatEntry: (entry: ChatMessageEntry) => Component;
 	};
 	return {
+		programStatus: { handleEvent: vi.fn() },
 		pendingTools: new Map<string, ToolExecutionComponent>(),
 		deferredRenderedUserInputs: [],
 		deferredRenderedUserInputComponents: new Map<string, Component[][]>(),

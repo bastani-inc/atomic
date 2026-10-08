@@ -6,15 +6,22 @@
 
 - Added the API-key-only providers `openai-api` and `anthropic-api`, so you can keep a ChatGPT or Claude subscription login on `openai`/`anthropic` and still use an API key for the same models. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time).
 - `session.compact()` and extension `ctx.compact()` accept `compactionModel` to pick the compaction model for one run without changing the `compactionModel` setting. An unknown ID rejects before the active run is interrupted. See [Compaction and tree navigation](docs/sdk.md#compaction-and-tree-navigation).
+- Added terminal program-status reporting through OSC 7501 for runs, compaction, extension prompts, and sign-in. Compatible terminals can show when Atomic is working, waiting for input, done, or has failed.
+- Added recorded response and tool execution durations. Bash tool results show their execution time, including after a session is resumed.
 
 ### Changed
 
 - Moved the GPT-6 Luna classifier from `openai/gpt-6-luna` to its own API-key-only provider, `openai-decisions/gpt-6-luna`, named "GPT-6 Luna Decisions". `openai/gpt-6-luna` now always means the chat model, and the classifier stays available while `openai` uses ChatGPT sign-in. Update `routerModel`, `compactionModel`, `structured_output` and codemode references that meant the classifier. See [Classifier models](docs/models.md#use-classifier-models).
+- Codemode labels returned output items with numbered headers and places console output in a separate trailing block.
 - Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))
 
 ### Fixed
 
 - Updated the sandbox example extension's lockfile to `shell-quote` 1.12.0, resolving the `quote()` command-injection advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) in its `@anthropic-ai/sandbox-runtime` dependency.
+- Fixed hyperlinks being disabled in Herdr panes, while keeping image protocols off even when outer-terminal environment variables are inherited ([#10573](https://github.com/earendil-works/pi/issues/10573)).
+- Fixed `outputPad` applying inconsistently to tool results, shell output, summaries, skill invocations, and custom transcript entries. Changing it in `/settings` now updates existing blocks without rebuilding the transcript.
+- Fixed fullscreen text selections surviving a transcript rebuild and selecting unrelated replacement text.
+- Fixed extension-registered MCP servers silently remaining unused when an SDK host has no MCP contribution consumer. Atomic now reports each unhandled server once.
 
 ## [0.9.28-alpha.3] - 2026-10-07
 

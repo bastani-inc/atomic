@@ -1,5 +1,6 @@
 import type { HostInput } from "../../../packages/coding-agent/src/index.js";
 import { InteractiveModeBase } from "../../../packages/coding-agent/src/modes/interactive/interactive-mode-base.js";
+import { ProgramStatusReporter } from "../../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { initTheme } from "../../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import "../../../packages/coding-agent/src/modes/interactive/interactive-extension-context.js";
 import "../../../packages/coding-agent/src/modes/interactive/interactive-extension-dialogs.js";
@@ -15,6 +16,10 @@ export function attachedCliPresentation(text: string, reply: "true" | "false" | 
 	initTheme("dark");
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		editor,
+		programStatus: new ProgramStatusReporter(
+			() => ({ setProgramStatus() {} }) as never,
+			() => undefined,
+		),
 		editorContainer: { clear() {}, addChild() {} },
 		ui: {
 			requestRender() {},

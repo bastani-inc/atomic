@@ -55,6 +55,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 	});
 	Object.assign(mode, {
 		bindCurrentSessionExtensions: async () => {},
+		resetTranscriptSelection() {},
 		applyRuntimeSettings() {},
 		pendingUserInputs: [],
 		promptTurnWorkingLoaderActive: false,

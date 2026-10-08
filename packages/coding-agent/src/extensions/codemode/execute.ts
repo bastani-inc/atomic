@@ -10,6 +10,7 @@ import type {
 } from "@bastani/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
+	type CodemodeOutputItem,
 	type CodemodeResult,
 	CodemodeSandbox,
 	type CodemodeTool,
@@ -117,6 +118,38 @@ export function toCodemodeModelInfo(model: AnyModel): Record<string, unknown> {
 		cost: model.cost,
 	};
 }
+/** Separate text items and collect console calls after the script's other output. */
+function formatOutput(output: readonly CodemodeOutputItem[]): (TextContent | ImageContent)[] {
+	const total = output.filter((item) => item.type === "text" && !item.console).length;
+	const items: (TextContent | ImageContent)[] = [];
+	const consoleLines: string[] = [];
+	let index = 0;
+	for (const item of output) {
+		if (item.type === "image") items.push(item);
+		else if (item.console) consoleLines.push(item.text);
+		else {
+			index++;
+			items.push({ type: "text", text: total > 1 ? `==> text ${index}/${total} <==\n${item.text}` : item.text });
+		}
+	}
+	if (consoleLines.length > 0)
+		items.push({ type: "text", text: `<console_output>\n${consoleLines.join("\n")}\n</console_output>` });
+	return items;
+}
+
+/** Providers may concatenate adjacent text blocks without a separator. */
+function joinAdjacentText(items: (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
+	const joined: (TextContent | ImageContent)[] = [];
+	for (const item of items) {
+		const last = joined.at(-1);
+		if (item.type === "text" && last?.type === "text") {
+			const separator = last.text === "" || last.text.endsWith("\n") ? "" : "\n";
+			joined[joined.length - 1] = { type: "text", text: `${last.text}${separator}${item.text}` };
+		} else joined.push(item);
+	}
+	return joined;
+}
+
 const MODEL_TYPES = ["chat", "image", "classifier"] as const;
 function modelType(value: unknown): ModelType {
 	if (value === "chat" || value === "image" || value === "classifier") return value;
@@ -515,17 +548,19 @@ export async function executeCodemode(
 		await sandbox.close();
 	}
 	for (const call of calls) if (call.status === "running") call.status = "cancelled";
-	let content: (TextContent | ImageContent)[] = [...result.output];
+	const scriptOutput = [...result.output];
 	if (result.ok) {
 		if (Object.keys(result.storeWrites.set).length || result.storeWrites.delete.length)
 			options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, result.storeWrites);
 		if (result.value !== undefined)
-			content.push({
+			scriptOutput.push({
 				type: "text",
 				text:
 					typeof result.value === "string" ? result.value : (JSON.stringify(result.value) ?? String(result.value)),
 			});
-	} else
+	}
+	let content = formatOutput(scriptOutput);
+	if (!result.ok)
 		content.push({
 			type: "text",
 			text: `Script error:\n${result.error.stack ?? result.error.message}\n\nTool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ") || "none"}`,
@@ -535,6 +570,7 @@ export async function executeCodemode(
 			type: "text",
 			text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
 		});
+	content = joinAdjacentText(content);
 	const text = content
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
@@ -562,7 +598,7 @@ export async function executeCodemode(
 		];
 	}
 	// Save after truncation so labels cannot be cut or separated from their images.
-	content = await saveImages(content);
+	content = joinAdjacentText(await saveImages(content));
 	return {
 		content: [
 			{

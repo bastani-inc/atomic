@@ -107,6 +107,7 @@ describe("InteractiveMode.handleEvent model changes", () => {
 	test("refreshes the built-in header when the active model changes", async () => {
 		const fakeThis: any = {
 			isInitialized: true,
+			programStatus: { handleEvent: vi.fn() },
 			footer: { invalidate: vi.fn() },
 			refreshBuiltInHeader: vi.fn(),
 			updateEditorBorderColor: vi.fn(),

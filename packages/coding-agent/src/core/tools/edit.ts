@@ -593,7 +593,7 @@ export function createEditToolDefinition(
 			component.clear();
 			if (!output) return component;
 			component.addChild(new Spacer(1));
-			component.addChild(new Text(output, 1, 0));
+			component.addChild(new Text(output, 0, 0));
 			return component;
 		},
 	};

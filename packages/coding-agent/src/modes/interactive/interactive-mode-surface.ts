@@ -52,6 +52,7 @@ import type {
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
+import type { BlockedStatus } from "./program-status-reporter.ts";
 
 declare module "./interactive-mode-base.ts" {
 	interface InteractiveModeBase {
@@ -201,6 +202,7 @@ declare module "./interactive-mode-base.ts" {
 			title: string,
 			options: string[],
 			opts?: ExtensionUIDialogOptions,
+			blocked?: BlockedStatus,
 		): Promise<string | undefined>;
 		hideExtensionSelector(instance?: ExtensionSelectorComponent): void;
 		showExtensionConfirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;

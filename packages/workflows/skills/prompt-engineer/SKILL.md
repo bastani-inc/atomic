@@ -35,6 +35,7 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 | Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, append-only reminders, completion within the output allowance |
 | Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |
 | Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, progress cadence, bounded unattended continuation, pasted-content boundaries |
+| Claude Haiku 5.5 | `references/claude_haiku_5_5.md` | Effort, date-guided search, JSON and tool use, long-agent completion, verification, and refusals |
 | Claude Opus 5 | `references/claude_opus_5.md` | Separate response length from effort, remove redundant verification, bound delegation |
 | Claude Opus 4.8 | `references/claude_opus_4_8.md` | Steerable thinking, literal scope, tool triggering, design alternatives |
 | Claude Sonnet 5.5 | `references/claude_sonnet_5_5.md` | Recalibrated effort, carrying coding work through, scope limits, silent tool loops, search and verification prompts, mid-turn message placement |

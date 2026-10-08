@@ -262,6 +262,29 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).not.toContain("[Showing lines 1001-4000 of 4000. Full output:");
 	});
 
+	test("bash renderer uses recorded duration after reload and ignores wall-clock jumps (#10549)", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		for (const live of [true, false]) {
+			const component = new ToolExecutionComponent(
+				"bash",
+				"recorded-duration",
+				{ command: "sleep 4" },
+				{},
+				createBashToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+			if (live) {
+				component.markExecutionStarted();
+				component.updateResult({ content: [], isError: false }, true);
+				vi.advanceTimersByTime(3_600_000);
+			}
+			component.updateResult({ content: [], isError: false, durationMs: 4_200 });
+			assert.ok(stripAnsi(component.render(120).join("\n")).includes("Took 4.2s"));
+		}
+	});
+
 	test("does not duplicate built-in headers when passed the active built-in definition", () => {
 		const component = new ToolExecutionComponent(
 			"read",

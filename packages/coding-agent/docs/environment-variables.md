@@ -21,6 +21,8 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 The renderer also owns `PI_HYPERLINKS`, `PI_IMAGE_PROTOCOL`, and `PI_TRUE_COLOR`. `PI_HYPERLINKS=1|0|auto` and `PI_TRUE_COLOR=1|0|auto` override or preserve detection; `PI_IMAGE_PROTOCOL=kitty|iterm2|none|auto` selects, disables, or preserves image-protocol detection. Explicit JSON values under `terminal.hyperlinks`, `terminal.images`, and `terminal.trueColor` take precedence. These renderer-owned names intentionally have no `ATOMIC_*` aliases.
 
+`PI_PROGRAM_STATUS=1` forces OSC 7501 program-status reports; `0` disables them. Otherwise Atomic reports only after the terminal confirms support. This renderer-owned variable has no `ATOMIC_*` alias. See [Program status](/terminal-setup#program-status).
+
 ## Prompt-cache retention
 
 Atomic defaults to **long** prompt-cache retention in main chat, workflow stages, and subagents wherever the provider/model supports it. `PI_CACHE_RETENTION` intentionally has no `ATOMIC_*` alias. Set it before launching Atomic to choose `short`, `none`, or `long`:

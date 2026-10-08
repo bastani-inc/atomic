@@ -13,6 +13,7 @@ import {
 	disposeInteractiveTasks,
 	refreshInteractiveTasks,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-task-projection.js";
+import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { getMarkdownTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
@@ -331,6 +332,10 @@ test("main lifecycle handler filters the full completion envelope before compone
 		ui: { requestRender() {} },
 		isInitialized: true,
 		footer: { invalidate() {} },
+		programStatus: new ProgramStatusReporter(
+			() => ({ setProgramStatus() {} }) as never,
+			() => undefined,
+		),
 		settingsManager: harness.settingsManager,
 		getMarkdownTransformers: () => [],
 		getMarkdownThemeWithSettings: getMarkdownTheme,

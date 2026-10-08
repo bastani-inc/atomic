@@ -27,6 +27,7 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
+	setProgramStatus(): void {}
 }
 
 function withPlatform(platform: NodeJS.Platform, run: () => void): void {

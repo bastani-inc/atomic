@@ -31,6 +31,7 @@ interface GeneratedModel {
 			cacheWrite: number;
 		}>;
 	};
+	serviceTiers?: Model<Api>["serviceTiers"];
 	contextWindow: number;
 	maxTokens: number;
 	thinkingLevelMap?: Record<string, string | null>;

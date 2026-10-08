@@ -149,6 +149,7 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 		this.ui.requestRender();
 	};
 
+	this.programStatus.setBlocked("login", { kind: "auth", message: `Log in to ${providerName}` });
 	try {
 		const loginResult = await this.runtimeHost.loginApiKeyProvider(providerId, {
 			signal: dialog.signal,
@@ -159,9 +160,11 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 				else if (event.type === "progress") dialog.showProgress(event.message);
 			},
 		});
+		this.programStatus.setBlocked("login", undefined);
 		restoreEditor();
 		await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel, loginResult);
 	} catch (error: unknown) {
+		this.programStatus.setBlocked("login", undefined);
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		if (error instanceof CredentialSynchronizationError) {
@@ -251,6 +254,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 	};
 
 	let loginSucceeded = false;
+	this.programStatus.setBlocked("login", { kind: "auth", message: `Log in to ${providerName}` });
 	try {
 		const loginResult = await this.runtimeHost.loginOAuthProvider(providerId, {
 			onAuth: (info: { url: string; instructions?: string }) => {
@@ -308,12 +312,14 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 
 			signal: dialog.signal,
 		});
+		this.programStatus.setBlocked("login", undefined);
 		loginSucceeded = true;
 
 		// Success
 		restoreEditor();
 		await this.completeProviderAuthentication(providerId, providerName, "oauth", previousModel, loginResult);
 	} catch (error: unknown) {
+		this.programStatus.setBlocked("login", undefined);
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		if (error instanceof CredentialSynchronizationError) {

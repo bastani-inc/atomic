@@ -151,9 +151,9 @@ export default function(pi) {
 					assert.ok(await fileExists(snapshotPath), tmux("capture-pane", "-p", "-t", name));
 					const snapshot = await readJson<StartupSnapshot>(snapshotPath);
 					tmux("send-keys", "-t", name, "-l", "/startup-ready");
-					while (!tmux("capture-pane", "-p", "-t", name).includes("/startup-ready") && Date.now() < deadline)
+					while (!/^❯ \/startup-ready\s*$/m.test(tmux("capture-pane", "-p", "-t", name)) && Date.now() < deadline)
 						await sleep(50);
-					assert.ok(tmux("capture-pane", "-p", "-t", name).includes("/startup-ready"));
+					assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/startup-ready\s*$/m);
 					tmux("send-keys", "-t", name, "Enter");
 					while (!(await fileExists(`${snapshotPath}.ready`)) && Date.now() < deadline) await sleep(50);
 					assert.ok(
@@ -174,23 +174,28 @@ export default function(pi) {
 					if (!disabled) serverPid = Number(await readText(serverMarker));
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
-						while (!tmux("capture-pane", "-p", "-t", name).includes("/mcp") && Date.now() < deadline)
+						while (!/^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)) && Date.now() < deadline)
 							await sleep(50);
-						assert.ok(tmux("capture-pane", "-p", "-t", name).includes("/mcp"));
+						assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/mcp\s*$/m);
 						tmux("send-keys", "-t", name, "Enter");
 						const managerDeadline = Date.now() + 5000;
-						while (
-							!tmux("capture-pane", "-p", "-t", name).includes("MCP servers") &&
-							Date.now() < managerDeadline
-						)
+						const managerTitle = /^\s*MCP servers\s*$/m;
+						const serverRow = /^\s*→ startup\s+.+$/m;
+						let pane = tmux("capture-pane", "-p", "-t", name);
+						while ((!managerTitle.test(pane) || !serverRow.test(pane)) && Date.now() < managerDeadline) {
 							await sleep(50);
-						const pane = tmux("capture-pane", "-p", "-t", name);
-						assert.ok(pane.includes("MCP servers"), pane);
+							pane = tmux("capture-pane", "-p", "-t", name);
+						}
+						assert.match(pane, managerTitle);
+						assert.match(pane, serverRow);
 						assert.ok(pane.includes("connecting"), pane);
 						tmux("send-keys", "-t", name, "Escape");
-						while (tmux("capture-pane", "-p", "-t", name).includes("MCP servers") && Date.now() < managerDeadline)
+						while ((managerTitle.test(pane) || !/^❯\s*$/m.test(pane)) && Date.now() < managerDeadline) {
 							await sleep(50);
-						assert.ok(!tmux("capture-pane", "-p", "-t", name).includes("MCP servers"));
+							pane = tmux("capture-pane", "-p", "-t", name);
+						}
+						assert.ok(!managerTitle.test(pane), pane);
+						assert.match(pane, /^❯\s*$/m);
 					}
 				} finally {
 					try {

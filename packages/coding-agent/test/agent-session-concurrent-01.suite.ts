@@ -8,8 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AssistantMessage,
-	type AssistantMessageEvent,
-	EventStream,
+	createAssistantMessageEventStream,
 	getModel,
 	type TextContent,
 } from "@bastani/pi-ai/compat";
@@ -22,20 +21,6 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
-
-// Mock stream that mimics AssistantMessageEventStream
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createAssistantMessage(text: string): AssistantMessage {
 	return {
@@ -136,7 +121,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			},
 			streamFn: (_model, _context, options) => {
 				abortSignal = options?.signal;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					stream.push({ type: "start", partial: createAssistantMessage("") });
 					const checkAbort = () => {
@@ -174,13 +159,20 @@ describe("AgentSession concurrent prompt guard", () => {
 		return session;
 	}
 
+	async function waitForStreaming(): Promise<void> {
+		const startedAt = Date.now();
+		while (!session.isStreaming) {
+			if (Date.now() - startedAt > 5000) throw new Error("Timed out waiting for streaming");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	}
+
 	it("should throw when prompt() called while streaming", async () => {
 		await createSession();
 		// Start first prompt (don't await, it will block until abort)
 		const firstPrompt = session.prompt("First message");
 
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await waitForStreaming();
 
 		// Verify we're streaming
 		expect(session.isStreaming).toBe(true);
@@ -222,7 +214,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await createSession();
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await waitForStreaming();
 
 		// steer should work while streaming
 		assert.equal(await session.steer("Steering message"), "queued");
@@ -236,7 +228,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await createSession();
 		// Start first prompt
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await waitForStreaming();
 
 		// followUp should work while streaming
 		assert.equal(await session.followUp("Follow-up message"), "queued");
@@ -262,7 +254,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			},
 			streamFn: (_model, context, options) => {
 				abortSignal = options?.signal;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					const userTexts = context.messages
 						.filter((message) => message.role === "user")
@@ -325,7 +317,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await waitForStreaming();
 		expect(session.isStreaming).toBe(true);
 
 		const pi = (
@@ -366,7 +358,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				tools: [],
 			},
 			streamFn: (_model, context, options) => {
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					const userTexts = context.messages
 						.filter((message) => message.role === "user")

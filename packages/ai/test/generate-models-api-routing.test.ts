@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ModelCost } from "../src/types.ts";
 import { afterEach, test } from "vitest";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -18,6 +19,7 @@ type GeneratedModel = {
 	api: string;
 	baseUrl: string;
 	compat?: { supportsMidConvoEffort?: boolean };
+	cost: ModelCost;
 };
 type GeneratedProviderCatalog = Record<string, Record<string, GeneratedModel>>;
 
@@ -25,6 +27,7 @@ function generateProviderCatalogs(
 	catalog: unknown,
 	providers: readonly string[],
 	openRouterModels: readonly unknown[] = [],
+	aiGatewayModels: readonly object[] = [],
 ): GeneratedProviderCatalog {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-api-routing-"));
 	temporaryRoots.push(fixtureRoot);
@@ -39,10 +42,12 @@ function generateProviderCatalogs(
 		preloadPath,
 		`const catalog = ${JSON.stringify(catalog)};\n` +
 			`const openRouterModels = ${JSON.stringify(openRouterModels)};\n` +
+			`const aiGatewayModels = ${JSON.stringify(aiGatewayModels)};\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: openRouterModels }), { status: 200 });\n` +
+			`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: aiGatewayModels }), { status: 200 });\n` +
 			`  return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`};\n`,
 	);
@@ -210,3 +215,63 @@ test.each(["kimi-code-plan-global", "kimi-code-plan-cn", "kimi-for-coding"])(
 		}
 	},
 );
+
+test("retains models.dev tiers and base rates across provider catalogs", () => {
+	const cost = {
+		input: 2,
+		output: 12,
+		cache_read: 0.2,
+		cache_write: 0.375,
+		tiers: [{ tier: { type: "context", size: 200000 }, input: 4, output: 18 }],
+	};
+	const model = { id: "tiered-model", ...toolCapable, cost };
+	const catalogs = generateProviderCatalogs(
+		{
+			google: { models: { "tiered-model": model } },
+			opencode: { models: { "tiered-model": model } },
+			groq: { models: { "tiered-model": model } },
+			openai: { models: { "tiered-model": model } },
+		},
+		["google", "opencode", "groq", "openai"],
+	);
+	for (const provider of ["google", "opencode", "groq", "openai"]) {
+		assert.deepEqual(
+			catalogs[provider]["tiered-model"].cost,
+			{
+				input: 2,
+				output: 12,
+				cacheRead: 0.2,
+				cacheWrite: 0.375,
+				tiers: [{ inputTokensAbove: 200000, input: 4, output: 18, cacheRead: 0.2, cacheWrite: 0.375 }],
+			},
+			provider,
+		);
+	}
+});
+
+test("AI Gateway pricing honors bracket ends and missing bracket rates", () => {
+	const catalogs = generateProviderCatalogs(
+		{},
+		["vercel-ai-gateway"],
+		[],
+		[
+			{
+				id: "example/model",
+				name: "Example",
+				type: "language",
+				tags: ["tool-use"],
+				pricing: {
+					input: "0.000001",
+					output: "0.000005",
+					input_tiers: [{ min: 100, max: 200, cost: "0.000002" }, { min: 200 }],
+					output_tiers: [{ min: 300, cost: "0.000009" }],
+				},
+			},
+		],
+	);
+	assert.deepEqual(catalogs["vercel-ai-gateway"]["example/model"].cost.tiers, [
+		{ inputTokensAbove: 99, input: 2, output: 5, cacheRead: 0, cacheWrite: 0 },
+		{ inputTokensAbove: 199, input: 1, output: 5, cacheRead: 0, cacheWrite: 0 },
+		{ inputTokensAbove: 299, input: 1, output: 9, cacheRead: 0, cacheWrite: 0 },
+	]);
+});

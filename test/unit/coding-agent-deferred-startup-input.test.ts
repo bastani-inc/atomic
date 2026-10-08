@@ -12,6 +12,7 @@ import {
 	type MarkdownTheme,
 	Text,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-deps.js";
+import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { readText } from "../helpers/runtime.js";
 
@@ -75,6 +76,7 @@ type UserMessageStartEvent = {
 type HandleEventContext = {
 	isInitialized: true;
 	footer: { invalidate: () => void };
+	programStatus: ProgramStatusReporter;
 	chatContainer: Container;
 	getUserMessageText: (message: { role: "user"; content: string }) => string;
 	consumeDeferredRenderedUserInput: (text: string) => boolean;
@@ -256,6 +258,10 @@ describe("coding-agent deferred startup input", () => {
 		const eventContext: HandleEventContext = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn(() => {}) },
+			programStatus: new ProgramStatusReporter(
+				() => ({ setProgramStatus() {} }) as never,
+				() => undefined,
+			),
 			chatContainer,
 			getUserMessageText: (message) => message.content,
 			consumeDeferredRenderedUserInput: () => false,

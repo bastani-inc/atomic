@@ -66,6 +66,7 @@ type StartupNoticesContext = {
 };
 
 type InitContext = {
+	programStatus: { report: () => void };
 	settingsManager: { getFullscreenScrollbar: () => "auto" };
 	isInitialized: boolean;
 	registerSignalHandlers: () => void;
@@ -229,6 +230,7 @@ describe("InteractiveMode startup latency hooks", () => {
 		initTheme("dark");
 		let focused: Component | undefined;
 		const context = {
+			programStatus: { report: vi.fn(), setBlocked: vi.fn() },
 			init: InteractiveMode.prototype.init,
 			showExtensionConfirm: InteractiveMode.prototype.showExtensionConfirm,
 			showExtensionSelector: InteractiveMode.prototype.showExtensionSelector,
@@ -309,6 +311,7 @@ describe("InteractiveMode startup latency hooks", () => {
 		);
 		const headerChildren: object[] = [];
 		const context = {
+			programStatus: { report: vi.fn() },
 			runtimeHost: {},
 			isInitialized: false,
 			registerSignalHandlers: vi.fn(),
@@ -371,6 +374,7 @@ describe("InteractiveMode startup latency hooks", () => {
 	it("does not start footer git watching during the inline init path", async () => {
 		const themeReady = new Promise<void>(() => {});
 		const context: InitContext = {
+			programStatus: { report: vi.fn() },
 			isInitialized: false,
 			registerSignalHandlers: vi.fn(),
 			ui: {

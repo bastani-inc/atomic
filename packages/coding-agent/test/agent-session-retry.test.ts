@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, getModel } from "@bastani/pi-ai/compat";
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,19 +11,6 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
-
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createAssistantMessage(text: string, overrides?: Partial<AssistantMessage>): AssistantMessage {
 	return {
@@ -85,7 +72,7 @@ describe("AgentSession retry", () => {
 			initialState: { model, systemPrompt: "Test", tools: [] },
 			streamFn: () => {
 				callCount++;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					if (callCount <= failCount) {
 						const msg = createAssistantMessage("", {
@@ -215,7 +202,7 @@ describe("AgentSession retry", () => {
 		let callCount = 0;
 		const streamFn = () => {
 			callCount++;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				if (callCount === 1) {
 					const msg = createAssistantMessage("", {
@@ -293,7 +280,7 @@ describe("AgentSession retry", () => {
 			initialState: { model, systemPrompt: "Test", tools: [] },
 			streamFn: () => {
 				callCount++;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					if (callCount === 1) {
 						// First call: overloaded error
@@ -360,7 +347,7 @@ describe("AgentSession retry", () => {
 		let callCount = 0;
 		await createSessionWithStream(() => {
 			callCount++;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				if (callCount === 1) {
 					const error = createAssistantMessage("", {
@@ -386,7 +373,7 @@ describe("AgentSession retry", () => {
 		let callCount = 0;
 		await createSessionWithStream(() => {
 			callCount++;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				if (callCount <= 2) {
 					const empty = createAssistantMessage("", { content: [], stopReason: "stop" });

@@ -43,6 +43,7 @@ class StartupTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
+	setProgramStatus(): void {}
 }
 
 function renderStartupIdentity(options: {

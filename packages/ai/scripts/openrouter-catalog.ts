@@ -13,6 +13,9 @@ export interface OpenRouterModelListItem {
 		input_cache_write?: string;
 		overrides?: Array<{
 			min_prompt_tokens?: number;
+			utc_start?: number;
+			utc_end?: number;
+			utc_days?: string[];
 			prompt?: string;
 			completion?: string;
 			input_cache_read?: string;
@@ -48,15 +51,20 @@ function cost(model: OpenRouterModelListItem): ModelCost {
 	const rates = model.pricing;
 	const toPrice = (value: string | undefined): number => roundCost(parseFloat(value || "0") * 1_000_000);
 	const tiers = rates?.overrides?.flatMap((override) =>
-		override.min_prompt_tokens === undefined
+		override.min_prompt_tokens === undefined ||
+		override.utc_start !== undefined ||
+		override.utc_end !== undefined ||
+		override.utc_days !== undefined
 			? []
-			: [{
-				inputTokensAbove: override.min_prompt_tokens,
-				input: toPrice(override.prompt ?? rates.prompt),
-				output: toPrice(override.completion ?? rates.completion),
-				cacheRead: toPrice(override.input_cache_read ?? rates.input_cache_read),
-				cacheWrite: toPrice(override.input_cache_write ?? rates.input_cache_write),
-			}],
+			: [
+					{
+						inputTokensAbove: override.min_prompt_tokens,
+						input: toPrice(override.prompt ?? rates.prompt),
+						output: toPrice(override.completion ?? rates.completion),
+						cacheRead: toPrice(override.input_cache_read ?? rates.input_cache_read),
+						cacheWrite: toPrice(override.input_cache_write ?? rates.input_cache_write),
+					},
+				],
 	);
 	return {
 		input: toPrice(rates?.prompt),

@@ -63,6 +63,7 @@ class RecordingTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 /** The exact live shape `inprocess-run-sync.ts` publishes while a child runs. */

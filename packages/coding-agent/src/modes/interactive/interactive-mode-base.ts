@@ -69,6 +69,7 @@ import {
 	type InteractiveTui,
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
+import { ProgramStatusReporter } from "./program-status-reporter.ts";
 
 /** Move the transcript and nothing else: what a reserving overlay may release. */
 const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
@@ -206,6 +207,14 @@ export class InteractiveModeBase {
 
 	ui: TUI;
 	private renderer: InteractiveTui;
+	readonly programStatus = new ProgramStatusReporter(
+		() => this.ui.terminal,
+		() => this.sessionManager.getSessionName(),
+	);
+
+	resetTranscriptSelection(): void {
+		if (this.renderer.mode === "fullscreen") this.renderer.resetTextSelection();
+	}
 
 	private readonly shouldHandleViewportInput = (
 		data: string,

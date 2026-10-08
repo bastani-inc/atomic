@@ -18,6 +18,8 @@ import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-p
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
+const OWNER_BACKEND_TERMINATION_TIMEOUT_MS = 5_000;
+
 const home = process.env.ATOMIC_FAULT_TEST_HOME;
 assert.ok(home && resolve(homedir()) === resolve(home), "requires disposable HOME");
 assert.notEqual(process.getuid?.(), 0, "refuse managed database fault injection as root");
@@ -76,8 +78,10 @@ export default workflow({ name: "sdk-crashed-recovery", description: "SDK durabl
 	return session;
 }
 
+const FIXTURE_CONDITION_TIMEOUT_MS = 30_000;
+
 async function until(predicate: () => Promise<boolean>, label: string): Promise<void> {
-	const deadline = wallClock() + 30_000;
+	const deadline = wallClock() + FIXTURE_CONDITION_TIMEOUT_MS;
 	while (!(await predicate())) {
 		assert.ok(wallClock() < deadline, label);
 		await sleep(20);
@@ -135,12 +139,18 @@ for await (const line of createInterface({ input: process.stdin })) {
 			const client = new Client({ connectionString });
 			await client.connect();
 			try {
-				const terminated = await client.query<{ terminated: boolean }>("SELECT pg_terminate_backend(pid) AS terminated FROM pg_stat_activity WHERE application_name = $1", [`atomic-owner:${hydrated.handle.ownerExecutorId}`]);
+				const terminated = await client.query<{ terminated: boolean }>("SELECT pg_terminate_backend(pid, $2::bigint) AS terminated FROM pg_stat_activity WHERE application_name = $1", [`atomic-owner:${hydrated.handle.ownerExecutorId}`, OWNER_BACKEND_TERMINATION_TIMEOUT_MS]);
 				assert.equal(terminated.rows.length, 1, "must terminate only the recorded ownership connection");
-				assert.equal(terminated.rows[0].terminated, true);
+				assert.equal(terminated.rows[0].terminated, true, "ownership backend must exit before recovery inspection");
 			} finally {
 				await client.end();
 			}
+			await until(async () => {
+				const current = await backend.hydrateWorkflowForInspection!(runId);
+				assert.ok(current.kind === "current", "terminated owner's durable generation must remain inspectable");
+				assert.equal(current.handle.ownerExecutorId, hydrated.handle.ownerExecutorId, "waiting for lock release must not adopt a new owner");
+				return current.handle.ownerLiveness === "dead";
+			}, "terminated owner's executor locks never became available for recovery");
 		} else if (command === "release-source") {
 			writeFileSync(releaseFile, "release");
 			await until(() => fileExists(sourceReturnedFile), "source callback never returned after fencing");

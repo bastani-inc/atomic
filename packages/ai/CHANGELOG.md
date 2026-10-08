@@ -4,13 +4,28 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Stream functions must return `AssistantMessageEventStream`, for example from `createAssistantMessageEventStream()`. Plain `EventStream` subclasses are no longer assignable to this response stream type.
+
 ### Added
 
 - Added `openaiApiProvider()` (`openai-api`) and `anthropicApiProvider()` (`anthropic-api`): API-key-only twins of `openai` and `anthropic` that list the same chat models under their own provider ID, so a subscription login on the source provider no longer displaces the API key.
+- Added Claude Haiku 5.5 with adaptive thinking, `xhigh`/`max` effort, prompt-length pricing tiers, and mid-conversation effort, system-message, and tool changes. Bedrock supports adaptive thinking, native `xhigh`, thinking block binding, and prompt caching for Haiku 5.5.
+- Added optional `durationMs` to assistant messages and tool results. Assistant response streams measure elapsed time with a monotonic clock, preserving existing measurements and leaving deferred results untimed.
 
 ### Changed
 
 - Moved the GPT-6 Luna Decisions classifier to the `openai-decisions` provider (`openaiDecisionsProvider()`), with its own API-key credential. The `openai` provider no longer lists classifiers.
+
+### Fixed
+
+- Fixed Kimi K3 cost estimates on Moonshot providers to use official pricing without cache-write charges.
+- Fixed Magistral models retaining Mistral's `prompt_mode` reasoning controls when catalog metadata advertises effort levels.
+- Fixed failed lazy API setup messages using the failure time instead of the request start as their timestamp.
+- Fixed prompt-length pricing tiers being lost when generating model catalogs from AI Gateway, OpenRouter, and models.dev.
+- Corrected the Claude Sonnet 5.5 fallback catalog's cache-read rate to the official $0.10 per million tokens.
+- Fixed Bedrock Claude Haiku 5.5 requests sending unsupported caller temperature settings.
 
 ## [0.9.28-alpha.3] - 2026-10-07
 
