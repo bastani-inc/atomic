@@ -6,6 +6,7 @@ import { executeHerdr, type HerdrDiagnostic } from "./transport.js";
 export interface PaneIdentity {
 	id: string;
 	path?: string;
+	resume?: string[];
 }
 export interface PaneReportingOptions {
 	clock?: () => number;
@@ -19,6 +20,7 @@ export interface PaneOwner {
 	status: "active" | "releasing" | "retired";
 	seq: number;
 	identitySent: boolean;
+	resumeUnsupported: boolean;
 	lastDeliveredActivity?: SessionActivity;
 	pending?: { activity: SessionActivity; skipUnchanged: boolean };
 	flight?: Promise<void>;
@@ -29,6 +31,9 @@ export interface PaneOwner {
 // Host module lifetime outlives inline extension factories and runner generations.
 const owners = new Map<string, PaneOwner>();
 let highWater = 0;
+
+const MAX_RESUME_ARGS = 64;
+const MAX_RESUME_BYTES = 8 * 1024;
 
 function diagnostic(owner: PaneOwner, value: HerdrDiagnostic): void {
 	owner.options.diagnostic?.(value);
@@ -51,6 +56,29 @@ function argv(owner: PaneOwner, command: string): string[] {
 		"--seq",
 		String(owner.seq),
 	];
+}
+
+/** Herdr drops the whole report for a resume argv it cannot accept, so only offer one it will. */
+function acceptedResume(resume: string[] | undefined): string[] | undefined {
+	if (!resume?.[0] || resume.length > MAX_RESUME_ARGS || /[\\/]/.test(resume[0])) return undefined;
+	let bytes = 0;
+	for (const word of resume) {
+		if (/['\u0000-\u001f\u007f-\u009f]/.test(word)) return undefined;
+		bytes += Buffer.byteLength(word) + 1;
+	}
+	return bytes > MAX_RESUME_BYTES ? undefined : resume;
+}
+
+function reportArgv(owner: PaneOwner, activity: SessionActivity, resume?: string[]): string[] {
+	const args = [...argv(owner, "report-agent"), "--state", activity.state];
+	if (activity.message) args.push("--message", activity.message);
+	if (!owner.identitySent) {
+		args.push("--agent-session-id", owner.identity.id);
+		if (owner.identity.path && isAbsolute(owner.identity.path))
+			args.push("--agent-session-path", owner.identity.path);
+	}
+	if (resume) args.push("--", ...resume);
+	return args;
 }
 
 async function send(owner: PaneOwner, args: string[]): Promise<boolean> {
@@ -77,6 +105,8 @@ export async function claimPaneReporting(
 		// Inherit the registration even if recovery produces no successor report before quit.
 		seq: previous?.seq ?? 0,
 		identitySent: false,
+		// The same Herdr serves every session in a pane, so a rejection stays true for the successor.
+		resumeUnsupported: previous?.resumeUnsupported ?? false,
 		async flush() {
 			await this.flight;
 		},
@@ -109,18 +139,21 @@ export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, 
 			owner.pending = undefined;
 			if (skipUnchanged && matchesActivity(owner.lastDeliveredActivity, next)) continue;
 			allocateSequence(owner);
-			const args = [...argv(owner, "report-agent"), "--state", next.state];
-			if (next.message) args.push("--message", next.message);
-			if (!owner.identitySent) {
-				args.push("--agent-session-id", owner.identity.id);
-				if (owner.identity.path && isAbsolute(owner.identity.path))
-					args.push("--agent-session-path", owner.identity.path);
+			const resume =
+				owner.identitySent || owner.resumeUnsupported ? undefined : acceptedResume(owner.identity.resume);
+			let failure = await executeHerdr(owner.environment, reportArgv(owner, next, resume), owner.options.timeoutMs);
+			if (resume && failure?.kind === "protocol_rejected") {
+				// Herdr older than 0.9.2 may refuse the trailing argv; keep the status and identity it would accept.
+				allocateSequence(owner);
+				failure = await executeHerdr(owner.environment, reportArgv(owner, next), owner.options.timeoutMs);
+				if (!failure) owner.resumeUnsupported = true;
 			}
-			if (await send(owner, args)) {
+			if (failure) {
+				diagnostic(owner, failure);
+				owner.lastDeliveredActivity = undefined;
+			} else {
 				owner.identitySent = true;
 				owner.lastDeliveredActivity = next;
-			} else {
-				owner.lastDeliveredActivity = undefined;
 			}
 		}
 	})().finally(() => {

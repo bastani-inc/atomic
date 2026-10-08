@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `fromSignal` to the `session_shutdown` event. It is `true` when a `quit` comes from a host `SIGTERM` or `SIGHUP` instead of Ctrl+D or `/quit`, and `runtimeHost.dispose({ fromSignal: true })` sets it for SDK hosts ([#3492](https://github.com/bastani-inc/atomic/issues/3492)).
+
 ### Changed
 
 - `openai-decisions/gpt-6-luna` no longer has its own `/login` entry, so you do not need to sign in again. The classifier uses the API key saved for `openai-api`, then the one saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in on `openai` cannot call the Decisions API and is not used, so the classifier stays unavailable until one of those keys exists. See [Classifier models](docs/models.md#use-classifier-models).
@@ -10,6 +14,7 @@
 
 - Fixed the startup project trust prompt opening inside the fully painted interface. Atomic now shows the prompt on its own and paints the interface after you choose.
 - Fixed the "This project is not trusted" warning staying in the transcript after you trusted the project at the startup prompt. The warning still appears when you decline trust or leave the project untrusted.
+- Fixed Herdr restoring panes without their Atomic conversation after a Herdr restart. With Herdr 0.9.2 or newer, Atomic now reports `atomic --session <id>` (plus `--session-dir` for a custom session directory) so Herdr can reopen the same session in the same pane, and keeps it registered when Herdr or the system ends Atomic with `SIGTERM` or `SIGHUP`. Quitting with Ctrl+D or `/quit` still clears it, and older Herdr versions keep status reporting without restore ([#3492](https://github.com/bastani-inc/atomic/issues/3492)).
 
 ## [0.9.28-alpha.4] - 2026-10-07
 

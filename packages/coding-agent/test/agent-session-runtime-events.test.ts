@@ -437,6 +437,32 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		]);
 	});
 
+	it("marks shutdown handlers when disposal was caused by a host signal (#3492)", async () => {
+		const events: SessionShutdownEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", (event) => {
+				events.push(event);
+			});
+		});
+
+		await runtimeHost.dispose({ fromSignal: true });
+
+		expect(events).toEqual([{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
+	});
+
+	it("does not mark an ordinary disposal as host-signal driven (#3492)", async () => {
+		const events: SessionShutdownEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", (event) => {
+				events.push(event);
+			});
+		});
+
+		await runtimeHost.dispose();
+
+		expect(events).toEqual([{ type: "session_shutdown", reason: "quit" }]);
+	});
+
 	it("honors session_before_switch cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
 		const { runtimeHost } = await createRuntimeHost((pi) => {

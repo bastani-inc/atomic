@@ -77,7 +77,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 	// dispatch and re-sends the signal if only its own listeners remain.
 
 	if (options?.fromSignal) {
-		await this.runtimeHost.dispose();
+		await this.runtimeHost.dispose({ fromSignal: true });
 		this.themeController.disableAutoSync();
 		// Drain any in-flight Kitty key release events briefly before stopping.
 		// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.

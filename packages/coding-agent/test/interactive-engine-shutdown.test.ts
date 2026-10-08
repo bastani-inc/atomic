@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import type { SessionShutdownEvent } from "../src/core/extensions/session-events.ts";
 import { waitForInteractiveEngineBound } from "../src/modes/interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import { rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
@@ -171,6 +172,36 @@ describe("isolated interactive startup shutdown", () => {
 				2,
 				"shutdown requests the idempotent stop during health and trailing cleanup",
 			);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	test("forwards a host-signal disposal to session shutdown handlers (#3492)", async () => {
+		const events: SessionShutdownEvent[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_shutdown", (event) => {
+						events.push(event);
+					});
+				},
+			],
+		});
+		try {
+			const runtime = createRuntime(harness, {
+				onEvent: () => () => {},
+				onGenerationEnded: () => () => {},
+				waitForInteractiveEngineBound: async () => {},
+				stop: async () => {},
+				getState: async () => createState(),
+				requestInternal: async <T>(_command: { type: string }) => undefined as T,
+				getCommands: async () => [],
+			});
+
+			await runtime.dispose({ fromSignal: true });
+
+			assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
 		} finally {
 			harness.cleanup();
 		}

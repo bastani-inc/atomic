@@ -570,7 +570,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 */
 	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
 
-	override dispose(): Promise<void> {
+	override dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
 		this.disposePromise = (async () => {
@@ -579,7 +579,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			// A replacement may have spawned while shutdown joined recovery; the
 			// idempotent trailing stop closes that child before disposal returns.
 			await this.client.stop();
-			await super.dispose();
+			await super.dispose(options);
 		})();
 		return this.disposePromise;
 	}

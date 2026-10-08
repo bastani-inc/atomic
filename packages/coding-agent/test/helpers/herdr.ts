@@ -5,6 +5,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { APP_NAME } from "../../src/config.js";
+import type { SessionManager } from "../../src/core/session-manager.js";
 import type { HerdrEnvironment } from "../../src/extensions/herdr/environment.js";
 
 // Each fake Herdr call spawns a real Node child process. On a loaded Windows runner its startup
@@ -61,8 +63,10 @@ ${body}
 	const environment: HerdrEnvironment = { bin, paneId: dir, socketPath: " socket path " };
 	const env = { HERDR_ENV: "1", HERDR_BIN_PATH: bin, HERDR_PANE_ID: dir, HERDR_SOCKET_PATH: environment.socketPath };
 	async function calls(): Promise<HerdrCall[]> {
+		// A fake child may be mid-append: only newline-terminated records are complete.
 		return (await readFile(log, "utf8"))
 			.split("\n")
+			.slice(0, -1)
 			.filter(Boolean)
 			.map((line) => JSON.parse(line));
 	}
@@ -109,4 +113,10 @@ ${body}
 export function arg(args: string[], flag: string): string | undefined {
 	const index = args.indexOf(flag);
 	return index < 0 ? undefined : args[index + 1];
+}
+
+/** The resume argv Herdr is given for a session, after the `--` separator of a report. */
+export function resumeArgs(session: SessionManager): string[] {
+	const sessionDir = session.usesDefaultSessionDir() ? [] : ["--session-dir", session.getSessionDir()];
+	return ["--", APP_NAME, ...sessionDir, "--session", session.getSessionId()];
 }
