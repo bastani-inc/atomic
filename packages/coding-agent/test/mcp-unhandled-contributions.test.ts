@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "vitest";
-import type { ExtensionAPI, ExtensionError } from "../src/core/extensions/index.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { ExtensionAPI, ExtensionError } from "../src/core/extensions/index.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 it("reports unhandled MCP servers once per name at startup, reload and later registration", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-unhandled-mcp-"));

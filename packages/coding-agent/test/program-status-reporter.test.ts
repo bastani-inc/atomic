@@ -3,8 +3,8 @@ import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { APP_NAME } from "../src/config.js";
-import type { AgentSessionEvent } from "../src/core/agent-session.ts";
-import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.ts";
+import type { AgentSessionEvent } from "../src/core/agent-session.js";
+import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.js";
 
 function setup() {
 	const reports: ProgramStatus[] = [];
