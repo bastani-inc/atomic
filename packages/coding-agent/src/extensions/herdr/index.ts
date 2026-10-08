@@ -21,10 +21,18 @@ export interface HerdrExtensionOptions extends PaneReportingOptions {
 	enabled?: (ctx: ExtensionContext) => boolean;
 }
 
+/** `--session` reads a value with a path separator or a `.jsonl` suffix as a file path, not a session ID. */
+function readsAsSessionPath(sessionId: string): boolean {
+	return sessionId.includes("/") || sessionId.includes("\\") || sessionId.endsWith(".jsonl");
+}
+
 function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[] | undefined {
-	if (!sessionManager.getSessionFile()) return undefined;
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile) return undefined;
+	const sessionId = sessionManager.getSessionId();
+	if (readsAsSessionPath(sessionId)) return [APP_NAME, "--session", sessionFile];
 	const sessionDir = sessionManager.usesDefaultSessionDir() ? [] : ["--session-dir", sessionManager.getSessionDir()];
-	return [APP_NAME, ...sessionDir, "--session", sessionManager.getSessionId()];
+	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 
 function enabled(ctx: ExtensionContext): boolean {

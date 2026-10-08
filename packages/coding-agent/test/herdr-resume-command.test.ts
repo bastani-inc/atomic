@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { test, vi } from "vitest";
 import { APP_NAME } from "../src/config.js";
 import { createEventBus } from "../src/core/event-bus.js";
@@ -102,6 +102,24 @@ test("resume argv omits --session-dir for the default session directory (#3492)"
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		runner.invalidate();
 		vi.unstubAllEnvs();
+		await fake.dispose();
+	}
+});
+
+test("a session ID that --session would read as a file path resumes by its session file (#3492)", async () => {
+	const fake = await fakeHerdr();
+	const session = SessionManager.create(fake.dir, fake.dir, { id: "notes.jsonl" });
+	assert.equal(session.getSessionId(), "notes.jsonl");
+	const runner = await startReporter(fake, session);
+	try {
+		await runner.emit({ type: "session_start" });
+		const [first] = await fake.waitFor(1);
+		const sessionFile = session.getSessionFile();
+		assert.ok(sessionFile !== undefined && isAbsolute(sessionFile));
+		assert.deepEqual(resumeOf(first.args), [APP_NAME, "--session", sessionFile]);
+	} finally {
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		runner.invalidate();
 		await fake.dispose();
 	}
 });
