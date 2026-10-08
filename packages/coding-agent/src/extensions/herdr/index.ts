@@ -1,4 +1,4 @@
-import { APP_NAME } from "../../config.ts";
+import { APP_NAME } from "../../config.js";
 import { getExtensionContextOwner, publishExtensionContextEffect } from "../../core/extensions/runner-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../../core/extensions/types.ts";
 import type { WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
