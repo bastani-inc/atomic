@@ -547,8 +547,13 @@ const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
 	o3: { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
 	"o4-mini": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
 };
+// GPT-6 Astra and GPT-6.1 Sol Ultrafast input and output rates are published ($12/$60 for Sol 6.1); Sol 6.1's
+// cache rates are derived at the same 6x-Standard ratio. GPT-5.6 Sol Ultrafast is a preview without published
+// rates, so it follows the 6x-Standard convention.
 const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
 	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
+	"gpt-6.1-sol": { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 },
+	"gpt-5.6-sol": { input: 24, output: 120, cacheRead: 2.4, cacheWrite: 30 },
 };
 
 function openAiServiceTierCost(modelId: string, cost: ModelCost): ModelCost {
@@ -565,7 +570,8 @@ function openAiServiceTiers(modelId: string): ModelServiceTier[] {
 }
 
 // Mirrors the service_tiers each model advertises in openai/codex codex-rs/models-manager/models.json
-// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates.
+// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates. GPT-6.1 Sol also gets
+// Ultrafast, which the ChatGPT backend applies (about 2.7x faster on a ChatGPT sign-in) before Codex lists it.
 const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-5.3-codex-spark": [],
 	"gpt-5.5": ["priority"],
@@ -573,7 +579,7 @@ const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-5.6-sol": ["priority"],
 	"gpt-5.6-terra": ["priority"],
 	"gpt-6-astra": ["priority", "ultrafast"],
-	"gpt-6.1-sol": ["priority"],
+	"gpt-6.1-sol": ["priority", "ultrafast"],
 	"gpt-6-sol": ["priority"],
 	"gpt-6-luna": ["priority"],
 };

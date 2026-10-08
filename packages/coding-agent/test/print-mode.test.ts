@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	type Api,
 	type AssistantMessage,
@@ -255,6 +256,34 @@ describe("runPrintMode", () => {
 		expect(session.prompt).toHaveBeenCalledWith("Say done", { images });
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("prints service tier warnings to stderr in text mode without touching stdout (#3529)", async () => {
+		const message = createAssistantMessage({ text: "done" });
+		message.diagnostics = [
+			{
+				type: "service_tier_unavailable",
+				timestamp: 1,
+				details: {
+					severity: "warning",
+					message: "ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
+				},
+			},
+		];
+		const runtimeHost = createRuntimeHost(message);
+		runtimeHost.session.prompt.mockImplementation(async () => {
+			runtimeHost.session.emitEvent({ type: "message_end", message });
+		});
+		const stdoutChunks = captureStdout();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hi" });
+
+		assert.equal(exitCode, 0);
+		assert.deepEqual(errorSpy.mock.calls, [
+			["Warning: ultrafast isn't available for gpt-5.6-sol on this account; ran at default"],
+		]);
+		assert.equal(stdoutChunks.join(""), "done\n");
 	});
 
 	it("emits session_shutdown in json mode", async () => {

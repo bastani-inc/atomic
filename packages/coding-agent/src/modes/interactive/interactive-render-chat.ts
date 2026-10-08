@@ -3,6 +3,7 @@ import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
+import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
@@ -51,10 +52,18 @@ function countDroppedThinkingBlocks(message: AssistantMessage): number {
 	}, 0);
 }
 
+function addServiceTierWarnings(mode: InteractiveModeBase, message: AssistantMessage): void {
+	for (const warning of serviceTierWarnings(message)) {
+		mode.chatContainer.addChild(new Spacer(1));
+		mode.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+	}
+}
+
 InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 	this: InteractiveModeBase,
 	message: AssistantMessage,
 ): void {
+	addServiceTierWarnings(this, message);
 	if (!this.settingsManager.getShowCacheMissNotices()) return;
 
 	const count = countDroppedThinkingBlocks(message);
@@ -480,6 +489,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		firstMessage = false;
 		for (const entry of chatEntriesFromAgentMessages(messageBuffer)) {
 			const component = this.addRenderedChatEntry(entry);
+			if (entry.kind === "assistant") addServiceTierWarnings(this, entry.message);
 			if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 				this.pendingTools.set(entry.toolCallId, component);
 			}

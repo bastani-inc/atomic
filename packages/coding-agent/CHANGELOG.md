@@ -4,7 +4,12 @@
 
 ### Added
 
+- Added `gpt-6.1-sol-ultrafast` and `gpt-5.6-sol-ultrafast` model variants for `openai` and `openai-api`, and `gpt-6.1-sol-ultrafast` for `openai-codex`. GPT-6.1 Sol Ultrafast is priced at OpenAI's published $12 input and $60 output per million tokens; GPT-5.6 Sol Ultrafast is a limited preview without published rates, priced at six times Standard. Ultrafast access depends on your OpenAI account ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
 - Added OpenAI's GPT Image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) as `openai-images` image models for codemode's `models.generateImages()`, extensions, and workflow `generateImages()` calls. They reuse your OpenAI API key, saved for `openai-api` or `openai` or set in `OPENAI_API_KEY`, and have no separate login; a ChatGPT sign-in cannot use them. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time) ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+
+### Changed
+
+- When the OpenAI API or the ChatGPT Codex backend rejects a Fast or Ultrafast tier, Atomic retries the request once at the default tier instead of failing the turn and shows a warning, for example `ultrafast isn't available for gpt-5.6-sol on this account; ran at default`. With an OpenAI API key, Atomic shows the same warning when the server reports a slower tier than the model you selected. Interactive sessions show it under the response, print mode writes it to stderr, and JSON mode includes it in the message's `diagnostics`. With ChatGPT sign-in (`openai` or `openai-codex`) there is no such warning, because the ChatGPT backend reports `default` for every tier it applies ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
 
 ## [0.9.28] - 2026-10-08
 

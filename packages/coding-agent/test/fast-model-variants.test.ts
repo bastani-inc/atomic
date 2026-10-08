@@ -620,6 +620,32 @@ describe("ModelRuntime fast model catalog", () => {
 		}
 	});
 
+	it("publishes ultrafast variants of GPT-6.1 Sol and GPT-5.6 Sol on the OpenAI providers (#3529)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
+		tempDirs.push(dir);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.create(join(dir, "auth.json")),
+			modelsPath: join(dir, "models.json"),
+			allowModelNetwork: false,
+		});
+		for (const provider of ["openai", "openai-api"]) {
+			for (const baseId of ["gpt-6.1-sol", "gpt-5.6-sol"]) {
+				const base = runtime.getModel(provider, baseId);
+				const ultrafast = runtime.getModel(provider, `${baseId}-ultrafast`);
+				assert.ok(base, `${provider}/${baseId}`);
+				assert.ok(ultrafast, `${provider}/${baseId}-ultrafast`);
+				assert.deepEqual(ultrafast.fastRoute, {
+					baseModelId: baseId,
+					upstreamModelId: baseId,
+					serviceTier: "ultrafast",
+				});
+				assert.equal(ultrafast.name, `${base.name} (ultrafast)`);
+				assert.equal(getServiceTierCost(ultrafast, "ultrafast")?.input, base.cost.input * 6);
+				assert.equal(getServiceTierCost(ultrafast, "ultrafast")?.output, base.cost.output * 6);
+			}
+		}
+	});
+
 	it("offers Fast and Ultrafast only where OpenAI and Codex advertise them", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-ultrafast-variants-"));
 		tempDirs.push(dir);
@@ -635,8 +661,12 @@ describe("ModelRuntime fast model catalog", () => {
 				.map((entry) => entry.id)
 				.sort();
 
-		assert.deepEqual(routed("openai-codex", "ultrafast"), ["gpt-6-astra-ultrafast"]);
-		assert.deepEqual(routed("openai", "ultrafast"), ["gpt-6-astra-ultrafast"]);
+		assert.deepEqual(routed("openai-codex", "ultrafast"), ["gpt-6-astra-ultrafast", "gpt-6.1-sol-ultrafast"]);
+		assert.deepEqual(routed("openai", "ultrafast"), [
+			"gpt-5.6-sol-ultrafast",
+			"gpt-6-astra-ultrafast",
+			"gpt-6.1-sol-ultrafast",
+		]);
 		assert.deepEqual(routed("openai-codex", "priority"), [
 			"gpt-5.5-fast",
 			"gpt-5.6-luna-fast",
@@ -652,7 +682,6 @@ describe("ModelRuntime fast model catalog", () => {
 			assert.equal(runtime.getModel("openai", id), undefined, id);
 		}
 		assert.equal(runtime.getModel("openai-codex", "gpt-5.3-codex-spark-fast"), undefined);
-		assert.equal(runtime.getModel("openai-codex", "gpt-6.1-sol-ultrafast"), undefined);
 		assert.equal(runtime.getModel("openai-codex", "gpt-5.6-sol-ultrafast"), undefined);
 	});
 

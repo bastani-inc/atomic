@@ -60,6 +60,10 @@ const SECOND_RETRY_DELAY_MS = reconnectDelayMs(1);
 const BROKER_RESPAWN_MS = 10_000;
 const RECOVERY_TIMEOUT_MS = FIRST_RETRY_DELAY_MS + SECOND_RETRY_DELAY_MS + BROKER_RESPAWN_MS;
 const RECOVERY_POLL_MS = 25;
+/** A SIGKILLed Windows broker can stay signalable well past the recovery window. */
+const KILLED_BROKER_EXIT_MS = 30_000;
+/** Respawn, re-registration and the killed broker's exit run back to back against real processes. */
+const KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS = 2 * RECOVERY_TIMEOUT_MS + KILLED_BROKER_EXIT_MS;
 const FORCED_FAILURE_MESSAGE = "forced first reconnect failure";
 
 interface OrchestrationContext {
@@ -274,8 +278,12 @@ async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity>
 }
 
 /** Poll `probe` until it yields a value, without any Intercom tool call on the runtime under test. */
-async function waitFor<T>(what: string, probe: () => Promise<T | undefined>): Promise<T> {
-	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
+async function waitFor<T>(
+	what: string,
+	probe: () => Promise<T | undefined>,
+	timeoutMs = RECOVERY_TIMEOUT_MS,
+): Promise<T> {
+	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown;
 	while (Date.now() < deadline) {
 		try {
@@ -286,7 +294,7 @@ async function waitFor<T>(what: string, probe: () => Promise<T | undefined>): Pr
 		}
 		await sleep(RECOVERY_POLL_MS);
 	}
-	throw new Error(`Timed out waiting for ${what} within ${RECOVERY_TIMEOUT_MS}ms: ${String(lastError)}`);
+	throw new Error(`Timed out waiting for ${what} within ${timeoutMs}ms: ${String(lastError)}`);
 }
 
 /**
@@ -377,7 +385,11 @@ function killBroker({ pid }: BrokerIdentity): void {
  */
 async function waitForKilledBrokerExit(killed: BrokerIdentity, replacement: BrokerIdentity): Promise<void> {
 	if (replacement.pid === killed.pid) return;
-	await waitFor(`killed broker ${killed.pid} to exit`, async () => (processIsAlive(killed.pid) ? undefined : true));
+	await waitFor(
+		`killed broker ${killed.pid} to exit`,
+		async () => (processIsAlive(killed.pid) ? undefined : true),
+		KILLED_BROKER_EXIT_MS,
+	);
 }
 
 afterAll(() => {
@@ -560,49 +572,53 @@ test.each(["", "/worker"])(
 	},
 );
 
-test("a failed background reconnect still recovers the session with no intercom tool call", async () => {
-	const forced = failFirstConnectAttempt("background");
-	const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery", {
-		intercomGroup: "default",
-	});
-	intercomHeavy(session.pi as never, forced.overrides);
-	try {
-		await session.start();
-		// An ordinary session connects lazily, so one tool call establishes the baseline
-		// connection. Everything asserted below happens strictly after this point.
-		assert.equal((await session.execute({ action: "status" })).isError, false);
-		const firstBroker = await waitForBroker();
-		const toolCallsAtKill = session.toolExecutions;
-
-		forced.arm();
-		killBroker(firstBroker);
-		// The disconnect arms attempt 0; `beforeConnectAttempt` fails it through the real
-		// catch/finally path, which is exactly the transition that used to strand the runtime.
-		await forced.failed;
-
-		const recoveredBroker = await waitForBroker(firstBroker);
-		const names = await waitFor("the recovered session to reappear in the broker directory", async () => {
-			const listed = await probeSessionNames();
-			return listed.includes("reconnect-recovery") ? listed : undefined;
+test(
+	"a failed background reconnect still recovers the session with no intercom tool call",
+	async () => {
+		const forced = failFirstConnectAttempt("background");
+		const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery", {
+			intercomGroup: "default",
 		});
+		intercomHeavy(session.pi as never, forced.overrides);
+		try {
+			await session.start();
+			// An ordinary session connects lazily, so one tool call establishes the baseline
+			// connection. Everything asserted below happens strictly after this point.
+			assert.equal((await session.execute({ action: "status" })).isError, false);
+			const firstBroker = await waitForBroker();
+			const toolCallsAtKill = session.toolExecutions;
 
-		assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
-		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
-		assert.ok(replacesBroker(recoveredBroker, firstBroker), "recovery must run against a freshly spawned broker");
-		assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
-		assert.ok(names.includes("reconnect-recovery"));
-		assert.equal(
-			session.toolExecutions,
-			toolCallsAtKill,
-			"recovery must complete without any intercom tool call after the broker died",
-		);
+			forced.arm();
+			killBroker(firstBroker);
+			// The disconnect arms attempt 0; `beforeConnectAttempt` fails it through the real
+			// catch/finally path, which is exactly the transition that used to strand the runtime.
+			await forced.failed;
 
-		// Explicit tool-call recovery is preserved, and the tool now rides the recovered client.
-		assert.equal((await session.execute({ action: "status" })).isError, false);
-	} finally {
-		await session.shutdown();
-	}
-});
+			const recoveredBroker = await waitForBroker(firstBroker);
+			const names = await waitFor("the recovered session to reappear in the broker directory", async () => {
+				const listed = await probeSessionNames();
+				return listed.includes("reconnect-recovery") ? listed : undefined;
+			});
+
+			assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
+			await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+			assert.ok(replacesBroker(recoveredBroker, firstBroker), "recovery must run against a freshly spawned broker");
+			assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
+			assert.ok(names.includes("reconnect-recovery"));
+			assert.equal(
+				session.toolExecutions,
+				toolCallsAtKill,
+				"recovery must complete without any intercom tool call after the broker died",
+			);
+
+			// Explicit tool-call recovery is preserved, and the tool now rides the recovered client.
+			assert.equal((await session.execute({ action: "status" })).isError, false);
+		} finally {
+			await session.shutdown();
+		}
+	},
+	KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS,
+);
 
 test("a failed explicit tool connect surfaces the error and still leaves a scheduled retry", async () => {
 	const forced = failFirstConnectAttempt("tool");
@@ -644,129 +660,139 @@ test("a failed explicit tool connect surfaces the error and still leaves a sched
 	}
 });
 
-test("a running workflow stage regains list visibility and both route aliases after broker churn", async () => {
-	const runId = "6a1f3c2e-84b1-4d0b-9b7c-2f5a1c0d4e39";
-	const stageId = "b2f9a7c4-30ab-4a1e-8f6d-91c7de5b2a08";
-	const stageName = "reviewer";
-	const workflowGroup = `workflow:${runId}`;
-	const store = createStore();
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({
-		workflowId: runId,
-		name: "reconnect-flow",
-		inputs: {},
-		status: "running",
-		createdAt: 1,
-	});
-	setDurableBackend(backend);
-
-	const owner = extensionFixture("reconnect-owner-session", "reconnect-owner", { intercomGroup: "default" });
-	intercomHeavy(owner.pi as never);
-	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
-	const sender = extensionFixture("reconnect-sender-session", "reconnect-sender", {
-		intercomGroup: workflowGroup,
-	});
-	intercomHeavy(sender.pi as never);
-
-	const forced = failFirstConnectAttempt("background");
-	const pendingStageDelivery = createWorkflowPendingStageDelivery(store, runId, stageId, stageName);
-	const stage = extensionFixture("reconnect-stage-session", stageName, {
-		intercomGroup: workflowGroup,
-		kind: "workflow-stage",
-		workflowRunId: runId,
-		workflowStageId: stageId,
-		workflowStageName: stageName,
-		pendingStageDelivery,
-	});
-	intercomHeavy(stage.pi as never, forced.overrides);
-
-	const stageTarget = `workflow:${runId}/${stageId}`;
-	const stageNameTarget = `workflow:${runId}/${stageName}`;
-	const stageIsRunning = (): boolean => store.runs()[0]?.stages[0]?.status === "running";
-
-	try {
-		await owner.start();
-		store.recordRunStart({
-			id: runId,
+test(
+	"a running workflow stage regains list visibility and both route aliases after broker churn",
+	async () => {
+		const runId = "6a1f3c2e-84b1-4d0b-9b7c-2f5a1c0d4e39";
+		const stageId = "b2f9a7c4-30ab-4a1e-8f6d-91c7de5b2a08";
+		const stageName = "reviewer";
+		const workflowGroup = `workflow:${runId}`;
+		const store = createStore();
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: runId,
 			name: "reconnect-flow",
 			inputs: {},
 			status: "running",
-			stages: [
-				{
-					id: stageId,
-					name: stageName,
-					status: "running",
-					sessionId: "reconnect-stage-session",
-					parentIds: [],
-					toolEvents: [],
-					pendingStageDeliveryAvailable: true,
-				},
-			],
-			startedAt: 1,
+			createdAt: 1,
 		});
-		await owner.settleRouteAnnouncement();
-		await sender.start();
-		await stage.start();
+		setDurableBackend(backend);
 
-		const baselineList = await sender.execute({ action: "list" });
-		assert.equal(baselineList.isError, false);
-		assert.ok(
-			(baselineList.content[0]?.text ?? "").includes(
-				`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``,
-			),
-		);
-		for (const target of [stageTarget, stageNameTarget]) {
-			const sent = await sender.execute({ action: "send", to: target, message: `baseline to ${target}` });
-			assert.equal(sent.details.delivered, true, `baseline send to ${target} must be delivered live`);
-		}
-		await waitFor("both baseline stage messages", async () =>
-			stage.injectedMessages.length >= 2 ? true : undefined,
-		);
-		assert.equal(stageIsRunning(), true);
-
-		const firstBroker = await waitForBroker();
-		forced.arm();
-		killBroker(firstBroker);
-		await forced.failed;
-		assert.equal(stageIsRunning(), true, "broker churn must not change the workflow stage lifecycle");
-
-		// Wait for the replacement broker before touching any tool, so the sender's polling can
-		// never be what respawned it. The owner's route client and the stage both recover on
-		// their own timers; whichever wins the spawn, only the stage can restore its live route.
-		const recoveredBroker = await waitForBroker(firstBroker);
-		await waitForKilledBrokerExit(firstBroker, recoveredBroker);
-		assert.equal(processIsAlive(recoveredBroker.pid), true);
-		assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
-
-		const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
-			const listed = await sender.execute({ action: "list" });
-			const text = listed.content[0]?.text ?? "";
-			return text.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``) ? text : undefined;
+		const owner = extensionFixture("reconnect-owner-session", "reconnect-owner", { intercomGroup: "default" });
+		intercomHeavy(owner.pi as never);
+		const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+		const sender = extensionFixture("reconnect-sender-session", "reconnect-sender", {
+			intercomGroup: workflowGroup,
 		});
-		assert.ok(recoveredList.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``));
-		assert.equal(forced.failures(), 1, "exactly one stage reconnect attempt must have been forced to fail");
-		assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
+		intercomHeavy(sender.pi as never);
 
-		const before = stage.injectedMessages.length;
-		for (const target of [stageTarget, stageNameTarget]) {
-			const sent = await waitFor(`delivery to ${target} after broker churn`, async () => {
-				const result = await sender.execute({ action: "send", to: target, message: `recovered to ${target}` });
-				return result.details.delivered === true ? result : undefined;
+		const forced = failFirstConnectAttempt("background");
+		const pendingStageDelivery = createWorkflowPendingStageDelivery(store, runId, stageId, stageName);
+		const stage = extensionFixture("reconnect-stage-session", stageName, {
+			intercomGroup: workflowGroup,
+			kind: "workflow-stage",
+			workflowRunId: runId,
+			workflowStageId: stageId,
+			workflowStageName: stageName,
+			pendingStageDelivery,
+		});
+		intercomHeavy(stage.pi as never, forced.overrides);
+
+		const stageTarget = `workflow:${runId}/${stageId}`;
+		const stageNameTarget = `workflow:${runId}/${stageName}`;
+		const stageIsRunning = (): boolean => store.runs()[0]?.stages[0]?.status === "running";
+
+		try {
+			await owner.start();
+			store.recordRunStart({
+				id: runId,
+				name: "reconnect-flow",
+				inputs: {},
+				status: "running",
+				stages: [
+					{
+						id: stageId,
+						name: stageName,
+						status: "running",
+						sessionId: "reconnect-stage-session",
+						parentIds: [],
+						toolEvents: [],
+						pendingStageDeliveryAvailable: true,
+					},
+				],
+				startedAt: 1,
 			});
-			assert.equal(sent.isError, false);
-			assert.equal(sent.details.queued, undefined, `${target} must route live, not fall back to durable queueing`);
+			await owner.settleRouteAnnouncement();
+			await sender.start();
+			await stage.start();
+
+			const baselineList = await sender.execute({ action: "list" });
+			assert.equal(baselineList.isError, false);
+			assert.ok(
+				(baselineList.content[0]?.text ?? "").includes(
+					`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``,
+				),
+			);
+			for (const target of [stageTarget, stageNameTarget]) {
+				const sent = await sender.execute({ action: "send", to: target, message: `baseline to ${target}` });
+				assert.equal(sent.details.delivered, true, `baseline send to ${target} must be delivered live`);
+			}
+			await waitFor("both baseline stage messages", async () =>
+				stage.injectedMessages.length >= 2 ? true : undefined,
+			);
+			assert.equal(stageIsRunning(), true);
+
+			const firstBroker = await waitForBroker();
+			forced.arm();
+			killBroker(firstBroker);
+			await forced.failed;
+			assert.equal(stageIsRunning(), true, "broker churn must not change the workflow stage lifecycle");
+
+			// Wait for the replacement broker before touching any tool, so the sender's polling can
+			// never be what respawned it. The owner's route client and the stage both recover on
+			// their own timers; whichever wins the spawn, only the stage can restore its live route.
+			const recoveredBroker = await waitForBroker(firstBroker);
+			await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+			assert.equal(processIsAlive(recoveredBroker.pid), true);
+			assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
+
+			const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
+				const listed = await sender.execute({ action: "list" });
+				const text = listed.content[0]?.text ?? "";
+				return text.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``)
+					? text
+					: undefined;
+			});
+			assert.ok(recoveredList.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``));
+			assert.equal(forced.failures(), 1, "exactly one stage reconnect attempt must have been forced to fail");
+			assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
+
+			const before = stage.injectedMessages.length;
+			for (const target of [stageTarget, stageNameTarget]) {
+				const sent = await waitFor(`delivery to ${target} after broker churn`, async () => {
+					const result = await sender.execute({ action: "send", to: target, message: `recovered to ${target}` });
+					return result.details.delivered === true ? result : undefined;
+				});
+				assert.equal(sent.isError, false);
+				assert.equal(
+					sent.details.queued,
+					undefined,
+					`${target} must route live, not fall back to durable queueing`,
+				);
+			}
+			await waitFor("both recovered stage messages", async () =>
+				stage.injectedMessages.length >= before + 2 ? true : undefined,
+			);
+			assert.equal(stageIsRunning(), true, "the workflow stage must never have left running");
+		} finally {
+			await stage.shutdown();
+			await sender.shutdown();
+			disposeBridge();
+			await owner.shutdown();
 		}
-		await waitFor("both recovered stage messages", async () =>
-			stage.injectedMessages.length >= before + 2 ? true : undefined,
-		);
-		assert.equal(stageIsRunning(), true, "the workflow stage must never have left running");
-	} finally {
-		await stage.shutdown();
-		await sender.shutdown();
-		disposeBridge();
-		await owner.shutdown();
-	}
-});
+	},
+	KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS,
+);
 
 test("a reconnect that fails after the broker accepted it leaves no second registration", async () => {
 	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan", { intercomGroup: "default" });

@@ -165,7 +165,7 @@ test("falls back to authoritative OpenAI and Codex GPT-6-Astra metadata without 
 	assert.equal(openai.compat?.supportsExplicitPromptCacheMode, true);
 });
 
-test("advertises OpenAI and Codex service tiers per model with their published rates", () => {
+test("advertises OpenAI and Codex service tiers per model with their published rates (#3529)", () => {
 	const catalogs = generate();
 	const withLongContext = (input: number, output: number, cacheRead: number, cacheWrite: number) => ({
 		input,
@@ -188,14 +188,16 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 	];
 	assert.deepEqual(catalogs.openai["gpt-6-astra"]?.serviceTiers, astraTiers);
 	assert.deepEqual(catalogs["openai-codex"]["gpt-6-astra"]?.serviceTiers, astraTiers);
-	for (const provider of ["openai", "openai-codex"]) {
-		assert.deepEqual(catalogs[provider]["gpt-5.6-sol"]?.serviceTiers, [
-			{ id: "priority", cost: withLongContext(8, 40, 0.8, 10) },
-		]);
-		assert.deepEqual(catalogs[provider]["gpt-6.1-sol"]?.serviceTiers, [
-			{ id: "priority", cost: withLongContext(4, 20, 0.2, 5) },
-		]);
-	}
+	const sol56Priority = { id: "priority", cost: withLongContext(8, 40, 0.8, 10) };
+	const sol61Priority = { id: "priority", cost: withLongContext(4, 20, 0.2, 5) };
+	assert.deepEqual(catalogs.openai["gpt-5.6-sol"]?.serviceTiers, [
+		sol56Priority,
+		{ id: "ultrafast", cost: withLongContext(24, 120, 2.4, 30) },
+	]);
+	const sol61Tiers = [sol61Priority, { id: "ultrafast", cost: withLongContext(12, 60, 0.6, 15) }];
+	assert.deepEqual(catalogs.openai["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-5.6-sol"]?.serviceTiers, [sol56Priority]);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
 
 	const codexTierIds = Object.fromEntries(
 		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
@@ -212,7 +214,7 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-astra": ["priority", "ultrafast"],
 		"gpt-6-luna": ["priority"],
 		"gpt-6-sol": ["priority"],
-		"gpt-6.1-sol": ["priority"],
+		"gpt-6.1-sol": ["priority", "ultrafast"],
 	});
 });
 

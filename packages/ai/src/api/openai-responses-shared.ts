@@ -33,6 +33,8 @@ import type {
 	Usage,
 } from "../types.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { normalizeProviderError } from "../utils/error-body.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -216,6 +218,109 @@ export function normalizeResponseServiceTier(serviceTier: string | null | undefi
 	return serviceTier === "fast" ? "priority" : (serviceTier as ServiceTier);
 }
 
+const CHATGPT_AUTH_CLAIM = "https://api.openai.com/auth";
+
+/**
+ * Whether a bearer token is a ChatGPT sign-in token (a JWT carrying OpenAI's auth claim) rather than an API key. Requests made with it are served by
+ * the ChatGPT backend, which reports `default` as the tier of every response, whatever tier it applied.
+ */
+export function isChatGPTSubscriptionToken(token: string | undefined): boolean {
+	const payload = token?.split(".")[1];
+	if (!payload || token?.split(".").length !== 3) return false;
+	try {
+		const claims = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+		return typeof claims?.[CHATGPT_AUTH_CLAIM] === "object" && claims[CHATGPT_AUTH_CLAIM] !== null;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The tier a ChatGPT-backend response ran at. That backend reports `default` for every Flex, Fast or Ultrafast
+ * request, so `default` there means the requested tier rather than a downgrade.
+ */
+export function resolveChatGPTBackendServiceTier(
+	responseServiceTier: ResponsesServiceTier | undefined,
+	requestServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTier === "flex" || requestServiceTier === "priority" || requestServiceTier === "ultrafast")
+	) {
+		return requestServiceTier;
+	}
+	return responseServiceTier ?? requestServiceTier;
+}
+
+/** Diagnostic type recorded when a requested Fast or Ultrafast tier did not apply to a response. */
+export const SERVICE_TIER_UNAVAILABLE_DIAGNOSTIC = "service_tier_unavailable";
+
+const SERVICE_TIER_SPEED_RANK: Readonly<Record<string, number>> = { priority: 1, ultrafast: 2 };
+
+function serviceTierSpeedRank(serviceTier: string): number {
+	return SERVICE_TIER_SPEED_RANK[serviceTier] ?? 0;
+}
+
+function serviceTierLabel(serviceTier: string): string {
+	return serviceTier === "priority" ? "fast" : serviceTier;
+}
+
+/**
+ * Whether the server refused the request because of its `service_tier`: `400 Invalid service_tier argument`
+ * on a plain request, or a status-less `error` event with `param: "service_tier"` on a streamed one.
+ */
+export function isServiceTierRejection(error: unknown): boolean {
+	const { status, body, message } = normalizeProviderError(error);
+	return (status === 400 || status === undefined) && /service_tier/i.test(`${message} ${body ?? ""}`);
+}
+
+function appendServiceTierWarning(
+	output: AssistantMessage,
+	model: Pick<Model<Api>, "fastRoute" | "id">,
+	requestedServiceTier: string,
+	ranAt: string,
+	reason: "rejected" | "downgraded",
+): void {
+	const baseModelId = model.fastRoute?.baseModelId ?? model.id;
+	appendAssistantMessageDiagnostic(output, {
+		type: SERVICE_TIER_UNAVAILABLE_DIAGNOSTIC,
+		timestamp: Date.now(),
+		details: {
+			severity: "warning",
+			message: `${serviceTierLabel(requestedServiceTier)} isn't available for ${baseModelId} on this account; ran at ${serviceTierLabel(ranAt)}`,
+			reason,
+			requestedServiceTier,
+			ranAtServiceTier: ranAt,
+		},
+	});
+}
+
+/** The server rejected the requested tier and the request was retried once without it. */
+export function appendServiceTierRejectedWarning(
+	output: AssistantMessage,
+	model: Pick<Model<Api>, "fastRoute" | "id">,
+	requestedServiceTier: string,
+): void {
+	appendServiceTierWarning(output, model, requestedServiceTier, "default", "rejected");
+}
+
+/**
+ * Warn when the server reports a slower tier than the Fast or Ultrafast tier requested. A response
+ * that reports no tier says nothing, so it never warns.
+ */
+export function appendServiceTierDowngradeWarning(
+	output: AssistantMessage,
+	model: Pick<Model<Api>, "fastRoute" | "id">,
+	requestedServiceTier: ResponsesServiceTier | undefined,
+	reportedServiceTier: ResponsesServiceTier | undefined,
+): void {
+	const requested = normalizeResponseServiceTier(requestedServiceTier);
+	if (requested === undefined || reportedServiceTier == null) return;
+	const requestedRank = serviceTierSpeedRank(requested);
+	if (requestedRank === 0 || serviceTierSpeedRank(reportedServiceTier) >= requestedRank) return;
+	appendServiceTierWarning(output, model, requested, reportedServiceTier, "downgraded");
+}
+
 /**
  * Reject a payload hook that rewrote a field the model's route owns.
  *
@@ -275,6 +380,8 @@ export interface OpenAIResponsesStreamOptions {
 		requestServiceTier: ResponsesServiceTier | undefined,
 	) => ResponsesServiceTier | undefined;
 	applyServiceTierPricing?: (usage: Usage, serviceTier: ResponsesServiceTier | undefined) => void;
+	/** Attach a warning when the response reports a slower tier than requested. Off where the reported tier is ambiguous. */
+	warnOnServiceTierDowngrade?: boolean;
 }
 
 export interface ConvertResponsesMessagesOptions {
@@ -740,6 +847,9 @@ export async function processResponsesStream<TApi extends Api>(
 				? options.resolveServiceTier(responseServiceTier, options.serviceTier)
 				: (responseServiceTier ?? options.serviceTier);
 			options.applyServiceTierPricing(output.usage, serviceTier);
+			if (options.warnOnServiceTierDowngrade) {
+				appendServiceTierDowngradeWarning(output, model, options.serviceTier, responseServiceTier);
+			}
 		}
 		// Map status to stop reason. For incomplete responses, retain the provider's
 		// specific reason so max-output truncation and content filtering stay distinct.

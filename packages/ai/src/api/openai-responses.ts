@@ -31,14 +31,18 @@ import {
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
+	appendServiceTierRejectedWarning,
 	applyServiceTierPricing,
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
+	isChatGPTSubscriptionToken,
+	isServiceTierRejection,
+	openAIServiceTierForRequest,
 	processResponsesStream,
 	type ResponsesServiceTier,
+	resolveChatGPTBackendServiceTier,
 	resolveRequestedServiceTier,
-	openAIServiceTierForRequest,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
@@ -56,13 +60,21 @@ function isChatGPTSignIn(model: Model<"openai-responses">, apiKey: string | unde
 	);
 }
 
-function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
-	if (!headers) return false;
+function headerValue(headers: ProviderHeaders | undefined, name: string): string | undefined {
+	if (!headers) return undefined;
 	const expected = name.toLowerCase();
 	for (const [key, value] of Object.entries(headers)) {
-		if (key.toLowerCase() === expected && value !== null && value.trim().length > 0) return true;
+		if (key.toLowerCase() === expected && value !== null && value.trim().length > 0) return value.trim();
 	}
-	return false;
+	return undefined;
+}
+
+function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
+	return headerValue(headers, name) !== undefined;
+}
+
+function bearerToken(apiKey: string | undefined, headers: ProviderHeaders | undefined): string | undefined {
+	return apiKey ?? headerValue(headers, "authorization")?.replace(/^Bearer\s+/i, "");
 }
 
 function getClientApiKey(provider: string, apiKey: string | undefined, headers: ProviderHeaders | undefined): string {
@@ -167,6 +179,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
+			const chatGPTBackend = isChatGPTSubscriptionToken(bearerToken(options?.apiKey, options?.headers));
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
@@ -194,29 +207,47 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const { data: openaiStream, response } = await retryProviderRequest(
-				() => client.responses.create(params, requestOptions).withResponse(),
-				{
+			const sendRequest = (requestParams: ResponseCreateParamsStreaming) =>
+				retryProviderRequest(() => client.responses.create(requestParams, requestOptions).withResponse(), {
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
-				},
-			);
-			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
-			stream.push({ type: "start", partial: output });
+				});
+			let startEmitted = false;
+			// Every attempt reports its HTTP response before its body is consumed, and the message stream starts
+			// once. A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
+			// response preamble is read before the request counts as accepted.
+			const openStream = async (requestParams: ResponseCreateParamsStreaming) => {
+				const { data, response } = await sendRequest(requestParams);
+				await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+				if (!startEmitted) {
+					startEmitted = true;
+					stream.push({ type: "start", partial: output });
+				}
+				return readResponsePreamble(withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort));
+			};
+			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
+			let openaiStream: Awaited<ReturnType<typeof openStream>>;
+			try {
+				openaiStream = await openStream(params);
+			} catch (error) {
+				if (params.service_tier == null || !isServiceTierRejection(error)) throw error;
+				const rejectedServiceTier = params.service_tier;
+				const { service_tier: _rejectedServiceTier, ...defaultTierParams } = params;
+				openaiStream = await openStream(defaultTierParams);
+				requestedServiceTier = undefined;
+				appendServiceTierRejectedWarning(output, model, rejectedServiceTier);
+			}
 
-			await processResponsesStream(
-				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
-				output,
-				stream,
-				model,
-				{
-					onProviderStreamEvent: options?.onProviderStreamEvent,
-					serviceTier: resolveOpenAIRequestServiceTier(model, options?.serviceTier),
-					grammarToolInputProperties,
-					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-				},
-			);
+			await processResponsesStream(openaiStream, output, stream, model, {
+				onProviderStreamEvent: options?.onProviderStreamEvent,
+				serviceTier: requestedServiceTier,
+				grammarToolInputProperties,
+				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+				...(chatGPTBackend
+					? { resolveServiceTier: resolveChatGPTBackendServiceTier }
+					: { warnOnServiceTierDowngrade: true }),
+			});
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -255,6 +286,59 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 
 	return stream;
 };
+
+const RESPONSE_PREAMBLE_EVENT_TYPES = new Set(["response.created", "response.in_progress", "response.queued"]);
+
+function failedResponseTierRejection(event: { type: string } | undefined): Error | undefined {
+	if (event?.type !== "response.failed") return undefined;
+	const failure = (event as { response?: { error?: { code?: string | null; message?: string } | null } }).response
+		?.error;
+	if (!failure?.message) return undefined;
+	const error = new Error(failure.message);
+	return isServiceTierRejection(error) ? error : undefined;
+}
+
+/**
+ * Read a stream up to its first event after the response preamble, so an error the server raises
+ * before producing output is thrown here. Returns a stream that replays every event read.
+ */
+async function readResponsePreamble<T extends { type: string }>(events: AsyncIterable<T>): Promise<AsyncIterable<T>> {
+	const iterator = events[Symbol.asyncIterator]();
+	const preamble: T[] = [];
+	let done = false;
+	try {
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) {
+				done = true;
+				break;
+			}
+			preamble.push(next.value);
+			if (!RESPONSE_PREAMBLE_EVENT_TYPES.has(next.value.type)) break;
+		}
+	} catch (error) {
+		await iterator.return?.();
+		throw error;
+	}
+	const tierRejection = failedResponseTierRejection(preamble.at(-1));
+	if (tierRejection) {
+		await iterator.return?.();
+		throw tierRejection;
+	}
+	return (async function* () {
+		try {
+			yield* preamble;
+			if (done) return;
+			for (;;) {
+				const next = await iterator.next();
+				if (next.done) return;
+				yield next.value;
+			}
+		} finally {
+			await iterator.return?.();
+		}
+	})();
+}
 
 export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOptions> = (
 	model: Model<"openai-responses">,
