@@ -194,12 +194,10 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		sol56Priority,
 		{ id: "ultrafast", cost: withLongContext(24, 120, 2.4, 30) },
 	]);
-	assert.deepEqual(catalogs.openai["gpt-6.1-sol"]?.serviceTiers, [
-		sol61Priority,
-		{ id: "ultrafast", cost: withLongContext(12, 60, 0.6, 15) },
-	]);
+	const sol61Tiers = [sol61Priority, { id: "ultrafast", cost: withLongContext(12, 60, 0.6, 15) }];
+	assert.deepEqual(catalogs.openai["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
 	assert.deepEqual(catalogs["openai-codex"]["gpt-5.6-sol"]?.serviceTiers, [sol56Priority]);
-	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, [sol61Priority]);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
 
 	const codexTierIds = Object.fromEntries(
 		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
@@ -216,7 +214,7 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-astra": ["priority", "ultrafast"],
 		"gpt-6-luna": ["priority"],
 		"gpt-6-sol": ["priority"],
-		"gpt-6.1-sol": ["priority"],
+		"gpt-6.1-sol": ["priority", "ultrafast"],
 	});
 });
 

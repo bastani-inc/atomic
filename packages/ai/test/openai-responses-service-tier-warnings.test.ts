@@ -66,19 +66,26 @@ function streamedRejection(message: string, param: string | null): Response {
 	return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
+/** A token shaped like an `openai` ChatGPT sign-in access token: a JWT whose auth claim has no account ID. */
+function chatGPTSignInToken(): string {
+	const encode = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, "");
+	const claims = { "https://api.openai.com/auth": { per_user_salt: "salt" } };
+	return `${encode({ alg: "none" })}.${encode(claims)}.signature`;
+}
+
 function serviceTierWarnings(message: AssistantMessage): string[] {
 	return (message.diagnostics ?? [])
 		.filter((diagnostic) => diagnostic.type === "service_tier_unavailable")
 		.map((diagnostic) => String(diagnostic.details?.message));
 }
 
-async function run(model: Model<"openai-responses">, responses: Response[]) {
-	const { result, payloads } = await runRecordingOrder(model, responses);
+async function run(model: Model<"openai-responses">, responses: Response[], apiKey = "sk-test-key") {
+	const { result, payloads } = await runRecordingOrder(model, responses, apiKey);
 	return { result, payloads };
 }
 
 /** Run a request and record `onResponse` calls interleaved with the stream's start, done, and error events. */
-async function runRecordingOrder(model: Model<"openai-responses">, responses: Response[]) {
+async function runRecordingOrder(model: Model<"openai-responses">, responses: Response[], apiKey = "sk-test-key") {
 	const payloads: Array<{ model?: string; service_tier?: string }> = [];
 	const order: string[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -88,7 +95,7 @@ async function runRecordingOrder(model: Model<"openai-responses">, responses: Re
 		return next;
 	});
 	const events = streamOpenAIResponses(model, context, {
-		apiKey: "sk-test-key",
+		apiKey,
 		onResponse: (response) => {
 			order.push(`onResponse:${response.status}`);
 		},
@@ -112,11 +119,15 @@ describe("catalog ultrafast tiers (#3529)", () => {
 		}
 	});
 
-	test("openai-codex keeps advertising only priority for the Sol models (#3529)", () => {
-		for (const id of ["gpt-6.1-sol", "gpt-5.6-sol"] as const) {
-			const tierIds = getModel("openai-codex", id).serviceTiers?.map((tier) => tier.id);
-			assert.deepEqual(tierIds, ["priority"]);
-		}
+	test("openai-codex advertises ultrafast for gpt-6.1-sol but only priority for gpt-5.6-sol (#3529)", () => {
+		assert.deepEqual(
+			getModel("openai-codex", "gpt-6.1-sol").serviceTiers?.map((tier) => tier.id),
+			["priority", "ultrafast"],
+		);
+		assert.deepEqual(
+			getModel("openai-codex", "gpt-5.6-sol").serviceTiers?.map((tier) => tier.id),
+			["priority"],
+		);
 	});
 });
 
@@ -281,6 +292,32 @@ describe("reported service tier downgrade (#3529)", () => {
 			"ultrafast isn't available for gpt-6.1-sol on this account; ran at default",
 		]);
 		assert.ok(Math.abs(result.usage.cost.input - (100_000 / 1_000_000) * model.cost.input) < 1e-9);
+	});
+
+	test("does not warn on a ChatGPT sign-in reporting default and prices at the requested tier (#3529)", async () => {
+		for (const model of [fastVariant("gpt-6.1-sol"), ultrafastVariant("gpt-6.1-sol")]) {
+			const { result, payloads } = await run(model, [completedResponse("default")], chatGPTSignInToken());
+			const requested = model.serviceTiers?.find((tier) => tier.id === model.fastRoute?.serviceTier);
+
+			assert.equal(payloads[0]?.service_tier, model.fastRoute?.serviceTier);
+			assert.deepEqual(serviceTierWarnings(result), []);
+			assert.ok(requested);
+			assert.ok(Math.abs(result.usage.cost.input - (100_000 / 1_000_000) * requested.cost.input) < 1e-9);
+		}
+	});
+
+	test("still retries at default with a warning when a ChatGPT sign-in rejects the tier (#3529)", async () => {
+		const { result, payloads } = await run(
+			ultrafastVariant("gpt-5.6-sol"),
+			[rejection(400, "Unsupported service_tier: ultrafast"), completedResponse("default")],
+			chatGPTSignInToken(),
+		);
+
+		assert.equal(payloads.length, 2);
+		assert.equal(payloads[1]?.service_tier, undefined);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
+		]);
 	});
 
 	test("warns when a fast model is reported at the default tier (#3529)", async () => {

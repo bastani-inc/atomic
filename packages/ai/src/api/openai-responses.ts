@@ -41,6 +41,8 @@ import {
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
 	openAIServiceTierForRequest,
+	isChatGPTSubscriptionToken,
+	resolveChatGPTBackendServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
@@ -169,6 +171,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
+			const chatGPTBackend = isChatGPTSubscriptionToken(apiKey);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
@@ -238,7 +241,9 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					serviceTier: requestedServiceTier,
 					grammarToolInputProperties,
 					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-					warnOnServiceTierDowngrade: true,
+					...(chatGPTBackend
+						? { resolveServiceTier: resolveChatGPTBackendServiceTier }
+						: { warnOnServiceTierDowngrade: true }),
 				},
 			);
 

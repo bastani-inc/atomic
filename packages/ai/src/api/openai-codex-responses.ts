@@ -49,6 +49,7 @@ import {
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
+	resolveChatGPTBackendServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -673,19 +674,6 @@ function resolveCodexRequestServiceTier(
 	return codexServiceTierForRequest(model, resolveRequestedServiceTier(model, optionsServiceTier));
 }
 
-function resolveCodexServiceTier(
-	responseServiceTier: ResponsesServiceTier | undefined,
-	requestServiceTier: ResponsesServiceTier | undefined,
-): ResponsesServiceTier | undefined {
-	if (
-		responseServiceTier === "default" &&
-		(requestServiceTier === "flex" || requestServiceTier === "priority" || requestServiceTier === "ultrafast")
-	) {
-		return requestServiceTier;
-	}
-	return responseServiceTier ?? requestServiceTier;
-}
-
 function resolveCodexUrl(baseUrl?: string): string {
 	const raw = baseUrl && baseUrl.trim().length > 0 ? baseUrl : DEFAULT_CODEX_BASE_URL;
 	const normalized = raw.replace(/\/+$/, "");
@@ -729,7 +717,7 @@ async function processStream(
 		{
 			serviceTier: requestServiceTier,
 			grammarToolInputProperties,
-			resolveServiceTier: resolveCodexServiceTier,
+			resolveServiceTier: resolveChatGPTBackendServiceTier,
 			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 		},
 	);
@@ -1635,7 +1623,7 @@ async function processWebSocketStream(
 			{
 				serviceTier: requestServiceTier,
 				grammarToolInputProperties,
-				resolveServiceTier: resolveCodexServiceTier,
+				resolveServiceTier: resolveChatGPTBackendServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 			},
 		);

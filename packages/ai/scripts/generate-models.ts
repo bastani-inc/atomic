@@ -570,7 +570,8 @@ function openAiServiceTiers(modelId: string): ModelServiceTier[] {
 }
 
 // Mirrors the service_tiers each model advertises in openai/codex codex-rs/models-manager/models.json
-// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates.
+// (90abcfac02665ad882853a04155591cd863b2ca7), priced at the matching OpenAI API tier rates. GPT-6.1 Sol also gets
+// Ultrafast, which the ChatGPT backend applies (about 2.7x faster on a ChatGPT sign-in) before Codex lists it.
 const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-5.3-codex-spark": [],
 	"gpt-5.5": ["priority"],
@@ -578,7 +579,7 @@ const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-5.6-sol": ["priority"],
 	"gpt-5.6-terra": ["priority"],
 	"gpt-6-astra": ["priority", "ultrafast"],
-	"gpt-6.1-sol": ["priority"],
+	"gpt-6.1-sol": ["priority", "ultrafast"],
 	"gpt-6-sol": ["priority"],
 	"gpt-6-luna": ["priority"],
 };

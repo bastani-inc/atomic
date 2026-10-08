@@ -218,6 +218,40 @@ export function normalizeResponseServiceTier(serviceTier: string | null | undefi
 	return serviceTier === "fast" ? "priority" : (serviceTier as ServiceTier);
 }
 
+const CHATGPT_AUTH_CLAIM = "https://api.openai.com/auth";
+
+/**
+ * Whether a bearer token is a ChatGPT sign-in token (a JWT carrying OpenAI's auth claim) rather than an API key. Requests made with it are served by
+ * the ChatGPT backend, which reports `default` as the tier of every response, whatever tier it applied.
+ */
+export function isChatGPTSubscriptionToken(token: string | undefined): boolean {
+	const payload = token?.split(".")[1];
+	if (!payload || token?.split(".").length !== 3) return false;
+	try {
+		const claims = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+		return typeof claims?.[CHATGPT_AUTH_CLAIM] === "object" && claims[CHATGPT_AUTH_CLAIM] !== null;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The tier a ChatGPT-backend response ran at. That backend reports `default` for every Flex, Fast or Ultrafast
+ * request, so `default` there means the requested tier rather than a downgrade.
+ */
+export function resolveChatGPTBackendServiceTier(
+	responseServiceTier: ResponsesServiceTier | undefined,
+	requestServiceTier: ResponsesServiceTier | undefined,
+): ResponsesServiceTier | undefined {
+	if (
+		responseServiceTier === "default" &&
+		(requestServiceTier === "flex" || requestServiceTier === "priority" || requestServiceTier === "ultrafast")
+	) {
+		return requestServiceTier;
+	}
+	return responseServiceTier ?? requestServiceTier;
+}
+
 /** Diagnostic type recorded when a requested Fast or Ultrafast tier did not apply to a response. */
 export const SERVICE_TIER_UNAVAILABLE_DIAGNOSTIC = "service_tier_unavailable";
 

@@ -661,7 +661,7 @@ describe("ModelRuntime fast model catalog", () => {
 				.map((entry) => entry.id)
 				.sort();
 
-		assert.deepEqual(routed("openai-codex", "ultrafast"), ["gpt-6-astra-ultrafast"]);
+		assert.deepEqual(routed("openai-codex", "ultrafast"), ["gpt-6-astra-ultrafast", "gpt-6.1-sol-ultrafast"]);
 		assert.deepEqual(routed("openai", "ultrafast"), [
 			"gpt-5.6-sol-ultrafast",
 			"gpt-6-astra-ultrafast",
@@ -682,7 +682,6 @@ describe("ModelRuntime fast model catalog", () => {
 			assert.equal(runtime.getModel("openai", id), undefined, id);
 		}
 		assert.equal(runtime.getModel("openai-codex", "gpt-5.3-codex-spark-fast"), undefined);
-		assert.equal(runtime.getModel("openai-codex", "gpt-6.1-sol-ultrafast"), undefined);
 		assert.equal(runtime.getModel("openai-codex", "gpt-5.6-sol-ultrafast"), undefined);
 	});
 

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
@@ -103,6 +104,46 @@ describe("InteractiveMode assistant diagnostics", () => {
 		const output = stripAnsi(chatContainer.render(120).join("\n"));
 		expect(output).not.toContain("Anthropic dropped");
 	});
+	test("shows a saved reply's service tier warning once when the session is rebuilt (#3529)", () => {
+		initTheme("dark");
+		const warning = "ultrafast isn't available for gpt-5.6-sol on this account; ran at default";
+		const chatContainer = new Container();
+		const entry: SessionEntry = {
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date(1).toISOString(),
+			message: {
+				...message,
+				diagnostics: [
+					{ type: "service_tier_unavailable", timestamp: 1, details: { severity: "warning", message: warning } },
+				],
+			},
+		};
+		const mode = {
+			resetTranscriptSelection: vi.fn(),
+			pendingTools: new Map(),
+			deferredRenderedUserInputs: [],
+			deferredRenderedUserInputComponents: new Map(),
+			footer: { invalidate: () => undefined },
+			updateEditorBorderColor: () => undefined,
+			chatContainer,
+			settingsManager: { getShowCacheMissNotices: () => false },
+			session: { modelRuntime: { getModel: () => undefined } },
+			ui: { requestRender: () => undefined },
+			addRenderedChatEntry: () => new Text("assistant response", 0, 0),
+			renderDeferredUserInput: () => undefined,
+		};
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: SessionEntry[],
+		) => void;
+
+		renderSessionEntries.call(mode, [entry]);
+		const output = stripAnsi(chatContainer.render(120).join("\n"));
+		assert.equal(output.split(`Warning: ${warning}`).length - 1, 1);
+	});
+
 	// Upstream #9391: an unchanged cumulative drop count is not a new warning.
 	test("suppresses unchanged drops but reports an increased count", () => {
 		initTheme("dark");
