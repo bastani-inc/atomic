@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.28-alpha.5] - 2026-10-08
+
 ### Added
 
 - Added `fromSignal` to the `session_shutdown` event. It is `true` when a `quit` comes from a host `SIGTERM` or `SIGHUP` instead of Ctrl+D or `/quit`, and `runtimeHost.dispose({ fromSignal: true })` sets it for SDK hosts ([#3492](https://github.com/bastani-inc/atomic/issues/3492)).
