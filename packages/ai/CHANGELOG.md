@@ -4,6 +4,47 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-08
+
+### Breaking Changes
+
+- Stream functions must return `AssistantMessageEventStream`, for example from `createAssistantMessageEventStream()`. Plain `EventStream` subclasses are no longer assignable to this response stream type.
+
+### Added
+
+- Added `ApiKeyAuth.borrowCredentialsFrom` and `sharedApiKeyAuth()`, which let a provider without a login of its own reuse the stored API key of the first listed provider that has one, then fall back to its environment variables. A borrowing provider has no stored credential of its own, and stored OAuth credentials of the listed providers are skipped.
+- Added `openaiApiProvider()` (`openai-api`) and `anthropicApiProvider()` (`anthropic-api`): API-key-only twins of `openai` and `anthropic` that list the same chat models under their own provider ID, so a subscription login on the source provider no longer displaces the API key.
+- Added Claude Haiku 5.5 with adaptive thinking, `xhigh`/`max` effort, prompt-length pricing tiers, and mid-conversation effort, system-message, and tool changes. Bedrock supports adaptive thinking, native `xhigh`, thinking block binding, and prompt caching for Haiku 5.5.
+- Added optional `durationMs` to assistant messages and tool results. Assistant response streams measure elapsed time with a monotonic clock, preserving existing measurements and leaving deferred results untimed.
+- Added `LoginOptions.agentName` for apps to identify themselves during OpenAI ChatGPT and Codex browser login.
+- Added OpenAI's Decisions classifier API and the `openai/gpt-6-luna` classifier, available with an API key but not Sign in with ChatGPT credentials.
+- Added optional `images` to classifier contexts. Unsupported models and classifier APIs return an error result instead of ignoring images.
+- Added Azure Foundry Chat Completions and `azure/deepseek-v4-pro`, with Azure endpoint resolution, deployment-name mapping, and supported reasoning efforts.
+
+### Changed
+
+- `openai-decisions` no longer has a login or stored credential of its own. It reuses the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT sign-in on `openai` is skipped.
+- Moved the GPT-6 Luna Decisions classifier to the `openai-decisions` provider (`openaiDecisionsProvider()`), with its own API-key credential. The `openai` provider no longer lists classifiers.
+- The faux provider compares prompt-cache prefixes message by message without changing simulated usage counts.
+- Renamed the Azure provider to `azure`, retaining the `azure-openai-responses` API ID and compatibility with the former provider name and exports.
+
+### Fixed
+
+- Fixed Kimi K3 cost estimates on Moonshot providers to use official pricing without cache-write charges.
+- Fixed Magistral models retaining Mistral's `prompt_mode` reasoning controls when catalog metadata advertises effort levels.
+- Fixed failed lazy API setup messages using the failure time instead of the request start as their timestamp.
+- Fixed prompt-length pricing tiers being lost when generating model catalogs from AI Gateway, OpenRouter, and models.dev.
+- Corrected the Claude Sonnet 5.5 fallback catalog's cache-read rate to the official $0.10 per million tokens.
+- Fixed Bedrock Claude Haiku 5.5 requests sending unsupported caller temperature settings.
+- Reduced context-limit request failures by estimating new input at 3.5 characters per token when calculating output limits.
+- Fixed transient `server_busy`, `servers are currently busy`, and Mistral `finish_reason: "error"` responses ending the turn instead of being retried.
+- Fixed Anthropic browser login when port 53692 is reserved or in use by falling back to a free loopback port. Copy-code login remains available for headless use.
+- Fixed Codex requests ignoring caller and model overrides for `originator` and `User-Agent` headers; authentication headers remain authoritative.
+- Fixed the selected reasoning effort not reaching OpenAI GPT models on Bedrock Converse. GPT-oss effort is clamped to `low`, `medium`, or `high`; Astra keeps its existing payload.
+- Fixed Radius models disabled by an organization still appearing in the catalog. Fetched or cached gateway catalogs now replace the bundled defaults, including empty catalogs.
+- Fixed OpenAI Decisions accepting unknown choices or out-of-range probabilities, confidence, and scores as successful answers, and failing to return error results when request hooks or fetch throw null or undefined.
+- Retry transient HTTP/2 errors containing "pending stream has been canceled".
+
 ## [0.9.28-alpha.5] - 2026-10-08
 
 ### Added

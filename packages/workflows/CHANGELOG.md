@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-08
+
+### Added
+
+- Added a Claude Haiku 5.5 prompt-engineering guide based on Anthropic's model-specific guidance, covering effort, search grounding, JSON/tool interactions, completion, verification, and refusal handling.
+- Added `createAgentSessionAdapter(baseOptions?)`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+
+### Changed
+
+- Updated the bundled Impeccable skill to 4.5.0 with engine 0.1.11, adding the `generate` playbook, component-review guidance, and reading, operating, and persuasion design modes. Atomic's telemetry and update-check defaults remain off.
+- Changed the `resumeInFlight` default from `"ask"` to `"never"`. Atomic no longer prompts at startup to resume interrupted durable workflows; resume them with `/workflow resume`, or set `resumeInFlight` to `"ask"` or `"auto"` in the workflow config to restore startup recovery.
+
+### Fixed
+
+- Fixed managed PostgreSQL health checks failing a workflow stage on a healthy but busy host: an unanswered check now retries with a short backoff for up to 15 seconds, the connection limit is 3 seconds instead of 1, and the "did not answer a health check in time" diagnostic clears once PostgreSQL answers again ([#3491](https://github.com/bastani-inc/atomic/issues/3491))
+- Fixed Atomic hanging at startup, never accepting input, when the current directory had interrupted durable workflows and `resumeInFlight` was `ask`. Startup no longer waits for workflow recovery; the "Resume interrupted workflows?" prompt now appears after the session is ready.
+- Fixed startup recovery and SDK crash recovery skipping interrupted workflows when the project directory was reached through a symlink, such as `/tmp` or `/var` on macOS.
+- Fixed long workflow runs retaining a full metadata snapshot for every checkpoint and message update. Atomic now compacts superseded snapshots, removes their duplicate input payloads, and bounds settled delivery state across root and child runs, including failed-stage sticky receipts, while preserving resume and message deduplication ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
+- Fixed archived sticky message receipts being ignored when a failed stage retries delivery without an explicit recipient or through live Intercom transport. Retry forwarding and confirmation deduplication survive cold resume, while a new recipient session can still receive the message ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
+- Fixed sticky messages delivered as pre-start context being forwarded again to the same live session, including after receipt archival and cold resume. Concurrent confirmations remain deduplicated when a stage finishes before they are saved, while a new recipient session can still receive the message ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
+- Fixed interrupted sticky receipt saves losing delivery counts after retry or cold resume and incorrectly reporting delivered messages as undeliverable ([#3467](https://github.com/bastani-inc/atomic/issues/3467)).
+- Fixed Goal infrastructure failures incorrectly ending the goal as `needs_human`. The ledger now stays `active`, and direct resume in the same session retries the interrupted stage and completes its turn without quitting Atomic. Malformed reviewer output, including exhausted schema corrections, still requires human attention. Older synthetic failure verdicts with identifiable database/checkpoint diagnostics are also recoverable; ambiguous old failures remain unchanged ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
+- Fixed Goal treating exhausted reviewer corrections for invalid `structured_output` inputs, including whitespace-only instructions and empty named state, as resumable infrastructure failures instead of `needs_human` ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
+- Fixed Goal reviewer corrections hiding an earlier provider failure when a later `structured_output` call has invalid inputs. If no correction succeeds, the goal remains resumable instead of becoming `needs_human` ([#3466](https://github.com/bastani-inc/atomic/issues/3466)).
+- Fixed `run()` failing at the first `ctx.task` or `ctx.stage` with "prompt adapter not configured" when `opts.adapters` was omitted. Stages now default to in-process `createAgentSession` sessions with in-memory session managers ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Fixed `resumeInFlight` having no effect at startup. `auto` now resumes eligible interrupted durable workflows, `ask` requests confirmation when a UI is available, and `never` leaves them for `/workflow resume`. Paused, quit, blocked, failed, awaiting-input, and live-owned runs are not automatically restarted ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed startup recovery of agent-owned workflows retaining the previous session's ownership. Safely recovered runs now allow the current session's agent to inspect and control them ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed recovered workflows disconnecting Intercom with pending-stage authorization errors when workflow extension modules load more than once ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed recovered agent stages failing with a stale extension context after accepted startup recovery. Committed host generations hand off synchronously and retired Store observers detach before authority revocation, independently of shutdown handler order ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed startup recovery offering or restarting another project's workflows when projects share a database. Automatic recovery now requires the original invocation directory to match the current working directory; cross-project recovery remains available through `/workflow resume` ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed durable-workflow shutdown returning before ownership and protected SQL connections terminated, including pending SQL acquisitions, so immediate recovery no longer races a stale executor lock ([#3489](https://github.com/bastani-inc/atomic/issues/3489)).
+- Attached stage chats honor configured transcript jump shortcuts, defaulting to Ctrl+Home and Ctrl+End, without intercepting the editor's Home and End keys.
+- Fixed slow workflow discovery for imports of `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` by sharing the running CLI's modules instead of loading them again for each workflow file. The host's versions take precedence over project copies for these three exact specifiers. These imports no longer need project-local packages in standalone-binary installs; workflow files and relative imports still refresh on reload ([#3454](https://github.com/bastani-inc/atomic/issues/3454)).
+- Fixed workflow stage questions in one process hosting several SDK sessions reaching the wrong session. A stage's `ask_user_question`, readiness question, or `ctx.ui.custom` prompt could go to whichever sibling session started last, so its own `HostInput.questionnaire` was never called and the stage stayed `awaiting_input`. Each session now keeps its own workflow store, stage UI broker, and run registries ([#3456](https://github.com/bastani-inc/atomic/issues/3456)).
+
 ## [0.9.28-alpha.5] - 2026-10-08
 
 ### Fixed
