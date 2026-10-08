@@ -1,6 +1,6 @@
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
-import type { AgentSessionEvent } from "../../core/agent-session.ts";
+import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 export type BlockedStatus = { kind: NonNullable<ProgramStatus["kind"]>; message: string };
