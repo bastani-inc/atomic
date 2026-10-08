@@ -419,6 +419,44 @@ describe("a slow-starting broker beside a live one", () => {
 			}
 		},
 	);
+
+	unixOnly(
+		"(#3505) a broker whose socket path was taken by another broker shuts down without removing it",
+		async () => {
+			const displaced = spawnBrokerDirectly();
+			assert.ok(
+				await waitUntil(() => recordedBrokerPid() === displaced.pid, BROKER_BUDGET_MS),
+				"the broker never bound its socket",
+			);
+			const stranded = newClient();
+			let disconnected = false;
+			stranded.on("disconnected", () => {
+				disconnected = true;
+			});
+			await stranded.connect(registration("stranded-session"));
+
+			removePathSync(socketPath, { force: true });
+			const successor = await listenOnBrokerSocket();
+			try {
+				const exitCode = await Promise.race([
+					displaced.exited,
+					sleep(BROKER_BUDGET_MS).then(() => "still running" as const),
+				]);
+				assert.equal(exitCode, 0, "the displaced broker kept running");
+				assert.equal(
+					await isSocketAnswering(socketPath),
+					true,
+					"the displaced broker removed its successor's socket",
+				);
+				assert.ok(
+					await waitUntil(() => disconnected, BROKER_BUDGET_MS),
+					"the stranded session was not told to reconnect",
+				);
+			} finally {
+				await closeServer(successor);
+			}
+		},
+	);
 });
 
 describe("spawn lock staleness (#3505)", () => {

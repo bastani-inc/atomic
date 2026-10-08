@@ -2,7 +2,7 @@
 // only position from which the stderr cap covers the other modules' own initialization.
 import "./bounded-stderr-install.js";
 import net from "net";
-import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from "fs";
+import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
 import { randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
@@ -68,6 +68,7 @@ const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
+const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
@@ -260,6 +261,7 @@ class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
   private deliveredMessages = new DeliveredMessageCache(
 	DELIVERED_MESSAGE_TTL_MS,
@@ -295,12 +297,37 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
+      if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
       releaseReplacementLock();
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
+      if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
     });
+  }
+
+  private ownsSocketPath(): boolean {
+    if (this.boundSocketInode === undefined) return process.platform === "win32";
+    try {
+      return statSync(SOCKET_PATH).ino === this.boundSocketInode;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * A broker whose socket path now leads to another broker can no longer be reached by new clients, so its sessions
+   * would be stranded. It shuts down instead, and its clients reconnect through broker.sock to the broker that owns it.
+   */
+  private watchSocketOwnership(): void {
+    const timer = setInterval(() => {
+      if (this.ownsSocketPath()) return;
+      clearInterval(timer);
+      console.error(`Intercom broker lost ${SOCKET_PATH} to another broker; shutting down so its sessions reconnect`);
+      this.shutdown();
+    }, SOCKET_OWNERSHIP_CHECK_MS);
+    timer.unref();
   }
 
   /** Take over only a stale socket: a path a live broker answers on is never unlinked. */
@@ -1850,9 +1877,10 @@ class IntercomBroker {
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
     // Node unlinks a Unix socket path on server.close() even after a successor
-    // rebound that path. Skip close when we no longer own the pid; process.exit
-    // still closes our fd. Windows named pipes are not path-unlinked this way.
-    if (process.platform === "win32" || ownsRuntime) {
+    // rebound that path. Skip close when we no longer own the pid or the socket
+    // path; process.exit still closes our fd. Windows named pipes are not
+    // path-unlinked this way.
+    if (process.platform === "win32" || (ownsRuntime && this.ownsSocketPath())) {
       this.server.close();
     }
     process.exit(0);
