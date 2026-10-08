@@ -46,6 +46,10 @@ export function getBrokerSpawnLockPath(agentDir: string = getAgentDir()): string
   return join(getIntercomDirPath(agentDir), "broker.spawn.lock");
 }
 
+export function getBrokerSocketReplacementLockPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker.sock.replace.lock");
+}
+
 /** Durable accepted-operation authority shared by replacement broker processes. */
 export function getBrokerDeliveredMessagesPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "delivered-messages.sqlite");

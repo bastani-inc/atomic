@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
-import type { Message } from "../../packages/intercom/types.js";
+import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
+	type ByteStream,
+	decodeStream,
 	fileExistsSync,
 	makeDirectorySync,
 	makeTempDirectory,
@@ -232,7 +234,7 @@ describe("a slow-starting broker beside a live one", () => {
 
 		const session = newClient();
 		const received: Message[] = [];
-		session.on("message", (_from: unknown, message: Message) => received.push(message));
+		session.on("message", (_from: SessionInfo, message: Message) => received.push(message));
 		const reconnect = spawnModule
 			.spawnBrokerIfNeeded(process.execPath, brokerArgs, LATER_SPAWN_READY_TIMEOUT_MS)
 			.then(() => session.connect(registration("slow-start-session")));
@@ -354,6 +356,62 @@ describe("a slow-starting broker beside a live one", () => {
 		);
 		assert.equal(await isSocketAnswering(socketPath), true);
 	});
+
+	unixOnly(
+		"(#3505) a broker that waited for another broker's stale-socket replacement yields to the socket it bound",
+		async () => {
+			makeDirectorySync(intercomDir, { recursive: true });
+			spawnSyncCollect([
+				process.execPath,
+				"-e",
+				`require("node:net").createServer().listen(process.argv[1], () => process.kill(process.pid, "SIGKILL"));`,
+				socketPath,
+			]);
+			assert.equal(await isSocketAnswering(socketPath), false, "the dead broker should leave a stale socket behind");
+			const replacementLock = pathsModule.getBrokerSocketReplacementLockPath();
+			writeTextSync(replacementLock, `${process.pid}\n`);
+
+			const waiter = spawnBrokerDirectly();
+			const stderrLines = decodeStream(waiter.stderr as ByteStream).getReader();
+			let stderr = "";
+			const sawWait = await Promise.race([
+				(async () => {
+					while (!stderr.includes("waiting for another broker")) {
+						const { done, value } = await stderrLines.read();
+						if (done) return false;
+						stderr += value;
+					}
+					return true;
+				})(),
+				sleep(BROKER_BUDGET_MS).then(() => false),
+			]);
+			assert.ok(sawWait, `the broker did not wait for the replacement lock:\n${stderr}`);
+
+			removePathSync(socketPath, { force: true });
+			const replacedBy = await listenOnBrokerSocket();
+			try {
+				removePathSync(replacementLock, { force: true });
+				const exitCode = await Promise.race([
+					waiter.exited,
+					sleep(BROKER_BUDGET_MS).then(() => "still running" as const),
+				]);
+				for (;;) {
+					const { done, value } = await stderrLines.read();
+					if (done) break;
+					stderr += value;
+				}
+				assert.equal(exitCode, 0, `the waiting broker did not yield:\n${stderr}`);
+				assert.match(stderr, /a live broker already answers/u);
+				assert.equal(
+					await isSocketAnswering(socketPath),
+					true,
+					"the waiting broker removed the socket bound meanwhile",
+				);
+			} finally {
+				await closeServer(replacedBy);
+			}
+		},
+	);
 });
 
 describe("spawn lock staleness (#3505)", () => {
@@ -399,5 +457,15 @@ describe("spawn lock staleness (#3505)", () => {
 	test("an unreadable lock is stale and an absent one is not", () => {
 		assert.equal(spawnModule.isSpawnLockStale(lockFile("not a lock"), NOW), true);
 		assert.equal(spawnModule.isSpawnLockStale(join(agentDir, "absent-lock"), NOW), false);
+	});
+
+	test("releasing removes only the lock this spawner wrote, not one that replaced it", () => {
+		const replaced = lockFile(`${process.pid}\n${NOW + 1}\n`);
+		spawnModule.releaseSpawnLock(`${process.pid}\n${NOW}\n`, replaced);
+		assert.equal(fileExistsSync(replaced), true);
+
+		const own = lockFile(`${process.pid}\n${NOW}\n4242\n`);
+		spawnModule.releaseSpawnLock(`${process.pid}\n${NOW}\n`, own);
+		assert.equal(fileExistsSync(own), false);
 	});
 });

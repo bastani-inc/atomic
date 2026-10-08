@@ -326,8 +326,8 @@ export async function spawnBrokerIfNeeded(
     return;
   }
 
-  const ownsLock = acquireSpawnLock();
-  if (!ownsLock) {
+  const lockOwner = acquireSpawnLock();
+  if (lockOwner === undefined) {
     await waitForBroker(readyTimeoutMs);
     return;
   }
@@ -359,7 +359,7 @@ export async function spawnBrokerIfNeeded(
       if (logFd !== undefined) closeSync(logFd);
     }
     child.unref();
-    if (launch.kind === "direct") recordSpawnedBroker(child.pid);
+    if (launch.kind === "direct") recordSpawnedBroker(child.pid, lockOwner);
 
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -408,7 +408,7 @@ export async function spawnBrokerIfNeeded(
       });
     });
   } finally {
-    if (!keepLock) releaseSpawnLock();
+    if (!keepLock) releaseSpawnLock(lockOwner);
   }
 }
 
@@ -435,16 +435,26 @@ function checkSocketConnectable(): Promise<boolean> {
 }
 
 /** Records the spawned broker on the lock so staleness follows that process, not just the spawner. */
-function recordSpawnedBroker(pid: number | undefined): void {
-  if (pid !== undefined) appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
+function recordSpawnedBroker(pid: number | undefined, owner: string): void {
+  if (pid !== undefined && ownsSpawnLock(owner)) appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
 }
 
-function acquireSpawnLock(): boolean {
+function ownsSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): boolean {
+  try {
+    return readFileSync(lockPath, "utf-8").startsWith(owner);
+  } catch {
+    return false;
+  }
+}
+
+/** Returns the header this spawner wrote, which proves ownership on release, or undefined when another spawner holds the lock. */
+function acquireSpawnLock(): string | undefined {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const owner = `${process.pid}\n${Date.now()}\n`;
     try {
-      writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
-      return true;
+      writeFileSync(BROKER_SPAWN_LOCK, owner, { flag: "wx" });
+      return owner;
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
@@ -457,10 +467,10 @@ function acquireSpawnLock(): boolean {
         }
         continue;
       }
-      return false;
+      return undefined;
     }
   }
-  return false;
+  return undefined;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -496,9 +506,11 @@ export function isSpawnLockStale(lockPath: string = BROKER_SPAWN_LOCK, nowMs: nu
   }
 }
 
-function releaseSpawnLock(): void {
+/** Removes the lock only while it is still the one `owner` wrote; a spawner that replaced a stale lock keeps its own. */
+export function releaseSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): void {
+  if (!ownsSpawnLock(owner, lockPath)) return;
   try {
-    unlinkSync(BROKER_SPAWN_LOCK);
+    unlinkSync(lockPath);
   } catch {
     // Another cleanup path may already have removed the lock.
   }

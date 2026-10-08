@@ -7,10 +7,12 @@ import { randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
 import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
 	getBrokerSocketPath,
+	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
 } from "./paths.js";
 import type {
@@ -61,6 +63,7 @@ import {
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = getBrokerPidPath();
+const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 const LISTEN_ATTEMPTS = 5;
@@ -284,13 +287,15 @@ class IntercomBroker {
     process.on("SIGINT", () => this.shutdown());
   }
 
-  private listen(attempt: number): void {
+  private listen(attempt: number, releaseReplacementLock: () => void = () => {}): void {
     const onError = (error: NodeJS.ErrnoException) => {
+      releaseReplacementLock();
       void this.recoverFromListenError(error, attempt);
     };
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
+      releaseReplacementLock();
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
       this.lastConnectionAt = performance.now();
@@ -300,21 +305,30 @@ class IntercomBroker {
 
   /** Take over only a stale socket: a path a live broker answers on is never unlinked. */
   private async recoverFromListenError(error: NodeJS.ErrnoException, attempt: number): Promise<void> {
+    if (error.code === "EADDRINUSE" && (await isSocketAnswering(SOCKET_PATH))) exitBecauseLiveBrokerOwnsSocket();
     if (error.code !== "EADDRINUSE" || attempt >= LISTEN_ATTEMPTS) {
       console.error(`Intercom broker could not listen on ${SOCKET_PATH}: ${error.message}`);
       process.exit(1);
     }
-    if (await isSocketAnswering(SOCKET_PATH)) exitBecauseLiveBrokerOwnsSocket();
     if (process.platform === "win32") {
       await new Promise<void>((resolve) => setTimeout(resolve, LISTEN_RETRY_DELAY_MS));
-    } else {
-      try {
-        unlinkSync(SOCKET_PATH);
-      } catch {
-        // Another broker may have removed the stale socket first.
-      }
+      this.listen(attempt + 1);
+      return;
     }
-    this.listen(attempt + 1);
+    const releaseReplacementLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
+      onWait: () => console.error(`Intercom broker waiting for another broker replacing ${SOCKET_PATH}`),
+    });
+    // Another broker may have replaced the stale socket while this one waited for the lock.
+    if (await isSocketAnswering(SOCKET_PATH)) {
+      releaseReplacementLock();
+      exitBecauseLiveBrokerOwnsSocket();
+    }
+    try {
+      unlinkSync(SOCKET_PATH);
+    } catch {
+      // A clean path has no stale socket to remove.
+    }
+    this.listen(attempt + 1, releaseReplacementLock);
   }
 
   private handleConnection(socket: net.Socket): void {
