@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.29-alpha.1] - 2026-10-08
+
 ### Added
 
 - Stages with `model: "auto"`, including builtin workflow stages that do not name a model, honor the new `modelRouting.allowedModels` and `modelRouting.excludedModels` settings for the routed model and every fallback, and fail before launch with an error naming the setting when no allowed model remains. A stage's `routerSelection` in `workflow` status now lists the `candidates` the router could choose from ([#3528](https://github.com/bastani-inc/atomic/issues/3528)).
