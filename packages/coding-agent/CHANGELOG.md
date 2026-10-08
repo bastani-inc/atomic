@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.28-alpha.4] - 2026-10-07
+
 ### Added
 
 - Added the API-key-only providers `openai-api` and `anthropic-api`, so you can keep a ChatGPT or Claude subscription login on `openai`/`anthropic` and still use an API key for the same models. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time).
