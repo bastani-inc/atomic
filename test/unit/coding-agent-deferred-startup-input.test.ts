@@ -12,7 +12,7 @@ import {
 	type MarkdownTheme,
 	Text,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-deps.js";
-import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.ts";
+import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { readText } from "../helpers/runtime.js";
 

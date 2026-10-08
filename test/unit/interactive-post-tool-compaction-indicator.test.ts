@@ -8,7 +8,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
-import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.ts";
+import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
