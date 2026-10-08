@@ -63,7 +63,7 @@ if errorlevel 1 goto download
 call :probe impeccable
 if not "%probe_ok%"=="1" goto download
 impeccable %*
-exit /b
+exit /b %errorlevel%
 
 :download
 rem Last resort: fetch this version's binary from the release channel into
@@ -170,7 +170,7 @@ exit /b 127
 
 :run
 "%run%" %*
-exit /b
+exit /b %errorlevel%
 
 :probe
 rem Sets probe_ok=1 when %1 answers the engine handshake: prints

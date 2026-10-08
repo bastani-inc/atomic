@@ -4,7 +4,7 @@ description: Browser automation CLI for AI agents. Use when the user needs to in
 hidden: true
 metadata:
     github-path: skills/agent-browser
-    github-ref: refs/tags/v0.38.1
+    github-ref: refs/tags/v0.38.2
     github-repo: https://github.com/vercel-labs/agent-browser
     github-tree-sha: 82def67855a0d2aad7794207951820fa5422fdb0
 name: agent-browser

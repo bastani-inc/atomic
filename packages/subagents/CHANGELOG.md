@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Cua Driver skill to upstream `cua-driver-rs-v0.34.0`, with focused runtime, workflow, and visual guides covering authorization, exact targets, observation, and outcome verification.
+
 ## [0.9.27] - 2026-10-05
 
 ### Fixed

@@ -212,7 +212,7 @@ Report what the installer did. On macOS it places `CuaDriver.app` in `/Applicati
 
 Never loop on the installer. In a workflow stage, a refused or failed install is reported as `blocked`/`needs_human` together with the exact installer command above, not worked around with an alternative tool.
 
-If the installed driver is older than the bundled skill's `version` (`0.28.2`), run `cua-driver update --apply` once and restart the daemon with the platform's startup command below. If it is newer, proceed and note the skew in the report. `cua-driver check-update` only checks; it changes nothing.
+The bundled skill's `version` (`0.34.0`) identifies its source release, not the running daemon. Check the installed driver's advertised schema before using unfamiliar parameters; do not upgrade software or change permissions merely to make a recipe work. If an upgrade is authorized, run `cua-driver update --apply` once and restart the daemon with the platform's startup command below. `cua-driver check-update` only checks; it changes nothing.
 
 ### Turn telemetry off
 
@@ -245,18 +245,18 @@ A missing macOS Accessibility or Screen Recording grant, a non-interactive Windo
 
 ### Drive a window from the shell
 
-Load the `cua-driver` skill and follow its loop. The shape, with `CUA_DRIVER_RS_TELEMETRY_ENABLED=false` exported as above, is:
+Load the `cua-driver` skill and follow its loop. For a multi-call CLI run, choose a short, non-default session label and repeat it on every call that accepts `session`; omitting it uses a disposable implicit lease rather than preserving the prior call's state. The shape, with `CUA_DRIVER_RS_TELEMETRY_ENABLED=false` exported as above, is:
 
 ```sh
 cua-driver call list_apps
 cua-driver call list_windows '{"pid":844}'
-cua-driver call get_window_state '{"pid":844,"window_id":10725,"screenshot_out_file":"artifacts/before.png"}' > artifacts/before.json
-# Pick one element_token from before.json, then act on it in the background.
-cua-driver call click '{"pid":844,"element_token":"s0000002a:14"}'
-cua-driver call get_window_state '{"pid":844,"window_id":10725,"screenshot_out_file":"artifacts/after.png"}' > artifacts/after.json
+cua-driver call get_window_state '{"pid":844,"window_id":10725,"session":"run-1","screenshot_out_file":"artifacts/before.png"}' > artifacts/before.json
+# Pick one element_token from before.json, then act on that exact window in the background.
+cua-driver call click '{"target":{"kind":"window","pid":844,"window_id":10725},"element_token":"s0000002a:14","session":"run-1","delivery_mode":"background"}'
+cua-driver call get_window_state '{"pid":844,"window_id":10725,"session":"run-1","screenshot_out_file":"artifacts/after.png"}' > artifacts/after.json
 ```
 
-Replace the pid, window id, and token with values read from your own output; tokens are bound to the snapshot that produced them and must be re-read after any UI change. Check the postcondition in `after.json` with a bounded poll deadline, never a fixed sleep and never a repeated click. A `degraded` or `truncated` snapshot is a reason to stop and re-observe, and a refused background action is an escalation signal, not something to retry. Foreground delivery is an explicit escalation. Keep the JSON results and the `screenshot_out_file` images as evidence. When the work ends in a PR, attach the before/after PNGs to the PR body (`gh pr create --body-file body.md --attach 'before.png#Before' --attach 'after.png#After'` on supported GitHub) next to the scenario they prove, and cite the JSON by name as a local artifact; see [Verification and evidence](/workflows/verification#native-github-media).
+Replace the pid, window id, token, and session label with values for your own run; tokens are bound to the snapshot that produced them and must be re-read after any UI change. Check the postcondition in `after.json` with a bounded poll deadline, never a fixed sleep and never a repeated click. A `degraded` or `truncated` snapshot is a reason to stop and re-observe. If background delivery is refused, refresh state and ask before foreground or desktop control unless it was already authorized; do not retry automatically. End only your run with `cua-driver call end_session '{"session":"run-1"}'`, not `cua-driver stop` on a shared service. Keep the JSON results and the `screenshot_out_file` images as evidence. When the work ends in a PR, attach the before/after PNGs to the PR body (`gh pr create --body-file body.md --attach 'before.png#Before' --attach 'after.png#After'` on supported GitHub) next to the scenario they prove, and cite the JSON by name as a local artifact; see [Verification and evidence](/workflows/verification#native-github-media).
 
 ### Run a scenario from workflow code
 
@@ -264,7 +264,7 @@ When a custom workflow owns the scenario, use the `@trycua/cua-driver` TypeScrip
 
 - **Prerequisite.** `node` (preferred) or `bun` on the host. If neither is present, install one in a bounded attempt (Node via [fnm](https://github.com/Schniz/fnm) with `fnm install --lts` or the host's package manager, Bun via `curl -fsSL https://bun.sh/install | bash`) and report what the installer did; if the install is refused or fails, report that as the limitation rather than retrying.
 - **Install.** `npm install @trycua/cua-driver@<exact pin matching cua-driver --version>` into a scratch directory outside the user's repository, one bounded attempt. The package ships per-platform native optional dependencies, so it is self-contained. Pin the exact driver version: daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch.
-- **Acquire the driver.** When `cua-driver status` reports a running daemon, use `CuaDriver.connect()` so the scenario reuses the daemon's permission identity (on macOS, `CuaDriver.app`'s grants) and the persisted telemetry-off preference; upstream describes `connect()` as a compatibility and app-hosting path, and that is exactly the role it plays here. Only when no daemon is reachable, fall back to `CuaDriver.create()`, which loads the runtime into the node process. On macOS that in-process fallback attributes Accessibility and Screen Recording to the node host, normally the terminal app, as a **separate grant**; `checkPermissions` is then read-only, and the host must fully quit and relaunch after granting.
+- **Acquire the driver.** When `cua-driver status` reports a running daemon, use `CuaDriver.connect(undefined)` so the scenario reuses the daemon's permission identity (on macOS, `CuaDriver.app`'s grants) and the persisted telemetry-off preference; upstream describes `connect()` as a compatibility and app-hosting path, and that is exactly the role it plays here. Only when no daemon is reachable, fall back to `CuaDriver.create(undefined)`, which loads the runtime into the node process. On macOS that in-process fallback attributes Accessibility and Screen Recording to the node host, normally the terminal app, as a **separate grant**; `checkPermissions` is then read-only, and the host must fully quit and relaunch after granting.
 - **Telemetry.** Set `CUA_DRIVER_RS_TELEMETRY_ENABLED=false` in the child environment before constructing the driver.
 - **Loop.** `listApps` → `listWindows` → `getWindowState` (refuse `degraded`/`truncated`) → resolve exactly one element → act by `elementToken` with `InputDeliveryMode.Background` → `getWindowState` again → bounded-poll the postcondition. `shutdown()` in `finally`, then `uniffiDestroy()` when present.
 - **Result.** Machine-readable `verified` / `refuted` / `blocked` / `unknown`; the wrapper maps anything but `verified` to a nonzero outcome. An action that times out before its response is `unknown`, resolved by the postcondition, never by replaying the mutation.
@@ -485,7 +485,7 @@ See [workflow authoring](/workflows/authoring) for stages and human-input gates.
 | `cua-driver`, uv, or another command is missing | Install it when permitted with one bounded attempt, refresh PATH, and check its version in the same shell that will launch automation. |
 | `cua-driver call` fails or `permissions status` reports `unknown` | The daemon is not running. Start it with `open -n -g -a CuaDriver --args serve` on macOS, an interactive-session `cua-driver serve` on Windows, or a foreground `cua-driver serve` inside the graphical session on Linux, then rerun `cua-driver status`. |
 | Grants look correct but actions or captures are refused | Stale TCC grants. Toggle CuaDriver off and on under Accessibility and Screen & System Audio Recording, or click **+** and re-add `/Applications/CuaDriver.app`, then fully relaunch the daemon. An in-process SDK runtime needs the node host relaunched instead. |
-| Contract, schema, or protocol mismatch | Version skew between the bundled skill (`0.28.2`), the `@trycua/cua-driver` pin, and `cua-driver --version`. Run `cua-driver update --apply` once, restart the daemon, and reinstall the SDK at the exact driver version. |
+| Contract, schema, or protocol mismatch | Version skew between the `@trycua/cua-driver` SDK pin and the running driver. Check `cua-driver --version` and reinstall the SDK at that exact version. The bundled skill (`0.34.0`) identifies its source release, not the daemon's protocol. If a driver upgrade is authorized, run `cua-driver update --apply` once and restart the daemon. |
 | Snapshot reports `degraded` or `truncated` | Do not act on it. Re-observe, narrow the query, or fall back to a pixel action from the same snapshot only where the skill allows it. |
 | Black screenshot or no desktop | Check screen permissions, display/session ownership, X11 versus Wayland, and remote-session state. |
 | Input reaches the wrong app | Stop. Confirm focus, window identity, scaling, and that no other controller shares the desktop. |

@@ -41,31 +41,34 @@ const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: s
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
 
-// trycua/cua `libs/cua-driver/rust/Skills/cua-driver` at tag cua-driver-rs-v0.28.2
-// (tree bcd5714fc3b102b0ebb1e2b9331feaf4f6c390ad, commit fc188250b4ca8549b8e61f937fdb1fb560770e86)
-// ships exactly these eight files, all tracked as 100644. The seven companion
+// trycua/cua `libs/cua-driver/rust/Skills/cua-driver` at tag cua-driver-rs-v0.34.0
+// (tree bc6d2b59a453e10321e30e58203294fee9d4bc28, commit b0968e1b12834e485dda68789541a3cc57664a9f)
+// ships exactly these eleven files, all tracked as 100644. The ten companion
 // files are byte-identical to upstream; only SKILL.md's frontmatter is Atomic-owned,
 // so its body after the closing `---` is pinned separately.
 const cuaDriverUpstream = {
 	repo: "https://github.com/trycua/cua",
 	path: "libs/cua-driver/rust/Skills/cua-driver",
-	ref: "refs/tags/cua-driver-rs-v0.28.2",
-	treeSha: "bcd5714fc3b102b0ebb1e2b9331feaf4f6c390ad",
+	ref: "refs/tags/cua-driver-rs-v0.34.0",
+	treeSha: "bc6d2b59a453e10321e30e58203294fee9d4bc28",
 } as const;
 const cuaDriverCompanionTree: ReadonlyArray<readonly [path: string, sha256: string]> = [
-	["BROWSER.md", "376960a136247d8ac2850f789fb7761c9619967c85e0f30c410f32890902e5d4"],
-	["EMBEDDING.md", "206e2c5ad3b5be5d7d5a0214975df9fa9e59026e72165c97eed4b59669db9715"],
-	["LINUX.md", "4d096f19eab5c56f0231bed98e2048abc09f969a92e70311be9e1f5ecc5209e0"],
-	["MACOS.md", "8e5013cb7a9a3cb4cbae6fe43593f14627597f1f41395d769602ed9e3c0e1603"],
-	["README.md", "07580cc0a7df49dc088939e88d8c95ae387aeb4a94d61142f4527fade4b4328c"],
-	["RECORDING.md", "16bfe5732d25bdebded8a8cb0c13cd367405dd264a6da8af8970bfa4151ca7c5"],
-	["WINDOWS.md", "0f42710550c9b6583f7cb705fbc1ffe320c790350b6a829c3689887747c909c5"],
+	["BROWSER.md", "5359fee4550e9f8f605608a8e228fd2ad85fee54bb9ef03c7669ec550ff55dfe"],
+	["EMBEDDING.md", "314ccec8fd7b96622149d7d0dbd3f7458cca0e80dcb4f0bd982c0b4b240de37b"],
+	["LINUX.md", "98535c92944e753a5d2b3d98fe772d0ef44af4c2aae136de39f5f4d7ad38a1fe"],
+	["MACOS.md", "55859dfe38367e87be000629c224ba8cacef50b679162d60252c114df10f92f9"],
+	["README.md", "3e6e3266a0a8a7249ac57f9be6eaaeeee68336789c7c4556d14889d0e8a0ca65"],
+	["RECORDING.md", "6d1d5f8ff192f37bd9c67efcda59154f3242b0fae72e86ba7e2ba5a4899fd248"],
+	["RUNTIME.md", "77e051551346b5d59622bfea6a84c4026356e7a4153570ae9825a337271780ec"],
+	["VISUAL.md", "66aa0fadd643ee4cd0deda751af1f3ebc2cec0b77607eec61c9b2a4ee7d4a256"],
+	["WINDOWS.md", "c324a52d18cde6349c9f0cd2a2798130cfb34367cf70479ddff92fbb5814d6a7"],
+	["WORKFLOW.md", "82cc769fcbcf60e30f39ad6bbf318ddef7056b16014e31d4273629c759e47223"],
 ];
 const cuaDriverTree = ["SKILL.md", ...cuaDriverCompanionTree.map(([path]) => path)].sort();
-const cuaDriverUpstreamSkillBodySha256 = "2ed5d656232f32af46ff9f96316a754be783d4e0a5ced2b7752b77765c2dc91f";
+const cuaDriverUpstreamSkillBodySha256 = "4d22f297c85fc1e280a018e8a0892e5a0a83b6c5054e41687b2e3fdb10202744";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.3.1 at cd12f8660e2dde57b9615c8a6b8ea674101f9cfc (engine 0.1.5)
+// skill-v4.5.0 at 508d7e8955de3b3caf2d8676e85206723d41a887 (engine 0.1.11)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -81,6 +84,7 @@ reference/audit.native.md
 reference/bolder.md
 reference/clarify.md
 reference/colorize.md
+reference/component-review.md
 reference/craft-floor.md
 reference/craft.md
 reference/critique.md
@@ -93,6 +97,7 @@ reference/distill.md
 reference/doctor.md
 reference/document.md
 reference/extract.md
+reference/generate.md
 reference/harden.md
 reference/hooks.md
 reference/init.md
@@ -100,6 +105,9 @@ reference/ios.md
 reference/layout.md
 reference/live-setup.md
 reference/live.md
+reference/mode-operate.md
+reference/mode-persuade.md
+reference/mode-read.md
 reference/new-work.md
 reference/onboard.md
 reference/operate.md
@@ -107,6 +115,7 @@ reference/optimize.md
 reference/overdrive.md
 reference/polish.md
 reference/quieter.md
+reference/region-map.md
 reference/routing.md
 reference/shape.md
 reference/typeset.md
@@ -126,7 +135,7 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.5";
+const IMPECCABLE_ENGINE_VERSION = "0.1.11";
 
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
@@ -298,7 +307,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.3\.1\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.5\.0\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -334,13 +343,22 @@ describe("synced upstream skill trees", () => {
 		]);
 	});
 
-	test("ships the exact Impeccable 4.3.1 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.5.0 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
 		// pins shortcuts under the `/` command prefix; `.agents` would print
 		// `.agents/...` paths and `$` shortcuts into every agent transcript.
 		const skill = readFileSync(join(skillRoot, "SKILL.md"), "utf8");
+		const { frontmatter } = splitFrontmatter(canonicalText(skill));
+		for (const [key, value] of [
+			["github-repo", "https://github.com/pbakaus/impeccable"],
+			["github-path", ".pi/skills/impeccable"],
+			["github-ref", "refs/tags/skill-v4.5.0"],
+			["github-tree-sha", "2493a4daa753fb20fdab53a51fb89ba8f5157496"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
+		}
 		assert.match(skill, /`<skill-base-dir>\/scripts\/impeccable context`/u);
 		assert.match(skill, /\.pi\/skills\/impeccable\/scripts\/impeccable <verb>/u);
 		assert.match(skill, /creates or removes a standalone `\/<command>` shortcut/u);
@@ -376,6 +394,34 @@ describe("synced upstream skill trees", () => {
 			entries.some((entry) => entry.includes("/scripts/bin/")),
 			false,
 			"the per-platform engine binary must never be tracked",
+		);
+	});
+
+	test("pins the unchanged agent-browser v0.38.2 discovery stub and provenance", () => {
+		const skillRoot = join(subagentSkills, "agent-browser");
+		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["SKILL.md"]);
+		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
+		assert.equal(
+			sha256(body.replace(/^\n/u, "")),
+			"62969c6661e7c3f62c155d23420bcf453e1786538a9d277398175330fb996a46",
+		);
+		assert.match(frontmatter, /^name: agent-browser$/mu);
+		assert.match(frontmatter, /^hidden: true$/mu);
+		assert.match(frontmatter, /^allowed-tools: Bash\(agent-browser:\*\), Bash\(npx agent-browser:\*\)$/mu);
+		for (const [key, value] of [
+			["github-repo", "https://github.com/vercel-labs/agent-browser"],
+			["github-path", "skills/agent-browser"],
+			["github-ref", "refs/tags/v0.38.2"],
+			["github-tree-sha", "82def67855a0d2aad7794207951820fa5422fdb0"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
+		}
+		assert.deepEqual(trackedModes("packages/subagents/skills/agent-browser"), [
+			"100644 packages/subagents/skills/agent-browser/SKILL.md",
+		]);
+		assert.deepEqual(
+			packedPaths(join(root, "packages/subagents")).filter((path) => path.startsWith("skills/agent-browser/")),
+			["skills/agent-browser/SKILL.md"],
 		);
 	});
 
@@ -416,7 +462,7 @@ describe("synced upstream skill trees", () => {
 		// Atomic adds hidden/allowed-tools and the github-* provenance pins, and drops
 		// upstream's OpenClaw requirement schema.
 		assert.match(frontmatter, /^name: cua-driver$/mu);
-		assert.match(frontmatter, /^version: 0\.28\.2$/mu);
+		assert.match(frontmatter, /^version: 0\.34\.0$/mu);
 		assert.match(
 			frontmatter,
 			/^description: Drive a native GUI app \(macOS, Windows, Linux\) via the cua-driver CLI \(default\)/mu,

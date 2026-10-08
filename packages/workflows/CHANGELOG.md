@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Impeccable skill to 4.5.0 with engine 0.1.11, adding the `generate` playbook, component-review guidance, and reading, operating, and persuasion design modes. Atomic's telemetry and update-check defaults remain off.
+
 ## [0.9.28-alpha.3] - 2026-10-07
 
 ### Changed

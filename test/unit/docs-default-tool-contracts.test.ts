@@ -139,7 +139,7 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	assert.match(computer, /`cua-driver config set update_check_enabled false`/);
 	assert.match(computer, /open -n -g -a CuaDriver --args serve/);
 	assert.match(computer, /`cua-driver update --apply` once/);
-	assert.match(computer, /`CuaDriver\.connect\(\)`[\s\S]*`CuaDriver\.create\(\)`/);
+	assert.match(computer, /`CuaDriver\.connect\(undefined\)`[\s\S]*`CuaDriver\.create\(undefined\)`/);
 	assert.match(computer, /\/workflows\/authoring#desktop-verification-with-cua-driver-in-ctx-tool/);
 	assert.match(
 		verification,
@@ -154,7 +154,7 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	assert.match(verification, /structured window state plus screenshots, not a screenshot alone/);
 	assert.ok(authoring.includes('<a id="desktop-verification-with-cua-driver-in-ctx-tool" />'));
 	assert.match(authoring, /CUA_DRIVER_RS_TELEMETRY_ENABLED: "false"/);
-	assert.match(authoring, /daemon \? await CuaDriver\.connect\(\) : CuaDriver\.create\(undefined\)/);
+	assert.match(authoring, /daemon \? CuaDriver\.connect\(undefined\) : CuaDriver\.create\(undefined\)/);
 	assert.match(authoring, /ctx\.exit\(\{ status: "blocked", reason: preflight\.reason \}\)/);
 	assert.match(authoring, /InputDeliveryMode\.Background/);
 	assert.match(authoring, /timeoutMs: 5 \* 60_000/);
@@ -170,7 +170,7 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 			`${name} promises a resume the engine never does`,
 		);
 	}
-	assert.match(skills, /cua-driver-rs-v0\.28\.2/);
+	assert.match(skills, /cua-driver-rs-v0\.34\.0/);
 	assert.match(skills, /MIT licensed, © 2025 Cua AI, Inc\./);
 });
 

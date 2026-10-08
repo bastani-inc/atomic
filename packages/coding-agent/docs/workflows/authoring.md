@@ -529,11 +529,11 @@ Prerequisites and setup, each as one bounded attempt:
 
 - `node` (preferred) or `bun` on the host. If neither is present, install one in a bounded attempt (Node via [fnm](https://github.com/Schniz/fnm) with `fnm install --lts` or the host's package manager, Bun via `curl -fsSL https://bun.sh/install | bash`) and report what the installer did; if the install is refused or fails, report that as the limitation rather than retrying.
 - The `cua-driver` executable (`cua-driver --version`), installed with upstream's one-line installer if missing, followed by `cua-driver telemetry disable` once.
-- The SDK installed at the exact driver version into a scratch directory outside the user's repository, for example `npm install @trycua/cua-driver@0.28.2 --prefix ~/.cache/atomic-cua`. The package ships per-platform native optional dependencies. Daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch, so the pin must match `cua-driver --version`.
+- The SDK installed at the exact driver version into a scratch directory outside the user's repository, for example `npm install @trycua/cua-driver@0.34.0 --prefix ~/.cache/atomic-cua`. The package ships per-platform native optional dependencies. Daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch, so the pin must match `cua-driver --version`.
 
 The executable installer does not install an agent skill. Atomic bundles the skill, so skip upstream's optional `cua-driver skills install`, `cua-driver skills update`, and `clawhub install @cua/driver` steps; leave existing user-level skills alone.
 
-The scenario itself is a small script in that scratch directory. It acquires the driver with `CuaDriver.connect()` when a daemon is running, so it reuses the daemon's permission identity (on macOS, `CuaDriver.app`'s Accessibility and Screen Recording grants) and the persisted telemetry-off preference; upstream describes `connect()` as a compatibility and app-hosting path, which is exactly the role it plays here. Only when no daemon is reachable does it fall back to `CuaDriver.create()`, which loads the runtime into the node process. On macOS that in-process fallback attributes permissions to the node host, normally the terminal app, as a **separate grant** from the app's; `checkPermissions` is then read-only, and the host must fully quit and relaunch after granting. Save it as `~/.cache/atomic-cua/verify-counter.mjs`:
+The scenario itself is a small script in that scratch directory. It acquires the driver with `CuaDriver.connect(undefined)` when a daemon is running, so it reuses the daemon's permission identity (on macOS, `CuaDriver.app`'s Accessibility and Screen Recording grants) and the persisted telemetry-off preference; upstream describes `connect()` as a compatibility and app-hosting path, which is exactly the role it plays here. Only when no daemon is reachable does it fall back to `CuaDriver.create(undefined)`, which loads the runtime into the node process. On macOS that in-process fallback attributes permissions to the node host, normally the terminal app, as a **separate grant** from the app's; `checkPermissions` is then read-only, and the host must fully quit and relaunch after granting. Save it as `~/.cache/atomic-cua/verify-counter.mjs`:
 
 ```js
 // Reads {"daemon":true|false,"artifactsDir":"..."} from argv[2]; prints one JSON result line.
@@ -558,7 +558,7 @@ const finish = (result, detail) => {
 
 // The wrapper already set CUA_DRIVER_RS_TELEMETRY_ENABLED=false in this process's environment
 // before the driver was constructed; the SDK is one of the faces that reports telemetry by default.
-const driver = daemon ? await CuaDriver.connect() : CuaDriver.create(undefined);
+const driver = daemon ? CuaDriver.connect(undefined) : CuaDriver.create(undefined);
 try {
   const apps = await driver.listApps(ListAppsInput.new({}));
   const app = unique(apps.apps.filter((a) => a.name === "Window Demo" && a.running), "app");
