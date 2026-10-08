@@ -442,8 +442,13 @@ function checkSocketConnectable(): Promise<boolean> {
 /** Records the still-starting broker on the lock so staleness follows that process instead of the spawner. */
 function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean {
   if (pid === undefined || !ownsSpawnLock(owner)) return false;
-  appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
-  return true;
+  try {
+    appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
+    return true;
+  } catch {
+    // The startup error must still reach the caller; an unrecorded lock is released like any other.
+    return false;
+  }
 }
 
 function ownsSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): boolean {

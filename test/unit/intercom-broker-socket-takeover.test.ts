@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-// `statSync` has no equivalent in test/helpers/runtime.ts; the socket file's presence is read directly.
-import { statSync } from "node:fs";
+// `statSync` and `utimesSync` have no equivalent in test/helpers/runtime.ts: the socket file is read directly and abandoned lock files are backdated.
+import { statSync, utimesSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,6 +54,9 @@ const CHILD_RUNNING_MS = 250;
 const YIELD_ATTEMPTS = 8;
 
 const POLL_INTERVAL_MS = 20;
+
+/** Older than the 1 s after which an unreadable lock or takeover token counts as left by a crashed broker. */
+const ABANDONED_FILE_AGE_MS = 10_000;
 
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
 const LIVE_HOLDER_OBSERVATION_MS = 300;
@@ -505,6 +508,21 @@ describe("socket replacement lock (#3505)", () => {
 		const release = await acquiring;
 		release();
 		assert.equal(fileExistsSync(path), false);
+	});
+
+	test("an unreadable lock and an unreadable takeover token left by crashed brokers are both recovered", async () => {
+		const path = lockPath();
+		const abandonedAt = new Date(Date.now() - ABANDONED_FILE_AGE_MS);
+		writeTextSync(path, "");
+		utimesSync(path, abandonedAt, abandonedAt);
+		const token = `${path}.takeover-unreadable`;
+		writeTextSync(token, "");
+		utimesSync(token, abandonedAt, abandonedAt);
+
+		const release = await acquireSocketReplacementLock(path);
+		assert.equal(readTextSync(path, "utf8"), `${process.pid}\n`);
+		assert.equal(fileExistsSync(token), false);
+		release();
 	});
 
 	test("a dead holder's lock is taken over and released by its new holder", async () => {
