@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Moved the GPT-6 Luna classifier from `openai/gpt-6-luna` to its own API-key-only provider, `openai-decisions/gpt-6-luna`, named "GPT-6 Luna Decisions". `openai/gpt-6-luna` now always means the chat model, and the classifier stays available while `openai` uses ChatGPT sign-in. Update `routerModel`, `compactionModel`, `structured_output` and codemode references that meant the classifier. See [Classifier models](docs/models.md#use-classifier-models).
 - Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))
 
 ### Fixed

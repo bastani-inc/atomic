@@ -25,7 +25,7 @@ For choosing which model to use rather than how to declare one, see [Model selec
 
 Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
 
-OpenAI's `gpt-6-luna` classifier uses the [Decisions API](https://developers.openai.com/api/docs/guides/decisions) and requires `OPENAI_API_KEY`. Sign in with ChatGPT credentials do not work with it. While `openai` uses `/login` credentials, the classifier is not listed as available, even if the environment key is set. Log out of `openai` to use the API key.
+OpenAI's GPT-6 Luna Decisions classifier is `openai-decisions/gpt-6-luna`. It uses the [Decisions API](https://developers.openai.com/api/docs/guides/decisions) and needs an API key, either from `OPENAI_API_KEY` or saved with `/login openai-decisions`. ChatGPT sign-in does not work with it. The provider has its own credential, so you can sign in with ChatGPT on `openai` and still use the classifier. `openai/gpt-6-luna` always means the chat model.
 
 GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON state. Other classifiers reject images unless their catalog input and API support them. Refused answers produce an error result. The endpoint rejects inputs above 922K tokens; very large inputs, currently above roughly 600K tokens, can hit its gateway time limit. These 504 responses are not retried, so reduce the input before trying again.
 

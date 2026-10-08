@@ -8,6 +8,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Added `openaiApiProvider()` (`openai-api`) and `anthropicApiProvider()` (`anthropic-api`): API-key-only twins of `openai` and `anthropic` that list the same chat models under their own provider ID, so a subscription login on the source provider no longer displaces the API key.
 
+### Changed
+
+- Moved the GPT-6 Luna Decisions classifier to the `openai-decisions` provider (`openaiDecisionsProvider()`), with its own API-key credential. The `openai` provider no longer lists classifiers.
+
 ## [0.9.28-alpha.3] - 2026-10-07
 
 ### Added

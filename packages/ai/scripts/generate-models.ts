@@ -3085,9 +3085,9 @@ const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 	{
 		type: "classifier",
 		id: "gpt-6-luna",
-		name: "GPT-6 Luna",
+		name: "GPT-6 Luna Decisions",
 		api: "openai-decisions",
-		provider: "openai",
+		provider: "openai-decisions",
 		baseUrl: "https://api.openai.com/v1",
 		input: ["text", "image"],
 		cost: withOpenAiLongContextPricing({ input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0 }),

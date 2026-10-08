@@ -54,6 +54,7 @@ export type KnownProvider =
 	| "azure"
 	| "azure-openai-responses"
 	| "openai-codex"
+	| "openai-decisions"
 	| "radius"
 	| "typesafe"
 	| "morph"
