@@ -359,7 +359,6 @@ export async function spawnBrokerIfNeeded(
       if (logFd !== undefined) closeSync(logFd);
     }
     child.unref();
-    if (launch.kind === "direct") recordSpawnedBroker(child.pid, lockOwner);
 
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -401,9 +400,15 @@ export async function spawnBrokerIfNeeded(
       }, (error) => {
         cleanup();
         // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
+        // Only now does the lock name the broker: until this hand-off it follows this live spawner, so no other
+        // spawner can judge it stale and replace it while this one may still release it.
         // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
         // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
-        keepLock = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
+        keepLock =
+          launch.kind === "direct" &&
+          child.exitCode === null &&
+          child.signalCode === null &&
+          handSpawnLockToBroker(child.pid, lockOwner);
         reject(toError(error));
       });
     });
@@ -434,9 +439,11 @@ function checkSocketConnectable(): Promise<boolean> {
   return isSocketAnswering(BROKER_SOCKET);
 }
 
-/** Records the spawned broker on the lock so staleness follows that process, not just the spawner. */
-function recordSpawnedBroker(pid: number | undefined, owner: string): void {
-  if (pid !== undefined && ownsSpawnLock(owner)) appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
+/** Records the still-starting broker on the lock so staleness follows that process instead of the spawner. */
+function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean {
+  if (pid === undefined || !ownsSpawnLock(owner)) return false;
+  appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
+  return true;
 }
 
 function ownsSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): boolean {

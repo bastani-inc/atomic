@@ -1,11 +1,11 @@
-import { readFileSync, unlinkSync, writeFileSync } from "fs";
+import { randomUUID } from "crypto";
+import { linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 
-/** A holder only probes, unlinks and binds; a lock held longer than this belongs to a hung broker. */
-export const SOCKET_REPLACEMENT_LOCK_MAX_WAIT_MS = 5_000;
 const SOCKET_REPLACEMENT_LOCK_POLL_MS = 20;
+/** A holder writes its pid as it creates the lock, so a lock unreadable for this long was left by a crashed broker. */
+const UNREADABLE_LOCK_GRACE_MS = 1_000;
 
 export interface SocketReplacementLockOptions {
-  readonly maxWaitMs?: number;
   readonly onWait?: () => void;
 }
 
@@ -27,37 +27,62 @@ function holderPid(lockPath: string): number | undefined {
   }
 }
 
-function removeLock(lockPath: string): void {
+function removeFile(path: string): void {
   try {
-    unlinkSync(lockPath);
+    unlinkSync(path);
   } catch {
-    // The holder or another waiter already removed it.
+    // Already removed.
   }
 }
 
 /**
+ * Moves a dead holder's lock aside atomically. If another waiter replaced it first, the moved lock belongs to a live
+ * holder and is linked back, which never overwrites a newer lock.
+ */
+function takeOverDeadHolder(lockPath: string, deadPid: number | undefined): void {
+  const claimed = `${lockPath}.${process.pid}.${randomUUID()}`;
+  try {
+    renameSync(lockPath, claimed);
+  } catch {
+    return;
+  }
+  if (holderPid(claimed) !== deadPid) {
+    try {
+      linkSync(claimed, lockPath);
+    } catch {
+      // A newer lock already governs the path.
+    }
+  }
+  removeFile(claimed);
+}
+
+/**
  * Serializes stale-socket replacement across brokers, so a broker that probed the socket as stale cannot unlink a
- * socket another broker bound in the meantime: the holder re-probes before it unlinks. Resolves with the release
- * function, which removes the lock only while this process still holds it.
+ * socket another broker bound in the meantime: the holder re-probes before it unlinks. A live holder's lock is never
+ * taken; a dead holder's lock is. Resolves with the release function, which removes the lock only while this process
+ * holds it.
  */
 export async function acquireSocketReplacementLock(
   lockPath: string,
-  { maxWaitMs = SOCKET_REPLACEMENT_LOCK_MAX_WAIT_MS, onWait }: SocketReplacementLockOptions = {},
+  { onWait }: SocketReplacementLockOptions = {},
 ): Promise<() => void> {
-  const deadline = Date.now() + maxWaitMs;
   let announcedWait = false;
+  let unreadableSince: number | undefined;
   for (;;) {
     try {
       writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" });
       return () => {
-        if (holderPid(lockPath) === process.pid) removeLock(lockPath);
+        if (holderPid(lockPath) === process.pid) removeFile(lockPath);
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     const holder = holderPid(lockPath);
-    if ((holder !== undefined && !isProcessAlive(holder)) || Date.now() >= deadline) {
-      removeLock(lockPath);
+    unreadableSince = holder === undefined ? (unreadableSince ?? Date.now()) : undefined;
+    const unreadableTooLong = unreadableSince !== undefined && Date.now() - unreadableSince >= UNREADABLE_LOCK_GRACE_MS;
+    if ((holder !== undefined && !isProcessAlive(holder)) || unreadableTooLong) {
+      takeOverDeadHolder(lockPath, holder);
+      unreadableSince = undefined;
       continue;
     }
     if (!announcedWait) {

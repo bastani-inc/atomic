@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
+import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type ByteStream,
@@ -53,6 +54,9 @@ const CHILD_RUNNING_MS = 250;
 const YIELD_ATTEMPTS = 8;
 
 const POLL_INTERVAL_MS = 20;
+
+/** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
+const LIVE_HOLDER_OBSERVATION_MS = 300;
 
 /** Windows releases a dead broker's inherited log handle a moment after the process exits. */
 const CLEANUP_RETRIES = { maxRetries: 20, retryDelay: 50 } as const;
@@ -467,5 +471,49 @@ describe("spawn lock staleness (#3505)", () => {
 		const own = lockFile(`${process.pid}\n${NOW}\n4242\n`);
 		spawnModule.releaseSpawnLock(`${process.pid}\n${NOW}\n`, own);
 		assert.equal(fileExistsSync(own), false);
+	});
+});
+
+describe("socket replacement lock (#3505)", () => {
+	let lockCount = 0;
+	const lockPath = () => join(agentDir, `replace-lock-${lockCount++}`);
+
+	async function deadPid(): Promise<number> {
+		const child = spawnProcess([process.execPath, "-e", ""], { stdout: "ignore" });
+		await child.exited;
+		assert.ok(child.pid !== undefined);
+		return child.pid;
+	}
+
+	test("a live holder's lock is never taken, however long it is held", async () => {
+		const path = lockPath();
+		const liveHolder = `${process.pid}\n`;
+		writeTextSync(path, liveHolder);
+		let waited = false;
+		let acquired = false;
+		const acquiring = acquireSocketReplacementLock(path, { onWait: () => (waited = true) }).then((release) => {
+			acquired = true;
+			return release;
+		});
+
+		await sleep(LIVE_HOLDER_OBSERVATION_MS);
+		assert.equal(acquired, false);
+		assert.equal(waited, true);
+		assert.equal(readTextSync(path, "utf8"), liveHolder);
+
+		removePathSync(path, { force: true });
+		const release = await acquiring;
+		release();
+		assert.equal(fileExistsSync(path), false);
+	});
+
+	test("a dead holder's lock is taken over and released by its new holder", async () => {
+		const path = lockPath();
+		writeTextSync(path, `${await deadPid()}\n`);
+
+		const release = await acquireSocketReplacementLock(path);
+		assert.equal(readTextSync(path, "utf8"), `${process.pid}\n`);
+		release();
+		assert.equal(fileExistsSync(path), false);
 	});
 });
