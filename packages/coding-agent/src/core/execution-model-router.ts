@@ -11,7 +11,7 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
-import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
+import { resolveModelScopeFromModels } from "./model-resolver-scope.js";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
 import {
 	type CandidateModel,
@@ -372,6 +372,7 @@ export async function routeExecutionModel(input: {
 			: seeing;
 		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
+		const routedCandidates = [...pairsFor.keys()];
 		const toCandidate = (model: Model<Api>): CandidateModel => {
 			const routeCost = model.fastRoute?.serviceTier
 				? getServiceTierCost(model, model.fastRoute.serviceTier)
@@ -492,7 +493,7 @@ export async function routeExecutionModel(input: {
 						})),
 					}
 				: {}),
-			candidates,
+			candidates: routedCandidates,
 		};
 	}
 	const fallbacks = selection.fallbacks?.map((pair) => Object.freeze({ model: pair.model, effort: pair.effort }));

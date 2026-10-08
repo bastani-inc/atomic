@@ -124,7 +124,7 @@ If the filters leave no eligible model, the stage or subagent fails before launc
 
 These settings apply only to `model: "auto"`. A stage, task, or agent that names a concrete model, and its explicit fallback models, run as written.
 
-To audit a routing decision, the stage's `routerSelection` in `workflow({ action: "status", runId })` lists the chosen model and fallbacks, and `candidates` lists every model the router could choose from after these filters. Subagent results carry the same `routerSelection`.
+To audit a routing decision, the stage's `routerSelection` in `workflow({ action: "status", runId })` lists the chosen model and fallbacks, and `candidates` lists every model the router could choose from after these filters and the task's image and long-context needs. Subagent results carry the same `routerSelection`.
 
 #### thinkingBudgets
 

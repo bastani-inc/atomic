@@ -761,6 +761,14 @@ test("the chat reader is asked only for the task needs the caller did not state"
 	assert.equal(route.routerSelection.model, "second-provider/reasoner");
 });
 
+test("routerSelection.candidates lists only the models the router chose from after the image filter (#3528)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	mockClassifier(f);
+	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
+	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
+});
+
 test("a caller that states every need gets one choice request whose options carry their own evidence", async () => {
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
