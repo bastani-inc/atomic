@@ -35,6 +35,7 @@ export interface InteractiveModeOptions {
 	verbose?: boolean;
 	/** Initial interactive theme setting for this invocation (from --use-theme; never persisted). */
 	initialThemeSetting?: string;
+	holdTuiForStartupTrust?: boolean;
 	/** Runtime was created without extension code; finish loading in the background after first paint. */
 	deferredExtensionLoad?: boolean;
 	/** Model scope patterns resolved again after deferred extension load registers providers. */

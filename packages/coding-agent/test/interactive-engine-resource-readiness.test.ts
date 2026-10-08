@@ -180,6 +180,43 @@ describe("interactive engine resource readiness", () => {
 		await expect(monitor.waitUntilResourcesReady()).resolves.toBeUndefined();
 	});
 
+	it("keeps startup project trust pending until the engine reports a trust decision", async () => {
+		const monitor = new InteractiveEngineMonitor(vi.fn(), vi.fn());
+		let settled = false;
+		void monitor.waitUntilProjectTrustSettled().then(() => {
+			settled = true;
+		});
+
+		monitor.handleLine(frame({ type: "engine_bound" }));
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		expect(monitor.handleLine(frame({ type: "engine_project_trust_resolved" }))).toBe(true);
+		await expect(monitor.waitUntilProjectTrustSettled()).resolves.toBeUndefined();
+		expect(settled).toBe(true);
+	});
+
+	it.each([
+		["finishes loading", { type: "engine_resources_ready" } as const],
+		["fails to load", { type: "engine_resources_failed", message: "bad extension" } as const],
+	])("settles startup project trust when the engine %s without a trust decision", async (_name, message) => {
+		const monitor = new InteractiveEngineMonitor(vi.fn(), vi.fn());
+		const trust = monitor.waitUntilProjectTrustSettled();
+
+		monitor.handleLine(frame(message));
+
+		await expect(trust).resolves.toBeUndefined();
+	});
+
+	it("rejects pending startup project trust when the engine transport fails", async () => {
+		const monitor = new InteractiveEngineMonitor(vi.fn(), vi.fn());
+		const trust = monitor.waitUntilProjectTrustSettled();
+
+		monitor.fail(rpcTransportError("Agent process exited"));
+
+		await expect(trust).rejects.toThrow("Agent process exited");
+	});
+
 	it("gates child-side prompts and dispatches them through the current session", async () => {
 		const harness = await createHarness();
 		const replacement = await createHarness();

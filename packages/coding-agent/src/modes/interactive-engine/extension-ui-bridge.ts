@@ -115,6 +115,11 @@ export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime
 	await runtime.initializeFromEngine();
 }
 
+export async function waitForInteractiveEngineProjectTrust(runtime: AgentSessionRuntime): Promise<void> {
+	if (!(runtime instanceof IsolatedInteractiveRuntime)) return;
+	await runtime.waitUntilProjectTrustSettled();
+}
+
 export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime): boolean {
 	return runtime instanceof IsolatedInteractiveRuntime && runtime.interruptBlockedCallback();
 }

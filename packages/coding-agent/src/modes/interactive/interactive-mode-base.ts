@@ -436,6 +436,7 @@ export class InteractiveModeBase {
 	deferredStartupPending = false;
 	initialStartupBinding = false;
 	deferredStartupPromise: Promise<void> | undefined = undefined;
+	startupTrustReleased = false;
 
 	inputHandlerReadyRecorded = false;
 

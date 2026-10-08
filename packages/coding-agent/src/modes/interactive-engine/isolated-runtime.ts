@@ -339,6 +339,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			throw error;
 		}
 	}
+	async waitUntilProjectTrustSettled(): Promise<void> {
+		await this.client.waitForInteractiveEngineProjectTrust();
+		await this.initializeFromEngine();
+	}
 	async waitUntilResourcesReady(): Promise<void> {
 		while (true) {
 			this.throwIfUnavailable();

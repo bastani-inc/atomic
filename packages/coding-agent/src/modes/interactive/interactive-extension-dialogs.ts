@@ -1,3 +1,4 @@
+import { showStartupInput, showStartupSelector } from "../../cli/startup-ui.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -11,6 +12,7 @@ import {
 	getEditorTheme,
 	type MissingSessionCwdError,
 } from "./interactive-mode-deps.ts";
+import { isStartupTrustHeld } from "./interactive-startup-trust.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
 
 InteractiveModeBase.prototype.showExtensionSelector = function (
@@ -20,6 +22,14 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 	opts?: ExtensionUIDialogOptions,
 	blocked: BlockedStatus = { kind: "question", message: title },
 ): Promise<string | undefined> {
+	if (isStartupTrustHeld(this)) {
+		return showStartupSelector(
+			this.settingsManager,
+			title,
+			options.map((option) => ({ label: option, value: option })),
+			opts,
+		);
+	}
 	return new Promise((resolve) => {
 		if (opts?.signal?.aborted) {
 			resolve(undefined);
@@ -111,6 +121,9 @@ InteractiveModeBase.prototype.showExtensionInput = function (
 	placeholder?: string,
 	opts?: ExtensionUIDialogOptions,
 ): Promise<string | undefined> {
+	if (isStartupTrustHeld(this)) {
+		return showStartupInput(this.settingsManager, title, placeholder, opts);
+	}
 	return new Promise((resolve) => {
 		if (opts?.signal?.aborted) {
 			resolve(undefined);

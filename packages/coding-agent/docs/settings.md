@@ -19,7 +19,7 @@ This page is the exhaustive settings reference: every field, its default, and it
 
 On interactive startup, Atomic asks before trusting a project folder that contains trust-gated project inputs and has no saved decision for the folder or a parent folder in `~/.atomic/agent/trust.json`. Trusting a project allows Atomic to load project-local `.atomic/settings.json` and `.atomic` resources, legacy `.pi/settings.json` and `.pi` resources, project-local context files, install missing project packages, and execute project extensions.
 
-Project resources and borrowed project-local code stay blocked until authorized. The trust dialog does not require a model request. Trusted global and explicitly authorized CLI extensions can report the wait.
+The startup prompt appears on its own, before the interface paints, and the interface appears once you choose. If you decline, the transcript warns that project resources are ignored; if you trust the project, it does not. Project resources and borrowed project-local code stay blocked until authorized. The trust dialog does not require a model request. Trusted global and explicitly authorized CLI extensions can report the wait.
 
 Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt. Without an applicable saved trust decision, they use `defaultProjectTrust` from global settings: `ask` (default) and `never` ignore trust-gated project inputs, while `always` trusts them. Pass `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one run.
 

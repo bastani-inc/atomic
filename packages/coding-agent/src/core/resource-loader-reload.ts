@@ -227,6 +227,7 @@ export async function prepareDefaultResourceLoaderReload(
 				preTrustExtensions,
 			);
 		}
+		options?.onProjectTrustResolved?.();
 	};
 	if (!options?.deferProjectTrust) await resolveTrust();
 	const complete = async () => {

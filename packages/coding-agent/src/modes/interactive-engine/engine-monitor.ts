@@ -9,6 +9,9 @@ export class InteractiveEngineMonitor {
 	private readonly bound: Promise<void>;
 	private resolveBound!: () => void;
 	private rejectBound!: (error: Error) => void;
+	private readonly projectTrustSettled: Promise<void>;
+	private resolveProjectTrustSettled!: () => void;
+	private rejectProjectTrustSettled!: (error: Error) => void;
 	private resourcesReady: Promise<void>;
 	private resolveResourcesReady!: () => void;
 	private rejectResourcesReady!: (error: Error) => void;
@@ -31,6 +34,11 @@ export class InteractiveEngineMonitor {
 			this.rejectBound = reject;
 		});
 		this.bound.catch(() => {});
+		this.projectTrustSettled = new Promise((resolve, reject) => {
+			this.resolveProjectTrustSettled = resolve;
+			this.rejectProjectTrustSettled = reject;
+		});
+		this.projectTrustSettled.catch(() => {});
 		this.resourcesReady = new Promise((resolve, reject) => {
 			this.resolveResourcesReady = resolve;
 			this.rejectResourcesReady = reject;
@@ -47,6 +55,7 @@ export class InteractiveEngineMonitor {
 	}
 	fail(error: Error): void {
 		this.rejectBound(error);
+		this.rejectProjectTrustSettled(error);
 		this.rejectResourcesReady(error);
 		this.rejectFailure(error);
 	}
@@ -62,6 +71,10 @@ export class InteractiveEngineMonitor {
 
 	waitUntilBound(): Promise<void> {
 		return this.bound;
+	}
+
+	waitUntilProjectTrustSettled(): Promise<void> {
+		return this.projectTrustSettled;
 	}
 
 	waitUntilResourcesReady(): Promise<void> {
@@ -83,12 +96,17 @@ export class InteractiveEngineMonitor {
 				markLifecycleTiming("engine-bound");
 				this.resolveBound();
 				break;
+			case "engine_project_trust_resolved":
+				this.resolveProjectTrustSettled();
+				break;
 			case "engine_resources_ready":
+				this.resolveProjectTrustSettled();
 				if (this.resourceState === "failed") this.resourcesReady = Promise.resolve();
 				else this.resolveResourcesReady();
 				this.resourceState = "ready";
 				break;
 			case "engine_resources_failed":
+				this.resolveProjectTrustSettled();
 				this.resourceState = "failed";
 				this.rejectResourcesReady(new Error(`Interactive engine resource loading failed: ${message.message}`));
 				break;

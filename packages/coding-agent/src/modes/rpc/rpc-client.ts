@@ -347,6 +347,9 @@ export class RpcClient extends RpcClientApi {
 	waitForInteractiveEngineBound(): Promise<void> {
 		return this.engineMonitor?.waitUntilBound() ?? Promise.resolve();
 	}
+	waitForInteractiveEngineProjectTrust(): Promise<void> {
+		return this.engineMonitor?.waitUntilProjectTrustSettled() ?? Promise.resolve();
+	}
 	waitForInteractiveEngineResources(): Promise<void> {
 		return this.engineMonitor?.waitUntilResourcesReady() ?? Promise.resolve();
 	}
