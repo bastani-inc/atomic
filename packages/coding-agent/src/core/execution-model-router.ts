@@ -11,7 +11,7 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
-import { resolveModelScopeFromModels } from "./model-resolver-scope.js";
+import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
 import {
 	type CandidateModel,
