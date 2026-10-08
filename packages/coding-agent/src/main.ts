@@ -80,6 +80,7 @@ import {
 	computeDeferExtensions,
 	computeInteractiveEngineResourceDeferral,
 	computeStartupInputCaptureEnabled,
+	computeStartupTrustPromptPossible,
 	formatScopedModelList,
 } from "./main-deferred-startup.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
@@ -362,7 +363,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
 	}
-	if (engineEnv.child === "1") startInteractiveEngineLiveness(writeRawStdout).ready();
+	const engineLiveness = engineEnv.child === "1" ? startInteractiveEngineLiveness(writeRawStdout) : undefined;
+	engineLiveness?.ready();
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);
@@ -568,6 +570,7 @@ export async function main(argv: string[], options?: MainOptions) {
 										completeStartupReload = complete;
 									}
 								: undefined,
+							onProjectTrustResolved: engineLiveness ? () => engineLiveness.projectTrustResolved() : undefined,
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
 										const trusted = await resolveProjectTrusted({
@@ -891,6 +894,14 @@ export async function main(argv: string[], options?: MainOptions) {
 			startupDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
+			holdTuiForStartupTrust:
+				isolateInteractiveHost &&
+				computeStartupTrustPromptPossible({
+					projectTrustOverride: parsed.projectTrustOverride,
+					hasTrustInputs: hasProjectTrustInputs(sessionCwd),
+					storedProjectTrust: projectTrustStore.get(sessionCwd),
+					defaultProjectTrust: startupDefaultProjectTrust,
+				}),
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

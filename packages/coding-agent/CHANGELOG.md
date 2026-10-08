@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the startup project trust prompt opening inside the fully painted interface. Atomic now shows the prompt on its own and paints the interface after you choose.
+- Fixed the "This project is not trusted" warning staying in the transcript after you trusted the project at the startup prompt. The warning still appears when you decline trust or leave the project untrusted.
+
 ## [0.9.28-alpha.4] - 2026-10-07
 
 ### Added

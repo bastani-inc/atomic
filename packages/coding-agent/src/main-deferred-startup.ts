@@ -1,5 +1,6 @@
 import type { Args } from "./cli/args.ts";
 import type { ScopedModel } from "./core/model-resolver-types.ts";
+import type { DefaultProjectTrust } from "./core/settings-manager.ts";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import { hasProjectTrustInputs } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
@@ -67,6 +68,22 @@ export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCapt
 		(input.parsed.projectTrustOverride !== undefined ||
 			!hasTrustInputs ||
 			input.projectTrustStore.get(input.sessionCwd) !== null)
+	);
+}
+
+export interface ComputeStartupTrustPromptPossibleInput {
+	projectTrustOverride: boolean | undefined;
+	hasTrustInputs: boolean;
+	storedProjectTrust: boolean | null;
+	defaultProjectTrust: DefaultProjectTrust;
+}
+
+export function computeStartupTrustPromptPossible(input: ComputeStartupTrustPromptPossibleInput): boolean {
+	return (
+		input.projectTrustOverride === undefined &&
+		input.hasTrustInputs &&
+		input.storedProjectTrust === null &&
+		input.defaultProjectTrust === "ask"
 	);
 }
 

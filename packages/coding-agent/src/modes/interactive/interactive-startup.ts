@@ -62,6 +62,7 @@ import {
 	updateProviderCountFromSnapshot,
 } from "./interactive-model-catalog-startup.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
+import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
@@ -203,6 +204,7 @@ export function attachInteractiveEngineResourceExtensionRefresh(mode: Interactiv
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.isInitialized) return;
 
+	if (this.options.holdTuiForStartupTrust) await holdTuiForStartupTrust(this);
 	this.registerSignalHandlers();
 
 	// Keep the transcript in its own viewport and reserve the bottom chrome in a

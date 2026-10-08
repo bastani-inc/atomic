@@ -60,6 +60,7 @@ export interface EngineKeybindingState {
 export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
+	| { type: "engine_project_trust_resolved" }
 	| { type: "engine_resources_ready" }
 	| { type: "engine_resources_failed"; message: string }
 	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
@@ -359,6 +360,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: value.pid }
 				: undefined;
 		case "engine_bound":
+			return { type: value.type };
+		case "engine_project_trust_resolved":
 			return { type: value.type };
 		case "engine_resources_ready":
 			return { type: value.type };

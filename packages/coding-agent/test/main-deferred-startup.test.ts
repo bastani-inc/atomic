@@ -10,6 +10,7 @@ import {
 	computeDeferExtensions,
 	computeInteractiveEngineResourceDeferral,
 	computeStartupInputCaptureEnabled,
+	computeStartupTrustPromptPossible,
 } from "../src/main-deferred-startup.ts";
 
 function baseInput(overrides: Partial<ComputeDeferExtensionsInput> = {}): ComputeDeferExtensionsInput {
@@ -245,5 +246,28 @@ describe("computeStartupInputCaptureEnabled", () => {
 			removeTempDir(providerInput.sessionCwd);
 			removeTempDir(modelInput.sessionCwd);
 		}
+	});
+});
+
+describe("computeStartupTrustPromptPossible", () => {
+	const promptable = {
+		projectTrustOverride: undefined,
+		hasTrustInputs: true,
+		storedProjectTrust: null,
+		defaultProjectTrust: "ask",
+	} as const;
+
+	it("is possible for an undecided project with trust inputs and the default ask policy", () => {
+		assert.equal(computeStartupTrustPromptPossible(promptable), true);
+	});
+
+	it.each([
+		["an --approve or --no-approve override", { projectTrustOverride: true }],
+		["no trust-gated project resources", { hasTrustInputs: false }],
+		["a stored trust decision", { storedProjectTrust: false }],
+		["an always-trust default", { defaultProjectTrust: "always" }],
+		["a never-trust default", { defaultProjectTrust: "never" }],
+	] as const)("is not possible with %s", (_name, overrides) => {
+		assert.equal(computeStartupTrustPromptPossible({ ...promptable, ...overrides }), false);
 	});
 });
