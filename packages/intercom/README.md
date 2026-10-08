@@ -492,7 +492,8 @@ Runtime files live under the active agent directory. Atomic defaults to `~/.atom
 - `broker.pid` — Broker process ID
 - `delivered-messages.sqlite` — bounded durable authority containing keyed digests, never plaintext payloads
 - `delivered-messages.key` — random owner-only HMAC key paired with the authority database
-- `broker.spawn.lock` — Short-lived lock used to avoid duplicate auto-spawns
+- `broker.spawn.lock` — Lock used to avoid duplicate auto-spawns. It records the spawner and its broker, and is held until the broker answers or the processes it names are gone, with a 60 second backstop. On Windows, where the hidden launcher does not expose the broker process, it ends with the spawner's 5 second readiness wait, and a later spawn that finds `broker.log` still held by a starting broker waits for that broker instead of starting another
+- `broker.sock.replace.lock` — Short-lived lock a starting broker holds while it re-checks and replaces a stale socket file, so two brokers never both replace it
 - `broker.log` — Broker stderr, truncated on every spawn and capped at 8 KiB by the broker itself
 - `config.json` — User configuration
 
@@ -504,7 +505,7 @@ The broker caps the file from the inside, since nothing on the parent side can b
 
 **Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux and a named pipe on Windows, which keeps setup simple and avoids port management.
 
-**Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
+**Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once. A broker that starts while another broker already answers on the socket exits instead of taking the socket over; it replaces only a stale socket file. A broker whose socket path comes to point at another broker shuts down, and its sessions reconnect to the broker that owns the path.
 
 **`ask` stays client-side.** The broker still routes plain messages; it does not have a special request/response mode for `ask`. The client waits for a matching reply before it triggers a new turn, then returns that reply as the tool result. Reply hints make that flow practical by showing the recipient the exact `send` call to use. Separately, `list` / `sessions` now carry a `requestId` so a delayed session-list reply cannot be mistaken for a newer one.
 
