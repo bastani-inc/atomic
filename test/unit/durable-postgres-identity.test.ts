@@ -66,6 +66,9 @@ function unsealRuntimeDirectories(path: string): void {
 		if (lstatSync(child).isDirectory()) unsealRuntimeDirectories(child);
 	}
 }
+/** Advancing the injected clock this far in one step ends the 15 s window an unanswered health probe retries within. */
+const EXHAUSTS_PROBE_RETRY_WINDOW_MS = 15_000;
+
 const roots: string[] = [];
 const listeners: Server[] = [];
 const postmasters: ChildProcess[] = [];
@@ -1354,6 +1357,7 @@ test("an unanswered monitoring connection rejects health without retiring owners
 	let invalidations = 0;
 	let recoveries = 0;
 	let identity = "same";
+	let clock = 0;
 	const health = new PostgresHealth({
 		probe: async () => {
 			if (!unavailable) return { url: "managed", identity };
@@ -1363,7 +1367,10 @@ test("an unanswered monitoring connection rejects health without retiring owners
 		recover: async () => {
 			recoveries++;
 		},
-		wait: async () => {},
+		now: () => clock,
+		wait: async () => {
+			clock += EXHAUSTS_PROBE_RETRY_WINDOW_MS;
+		},
 	});
 	health.subscribe(() => invalidations++);
 	try {
@@ -1387,7 +1394,7 @@ test("a non-PostgreSQL listener cannot satisfy the bounded SQL probe", async () 
 	const foreign = await listener();
 	const started = performance.now();
 	await assert.rejects(probePostgresIdentity(foreign.port), /timeout/);
-	assert.ok(performance.now() - started < 5000, "the 1-second connection budget must bound a silent listener");
+	assert.ok(performance.now() - started < 5000, "the 3-second connection budget must bound a silent listener");
 	assert.equal(foreign.server.listening, true);
 });
 
@@ -1458,10 +1465,15 @@ test("a monitoring probe read timeout is a dependency failure that keeps consume
 	let invalidations = 0;
 	health.subscribe(() => invalidations++);
 	slow = true;
-	const failure = await health.check().then(
-		() => undefined,
-		(error: unknown) => error,
-	);
+	let clock = Date.now();
+	const steppedClock = vi.spyOn(Date, "now").mockImplementation(() => (clock += EXHAUSTS_PROBE_RETRY_WINDOW_MS / 2));
+	const failure = await health
+		.check()
+		.then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+		.finally(() => steppedClock.mockRestore());
 	assert.equal(isDbosDependencyError(failure), true);
 	assert.equal(invalidations, 0);
 	assert.equal(starts, 0);

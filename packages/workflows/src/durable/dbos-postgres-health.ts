@@ -18,6 +18,9 @@ interface PostgresHealthOperations {
 
 const HEALTH_INTERVAL_MS = 5_000;
 const RECOVERY_ATTEMPTS = 3;
+const MONITORING_PROBE_RETRY_WINDOW_MS = 15_000;
+const MONITORING_PROBE_RETRY_INITIAL_MS = 250;
+const MONITORING_PROBE_RETRY_MAX_MS = 2_000;
 
 export function isMonitoringConnectionTimeout(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
@@ -48,6 +51,7 @@ export class PostgresHealth {
 	private attempts = 0;
 	private nextRecoveryAt = 0;
 	private failure?: Error;
+	private failureUnanswered = false;
 	private healthySinceFailure = false;
 	private revision = 0;
 	private readonly listeners = new Set<() => void>();
@@ -62,10 +66,11 @@ export class PostgresHealth {
 		return this.operations.url?.();
 	}
 
-	private retainFailure(error: unknown): void {
+	private retainFailure(error: unknown, unanswered = false): void {
 		const message = error instanceof Error ? error.message : String(error);
 		const safe = redactedDatabaseMessage(message, this.endpoint);
 		this.failure = new Error(safe);
+		this.failureUnanswered = unanswered;
 		this.healthySinceFailure = false;
 	}
 
@@ -101,7 +106,7 @@ export class PostgresHealth {
 				await this.operations.validate?.(client);
 			}
 		} catch (error) {
-			this.retainFailure(error);
+			this.retainFailure(error, isQueryReadTimeout(error));
 			// An unanswered check is load, not evidence about the server: destroy only this unvalidated
 			// socket instead of every concurrent checkout, and let the caller retry admission.
 			if (!isQueryReadTimeout(error)) {
@@ -145,20 +150,38 @@ export class PostgresHealth {
 
 	private async probe(): Promise<string | undefined> {
 		const revision = this.revision;
+		const now = this.operations.now ?? Date.now;
+		const wait = this.operations.wait ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 		let identity: PostgresHealthIdentity | undefined;
 		try {
 			identity = await this.operations.probe();
 		} catch (error) {
 			if (!(isMonitoringConnectionFailure(error) || isQueryReadTimeout(error)) || this.stopped) throw error;
 			// A busy host can expire a monitoring connection or read while existing SQL sockets remain healthy.
-			// Retry only this read-only probe, never application SQL.
-			try {
-				identity = await this.operations.probe();
-			} catch (retryError) {
-				if (isMonitoringConnectionTimeout(retryError) || !isMonitoringConnectionFailure(retryError))
-					throw retryError;
-				this.retainFailure(retryError);
-				return undefined;
+			// Retry only this read-only probe, never application SQL. A refused or reset connection retries
+			// once at once; an unanswered probe backs off within a bounded window.
+			const deadline = now() + MONITORING_PROBE_RETRY_WINDOW_MS;
+			let delay = MONITORING_PROBE_RETRY_INITIAL_MS;
+			let failure: unknown = error;
+			for (;;) {
+				if (isMonitoringConnectionTimeout(failure) || isQueryReadTimeout(failure)) {
+					if (now() >= deadline) throw failure;
+					await wait(delay);
+					delay = Math.min(delay * 2, MONITORING_PROBE_RETRY_MAX_MS);
+					if (this.stopped) throw failure;
+				}
+				try {
+					identity = await this.operations.probe();
+					break;
+				} catch (retryError) {
+					if (isMonitoringConnectionTimeout(retryError) || isQueryReadTimeout(retryError)) {
+						failure = retryError;
+						continue;
+					}
+					if (!isMonitoringConnectionFailure(retryError)) throw retryError;
+					this.retainFailure(retryError);
+					return undefined;
+				}
 			}
 		}
 		if (revision !== this.revision) return undefined;
@@ -169,6 +192,7 @@ export class PostgresHealth {
 		this.attempts = 0;
 		this.nextRecoveryAt = 0;
 		this.healthySinceFailure = true;
+		if (this.failureUnanswered) this.failure = undefined;
 		return identity.url;
 	}
 
@@ -180,7 +204,7 @@ export class PostgresHealth {
 			if (isQueryReadTimeout(error) || isMonitoringConnectionTimeout(error)) {
 				// An unanswered monitoring probe says nothing about held sockets: keep `available` and
 				// every checkout, and start no recovery.
-				this.retainFailure(new Error("Managed PostgreSQL did not answer a health check in time."));
+				this.retainFailure(new Error("Managed PostgreSQL did not answer a health check in time."), true);
 				throw this.dependencyFailure("Managed PostgreSQL did not answer a health check in time.");
 			}
 			// Identity/authentication failures are not permission to restart anything.

@@ -441,13 +441,17 @@ test.each([
 	const f = fixture();
 	let outage = false;
 	let recoveries = 0;
+	let clock = 0;
 	const health = new PostgresHealth({
 		probe: async () => (outage ? degraded() : healthy),
 		recover: async () => {
 			recoveries++;
 			outage = false;
 		},
-		wait: async () => {},
+		now: () => clock,
+		wait: async (ms) => {
+			clock += ms;
+		},
 	});
 	const { pool, invalidate } = createRecoverablePostgresPool(initialUrl, {
 		createPool: f.createPool,

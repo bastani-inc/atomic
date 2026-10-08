@@ -4,6 +4,22 @@ import { test, vi } from "vitest";
 import { isDbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { PostgresHealth } from "../../packages/workflows/src/durable/dbos-postgres-health.js";
 
+const PROBE_RETRY_WINDOW_MS = 15_000;
+const PROBE_RETRY_MAX_BACKOFF_MS = 2_000;
+
+function fakeClock() {
+	const clock = {
+		elapsed: 0,
+		waits: [] as number[],
+		now: () => clock.elapsed,
+		wait: async (ms: number) => {
+			clock.waits.push(ms);
+			clock.elapsed += ms;
+		},
+	};
+	return clock;
+}
+
 test("transient monitoring connection timeout preserves live consumers (#3246)", async () => {
 	let probes = 0;
 	let invalidations = 0;
@@ -93,6 +109,7 @@ test("a monitoring probe repeats once after a query read timeout without invalid
 });
 
 test("a persistent monitoring read timeout is a dependency failure that never invalidates or recovers", async () => {
+	const clock = fakeClock();
 	let slow = false;
 	let probes = 0;
 	let recoveries = 0;
@@ -107,20 +124,23 @@ test("a persistent monitoring read timeout is a dependency failure that never in
 		recover: async () => {
 			recoveries++;
 		},
-		wait: async () => {},
+		wait: clock.wait,
+		now: clock.now,
 	});
 	health.subscribe(() => invalidations++);
 	assert.equal(await health.check(), "managed");
 	slow = true;
 	probes = 0;
 	for (let round = 0; round < 3; round++) {
+		const before = probes;
 		const failure = await health.check().then(
 			() => undefined,
 			(error: unknown) => error,
 		);
 		assert.equal(isDbosDependencyError(failure), true);
+		assert.ok(probes - before > 2, "each check keeps retrying the read-only probe within its window");
 	}
-	assert.equal(probes, 6, "each check repeats the read-only probe exactly once");
+	assert.ok(probes < 60, "retries are bounded");
 	assert.match(health.lastFailure?.message ?? "", /did not answer a health check/);
 	assert.equal(recoveries, 0);
 	assert.equal(invalidations, 0);
@@ -128,6 +148,7 @@ test("a persistent monitoring read timeout is a dependency failure that never in
 	assert.equal(await health.check(), "managed");
 	assert.equal(recoveries, 0);
 	assert.equal(invalidations, 0);
+	assert.equal(health.lastFailure, undefined, "an answered probe clears the stale health-check failure (#3491)");
 	slow = true;
 	await assert.rejects(health.check());
 	slow = false;
@@ -135,6 +156,92 @@ test("a persistent monitoring read timeout is a dependency failure that never in
 	assert.equal(await health.check(), "managed");
 	assert.equal(invalidations, 1, "the identity known before the timeouts is still compared");
 	assert.equal(recoveries, 0);
+	await health.stop();
+});
+
+test("a managed PostgreSQL that delays new connections for seconds recovers without failing the check (#3491)", async () => {
+	const clock = fakeClock();
+	let probes = 0;
+	let recoveries = 0;
+	let invalidations = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			if (++probes <= 4) throw new Error("Connection terminated due to connection timeout");
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+		validate: async () => {
+			throw new Error("Query read timeout");
+		},
+		wait: clock.wait,
+		now: clock.now,
+	});
+	health.subscribe(() => invalidations++);
+	await assert.rejects(health.validate({} as PoolClient), /did not answer a connection identity check/);
+	assert.match(health.lastFailure?.message ?? "", /Query read timeout/);
+	assert.equal(await health.check(), "managed");
+	assert.equal(probes, 5);
+	assert.ok(clock.waits.length >= 4 && clock.elapsed < PROBE_RETRY_WINDOW_MS);
+	assert.equal(recoveries, 0);
+	assert.equal(invalidations, 0);
+	assert.equal(health.lastFailure, undefined, "the stale failure is cleared once the probe is answered");
+	await health.stop();
+});
+
+test("a probe that is never answered still fails within a bounded window (#3491)", async () => {
+	const clock = fakeClock();
+	let probes = 0;
+	let recoveries = 0;
+	let invalidations = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			probes++;
+			throw new Error("timeout expired");
+		},
+		recover: async () => {
+			recoveries++;
+		},
+		wait: clock.wait,
+		now: clock.now,
+	});
+	health.subscribe(() => invalidations++);
+	await assert.rejects(health.check(), (error: Error) => {
+		assert.equal(isDbosDependencyError(error), true);
+		assert.match(error.message, /did not answer a health check in time/);
+		return true;
+	});
+	assert.ok(clock.elapsed >= PROBE_RETRY_WINDOW_MS);
+	assert.ok(clock.elapsed <= PROBE_RETRY_WINDOW_MS + PROBE_RETRY_MAX_BACKOFF_MS);
+	assert.ok(Math.max(...clock.waits) <= PROBE_RETRY_MAX_BACKOFF_MS);
+	assert.equal(probes, clock.waits.length + 1);
+	assert.match(health.lastFailure?.message ?? "", /did not answer a health check/);
+	assert.equal(recoveries, 0);
+	assert.equal(invalidations, 0);
+	await health.stop();
+});
+
+test("a refused monitoring connection is not delayed by timeout backoff (#3491)", async () => {
+	const clock = fakeClock();
+	let probes = 0;
+	let recoveries = 0;
+	const health = new PostgresHealth({
+		probe: async () => {
+			probes++;
+			if (recoveries === 0) throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+			return { url: "managed", identity: "same" };
+		},
+		recover: async () => {
+			recoveries++;
+		},
+		wait: clock.wait,
+		now: clock.now,
+	});
+	assert.equal(await health.check(), "managed");
+	assert.equal(recoveries, 1);
+	assert.equal(probes, 3);
+	assert.equal(clock.elapsed, 0);
 	await health.stop();
 });
 
