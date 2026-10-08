@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed managed PostgreSQL health checks failing a workflow stage on a healthy but busy host: an unanswered check now retries with a short backoff for up to 15 seconds, the connection limit is 3 seconds instead of 1, and the "did not answer a health check in time" diagnostic clears once PostgreSQL answers again ([#3491](https://github.com/bastani-inc/atomic/issues/3491))
+
 ## [0.9.28-alpha.4] - 2026-10-07
 
 ### Added

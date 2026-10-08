@@ -154,6 +154,9 @@ export const POSTGRES_TIMEZONE_SQL = "SELECT set_config('timezone_abbreviations'
  */
 export const POSTGRES_HEALTH_QUERY_TIMEOUT_MS = 3_000;
 
+/** A busy host can take over a second to accept a new backend while its existing sockets stay healthy. */
+const POSTGRES_HEALTH_CONNECT_TIMEOUT_MS = 3_000;
+
 export async function probePostgresTimezoneData(port: number): Promise<void> {
 	const client = new Client({
 		host: "127.0.0.1",
@@ -162,7 +165,7 @@ export async function probePostgresTimezoneData(port: number): Promise<void> {
 		password: "atomic",
 		database: "postgres",
 		ssl: false,
-		connectionTimeoutMillis: 1000,
+		connectionTimeoutMillis: POSTGRES_HEALTH_CONNECT_TIMEOUT_MS,
 		query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 		statement_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	});
@@ -183,7 +186,7 @@ export async function probePostgresIdentity(port: number): Promise<PostgresIdent
 		password: "atomic",
 		database: "postgres",
 		ssl: false,
-		connectionTimeoutMillis: 1000,
+		connectionTimeoutMillis: POSTGRES_HEALTH_CONNECT_TIMEOUT_MS,
 		query_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 		statement_timeout: POSTGRES_HEALTH_QUERY_TIMEOUT_MS,
 	});
