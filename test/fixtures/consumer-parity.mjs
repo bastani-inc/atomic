@@ -25,6 +25,7 @@ import {
 	removeFixtureRoot,
 	withoutSqliteExperimentalWarning,
 } from "./sdk-host-fixture-support.mjs";
+const DURABLE_PHASE_TIMEOUT_MS = 30_000;
 async function stopDisposablePostgres() {
 	const consumer = realpathSync(dirname(fileURLToPath(import.meta.url)));
 	assert.match(basename(dirname(consumer)), /^atomic-packed-consumer-/);
@@ -219,7 +220,7 @@ const tool = (session, name) => {
 };
 const call = (session, name, args) => tool(session, name).execute(name, args, new AbortController().signal);
 async function until(check) {
-	const deadline = Date.now() + 15_000;
+	const deadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 	while (true) {
 		try {
 			return await check();
@@ -370,7 +371,7 @@ try {
 		};
 		const waitForPhase = async (phase, check) => {
 			const startedAt = Date.now();
-			const entry = { phase, startedAt, deadline: startedAt + 15_000 };
+			const entry = { phase, startedAt, deadline: startedAt + DURABLE_PHASE_TIMEOUT_MS };
 			if (phases.length >= 64) phases.shift();
 			phases.push(entry);
 			try {

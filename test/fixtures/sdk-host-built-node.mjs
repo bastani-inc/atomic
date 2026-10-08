@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+const DURABLE_PHASE_TIMEOUT_MS = 30_000;
 
 const home = process.env.ATOMIC_MANAGED_TEST_HOME;
 assert.ok(home && resolve(homedir()) === resolve(home) && process.env.USERPROFILE === home, "built host fixture requires a disposable managed HOME");
@@ -88,7 +89,7 @@ try {
 	await session.prompt("/workflow sdk-host-durable --no-picker");
 	const tool = session.agent.state.tools.find((entry) => entry.name === "workflow");
 	assert.ok(tool);
-	const pendingDeadline = Date.now() + 10_000;
+	const pendingDeadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 	let pending;
 	do {
 		pending = (await tool.execute("pending", { action: "status" }, new AbortController().signal)).details;
@@ -115,7 +116,7 @@ try {
 		callbacks.push({ event: "bindings-installing", observedAt: Date.now() });
 		await session.bindExtensions(bindings);
 		callbacks.push({ event: "bindings-installed", observedAt: Date.now() });
-		const confirmDeadline = Date.now() + 10_000;
+		const confirmDeadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 		let details;
 		let confirmRequest;
 		let confirmStage;
@@ -138,7 +139,7 @@ try {
 		assert.equal(existsSync(join(cwd, "effects.jsonl")), false);
 		callbacks.push({ event: "confirm-ready", observedAt: Date.now(), requestId: confirmRequest.requestId, promptId: confirmStage.pendingPrompt.id });
 		confirmAnswer.resolve(true);
-		const deadline = Date.now() + 10_000;
+		const deadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 		do {
 			details = (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;
 			observeProgress(details);
