@@ -1,3 +1,4 @@
+import { normalizeProviderId } from "../provider-id.ts";
 import type { ProviderEnv } from "../types.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { ModelsError } from "../utils/models-error.ts";
@@ -35,8 +36,9 @@ export interface AuthResolutionOverrides {
 /**
  * Auth resolution shared by all operations in a `Models` collection.
  * A stored credential owns the provider: ambient/env is consulted only when
- * nothing is stored. No silent env fallback after a failed refresh or for a
- * credential type without a matching handler.
+ * nothing is stored. A provider with no credential of its own may borrow one
+ * (see `readProviderCredential`). No silent env fallback after a failed
+ * refresh or for a credential type without a matching handler.
  */
 export function resolveProviderAuth(
 	provider: { id: string; auth: ProviderAuth },
@@ -93,7 +95,7 @@ async function resolveProviderAuthWithSignal(
 		);
 	}
 
-	const stored = await readCredential(credentials, provider.id, signal);
+	const stored = await readProviderCredential(credentials, provider, signal);
 	if (stored) {
 		if (stored.type === "oauth" && provider.auth.oauth) {
 			return resolveStoredOAuth(
@@ -213,6 +215,26 @@ async function resolveApiKey(
 	} catch (error) {
 		throw new ModelsError("auth", `API key auth failed for provider ${providerId}`, { cause: error });
 	}
+}
+
+/**
+ * The stored credential that supplies auth for `provider`: its own, otherwise
+ * the first usable api-key credential among the providers named by its
+ * `apiKey.borrowCredentialsFrom`. Shared by request auth and availability
+ * checks so both agree on which credential applies.
+ */
+export async function readProviderCredential(
+	credentials: CredentialStore,
+	provider: { id: string; auth: ProviderAuth },
+	signal: AbortSignal,
+): Promise<Credential | undefined> {
+	const own = await readCredential(credentials, provider.id, signal);
+	if (own) return own;
+	for (const sourceId of provider.auth.apiKey?.borrowCredentialsFrom ?? []) {
+		const borrowed = await readCredential(credentials, normalizeProviderId(sourceId), signal);
+		if (borrowed?.type === "api_key" && borrowed.key) return borrowed;
+	}
+	return undefined;
 }
 
 async function readCredential(

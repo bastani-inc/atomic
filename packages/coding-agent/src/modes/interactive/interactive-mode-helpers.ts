@@ -129,5 +129,5 @@ export function isApiKeyLoginProvider(
 	_builtInProviderIds?: ReadonlySet<string>,
 ): boolean {
 	const builtin = builtinProviders().find((provider) => provider.id === providerId);
-	return builtin ? builtin.auth.apiKey !== undefined : !oauthProviderIds.has(providerId);
+	return builtin ? builtin.auth.apiKey?.login !== undefined : !oauthProviderIds.has(providerId);
 }

@@ -4,6 +4,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `ApiKeyAuth.borrowCredentialsFrom` and `sharedApiKeyAuth()`, which let a provider without a login of its own reuse the stored API key of the first listed provider that has one, then fall back to its environment variables. Stored OAuth credentials of the listed providers are skipped, and a provider's own stored credential still wins.
+
+### Changed
+
+- `openai-decisions` no longer has a login or stored credential of its own. It reuses the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT sign-in on `openai` is skipped. A key already stored for `openai-decisions` is still used first.
+
 ## [0.9.28-alpha.4] - 2026-10-07
 
 ### Breaking Changes

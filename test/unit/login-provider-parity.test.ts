@@ -31,10 +31,12 @@ test("API-key login options follow builtin provider auth metadata", () => {
 	const options = getBuiltinApiKeyLoginOptions((id) => BUILT_IN_PROVIDER_DISPLAY_NAMES[id] ?? id);
 	const optionIds = new Set(options.map((option) => option.id));
 	const expectedIds = builtinProviders()
-		.filter((provider) => provider.auth.apiKey !== undefined)
+		.filter((provider) => provider.auth.apiKey?.login !== undefined)
 		.map((provider) => provider.id);
 
 	assert.deepEqual([...optionIds].sort(), expectedIds.sort());
+	assert.ok(!optionIds.has("openai-decisions"));
+	assert.ok(optionIds.has("openai-api"));
 	assert.ok(optionIds.has("qwen-token-plan"));
 	assert.ok(optionIds.has("qwen-token-plan-cn"));
 	assert.ok(!optionIds.has("openai-codex"));

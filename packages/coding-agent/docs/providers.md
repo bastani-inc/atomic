@@ -73,6 +73,8 @@ Apps using `@bastani/pi-ai` directly can pass `{ agentName: "my-app" }` as the f
 
 For example, sign in with ChatGPT under `openai` and select `openai/gpt-6-sol` for subscription chat, while a workflow stage pinned to `openai-api/gpt-6-sol` bills the API key.
 
+The GPT-6 Luna Decisions classifier (`openai-decisions`) has no login of its own. It uses the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`, and ignores a ChatGPT sign-in. See [Classifier models](/models#use-classifier-models).
+
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
+import type { Credential } from "../src/auth/types.ts";
 import { describe, expect, it } from "vitest";
 import { createModels, createProvider, getModelType } from "../src/models.ts";
 import {
@@ -218,6 +219,128 @@ describe("Models with classifier models", () => {
 		assert.equal((await models.getAuth("openai-decisions"))?.source, "OPENAI_API_KEY");
 		assert.equal((await models.checkAuth("openai"))?.type, "oauth");
 		assert((await models.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
+	});
+
+	it("has no login of its own and rejects login attempts", async () => {
+		const models = builtinModels();
+		const apiKey = models.getProvider("openai-decisions")?.auth.apiKey;
+		assert(apiKey);
+		assert.equal(apiKey.login, undefined);
+		assert.equal(models.getProvider("openai-decisions")?.auth.oauth, undefined);
+		await assert.rejects(
+			models.login("openai-decisions", "api_key", {
+				prompt: async () => "sk-typed",
+				notify: () => {},
+			}),
+			/does not support api_key login/,
+		);
+	});
+
+	describe("OpenAI Decisions shared credential", () => {
+		const noEnv = { env: async () => undefined, fileExists: async () => false };
+
+		function decisionsModels(options: { stored?: Record<string, Credential>; env?: string } = {}) {
+			const credentials = new InMemoryCredentialStore();
+			const seeded = Promise.all(
+				Object.entries(options.stored ?? {}).map(([providerId, credential]) =>
+					credentials.modify(providerId, async () => credential),
+				),
+			);
+			const models = builtinModels({
+				credentials,
+				authContext: options.env
+					? { env: async (name) => (name === "OPENAI_API_KEY" ? options.env : undefined), fileExists: async () => false }
+					: noEnv,
+			});
+			return { models, seeded };
+		}
+
+		const apiKey = (key: string): Credential => ({ type: "api_key", key });
+		const oauth: Credential = { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 3_600_000 };
+
+		async function availableIds(models: ReturnType<typeof builtinModels>): Promise<string[]> {
+			return (await models.getAvailableOfType("classifier", "openai-decisions")).map((model) => model.id);
+		}
+
+		it("resolves from an API key stored for openai-api", async () => {
+			const { models, seeded } = decisionsModels({ stored: { "openai-api": apiKey("sk-openai-api") } });
+			await seeded;
+			assert.deepEqual(await availableIds(models), ["gpt-6-luna"]);
+			assert.equal((await models.getAuth("openai-decisions"))?.auth.apiKey, "sk-openai-api");
+			assert.equal((await models.checkAuth("openai-decisions"))?.type, "api_key");
+			assert.deepEqual(
+				(await models.getAllAvailable("openai-decisions")).map((model) => model.id),
+				["gpt-6-luna"],
+			);
+		});
+
+		it("resolves from an API key stored for openai", async () => {
+			const { models, seeded } = decisionsModels({ stored: { openai: apiKey("sk-openai") } });
+			await seeded;
+			assert.deepEqual(await availableIds(models), ["gpt-6-luna"]);
+			assert.equal((await models.getAuth("openai-decisions"))?.auth.apiKey, "sk-openai");
+		});
+
+		it("prefers openai-api over openai over OPENAI_API_KEY", async () => {
+			const stored = { "openai-api": apiKey("sk-openai-api"), openai: apiKey("sk-openai") };
+			const both = decisionsModels({ stored, env: "sk-env" });
+			await both.seeded;
+			assert.equal((await both.models.getAuth("openai-decisions"))?.auth.apiKey, "sk-openai-api");
+
+			const openaiOnly = decisionsModels({ stored: { openai: stored.openai }, env: "sk-env" });
+			await openaiOnly.seeded;
+			assert.equal((await openaiOnly.models.getAuth("openai-decisions"))?.auth.apiKey, "sk-openai");
+		});
+
+		it("ignores a ChatGPT OAuth login on openai", async () => {
+			const withoutKey = decisionsModels({ stored: { openai: oauth } });
+			await withoutKey.seeded;
+			assert.deepEqual(await availableIds(withoutKey.models), []);
+			assert.equal(await withoutKey.models.getAuth("openai-decisions"), undefined);
+			assert.equal(await withoutKey.models.checkAuth("openai-decisions"), undefined);
+			assert.equal((await withoutKey.models.checkAuth("openai"))?.type, "oauth");
+
+			const withEnv = decisionsModels({ stored: { openai: oauth }, env: "sk-env" });
+			await withEnv.seeded;
+			assert.deepEqual(await availableIds(withEnv.models), ["gpt-6-luna"]);
+			const resolution = await withEnv.models.getAuth("openai-decisions");
+			assert.equal(resolution?.auth.apiKey, "sk-env");
+			assert.equal(resolution?.source, "OPENAI_API_KEY");
+		});
+
+		it("falls back to OPENAI_API_KEY", async () => {
+			const { models } = decisionsModels({ env: "sk-env" });
+			assert.deepEqual(await availableIds(models), ["gpt-6-luna"]);
+			assert.equal((await models.getAuth("openai-decisions"))?.auth.apiKey, "sk-env");
+		});
+
+		it("is unavailable without any OpenAI API credential", async () => {
+			const { models } = decisionsModels();
+			assert.deepEqual(await availableIds(models), []);
+			assert.equal(await models.getAuth("openai-decisions"), undefined);
+			assert.equal(await models.checkAuth("openai-decisions"), undefined);
+		});
+
+		it("sends the borrowed key when classifying", async () => {
+			const { models, seeded } = decisionsModels({ stored: { "openai-api": apiKey("sk-openai-api") } });
+			await seeded;
+			const luna = models.getModelOfType("classifier", "openai-decisions", "gpt-6-luna");
+			assert(luna);
+			const authorizations: Array<string | null> = [];
+			const result = await models.classify(
+				luna,
+				{ ...context },
+				{
+					fetch: async (_input, init) => {
+						authorizations.push(new Headers(init?.headers).get("authorization"));
+						return Response.json({ answers: [{ type: "predicate", name: "approved", probability: 0.8 }] });
+					},
+				},
+			);
+
+			assert.deepEqual(authorizations, ["Bearer sk-openai-api"]);
+			assert.equal(result.stopReason, "stop");
+		});
 	});
 
 	it("routes OpenRouter classifier models through the System One API", () => {

@@ -2017,7 +2017,7 @@ describe("credential egress chokepoint", () => {
 		const session = {
 			scopedModels: [],
 			modelRuntime: {
-				getProvider: () => ({ auth: { apiKey: {} } }),
+				getProvider: () => ({ auth: { apiKey: { login: async () => ({ type: "api_key" }) } } }),
 				login: async (
 					_provider: string,
 					_type: string,

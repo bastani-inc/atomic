@@ -25,6 +25,7 @@ function withProvider<T extends { provider: string }>(value: T, provider: string
 function aliasApiKey(auth: ApiKeyAuth): ApiKeyAuth {
 	return {
 		...auth,
+		borrowCredentialsFrom: undefined,
 		check: async (input) => {
 			if (!input.credential?.key?.trim()) return undefined;
 			if (auth.check) return auth.check(input);
