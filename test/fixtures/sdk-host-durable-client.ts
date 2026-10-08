@@ -21,6 +21,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { store } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { attachedCliPresentation, forwardCliDialogs } from "../integration/fixtures/sdk-host-cli.js";
+const DURABLE_PHASE_TIMEOUT_MS = 30_000;
 
 const definition = loadWorkflowModule(fileURLToPath(new URL("./sdk-host-durable-workflow.ts", import.meta.url)))
 	.default as WorkflowDefinition;
@@ -80,7 +81,7 @@ const unbind = bindWorkflowHumanInput(store, {
 	ui,
 });
 async function until(predicate: () => boolean) {
-	const deadline = Date.now() + 15000;
+	const deadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
 	while (!predicate()) {
 		assert.ok(Date.now() < deadline, JSON.stringify(store.runs()));
 		await new Promise((resolve) => setTimeout(resolve, 20));

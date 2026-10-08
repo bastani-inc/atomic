@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import type { Api, ClassifierContext, ClassifierModel, ClassifierResult, Model } from "@bastani/pi-ai";
 import { getBuiltinClassifierModel } from "@bastani/pi-ai/providers/all";
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
+	AutoRoutingInferenceError,
 	type ModelRoutingContext,
 	routeExecutionModel,
 } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import type { ModelConstraints } from "../../packages/coding-agent/src/core/model-routing-constraints.js";
+import type {
+	ModelConstraints,
+	ModelRouterOutput,
+} from "../../packages/coding-agent/src/core/model-routing-constraints.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { deepMergeSettings } from "../../packages/coding-agent/src/core/settings-merge.js";
 import type { ModelRoutingSettings } from "../../packages/coding-agent/src/core/settings-types.js";
@@ -14,6 +18,10 @@ import { workflowModelCatalogFromContext } from "../../packages/workflows/src/ex
 import { chatRouter, classifierOptions, defaultClassifierChoice } from "../helpers/model-routing.js";
 
 const jev = getBuiltinClassifierModel("typesafe", "jev-latest") as ClassifierModel<Api>;
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 function chatModel(provider: string, id: string): Model<Api> {
 	return {
@@ -199,5 +207,102 @@ test("provider lists from an agent definition or workflow never lift the user's 
 		routed(await route(ctx, [{ allowedProviders: ["openrouter", "anthropic"] }])),
 		["anthropic/claude-fable-5-1"],
 		"a definition-level allow list only narrows; the user's exclusion still applies",
+	);
+});
+
+test("modelRouting.allowedModels limits the primary, fallbacks and offered models to matching full IDs and globs (#3528)", async () => {
+	const { ctx, offered } = routingContext({
+		allowedModels: ["*claude-fable*", "openrouter/openai/gpt-6-astra"],
+	});
+	const result = await route(ctx);
+	assert.deepEqual(offered[0]?.sort(), ["anthropic/claude-fable-5-1", "openrouter/openai/gpt-6-astra"]);
+	assert.deepEqual(routed(result), ["anthropic/claude-fable-5-1", "openrouter/openai/gpt-6-astra"]);
+	assert.equal(result.allowsModel(models[0]!), false, "a gated-out model is never an execution fallback");
+	assert.equal(result.allowsModel(models[1]!), true);
+});
+
+test("settings validate the modelRouting model lists, and a project list replaces the global list of the same name (#3528)", () => {
+	assert.deepEqual(
+		SettingsManager.inMemory({
+			modelRouting: { allowedModels: ["anthropic/*", "anthropic/*"], excludedModels: ["*opus*:high"] },
+		}).getModelRouting(),
+		{ allowedModels: ["anthropic/*"], excludedModels: ["*opus*:high"] },
+	);
+	for (const modelRouting of [
+		{ allowedModels: "anthropic/*" },
+		{ allowedModels: [1] },
+		{ excludedModels: [""] },
+		{ excludedModels: [" anthropic/*"] },
+	])
+		assert.throws(
+			() => SettingsManager.inMemory({ modelRouting } as never).getModelRouting(),
+			/Invalid modelRouting: .*allowedModels and excludedModels must be arrays/u,
+		);
+	const merged = deepMergeSettings(
+		{ modelRouting: { allowedModels: ["anthropic/*", "openrouter/*"], excludedModels: ["*opus*"] } },
+		{ modelRouting: { allowedModels: ["openrouter/*"] } },
+	);
+	assert.deepEqual(merged.modelRouting, { allowedModels: ["openrouter/*"], excludedModels: ["*opus*"] });
+});
+
+test("modelRouting.excludedModels removes matches even when allowed, and neither a call's provider lists nor a recorded decision lifts it (#3528)", async () => {
+	const both = routingContext({ allowedModels: ["*/claude-*"], excludedModels: ["github-copilot/claude-opus-5.5"] });
+	assert.deepEqual(routed(await route(both.ctx)), ["anthropic/claude-fable-5-1"]);
+
+	const override = routingContext({ excludedProviders: ["openrouter"], excludedModels: ["anthropic/*"] });
+	assert.deepEqual(
+		routed(await route(override.ctx, [{ allowedProviders: ["openrouter", "anthropic"] }], true)),
+		["openrouter/openai/gpt-6-astra"],
+		"a call's provider lists replace only the provider settings",
+	);
+	await assert.rejects(
+		routeExecutionModel({
+			ctx: override.ctx,
+			task: "Review the change",
+			agent: { name: "reviewer", description: "Reviews code" },
+			selection: { model: "anthropic/claude-fable-5-1", effort: null },
+		}),
+		/no longer eligible/u,
+	);
+});
+
+test("a model gate that leaves no candidate fails before routing and names the setting (#3528)", async () => {
+	const allowed = routingContext({ allowedModels: ["openai-codex/*"] });
+	const classify = vi.spyOn(allowed.ctx.modelRegistry, "classify");
+	await assert.rejects(route(allowed.ctx), (error: Error) => {
+		assert.equal(error instanceof AutoRoutingInferenceError, false, "an empty pool never degrades");
+		assert.match(error.message, /and the modelRouting\.allowedModels setting\.$/u);
+		return true;
+	});
+	assert.equal(classify.mock.calls.length, 0);
+
+	const excluded = routingContext({ allowedProviders: ["anthropic"], excludedModels: ["*claude*"] });
+	await assert.rejects(
+		route(excluded.ctx),
+		/modelRouting allowedProviders\/excludedProviders and modelRouting\.excludedModels settings\.$/u,
+	);
+	const lists = routingContext({ allowedModels: ["anthropic/*"], excludedModels: ["anthropic/*"] });
+	await assert.rejects(route(lists.ctx), /modelRouting\.allowedModels and modelRouting\.excludedModels settings\.$/u);
+});
+
+test("routerSelection echoes the post-filter candidates, and a restored decision keeps its recorded list (#3528)", async () => {
+	const ids = models.map((model) => `${model.provider}/${model.id}`);
+	assert.deepEqual((await route(routingContext().ctx)).routerSelection.candidates, ids);
+
+	const { ctx } = routingContext({ excludedModels: ["github-copilot/claude-opus-5.5"] });
+	const fresh = await route(ctx);
+	assert.deepEqual(fresh.routerSelection.candidates, ids.slice(1));
+	const restore = (selection: ModelRouterOutput) =>
+		routeExecutionModel({
+			ctx,
+			task: "Review the change",
+			agent: { name: "reviewer", description: "Reviews code" },
+			selection,
+		});
+	assert.deepEqual((await restore(fresh.routerSelection)).routerSelection, fresh.routerSelection);
+	assert.equal(
+		Object.hasOwn((await restore({ model: ids[1]!, effort: null })).routerSelection, "candidates"),
+		false,
+		"a legacy decision without candidates stays valid and unchanged",
 	);
 });

@@ -134,7 +134,11 @@ for (const mode of ["single-explicit", "single-default", "parallel-explicit", "p
 		assert.equal(f.runSync.mock.calls.length, 1);
 		const options = f.runSync.mock.calls[0]![4];
 		assert.equal(options.modelOverride, "decision-test/chat");
-		assert.deepEqual(options.modelRoute?.routerSelection, { model: "decision-test/chat", effort: null });
+		assert.deepEqual(options.modelRoute?.routerSelection, {
+			model: "decision-test/chat",
+			effort: null,
+			candidates: ["decision-test/chat"],
+		});
 	});
 }
 test("discovered builtin defaults route on single and parallel execution without a model argument", async () => {
@@ -253,7 +257,11 @@ test("host status retains immutable original selection separately from actual fa
 		const watched = host.watchOwnerTasks();
 		assert.ok(watched.ok);
 		const record = watched.value.snapshot.tasks[0]!;
-		assert.deepEqual(record.routerSelection, { model: "decision-test/chat", effort: null });
+		assert.deepEqual(record.routerSelection, {
+			model: "decision-test/chat",
+			effort: null,
+			candidates: ["decision-test/chat"],
+		});
 		assert.equal(Object.isFrozen(record.routerSelection), true);
 		assert.equal(record.model, "fallback/model");
 		assert.equal(record.thinking, "low");
@@ -262,3 +270,19 @@ test("host status retains immutable original selection separately from actual fa
 		await host.close("session-close");
 	}
 });
+
+for (const mode of ["single", "parallel"] as const) {
+	test(`${mode} auto launch fails before admission when modelRouting leaves no candidate (#3528)`, async () => {
+		const f = await fixture("auto");
+		f.ctx.getModelRouting = () => ({ allowedModels: ["openai-codex/*"] });
+		const params =
+			mode === "single"
+				? { agent: "worker", task: "Inspect this patch" }
+				: { tasks: [{ agent: "worker", task: "Inspect this patch" }] };
+		const result = await f.call(params);
+		assert.equal(result.isError, true);
+		assert.match(JSON.stringify(result.content), /modelRouting\.allowedModels setting/u);
+		assert.equal(f.runSync.mock.calls.length, 0);
+		assert.equal(f.infer.mock.calls.length, 0);
+	});
+}

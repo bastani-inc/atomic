@@ -493,7 +493,7 @@ export function isRouterSelection(value: unknown): value is import("@bastani/ato
 		);
 	};
 	return (
-		Object.keys(record).every((key) => ["model", "effort", "fallbacks"].includes(key)) &&
+		Object.keys(record).every((key) => ["model", "effort", "fallbacks", "candidates"].includes(key)) &&
 		typeof record.model === "string" &&
 		(record.effort === null || isReasoningLevel(record.effort)) &&
 		(record.fallbacks === undefined ||
@@ -504,7 +504,9 @@ export function isRouterSelection(value: unknown): value is import("@bastani/ato
 					record.model,
 					...record.fallbacks.map((pair) => (pair as Record<string, WorkflowSerializableValue>).model),
 				]).size ===
-					record.fallbacks.length + 1))
+					record.fallbacks.length + 1)) &&
+		(record.candidates === undefined ||
+			(Array.isArray(record.candidates) && record.candidates.every((id) => typeof id === "string")))
 	);
 }
 

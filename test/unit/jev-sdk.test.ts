@@ -160,7 +160,7 @@ test("execution auto routing uses selected current chat even with classifier cre
 		agent: { name: "reviewer", description: "Review only" },
 		constraints: [{ allowedModels: [selection.model] }],
 	});
-	assert.deepEqual(result.routerSelection, selection);
+	assert.deepEqual(result.routerSelection, { ...selection, candidates: [selection.model] });
 	assert.equal(result.modelOverride, selection.model);
 	assert.equal(dispatch.mock.calls.length, 1);
 	result.assertCurrent();

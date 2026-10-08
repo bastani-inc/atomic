@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Subagents with `model: "auto"` honor the new `modelRouting.allowedModels` and `modelRouting.excludedModels` settings for the routed model, its fallbacks, and the current chat model used when routing fails, and the launch fails with an error naming the setting when no allowed model remains. A subagent result's `routerSelection` now lists the `candidates` the router could choose from ([#3528](https://github.com/bastani-inc/atomic/issues/3528)).
+
 ## [0.9.28] - 2026-10-08
 
 ### Changed

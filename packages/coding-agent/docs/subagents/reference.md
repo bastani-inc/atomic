@@ -38,7 +38,7 @@ subagent({
 })
 ```
 
-`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`; `needsImages`, `longContext` (must hold a very large codebase or document set) and `latencySensitive` (a fast answer matters more than extra reasoning) are true or false. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
+`work` is one of `computer_use`, `coding`, `code_review`, `codebase_lookup`, `research`, `business_workflow`, `math_science` or `writing`; `difficulty` is `trivial`, `easy`, `moderate`, `hard` or `very_hard`; `mistakeCost` is `negligible`, `low`, `moderate`, `high` or `severe`; `needsImages`, `longContext` (must hold a very large codebase or document set) and `latencySensitive` (a fast answer matters more than extra reasoning) are true or false. When listing candidates, prefer the user's subscription models over pay-per-token API models unless the user asked for API models or has none. To keep providers or models out of routing entirely, use the [`modelRouting`](/settings#modelrouting) setting. You do not need to attach eval records yourself.
 
 The agent's system prompt is not routing metadata. For a self-contained agent with no task, it remains the task fallback. The router weighs task-relevant evidence, cost, and latency rather than always choosing a benchmark winner or maximum effort. Benchmark measurement effort does not prescribe execution effort.
 
@@ -53,7 +53,7 @@ Saved classifier credentials do not change this order. Neither routing nor child
 
 Routing has no built-in wall-clock deadline. Slow decisions can finish; cancel the request to stop waiting. Independent provider and credential-preparation limits still apply. Chat routing gets an initial attempt plus three corrective retries for malformed or schema-invalid answers. A classifier routing failure switches to the current chat model instead of repeating the classifier request. A valid answer stops repairs.
 
-The result records a primary `{ model, effort }` and up to two ordered `fallbacks`, each with its own model and effort. Atomic ranks three distinct eligible provider/model IDs, or all available IDs when fewer than three qualify. It selects each rank from the remaining models, excluding all efforts of earlier choices. A supported `"off"` is distinct from `null`, which means no configurable reasoning. The catalog reflects configured authentication, not proof of valid credentials, quota, or entitlement.
+The result records a primary `{ model, effort }`, up to two ordered `fallbacks`, each with its own model and effort, and `candidates`, every model the router could choose from after the routing settings, constraints, and the task's image and long-context needs. Atomic ranks three distinct eligible provider/model IDs, or all available IDs when fewer than three qualify. It selects each rank from the remaining models, excluding all efforts of earlier choices. A supported `"off"` is distinct from `null`, which means no configurable reasoning. The catalog reflects configured authentication, not proof of valid credentials, quota, or entitlement.
 
 The child does not start if no candidates are eligible, availability changes, or cancellation occurs. A classifier provider failure, missing credentials, unsupported classify operation, size rejection, or malformed answer switches to the current chat model. Transient provider failures are retried up to three times first. The chat model gets its own output-repair allowance. If routing inference fails completely, or Atomic cannot pick a model itself (the task needs images and no eligible model reads them, `allowedModels` lists more models than one routing request holds (roughly 100), or `evals.md` is missing), the child runs on the current chat model instead of failing, but only when that model is available and satisfies every routing constraint (such as `allowedModels` and effort, cost, context and input limits). Otherwise the launch fails. Invalid inputs, conflicting constraints, cancellation and stale-catalog failures never trigger fallback. No partial decision can launch a child. These switches are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1` is set.
 
@@ -65,11 +65,11 @@ Choose a router provider permitted to receive the task and agent name/descriptio
 
 ### Hard model constraints
 
-For automatic routing, optional `modelConstraints` on a call, parallel task, or agent definition restricts eligible choices and execution fallbacks. All applicable restrictions must hold; a call cannot widen an agent's restrictions. Omit this object to use the full available catalog.
+For automatic routing, optional `modelConstraints` on a call, parallel task, or agent definition restricts eligible choices and execution fallbacks. All applicable restrictions must hold; a call cannot widen an agent's restrictions. Omit this object to use the full available catalog that your [`modelRouting`](/settings#modelrouting) settings allow.
 
 | Field | Meaning |
 | --- | --- |
-| `allowedModels` | Exact provider/model IDs permitted to receive the task |
+| `allowedModels` | Exact provider/model IDs permitted to receive the task. The [`modelRouting`](/settings#modelrouting) `allowedModels` and `excludedModels` settings still apply on top of this list |
 | `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. On a call, setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call, so set them only when the user asks; in an agent definition they only narrow those settings |
 | `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap |
 | `minContextWindow` | Minimum advertised context window in tokens |

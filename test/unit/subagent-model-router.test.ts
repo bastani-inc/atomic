@@ -254,7 +254,11 @@ for (const answer of invalidPairs) {
 		assert.equal(warning.mock.calls.length, 0, "the degrade is silent unless routing debugging is on");
 		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		const route = await f.route();
-		assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
+		assert.deepEqual(route.routerSelection, {
+			model: "decision-test/chat",
+			effort: null,
+			candidates: ["decision-test/chat"],
+		});
 		assert.equal(route.modelOverride, "decision-test/chat");
 		assert.equal(warning.mock.calls.length, 1);
 		assert.match(String(warning.mock.calls[0]![0]), /running "worker" on the current chat model/);
@@ -334,7 +338,11 @@ test.each(["", false])(
 			assert.equal(builtinAgent.thinking, thinking === false ? undefined : thinking);
 			assert.equal(builtinAgent.model, "auto");
 			const route = await routeSubagentModel({ ctx: f.ctx, agent: builtinAgent });
-			assert.deepEqual(route.routerSelection, { model: "decision-test/chat", effort: null });
+			assert.deepEqual(route.routerSelection, {
+				model: "decision-test/chat",
+				effort: null,
+				candidates: ["decision-test/chat"],
+			});
 			assert.equal(f.infer.mock.calls.length, 1);
 			await assert.rejects(
 				routeSubagentModel({ ctx: f.ctx, agent: builtinAgent, modelConstraints: { allowedEfforts: ["high"] } }),
@@ -581,7 +589,11 @@ test("routing accepts a valid selection after the former deadline without retry"
 		reason: "toolUse",
 		message: decisionMessage({ ...DEFAULT_NEEDS }),
 	});
-	assert.deepEqual((await pending).routerSelection, { model: "decision-test/chat", effort: null });
+	assert.deepEqual((await pending).routerSelection, {
+		model: "decision-test/chat",
+		effort: null,
+		candidates: ["decision-test/chat"],
+	});
 	assert.equal(f.infer.mock.calls.length, 1);
 });
 
@@ -747,6 +759,14 @@ test("the chat reader is asked only for the task needs the caller did not state"
 	]);
 	assert.deepEqual(chatPayload(request).state.caller_says, { work: "computer_use", needs_images: "yes" });
 	assert.equal(route.routerSelection.model, "second-provider/reasoner");
+});
+
+test("routerSelection.candidates lists only the models the router chose from after the image filter (#3528)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	mockClassifier(f);
+	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
+	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
 });
 
 test("a caller that states every need gets one choice request whose options carry their own evidence", async () => {
@@ -1055,4 +1075,30 @@ test("only the call's own provider lists replace the user's modelRouting setting
 		modelConstraints: { allowedProviders: ["second-provider"] },
 	});
 	assert.equal(fromCall.modelOverride.startsWith("second-provider/reasoner"), true);
+});
+
+test("a subagent route and every fallback candidate stay inside modelRouting.allowedModels (#3528)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, reasoningModel]);
+	f.ctx.getModelRouting = () => ({ allowedModels: ["second-provider/*"] });
+	const route = await f.route();
+	assert.equal(route.modelOverride.startsWith("second-provider/reasoner"), true);
+	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
+	assert.equal(route.allowsCandidate("decision-test/chat"), false, "the current chat model is no fallback");
+	assert.equal(route.allowsModel(decisionModel), false);
+});
+
+test("total routing failure never degrades to a current chat model outside modelRouting.excludedModels (#3528)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	f.ctx.getModelRouting = () => ({ excludedModels: ["decision-test/chat"] });
+	f.infer.mockImplementation(() => {
+		throw new Error("mock provider failure");
+	});
+	await assert.rejects(f.route(), (error: Error) => {
+		assert.equal(error instanceof AutoRoutingInferenceError, true);
+		assert.equal((error as AutoRoutingInferenceError).currentModelRoute, undefined);
+		return true;
+	});
 });

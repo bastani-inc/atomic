@@ -16,9 +16,9 @@ import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts"
 type CompactionModel = Pick<Model<string>, "provider" | "id">;
 
 const MODEL_ROUTING_ERROR =
-	'Invalid modelRouting: allowedProviders and excludedProviders must be arrays of provider IDs, such as ["github-copilot"].';
+	'Invalid modelRouting: allowedProviders and excludedProviders must be arrays of provider IDs, such as ["github-copilot"], and allowedModels and excludedModels must be arrays of model IDs or glob patterns, such as ["anthropic/claude-*"].';
 
-function providerList(value: unknown): string[] | undefined {
+function routingList(value: unknown): string[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.trim() !== item))
 		throw new Error(MODEL_ROUTING_ERROR);
@@ -237,11 +237,15 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const value = settingsInternals(this).settings.modelRouting;
 		if (value === undefined) return {};
 		if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(MODEL_ROUTING_ERROR);
-		const allowedProviders = providerList(value.allowedProviders);
-		const excludedProviders = providerList(value.excludedProviders);
+		const allowedProviders = routingList(value.allowedProviders);
+		const excludedProviders = routingList(value.excludedProviders);
+		const allowedModels = routingList(value.allowedModels);
+		const excludedModels = routingList(value.excludedModels);
 		return {
 			...(allowedProviders ? { allowedProviders } : {}),
 			...(excludedProviders ? { excludedProviders } : {}),
+			...(allowedModels ? { allowedModels } : {}),
+			...(excludedModels ? { excludedModels } : {}),
 		};
 	},
 

@@ -76,6 +76,8 @@ export type ModelRouterOutput = {
 	readonly effort: string | null;
 	/** Ranked alternatives, excluding the primary. Absent on legacy recorded selections. */
 	readonly fallbacks?: readonly { readonly model: string; readonly effort: string | null }[];
+	/** Full IDs of every model the router could choose from after all filters. Absent on legacy recorded selections. */
+	readonly candidates?: readonly string[];
 };
 /** Whether a constraint sets its own provider list. */
 export function setsProviders(constraints: ModelConstraints | undefined): boolean {

@@ -11,6 +11,7 @@ import {
 import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
 import type { ModelRegistry } from "./model-registry.ts";
+import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
 import {
 	type CandidateModel,
@@ -46,7 +47,7 @@ export interface ModelRoutingContext {
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
 	readonly model?: Model<Api>;
 	getRouterModel(): string;
-	/** Provider filters from settings.json `modelRouting`; absent means every provider is a candidate. */
+	/** Provider and model filters from settings.json `modelRouting`; absent means every model is a candidate. */
 	getModelRouting?(): ModelRoutingSettings;
 }
 export interface ModelRoute {
@@ -144,15 +145,34 @@ export async function routeExecutionModel(input: {
 	const statedNeeds = parseTaskNeeds(input.taskNeeds);
 	// settings.json provider lists are defaults that only the call itself may
 	// replace; every constraint's own provider lists are enforced by eligiblePair.
-	const { allowedProviders = [], excludedProviders = [] } = input.overrideProviderSettings
-		? {}
-		: (ctx.getModelRouting?.() ?? {});
+	const routing = ctx.getModelRouting?.() ?? {};
+	const { allowedProviders = [], excludedProviders = [] } = input.overrideProviderSettings ? {} : routing;
+	// The model lists are the operator's gate and apply to every call (#3528).
+	const { allowedModels = [], excludedModels = [] } = routing;
 	const providerPermitted = (provider: string) =>
 		(allowedProviders.length === 0 || allowedProviders.includes(provider)) && !excludedProviders.includes(provider);
+	const matching = (patterns: readonly string[], models: readonly Model<Api>[]) =>
+		new Set(
+			resolveModelScopeFromModels([...patterns], models).scopedModels.map(
+				({ model }) => `${model.provider}/${model.id}`,
+			),
+		);
+	const permittedModels = () => {
+		const models = ctx.modelRegistry.getAvailable();
+		const allowed = allowedModels.length ? matching(allowedModels, models) : undefined;
+		const excluded = matching(excludedModels, models);
+		return models.filter((model) => {
+			const id = `${model.provider}/${model.id}`;
+			return (
+				isModelType(model, "chat") &&
+				providerPermitted(model.provider) &&
+				(allowed === undefined || allowed.has(id)) &&
+				!excluded.has(id)
+			);
+		});
+	};
 	const catalog = () =>
-		ctx.modelRegistry
-			.getAvailable()
-			.filter((model) => isModelType(model, "chat") && providerPermitted(model.provider))
+		permittedModels()
 			// Ultrafast is billed above Standard and gated by account access. It is selectable
 			// manually, but auto must receive an exact caller allowance or restore an explicit decision.
 			.filter(
@@ -170,12 +190,22 @@ export async function routeExecutionModel(input: {
 			.filter((entry) => entry.pairs.length > 0);
 	const available = catalog();
 	const pairs = available.flatMap((entry) => entry.pairs);
-	if (!pairs.length)
+	if (!pairs.length) {
+		const providerSettings = allowedProviders.length > 0 || excludedProviders.length > 0;
+		const gateSettings = [
+			...(providerSettings ? ["modelRouting allowedProviders/excludedProviders"] : []),
+			...(allowedModels.length ? ["modelRouting.allowedModels"] : []),
+			...(excludedModels.length ? ["modelRouting.excludedModels"] : []),
+		];
+		const noun = gateSettings.length === 1 && !providerSettings ? "setting" : "settings";
 		throw new Error(
-			allowedProviders.length || excludedProviders.length
-				? "Auto routing has no eligible model/effort pairs. Check configured providers, modelConstraints, and the modelRouting allowedProviders/excludedProviders settings."
+			gateSettings.length
+				? `Auto routing has no eligible model/effort pairs. Check configured providers, modelConstraints, and the ${new Intl.ListFormat("en", { type: "conjunction" }).format(gateSettings)} ${noun}.`
 				: "Auto routing has no eligible model/effort pairs. Check configured providers and modelConstraints.",
 		);
+	}
+	// The effective post-filter pool, echoed in routerSelection for audit (#3528).
+	const candidates = [...new Set(available.map((entry) => `${entry.model.provider}/${entry.model.id}`))];
 	let selection = input.selection;
 	if (selection === undefined) {
 		const settings = { getRouterModel: () => ctx.getRouterModel() };
@@ -211,7 +241,7 @@ export async function routeExecutionModel(input: {
 				entry?.pairs.find((candidate) => candidate.effort === effort),
 			).find((candidate) => candidate !== undefined);
 			if (pair === undefined) return undefined;
-			return routeExecutionModel({ ...input, selection: { model: pair.model, effort: pair.effort } });
+			return routeExecutionModel({ ...input, selection: { model: pair.model, effort: pair.effort, candidates } });
 		};
 		// Any failure before a model is chosen is a total inference failure: the
 		// router and its chat structured-output fallback both failed (#3206).
@@ -342,6 +372,7 @@ export async function routeExecutionModel(input: {
 			: seeing;
 		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
+		const routedCandidates = [...pairsFor.keys()];
 		const toCandidate = (model: Model<Api>): CandidateModel => {
 			const routeCost = model.fastRoute?.serviceTier
 				? getServiceTierCost(model, model.fastRoute.serviceTier)
@@ -364,14 +395,7 @@ export async function routeExecutionModel(input: {
 		// but price and recency still compare them with every model the user could route to.
 		const callerListed = constraints.some((constraint) => (constraint.allowedModels?.length ?? 0) > 0);
 		const reference = callerListed
-			? ctx.modelRegistry
-					.getAvailable()
-					.filter(
-						(model) =>
-							isModelType(model, "chat") &&
-							providerPermitted(model.provider) &&
-							(!needs.needsImages || model.input.includes("image")),
-					)
+			? permittedModels().filter((model) => !needs.needsImages || model.input.includes("image"))
 			: usable.map((entry) => entry.model);
 		const standings = rankCandidates(catalogEvals, reference.map(toCandidate), needs);
 		const ranked = standings.filter((candidate) => pairsFor.has(candidate.model));
@@ -469,6 +493,7 @@ export async function routeExecutionModel(input: {
 						})),
 					}
 				: {}),
+			candidates: routedCandidates,
 		};
 	}
 	const fallbacks = selection.fallbacks?.map((pair) => Object.freeze({ model: pair.model, effort: pair.effort }));
@@ -482,6 +507,7 @@ export async function routeExecutionModel(input: {
 		model: selection.model,
 		effort: selection.effort,
 		...(fallbacks?.length ? { fallbacks: Object.freeze(fallbacks) } : {}),
+		...(selection.candidates ? { candidates: Object.freeze([...selection.candidates]) } : {}),
 	});
 	const hasPair = (pair: ModelRouterOutput) =>
 		catalog().some((entry) => entry.pairs.some((p) => p.model === pair.model && p.effort === pair.effort));

@@ -546,7 +546,7 @@ Selects the primary stage model. String values can carry the reasoning suffix de
 
 Use `model: "auto"` for prompt-based selection of an execution model and supported effort before session admission. Omission and concrete models keep prior behavior. Shared chain/parallel defaults accept `auto`; each stage receives one decision. The router sees the final supplied prompt, including interpolated inputs and supplied task context, rather than only a stage name.
 
-`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution/compaction fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. An authored `thinkingLevel` restricts auto selection to that supported effort.
+`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution/compaction fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. An authored `thinkingLevel` restricts auto selection to that supported effort. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
 
 An auto stage has no session until it receives prompt text. Model-dependent operations such as `compact()` or `cycleModel()` before that point report an error; call `prompt()` first or deliberately select a concrete model with `setModel()`. Session operations after admission keep their normal behavior.
 
@@ -569,7 +569,7 @@ Rejected credentials, unavailable models, and incompatible requests advance imme
 
 A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior.
 
-Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist. `modelRouting.allowedProviders`, `modelRouting.excludedProviders`, and `routerModel` apply to `model: "auto"`, not to these pinned primary or fallback models.
+Explicit stage models can use numbered account providers such as `openai-1/gpt-5-mini:low` with credentials saved under `openai-1` in `auth.json`. They use the source provider's catalog and endpoint, but the account's own credentials; no alias entry in `models.json` or provider-registration extension is needed. The source provider and requested model must exist. `modelRouting` (`allowedProviders`, `excludedProviders`, `allowedModels`, `excludedModels`) and `routerModel` apply to `model: "auto"`, not to these pinned primary or fallback models.
 
 A same-candidate retry resumes the existing turn when the transcript ends in a message the agent can continue from. Otherwise, it re-sends the stage prompt. In either case, Atomic removes the failed provider error from the live transcript and delivers the prompt exactly once.
 
@@ -1023,7 +1023,7 @@ interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly artifacts?: readonly WorkflowArtifact[];
   readonly model?: string;
   readonly thinkingLevel?: string;
-  readonly routerSelection?: { readonly model: string; readonly effort: string | null };
+  readonly routerSelection?: ModelRouterOutput;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];
@@ -1177,7 +1177,7 @@ interface StageSnapshot extends WorkflowSerializableObject {
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
 
-Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
+Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. Selections recorded before `candidates` existed omit it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
 ## Programmatic usage
 
