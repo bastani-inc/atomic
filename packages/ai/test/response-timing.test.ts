@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import assert from "node:assert/strict";
+import { afterEach, describe, it, vi } from "vitest";
 import { lazyStream } from "../src/api/lazy.js";
 import { getBuiltinModel } from "../src/providers/all.js";
 import type { AssistantMessage } from "../src/types.js";
@@ -38,8 +39,8 @@ describe("AssistantMessageEventStream timing", () => {
 		if (completion === "done") stream.push({ type: "done", reason: "stop", message: result });
 		else if (completion === "error") stream.push({ type: "error", reason: "error", error: result });
 		else stream.end(result);
-		expect((await stream.result()).durationMs).toBe(26);
-		expect(result.timestamp).toBe(1000);
+		assert.equal((await stream.result()).durationMs, 26);
+		assert.equal(result.timestamp, 1000);
 	});
 
 	it("preserves inner stream timing when forwarding a final message", async () => {
@@ -53,17 +54,17 @@ describe("AssistantMessageEventStream timing", () => {
 		inner.push({ type: "done", reason: "stop", message: result });
 		clock.mockReturnValue(200);
 		outer.push({ type: "done", reason: "stop", message: result });
-		expect((await outer.result()).durationMs).toBe(10);
+		assert.equal((await outer.result()).durationMs, 10);
 	});
 
 	it("preserves existing timing and leaves fetched deferred results untimed", () => {
 		vi.spyOn(Date, "now").mockReturnValue(1000);
 		const preset = message(1000, 1234);
 		new AssistantMessageEventStream().end(preset);
-		expect(preset.durationMs).toBe(1234);
+		assert.equal(preset.durationMs, 1234);
 		const fetched = message(999);
 		new AssistantMessageEventStream().push({ type: "done", reason: "stop", message: fetched });
-		expect(fetched.durationMs).toBeUndefined();
+		assert.equal(fetched.durationMs, undefined);
 	});
 
 	it("does not time final messages after completion", () => {
@@ -72,7 +73,7 @@ describe("AssistantMessageEventStream timing", () => {
 		const late = message();
 		stream.push({ type: "done", reason: "stop", message: late });
 		stream.end(late);
-		expect(late.durationMs).toBeUndefined();
+		assert.equal(late.durationMs, undefined);
 	});
 
 	it("clamps a negative elapsed clock reading to zero", () => {
@@ -81,7 +82,7 @@ describe("AssistantMessageEventStream timing", () => {
 		clock.mockReturnValue(99);
 		const result = message();
 		stream.end(result);
-		expect(result.durationMs).toBe(0);
+		assert.equal(result.durationMs, 0);
 	});
 
 	it("keeps request-start timestamp and timing when lazy setup fails", async () => {
@@ -93,8 +94,8 @@ describe("AssistantMessageEventStream timing", () => {
 			throw new Error("setup failed");
 		});
 		const result = await stream.result();
-		expect(result.timestamp).toBe(1000);
-		expect(result.durationMs).toBe(75);
-		expect(result.errorMessage).toBe("setup failed");
+		assert.equal(result.timestamp, 1000);
+		assert.equal(result.durationMs, 75);
+		assert.equal(result.errorMessage, "setup failed");
 	});
 });

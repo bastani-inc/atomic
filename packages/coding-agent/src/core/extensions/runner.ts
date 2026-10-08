@@ -186,6 +186,8 @@ export async function emitSessionShutdownEvent(
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
+	private readonly reportedMcpServers = new Set<string>();
+	private mcpDiagnosticUnsubscriber?: () => void;
 	private uiContext: ExtensionUIContext;
 	private presentationUI?: ExtensionUIContext;
 	private presentationInput?: HostInput;
@@ -670,6 +672,8 @@ export class ExtensionRunner {
 
 	retireObservation(): void {
 		retireExtensionContextEffects(this.contextOwner);
+		this.mcpDiagnosticUnsubscriber?.();
+		this.mcpDiagnosticUnsubscriber = undefined;
 	}
 
 	revokeAuthority(): void {
@@ -690,6 +694,23 @@ export class ExtensionRunner {
 				this.staleMessage = message;
 				this.runtime.invalidate(message);
 			}
+		}
+	}
+
+	reportUnhandledMcpServers(): void {
+		this.mcpDiagnosticUnsubscriber ??= this.runtime.mcpServerRegistry.subscribe(
+			() => this.reportUnhandledMcpServers(),
+			{ consumer: false },
+		);
+		if (this.runtime.mcpServerRegistry.hasConsumers()) return;
+		for (const server of this.runtime.mcpServerRegistry.list()) {
+			if (this.reportedMcpServers.has(server.name)) continue;
+			this.reportedMcpServers.add(server.name);
+			this.emitError({
+				extensionPath: server.sourceInfo.path,
+				event: "register_mcp_server",
+				error: `MCP server "${server.name}" is registered, but no loaded extension connects MCP servers; another extension may have replaced the built-in MCP support`,
+			});
 		}
 	}
 

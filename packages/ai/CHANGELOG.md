@@ -25,6 +25,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed failed lazy API setup messages using the failure time instead of the request start as their timestamp.
 - Fixed prompt-length pricing tiers being lost when generating model catalogs from AI Gateway, OpenRouter, and models.dev.
 - Corrected the Claude Sonnet 5.5 fallback catalog's cache-read rate to the official $0.10 per million tokens.
+- Fixed Bedrock Claude Haiku 5.5 requests sending unsupported caller temperature settings.
 
 ## [0.9.28-alpha.3] - 2026-10-07
 

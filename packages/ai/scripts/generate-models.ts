@@ -1367,6 +1367,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
 	}
+	if (model.api === "bedrock-converse-stream" && /claude-haiku-5[-.]5/.test(model.id)) {
+		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsTemperature: false };
+	}
 	if (
 		model.api === "openai-completions" &&
 		model.id.includes("deepseek-v4") &&

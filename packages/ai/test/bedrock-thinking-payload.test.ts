@@ -6,6 +6,7 @@ import type { Context, Model } from "../src/types.ts";
 import { hasBedrockCredentials } from "./bedrock-utils.ts";
 
 interface BedrockThinkingPayload {
+	inferenceConfig?: { temperature?: number };
 	additionalModelRequestFields?: {
 		thinking?: {
 			type: string;
@@ -73,11 +74,30 @@ describe("Bedrock thinking payload", () => {
 		async (reasoning) => {
 			const model = getModel("amazon-bedrock", "global.anthropic.claude-haiku-5-5");
 			const payload = await capturePayload(model, { reasoning });
-			expect(payload.additionalModelRequestFields?.thinking).toEqual(ADAPTIVE_WITH_BINDING);
-			expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: reasoning });
-			expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual([THINKING_BINDING_CONTROLS_BETA]);
+			assert.deepEqual(payload.additionalModelRequestFields?.thinking, ADAPTIVE_WITH_BINDING);
+			assert.deepEqual(payload.additionalModelRequestFields?.output_config, { effort: reasoning });
+			assert.deepEqual(payload.additionalModelRequestFields?.anthropic_beta, [THINKING_BINDING_CONTROLS_BETA]);
 		},
 	);
+
+	it.each([
+		"anthropic.claude-haiku-5-5",
+		"au.anthropic.claude-haiku-5-5",
+		"eu.anthropic.claude-haiku-5-5",
+		"global.anthropic.claude-haiku-5-5",
+		"jp.anthropic.claude-haiku-5-5",
+		"us.anthropic.claude-haiku-5-5",
+	] as const)("omits unsupported temperature for catalog model %s", async (id) => {
+		const payload = await capturePayload(getModel("amazon-bedrock", id), { reasoning: "high", temperature: 0.5 });
+		assert.equal(payload.inferenceConfig?.temperature, undefined);
+	});
+
+	it("preserves caller temperature for Bedrock models that support it", async () => {
+		const payload = await capturePayload(getModel("amazon-bedrock", "openai.gpt-oss-120b-1:0"), {
+			temperature: 0.5,
+		});
+		assert.equal(payload.inferenceConfig?.temperature, 0.5);
+	});
 
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
@@ -400,13 +420,13 @@ describe("Application inference profile support", () => {
 			}
 
 			// System prompt should have a cache point
-			expect(capturedPayload.system).toHaveLength(2);
-			expect(capturedPayload.system[1]).toHaveProperty("cachePoint");
+			assert.equal(capturedPayload.system.length, 2);
+			assert.ok(Object.hasOwn(capturedPayload.system[1], "cachePoint"));
 
 			// Last user message should have a cache point
 			const lastMsg = capturedPayload.messages[capturedPayload.messages.length - 1];
 			const lastContent = lastMsg.content[lastMsg.content.length - 1];
-			expect(lastContent).toHaveProperty("cachePoint");
+			assert.ok(Object.hasOwn(lastContent, "cachePoint"));
 		},
 	);
 

@@ -281,7 +281,7 @@ describe("ToolExecutionComponent parity", () => {
 				vi.advanceTimersByTime(3_600_000);
 			}
 			component.updateResult({ content: [], isError: false, durationMs: 4_200 });
-			expect(stripAnsi(component.render(120).join("\n"))).toContain("Took 4.2s");
+			assert.ok(stripAnsi(component.render(120).join("\n")).includes("Took 4.2s"));
 		}
 	});
 

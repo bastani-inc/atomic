@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { type Api, getModel, type Model } from "@bastani/pi-ai/compat";
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -52,7 +53,7 @@ describe("interactive API-key login persistence failures", () => {
 			providerName: string,
 		) => Promise<void>;
 		await showApiKeyLoginDialog.call(harness, "example", "Example Provider");
-		expect(harness.programStatus.setBlocked.mock.calls).toEqual([
+		assert.deepEqual(harness.programStatus.setBlocked.mock.calls, [
 			["login", { kind: "auth", message: "Log in to Example Provider" }],
 			["login", undefined],
 		]);

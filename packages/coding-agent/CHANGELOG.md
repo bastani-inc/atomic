@@ -12,7 +12,7 @@
 ### Changed
 
 - Moved the GPT-6 Luna classifier from `openai/gpt-6-luna` to its own API-key-only provider, `openai-decisions/gpt-6-luna`, named "GPT-6 Luna Decisions". `openai/gpt-6-luna` now always means the chat model, and the classifier stays available while `openai` uses ChatGPT sign-in. Update `routerModel`, `compactionModel`, `structured_output` and codemode references that meant the classifier. See [Classifier models](docs/models.md#use-classifier-models).
-- Codemode preserves separate console output items and returned tool output instead of merging them into one text block.
+- Codemode labels returned output items with numbered headers and places console output in a separate trailing block.
 - Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))
 
 ### Fixed
@@ -21,6 +21,7 @@
 - Fixed hyperlinks being disabled in Herdr panes, while keeping image protocols off even when outer-terminal environment variables are inherited ([#10573](https://github.com/earendil-works/pi/issues/10573)).
 - Fixed `outputPad` applying inconsistently to tool results, shell output, summaries, skill invocations, and custom transcript entries. Changing it in `/settings` now updates existing blocks without rebuilding the transcript.
 - Fixed fullscreen text selections surviving a transcript rebuild and selecting unrelated replacement text.
+- Fixed extension-registered MCP servers silently remaining unused when an SDK host has no MCP contribution consumer. Atomic now reports each unhandled server once.
 
 ## [0.9.28-alpha.3] - 2026-10-07
 

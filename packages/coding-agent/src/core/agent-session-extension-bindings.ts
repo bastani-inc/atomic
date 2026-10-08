@@ -219,6 +219,7 @@ function startExtensions(
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
 				if (failures.length) throw new AggregateError(failures, "Extension startup failed");
 				await finalize?.();
+				if (runner === session.extensionRunner) runner.reportUnhandledMcpServers();
 				completeStartup(runner);
 			} finally {
 				unsubscribe();
@@ -919,6 +920,7 @@ async function reloadOwnedGeneration(
 			preserveRunner: true,
 		});
 		this._appliedDefaultTools = new Set(defaultTools);
+		candidateRunner.reportUnhandledMcpServers();
 	} catch (error) {
 		failures.push(error);
 	}

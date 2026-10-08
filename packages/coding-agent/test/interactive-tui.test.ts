@@ -818,9 +818,9 @@ test("drops fullscreen text selection when rebuilding session entries (#9311)", 
 		terminal.input("\x1b[<32;4;2M");
 		terminal.input("\x1b[<0;4;2m");
 		ui.renderNow();
-		expect(ui.hasActiveSelection()).toBe(true);
+		assert.equal(ui.hasActiveSelection(), true);
 		context.renderSessionEntries([]);
-		expect(ui.hasActiveSelection()).toBe(false);
+		assert.equal(ui.hasActiveSelection(), false);
 	} finally {
 		ui.stop();
 	}
