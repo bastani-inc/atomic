@@ -1,5 +1,4 @@
-import { randomUUID } from "crypto";
-import { linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { readFileSync, unlinkSync, writeFileSync } from "fs";
 
 const SOCKET_REPLACEMENT_LOCK_POLL_MS = 20;
 /** A holder writes its pid as it creates the lock, so a lock unreadable for this long was left by a crashed broker. */
@@ -36,24 +35,25 @@ function removeFile(path: string): void {
 }
 
 /**
- * Moves a dead holder's lock aside atomically. If another waiter replaced it first, the moved lock belongs to a live
- * holder and is linked back, which never overwrites a newer lock.
+ * Removes a dead holder's lock without ever touching a live one. Only the waiter that creates the takeover token for
+ * that holder may remove its lock, and while that lock exists no newer lock can be created, so the lock it removes is
+ * still the dead holder's.
  */
 function takeOverDeadHolder(lockPath: string, deadPid: number | undefined): void {
-  const claimed = `${lockPath}.${process.pid}.${randomUUID()}`;
+  const token = `${lockPath}.takeover-${deadPid ?? "unreadable"}`;
   try {
-    renameSync(lockPath, claimed);
-  } catch {
+    writeFileSync(token, `${process.pid}\n`, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const tokenHolder = holderPid(token);
+    if (tokenHolder !== undefined && !isProcessAlive(tokenHolder)) removeFile(token);
     return;
   }
-  if (holderPid(claimed) !== deadPid) {
-    try {
-      linkSync(claimed, lockPath);
-    } catch {
-      // A newer lock already governs the path.
-    }
+  try {
+    if (holderPid(lockPath) === deadPid) removeFile(lockPath);
+  } finally {
+    removeFile(token);
   }
-  removeFile(claimed);
 }
 
 /**
