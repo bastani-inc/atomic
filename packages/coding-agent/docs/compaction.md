@@ -102,7 +102,7 @@ You can also set `compactionModel` in `~/.atomic/agent/settings.json` or a trust
 
 The default, `auto`, or an empty value uses the current session model, including Anthropic models. An exact registered chat-model ID selects that model just for compaction. Registered classifiers and Morph compactors are also selectable. Project settings cannot select `morph/*`; choose Morph globally instead.
 
-An explicit compaction model can send the compactable transcript to a different provider, using that provider's credentials. Choose only providers permitted to receive your conversation. Changing `compactionModel` does not affect branch summaries.
+An explicit compaction model can send the compactable transcript to a different provider, using that provider's credentials. Choose only providers permitted to receive your conversation. Changing `compactionModel` does not affect branch summaries. SDK and extension code can pick a model for a single run with `session.compact({ compactionModel })` or `ctx.compact({ compactionModel })`, which leaves the setting unchanged.
 
 For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
 

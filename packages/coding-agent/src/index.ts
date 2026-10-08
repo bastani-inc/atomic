@@ -113,6 +113,7 @@ export {
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
+	type SessionCompactOptions,
 	type SessionStats,
 } from "./core/agent-session.js";
 // Auth and model runtime

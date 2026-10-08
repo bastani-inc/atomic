@@ -5,6 +5,7 @@
 ### Added
 
 - Added the API-key-only providers `openai-api` and `anthropic-api`, so you can keep a ChatGPT or Claude subscription login on `openai`/`anthropic` and still use an API key for the same models. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time).
+- `session.compact()` and extension `ctx.compact()` accept `compactionModel` to pick the compaction model for one run without changing the `compactionModel` setting. An unknown ID rejects before the active run is interrupted. See [Compaction and tree navigation](docs/sdk.md#compaction-and-tree-navigation).
 
 ### Changed
 

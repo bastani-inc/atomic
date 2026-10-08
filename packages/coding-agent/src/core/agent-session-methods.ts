@@ -71,6 +71,11 @@ import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 
+export interface SessionCompactOptions extends Partial<VerbatimCompactionParameters> {
+	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
+	compactionModel?: string;
+}
+
 export interface VerbatimCompactionApplyOptions {
 	/** Per-model planner credentials; a borrowed fallback uses its own, never the session model's. */
 	resolvePlannerAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
@@ -79,6 +84,7 @@ export interface VerbatimCompactionApplyOptions {
 	compression_ratio?: number;
 	preserve_recent?: number;
 	query?: string;
+	compactionModel?: string;
 	reason: "manual" | "threshold" | "overflow";
 	/** Reports when a session_before_compact override becomes the active compaction source. */
 	onCompactionSource?: (fromExtension: boolean) => void;
@@ -307,7 +313,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel;
 
 	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
-	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
+	compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
 	abortSessionSummary(): void;

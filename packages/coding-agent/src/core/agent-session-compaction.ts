@@ -1,6 +1,7 @@
 import type { Usage } from "@bastani/pi-ai/compat";
 import type {
 	AgentSessionInternalSurface as AgentSession,
+	SessionCompactOptions,
 	VerbatimCompactionApplyOptions,
 } from "./agent-session-methods.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
@@ -15,7 +16,6 @@ import {
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
-	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
@@ -208,7 +208,7 @@ export async function _applyVerbatimCompaction(
 			classify: (classifierModel, context, classifierOptions) =>
 				this._modelRuntime.classify(classifierModel, context, classifierOptions),
 			compactionModel: resolveCompactionModel(
-				this.settingsManager.getCompactionModel(),
+				options.compactionModel ?? this.settingsManager.getCompactionModel(),
 				model,
 				this._modelRuntime.getAllModels(),
 			),
@@ -340,7 +340,7 @@ async function emitManualCompactionFailure(
 async function runOwnedManualCompaction(
 	this: AgentSession,
 	controller: AbortController,
-	options: Partial<VerbatimCompactionParameters>,
+	options: SessionCompactOptions,
 ): Promise<VerbatimCompactionResult> {
 	this._emit({ type: "compaction_start", reason: "manual" });
 	let fromExtension = false;
@@ -355,6 +355,7 @@ async function runOwnedManualCompaction(
 			...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
+			...(options.compactionModel === undefined ? {} : { compactionModel: options.compactionModel }),
 			resolvePlannerAuth: (candidate) => this._getRequiredRequestAuth(candidate, controller.signal),
 			abortController: controller,
 			backupLabel: "compact",
@@ -384,12 +385,12 @@ async function runOwnedManualCompaction(
  * active agent run before it starts, while agent event delivery remains live so
  * a pending threshold check cannot race the requested manual boundary.
  */
-export function compact(
-	this: AgentSession,
-	options: Partial<VerbatimCompactionParameters> = {},
-): Promise<VerbatimCompactionResult> {
+export function compact(this: AgentSession, options: SessionCompactOptions = {}): Promise<VerbatimCompactionResult> {
 	try {
 		assertCompactionOpen(this);
+		if (options.compactionModel !== undefined && this.model) {
+			resolveCompactionModel(options.compactionModel, this.model, this._modelRuntime.getAllModels());
+		}
 	} catch (error) {
 		return Promise.reject(error);
 	}
