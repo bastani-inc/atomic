@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenAI's GPT Image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) as `openai-images` image models for codemode's `models.generateImages()`, extensions, and workflow `generateImages()` calls. They reuse your OpenAI API key, saved for `openai-api` or `openai` or set in `OPENAI_API_KEY`, and have no separate login; a ChatGPT sign-in cannot use them. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time) ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+
 ## [0.9.28] - 2026-10-08
 
 ### Added

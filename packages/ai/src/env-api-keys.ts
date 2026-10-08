@@ -80,6 +80,7 @@ const apiKeyEnvMap: Record<string, string> = {
 	"openai-api": "OPENAI_API_KEY",
 	"anthropic-api": ANTHROPIC_API_KEY_ENV,
 	"openai-decisions": "OPENAI_API_KEY",
+	"openai-images": "OPENAI_API_KEY",
 	azure: "AZURE_OPENAI_API_KEY",
 	nvidia: "NVIDIA_API_KEY",
 	deepseek: "DEEPSEEK_API_KEY",

@@ -30,6 +30,7 @@ import { nvidiaProvider } from "./nvidia.ts";
 import { openaiApiProvider, openaiProvider } from "./openai.ts";
 import { openaiCodexProvider } from "./openai-codex.ts";
 import { openaiDecisionsProvider } from "./openai-decisions.ts";
+import { openaiImagesProvider } from "./openai-images.ts";
 import { opencodeProvider } from "./opencode.ts";
 import { opencodeGoProvider } from "./opencode-go.ts";
 import { openrouterProvider } from "./openrouter.ts";
@@ -171,6 +172,7 @@ export function builtinProviders(): Provider[] {
 		openaiApiProvider(),
 		openaiCodexProvider(),
 		openaiDecisionsProvider(),
+		openaiImagesProvider(),
 		opencodeProvider(),
 		opencodeGoProvider(),
 		openrouterProvider(),

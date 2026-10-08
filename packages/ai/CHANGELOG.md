@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added the `openai-images` provider (`openaiImagesProvider()`) and the `openai-images` image API for OpenAI's Images API, with `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`. Text input becomes the prompt; image inputs send the request to `/images/edits`. `OpenAIImagesOptions` adds `size`, `quality`, `n`, and `background`, and `Models.generateImages()` options are now typed per image API through `ImageApiOptionsMap`. Like `openai-decisions`, the provider has no login of its own: it reuses the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`, and skips a ChatGPT sign-in on `openai` ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+
 ## [0.9.28] - 2026-10-08
 
 ### Breaking Changes
