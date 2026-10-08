@@ -148,6 +148,7 @@ test("a persistent monitoring read timeout is a dependency failure that never in
 	assert.equal(await health.check(), "managed");
 	assert.equal(recoveries, 0);
 	assert.equal(invalidations, 0);
+	assert.equal(health.lastFailure, undefined, "an answered probe clears the stale health-check failure (#3491)");
 	slow = true;
 	await assert.rejects(health.check());
 	slow = false;
