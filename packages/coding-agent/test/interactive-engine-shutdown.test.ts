@@ -6,6 +6,7 @@ import { waitForInteractiveEngineBound } from "../src/modes/interactive-engine/e
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import { rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
 import type { RpcEvent, RpcModelCatalog, RpcSessionState, RpcSlashCommand } from "../src/modes/rpc/rpc-types.ts";
+import { arg, fakeHerdr } from "./helpers/herdr.js";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 interface Deferred<T> {
@@ -62,7 +63,7 @@ function createRuntime(
 		onGenerationEnded(listener: () => void): () => void;
 		waitForInteractiveEngineBound(): Promise<void>;
 		stop(): Promise<void>;
-		announceExplicitQuit?(): Promise<void>;
+		announceExplicitQuit?(): Promise<boolean>;
 		getState(): Promise<RpcSessionState>;
 		requestInternal<T>(command: { type: string }): Promise<T>;
 		getCommands(): Promise<readonly RpcSlashCommand[]>;
@@ -208,7 +209,7 @@ describe("isolated interactive startup shutdown", () => {
 		}
 	});
 
-	async function disposeAndObserve(options?: { fromSignal?: boolean }) {
+	async function disposeAndObserve(options?: { fromSignal?: boolean }, acknowledged = true) {
 		const order: string[] = [];
 		const events: SessionShutdownEvent[] = [];
 		const harness = await createHarness({
@@ -227,6 +228,7 @@ describe("isolated interactive startup shutdown", () => {
 				waitForInteractiveEngineBound: async () => {},
 				announceExplicitQuit: async () => {
 					order.push("announce");
+					return acknowledged;
 				},
 				stop: async () => {
 					order.push("stop");
@@ -254,5 +256,29 @@ describe("isolated interactive startup shutdown", () => {
 
 		assert.deepEqual(order, ["stop", "stop"]);
 		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
+	});
+
+	async function herdrReleasesAfterQuit(acknowledged: boolean): Promise<string[][]> {
+		const fake = await fakeHerdr();
+		for (const [name, value] of Object.entries(fake.env)) vi.stubEnv(name, value);
+		try {
+			await disposeAndObserve(undefined, acknowledged);
+			return (await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args);
+		} finally {
+			vi.unstubAllEnvs();
+			await fake.dispose();
+		}
+	}
+
+	test("an explicit quit no engine child recorded releases Herdr's registration from the host (#3492)", async () => {
+		const [release, ...rest] = await herdrReleasesAfterQuit(false);
+
+		assert.deepEqual(rest, []);
+		assert.deepEqual(release?.slice(0, 2), ["pane", "release-agent"]);
+		assert.equal(arg(release, "--agent"), "atomic");
+	});
+
+	test("an explicit quit the engine child recorded leaves the release to that child (#3492)", async () => {
+		assert.deepEqual(await herdrReleasesAfterQuit(true), []);
 	});
 });

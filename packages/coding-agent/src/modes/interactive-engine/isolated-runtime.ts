@@ -6,6 +6,8 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../.
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
+import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -577,7 +579,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
 			// is a SIGTERM, which the engine cannot tell from this process being signalled.
 			// Optional like the other transport surfaces focused test doubles omit.
-			if (!options?.fromSignal) await this.client.announceExplicitQuit?.();
+			if (!options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false) {
+				// No engine child recorded the quit, so none will release Herdr's registration; this host loads no Herdr reporter.
+				const herdr = captureHerdrEnvironment(process.env);
+				if (herdr) await releaseUnownedPaneRegistration(herdr);
+			}
 			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown();
 			// A replacement may have spawned while shutdown joined recovery; the

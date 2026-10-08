@@ -45,7 +45,7 @@ describe("RpcClient.announceExplicitQuit", () => {
 		const client = await startClient("ack");
 		try {
 			const startedAt = performance.now();
-			await client.announceExplicitQuit(LONG_WAIT_MS);
+			assert.equal(await client.announceExplicitQuit(LONG_WAIT_MS), true);
 			assert.ok(performance.now() - startedAt < LONG_WAIT_MS / 2);
 		} finally {
 			await client.stop();
@@ -56,7 +56,7 @@ describe("RpcClient.announceExplicitQuit", () => {
 		const client = await startClient("exit");
 		try {
 			const startedAt = performance.now();
-			await client.announceExplicitQuit(LONG_WAIT_MS);
+			assert.equal(await client.announceExplicitQuit(LONG_WAIT_MS), false);
 			assert.ok(performance.now() - startedAt < LONG_WAIT_MS / 2);
 		} finally {
 			await client.stop();
@@ -67,7 +67,7 @@ describe("RpcClient.announceExplicitQuit", () => {
 		const client = await startClient("ignore");
 		try {
 			const startedAt = performance.now();
-			await client.announceExplicitQuit(100);
+			assert.equal(await client.announceExplicitQuit(100), false);
 			assert.ok(performance.now() - startedAt >= 90);
 		} finally {
 			await client.stop();
@@ -75,6 +75,9 @@ describe("RpcClient.announceExplicitQuit", () => {
 	});
 
 	test("returns immediately when no engine child is running (#3492)", async () => {
-		await new RpcClient({ interactiveEngine: { onDiagnostic: () => {} } }).announceExplicitQuit(LONG_WAIT_MS);
+		assert.equal(
+			await new RpcClient({ interactiveEngine: { onDiagnostic: () => {} } }).announceExplicitQuit(LONG_WAIT_MS),
+			false,
+		);
 	});
 });

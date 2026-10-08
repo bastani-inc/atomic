@@ -212,24 +212,25 @@ export class RpcClient extends RpcClientApi {
 	 * record that. Call it before `stop()` for a quit the user asked for: stopping closes
 	 * stdin and sends SIGTERM, which is also how the child is stopped when the host itself
 	 * was signalled, so only this announcement lets the child tell the two apart.
-	 * Resolves without waiting when there is no live engine child.
+	 * Resolves true only when the child acknowledged the quit, and false without waiting when
+	 * there is no live engine child, or when the child exits or misses the deadline first.
 	 */
-	async announceExplicitQuit(timeoutMs = EXPLICIT_QUIT_ACK_TIMEOUT_MS): Promise<void> {
+	async announceExplicitQuit(timeoutMs = EXPLICIT_QUIT_ACK_TIMEOUT_MS): Promise<boolean> {
 		const writer = this.stdinWriter;
-		if (!writer || !this.engineMonitor || this.generation <= this.lastEndedGeneration) return;
+		if (!writer || !this.engineMonitor || this.generation <= this.lastEndedGeneration) return false;
 		const generation = this.generation;
-		const done = Promise.withResolvers<void>();
-		this.explicitQuitAck = { generation, acknowledge: done.resolve };
+		const done = Promise.withResolvers<boolean>();
+		this.explicitQuitAck = { generation, acknowledge: () => done.resolve(true) };
 		const stopListening = this.onGenerationEnded((event) => {
-			if (event.generation === generation) done.resolve();
+			if (event.generation === generation) done.resolve(false);
 		});
-		const timer = setTimeout(done.resolve, timeoutMs);
+		const timer = setTimeout(() => done.resolve(false), timeoutMs);
 		try {
 			this.bestEffort(
 				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
 				"explicit quit",
 			);
-			await done.promise;
+			return await done.promise;
 		} finally {
 			clearTimeout(timer);
 			stopListening();

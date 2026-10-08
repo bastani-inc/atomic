@@ -40,11 +40,11 @@ function diagnostic(owner: PaneOwner, value: HerdrDiagnostic): void {
 }
 
 /** Every admitted command, including release, takes a fresh strictly increasing sequence: Herdr ignores equal or older `--seq`. */
-function allocateSequence(owner: PaneOwner): void {
+function allocateSequence(owner: Pick<PaneOwner, "options" | "seq">): void {
 	owner.seq = highWater = Math.max((owner.options.clock ?? Date.now)(), highWater + 1);
 }
 
-function argv(owner: PaneOwner, command: string): string[] {
+function argv(owner: Pick<PaneOwner, "environment" | "seq">, command: string): string[] {
 	return [
 		"pane",
 		command,
@@ -190,4 +190,18 @@ function stopPaneReporting(owner: PaneOwner, releaseRegistration: boolean): Prom
 			owners.delete(owner.environment.paneId);
 	})();
 	return owner.release;
+}
+
+/**
+ * Clears Atomic's registration in this pane when no reporter can: an explicit quit the engine child never recorded,
+ * because it was stopped mid-recovery or did not answer, would otherwise leave the conversation eligible for restore.
+ */
+export async function releaseUnownedPaneRegistration(
+	environment: HerdrEnvironment,
+	options: PaneReportingOptions = {},
+): Promise<void> {
+	const owner: Pick<PaneOwner, "environment" | "options" | "seq"> = { environment, options, seq: 0 };
+	allocateSequence(owner);
+	const result = await executeHerdr(environment, argv(owner, "release-agent"), options.timeoutMs);
+	if (result) options.diagnostic?.(result);
 }
