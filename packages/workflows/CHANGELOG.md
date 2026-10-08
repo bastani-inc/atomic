@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.28-alpha.4] - 2026-10-07
+
 ### Added
 
 - Added a Claude Haiku 5.5 prompt-engineering guide based on Anthropic's model-specific guidance, covering effort, search grounding, JSON/tool interactions, completion, verification, and refusal handling.

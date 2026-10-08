@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.28-alpha.4] - 2026-10-07
+
 ### Breaking Changes
 
 - Stream functions must return `AssistantMessageEventStream`, for example from `createAssistantMessageEventStream()`. Plain `EventStream` subclasses are no longer assignable to this response stream type.
