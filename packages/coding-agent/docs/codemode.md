@@ -68,7 +68,7 @@ The store is for small state such as IDs, cursors, or summaries. One value may h
 
 ## Models
 
-`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models. Neither kind appears in `/model`.
+`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models, and OpenAI's GPT Image models under `openai-images`, such as `gpt-image-2.5-flare`, which reuse your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time). Neither kind appears in `/model`.
 
 ```ts
 type ModelType = "chat" | "image" | "classifier";

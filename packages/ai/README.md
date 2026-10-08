@@ -404,7 +404,7 @@ if (modelAuth) {
 
 Both overloads resolve credentials, refresh expired OAuth when necessary, and may return an auth-derived `apiKey`, `headers`, or `baseUrl`. `getAuth()` resolves `undefined` for unconfigured providers and rejects with `ModelsError` when something is actually broken (`"oauth"`: token refresh failed, credential preserved for re-login; `"auth"`: key resolution or credential store failure). Request paths surface the same failures as stream errors.
 
-A provider can reuse other providers' stored API keys instead of offering its own login. List their IDs in `ApiKeyAuth.borrowCredentialsFrom`, or build the auth with `sharedApiKeyAuth(name, envVars, providerIds)`. The provider then has no stored credential of its own: the first listed provider with a stored API key supplies it, in the order given. Stored OAuth credentials are skipped, and the environment variables apply when none qualifies. `openai-decisions` uses this with `['openai-api', 'openai']`.
+A provider can reuse other providers' stored API keys instead of offering its own login. List their IDs in `ApiKeyAuth.borrowCredentialsFrom`, or build the auth with `sharedApiKeyAuth(name, envVars, providerIds)`. The provider then has no stored credential of its own: the first listed provider with a stored API key supplies it, in the order given. Stored OAuth credentials are skipped, and the environment variables apply when none qualifies. `openai-decisions` and `openai-images` use this with `['openai-api', 'openai']`.
 
 `getAuth()`, `checkAuth()`, `getAvailable()`, login, and logout accept optional caller cancellation through their existing options or interaction objects and remain unbounded when no signal is supplied. Provider `login`, `ApiKeyAuth.check`, `ApiKeyAuth.resolve`, and `OAuthAuth.refresh` implementations always receive a concrete signal and must honor it for blocking work.
 
@@ -828,7 +828,7 @@ const pixels = createProvider({
 models.setProvider(pixels);
 ```
 
-The old global API (`getImageModel()` / `getImageModels()` / `getImageProviders()` / `generateImages()`) remains available on the [compat entrypoint](#migrating-from-the-old-global-api):
+The old global API (`getImageModel()` / `getImageModels()` / `getImageProviders()` / `generateImages()`) remains available on the [compat entrypoint](#migrating-from-the-old-global-api). Its `generateImages()` dispatches on `model.api` and takes `apiKey` explicitly:
 
 ```typescript
 import { getImageModel, generateImages } from '@bastani/pi-ai/compat';
@@ -839,6 +839,18 @@ const result = await generateImages(model, {
 }, {
   apiKey: process.env.OPENROUTER_API_KEY
 });
+```
+
+`registerImagesApiProvider({ api, generateImages })` from the compat entrypoint is the extension point for image backends that are not built in. It registers an implementation for an image API ID, and the global `generateImages()` then dispatches models with that `api` to it:
+
+```typescript
+import { generateImages, registerImagesApiProvider } from '@bastani/pi-ai/compat';
+
+registerImagesApiProvider({
+  api: 'pixels-images',
+  generateImages: async (model, context, options) => { /* call the backend with options?.apiKey */ },
+});
+const result = await generateImages(pixelsModel, context, { apiKey: process.env.PIXELS_API_KEY });
 ```
 
 Some models also support image input:
@@ -861,6 +873,21 @@ Check capabilities on the model metadata:
 console.log(model.input);  // ['text'] or ['text', 'image']
 console.log(model.output); // ['image'] or ['image', 'text']
 ```
+
+### OpenAI Images API
+
+The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) through the Images API. It borrows the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT OAuth credential on `openai` is skipped, so with only that credential the models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`. Text blocks become the `prompt`. Without image blocks the request goes to `/images/generations`; with them it goes to `/images/edits`, uploading each image block. `OpenAIImagesOptions` adds `size`, `quality`, `n`, and `background`, each sent only when set:
+
+```typescript
+import { getBuiltinImageModel } from '@bastani/pi-ai/providers/all';
+
+const flare = getBuiltinImageModel('openai-images', 'gpt-image-2.5-flare');
+const result = await models.generateImages(flare, {
+  input: [{ type: 'text', text: 'A red fox in the snow, watercolor' }]
+}, { size: '1024x1024', quality: 'low' });
+```
+
+Each returned image is an `ImageContent` block whose `mimeType` follows the response's `output_format`.
 
 ### Notes and Limitations
 
