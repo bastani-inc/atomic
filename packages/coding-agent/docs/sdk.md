@@ -420,7 +420,7 @@ interface AgentSession {
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
   // Verbatim line compaction
-  compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
+  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // Partial<VerbatimCompactionParameters> & { compactionModel?: string }
   abortCompaction(): void;
 
   // Abort current operation
@@ -492,6 +492,12 @@ Caller-supplied `executeBash()` IDs remain correlation IDs, not unique operation
 #### Compaction and tree navigation
 
 `compact()` removes selected older transcript lines without asking the model to rewrite retained text. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and respects the configured recent-message count. See [Compaction](/compaction) for controls and [Session format](/session-format#compactionentry) for persisted fields.
+
+Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts the same exact `provider/model` IDs as the [`compactionModel` setting](/compaction#compaction-model): a chat model, a registered classifier, or `morph/morph-compactor`. An unknown ID rejects before the active run is interrupted. A call made while another manual compaction is running joins that run and uses its model.
+
+```typescript
+await session.compact({ compactionModel: "typesafe/jev-latest", query: "keep the auth decisions" });
+```
 
 `session.navigateTree()` rejects during streaming, compaction, or branch summarization rather than queueing the navigation. The active branch stays unchanged. Wait for the operation to finish before retrying.
 

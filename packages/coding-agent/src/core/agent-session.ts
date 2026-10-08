@@ -66,6 +66,7 @@ import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
+export type { SessionCompactOptions } from "./agent-session-methods.ts";
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
 export { parseSkillBlock } from "./agent-session-skill-block.ts";
 export type {

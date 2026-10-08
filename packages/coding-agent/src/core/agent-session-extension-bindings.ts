@@ -595,6 +595,7 @@ export function _bindExtensionCore(
 								: { compression_ratio: options.compression_ratio }),
 							...(options?.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 							...(options?.query === undefined ? {} : { query: options.query }),
+							...(options?.compactionModel === undefined ? {} : { compactionModel: options.compactionModel }),
 						});
 						options?.onComplete?.(result);
 					} catch (error) {

@@ -41,6 +41,8 @@ export interface CompactOptions {
 	preserve_recent?: number;
 	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
 	query?: string;
+	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
+	compactionModel?: string;
 	onComplete?: (result: VerbatimCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
