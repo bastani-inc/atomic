@@ -100,7 +100,10 @@ export function isNativeFastRouteApi(api: Api): api is "openai-responses" | "ope
  * because selecting it would send an ordinary request under a name that promises otherwise.
  */
 export function usesOpenAIFastServiceTier(model: Pick<Model<Api>, "api" | "provider">): boolean {
-	return isNativeFastRouteApi(model.api) && (model.provider === "openai" || model.provider === "openai-codex");
+	return (
+		isNativeFastRouteApi(model.api) &&
+		(model.provider === "openai" || model.provider === "openai-api" || model.provider === "openai-codex")
+	);
 }
 
 /**
@@ -131,7 +134,7 @@ export function isGitHubCopilotModel(model: Pick<Model<Api>, "provider">): boole
 export function usesAnthropicFastMode(model: Pick<Model<Api>, "api" | "id" | "provider">): boolean {
 	return (
 		model.api === "anthropic-messages" &&
-		model.provider === "anthropic" &&
+		(model.provider === "anthropic" || model.provider === "anthropic-api") &&
 		ANTHROPIC_FAST_MODE_MODEL_IDS.has(model.id)
 	);
 }

@@ -63,7 +63,7 @@ const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 // The Codex backend accepts zstd-compressed request bodies on the SSE responses
 // endpoint (the same endpoint the official Codex client compresses against).
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
-const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-api", "openai-codex", "opencode"]);
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";

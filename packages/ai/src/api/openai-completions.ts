@@ -1310,7 +1310,7 @@ export function convertMessages(
 			return `${prefix}_${hash}`;
 		}
 
-		if (model.provider === "openai") return id.length > 40 ? id.slice(0, 40) : id;
+		if (model.provider === "openai" || model.provider === "openai-api") return id.length > 40 ? id.slice(0, 40) : id;
 		return id;
 	};
 

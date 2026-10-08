@@ -67,6 +67,12 @@ Complete the browser callback, or paste the full callback URL into the login dia
 
 Apps using `@bastani/pi-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex browser-login originator. ChatGPT sign-in keeps `Atomic` as its default name.
 
+### Subscription and API key at the same time
+
+`openai` and `anthropic` hold one credential each, so a subscription login there replaces the API key. To keep both, use the API-key-only providers `openai-api` and `anthropic-api`. They list the same chat models, send requests to the same endpoints, and read `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` unless you save a key with `/login openai-api` or `/login anthropic-api`. They never offer subscription sign-in, and `anthropic-api` ignores `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN`.
+
+For example, sign in with ChatGPT under `openai` and select `openai/gpt-6-sol` for subscription chat, while a workflow stage pinned to `openai-api/gpt-6-sol` bills the API key.
+
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription
@@ -218,9 +224,11 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | Provider                           | Environment Variable                                                      | `auth.json` key              |
 | ---------------------------------- | ------------------------------------------------------------------------- | ---------------------------- |
 | Anthropic                          | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN`                 | `anthropic`                  |
+| Anthropic (API key only)           | `ANTHROPIC_API_KEY`                                                       | `anthropic-api`              |
 | Ant Ling                           | `ANT_LING_API_KEY`                                                        | `ant-ling`                   |
 | Azure                              | `AZURE_OPENAI_API_KEY`                                                    | `azure`                      |
 | OpenAI                             | `OPENAI_API_KEY`                                                          | `openai`                     |
+| OpenAI (API key only)              | `OPENAI_API_KEY`                                                          | `openai-api`                 |
 | DeepSeek                           | `DEEPSEEK_API_KEY`                                                        | `deepseek`                   |
 | NVIDIA NIM                         | `NVIDIA_API_KEY`                                                          | `nvidia`                     |
 | Google Gemini                      | `GEMINI_API_KEY`                                                          | `google`                     |

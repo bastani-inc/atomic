@@ -42,7 +42,7 @@ import {
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
-const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-api", "openai-codex", "opencode"]);
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
@@ -241,7 +241,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			const errorMessage = formatProviderError(
 				normalizeProviderError(error),
-				`${model.provider === "openai" ? "OpenAI" : model.provider} API error`,
+				`${model.provider === "openai" || model.provider === "openai-api" ? "OpenAI" : model.provider} API error`,
 			);
 			output.errorMessage = errorMessage.includes("subscription_sharing_usage_limit_exceeded")
 				? `${errorMessage}\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
