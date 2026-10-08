@@ -202,6 +202,28 @@ test("shows the startup trust prompt standalone instead of mounting it in the he
 	assert.equal(start.mock.calls.length, 1);
 });
 
+test("routes a trust prompt buffered before init() to the standalone selector", async () => {
+	const decision = deferred();
+	const answer = deferred<string | undefined>();
+	startup.trustSettled.mockReturnValue(decision.promise);
+	startup.select.mockReturnValue(answer.promise);
+	const { mode, start, editorContainer } = createMode({ holdTuiForStartupTrust: true });
+
+	const selection = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const init = mode.init();
+	await flush();
+
+	assert.equal(startup.select.mock.calls.length, 1);
+	assert.equal(editorContainer.children.length, 0);
+	assert.equal(start.mock.calls.length, 0);
+
+	answer.resolve("Trust (this session only)");
+	assert.equal(await selection, "Trust (this session only)");
+	decision.resolve();
+	await init;
+	assert.equal(start.mock.calls.length, 1);
+});
+
 test("shows startup trust confirmations and inputs standalone while the TUI is held", async () => {
 	const decision = deferred();
 	startup.trustSettled.mockReturnValue(decision.promise);
