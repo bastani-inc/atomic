@@ -209,7 +209,11 @@ describe("isolated interactive startup shutdown", () => {
 		}
 	});
 
-	async function disposeAndObserve(options?: { fromSignal?: boolean }, acknowledged = true) {
+	async function disposeAndObserve(
+		options?: { fromSignal?: boolean },
+		acknowledged = true,
+		onStop: () => Promise<void> = async () => {},
+	) {
 		const order: string[] = [];
 		const events: SessionShutdownEvent[] = [];
 		const harness = await createHarness({
@@ -232,6 +236,7 @@ describe("isolated interactive startup shutdown", () => {
 				},
 				stop: async () => {
 					order.push("stop");
+					await onStop();
 				},
 				getState: async () => createState(),
 				requestInternal: async <T>(_command: { type: string }) => undefined as T,
@@ -262,7 +267,9 @@ describe("isolated interactive startup shutdown", () => {
 		const fake = await fakeHerdr();
 		for (const [name, value] of Object.entries(fake.env)) vi.stubEnv(name, value);
 		try {
-			await disposeAndObserve(undefined, acknowledged);
+			await disposeAndObserve(undefined, acknowledged, async () => {
+				assert.deepEqual(await fake.calls(), [], "the release must wait until every engine child is stopped");
+			});
 			return (await fake.calls()).filter((call) => call.phase === "start").map((call) => call.args);
 		} finally {
 			vi.unstubAllEnvs();
@@ -270,7 +277,7 @@ describe("isolated interactive startup shutdown", () => {
 		}
 	}
 
-	test("an explicit quit no engine child recorded releases Herdr's registration from the host (#3492)", async () => {
+	test("an explicit quit no engine child recorded releases Herdr's registration from the host after every child stops (#3492)", async () => {
 		const [release, ...rest] = await herdrReleasesAfterQuit(false);
 
 		assert.deepEqual(rest, []);
