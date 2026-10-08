@@ -1,6 +1,6 @@
 // #3105: copied unchanged into a real npm installation; never use checkout imports or CLI hosts.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -816,46 +816,67 @@ for await (const line of createInterface({ input: process.stdin })) {
 			await session.dispose();
 		}
 	} else {
-		const run = (file, args = [], extraEnv = {}) => {
-			const result = spawnSync(process.execPath, [fileURLToPath(new URL(file, import.meta.url)), ...args], {
-				encoding: "utf8",
-				timeout: 60_000,
-				env: { ...process.env, ...extraEnv },
+		const run = async (file, args = [], extraEnv = {}) => {
+			const started = performance.now();
+			const result = await new Promise((resolve) => {
+				execFile(
+					process.execPath,
+					[fileURLToPath(new URL(file, import.meta.url)), ...args],
+					{ encoding: "utf8", timeout: 60_000, env: { ...process.env, ...extraEnv } },
+					(error, stdout, stderr) => resolve({ error, stdout, stderr }),
+				);
 			});
-			assert.equal(result.status, 0, `${file} ${args}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+			console.log(
+				`[packed-node-consumer] parity ${file} ${args.join(" ")}: ${Math.round(performance.now() - started)}ms (status=${result.error ? (result.error.code ?? result.error.signal ?? "error") : 0})`,
+			);
+			assert.equal(result.error, null, `${file} ${args}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
 			assert.equal(withoutSqliteExperimentalWarning(result.stderr), "", `${file}: unsolicited diagnostics`);
 			return result.stdout;
 		};
-		for (const reply of ["true", "false", "cancel", "missing", "stale", "invalid", "duplicate"])
-			run("./consumer-parity.mjs", [`gate-${reply}`]);
-		run("./consumer-parity.mjs", ["lifecycle"]);
-		run("./consumer-parity.mjs", ["prompt"]);
-		const persisted = join(root, "persisted");
-		mkdirSync(persisted);
-		run("./consumer-parity.mjs", ["persist-start", persisted]);
-		run("./consumer-parity.mjs", ["persist-resume", persisted]);
-		run("./consumer-parity.mjs", ["children"]);
-		const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
-		const durable = JSON.parse(run("./sdk-host-built-node.mjs", [], {
-			ATOMIC_MANAGED_TEST_HOME: process.env.HOME,
-			ATOMIC_POSTGRES_PORT: String(metadata.server.port),
-			PGPORT: "0",
-		}).trim());
-		assert.equal(durable.effects, 1);
-		assert.equal(
-			durable.hash,
-			createHash("sha256")
-				.update(readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)))
-				.digest("hex"),
-		);
-		for (const file of [
-			"sdk-host-lazy-mcp.mjs",
-			"sdk-host-web-owners.mjs",
-			"sdk-host-web-unavailable.mjs",
-			"sdk-host-intercom-owners.mjs",
-			"sdk-host-mcp-diagnostics.mjs",
-		])
-			run(`./${file}`);
+		const independentHosts = (async () => {
+			const files = [
+				"sdk-host-lazy-mcp.mjs",
+				"sdk-host-web-owners.mjs",
+				"sdk-host-web-unavailable.mjs",
+				"sdk-host-intercom-owners.mjs",
+				"sdk-host-mcp-diagnostics.mjs",
+			];
+			const results = [];
+			for (let index = 0; index < files.length; index += 2) {
+				results.push(
+					...await Promise.allSettled(files.slice(index, index + 2).map((file) => run(`./${file}`))),
+				);
+			}
+			return results;
+		})();
+		try {
+			for (const reply of ["true", "false", "cancel", "missing", "stale", "invalid", "duplicate"])
+				await run("./consumer-parity.mjs", [`gate-${reply}`]);
+			await run("./consumer-parity.mjs", ["lifecycle"]);
+			await run("./consumer-parity.mjs", ["prompt"]);
+			const persisted = join(root, "persisted");
+			mkdirSync(persisted);
+			await run("./consumer-parity.mjs", ["persist-start", persisted]);
+			await run("./consumer-parity.mjs", ["persist-resume", persisted]);
+			await run("./consumer-parity.mjs", ["children"]);
+			const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
+			const durable = JSON.parse((await run("./sdk-host-built-node.mjs", [], {
+				ATOMIC_MANAGED_TEST_HOME: process.env.HOME,
+				ATOMIC_POSTGRES_PORT: String(metadata.server.port),
+				PGPORT: "0",
+			})).trim());
+			assert.equal(durable.effects, 1);
+			assert.equal(
+				durable.hash,
+				createHash("sha256")
+					.update(readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)))
+					.digest("hex"),
+			);
+		} finally {
+			for (const result of await independentHosts) {
+				if (result.status === "rejected") throw result.reason;
+			}
+		}
 	}
 } finally {
 	await awaitFixtureBrokerExit(join(root, "agent"));
