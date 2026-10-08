@@ -165,7 +165,11 @@ test("public stage auto asks the router about the actual prompt before admission
 	assert.equal(result.status, "completed", result.error);
 	assert.deepEqual(f.admissions, ["decision-test/chat"]);
 	assert.equal(f.infer.mock.calls.length, 1);
-	assert.deepEqual(f.store.runs()[0]?.stages[0]?.routerSelection, { model: "decision-test/chat", effort: null });
+	assert.deepEqual(f.store.runs()[0]?.stages[0]?.routerSelection, {
+		model: "decision-test/chat",
+		effort: null,
+		candidates: ["decision-test/chat"],
+	});
 	assert.equal(f.store.runs()[0]?.stages[0]?.model, "decision-test/chat");
 	const state = JSON.parse(
 		f.infer.mock.calls[0]![1].messages.find((message) => message.role === "user")!.content as string,
@@ -386,8 +390,8 @@ test("chain and parallel inherit auto and route expanded previous context", asyn
 			assert.deepEqual(
 				results.map((r) => r.routerSelection),
 				[
-					{ model: "decision-test/chat", effort: null },
-					{ model: "decision-test/chat", effort: null },
+					{ model: "decision-test/chat", effort: null, candidates: ["decision-test/chat"] },
+					{ model: "decision-test/chat", effort: null, candidates: ["decision-test/chat"] },
 				],
 			);
 			await ctx.parallel(
@@ -507,7 +511,11 @@ test("reusing an auto stage session makes only one decision and retains selected
 	await ctx.prompt("Actual task");
 	await ctx.prompt("Next prompt");
 	assert.equal(f.infer.mock.calls.length, 1);
-	assert.deepEqual(ctx.__modelFallbackMeta().routerSelection, { model: "decision-test/chat", effort: null });
+	assert.deepEqual(ctx.__modelFallbackMeta().routerSelection, {
+		model: "decision-test/chat",
+		effort: null,
+		candidates: ["decision-test/chat"],
+	});
 	await ctx.__dispose();
 });
 
@@ -636,6 +644,7 @@ test("reasoning fallback preserves explicit and inherited efforts and immutable 
 			model: "decision-test/primary",
 			effort: "high",
 			fallbacks: [{ model: "decision-test/fallback", effort: "high" }],
+			candidates: ["decision-test/primary", "decision-test/fallback"],
 		});
 		assert.equal(ctx.__modelFallbackMeta().model, "decision-test/fallback");
 		assert.equal(f.infer.mock.calls.length, 2);
@@ -1140,4 +1149,122 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 	} finally {
 		await ctx.__dispose();
 	}
+});
+
+test("an auto stage whose modelRouting gate leaves no candidate fails before admission and names the setting (#3528)", async () => {
+	const f = await fixture();
+	const models = workflowModelCatalogFromContext({
+		model: decisionModel,
+		modelRegistry: f.modelRegistry,
+		getRouterModel: () => "decision-test/chat",
+		getModelRouting: () => ({ excludedModels: ["decision-test/*"] }),
+	});
+	const def = workflow({
+		name: "gated-auto",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("gated", { model: "auto" }).prompt("Solve this task");
+			return {};
+		},
+	});
+	const result = await run(def, {}, { ...f, models });
+	assert.equal(result.status, "failed");
+	assert.match(result.error ?? "", /modelRouting\.excludedModels setting/u);
+	assert.deepEqual(f.admissions, [], "an empty pool never falls back to the unfiltered catalog");
+	assert.equal(f.infer.mock.calls.length, 0);
+});
+
+test("builtin stages that omit a model route only to models the modelRouting gate admits (#3528)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
+	const models = workflowModelCatalogFromContext({
+		model: decisionModel,
+		modelRegistry: f.modelRegistry,
+		getRouterModel: () => "decision-test/chat",
+		getModelRouting: () => ({ allowedModels: ["decision-test/oth*"] }),
+	});
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-builtin-gated-auto-"));
+	try {
+		const parent = workflow({
+			name: "builtin-gated-parent",
+			description: "Compose a builtin without choosing its models",
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(classifyAndAct, {
+					inputs: { prompt: "Inspect the parser", categories: ["analysis"], confidence_threshold: 0.75 },
+				});
+				return {};
+			},
+		});
+		const result = await run(
+			parent,
+			{},
+			{
+				...f,
+				models,
+				cwd,
+				adapters: {
+					agentSession: {
+						async create(options) {
+							f.admissions.push(`${options.model?.provider}/${options.model?.id}`);
+							const session = structuredOutputMockSession(
+								{ customTools: options.customTools },
+								{ category: "analysis", confidence: 1, rationale: "Read-only inspection" },
+							);
+							return { ...session, model: options.model, thinkingLevel: "off" as const };
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(f.admissions, ["decision-test/other", "decision-test/other"]);
+		const selections = f.store
+			.runs()
+			.flatMap((run) => run.stages)
+			.flatMap((stage) => (stage.routerSelection ? [stage.routerSelection] : []));
+		assert.equal(selections.length, 2);
+		for (const selection of selections)
+			assert.deepEqual(selection, {
+				model: "decision-test/other",
+				effort: null,
+				candidates: ["decision-test/other"],
+			});
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("durable checkpoints keep routerSelection candidates and reject malformed lists (#3528)", async () => {
+	const backend = new InMemoryDurableBackend();
+	backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
+	const selection = { model: "decision-test/chat", effort: null, candidates: ["decision-test/chat", "other/model"] };
+	await recordStageSessionCheckpoint(
+		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },
+		{
+			id: "s",
+			name: "task",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+			replayKey: "stage:test",
+			sessionFile: "/synthetic/session.jsonl",
+			routerSelection: selection,
+		},
+	);
+	const checkpoint = backend.listCheckpoints("auto")[0]!;
+	const encoded = encodeCheckpoint(checkpoint);
+	const decoded = decodeToCheckpoint("auto", checkpoint.checkpointId, encoded);
+	assert.ok(decoded?.kind === "stage");
+	assert.deepEqual(decoded.routerSelection, selection);
+	for (const candidates of ["decision-test/chat", [1], [null]])
+		assert.equal(
+			decodeToCheckpoint("auto", checkpoint.checkpointId, {
+				...encoded,
+				routerSelection: { ...selection, candidates },
+			}),
+			undefined,
+		);
 });

@@ -56,7 +56,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
 | `routerModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
-| `modelRouting` | object | `{}` | Provider filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays). Does not change `routerModel`. See [modelRouting](#modelrouting). |
+| `modelRouting` | object | `{}` | Provider and model filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays), `allowedModels` and `excludedModels` (model ID or glob pattern arrays). Does not change `routerModel`. See [modelRouting](#modelrouting). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -100,19 +100,31 @@ Remove secrets from routing tasks, inputs, and workflow descriptions/contracts b
 {
   "modelRouting": {
     "allowedProviders": ["github-copilot", "openai-codex", "anthropic"],
-    "excludedProviders": ["openrouter"]
+    "excludedProviders": ["openrouter"],
+    "allowedModels": ["github-copilot/*", "anthropic/claude-sonnet-*", "openai-codex/gpt-5.5"],
+    "excludedModels": ["*-fast"]
   }
 }
 ```
 
-Limits which providers' models workflow stages and subagents with `model: "auto"` can be routed to. It filters the candidates only; the model that makes the decision is still `routerModel`.
+Limits which models workflow stages and subagents with `model: "auto"` can be routed to, including builtin workflow stages that do not name a model. It filters the candidates only; the model that makes the decision is still `routerModel`.
 
 - `allowedProviders`: when nonempty, only models from these providers are candidates.
 - `excludedProviders`: models from these providers are never candidates, even if they are also allowed.
+- `allowedModels`: when nonempty, only models matching one of these patterns are candidates.
+- `excludedModels`: models matching any of these patterns are never candidates, even if they are also allowed.
 
-Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so this setting cannot separate them.
+Use provider IDs as shown by `/model` or `workflow({ action: "models" })`, such as `github-copilot`, `openai-codex`, `anthropic`, or `openrouter`. For example, to route only to your subscriptions, exclude the API-billed providers you have configured. The Claude subscription and the Anthropic API both use the `anthropic` provider, so the provider lists cannot separate them.
 
-A project list replaces the global list of the same name; the other list is kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of these for that call. Provider lists in an agent definition or inherited from a parent workflow only narrow these settings; they never lift an exclusion. If the filters leave no eligible model, the stage or subagent fails before launch with an error that names this setting. A run resumed after you exclude a provider rejects a recorded selection from that provider instead of using it.
+Model patterns use the same format as [`enabledModels`](#models) and `--models`: a full `provider/model` ID, a bare model ID, or a glob such as `anthropic/claude-*` or `*sonnet*`. Matching is case-insensitive. A pattern without glob characters selects a single model, so use a glob to cover a family. A thinking suffix such as `anthropic/claude-opus-4-8:high` selects the model only; it does not limit the effort `auto` chooses. A candidate must pass every list. Patterns that match no available model are ignored, so an allowlist whose patterns match nothing leaves no candidate.
+
+A project list replaces the global list of the same name; the other lists are kept. A subagent call or workflow stage that sets `modelConstraints.allowedProviders` or `excludedProviders`, for example because you asked for a provider, uses its own lists instead of the provider lists here for that call. `allowedModels` and `excludedModels` always apply, and the call's own `modelConstraints.allowedModels` can only narrow them. Provider lists in an agent definition or inherited from a parent workflow only narrow these settings; they never lift an exclusion. The filters apply to the routed model, its ranked fallbacks, any other fallback models the stage or subagent would try, and the current chat model that `auto` falls back to when routing fails, so none of them can run a filtered-out model.
+
+If the filters leave no eligible model, the stage or subagent fails before launch with an error that names the settings involved, such as `modelRouting.allowedModels`; Atomic never falls back to the unfiltered catalog. A run resumed after you exclude a provider or model rejects a recorded selection that is no longer allowed instead of using it.
+
+These settings apply only to `model: "auto"`. A stage, task, or agent that names a concrete model, and its explicit fallback models, run as written.
+
+To audit a routing decision, the stage's `routerSelection` in `workflow({ action: "status", runId })` lists the chosen model and fallbacks, and `candidates` lists every model the router could choose from after these filters. Subagent results carry the same `routerSelection`.
 
 #### thinkingBudgets
 
@@ -161,7 +173,7 @@ Fallback entries should be fully qualified `provider/model` ids. Add a reasoning
 
 Fallback attempts are visible as model changes in the session transcript and as a fallback status in the UI. Switching providers can change latency, billing, data-handling terms, and subscription/credit usage. Configure only providers you are comfortable sending the current conversation and tool context to.
 
-`enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain.
+`enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain. It does not limit `model: "auto"` routing; use [`modelRouting.allowedModels`](#modelrouting) for that.
 
 ### Fast models
 

@@ -5,6 +5,7 @@
 ### Added
 
 - Added OpenAI's GPT Image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) as `openai-images` image models for codemode's `models.generateImages()`, extensions, and workflow `generateImages()` calls. They reuse your OpenAI API key, saved for `openai-api` or `openai` or set in `OPENAI_API_KEY`, and have no separate login; a ChatGPT sign-in cannot use them. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time) ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+- Added the `modelRouting.allowedModels` and `modelRouting.excludedModels` settings, which keep workflow stages and subagents with `model: "auto"` from routing to models you did not allow, including through fallbacks. They take full model IDs or glob patterns, matched like `enabledModels` and `--models`. If they leave no eligible model, the stage or subagent fails before launch with an error naming the setting. `routerSelection` now also lists the `candidates` the router could choose from after filtering. See [modelRouting](docs/settings.md#modelrouting) ([#3528](https://github.com/bastani-inc/atomic/issues/3528)).
 
 ## [0.9.28] - 2026-10-08
 

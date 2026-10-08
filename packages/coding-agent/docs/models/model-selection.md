@@ -22,7 +22,7 @@ Only chat language models are eligible for execution `auto`, including models th
 
 In authored workflows, a classifier can make a structured triage decision without executing the stage; an image model can generate an asset inside a durable tool step. See [classifier and image models in `ctx.tool`](/workflows/authoring#classifier-and-image-models-in-ctx-tool).
 
-To keep some providers out of routing entirely, set [`modelRouting`](/settings#modelrouting).
+To keep providers or models out of routing entirely, set [`modelRouting`](/settings#modelrouting).
 
 ## Benchmarks are evidence, not policy
 

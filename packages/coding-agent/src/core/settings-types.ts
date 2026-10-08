@@ -112,12 +112,16 @@ export interface BashInterceptorSettings {
 	enabled?: boolean; // default: false
 }
 
-/** Provider filters for the candidates `model: "auto"` may route to. Does not affect `routerModel`. */
+/** Provider and model filters for the candidates `model: "auto"` may route to. Does not affect `routerModel`. */
 export interface ModelRoutingSettings {
 	/** When nonempty, only these provider IDs are routing candidates. */
 	allowedProviders?: string[];
 	/** Provider IDs that are never routing candidates; applied after `allowedProviders`. */
 	excludedProviders?: string[];
+	/** When nonempty, only models matching these full-ID or glob patterns (as in `enabledModels`) are routing candidates. */
+	allowedModels?: string[];
+	/** Models matching these full-ID or glob patterns are never routing candidates; applied after `allowedModels`. */
+	excludedModels?: string[];
 }
 
 export interface Settings {
