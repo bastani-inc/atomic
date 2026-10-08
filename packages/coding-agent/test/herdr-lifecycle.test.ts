@@ -14,7 +14,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
-import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { arg, fakeHerdr, resumeArgs } from "./helpers/herdr.js";
 import { createFauxStreamFn, createHarnessWithExtensions, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
@@ -352,6 +352,7 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 							manager.getSessionId(),
 							"--agent-session-path",
 							manager.getSessionFile()!,
+							...resumeArgs(manager),
 						]),
 			]);
 			assert.equal(call.socket, fake.environment.socketPath);
@@ -458,7 +459,13 @@ if (args.includes("working")) {
 				...(states[index] ? ["--state", states[index]] : []),
 				...(index === 4 ? ["--message", "Waiting for approval"] : []),
 				...(manager
-					? ["--agent-session-id", manager.getSessionId(), "--agent-session-path", manager.getSessionFile()!]
+					? [
+							"--agent-session-id",
+							manager.getSessionId(),
+							"--agent-session-path",
+							manager.getSessionFile()!,
+							...resumeArgs(manager),
+						]
 					: []),
 			]);
 			assert.equal(call.socket, fake.environment.socketPath);

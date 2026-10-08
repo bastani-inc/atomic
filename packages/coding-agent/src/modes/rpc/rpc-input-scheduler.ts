@@ -1,4 +1,4 @@
-import { parseInteractiveEngineCommand } from "../interactive-engine/protocol.ts";
+import { parseEngineExplicitQuitCommand, parseInteractiveEngineCommand } from "../interactive-engine/protocol.ts";
 import type { RpcExtensionUIResponse } from "./rpc-types.ts";
 
 const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
@@ -31,7 +31,7 @@ export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionU
  * the ordered command lane.
  */
 export function isConcurrentRpcControlLine(line: string): boolean {
-	if (parseInteractiveEngineCommand(line)) return true;
+	if (parseInteractiveEngineCommand(line) || parseEngineExplicitQuitCommand(line)) return true;
 	let value: object | null;
 	try {
 		const parsed = JSON.parse(line) as object | boolean | null | number | string;

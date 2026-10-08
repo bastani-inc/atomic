@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";
@@ -13,7 +13,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
 import { publishExtensionContextEffect, registerExtensionContextRetirementEffect } from "../src/index.js";
-import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, fakeHerdr } from "./helpers/herdr.js";
+import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, fakeHerdr, resumeArgs } from "./helpers/herdr.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
@@ -126,8 +126,12 @@ test.each([
 ])(
 	"identical snapshot retries failed delivery (established: $established, queued during flight: $queuedDuringFlight) (#3468)",
 	async ({ established, queuedDuringFlight }) => {
+		// An unestablished report first offers the resume argv, so Herdr must fail it and its retry without one.
+		const failedCalls = established ? [1] : [0, 1];
 		const fake = await fakeHerdr(`
-if (fs.existsSync(args[2] + "/healthy")) finish();
+const ordinal = fs.readdirSync(args[2]).filter((name) => name.startsWith("call-")).length;
+fs.writeFileSync(args[2] + "/call-" + ordinal, "");
+if (!${JSON.stringify(failedCalls)}.includes(ordinal)) finish();
 else {
 	const timer = setInterval(() => {
 		if (fs.existsSync(args[2] + "/allow-failure")) {
@@ -136,11 +140,9 @@ else {
 		}
 	}, 5);
 }`);
-		const healthy = join(fake.dir, "healthy");
 		const allowFailure = join(fake.dir, "allow-failure");
 		const diagnostics: HerdrDiagnostic[] = [];
 		const failedReport = Promise.withResolvers<void>();
-		if (established) await writeFile(healthy, "");
 		const loaded = await createTestExtensionsResult(
 			[
 				createHerdrExtension({
@@ -163,7 +165,6 @@ else {
 			await runner.emit({ type: "session_start" });
 			if (established) {
 				await fake.waitFor(1);
-				await rm(healthy);
 				await runner.emit({ type: "agent_start" });
 			}
 			await fake.waitForStarted(established ? 2 : 1);
@@ -171,17 +172,16 @@ else {
 				publisher.publishSnapshot({ availability: "ready", roots: [] });
 				await runner.drainWork();
 			}
-			await writeFile(healthy, "");
 			await writeFile(allowFailure, "");
 			await failedReport.promise;
 			assert.deepEqual(diagnostics, [{ kind: "protocol_rejected" }]);
 			if (!queuedDuringFlight) publisher.publishSnapshot({ availability: "ready", roots: [] });
-			await fake.waitFor(established ? 3 : 2);
+			await fake.waitFor(3);
 			await runner.emit({ type: "session_shutdown", reason: "reload" });
 			const reports = (await fake.calls()).filter(
 				(call) => call.phase === "start" && call.args[1] === "report-agent",
 			);
-			assert.equal(reports.length, established ? 3 : 2);
+			assert.equal(reports.length, 3);
 			for (const report of reports.slice(established ? 1 : 0)) {
 				assert.equal(arg(report.args, "--state"), established ? "working" : "idle");
 				assert.equal(arg(report.args, "--agent-session-id"), established ? undefined : manager.getSessionId());
@@ -333,6 +333,7 @@ test(
 									sessionManager.getSessionId(),
 									"--agent-session-path",
 									sessionManager.getSessionFile()!,
+									...resumeArgs(sessionManager),
 								]
 							: []),
 					]);
@@ -450,6 +451,7 @@ if (args.includes("working")) {
 							sessionManager.getSessionId(),
 							"--agent-session-path",
 							sessionManager.getSessionFile()!,
+							...resumeArgs(sessionManager),
 						]
 					: []),
 			]);
@@ -657,6 +659,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 									sessionManager.getSessionId(),
 									"--agent-session-path",
 									sessionManager.getSessionFile()!,
+									...resumeArgs(sessionManager),
 								]
 							: []),
 					]);

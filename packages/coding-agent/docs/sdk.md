@@ -475,7 +475,7 @@ Shared loaders, event buses, settings, and `SessionManager` instances do not sha
 
 #### Session replacement and deferred cleanup
 
-`await runtime.dispose()` refuses new replacements and waits for pending factories, startup, and cleanup. No successor is published after closure. Host callbacks must settle independently of disposal.
+`await runtime.dispose()` refuses new replacements and waits for pending factories, startup, and cleanup. No successor is published after closure. Host callbacks must settle independently of disposal. Call `runtime.dispose({ fromSignal: true })` when the host is shutting down because of `SIGTERM` or `SIGHUP`, so `session_shutdown` handlers receive `fromSignal: true` and can tell it from an explicit quit.
 
 An extension command may await `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `session.reload()`. Its old generation remains owned until the command continuation finishes, and final disposal waits for that cleanup. Do not await disposal inside the continuation it must drain. Concurrent replacements are supported, and deferred cleanup failures remain visible.
 

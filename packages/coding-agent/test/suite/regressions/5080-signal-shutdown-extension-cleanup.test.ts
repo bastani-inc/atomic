@@ -20,7 +20,7 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 type ShutdownThis = {
 	isShuttingDown: boolean;
 	unregisterSignalHandlers: () => void;
-	runtimeHost: { dispose: () => Promise<void> };
+	runtimeHost: { dispose: (options?: { fromSignal?: boolean }) => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
 	themeController: { disableAutoSync: () => void };
 	stop: () => void;
@@ -168,6 +168,28 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		for (const call of stdoutWrite.mock.calls) {
 			expect(call[0]).not.toContain("To resume this session:");
 		}
+	});
+
+	test("signal-triggered shutdown tells the runtime it was ended by a host signal (#3492)", async () => {
+		vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new ProcessExitError();
+		}) as typeof process.exit);
+		const context = createContext([]);
+
+		await callShutdown(context, { fromSignal: true });
+
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
+	});
+
+	test("interactive quit disposes the runtime without the host-signal marker (#3492)", async () => {
+		vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new ProcessExitError();
+		}) as typeof process.exit);
+		const context = createContext([]);
+
+		await callShutdown(context);
+
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[]]);
 	});
 
 	test("re-entrant shutdown is a no-op", async () => {

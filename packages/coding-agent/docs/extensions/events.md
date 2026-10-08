@@ -260,9 +260,12 @@ Fired before a started session runtime is torn down. Use this to clean up resour
 pi.on("session_shutdown", async (event, ctx) => {
   // event.reason - "quit" | "reload" | "new" | "resume" | "fork"
   // event.targetSessionFile - destination session for session replacement flows
+  // event.fromSignal - true when a "quit" came from a host SIGTERM/SIGHUP, not an explicit quit
   // Cleanup, save state, etc.
 });
 ```
+
+`fromSignal` is set only on `reason: "quit"`. Ctrl+D and `/quit` leave it unset. Use it to tell a deliberate exit from the host stopping the process, for example to keep externally registered state that a restart can resume from.
 
 ### Agent Events
 

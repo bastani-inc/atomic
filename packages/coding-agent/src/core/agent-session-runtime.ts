@@ -107,6 +107,7 @@ export class AgentSessionRuntime {
 	private beforeSessionInvalidate?: () => void;
 	private projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 	private closed = false;
+	private endedBySignal = false;
 	private closing?: Promise<void>;
 	private cleanupFailures: unknown[] = [];
 	private candidates = new Set<AgentSession>();
@@ -128,7 +129,7 @@ export class AgentSessionRuntime {
 		const session = this.session;
 		if (!this.retained.delete(session)) return;
 		const finalize = async () => {
-			await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+			await emitSessionShutdownEvent(session.extensionRunner, this.quitEvent());
 		};
 		if (hasCallingSessionWork(session)) {
 			this.retainRetirementCleanup(
@@ -270,7 +271,7 @@ export class AgentSessionRuntime {
 			this.candidates.add(candidate.session);
 			if (this.closed) {
 				try {
-					await candidate.session.dispose();
+					await (candidate.session as unknown as AgentSessionInternalSurface)._close(this.quitEvent());
 				} catch (error) {
 					this.cleanupFailures.push(error);
 				}
@@ -414,6 +415,12 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
+	private quitEvent(): SessionShutdownEvent {
+		return this.endedBySignal
+			? { type: "session_shutdown", reason: "quit", fromSignal: true }
+			: { type: "session_shutdown", reason: "quit" };
+	}
+
 	private disposeCurrentSession(event: SessionShutdownEvent): Promise<void> {
 		const session = this.session;
 		if (event.reason !== "quit") this.retained.add(session);
@@ -506,10 +513,9 @@ export class AgentSessionRuntime {
 			} catch (cause) {
 				if (this.candidates.delete(result.session)) {
 					try {
-						await (result.session as unknown as AgentSessionInternalSurface)._close({
-							type: "session_shutdown",
-							reason: this.closed ? "quit" : "new",
-						});
+						await (result.session as unknown as AgentSessionInternalSurface)._close(
+							this.closed ? this.quitEvent() : { type: "session_shutdown", reason: "new" },
+						);
 					} catch (error) {
 						this.cleanupFailures.push(error);
 						throw Object.assign(
@@ -741,16 +747,17 @@ export class AgentSessionRuntime {
 		});
 	}
 
-	dispose(): Promise<void> {
+	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
-		const current = this.disposeCurrentSession({ type: "session_shutdown", reason: "quit" });
+		this.endedBySignal = options?.fromSignal === true;
+		const current = this.disposeCurrentSession(this.quitEvent());
 		void current.catch(() => {});
 		this.closing = (async () => {
 			await drainSessionWork(this);
 			for (const candidate of this.candidates) {
 				try {
-					await candidate.dispose();
+					await (candidate as unknown as AgentSessionInternalSurface)._close(this.quitEvent());
 				} catch (error) {
 					this.cleanupFailures.push(error);
 				}

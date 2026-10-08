@@ -73,6 +73,9 @@ export interface RpcClientOptions {
 
 export type RpcEventListener = (event: RpcEvent) => void;
 
+/** Longest an explicit quit waits for the child to acknowledge it before stopping an unresponsive engine anyway. */
+const EXPLICIT_QUIT_ACK_TIMEOUT_MS = 1000;
+
 export class RpcClient extends RpcClientApi {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
@@ -84,6 +87,7 @@ export class RpcClient extends RpcClientApi {
 	private readonly pendingEngineMessages = new GenerationBuffer<InteractiveEngineMessage>();
 	private readonly pendingProjectTrustFrames = new GenerationBuffer<string>();
 	private boundGeneration = 0;
+	private explicitQuitAck: { generation: number; acknowledge: () => void } | undefined;
 	private readonly pendingRequests = new RpcPendingRequests();
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
@@ -200,6 +204,37 @@ export class RpcClient extends RpcClientApi {
 
 		if (generation !== this.generation || this.process?.exitCode !== null) {
 			throw rpcTransportError(`Agent process exited immediately. Stderr: ${this.stderr}`);
+		}
+	}
+
+	/**
+	 * Tell the engine child the host is quitting on purpose, and wait (bounded) for it to
+	 * record that. Call it before `stop()` for a quit the user asked for: stopping closes
+	 * stdin and sends SIGTERM, which is also how the child is stopped when the host itself
+	 * was signalled, so only this announcement lets the child tell the two apart.
+	 * Resolves true only when the child acknowledged the quit, and false without waiting when
+	 * there is no live engine child, or when the child exits or misses the deadline first.
+	 */
+	async announceExplicitQuit(timeoutMs = EXPLICIT_QUIT_ACK_TIMEOUT_MS): Promise<boolean> {
+		const writer = this.stdinWriter;
+		if (!writer || !this.engineMonitor || this.generation <= this.lastEndedGeneration) return false;
+		const generation = this.generation;
+		const done = Promise.withResolvers<boolean>();
+		this.explicitQuitAck = { generation, acknowledge: () => done.resolve(true) };
+		const stopListening = this.onGenerationEnded((event) => {
+			if (event.generation === generation) done.resolve(false);
+		});
+		const timer = setTimeout(() => done.resolve(false), timeoutMs);
+		try {
+			this.bestEffort(
+				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
+				"explicit quit",
+			);
+			return await done.promise;
+		} finally {
+			clearTimeout(timer);
+			stopListening();
+			if (this.explicitQuitAck?.generation === generation) this.explicitQuitAck = undefined;
 		}
 	}
 
@@ -451,6 +486,10 @@ export class RpcClient extends RpcClientApi {
 		// stale frame would revive a PID, an activity, or a mount that is gone.
 		if (message.type === "engine_request_accepted") {
 			if (generation === this.generation) this.pendingRequests.markAccepted(message.requestId);
+			return;
+		}
+		if (message.type === "engine_explicit_quit_ack") {
+			if (this.explicitQuitAck?.generation === generation) this.explicitQuitAck.acknowledge();
 			return;
 		}
 		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;

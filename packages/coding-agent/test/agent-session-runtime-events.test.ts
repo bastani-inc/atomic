@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -435,6 +436,32 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
 			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
 		]);
+	});
+
+	it("marks shutdown handlers when disposal was caused by a host signal (#3492)", async () => {
+		const events: SessionShutdownEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", (event) => {
+				events.push(event);
+			});
+		});
+
+		await runtimeHost.dispose({ fromSignal: true });
+
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
+	});
+
+	it("does not mark an ordinary disposal as host-signal driven (#3492)", async () => {
+		const events: SessionShutdownEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_shutdown", (event) => {
+				events.push(event);
+			});
+		});
+
+		await runtimeHost.dispose();
+
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit" }]);
 	});
 
 	it("honors session_before_switch cancellation", async () => {

@@ -6,6 +6,8 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../.
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
+import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -570,16 +572,26 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 */
 	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
 
-	override dispose(): Promise<void> {
+	override dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
 		this.disposePromise = (async () => {
+			// A quit the user asked for must reach the engine before it is stopped: the stop
+			// is a SIGTERM, which the engine cannot tell from this process being signalled.
+			// Optional like the other transport surfaces focused test doubles omit.
+			const unrecordedQuit = !options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false;
 			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown();
 			// A replacement may have spawned while shutdown joined recovery; the
 			// idempotent trailing stop closes that child before disposal returns.
 			await this.client.stop();
-			await super.dispose();
+			if (unrecordedQuit) {
+				// No engine child recorded the quit, so none released Herdr's registration, and a replacement started
+				// during recovery may have registered again. Every child is stopped now; this host loads no Herdr reporter.
+				const herdr = captureHerdrEnvironment(process.env);
+				if (herdr) await releaseUnownedPaneRegistration(herdr);
+			}
+			await super.dispose(options);
 		})();
 		return this.disposePromise;
 	}

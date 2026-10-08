@@ -1,3 +1,4 @@
+import { APP_NAME } from "../../config.js";
 import { getExtensionContextOwner, publishExtensionContextEffect } from "../../core/extensions/runner-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../../core/extensions/types.ts";
 import type { WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
@@ -18,6 +19,19 @@ import type { HerdrDiagnostic } from "./transport.js";
 export interface HerdrExtensionOptions extends PaneReportingOptions {
 	env?: NodeJS.ProcessEnv;
 	enabled?: (ctx: ExtensionContext) => boolean;
+}
+
+/** `--session` reads a value with a path separator or a `.jsonl` suffix as a file path, not a session ID. */
+function readsAsSessionPath(sessionId: string): boolean {
+	return sessionId.includes("/") || sessionId.includes("\\") || sessionId.endsWith(".jsonl");
+}
+
+function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[] | undefined {
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile) return undefined;
+	const sessionId = sessionManager.getSessionId();
+	const sessionDir = sessionManager.usesDefaultSessionDir() ? [] : ["--session-dir", sessionManager.getSessionDir()];
+	return [APP_NAME, ...sessionDir, "--session", readsAsSessionPath(sessionId) ? sessionFile : sessionId];
 }
 
 function enabled(ctx: ExtensionContext): boolean {
@@ -98,7 +112,11 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			availability = "unavailable";
 			const claimed = await claimPaneReporting(
 				environment,
-				{ id: ctx.sessionManager.getSessionId(), path: ctx.sessionManager.getSessionFile() },
+				{
+					id: ctx.sessionManager.getSessionId(),
+					path: ctx.sessionManager.getSessionFile(),
+					resume: resumeArgv(ctx.sessionManager),
+				},
 				{ ...options, diagnostic },
 			);
 			if (current !== generation) {
@@ -202,7 +220,8 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			// and this shutdown's completion must never clear that newer binding.
 			boundSessionManager = undefined;
 			if (previous) {
-				if (event.reason === "quit") await releasePaneReporting(previous);
+				// A host signal ends the process, not the conversation: keep the registration Herdr restores from.
+				if (event.reason === "quit" && !event.fromSignal) await releasePaneReporting(previous);
 				else await retirePaneReporting(previous);
 			}
 		});

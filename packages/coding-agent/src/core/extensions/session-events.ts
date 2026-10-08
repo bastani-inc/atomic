@@ -93,6 +93,8 @@ export interface SessionShutdownEvent {
 	reason: "quit" | "reload" | "new" | "resume" | "fork";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
+	/** True when a `quit` was caused by a host termination signal (SIGTERM/SIGHUP) rather than an explicit user quit. */
+	fromSignal?: boolean;
 }
 
 /** Preparation data for tree navigation */
