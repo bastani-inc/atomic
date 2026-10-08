@@ -1,17 +1,40 @@
 {
   "name": "@bastani/mcp",
-  "version": "0.0.0",
+  "version": "0.9.28",
   "private": true,
   "description": "Atomic's pi-compatible MCP integration for server connections, OAuth, tools, resources, and terminal management.",
-  "contributors": ["Norin Lavaee", "Alex Lavaee"],
+  "contributors": [
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
   "license": "MIT",
   "type": "module",
-  "engines": { "bun": ">=1.4.2" },
+  "engines": {
+    "bun": ">=1.4.2"
+  },
   "main": "./index.ts",
   "types": "./index.ts",
-  "exports": { ".": "./index.ts" },
-  "files": ["index.ts", "README.md", "OAUTH.md", "CHANGELOG.md", "LICENSE"],
-  "pi": { "extensions": ["./index.ts"] },
-  "peerDependencies": { "@bastani/atomic": "*" },
-  "peerDependenciesMeta": { "@bastani/atomic": { "optional": true } }
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "OAUTH.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    }
+  }
 }
