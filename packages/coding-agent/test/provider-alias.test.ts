@@ -166,3 +166,27 @@ test("OAuth refresh rotates only the selected alias credential", async () => {
 	assert.equal((await runtime.getAuth("openai"))?.auth.apiKey, "fake-token-openai");
 	assert.equal((await runtime.getAuth("openai-2"))?.auth.apiKey, "fake-token-openai-2");
 });
+
+test("an alias of a login-less shared-credential provider prompts for its own API key", async () => {
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify("openai-api", async () => ({ type: "api_key", key: "sk-shared" }));
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+	runtime.registerProvider("decisions-work", { aliasOf: "openai-decisions", name: "Decisions (work)" });
+
+	const aliasAuth = runtime.getProvider("decisions-work")?.auth.apiKey;
+	assert.ok(aliasAuth?.login);
+	assert.equal(aliasAuth.borrowCredentialsFrom, undefined);
+	assert.equal(await runtime.getAuth("decisions-work"), undefined);
+
+	const prompts: string[] = [];
+	const credential = await aliasAuth.login({
+		signal: new AbortController().signal,
+		prompt: async (prompt) => {
+			prompts.push(prompt.message);
+			return "sk-work";
+		},
+		notify: () => {},
+	});
+	assert.deepEqual(credential, { type: "api_key", key: "sk-work" });
+	assert.equal(prompts.length, 1);
+});

@@ -26,6 +26,14 @@ function aliasApiKey(auth: ApiKeyAuth): ApiKeyAuth {
 	return {
 		...auth,
 		borrowCredentialsFrom: undefined,
+		login:
+			auth.login ??
+			(async (interaction) => {
+				interaction.signal.throwIfAborted();
+				const key = await interaction.prompt({ type: "secret", message: `Enter ${auth.name}` });
+				interaction.signal.throwIfAborted();
+				return { type: "api_key", key };
+			}),
 		check: async (input) => {
 			if (!input.credential?.key?.trim()) return undefined;
 			if (auth.check) return auth.check(input);

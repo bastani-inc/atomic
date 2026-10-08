@@ -5,6 +5,7 @@ import type { ClassifierContext, Credential } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.ts";
+import type { ModelsJsonProvider } from "../src/core/model-config.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { loginIsolatedApiKeyProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
@@ -209,7 +210,7 @@ describe("openai-decisions shares OpenAI API credentials", () => {
 			for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 		});
 
-		function modelsJson(provider: Record<string, unknown>): string {
+		function modelsJson(provider: ModelsJsonProvider): string {
 			const root = mkdtempSync(join(tmpdir(), "atomic-openai-decisions-"));
 			roots.push(root);
 			const path = join(root, "models.json");
