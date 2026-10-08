@@ -28,7 +28,7 @@ A failed workflow can remain marked blocked in Atomic after its execution ends, 
 
 With Herdr 0.9.2 or newer, Atomic also reports the command that reopens the current session, so Herdr can restart Atomic in the same pane with the same conversation after a Herdr server restart. Atomic does not restore anything itself. To turn this off in Herdr, set `[session] resume_agents_on_restore = false` in Herdr's config.
 
-- The command is `atomic --session <id>`, with `--session-dir` added when you use a custom session directory. A session ID that `--session` would read as a file path, such as one ending in `.jsonl`, is reopened by its session file instead. A new session is reopened only once it has been saved, so a session with no messages yet may not be found when Herdr tries to restore it.
+- The command is `atomic --session <id>`, with `--session-dir` added when you use a custom session directory. A session ID that `--session` would read as a file path, such as one ending in `.jsonl`, is reopened by its session file instead, still with any custom `--session-dir`. A new session is reopened only once it has been saved, so a session with no messages yet may not be found when Herdr tries to restore it.
 - Sessions that are not saved (`--no-session`) are reported without a resume command.
 - Quitting Atomic yourself, with Ctrl+D or `/quit`, clears the resume command, so the pane is not reopened. When Herdr or the system stops Atomic with `SIGTERM` or `SIGHUP`, the command stays registered so the session can be restored.
 - Herdr 0.8.2 to 0.9.1 still show status but do not restore sessions.

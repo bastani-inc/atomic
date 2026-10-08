@@ -30,9 +30,8 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile) return undefined;
 	const sessionId = sessionManager.getSessionId();
-	if (readsAsSessionPath(sessionId)) return [APP_NAME, "--session", sessionFile];
 	const sessionDir = sessionManager.usesDefaultSessionDir() ? [] : ["--session-dir", sessionManager.getSessionDir()];
-	return [APP_NAME, ...sessionDir, "--session", sessionId];
+	return [APP_NAME, ...sessionDir, "--session", readsAsSessionPath(sessionId) ? sessionFile : sessionId];
 }
 
 function enabled(ctx: ExtensionContext): boolean {
