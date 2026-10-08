@@ -196,7 +196,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 			};
 			show.call(mode, warned);
 			const output = stripAnsi(mode.chatContainer.render(120).join("\n"));
-			expect(output).toContain(`Warning: ${warning}`);
+			assert.ok(output.includes(`Warning: ${warning}`));
 		}
 	});
 });

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	type Api,
 	type AssistantMessage,
@@ -278,11 +279,11 @@ describe("runPrintMode", () => {
 
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hi" });
 
-		expect(exitCode).toBe(0);
-		expect(errorSpy).toHaveBeenCalledWith(
-			"Warning: ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
-		);
-		expect(stdoutChunks.join("")).toBe("done\n");
+		assert.equal(exitCode, 0);
+		assert.deepEqual(errorSpy.mock.calls, [
+			["Warning: ultrafast isn't available for gpt-5.6-sol on this account; ran at default"],
+		]);
+		assert.equal(stdoutChunks.join(""), "done\n");
 	});
 
 	it("emits session_shutdown in json mode", async () => {

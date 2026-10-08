@@ -73,19 +73,44 @@ function chatGPTSignInToken(): string {
 	return `${encode({ alg: "none" })}.${encode(claims)}.signature`;
 }
 
+/** A streamed request that fails with a nested tier error in `response.failed` and no top-level `error` event. */
+function failedResponseRejection(message: string): Response {
+	const response = { id: "resp_1", object: "response", status: "in_progress", service_tier: "ultrafast", output: [] };
+	const events = [
+		{ type: "response.created", response, sequence_number: 0 },
+		{
+			type: "response.failed",
+			response: { ...response, status: "failed", error: { code: "invalid_request_error", message } },
+			sequence_number: 1,
+		},
+	];
+	const sse = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+	return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 function serviceTierWarnings(message: AssistantMessage): string[] {
 	return (message.diagnostics ?? [])
 		.filter((diagnostic) => diagnostic.type === "service_tier_unavailable")
 		.map((diagnostic) => String(diagnostic.details?.message));
 }
 
-async function run(model: Model<"openai-responses">, responses: Response[], apiKey = "sk-test-key") {
-	const { result, payloads } = await runRecordingOrder(model, responses, apiKey);
+type RequestAuth = { apiKey: string } | { headers: Record<string, string> };
+
+async function run(
+	model: Model<"openai-responses">,
+	responses: Response[],
+	auth: string | RequestAuth = "sk-test-key",
+) {
+	const { result, payloads } = await runRecordingOrder(model, responses, auth);
 	return { result, payloads };
 }
 
 /** Run a request and record `onResponse` calls interleaved with the stream's start, done, and error events. */
-async function runRecordingOrder(model: Model<"openai-responses">, responses: Response[], apiKey = "sk-test-key") {
+async function runRecordingOrder(
+	model: Model<"openai-responses">,
+	responses: Response[],
+	auth: string | RequestAuth = "sk-test-key",
+) {
 	const payloads: Array<{ model?: string; service_tier?: string }> = [];
 	const order: string[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -95,7 +120,7 @@ async function runRecordingOrder(model: Model<"openai-responses">, responses: Re
 		return next;
 	});
 	const events = streamOpenAIResponses(model, context, {
-		apiKey,
+		...(typeof auth === "string" ? { apiKey: auth } : auth),
 		onResponse: (response) => {
 			order.push(`onResponse:${response.status}`);
 		},
@@ -186,6 +211,29 @@ describe("service tier rejection (#3529)", () => {
 		assert.deepEqual(serviceTierWarnings(result), [
 			"ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
 		]);
+	});
+
+	test("retries at the default tier when response.failed carries the tier rejection before any output (#3529)", async () => {
+		const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
+			failedResponseRejection("Invalid service_tier argument"),
+			completedResponse("default"),
+		]);
+
+		assert.equal(payloads.length, 2);
+		assert.equal(payloads[1]?.service_tier, undefined);
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
+		]);
+	});
+
+	test("does not retry a response.failed that is not about the service tier (#3529)", async () => {
+		const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
+			failedResponseRejection("The server had an error processing your request"),
+		]);
+
+		assert.equal(payloads.length, 1);
+		assert.equal(result.stopReason, "error");
 	});
 
 	test("does not retry a streamed error that is not about the service tier (#3529)", async () => {
@@ -304,6 +352,14 @@ describe("reported service tier downgrade (#3529)", () => {
 			assert.ok(requested);
 			assert.ok(Math.abs(result.usage.cost.input - (100_000 / 1_000_000) * requested.cost.input) < 1e-9);
 		}
+	});
+
+	test("does not warn when the ChatGPT sign-in token arrives only in the Authorization header (#3529)", async () => {
+		const { result } = await run(ultrafastVariant("gpt-6.1-sol"), [completedResponse("default")], {
+			headers: { Authorization: `Bearer ${chatGPTSignInToken()}` },
+		});
+
+		assert.deepEqual(serviceTierWarnings(result), []);
 	});
 
 	test("still retries at default with a warning when a ChatGPT sign-in rejects the tier (#3529)", async () => {

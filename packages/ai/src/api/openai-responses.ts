@@ -31,18 +31,18 @@ import {
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
-	applyServiceTierPricing,
 	appendServiceTierRejectedWarning,
+	applyServiceTierPricing,
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
+	isChatGPTSubscriptionToken,
 	isServiceTierRejection,
+	openAIServiceTierForRequest,
 	processResponsesStream,
 	type ResponsesServiceTier,
-	resolveRequestedServiceTier,
-	openAIServiceTierForRequest,
-	isChatGPTSubscriptionToken,
 	resolveChatGPTBackendServiceTier,
+	resolveRequestedServiceTier,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
@@ -60,13 +60,21 @@ function isChatGPTSignIn(model: Model<"openai-responses">, apiKey: string | unde
 	);
 }
 
-function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
-	if (!headers) return false;
+function headerValue(headers: ProviderHeaders | undefined, name: string): string | undefined {
+	if (!headers) return undefined;
 	const expected = name.toLowerCase();
 	for (const [key, value] of Object.entries(headers)) {
-		if (key.toLowerCase() === expected && value !== null && value.trim().length > 0) return true;
+		if (key.toLowerCase() === expected && value !== null && value.trim().length > 0) return value.trim();
 	}
-	return false;
+	return undefined;
+}
+
+function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
+	return headerValue(headers, name) !== undefined;
+}
+
+function bearerToken(apiKey: string | undefined, headers: ProviderHeaders | undefined): string | undefined {
+	return apiKey ?? headerValue(headers, "authorization")?.replace(/^Bearer\s+/i, "");
 }
 
 function getClientApiKey(provider: string, apiKey: string | undefined, headers: ProviderHeaders | undefined): string {
@@ -171,7 +179,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
-			const chatGPTBackend = isChatGPTSubscriptionToken(apiKey);
+			const chatGPTBackend = isChatGPTSubscriptionToken(bearerToken(options?.apiKey, options?.headers));
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
@@ -231,21 +239,15 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				appendServiceTierRejectedWarning(output, model, rejectedServiceTier);
 			}
 
-			await processResponsesStream(
-				openaiStream,
-				output,
-				stream,
-				model,
-				{
-					onProviderStreamEvent: options?.onProviderStreamEvent,
-					serviceTier: requestedServiceTier,
-					grammarToolInputProperties,
-					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-					...(chatGPTBackend
-						? { resolveServiceTier: resolveChatGPTBackendServiceTier }
-						: { warnOnServiceTierDowngrade: true }),
-				},
-			);
+			await processResponsesStream(openaiStream, output, stream, model, {
+				onProviderStreamEvent: options?.onProviderStreamEvent,
+				serviceTier: requestedServiceTier,
+				grammarToolInputProperties,
+				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+				...(chatGPTBackend
+					? { resolveServiceTier: resolveChatGPTBackendServiceTier }
+					: { warnOnServiceTierDowngrade: true }),
+			});
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -287,6 +289,15 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 
 const RESPONSE_PREAMBLE_EVENT_TYPES = new Set(["response.created", "response.in_progress", "response.queued"]);
 
+function failedResponseTierRejection(event: { type: string } | undefined): Error | undefined {
+	if (event?.type !== "response.failed") return undefined;
+	const failure = (event as { response?: { error?: { code?: string | null; message?: string } | null } }).response
+		?.error;
+	if (!failure?.message) return undefined;
+	const error = new Error(failure.message);
+	return isServiceTierRejection(error) ? error : undefined;
+}
+
 /**
  * Read a stream up to its first event after the response preamble, so an error the server raises
  * before producing output is thrown here. Returns a stream that replays every event read.
@@ -308,6 +319,11 @@ async function readResponsePreamble<T extends { type: string }>(events: AsyncIte
 	} catch (error) {
 		await iterator.return?.();
 		throw error;
+	}
+	const tierRejection = failedResponseTierRejection(preamble.at(-1));
+	if (tierRejection) {
+		await iterator.return?.();
+		throw tierRejection;
 	}
 	return (async function* () {
 		try {
