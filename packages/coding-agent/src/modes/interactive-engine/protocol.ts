@@ -61,6 +61,8 @@ export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
 	| { type: "engine_project_trust_resolved" }
+	/** The child recorded `engine_explicit_quit`; it is safe for the host to stop it. */
+	| { type: "engine_explicit_quit_ack" }
 	| { type: "engine_resources_ready" }
 	| { type: "engine_resources_failed"; message: string }
 	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
@@ -121,6 +123,17 @@ export type InteractiveEngineMessage =
 			submitLabel?: string;
 	  }
 	| { type: "engine_input_form_close"; componentId: string };
+/**
+ * The host is quitting because the user asked to, not because a signal ended the
+ * process. The child must acknowledge it (`engine_explicit_quit_ack`) before the host
+ * stops it, because stopping closes stdin and sends SIGTERM, which alone cannot tell
+ * an explicit quit from a host shutdown caused by a signal. Kept apart from
+ * `InteractiveEngineCommand` because it addresses the process, not a UI component.
+ */
+export interface EngineExplicitQuitCommand {
+	type: "engine_explicit_quit";
+}
+
 export type InteractiveEngineCommand =
 	| { type: "engine_project_trust_start"; componentId: string; kind: "select" | "confirm" | "input"; title: string }
 	| { type: "engine_project_trust_end"; componentId: string }
@@ -362,6 +375,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_bound":
 			return { type: value.type };
 		case "engine_project_trust_resolved":
+		case "engine_explicit_quit_ack":
 			return { type: value.type };
 		case "engine_resources_ready":
 			return { type: value.type };
@@ -521,6 +535,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 	}
 }
 
+export function parseEngineExplicitQuitCommand(line: string): EngineExplicitQuitCommand | undefined {
+	return parseJsonObject(line)?.type === "engine_explicit_quit" ? { type: "engine_explicit_quit" } : undefined;
+}
+
 export function parseInteractiveEngineCommand(line: string): InteractiveEngineCommand | undefined {
 	const value = parseJsonObject(line);
 	if (!value || typeof value.type !== "string" || typeof value.componentId !== "string") return undefined;
@@ -637,7 +655,9 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	return undefined;
 }
 
-export function serializeInteractiveEngineFrame(message: InteractiveEngineMessage | InteractiveEngineCommand): string {
+export function serializeInteractiveEngineFrame(
+	message: InteractiveEngineMessage | InteractiveEngineCommand | EngineExplicitQuitCommand,
+): string {
 	return `${JSON.stringify(message)}\n`;
 }
 

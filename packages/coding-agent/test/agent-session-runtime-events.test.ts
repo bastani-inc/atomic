@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -447,7 +448,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		await runtimeHost.dispose({ fromSignal: true });
 
-		expect(events).toEqual([{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
 	});
 
 	it("does not mark an ordinary disposal as host-signal driven (#3492)", async () => {
@@ -460,7 +461,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		await runtimeHost.dispose();
 
-		expect(events).toEqual([{ type: "session_shutdown", reason: "quit" }]);
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit" }]);
 	});
 
 	it("honors session_before_switch cancellation", async () => {

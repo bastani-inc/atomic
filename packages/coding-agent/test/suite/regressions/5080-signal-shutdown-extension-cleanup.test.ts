@@ -178,7 +178,7 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 
 		await callShutdown(context, { fromSignal: true });
 
-		expect(context.runtimeHost.dispose).toHaveBeenCalledWith({ fromSignal: true });
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
 	});
 
 	test("interactive quit disposes the runtime without the host-signal marker (#3492)", async () => {
@@ -189,7 +189,7 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 
 		await callShutdown(context);
 
-		expect(context.runtimeHost.dispose).toHaveBeenCalledWith();
+		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[]]);
 	});
 
 	test("re-entrant shutdown is a no-op", async () => {

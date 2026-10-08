@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import type { SessionShutdownEvent } from "../src/core/extensions/session-events.ts";
+import type { SessionShutdownEvent } from "../src/core/extensions/session-events.js";
 import { waitForInteractiveEngineBound } from "../src/modes/interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import { rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
@@ -62,6 +62,7 @@ function createRuntime(
 		onGenerationEnded(listener: () => void): () => void;
 		waitForInteractiveEngineBound(): Promise<void>;
 		stop(): Promise<void>;
+		announceExplicitQuit?(): Promise<void>;
 		getState(): Promise<RpcSessionState>;
 		requestInternal<T>(command: { type: string }): Promise<T>;
 		getCommands(): Promise<readonly RpcSlashCommand[]>;
@@ -205,5 +206,53 @@ describe("isolated interactive startup shutdown", () => {
 		} finally {
 			harness.cleanup();
 		}
+	});
+
+	async function disposeAndObserve(options?: { fromSignal?: boolean }) {
+		const order: string[] = [];
+		const events: SessionShutdownEvent[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_shutdown", (event) => {
+						events.push(event);
+					});
+				},
+			],
+		});
+		try {
+			const runtime = createRuntime(harness, {
+				onEvent: () => () => {},
+				onGenerationEnded: () => () => {},
+				waitForInteractiveEngineBound: async () => {},
+				announceExplicitQuit: async () => {
+					order.push("announce");
+				},
+				stop: async () => {
+					order.push("stop");
+				},
+				getState: async () => createState(),
+				requestInternal: async <T>(_command: { type: string }) => undefined as T,
+				getCommands: async () => [],
+			});
+			await runtime.dispose(options);
+			return { order, events };
+		} finally {
+			harness.cleanup();
+		}
+	}
+
+	test("an explicit quit tells the engine before stopping it (#3492)", async () => {
+		const { order, events } = await disposeAndObserve();
+
+		assert.deepEqual(order, ["announce", "stop", "stop"]);
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit" }]);
+	});
+
+	test("a host signal stops the engine without announcing a quit (#3492)", async () => {
+		const { order, events } = await disposeAndObserve({ fromSignal: true });
+
+		assert.deepEqual(order, ["stop", "stop"]);
+		assert.deepEqual(events, [{ type: "session_shutdown", reason: "quit", fromSignal: true }]);
 	});
 });

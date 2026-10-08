@@ -23,6 +23,7 @@ import { startInteractiveEngineLiveness } from "../interactive-engine/engine-chi
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
+import { EngineQuitIntent } from "../interactive-engine/engine-quit-intent.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
@@ -71,6 +72,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const renderService = interactiveEngineChild ? new EngineRenderService(writeRawStdout) : undefined;
 	const sessionPicker = interactiveEngineChild ? new EngineSessionPickerService(writeRawStdout) : undefined;
 	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;
+	const quitIntent = interactiveEngineChild ? new EngineQuitIntent(writeRawStdout) : undefined;
 	const projectTrust = interactiveEngineChild
 		? new EngineProjectTrustService(() => runtimeHost.session.extensionRunner)
 		: undefined;
@@ -141,7 +143,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,
 	});
 
-	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
+	/**
+	 * Whether this shutdown ends the process but not the conversation. A signal and a
+	 * closed stdin only do that when no explicit quit was announced: the interactive host
+	 * announces one before it stops the engine, so anything else is the host being
+	 * signalled or dying. A standalone RPC client has no such announcement; for it a
+	 * signal is a host termination and a closed stdin or a shutdown request is a deliberate end.
+	 */
+	const endsProcessOnly = (cause: "signal" | "input-end" | "request"): boolean => {
+		if (cause === "request") return false;
+		if (quitIntent) return !quitIntent.explicitQuitRequested;
+		return cause === "signal";
+	};
+
+	async function shutdown(
+		exitCode = 0,
+		signal?: NodeJS.Signals,
+		cause: "signal" | "input-end" | "request" = "request",
+	): Promise<never> {
 		if (shuttingDown) {
 			process.exit(exitCode);
 		}
@@ -160,7 +179,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		inputForm?.dispose();
 		projectTrust?.dispose();
 		outputBuffer.dispose();
-		await runtimeHost.dispose();
+		await runtimeHost.dispose({ fromSignal: endsProcessOnly(cause) });
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}
@@ -181,7 +200,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		for (const signal of signals) {
 			const handler = () => {
 				killTrackedDetachedChildren();
-				void shutdown(signal === "SIGHUP" ? 129 : 143, signal);
+				void shutdown(signal === "SIGHUP" ? 129 : 143, signal, "signal");
 			};
 			process.on(signal, handler);
 			signalCleanupHandlers.push(() => process.off(signal, handler));
@@ -201,8 +220,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 					)
 			: undefined,
 		handleInteractiveEngineLine:
-			customUi || renderService || sessionPicker || inputForm || projectTrust
+			customUi || renderService || sessionPicker || inputForm || projectTrust || quitIntent
 				? (line) =>
+						quitIntent?.handleLine(line) === true ||
 						customUi?.handleLine(line) === true ||
 						renderService?.handleLine(line) === true ||
 						sessionPicker?.handleLine(line) === true ||
@@ -212,7 +232,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	});
 
 	const onInputEnd = () => {
-		void shutdown();
+		void shutdown(0, undefined, "input-end");
 	};
 	process.stdin.on("end", onInputEnd);
 

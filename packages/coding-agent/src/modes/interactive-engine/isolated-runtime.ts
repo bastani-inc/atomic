@@ -574,6 +574,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
 		this.disposePromise = (async () => {
+			// A quit the user asked for must reach the engine before it is stopped: the stop
+			// is a SIGTERM, which the engine cannot tell from this process being signalled.
+			// Optional like the other transport surfaces focused test doubles omit.
+			if (!options?.fromSignal) await this.client.announceExplicitQuit?.();
 			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown();
 			// A replacement may have spawned while shutdown joined recovery; the
