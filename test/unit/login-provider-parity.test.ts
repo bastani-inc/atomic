@@ -36,6 +36,7 @@ test("API-key login options follow builtin provider auth metadata", () => {
 
 	assert.deepEqual([...optionIds].sort(), expectedIds.sort());
 	assert.ok(!optionIds.has("openai-decisions"));
+	assert.ok(!optionIds.has("openai-images"));
 	assert.ok(optionIds.has("openai-api"));
 	assert.ok(optionIds.has("qwen-token-plan"));
 	assert.ok(optionIds.has("qwen-token-plan-cn"));

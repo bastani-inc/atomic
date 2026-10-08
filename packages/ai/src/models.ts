@@ -40,6 +40,7 @@ import type {
 	DeferredFetchOptions,
 	DeferredHandle,
 	ImageApi,
+	ImageApiOptions,
 	ImageModel,
 	ImagesContext,
 	ImagesOptions,
@@ -135,6 +136,8 @@ export type ModelsSimpleStreamOptions = SimpleStreamOptions & ModelsRequestTrans
 export type ModelsDeferredFetchOptions = DeferredFetchOptions & ModelsRequestTransforms;
 export type ModelsDeferredCancelOptions = DeferredCancelOptions & ModelsRequestTransforms;
 export type ModelsImagesOptions = ImagesOptions & ModelsRequestTransforms;
+/** Image request options for one image API, for example `OpenAIImagesOptions` for `"openai-images"`. */
+export type ModelsImagesApiOptions<TApi extends ImageApi> = ImageApiOptions<TApi> & ModelsRequestTransforms;
 export type ModelsClassifierOptions = ClassifierOptions & ModelsRequestTransforms;
 
 const KNOWN_MODEL_TYPES: Record<ModelType, true> = { chat: true, image: true, classifier: true, compactor: true };
@@ -359,10 +362,10 @@ export interface Models {
 	 * `stream()`. Never rejects: unknown providers, unconfigured auth, and
 	 * providers without `generateImages` return an error `AssistantImages`.
 	 */
-	generateImages(
-		model: ImageModel<ImageApi>,
+	generateImages<TApi extends ImageApi>(
+		model: ImageModel<TApi>,
 		context: ImagesContext,
-		options?: ModelsImagesOptions,
+		options?: ModelsImagesApiOptions<TApi>,
 	): Promise<AssistantImages>;
 
 	/** Classify structured state through the owning provider. Never rejects. */
@@ -990,11 +993,12 @@ class ModelsImpl implements MutableModels {
 		await provider.cancelDeferred(requestModel, handle, requestOptions);
 	}
 
-	async generateImages(
-		model: ImageModel<ImageApi>,
+	async generateImages<TApi extends ImageApi>(
+		model: ImageModel<TApi>,
 		context: ImagesContext,
-		options?: ModelsImagesOptions,
+		apiOptions?: ModelsImagesApiOptions<TApi>,
 	): Promise<AssistantImages> {
+		const options = apiOptions as ModelsImagesOptions | undefined;
 		try {
 			assertImageModel(model);
 			const provider = this.requireProvider(model);

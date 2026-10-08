@@ -7,6 +7,7 @@ import type { GoogleVertexOptions } from "./api/google-vertex.ts";
 import type { MistralOptions } from "./api/mistral-conversations.ts";
 import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
+import type { OpenAIImagesOptions } from "./api/openai-images.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 import type { PiMessagesOptions } from "./api/pi-messages.ts";
 import type { AssistantMessageDiagnostic } from "./utils/diagnostics.ts";
@@ -28,7 +29,7 @@ export type KnownApi =
 
 export type Api = KnownApi | (string & {});
 
-export type KnownImageApi = "openrouter-images";
+export type KnownImageApi = "openrouter-images" | "openai-images";
 
 export type ImageApi = KnownImageApi | (string & {});
 
@@ -55,6 +56,7 @@ export type KnownProvider =
 	| "azure-openai-responses"
 	| "openai-codex"
 	| "openai-decisions"
+	| "openai-images"
 	| "radius"
 	| "typesafe"
 	| "morph"
@@ -365,6 +367,23 @@ export interface ImagesOptions extends ProviderRequestOptions<ImageModel<ImageAp
 }
 
 export type ProviderImagesOptions = ImagesOptions & Record<string, unknown>;
+
+/**
+ * Maps known image APIs to their request option types, like `ApiOptionsMap`
+ * does for chat APIs.
+ */
+export interface ImageApiOptionsMap {
+	"openrouter-images": ImagesOptions;
+	"openai-images": OpenAIImagesOptions;
+}
+
+/**
+ * Request options for an image API. Known APIs resolve to their concrete option
+ * type; custom API strings fall back to the generic shape.
+ */
+export type ImageApiOptions<TApi extends ImageApi> = TApi extends keyof ImageApiOptionsMap
+	? ImageApiOptionsMap[TApi]
+	: ProviderImagesOptions;
 
 export interface AnthropicAllowedFallbackModel {
 	provider: ProviderId;

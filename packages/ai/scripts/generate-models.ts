@@ -2956,6 +2956,30 @@ const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 	},
 ];
 
+// OpenAI Images API models, served by the openai-images provider. Standard-tier
+// prices from https://developers.openai.com/api/docs/pricing: `input` and `cacheRead`
+// are the text input rates and `output` is the image output rate. ModelCost has no
+// separate image input rate, so image input tokens on edits are priced as text input.
+const OPENAI_IMAGES_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_IMAGE_MODELS: ImageModel<"openai-images">[] = [
+	{ id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", input: 5, cacheRead: 1.25, output: 30 },
+	{ id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", input: 5, cacheRead: 1.25, output: 30 },
+	{ id: "gpt-image-2", name: "GPT Image 2", input: 5, cacheRead: 1.25, output: 30 },
+	{ id: "gpt-image-1.5", name: "GPT Image 1.5", input: 5, cacheRead: 1.25, output: 32 },
+	{ id: "gpt-image-1", name: "GPT Image 1", input: 5, cacheRead: 1.25, output: 40 },
+	{ id: "gpt-image-1-mini", name: "GPT Image 1 Mini", input: 2, cacheRead: 0.2, output: 8 },
+].map(({ id, name, input, cacheRead, output }): ImageModel<"openai-images"> => ({
+	type: "image",
+	id,
+	name,
+	api: "openai-images",
+	provider: "openai-images",
+	baseUrl: OPENAI_IMAGES_BASE_URL,
+	input: ["text", "image"],
+	output: ["image"],
+	cost: { input, output, cacheRead, cacheWrite: 0 },
+}));
+
 async function generateModels() {
 	// Fetch models from all upstream catalogs.
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
@@ -3722,7 +3746,7 @@ async function generateModels() {
 		// Only add if not already present (models.dev takes priority over OpenRouter).
 		providers[model.provider].chat[model.id] ??= { ...model, type: "chat" };
 	}
-	for (const model of openRouterCatalog.images) {
+	for (const model of [...openRouterCatalog.images, ...OPENAI_IMAGE_MODELS]) {
 		applyImageInputMetadata(model);
 		providers[model.provider] ??= { chat: {}, image: {}, classifier: {} };
 		providers[model.provider].image[model.id] ??= model;

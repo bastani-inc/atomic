@@ -75,6 +75,8 @@ For example, sign in with ChatGPT under `openai` and select `openai/gpt-6-sol` f
 
 The GPT-6 Luna Decisions classifier (`openai-decisions`) has no login of its own. It uses the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`, and ignores a ChatGPT sign-in. See [Classifier models](/models#use-classifier-models).
 
+OpenAI's image models (`openai-images`, such as `openai-images/gpt-image-2.5-flare`) work the same way: no login of their own, the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in cannot call OpenAI's Images API and is skipped, so with only that sign-in the image models stay unavailable until you save an API key with `/login openai-api` or set `OPENAI_API_KEY`. Generate images with them from [codemode](/codemode#generate-images) or a [workflow tool step](/workflows/authoring#generate-an-image-artifact-in-a-durable-tool-step).
+
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription
