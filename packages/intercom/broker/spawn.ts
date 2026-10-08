@@ -388,7 +388,9 @@ export async function spawnBrokerIfNeeded(
       }, (error) => {
         cleanup();
         // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
-        keepLock = launch.kind === "windows-launcher" || (child.exitCode === null && child.signalCode === null);
+        // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
+        // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
+        keepLock = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
         reject(toError(error));
       });
     });

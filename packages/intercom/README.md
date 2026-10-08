@@ -492,7 +492,7 @@ Runtime files live under the active agent directory. Atomic defaults to `~/.atom
 - `broker.pid` — Broker process ID
 - `delivered-messages.sqlite` — bounded durable authority containing keyed digests, never plaintext payloads
 - `delivered-messages.key` — random owner-only HMAC key paired with the authority database
-- `broker.spawn.lock` — Lock used to avoid duplicate auto-spawns. It records the spawner and its broker, and is held until the broker answers or the processes it names are gone, with a 60 second backstop
+- `broker.spawn.lock` — Lock used to avoid duplicate auto-spawns. It records the spawner and its broker, and is held until the broker answers or the processes it names are gone, with a 60 second backstop. On Windows, where the hidden launcher does not expose the broker process, it ends with the spawner's 5 second readiness wait
 - `broker.log` — Broker stderr, truncated on every spawn and capped at 8 KiB by the broker itself
 - `config.json` — User configuration
 
