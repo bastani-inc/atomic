@@ -263,10 +263,20 @@ export function getBrokerSpawnOptions(
   };
 }
 
-/** Truncate (or create) the broker log so each spawn starts from a bounded, current file. */
-function resetBrokerLog(logPath: string = BROKER_LOG): void {
+/**
+ * Truncate (or create) the broker log so each spawn starts from a bounded, current file. Returns false when a
+ * Windows broker that is still starting holds the log through its launcher's stderr redirect.
+ */
+function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
   ensurePrivateDirectory(dirname(logPath));
-  closeSync(openSync(logPath, "w"));
+  try {
+    closeSync(openSync(logPath, "w"));
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform === "win32" && (code === "EBUSY" || code === "EPERM")) return false;
+    throw error;
+  }
 }
 
 /** Read at most {@link BROKER_LOG_TAIL_BYTES} trailing bytes of the broker log. */
@@ -334,7 +344,10 @@ export async function spawnBrokerIfNeeded(
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
     // Reset before spawning either way: the Windows launcher appends to this same path.
-    resetBrokerLog();
+    if (!resetBrokerLog()) {
+      await waitForBroker(readyTimeoutMs);
+      return;
+    }
     // The Windows launcher redirects the broker's own stderr, so only the direct spawn
     // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
     // immediately afterwards rather than being held open for the broker's lifetime.
