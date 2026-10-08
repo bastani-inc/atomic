@@ -168,14 +168,17 @@ describe("Models with classifier models", () => {
 		assert.equal(calls, 1);
 	});
 
-	it("routes OpenAI GPT-6 Luna through the Decisions API with images", async () => {
+	it("routes OpenAI GPT-6 Luna Decisions through the Decisions API with images", async () => {
 		const models = builtinModels();
-		const luna = models.getModelOfType("classifier", "openai", "gpt-6-luna");
+		const luna = models.getModelOfType("classifier", "openai-decisions", "gpt-6-luna");
 		assert(luna);
 		assert.equal(luna.api, "openai-decisions");
+		assert.equal(luna.name, "GPT-6 Luna Decisions");
 		assert.deepEqual(luna.input, ["text", "image"]);
 		assert.equal(luna.contextWindow, 922000);
 		assert.equal(models.getModel("openai", "gpt-6-luna")?.api, "openai-responses");
+		assert.equal(models.getModelOfType("classifier", "openai", "gpt-6-luna"), undefined);
+		assert.equal(models.getModel("openai-decisions", "gpt-6-luna"), undefined);
 
 		const urls: string[] = [];
 		const result = await models.classify(
@@ -195,25 +198,26 @@ describe("Models with classifier models", () => {
 		assert.deepEqual(result.answers.approved, { type: "bool", probability: 0.8 });
 	});
 
-	it("lists OpenAI Decisions models only for API key credentials", async () => {
-		const apiKeyStore = new InMemoryCredentialStore();
-		await apiKeyStore.modify("openai", async () => ({ type: "api_key", key: "secret" }));
-		const oauthStore = new InMemoryCredentialStore();
-		await oauthStore.modify("openai", async () => ({
+	it("keeps OpenAI Decisions on an API key while openai uses a ChatGPT subscription", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("openai", async () => ({
 			type: "oauth",
 			access: "access",
 			refresh: "refresh",
 			expires: Date.now() + 3_600_000,
 		}));
+		const models = builtinModels({
+			credentials,
+			authContext: { env: async (name) => (name === "OPENAI_API_KEY" ? "sk-key" : undefined), fileExists: async () => false },
+		});
 
-		const keyCredentialModels = builtinModels({ credentials: apiKeyStore });
-		const subscriptionModels = builtinModels({ credentials: oauthStore });
-
-		assert.deepEqual((await keyCredentialModels.getAvailableOfType("classifier", "openai")).map((model) => model.id), [
-			"gpt-6-luna",
-		]);
-		assert.deepEqual(await subscriptionModels.getAvailableOfType("classifier", "openai"), []);
-		assert((await subscriptionModels.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
+		assert.deepEqual(
+			(await models.getAvailableOfType("classifier", "openai-decisions")).map((model) => model.id),
+			["gpt-6-luna"],
+		);
+		assert.equal((await models.getAuth("openai-decisions"))?.source, "OPENAI_API_KEY");
+		assert.equal((await models.checkAuth("openai"))?.type, "oauth");
+		assert((await models.getAvailable("openai")).some((model) => model.id === "gpt-6-luna"));
 	});
 
 	it("routes OpenRouter classifier models through the System One API", () => {

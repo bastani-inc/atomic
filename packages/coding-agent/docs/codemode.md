@@ -176,7 +176,7 @@ return results.map((result, i) =>
 Classifiers whose `input` includes `"image"` can judge images alongside the state. `tools.read()` returns image blocks that `images` accepts. Text-only classifiers and APIs that cannot send images return an error result for nonempty `images`.
 
 ```js
-const luna = await models.getModelOfType("classifier", "openai", "gpt-6-luna");
+const luna = await models.getModelOfType("classifier", "openai-decisions", "gpt-6-luna");
 const photo = await tools.read({ path: "screenshot.png" });
 const result = await models.classify(luna, {
   state: { task: "Settings page redesign" },

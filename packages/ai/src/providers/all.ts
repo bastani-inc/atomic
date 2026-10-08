@@ -29,6 +29,7 @@ import { morphProvider } from "./morph.js";
 import { nvidiaProvider } from "./nvidia.ts";
 import { openaiApiProvider, openaiProvider } from "./openai.ts";
 import { openaiCodexProvider } from "./openai-codex.ts";
+import { openaiDecisionsProvider } from "./openai-decisions.ts";
 import { opencodeProvider } from "./opencode.ts";
 import { opencodeGoProvider } from "./opencode-go.ts";
 import { openrouterProvider } from "./openrouter.ts";
@@ -169,6 +170,7 @@ export function builtinProviders(): Provider[] {
 		openaiProvider(),
 		openaiApiProvider(),
 		openaiCodexProvider(),
+		openaiDecisionsProvider(),
 		opencodeProvider(),
 		opencodeGoProvider(),
 		openrouterProvider(),
