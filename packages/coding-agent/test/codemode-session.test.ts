@@ -878,3 +878,49 @@ test("codemode tells declared tools how scripts call them instead of repeating t
 		await harness.cleanup();
 	}
 });
+
+test("codemode discovery names model-only tools instead of returning nothing (#3510)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "delegate-work",
+					label: "Delegate",
+					description: "Delegate work",
+					exposure: "model-only",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["read", "codemode", "delegate-work"],
+	});
+	try {
+		const description = harness.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description ?? "";
+		assert.match(description, /tools, ALL_TOOLS and searchTools\(\) matches cover only script-callable tools/);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: 'return { hits: await searchTools("delegate-work"), described: await describeTool("delegate_work"), listed: ALL_TOOLS.some(tool => tool.name === "delegate_work"), callable: "delegate_work" in tools, other: await searchTools("read") };',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("look for the delegate tool");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
+		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
+		const hint = "`delegate-work` is model-only: call it directly, not from a script.";
+		assert.deepEqual(output.hits[0], { name: "delegate-work", description: hint });
+		assert.equal(output.described, hint);
+		assert.equal(output.listed, false);
+		assert.equal(output.callable, false);
+		assert(!output.other.some((hit: { name: string }) => hit.name === "delegate-work"));
+	} finally {
+		await harness.cleanup();
+	}
+});
