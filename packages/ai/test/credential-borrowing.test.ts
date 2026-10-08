@@ -122,15 +122,15 @@ describe("borrowed provider credentials", () => {
 		);
 	});
 
-	it("lets the provider's own stored credential and explicit request keys win", async () => {
+	it("ignores a credential stored under the borrowing provider and lets explicit request keys win", async () => {
 		const { credentials, models } = setup({ TEST_API_KEY: "env-key" });
 		await storeApiKey(credentials, "lender-a", "key-a");
 		await storeApiKey(credentials, "borrower", "own-key");
-		assert.equal((await models.getAuth("borrower"))?.auth.apiKey, "own-key");
-
-		await credentials.delete("borrower");
 		assert.equal((await models.getAuth("borrower"))?.auth.apiKey, "key-a");
 		assert.equal((await models.getAuth("borrower", { apiKey: "explicit-key" }))?.auth.apiKey, "explicit-key");
+
+		await credentials.delete("lender-a");
+		assert.equal((await models.getAuth("borrower"))?.auth.apiKey, "env-key");
 	});
 
 	it("skips OAuth credentials and key-less API credentials, then falls back to ambient auth", async () => {

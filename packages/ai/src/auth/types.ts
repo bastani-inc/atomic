@@ -176,12 +176,13 @@ export interface ApiKeyAuth {
 
 	/**
 	 * Provider ids whose stored api-key credentials this provider reuses, in
-	 * precedence order, when it has no stored credential of its own. The first
+	 * precedence order. A borrowing provider has no stored credential of its
+	 * own; anything stored under its id is ignored. The first
 	 * listed provider with a stored api-key credential that has a key is passed
 	 * to `resolve()` as `credential`; stored OAuth credentials and key-less
 	 * api-key credentials are skipped. When none qualifies, `resolve()` runs
 	 * without a credential, so ambient sources (env vars) still apply. Pair with
-	 * an absent `login` for providers that should not have a credential of their own.
+	 * an absent `login`.
 	 */
 	borrowCredentialsFrom?: readonly string[];
 

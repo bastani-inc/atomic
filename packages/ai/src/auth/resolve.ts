@@ -36,8 +36,8 @@ export interface AuthResolutionOverrides {
 /**
  * Auth resolution shared by all operations in a `Models` collection.
  * A stored credential owns the provider: ambient/env is consulted only when
- * nothing is stored. A provider with no credential of its own may borrow one
- * (see `readProviderCredential`). No silent env fallback after a failed
+ * nothing is stored. A provider that borrows credentials reads only its
+ * lenders' (see `readProviderCredential`). No silent env fallback after a failed
  * refresh or for a credential type without a matching handler.
  */
 export function resolveProviderAuth(
@@ -218,19 +218,20 @@ async function resolveApiKey(
 }
 
 /**
- * The stored credential that supplies auth for `provider`: its own, otherwise
- * the first usable api-key credential among the providers named by its
- * `apiKey.borrowCredentialsFrom`. Shared by request auth and availability
- * checks so both agree on which credential applies.
+ * The stored credential that supplies auth for `provider`. A provider that
+ * declares `apiKey.borrowCredentialsFrom` has no credential of its own: it
+ * uses the first usable api-key credential among those providers. Any other
+ * provider uses its own. Shared by request auth and availability checks so
+ * both agree on which credential applies.
  */
 export async function readProviderCredential(
 	credentials: CredentialStore,
 	provider: { id: string; auth: ProviderAuth },
 	signal: AbortSignal,
 ): Promise<Credential | undefined> {
-	const own = await readCredential(credentials, provider.id, signal);
-	if (own) return own;
-	for (const sourceId of provider.auth.apiKey?.borrowCredentialsFrom ?? []) {
+	const lenders = provider.auth.apiKey?.borrowCredentialsFrom;
+	if (!lenders) return readCredential(credentials, provider.id, signal);
+	for (const sourceId of lenders) {
 		const borrowed = await readCredential(credentials, normalizeProviderId(sourceId), signal);
 		if (borrowed?.type === "api_key" && borrowed.key) return borrowed;
 	}
