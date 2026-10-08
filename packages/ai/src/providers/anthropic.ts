@@ -1,5 +1,5 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
-import { lazyOAuth } from "../auth/helpers.ts";
+import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadAnthropicOAuth } from "../auth/oauth/load.ts";
 import type { ApiKeyAuth } from "../auth/types.ts";
 import {
@@ -82,6 +82,19 @@ export function anthropicProvider(): Provider<"anthropic-messages"> {
 			}),
 		},
 		models: Object.values(ANTHROPIC_MODELS),
+		api: anthropicMessagesApi(),
+	});
+}
+
+export function anthropicApiProvider(): Provider<"anthropic-messages"> {
+	return createProvider({
+		id: "anthropic-api",
+		name: "Anthropic (API key)",
+		baseUrl: "https://api.anthropic.com",
+		auth: {
+			apiKey: envApiKeyAuth("Anthropic API key", [ANTHROPIC_API_KEY_ENV]),
+		},
+		models: Object.values(ANTHROPIC_MODELS).map((model) => ({ ...model, provider: "anthropic-api" })),
 		api: anthropicMessagesApi(),
 	});
 }

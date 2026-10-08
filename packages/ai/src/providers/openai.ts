@@ -34,3 +34,16 @@ export function openaiProvider(): Provider<"openai-responses"> {
 		},
 	});
 }
+
+export function openaiApiProvider(): Provider<"openai-responses"> {
+	return createProvider<"openai-responses">({
+		id: "openai-api",
+		name: "OpenAI (API key)",
+		baseUrl: "https://api.openai.com/v1",
+		auth: {
+			apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]),
+		},
+		models: Object.values(OPENAI_MODELS).map((model) => ({ ...model, provider: "openai-api" })),
+		api: openAIResponsesApi(),
+	});
+}

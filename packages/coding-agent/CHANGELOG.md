@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the API-key-only providers `openai-api` and `anthropic-api`, so you can keep a ChatGPT or Claude subscription login on `openai`/`anthropic` and still use an API key for the same models. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time).
+
 ### Changed
 
 - Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))

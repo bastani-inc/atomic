@@ -4,7 +4,9 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 export const defaultModelPerProvider: Record<string, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	anthropic: "claude-opus-4-8",
+	"anthropic-api": "claude-opus-4-8",
 	openai: "gpt-5.5",
+	"openai-api": "gpt-5.5",
 	azure: "gpt-5.4",
 	"openai-codex": "gpt-6.1-sol",
 	radius: "balanced",

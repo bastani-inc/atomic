@@ -77,6 +77,8 @@ const apiKeyEnvMap: Record<string, string> = {
 	"qwen-token-plan-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
 	"qwen-token-plan-individual": "QWEN_TOKEN_PLAN_API_KEY",
 	openai: "OPENAI_API_KEY",
+	"openai-api": "OPENAI_API_KEY",
+	"anthropic-api": ANTHROPIC_API_KEY_ENV,
 	azure: "AZURE_OPENAI_API_KEY",
 	nvidia: "NVIDIA_API_KEY",
 	deepseek: "DEEPSEEK_API_KEY",
