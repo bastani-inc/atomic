@@ -202,23 +202,32 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
 				});
+			// A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
+			// response preamble is read before the request counts as accepted.
+			const openStream = async (requestParams: ResponseCreateParamsStreaming) => {
+				const { data, response } = await sendRequest(requestParams);
+				const events = await readResponsePreamble(
+					withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort),
+				);
+				return { events, response };
+			};
 			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
-			let sent: Awaited<ReturnType<typeof sendRequest>>;
+			let opened: Awaited<ReturnType<typeof openStream>>;
 			try {
-				sent = await sendRequest(params);
+				opened = await openStream(params);
 			} catch (error) {
 				if (params.service_tier == null || !isServiceTierRejection(error)) throw error;
 				appendServiceTierRejectedWarning(output, model, params.service_tier);
 				requestedServiceTier = undefined;
 				const { service_tier: _rejectedServiceTier, ...defaultTierParams } = params;
-				sent = await sendRequest(defaultTierParams);
+				opened = await openStream(defaultTierParams);
 			}
-			const { data: openaiStream, response } = sent;
+			const { events: openaiStream, response } = opened;
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(
-				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				openaiStream,
 				output,
 				stream,
 				model,
@@ -268,6 +277,45 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 
 	return stream;
 };
+
+const RESPONSE_PREAMBLE_EVENT_TYPES = new Set(["response.created", "response.in_progress", "response.queued"]);
+
+/**
+ * Read a stream up to its first event after the response preamble, so an error the server raises
+ * before producing output is thrown here. Returns a stream that replays every event read.
+ */
+async function readResponsePreamble<T extends { type: string }>(events: AsyncIterable<T>): Promise<AsyncIterable<T>> {
+	const iterator = events[Symbol.asyncIterator]();
+	const preamble: T[] = [];
+	let done = false;
+	try {
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) {
+				done = true;
+				break;
+			}
+			preamble.push(next.value);
+			if (!RESPONSE_PREAMBLE_EVENT_TYPES.has(next.value.type)) break;
+		}
+	} catch (error) {
+		await iterator.return?.();
+		throw error;
+	}
+	return (async function* () {
+		try {
+			yield* preamble;
+			if (done) return;
+			for (;;) {
+				const next = await iterator.next();
+				if (next.done) return;
+				yield next.value;
+			}
+		} finally {
+			await iterator.return?.();
+		}
+	})();
+}
 
 export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOptions> = (
 	model: Model<"openai-responses">,

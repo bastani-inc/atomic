@@ -49,6 +49,23 @@ function rejection(status: number, message: string): Response {
 	});
 }
 
+/** A streamed request the Responses API refuses after HTTP 200, the way it rejects an unsupported service_tier. */
+function streamedRejection(message: string, param: string | null): Response {
+	const response = { id: "resp_1", object: "response", status: "in_progress", service_tier: "ultrafast", output: [] };
+	const events = [
+		{ type: "response.created", response, sequence_number: 0 },
+		{ type: "response.in_progress", response, sequence_number: 1 },
+		{ type: "error", error: { type: "invalid_request_error", code: null, message, param }, sequence_number: 2 },
+		{
+			type: "response.failed",
+			response: { ...response, status: "failed", error: { code: "unknown", message } },
+			sequence_number: 3,
+		},
+	];
+	const sse = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+	return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 function serviceTierWarnings(message: AssistantMessage): string[] {
 	return (message.diagnostics ?? [])
 		.filter((diagnostic) => diagnostic.type === "service_tier_unavailable")
@@ -124,6 +141,31 @@ describe("service tier rejection (#3529)", () => {
 		assert.deepEqual(serviceTierWarnings(result), [
 			"fast isn't available for gpt-6.1-sol on this account; ran at default",
 		]);
+	});
+
+	test("retries once at the default tier when a streamed response rejects ultrafast after HTTP 200 (#3529)", async () => {
+		const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
+			streamedRejection("Invalid service_tier argument", "service_tier"),
+			completedResponse("default"),
+		]);
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(payloads.length, 2);
+		assert.equal(payloads[0]?.service_tier, "ultrafast");
+		assert.equal(payloads[1]?.service_tier, undefined);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
+		]);
+	});
+
+	test("does not retry a streamed error that is not about the service tier (#3529)", async () => {
+		const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
+			streamedRejection("Invalid value for 'input'", "input"),
+		]);
+
+		assert.equal(result.stopReason, "error");
+		assert.equal(payloads.length, 1);
+		assert.deepEqual(serviceTierWarnings(result), []);
 	});
 
 	test("does not retry a second time when the default-tier request also fails (#3529)", async () => {

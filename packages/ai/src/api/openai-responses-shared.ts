@@ -231,10 +231,13 @@ function serviceTierLabel(serviceTier: string): string {
 	return serviceTier === "priority" ? "fast" : serviceTier;
 }
 
-/** Whether the server refused the request because of its `service_tier` (for example `400 Invalid service_tier argument`). */
+/**
+ * Whether the server refused the request because of its `service_tier`: `400 Invalid service_tier argument`
+ * on a plain request, or a status-less `error` event with `param: "service_tier"` on a streamed one.
+ */
 export function isServiceTierRejection(error: unknown): boolean {
 	const { status, body, message } = normalizeProviderError(error);
-	return status === 400 && /service_tier/i.test(`${message} ${body ?? ""}`);
+	return (status === 400 || status === undefined) && /service_tier/i.test(`${message} ${body ?? ""}`);
 }
 
 function appendServiceTierWarning(
