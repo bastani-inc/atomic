@@ -366,7 +366,6 @@ runTest(
 				npmCli,
 				"install",
 				"--ignore-scripts",
-				"--prefer-offline",
 				"--no-audit",
 				"--no-fund",
 				"--save-exact",
