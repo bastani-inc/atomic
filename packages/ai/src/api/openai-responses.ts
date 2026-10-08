@@ -32,9 +32,11 @@ import {
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
 	applyServiceTierPricing,
+	appendServiceTierRejectedWarning,
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
+	isServiceTierRejection,
 	processResponsesStream,
 	type ResponsesServiceTier,
 	resolveRequestedServiceTier,
@@ -194,14 +196,24 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const { data: openaiStream, response } = await retryProviderRequest(
-				() => client.responses.create(params, requestOptions).withResponse(),
-				{
+			const sendRequest = (requestParams: ResponseCreateParamsStreaming) =>
+				retryProviderRequest(() => client.responses.create(requestParams, requestOptions).withResponse(), {
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
-				},
-			);
+				});
+			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
+			let sent: Awaited<ReturnType<typeof sendRequest>>;
+			try {
+				sent = await sendRequest(params);
+			} catch (error) {
+				if (params.service_tier == null || !isServiceTierRejection(error)) throw error;
+				appendServiceTierRejectedWarning(output, model, params.service_tier);
+				requestedServiceTier = undefined;
+				const { service_tier: _rejectedServiceTier, ...defaultTierParams } = params;
+				sent = await sendRequest(defaultTierParams);
+			}
+			const { data: openaiStream, response } = sent;
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -212,9 +224,10 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				model,
 				{
 					onProviderStreamEvent: options?.onProviderStreamEvent,
-					serviceTier: resolveOpenAIRequestServiceTier(model, options?.serviceTier),
+					serviceTier: requestedServiceTier,
 					grammarToolInputProperties,
 					applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+					warnOnServiceTierDowngrade: true,
 				},
 			);
 

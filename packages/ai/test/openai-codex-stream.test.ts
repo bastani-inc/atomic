@@ -445,6 +445,19 @@ describe("openai-codex advertised service tiers", () => {
 		expect(result.usage.cost.total).toBeCloseTo(9, 10);
 	});
 
+	it("does not warn when Codex reports default for a requested ultrafast or fast tier (#3529)", async () => {
+		for (const [model, options] of [
+			[astraUltrafast, {}],
+			[sol61Ultrafast, {}],
+			[sol61, { serviceTier: "priority" }],
+		] as const) {
+			const { result } = await run(model, options, { serviceTier: "default" });
+
+			assert.equal(result.stopReason, "stop");
+			assert.equal(result.diagnostics, undefined);
+		}
+	});
+
 	it("prices a priority response at the model's published Fast rates", async () => {
 		const { result } = await run(
 			astra,

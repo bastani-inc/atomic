@@ -129,4 +129,33 @@ describe("InteractiveMode assistant diagnostics", () => {
 			"Anthropic dropped 2 thinking blocks (details in session)",
 		);
 	});
+
+	test("shows a service tier warning whether or not cache miss notices are enabled (#3529)", () => {
+		initTheme("dark");
+		const warning = "ultrafast isn't available for gpt-5.6-sol on this account; ran at default";
+		const warned: AssistantMessage = {
+			...message,
+			diagnostics: [
+				{ type: "service_tier_unavailable", timestamp: 1, details: { severity: "warning", message: warning } },
+			],
+		};
+		const show = Reflect.get(InteractiveMode.prototype, "maybeShowAssistantDiagnostics") as (
+			this: {
+				chatContainer: Container;
+				settingsManager: { getShowCacheMissNotices(): boolean };
+				sessionManager: { getBranch(): SessionEntry[] };
+			},
+			message: AssistantMessage,
+		) => void;
+		for (const enabled of [true, false]) {
+			const mode = {
+				chatContainer: new Container(),
+				settingsManager: { getShowCacheMissNotices: () => enabled },
+				sessionManager: { getBranch: (): SessionEntry[] => [] },
+			};
+			show.call(mode, warned);
+			const output = stripAnsi(mode.chatContainer.render(120).join("\n"));
+			expect(output).toContain(`Warning: ${warning}`);
+		}
+	});
 });

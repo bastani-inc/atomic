@@ -547,8 +547,12 @@ const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
 	o3: { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
 	"o4-mini": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
 };
+// Astra's Ultrafast rates are published. The Ultrafast rate card does not list Sol yet, so Sol follows the
+// same 6x-Standard convention until OpenAI publishes its own.
 const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
 	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
+	"gpt-6.1-sol": { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 },
+	"gpt-5.6-sol": { input: 24, output: 120, cacheRead: 2.4, cacheWrite: 30 },
 };
 
 function openAiServiceTierCost(modelId: string, cost: ModelCost): ModelCost {

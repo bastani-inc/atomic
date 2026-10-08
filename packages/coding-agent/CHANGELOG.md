@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `gpt-6.1-sol-ultrafast` and `gpt-5.6-sol-ultrafast` model variants for `openai` and `openai-api`. Ultrafast access depends on your OpenAI account ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
+### Changed
+
+- When OpenAI rejects a Fast or Ultrafast tier, Atomic retries the request once at the default tier instead of failing the turn. When the server runs a request at a slower tier than the model you selected, Atomic shows a warning, for example `ultrafast isn't available for gpt-5.6-sol on this account; ran at default`. Interactive sessions show it under the response, print mode writes it to stderr, and JSON mode includes it in the message's `diagnostics`. Codex models do not warn on a reported `default` tier ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
 ## [0.9.28] - 2026-10-08
 
 ### Added

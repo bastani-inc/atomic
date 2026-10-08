@@ -3,6 +3,7 @@ import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
+import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
@@ -55,6 +56,10 @@ InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 	this: InteractiveModeBase,
 	message: AssistantMessage,
 ): void {
+	for (const warning of serviceTierWarnings(message)) {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+	}
 	if (!this.settingsManager.getShowCacheMissNotices()) return;
 
 	const count = countDroppedThinkingBlocks(message);

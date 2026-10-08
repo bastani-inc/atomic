@@ -13,6 +13,7 @@ import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
+import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -196,6 +197,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			}
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
+			} else if (event.type === "message_end" && event.message.role === "assistant") {
+				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
 			}
 		});
 	};

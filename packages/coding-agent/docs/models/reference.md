@@ -138,7 +138,7 @@ Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-
 | Up to 272,000 | $60 | $6 | $75 | $300 |
 | Above 272,000 | $120 | $12 | $150 | $450 |
 
-GPT-6 Astra is the only model with an Ultrafast choice. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers).
+GPT-6 Astra has an Ultrafast choice on Codex and the OpenAI API; GPT-6.1 Sol and GPT-5.6 Sol have one on the OpenAI API only. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers).
 
 Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` through the `amazon-bedrock` provider. These entries keep the same 272,000 input and 128,000 output limits, text and image input, and five reasoning levels; Atomic sends the selected effort as Bedrock's OpenAI `reasoning_effort` field. They do not get Fast or OpenAI tool-search metadata. Atomic sends each Bedrock ID unchanged and records all four price fields as zero because AWS had not published Astra pricing. Zero means unknown here, not free.
 
@@ -161,7 +161,7 @@ Atomic uses a 272,000-token default context and a 128,000-token output limit. In
 
 Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
 
-GPT-6.1 Sol supports Standard and Fast only; it has no `-ultrafast` choice. See [provider tier caveats](/providers#fast-models).
+`openai/gpt-6.1-sol-ultrafast` (also `openai-api/`) sends `service_tier: "ultrafast"` and is priced at six times Standard: $12 input, $0.60 cached input, $15 cache write, and $60 output per million tokens up to 272,000 input tokens. OpenAI has not published Sol Ultrafast rates yet. Codex offers Standard and Fast only. See [provider tier caveats](/providers#fast-models).
 
 ### Image Input Limits
 

@@ -4,6 +4,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added the `ultrafast` service tier to `gpt-6.1-sol` and `gpt-5.6-sol` on `openai` and `openai-api`, priced at six times their Standard rates until OpenAI publishes Sol Ultrafast rates ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
+### Changed
+
+- OpenAI Responses requests now retry once at the default tier when the server rejects the requested `service_tier`, and a response that reports a slower tier than requested records the same `service_tier_unavailable` warning diagnostic on the assistant message. Pricing keeps following the tier the server reports ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
 ## [0.9.28] - 2026-10-08
 
 ### Breaking Changes
