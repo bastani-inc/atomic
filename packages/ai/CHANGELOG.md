@@ -6,11 +6,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Added
 
-- Added the `ultrafast` service tier to `gpt-6.1-sol` and `gpt-5.6-sol` on `openai` and `openai-api`, priced at six times their Standard rates until OpenAI publishes Sol Ultrafast rates ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+- Added the `ultrafast` service tier to `gpt-6.1-sol` and `gpt-5.6-sol` on `openai` and `openai-api`. GPT-6.1 Sol uses OpenAI's published Ultrafast rates ($12 input, $60 output per million tokens), with cache rates derived at the same six-times-Standard ratio; GPT-5.6 Sol Ultrafast is a preview without published rates and is priced at six times its Standard rates ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
 
 ### Changed
 
-- OpenAI Responses requests now retry once at the default tier when the server rejects the requested `service_tier`, and a response that reports a slower tier than requested records the same `service_tier_unavailable` warning diagnostic on the assistant message. Pricing keeps following the tier the server reports ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+- OpenAI Responses and OpenAI Codex Responses requests now retry once at the default tier when the server rejects the requested `service_tier` before producing output, and record a `service_tier_unavailable` warning diagnostic on the assistant message once the default-tier request is accepted. On OpenAI Responses, a response that reports a slower tier than requested records the same warning; Codex does not warn on a reported `default`. Pricing keeps following the tier the server reports ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
 
 ## [0.9.28] - 2026-10-08
 

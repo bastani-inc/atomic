@@ -202,29 +202,31 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
 				});
-			// A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
+			let startEmitted = false;
+			// Every attempt reports its HTTP response before its body is consumed, and the message stream starts
+			// once. A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
 			// response preamble is read before the request counts as accepted.
 			const openStream = async (requestParams: ResponseCreateParamsStreaming) => {
 				const { data, response } = await sendRequest(requestParams);
-				const events = await readResponsePreamble(
-					withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort),
-				);
-				return { events, response };
+				await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+				if (!startEmitted) {
+					startEmitted = true;
+					stream.push({ type: "start", partial: output });
+				}
+				return readResponsePreamble(withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort));
 			};
 			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
-			let opened: Awaited<ReturnType<typeof openStream>>;
+			let openaiStream: Awaited<ReturnType<typeof openStream>>;
 			try {
-				opened = await openStream(params);
+				openaiStream = await openStream(params);
 			} catch (error) {
 				if (params.service_tier == null || !isServiceTierRejection(error)) throw error;
-				appendServiceTierRejectedWarning(output, model, params.service_tier);
-				requestedServiceTier = undefined;
+				const rejectedServiceTier = params.service_tier;
 				const { service_tier: _rejectedServiceTier, ...defaultTierParams } = params;
-				opened = await openStream(defaultTierParams);
+				openaiStream = await openStream(defaultTierParams);
+				requestedServiceTier = undefined;
+				appendServiceTierRejectedWarning(output, model, rejectedServiceTier);
 			}
-			const { events: openaiStream, response } = opened;
-			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
-			stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(
 				openaiStream,

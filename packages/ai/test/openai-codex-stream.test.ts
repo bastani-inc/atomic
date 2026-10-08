@@ -12,7 +12,7 @@ import {
 	stream as streamOpenAICodexResponses,
 	streamSimple as streamSimpleOpenAICodexResponses,
 } from "../src/api/openai-codex-responses.ts";
-import type { Api, Context, Model, ModelCost } from "../src/types.ts";
+import type { Api, AssistantMessage, Context, Model, ModelCost } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -409,28 +409,202 @@ describe("openai-codex advertised service tiers", () => {
 		assert.equal(body?.service_tier, undefined);
 	});
 
-	it("fails an advertised ultrafast request the provider rejects without retrying at a lower tier", async () => {
+	const ULTRAFAST_ROUTING_HINT = "model=gpt-6-astra;tier=ultrafast";
+
+	function tierRejection(status: number, message: string, param: string | null = null): Response {
+		return new Response(JSON.stringify({ error: { message, type: "invalid_request_error", param } }), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+	}
+
+	/** A 200 stream the backend refuses before producing output, the way the Responses API rejects a service_tier. */
+	function streamedTierRejection(message: string, param: string | null): Response {
+		const sse = [
+			{ type: "response.created", response: { id: "resp_rejected", status: "in_progress" } },
+			{ type: "error", error: { type: "invalid_request_error", code: null, message, param } },
+		]
+			.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+			.join("");
+		return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+	}
+
+	function completedResponse(serviceTier?: string): Response {
+		return new Response(completedSSE({ input: 100_000, output: 10_000 }, serviceTier), {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+	}
+
+	function serviceTierWarnings(message: AssistantMessage): string[] {
+		return (message.diagnostics ?? [])
+			.filter((diagnostic) => diagnostic.type === "service_tier_unavailable")
+			.map((diagnostic) => String(diagnostic.details?.message));
+	}
+
+	/** Run an SSE request through a sequence of responses, recording bodies, routing hints, and hook/event order. */
+	async function runSequence(model: Model<"openai-codex-responses">, responses: Response[]) {
 		const requests: Array<Record<string, unknown> | null> = [];
+		const routingHints: Array<string | null> = [];
+		const order: string[] = [];
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
 				requests.push(decodeCodexRequestBody(init?.body));
-				return new Response(
-					JSON.stringify({ error: { message: "service_tier ultrafast is not available for this account" } }),
-					{ status: 400, headers: { "content-type": "application/json" } },
-				);
+				routingHints.push(new Headers(init?.headers).get("x-codex-routing-hint"));
+				const next = responses.shift();
+				if (!next) throw new Error("unexpected extra request");
+				return next;
 			}),
 		);
+		const events = streamOpenAICodexResponses(model, normalizeContext(context), {
+			apiKey: mockToken(),
+			transport: "sse",
+			headers: { "x-codex-routing-hint": ULTRAFAST_ROUTING_HINT },
+			onResponse: (response) => {
+				order.push(`onResponse:${response.status}`);
+			},
+		});
+		for await (const event of events) {
+			if (event.type === "start" || event.type === "done" || event.type === "error") order.push(event.type);
+		}
+		return { result: await events.result(), requests, routingHints, order };
+	}
+
+	it("retries once at the default tier with a warning when Codex rejects the tier with a 400 over SSE (#3529)", async () => {
+		const { result, requests, routingHints, order } = await runSequence(astraUltrafast, [
+			tierRejection(400, "Invalid service_tier argument", "service_tier"),
+			completedResponse("default"),
+		]);
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(requests.length, 2);
+		assert.equal(requests[0]?.service_tier, "ultrafast");
+		assert.equal(requests[1]?.service_tier, undefined);
+		assert.equal(requests[1]?.model, "gpt-6-astra");
+		assert.deepEqual(routingHints, [ULTRAFAST_ROUTING_HINT, null]);
+		assert.deepEqual(order, ["onResponse:400", "onResponse:200", "start", "done"]);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-6-astra on this account; ran at default",
+		]);
+		expect(result.usage.cost.input).toBeCloseTo(1, 10);
+		expect(result.usage.cost.output).toBeCloseTo(0.5, 10);
+	});
+
+	it("retries once at the default tier when Codex rejects the tier inside a 200 SSE stream (#3529)", async () => {
+		const { result, requests, order } = await runSequence(astraUltrafast, [
+			streamedTierRejection("Invalid service_tier argument", "service_tier"),
+			completedResponse("default"),
+		]);
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(requests.length, 2);
+		assert.equal(requests[1]?.service_tier, undefined);
+		assert.deepEqual(order, ["onResponse:200", "start", "onResponse:200", "done"]);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-6-astra on this account; ran at default",
+		]);
+	});
+
+	it("retries once at the default tier when Codex rejects the tier over WebSocket (#3529)", async () => {
+		const sentBodies: Array<Record<string, unknown>> = [];
+		const handshakeRoutingHints: Array<string | undefined> = [];
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		class MockWebSocket extends EventTarget {
+			constructor(_url: string, options?: { headers?: Record<string, string> }) {
+				super();
+				handshakeRoutingHints.push(options?.headers?.["x-codex-routing-hint"]);
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(data: string): void {
+				const body = JSON.parse(data) as Record<string, unknown>;
+				sentBodies.push(body);
+				const events =
+					body.service_tier === undefined
+						? [
+								{
+									type: "response.completed",
+									response: {
+										id: "resp_default",
+										status: "completed",
+										service_tier: "default",
+										usage: { input_tokens: 100_000, output_tokens: 10_000, total_tokens: 110_000 },
+									},
+								},
+							]
+						: [
+								{ type: "response.created", response: { id: "resp_rejected", status: "in_progress" } },
+								{
+									type: "error",
+									error: {
+										type: "invalid_request_error",
+										message: "Invalid service_tier argument",
+										param: "service_tier",
+									},
+								},
+							];
+				for (const event of events) {
+					queueMicrotask(() => {
+						this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify(event) }));
+					});
+				}
+			}
+
+			close(): void {}
+		}
+		vi.stubGlobal("WebSocket", MockWebSocket);
 
 		const result = await streamOpenAICodexResponses(astraUltrafast, normalizeContext(context), {
 			apiKey: mockToken(),
-			transport: "sse",
+			headers: { "x-codex-routing-hint": ULTRAFAST_ROUTING_HINT },
 		}).result();
 
+		assert.equal(result.stopReason, "stop");
+		assert.equal(sentBodies.length, 2);
+		assert.equal(sentBodies[0]?.service_tier, "ultrafast");
+		assert.equal(sentBodies[1]?.service_tier, undefined);
+		assert.deepEqual(handshakeRoutingHints, [ULTRAFAST_ROUTING_HINT, undefined]);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-6-astra on this account; ran at default",
+		]);
+		expect(result.usage.cost.total).toBeCloseTo(1.5, 10);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("does not retry a Codex error that is not about the service tier (#3529)", async () => {
+		for (const response of [
+			tierRejection(400, "Invalid value for 'input'", "input"),
+			streamedTierRejection("Rate limit reached for requests", null),
+		]) {
+			const { result, requests } = await runSequence(astraUltrafast, [response]);
+
+			assert.equal(result.stopReason, "error");
+			assert.equal(requests.length, 1);
+			assert.deepEqual(serviceTierWarnings(result), []);
+		}
+	});
+
+	it("does not retry a Codex tier rejection when the request sent no service tier (#3529)", async () => {
+		const { result, requests } = await runSequence(astra, [
+			tierRejection(400, "Invalid service_tier argument", "service_tier"),
+		]);
+
 		assert.equal(result.stopReason, "error");
-		assert.match(result.errorMessage ?? "", /ultrafast/);
 		assert.equal(requests.length, 1);
-		assert.equal(requests[0]?.service_tier, "ultrafast");
+	});
+
+	it("does not claim a Codex request ran at default when the default-tier retry fails (#3529)", async () => {
+		const { result, requests } = await runSequence(astraUltrafast, [
+			tierRejection(400, "Invalid service_tier argument", "service_tier"),
+			tierRejection(400, "Invalid value for 'input'", "input"),
+		]);
+
+		assert.equal(result.stopReason, "error");
+		assert.equal(requests.length, 2);
+		assert.deepEqual(serviceTierWarnings(result), []);
 	});
 
 	it("prices an ultrafast route at the model's published Ultrafast rates", async () => {

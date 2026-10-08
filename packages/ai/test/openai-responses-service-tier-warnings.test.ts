@@ -73,15 +73,31 @@ function serviceTierWarnings(message: AssistantMessage): string[] {
 }
 
 async function run(model: Model<"openai-responses">, responses: Response[]) {
+	const { result, payloads } = await runRecordingOrder(model, responses);
+	return { result, payloads };
+}
+
+/** Run a request and record `onResponse` calls interleaved with the stream's start, done, and error events. */
+async function runRecordingOrder(model: Model<"openai-responses">, responses: Response[]) {
 	const payloads: Array<{ model?: string; service_tier?: string }> = [];
+	const order: string[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
 		payloads.push(JSON.parse(String(init?.body)) as { model?: string; service_tier?: string });
 		const next = responses.shift();
 		if (!next) throw new Error("unexpected extra request");
 		return next;
 	});
-	const result = await streamOpenAIResponses(model, context, { apiKey: "sk-test-key" }).result();
-	return { result, payloads };
+	const events = streamOpenAIResponses(model, context, {
+		apiKey: "sk-test-key",
+		onResponse: (response) => {
+			order.push(`onResponse:${response.status}`);
+		},
+	});
+	for await (const event of events) {
+		if (event.type === "start" || event.type === "done" || event.type === "error") order.push(event.type);
+	}
+	const result = await events.result();
+	return { result, payloads, order };
 }
 
 afterEach(() => {
@@ -123,7 +139,10 @@ describe("service tier rejection (#3529)", () => {
 
 	test("prices the retried request at the default tier (#3529)", async () => {
 		const model = ultrafastVariant("gpt-5.6-sol");
-		const { result } = await run(model, [rejection(400, "Invalid service_tier argument"), completedResponse("default")]);
+		const { result } = await run(model, [
+			rejection(400, "Invalid service_tier argument"),
+			completedResponse("default"),
+		]);
 
 		assert.ok(Math.abs(result.usage.cost.input - (100_000 / 1_000_000) * model.cost.input) < 1e-9);
 		assert.ok(Math.abs(result.usage.cost.output - (10_000 / 1_000_000) * model.cost.output) < 1e-9);
@@ -179,6 +198,23 @@ describe("service tier rejection (#3529)", () => {
 		assert.equal(payloads[1]?.service_tier, undefined);
 	});
 
+	test("does not claim the request ran at default when the default-tier retry fails (#3529)", async () => {
+		for (const firstAttempt of [
+			rejection(400, "Invalid service_tier argument"),
+			streamedRejection("Invalid service_tier argument", "service_tier"),
+		]) {
+			const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
+				firstAttempt,
+				rejection(400, "Invalid value for 'input'"),
+			]);
+
+			assert.equal(result.stopReason, "error");
+			assert.equal(payloads.length, 2);
+			assert.deepEqual(serviceTierWarnings(result), []);
+			vi.restoreAllMocks();
+		}
+	});
+
 	test("does not retry a 400 that is not about the service tier (#3529)", async () => {
 		const { result, payloads } = await run(ultrafastVariant("gpt-5.6-sol"), [
 			rejection(400, "Invalid value for 'input'"),
@@ -205,6 +241,32 @@ describe("service tier rejection (#3529)", () => {
 
 		assert.equal(result.stopReason, "error");
 		assert.equal(payloads.length, 1);
+	});
+});
+
+describe("provider response hook ordering (#3529)", () => {
+	test("calls onResponse and emits start before a 200 stream's early error that is not about the tier (#3529)", async () => {
+		const { result, payloads, order } = await runRecordingOrder(ultrafastVariant("gpt-5.6-sol"), [
+			streamedRejection("Rate limit reached for requests", null),
+		]);
+
+		assert.deepEqual(order, ["onResponse:200", "start", "error"]);
+		assert.equal(result.stopReason, "error");
+		assert.equal(payloads.length, 1);
+	});
+
+	test("calls onResponse for both attempts and emits start once when a streamed tier rejection is retried (#3529)", async () => {
+		const { result, payloads, order } = await runRecordingOrder(ultrafastVariant("gpt-5.6-sol"), [
+			streamedRejection("Invalid service_tier argument", "service_tier"),
+			completedResponse("default"),
+		]);
+
+		assert.deepEqual(order, ["onResponse:200", "start", "onResponse:200", "done"]);
+		assert.equal(result.stopReason, "stop");
+		assert.equal(payloads.length, 2);
+		assert.deepEqual(serviceTierWarnings(result), [
+			"ultrafast isn't available for gpt-5.6-sol on this account; ran at default",
+		]);
 	});
 });
 

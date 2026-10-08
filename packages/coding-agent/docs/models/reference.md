@@ -161,7 +161,7 @@ Atomic uses a 272,000-token default context and a 128,000-token output limit. In
 
 Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
 
-`openai/gpt-6.1-sol-ultrafast` (also `openai-api/`) sends `service_tier: "ultrafast"` and is priced at six times Standard: $12 input, $0.60 cached input, $15 cache write, and $60 output per million tokens up to 272,000 input tokens. OpenAI has not published Sol Ultrafast rates yet. Codex offers Standard and Fast only. See [provider tier caveats](/providers#fast-models).
+`openai/gpt-6.1-sol-ultrafast` (also `openai-api/`) sends `service_tier: "ultrafast"`. It uses OpenAI's published Ultrafast rates of $12 input and $60 output per million tokens up to 272,000 input tokens. OpenAI has not listed Sol Ultrafast cache rates, so Atomic derives them at the same six-times-Standard ratio: $0.60 cached input and $15 cache write. Above 272,000 input tokens, the usual long-context multipliers apply. Atomic has no `openai-codex/gpt-6.1-sol-ultrafast` choice, because the Codex backend does not confirm which tier it applied. See [provider tier caveats](/providers#fast-models).
 
 ### Image Input Limits
 
