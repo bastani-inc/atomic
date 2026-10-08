@@ -6,6 +6,7 @@ import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from "f
 import { randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
+import { isSocketAnswering } from "./socket-liveness.js";
 import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
@@ -62,6 +63,13 @@ const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = getBrokerPidPath();
 
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
+const LISTEN_ATTEMPTS = 5;
+const LISTEN_RETRY_DELAY_MS = 100;
+
+function exitBecauseLiveBrokerOwnsSocket(): never {
+  console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
+  process.exit(0);
+}
 
 interface PendingStageRouteRegistration {
   readonly sessionId: string;
@@ -267,25 +275,46 @@ class IntercomBroker {
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(SOCKET_PATH);
-      } catch {
-        // A clean startup has no stale socket to remove.
-      }
-    }
     this.server = net.createServer(this.handleConnection.bind(this));
   }
 
   start(): void {
+    this.listen(1);
+    process.on("SIGTERM", () => this.shutdown());
+    process.on("SIGINT", () => this.shutdown());
+  }
+
+  private listen(attempt: number): void {
+    const onError = (error: NodeJS.ErrnoException) => {
+      void this.recoverFromListenError(error, attempt);
+    };
+    this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
+      this.server.off("error", onError);
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
     });
-    process.on("SIGTERM", () => this.shutdown());
-    process.on("SIGINT", () => this.shutdown());
+  }
+
+  /** Take over only a stale socket: a path a live broker answers on is never unlinked. */
+  private async recoverFromListenError(error: NodeJS.ErrnoException, attempt: number): Promise<void> {
+    if (error.code !== "EADDRINUSE" || attempt >= LISTEN_ATTEMPTS) {
+      console.error(`Intercom broker could not listen on ${SOCKET_PATH}: ${error.message}`);
+      process.exit(1);
+    }
+    if (await isSocketAnswering(SOCKET_PATH)) exitBecauseLiveBrokerOwnsSocket();
+    if (process.platform === "win32") {
+      await new Promise<void>((resolve) => setTimeout(resolve, LISTEN_RETRY_DELAY_MS));
+    } else {
+      try {
+        unlinkSync(SOCKET_PATH);
+      } catch {
+        // Another broker may have removed the stale socket first.
+      }
+    }
+    this.listen(attempt + 1);
   }
 
   private handleConnection(socket: net.Socket): void {
@@ -1817,4 +1846,9 @@ class IntercomBroker {
 }
 
 // The stderr cap is already in place: `./bounded-stderr-install.js` is this file's first import.
-new IntercomBroker().start();
+async function startUnlessLiveBrokerAnswers(): Promise<void> {
+  if (await isSocketAnswering(SOCKET_PATH)) exitBecauseLiveBrokerOwnsSocket();
+  new IntercomBroker().start();
+}
+
+void startUnlessLiveBrokerAnswers();

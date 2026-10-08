@@ -240,6 +240,9 @@ unixEvictionTest(
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-evict-"));
 		const incumbent = spawnBroker(agentDir);
 		const incumbentPid = await waitForBrokerPid(agentDir, incumbent);
+		// A starting broker no longer takes over a socket a live broker answers on (#3505), so the
+		// incumbent is evicted by removing its socket path, which is what leaves a successor free to bind.
+		rmSync(getBrokerSocketPath(process.platform, agentDir));
 		const successor = spawnBroker(agentDir);
 		const successorPid = await waitForBrokerPid(agentDir, successor);
 		assert.notEqual(successorPid, incumbentPid);

@@ -1,9 +1,9 @@
 import { spawn } from "child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
-import net from "net";
+import { isSocketAnswering } from "./socket-liveness.js";
 import { createChildProcessEnvironment, isBunBinary } from "@bastani/atomic";
 import {
   getBrokerLogPath,
@@ -56,6 +56,12 @@ export const BROKER_POLL_INITIAL_INTERVAL_MS = 10;
 
 /** Upper bound for the readiness poll interval, matching the historic flat poll. */
 export const BROKER_POLL_MAX_INTERVAL_MS = 100;
+
+/** How long one spawn attempt waits for the broker socket to answer. */
+export const BROKER_READY_TIMEOUT_MS = 5000;
+
+/** Backstop only: a spawn lock normally ends when its broker is ready or the processes it names are gone. */
+export const BROKER_SPAWN_LOCK_MAX_AGE_MS = 60_000;
 
 type BrokerRuntime = "node" | "bun-source" | "bun-binary";
 
@@ -299,7 +305,11 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[]): Promise<void> {
+export async function spawnBrokerIfNeeded(
+  brokerCommand: string,
+  brokerArgs: string[],
+  readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
+): Promise<void> {
   ensurePrivateDirectory(INTERCOM_DIR);
 
   if (await isBrokerRunning()) {
@@ -308,10 +318,11 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
 
   const ownsLock = acquireSpawnLock();
   if (!ownsLock) {
-    await waitForBroker();
+    await waitForBroker(readyTimeoutMs);
     return;
   }
 
+  let keepLock = false;
   try {
     if (await isBrokerRunning()) {
       return;
@@ -335,6 +346,7 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       if (logFd !== undefined) closeSync(logFd);
     }
     child.unref();
+    if (launch.kind === "direct") recordSpawnedBroker(child.pid);
 
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -358,23 +370,30 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
           reject(new Error(`Intercom broker exited before startup with signal ${signal}\n${describeBrokerLog()}`));
           return;
         }
-        reject(
-          new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}\n${describeBrokerLog()}`),
-        );
+        const exitedBeforeStartup = () =>
+          new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}\n${describeBrokerLog()}`);
+        if (code === 0) {
+          // A broker that finds a live broker on the socket yields with a clean exit.
+          void checkSocketConnectable().then((answering) => (answering ? resolve() : reject(exitedBeforeStartup())));
+          return;
+        }
+        reject(exitedBeforeStartup());
       };
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker().then(() => {
+      waitForBroker(readyTimeoutMs).then(() => {
         cleanup();
         resolve();
       }, (error) => {
         cleanup();
+        // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
+        keepLock = launch.kind === "windows-launcher" || (child.exitCode === null && child.signalCode === null);
         reject(toError(error));
       });
     });
   } finally {
-    releaseSpawnLock();
+    if (!keepLock) releaseSpawnLock();
   }
 }
 
@@ -397,31 +416,12 @@ async function isBrokerRunning(): Promise<boolean> {
 }
 
 function checkSocketConnectable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect(BROKER_SOCKET);
-    const finish = (isConnected: boolean) => {
-      clearTimeout(timeout);
-      socket.off("connect", onConnect);
-      socket.off("error", onError);
-      resolve(isConnected);
-    };
-    const onConnect = () => {
-      // end() starts a half-close; a reset can still arrive before close. Keep a handler until then.
-      socket.on("error", () => {});
-      socket.end();
-      finish(true);
-    };
-    const onError = () => {
-      socket.destroy();
-      finish(false);
-    };
-    socket.on("connect", onConnect);
-    socket.on("error", onError);
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      finish(false);
-    }, 1000);
-  });
+  return isSocketAnswering(BROKER_SOCKET);
+}
+
+/** Records the spawned broker on the lock so staleness follows that process, not just the spawner. */
+function recordSpawnedBroker(pid: number | undefined): void {
+  if (pid !== undefined) appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
 }
 
 function acquireSpawnLock(): boolean {
@@ -448,27 +448,33 @@ function acquireSpawnLock(): boolean {
   return false;
 }
 
-function isSpawnLockStale(): boolean {
-  if (!existsSync(BROKER_SPAWN_LOCK)) {
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * A lock is stale once the broker it recorded is gone, or, while no broker is recorded, once its
+ * spawner is gone. A live broker keeps the lock even if its spawner died, until the age backstop.
+ */
+export function isSpawnLockStale(lockPath: string = BROKER_SPAWN_LOCK, nowMs: number = Date.now()): boolean {
+  if (!existsSync(lockPath)) {
     return false;
   }
 
   try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
-    const pid = Number.parseInt(pidLine, 10);
+    const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = readFileSync(lockPath, "utf-8").trim().split("\n");
+    const spawnerPid = Number.parseInt(spawnerLine, 10);
     const createdAt = Number.parseInt(createdAtLine, 10);
-    const ageMs = Date.now() - createdAt;
+    const brokerPid = Number.parseInt(brokerLine, 10);
 
-    if (Number.isFinite(pid)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        // The process that created the lock is gone.
-        return true;
-      }
-    }
-
-    return !Number.isFinite(createdAt) || ageMs > 10_000;
+    if (!Number.isFinite(spawnerPid) || !Number.isFinite(createdAt)) return true;
+    if (nowMs - createdAt > BROKER_SPAWN_LOCK_MAX_AGE_MS) return true;
+    return !isProcessAlive(Number.isFinite(brokerPid) ? brokerPid : spawnerPid);
   } catch {
     // Unreadable lock contents are treated as stale so a new broker can start.
     return true;
@@ -488,7 +494,7 @@ function releaseSpawnLock(): void {
  * Startup is tens of milliseconds, so the previous flat 100 ms sleep dominated it; the
  * overall timeout semantics are unchanged.
  */
-export async function waitForBroker(timeoutMs = 5000): Promise<void> {
+export async function waitForBroker(timeoutMs = BROKER_READY_TIMEOUT_MS): Promise<void> {
   const start = Date.now();
   let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
   while (Date.now() - start < timeoutMs) {
