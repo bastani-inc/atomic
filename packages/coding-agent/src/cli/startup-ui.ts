@@ -7,6 +7,7 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.js";
+import type { ExtensionUIDialogOptions } from "../core/extensions/index.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
@@ -95,8 +96,13 @@ export async function showStartupSelector<T>(
 	settingsManager: SettingsManager,
 	title: string,
 	options: Array<{ label: string; value: T }>,
+	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<T | undefined> {
 	return new Promise((resolve) => {
+		if (dialogOptions?.signal?.aborted) {
+			resolve(undefined);
+			return;
+		}
 		const ui = createStartupTui(settingsManager);
 
 		let settled = false;
@@ -105,17 +111,21 @@ export async function showStartupSelector<T>(
 				return;
 			}
 			settled = true;
+			dialogOptions?.signal?.removeEventListener("abort", abandon);
+			selector.dispose();
 			await clearStartupTui(ui);
 			ui.stop();
 			resolve(result);
 		};
+		const abandon = () => void finish(undefined);
+		dialogOptions?.signal?.addEventListener("abort", abandon, { once: true });
 
 		const selector = new ExtensionSelectorComponent(
 			title,
 			options.map((option) => option.label),
 			(option) => void finish(options.find((entry) => entry.label === option)?.value),
 			() => void finish(undefined),
-			{ tui: ui },
+			{ tui: ui, timeout: dialogOptions?.timeout },
 		);
 		ui.addChild(selector);
 		ui.setFocus(selector);
@@ -127,8 +137,13 @@ export async function showStartupInput(
 	settingsManager: SettingsManager,
 	title: string,
 	placeholder?: string,
+	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<string | undefined> {
 	return new Promise((resolve) => {
+		if (dialogOptions?.signal?.aborted) {
+			resolve(undefined);
+			return;
+		}
 		const ui = createStartupTui(settingsManager);
 
 		let settled = false;
@@ -137,18 +152,21 @@ export async function showStartupInput(
 				return;
 			}
 			settled = true;
+			dialogOptions?.signal?.removeEventListener("abort", abandon);
 			input.dispose();
 			await clearStartupTui(ui);
 			ui.stop();
 			resolve(result);
 		};
+		const abandon = () => void finish(undefined);
+		dialogOptions?.signal?.addEventListener("abort", abandon, { once: true });
 
 		const input = new ExtensionInputComponent(
 			title,
 			placeholder,
 			(value) => void finish(value),
 			() => void finish(undefined),
-			{ tui: ui },
+			{ tui: ui, timeout: dialogOptions?.timeout },
 		);
 		ui.addChild(input);
 		ui.setFocus(input);

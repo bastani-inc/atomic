@@ -7,6 +7,7 @@ import { INTERACTIVE_ENGINE_PROTOCOL_VERSION, serializeInteractiveEngineMessage 
 export interface InteractiveEngineLiveness {
 	ready(): void;
 	bound(): void;
+	projectTrustResolved(): void;
 	resourcesReady(): void;
 	resourcesFailed(error: Error): void;
 	stop(): void;
@@ -18,7 +19,14 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 	if (activeLiveness) return activeLiveness;
 	const engineEnv = interactiveEngineStartupEnv();
 	if (engineEnv.child !== "1") {
-		return { ready: () => {}, bound: () => {}, resourcesReady: () => {}, resourcesFailed: () => {}, stop: () => {} };
+		return {
+			ready: () => {},
+			bound: () => {},
+			projectTrustResolved: () => {},
+			resourcesReady: () => {},
+			resourcesFailed: () => {},
+			stop: () => {},
+		};
 	}
 	const hostPid = Number.parseInt(engineEnv.hostPid ?? "", 10);
 	const stopGuardian =
@@ -37,6 +45,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 	heartbeat.unref?.();
 	let readySent = false;
 	let boundSent = false;
+	let projectTrustResolvedSent = false;
 	let resourceState: "pending" | "ready" | "failed" = "pending";
 	const liveness: InteractiveEngineLiveness = {
 		ready: () => {
@@ -48,6 +57,11 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			if (boundSent) return;
 			boundSent = true;
 			send({ type: "engine_bound" });
+		},
+		projectTrustResolved: () => {
+			if (projectTrustResolvedSent) return;
+			projectTrustResolvedSent = true;
+			send({ type: "engine_project_trust_resolved" });
 		},
 		resourcesReady: () => {
 			if (resourceState === "ready") return;

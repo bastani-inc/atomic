@@ -130,6 +130,8 @@ for (const scenario of [
 				if (request.method === "notify" && request.message === "startup-start-observed") start();
 				if (request.method === "notify" && request.message === "startup-end-observed") end();
 			});
+			const engineMessages: string[] = [];
+			client.onInteractiveEngineMessage((message) => engineMessages.push(message.type));
 			const entries = (): Array<{
 				type: string;
 				cwd?: string;
@@ -157,6 +159,7 @@ for (const scenario of [
 				assert.equal(observed.reason, "project_trust");
 				assert.equal(observed.kind, kind);
 				assert.equal(before.filter((entry) => entry.type === "session_start").length, 1);
+				assert.equal(engineMessages.includes("engine_project_trust_resolved"), false);
 				if (scenario === "cancel")
 					await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, cancelled: true });
 				else if (scenario === "confirm")
@@ -183,6 +186,11 @@ for (const scenario of [
 					await client.requestInternal({ type: "reload" });
 				}
 				await client.waitForInteractiveEngineResources();
+				const trustResolvedIndex = engineMessages.indexOf("engine_project_trust_resolved");
+				const resourcesSettledIndex = engineMessages.findIndex(
+					(type) => type === "engine_resources_ready" || type === "engine_resources_failed",
+				);
+				assert.ok(trustResolvedIndex >= 0 && trustResolvedIndex < resourcesSettledIndex);
 				const after = entries();
 				assert.equal(after.filter((entry) => entry.type === "factory").length, 1);
 				assert.equal(

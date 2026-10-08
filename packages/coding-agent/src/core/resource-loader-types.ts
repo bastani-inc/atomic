@@ -36,6 +36,7 @@ export interface ResourceLoaderReloadOptions {
 		resources: ResolvedResource[];
 		extensionsResult: LoadExtensionsResult;
 	}) => boolean | Promise<boolean>;
+	onProjectTrustResolved?: () => void;
 }
 export interface PreparedResourceLoaderCommit {
 	commit(): void;
