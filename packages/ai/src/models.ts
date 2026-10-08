@@ -4,6 +4,7 @@ import { InMemoryCredentialStore } from "./auth/credential-store.ts";
 import {
 	type AuthResolutionOverrides,
 	ModelsError,
+	readProviderCredential,
 	refreshStoredOAuthCredential,
 	resolveProviderAuth,
 } from "./auth/resolve.ts";
@@ -610,7 +611,7 @@ class ModelsImpl implements MutableModels {
 					let storedCredential: Credential | undefined;
 					let credentialError: unknown;
 					try {
-						storedCredential = await this.readCredential(provider.id, signal);
+						storedCredential = await readProviderCredential(this.credentials, provider, signal);
 					} catch (error) {
 						credentialError = error;
 					}
@@ -680,18 +681,6 @@ class ModelsImpl implements MutableModels {
 		return { type: "api_key", key: result.auth.apiKey, env: result.env };
 	}
 
-	private async readCredential(providerId: string, signal: AbortSignal): Promise<Credential | undefined> {
-		try {
-			const credential = await this.credentials.read(providerId, { signal });
-			return (
-				credential ??
-				(providerId === "azure" ? await this.credentials.read("azure-openai-responses", { signal }) : undefined)
-			);
-		} catch (error) {
-			throw new ModelsError("auth", `Credential store read failed for ${providerId}`, { cause: error });
-		}
-	}
-
 	private async checkProviderAuth(
 		provider: Provider,
 		credential: Credential | undefined,
@@ -725,7 +714,11 @@ class ModelsImpl implements MutableModels {
 			signal.throwIfAborted();
 			const provider = this.providers.get(providerId);
 			if (!provider) return undefined;
-			return this.checkProviderAuth(provider, await this.readCredential(providerId, signal), signal);
+			return this.checkProviderAuth(
+				provider,
+				await readProviderCredential(this.credentials, provider, signal),
+				signal,
+			);
 		})();
 		return raceWithAbortSignal(check, signal);
 	}
@@ -737,7 +730,7 @@ class ModelsImpl implements MutableModels {
 			: this.getProviders();
 		const checks = await Promise.all(
 			providers.map(async (provider) => {
-				const credential = await this.readCredential(provider.id, signal);
+				const credential = await readProviderCredential(this.credentials, provider, signal);
 				return { provider, credential, auth: await this.checkProviderAuth(provider, credential, signal) };
 			}),
 		);

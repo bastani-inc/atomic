@@ -1,5 +1,5 @@
 import { openAIDecisionsApi } from "../api/openai-decisions.lazy.ts";
-import { envApiKeyAuth } from "../auth/helpers.ts";
+import { sharedApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";
 import type { ClassifierModel } from "../types.ts";
 import { OPENAI_DECISIONS_CLASSIFIER_MODELS } from "./openai-decisions.models.ts";
@@ -10,7 +10,7 @@ export function openaiDecisionsProvider(): Provider {
 		name: "OpenAI Decisions",
 		baseUrl: "https://api.openai.com/v1",
 		auth: {
-			apiKey: envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"]),
+			apiKey: sharedApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"], ["openai-api", "openai"]),
 		},
 		models: Object.values<ClassifierModel<"openai-decisions">>(OPENAI_DECISIONS_CLASSIFIER_MODELS),
 		classifiers: {

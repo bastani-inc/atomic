@@ -1,5 +1,20 @@
 import type { ApiKeyAuth, OAuthAuth } from "./types.ts";
 
+function resolveStoredKeyOrEnv(envVars: readonly string[]): ApiKeyAuth["resolve"] {
+	return async ({ ctx, credential, signal }) => {
+		signal.throwIfAborted();
+		if (credential?.key) {
+			return { auth: { apiKey: credential.key }, env: credential.env, source: "stored credential" };
+		}
+		for (const envVar of envVars) {
+			const value = await ctx.env(envVar);
+			signal.throwIfAborted();
+			if (value) return { auth: { apiKey: value }, source: envVar };
+		}
+		return undefined;
+	};
+}
+
 /**
  * Standard api-key auth: a stored credential key wins, otherwise the first
  * set env var resolves. Includes a `login` that prompts for the key.
@@ -15,19 +30,21 @@ export function envApiKeyAuth(name: string, envVars: readonly string[]): ApiKeyA
 			interaction.signal.throwIfAborted();
 			return { type: "api_key", key };
 		},
-		resolve: async ({ ctx, credential, signal }) => {
-			signal.throwIfAborted();
-			if (credential?.key) {
-				return { auth: { apiKey: credential.key }, env: credential.env, source: "stored credential" };
-			}
-			for (const envVar of envVars) {
-				const value = await ctx.env(envVar);
-				signal.throwIfAborted();
-				if (value) return { auth: { apiKey: value }, source: envVar };
-			}
-			return undefined;
-		},
+		resolve: resolveStoredKeyOrEnv(envVars),
 	};
+}
+
+/**
+ * Api-key auth without a `login` of its own. It reuses the stored api key of
+ * the first provider in `borrowCredentialsFrom` that has one, then falls back
+ * to the first set env var.
+ */
+export function sharedApiKeyAuth(
+	name: string,
+	envVars: readonly string[],
+	borrowCredentialsFrom: readonly string[],
+): ApiKeyAuth {
+	return { name, borrowCredentialsFrom, resolve: resolveStoredKeyOrEnv(envVars) };
 }
 
 /**

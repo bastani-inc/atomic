@@ -24,7 +24,7 @@ export class RpcProviderAuth {
 	}
 
 	async login(session: AgentSession, provider: string, loginId = provider): Promise<RpcLoginProviderResult> {
-		if (!session.modelRuntime.getProvider(provider)?.auth.apiKey)
+		if (!session.modelRuntime.getProvider(provider)?.auth.apiKey?.login)
 			throw new Error(`Provider does not support API-key login: ${provider}`);
 		if (!this.inputForm) throw new Error("Provider login requires an interactive input host");
 		const controller = this.begin(provider, loginId);

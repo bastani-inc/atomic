@@ -415,12 +415,14 @@ export function composeApiKeyAuth(
 	const authHeader = extension?.authHeader ?? config?.authHeader ?? false;
 	return {
 		name: inherited?.name ?? "API key",
-		login:
-			inherited?.login ??
-			(async (interaction: ProviderAuthInteraction) => ({
-				type: "api_key",
-				key: await interaction.prompt({ type: "secret", message: "Enter API key" }),
-			})),
+		// A configured key replaces borrowed credentials; a base without a login gains none.
+		borrowCredentialsFrom: rawKey === undefined ? inherited?.borrowCredentialsFrom : undefined,
+		login: inherited
+			? inherited.login
+			: async (interaction: ProviderAuthInteraction) => ({
+					type: "api_key",
+					key: await interaction.prompt({ type: "secret", message: "Enter API key" }),
+				}),
 		check: async (input) => {
 			if (input.credential) {
 				if (inherited?.check) return inherited.check(input);

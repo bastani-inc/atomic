@@ -175,6 +175,18 @@ export interface ApiKeyAuth {
 	login?(interaction: ProviderAuthInteraction): Promise<ApiKeyCredential>;
 
 	/**
+	 * Provider ids whose stored api-key credentials this provider reuses, in
+	 * precedence order. A borrowing provider has no stored credential of its
+	 * own; anything stored under its id is ignored. The first
+	 * listed provider with a stored api-key credential that has a key is passed
+	 * to `resolve()` as `credential`; stored OAuth credentials and key-less
+	 * api-key credentials are skipped. When none qualifies, `resolve()` runs
+	 * without a credential, so ambient sources (env vars) still apply. Pair with
+	 * an absent `login`.
+	 */
+	borrowCredentialsFrom?: readonly string[];
+
+	/**
 	 * Optional side-effect-free availability check. Use this when `resolve()` may
 	 * execute commands or perform other request-time work. Missing means Models
 	 * checks availability by resolving auth.

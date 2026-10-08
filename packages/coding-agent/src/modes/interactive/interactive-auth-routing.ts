@@ -23,7 +23,7 @@ export function formatLogoutStatus(
 
 export function getBuiltinApiKeyLoginOptions(getDisplayName: (providerId: string) => string): AuthSelectorProvider[] {
 	return builtinProviders()
-		.filter((provider) => provider.auth.apiKey !== undefined)
+		.filter((provider) => provider.auth.apiKey?.login !== undefined)
 		.map((provider) => ({
 			id: provider.id,
 			name: getDisplayName(provider.id),
@@ -48,7 +48,7 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function (
 		...subscriptionFlag(provider.isSubscription),
 	}));
 	for (const provider of this.session.modelRuntime.getProviders()) {
-		if (provider.auth.apiKey)
+		if (provider.auth.apiKey?.login)
 			options.push({
 				id: provider.id,
 				name: provider.name ?? provider.id,

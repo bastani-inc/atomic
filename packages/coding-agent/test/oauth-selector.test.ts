@@ -39,7 +39,12 @@ describe("OAuthSelectorComponent", () => {
 			{
 				id: "google-vertex",
 				name: "Google Vertex AI",
-				auth: { apiKey: { name: "Google Cloud credentials" } },
+				auth: { apiKey: { name: "Google Cloud credentials", login: async () => ({}) } },
+			},
+			{
+				id: "ambient-only",
+				name: "Ambient Only",
+				auth: { apiKey: { name: "Ambient credentials" } },
 			},
 		];
 		const fakeThis = {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `openai-decisions/gpt-6-luna` no longer has its own `/login` entry, so you do not need to sign in again. The classifier uses the API key saved for `openai-api`, then the one saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in on `openai` cannot call the Decisions API and is not used, so the classifier stays unavailable until one of those keys exists. See [Classifier models](docs/models.md#use-classifier-models).
+
 ### Fixed
 
 - Fixed the startup project trust prompt opening inside the fully painted interface. Atomic now shows the prompt on its own and paints the interface after you choose.
