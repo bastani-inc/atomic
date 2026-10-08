@@ -2,6 +2,89 @@
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-08
+
+### Added
+
+- Added `fromSignal` to the `session_shutdown` event. It is `true` when a `quit` comes from a host `SIGTERM` or `SIGHUP` instead of Ctrl+D or `/quit`, and `runtimeHost.dispose({ fromSignal: true })` sets it for SDK hosts ([#3492](https://github.com/bastani-inc/atomic/issues/3492)).
+- Added the API-key-only providers `openai-api` and `anthropic-api`, so you can keep a ChatGPT or Claude subscription login on `openai`/`anthropic` and still use an API key for the same models. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time).
+- `session.compact()` and extension `ctx.compact()` accept `compactionModel` to pick the compaction model for one run without changing the `compactionModel` setting. An unknown ID rejects before the active run is interrupted. See [Compaction and tree navigation](docs/sdk.md#compaction-and-tree-navigation).
+- Added terminal program-status reporting through OSC 7501 for runs, compaction, extension prompts, and sign-in. Compatible terminals can show when Atomic is working, waiting for input, done, or has failed.
+- Added recorded response and tool execution durations. Bash tool results show their execution time, including after a session is resumed.
+- Added OpenAI's GPT-6 Luna classifier through the Decisions API with `OPENAI_API_KEY`, and image input for codemode's `models.classify()` context. See [Classifier models](docs/models.md#use-classifier-models).
+- Added native classification for llama.cpp decision models through `/v1/systemone`. Decision-only models stay out of the chat selector, while chat models keep the next-token classifier fallback. Cached native classifiers remain available after restart.
+- Added exact-name `+name` and `-name` modifiers to CLI `--tools` and SDK `tools`, for example `atomic --tools +codemode,-write`. They change the resolved defaults instead of replacing them and persist across `/reload`.
+- Added `compactionModel` and a **Compaction model** selector in `/settings` to choose a compactor independently of the chat model ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added verbatim classifier compaction with registered models such as `typesafe/jev-latest`, retaining protected context and recent messages ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added Morph verbatim compaction with `morph/morph-compactor`, authenticated through `/login morph` or `MORPH_API_KEY` ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Added `session.workflows.observe(observer)`, so SDK hosts can follow the workflow runs the agent launches without writing an extension. The observer receives a snapshot first, then changes in order. Root activity now includes an optional `graph` that lists each stage and `ctx.tool` node with its status, parents, and pending prompt, plus any run-level prompts ([#3476](https://github.com/bastani-inc/atomic/issues/3476)).
+- Added `RunOpts.onStageSessionEvent` so workflow `run()` callers receive each stage session's events, such as message updates and tool executions, tagged with the run and stage ids. Events continue across fallback-model sessions and include nested workflow stages ([#3474](https://github.com/bastani-inc/atomic/issues/3474)).
+- Added `createTranscript()`, which turns session events into the assistant's output as ordered, JSON-serializable text, thinking, and tool call parts, with each tool call joined to its result ([#3475](https://github.com/bastani-inc/atomic/issues/3475)).
+- Added `createAgentSessionAdapter(baseOptions?)` to `@bastani/atomic/workflows`, which builds the default workflow stage-session adapter with `createAgentSession` options shared by every stage ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Added `ctx.isPresentationOnly` so extension lifecycle hooks can leave execution to the isolated interactive engine while retaining host-side UI ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Exported `publishExtensionContextEffect(ctx, effect, phase?)` with a synchronous commit phase for generation identity handoff, and `registerExtensionContextRetirementEffect(ctx, dispose)` for observer cleanup before authority revocation ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Added Azure Foundry Chat Completions with `azure/deepseek-v4-pro`, using the existing Azure endpoint and deployment-name settings.
+- Added `*` patterns to `--tools` and `--exclude-tools`, including MCP tool names.
+- Added `--no-mcp` to disable built-in MCP support for one run, including interactive sessions.
+- Added `ExtensionAPI.getWorkflowHostModules()` to supply shared host module instances for the exact workflow imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all`, avoiding repeated package loading ([#3454](https://github.com/bastani-inc/atomic/issues/3454)).
+
+### Changed
+
+- `openai-decisions/gpt-6-luna` no longer has its own `/login` entry, so you do not need to sign in again. The classifier uses the API key saved for `openai-api`, then the one saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in on `openai` cannot call the Decisions API and is not used, so the classifier stays unavailable until one of those keys exists. See [Classifier models](docs/models.md#use-classifier-models).
+- Moved the GPT-6 Luna classifier from `openai/gpt-6-luna` to its own API-key-only provider, `openai-decisions/gpt-6-luna`, named "GPT-6 Luna Decisions". `openai/gpt-6-luna` now always means the chat model, and the classifier stays available while `openai` uses ChatGPT sign-in. Update `routerModel`, `compactionModel`, `structured_output` and codemode references that meant the classifier. See [Classifier models](docs/models.md#use-classifier-models).
+- Codemode labels returned output items with numbered headers and places console output in a separate trailing block.
+- Codemode now says that `ALL_TOOLS`, `searchTools()`, and `describeTool()` list only script-callable tools, and `searchTools()`/`describeTool()` answer an exact model-only tool name such as `subagent` with a hint to call it directly instead of returning nothing ([#3510](https://github.com/bastani-inc/atomic/issues/3510))
+- Changed `atomic mcp login --timeout` to limit the whole sign-in, including requests to the authorization server, instead of only the wait for the browser.
+- Compaction planners now receive structured per-message lines instead of a numbered transcript ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Compaction cards show the backend and model used, including `summary (pi fallback)` for policy-refusal summaries ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Home and End move the editor cursor to the start and end of the line. Ctrl+Home and Ctrl+End jump to the top and bottom of the fullscreen transcript.
+- Renamed the Azure provider to `azure`. Existing provider references remain supported, and startup migrates credentials and configuration without replacing existing `azure` entries. Project files are migrated only when trusted.
+- Codemode built-ins are frozen in pi 1.0.4. Patches to built-ins are ignored instead of crashing the host.
+
+### Fixed
+
+- Fixed the startup project trust prompt opening inside the fully painted interface. Atomic now shows the prompt on its own and paints the interface after you choose.
+- Fixed the "This project is not trusted" warning staying in the transcript after you trusted the project at the startup prompt. The warning still appears when you decline trust or leave the project untrusted.
+- Fixed Herdr restoring panes without their Atomic conversation after a Herdr restart. With Herdr 0.9.2 or newer, Atomic now reports `atomic --session <id>` (plus `--session-dir` for a custom session directory) so Herdr can reopen the same session in the same pane, and keeps it registered when Herdr or the system ends Atomic with `SIGTERM` or `SIGHUP`. Quitting with Ctrl+D or `/quit` still clears it, and older Herdr versions keep status reporting without restore ([#3492](https://github.com/bastani-inc/atomic/issues/3492)).
+- Updated the sandbox example extension's lockfile to `shell-quote` 1.12.0, resolving the `quote()` command-injection advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) in its `@anthropic-ai/sandbox-runtime` dependency.
+- Fixed hyperlinks being disabled in Herdr panes, while keeping image protocols off even when outer-terminal environment variables are inherited ([#10573](https://github.com/earendil-works/pi/issues/10573)).
+- Fixed `outputPad` applying inconsistently to tool results, shell output, summaries, skill invocations, and custom transcript entries. Changing it in `/settings` now updates existing blocks without rebuilding the transcript.
+- Fixed fullscreen text selections surviving a transcript rebuild and selecting unrelated replacement text.
+- Fixed extension-registered MCP servers silently remaining unused when an SDK host has no MCP contribution consumer. Atomic now reports each unhandled server once.
+- Fixed a false `Timeout waiting for response to resume_queued_messages` error when you send a message while a paused queue is still waiting for the agent's current turn to finish, and the follow-up `Agent is already processing` error caused by the stale paused state. The resume now waits for the turn instead of giving up after 30 seconds ([#3493](https://github.com/bastani-inc/atomic/issues/3493)).
+- Fixed extension `session_shutdown` handlers being cut off when you quit the interactive CLI. The engine now gets up to 5 seconds to finish extension shutdown, instead of about 750 ms, before it is force-stopped.
+- Fixed slow extension loading and `/reload` on Windows. Imports such as `./helper.js` that point at TypeScript sources no longer make the loader try hundreds of missing files before finding `helper.ts`.
+- Fixed `/mcp` waiting for startup connections before opening. The manager now updates live and stays usable while enabling, disabling, or reconnecting servers.
+- Fixed images being dropped as unresizable under `node --watch` when Node sends its own messages on the image resize worker channel.
+- Fixed codemode's tool description omitting `await` for `searchTools()`, `describeTool()`, and `describeNamespace()`, which could make scripts return unresolved promises instead of tool information.
+- Fixed slash commands and shell-command drafts typed during interactive startup running before Enter, including when launching with `--model` or `--provider`. Enter-terminated input stays ordered and unfinished text remains in the editor.
+- Fixed a stuck MCP server startup blocking re-enabling the server or shutting down after it was disabled.
+- Fixed clipboard paste doing nothing in Termux, and failed copies there omitting the Termux:API install hint.
+- Fixed `!` and RPC `bash` output keeping fragments of color codes, such as a stray `m`, when a code was split across output chunks.
+- Fixed MCP OAuth sign-ins that could not be cancelled while waiting on the authorization server and kept running after the session ended. The sign-in screen now cancels with Esc at every step, session shutdown aborts a running sign-in, and each request to the authorization server times out after 15 seconds.
+- Fixed shutdown waiting up to 15 seconds to refresh an MCP OAuth token that was about to expire, only to close the server's session.
+- Policy refusals from any chat compaction model, including `auto`, explicit chat-model IDs, and borrowed fallback entries, now try pi's summary compaction on the same model before continuing through fallback models. Summary requests retry recoverable errors; policy refusals are never retried. Classifier and Morph failures advance directly to fallback models ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Morph compaction failures now include the HTTP status and a bounded, credential-redacted response excerpt in error diagnostics ([#3470](https://github.com/bastani-inc/atomic/issues/3470)).
+- Fixed Herdr publishing duplicate pane activity when startup workflow recovery refreshes an unchanged activity snapshot ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed Herdr skipping a return to an earlier pane activity after an intervening report timed out or failed ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed project `.atomic/settings.json`, extensions, skills, and other trust-gated resources being ignored without notice in untrusted projects. Interactive sessions now show a warning that points to `/trust`, matching upstream pi.
+- Fixed `@bastani/atomic/workflows` type declarations disagreeing with the runtime: `StageSnapshot` now declares `parentIds`, `executionOrder`, `model`, `startedAt`, `endedAt`, and `durationMs`; `Store` now declares `snapshot()`, `graphSnapshot()`, and `subscribe()`; and an `AgentSessionAdapter.create` can return `createAgentSession(...)` directly without a type cast ([#3473](https://github.com/bastani-inc/atomic/issues/3473)).
+- Fixed `run()` from `@bastani/atomic/workflows` failing at the first `ctx.task` or `ctx.stage` with "prompt adapter not configured" when `opts.adapters` was omitted. Stages now default to in-process `createAgentSession` sessions with in-memory session managers ([#3472](https://github.com/bastani-inc/atomic/issues/3472)).
+- Fixed startup extension confirmations, including workflow recovery prompts, losing keyboard focus during terminal initialization ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed queued protected workflow notices producing `SessionClosed` replies during reload. Successful reload now preserves those notices for the replacement extensions without releasing an explicitly paused queue ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed idle workflow status and control commands not displaying their output in isolated interactive sessions, including after `/reload` ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed extension reload skipping remaining commit effects and predecessor shutdown when a commit effect and an SDK error observer both throw. Reload now retains both failures while keeping the replacement extensions active ([#3468](https://github.com/bastani-inc/atomic/issues/3468)).
+- Fixed syntax colors leaking across lines in multiline tokens and interpolation substitutions inheriting string colors.
+- Invalid router and provider-list settings retain their configuration validation errors during Azure provider migration.
+- Fixed codemode `tools.read()` returning text instead of an image block for image files. Pass the result to `image()` to display it ([#10251](https://github.com/earendil-works/pi/issues/10251)).
+- Fixed MCP OAuth dynamic registration omitting `application_type`, which caused redirect URI rejections on OpenID Connect servers ([#10493](https://github.com/earendil-works/pi/issues/10493)).
+- Fixed `--tools` removing MCP tools when selecting codemode. MCP tools remain callable unless the allowlist contains an entry starting with `mcp__`; unmatched tools are not declared directly.
+- Fixed shutdown leaving MCP connections open while a server was still connecting ([#10249](https://github.com/earendil-works/pi/issues/10249)).
+- Fixed hidden tools appearing in prompt rules and skill-reading hints. Codemode tool declarations now include each tool's prompt guidelines ([#10343](https://github.com/earendil-works/pi/issues/10343)).
+- Fixed interactive quit waiting on pending extension commands, which could leave connecting MCP servers running.
+- Fixed HTTP/2 pending stream cancellations being treated as user cancellations instead of retryable transport failures.
+- Updated the bundled `proxy-addr` dependency to 2.0.8, fixing IP spoofing through IPv4-mapped IPv6 trusted subnets.
+
 ## [0.9.28-alpha.5] - 2026-10-08
 
 ### Added

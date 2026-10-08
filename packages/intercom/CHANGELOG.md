@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-08
+
+### Fixed
+
+- Fixed a slow-starting intercom broker taking over a live broker's socket, which left a connected session unreachable by `intercom list` and `send`, so messages to it were silently not delivered ([#3505](https://github.com/bastani-inc/atomic/issues/3505)).
+- Fixed intercom occasionally reporting `Intercom not connected: connect ENOENT …/broker.sock` when a session connected just as an idle broker was shutting down.
+
 ## [0.9.28-alpha.5] - 2026-10-08
 
 ### Fixed
