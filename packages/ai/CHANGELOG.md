@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.28-alpha.5] - 2026-10-08
+
 ### Added
 
 - Added `ApiKeyAuth.borrowCredentialsFrom` and `sharedApiKeyAuth()`, which let a provider without a login of its own reuse the stored API key of the first listed provider that has one, then fall back to its environment variables. A borrowing provider has no stored credential of its own, and stored OAuth credentials of the listed providers are skipped.
