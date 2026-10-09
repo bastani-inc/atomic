@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.29-alpha.2] - 2026-10-09
+
 ### Added
 
 - Added the `/tools` command, which shows the tools the model can use, why each other tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion for likely typos such as `+tool-search` instead of `+tool_search`. SDK hosts get the same report from `session.getToolStatus()` and render it with `formatToolStatus()`; RPC clients use the `get_tools` command or `RpcClient.getTools()`. See [Checking tool status](docs/sdk/reference.md#checking-tool-status) and [get_tools](docs/rpc/protocol.md#get_tools).
