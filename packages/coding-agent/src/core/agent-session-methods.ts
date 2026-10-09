@@ -68,6 +68,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
+import type { ToolStatusReport } from "./tool-status.ts";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 
@@ -215,6 +216,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getCallableToolNames(): string[];
 	getAllTools(): ToolInfo[];
 	getToolDefinition(name: string): ToolDefinition | undefined;
+	/** Explain which tools are active, which are not (and why), and which selected names nothing registered. */
+	getToolStatus(): ToolStatusReport;
 	setActiveToolsByName(toolNames: string[]): void;
 	_setActiveTools(toolNames: string[]): void;
 	setScopedModels(scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void;
@@ -449,6 +452,7 @@ export interface AgentSessionPublicSurface
 		| "getCallableToolNames"
 		| "getAllTools"
 		| "getToolDefinition"
+		| "getToolStatus"
 		| "setActiveToolsByName"
 		| "setScopedModels"
 		| "prompt"

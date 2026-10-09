@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `/tools` command, which shows the tools the model can use, why each other tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion for likely typos such as `+tool-search` instead of `+tool_search`. SDK hosts get the same report from `session.getToolStatus()` and render it with `formatToolStatus()`; RPC clients use the `get_tools` command or `RpcClient.getTools()`. See [Checking tool status](docs/sdk/reference.md#checking-tool-status) and [get_tools](docs/rpc/protocol.md#get_tools).
+
 ### Fixed
 
 - Fixed sessions created with the SDK's `createAgentSession()` or a `DefaultResourceLoader` ignoring `defaultTools: ["+codemode"]` and `tools: ["+tool_search"]`, and lacking the llama.cpp provider. Every `DefaultResourceLoader` now includes the `codemode`, `tool-search`, and `llama.cpp` built-in extensions; codemode and tool search remain opt-in. `loader.getExtensions()` now lists these three with `builtin:<name>` paths.
+- Fixed `defaultTools: ["+codemode"]` and `--tools +codemode` leaving codemode inactive in interactive sessions. Opt-in tools that your tool selection names now activate when their extension finishes loading after startup, and `/tools` no longer tells you to add a tool that is already selected.
 
 ## [0.9.29-alpha.1] - 2026-10-08
 

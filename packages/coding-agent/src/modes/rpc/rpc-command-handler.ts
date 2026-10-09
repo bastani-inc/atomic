@@ -407,6 +407,10 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_session_stats", session.getSessionStats());
 			}
 
+			case "get_tools": {
+				return createRpcSuccessResponse(id, "get_tools", session.getToolStatus());
+			}
+
 			case "export_html": {
 				const path = await session.exportToHtml(command.outputPath);
 				return createRpcSuccessResponse(id, "export_html", { path });

@@ -1,4 +1,5 @@
 import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
+import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
@@ -343,6 +344,27 @@ InteractiveModeBase.prototype.handleNameCommand = function (this: InteractiveMod
 	this.session.setSessionName(name);
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${name}`), 1, 0));
+	this.ui.requestRender();
+};
+
+InteractiveModeBase.prototype.handleToolsCommand = async function (this: InteractiveModeBase): Promise<void> {
+	let report: ToolStatusReport;
+	try {
+		report =
+			this.runtimeHost instanceof IsolatedInteractiveRuntime
+				? await this.runtimeHost.getToolStatus()
+				: this.session.getToolStatus();
+	} catch (error) {
+		this.showError(`Could not read tool status: ${error instanceof Error ? error.message : String(error)}`);
+		return;
+	}
+	const text = formatToolStatus(report, {
+		heading: (value) => theme.bold(value),
+		dim: (value) => theme.fg("dim", value),
+		warning: (value) => theme.fg("warning", value),
+	});
+	this.chatContainer.addChild(new Spacer(1));
+	this.chatContainer.addChild(new Text(`${theme.bold("Tools")}\n\n${text}`, 1, 0));
 	this.ui.requestRender();
 };
 

@@ -7,7 +7,7 @@ import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandato
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
-import { isRegisteredToolAllowed } from "./tool-selection.ts";
+import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegistration } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
 import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
@@ -106,11 +106,8 @@ export function _refreshToolRegistry(
 		options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 	).filter((name) => isExposedTool(name) || selectedMcpNames.has(name));
 
-	const activatesOnRegistration = (name: string): boolean => {
-		const definition = this._toolDefinitions.get(name)?.definition;
-		const exposure = definition?.exposure ?? "direct";
-		return definition?.defaultActive !== false && (exposure === "direct" || exposure === "model-only");
-	};
+	const activatesOnRegistration = (name: string): boolean =>
+		toolActivatesOnRegistration(this, name, this._toolDefinitions.get(name)?.definition);
 	if (allowedTools) {
 		for (const toolName of this._toolRegistry.keys()) {
 			const exposure = this._toolDefinitions.get(toolName)?.definition.exposure ?? "direct";

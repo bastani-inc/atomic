@@ -213,6 +213,49 @@ const { session } = await createAgentSession({
 });
 ```
 
+#### Checking tool status
+
+`session.getToolStatus()` explains a session's tools: where the tool selection came from, every registered tool with its exposure, owner, and active state, why each inactive tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion when a name looks like a typo. `formatToolStatus()` renders the report as plain text.
+
+```typescript
+import { createAgentSession, formatToolStatus } from "@bastani/atomic";
+
+const { session } = await createAgentSession({ tools: ["+codemode"] });
+console.log(formatToolStatus(session.getToolStatus()));
+```
+
+```text
+Tool selection: Atomic's default tool set with +codemode
+  read, bash, kill, edit, write, find, search, ask_user_question, todo, codemode
+
+Active (17)
+  read                direct      built-in
+  bash                direct      built-in
+  kill                direct      built-in
+  edit                direct      built-in
+  write               direct      built-in
+  find                direct      built-in
+  search              direct      built-in
+  ask_user_question   model-only  built-in
+  todo                direct      built-in
+  workflow            model-only  bundled package "workflows"
+  subagent            model-only  bundled package "subagents"
+  web_search          direct      bundled package "web-access"
+  code_search         direct      bundled package "web-access"
+  fetch_content       direct      bundled package "web-access"
+  get_search_content  direct      bundled package "web-access"
+  intercom            model-only  bundled package "intercom"
+  codemode            model-only  built-in extension "codemode"
+
+Inactive (2)
+  ls                  direct      built-in
+    not selected; add "+ls" to defaultTools or --tools to enable it
+  tool_search         model-only  built-in extension "tool-search"
+    opt-in; add "+tool_search" to defaultTools or --tools to enable it
+```
+
+Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or an extension that failed to load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` to add terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
+
 #### Bash tool behavior
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.

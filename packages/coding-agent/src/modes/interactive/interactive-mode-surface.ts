@@ -382,6 +382,7 @@ declare module "./interactive-mode-base.ts" {
 		handleCopyCommand(): Promise<void>;
 		handleNameCommand(text: string): void;
 		handleSessionCommand(): void;
+		handleToolsCommand(): Promise<void>;
 		handleChangelogCommand(): void;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
