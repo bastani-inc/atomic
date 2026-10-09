@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.31-alpha.1] - 2026-10-09
+
 ### Fixed
 
 - Interactive startup now selects a `defaultProvider`/`defaultModel` registered by an extension loaded from a package or the `extensions` setting, instead of warning "Configured default model is unavailable or unsupported" and starting with no model.
