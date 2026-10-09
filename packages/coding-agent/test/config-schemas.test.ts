@@ -1,21 +1,22 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020";
 import { Compile } from "typebox/compile";
-import { afterEach, describe, expect, it } from "vitest";
-import { renderConfigSchemas } from "../scripts/generate-schemas.ts";
-import { parseHttpIdleTimeoutMs } from "../src/core/http-dispatcher.ts";
-import { KEYBINDINGS, KeybindingsManager } from "../src/core/keybindings.ts";
-import { KeybindingValueSchema } from "../src/core/keybindings-schema.ts";
-import { ModelConfig } from "../src/core/model-config.ts";
-import { SETTINGS_DEFAULTS } from "../src/core/settings-defaults.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { SettingsSchema } from "../src/core/settings-schema.ts";
-import type { ThemeBg, ThemeColor } from "../src/modes/interactive/theme/theme-class.ts";
-import { loadThemeFromContent } from "../src/modes/interactive/theme/theme-loading.ts";
-import { parseThemeJson } from "../src/modes/interactive/theme/theme-parse.ts";
-import { THEME_TOKENS } from "../src/modes/interactive/theme/theme-tokens.ts";
+import { afterEach, describe, it } from "vitest";
+import { renderConfigSchemas } from "../scripts/generate-schemas.js";
+import { parseHttpIdleTimeoutMs } from "../src/core/http-dispatcher.js";
+import { KEYBINDINGS, KeybindingsManager } from "../src/core/keybindings.js";
+import { KeybindingValueSchema } from "../src/core/keybindings-schema.js";
+import { ModelConfig } from "../src/core/model-config.js";
+import { SETTINGS_DEFAULTS } from "../src/core/settings-defaults.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { SettingsSchema } from "../src/core/settings-schema.js";
+import type { ThemeBg, ThemeColor } from "../src/modes/interactive/theme/theme-class.js";
+import { loadThemeFromContent } from "../src/modes/interactive/theme/theme-loading.js";
+import { parseThemeJson } from "../src/modes/interactive/theme/theme-parse.js";
+import { THEME_TOKENS } from "../src/modes/interactive/theme/theme-tokens.js";
 
 const schemaBaseUrl = "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas";
 const temporaryDirectories: string[] = [];
@@ -40,7 +41,21 @@ function readPackageFile(relativePath: string): string {
 	return readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf-8");
 }
 
-type JsonSchemaNode = { properties?: Record<string, JsonSchemaNode>; anyOf?: JsonSchemaNode[]; default?: unknown };
+type JsonSchemaNode = {
+	properties?: Record<string, JsonSchemaNode>;
+	anyOf?: JsonSchemaNode[];
+	default?: unknown;
+	$schema?: string;
+	$id?: string;
+	$ref?: string;
+	title?: string;
+	description?: string;
+};
+
+function assertDescriptionIncludes(node: JsonSchemaNode | undefined, fragment: string) {
+	assert.equal(typeof node?.description, "string", `missing description containing ${fragment}`);
+	assert.ok(node?.description?.includes(fragment), `${node?.description} should contain ${fragment}`);
+}
 
 function renderedSchema(name: "models" | "settings" | "keybindings" | "theme") {
 	return JSON.parse(renderConfigSchemas().get(`schemas/${name}.schema.json`) ?? "") as JsonSchemaNode & {
@@ -78,32 +93,35 @@ function defaultLeaves(value: unknown, prefix: readonly string[] = []): string[]
 describe("generated configuration schemas", () => {
 	it("matches the four committed artifacts", () => {
 		const rendered = renderConfigSchemas();
-		expect([...rendered.keys()]).toEqual([
-			"schemas/models.schema.json",
-			"schemas/settings.schema.json",
-			"schemas/keybindings.schema.json",
-			"schemas/theme.schema.json",
-		]);
+		assert.deepEqual(
+			[...rendered.keys()],
+			[
+				"schemas/models.schema.json",
+				"schemas/settings.schema.json",
+				"schemas/keybindings.schema.json",
+				"schemas/theme.schema.json",
+			],
+		);
 		for (const [relativePath, expected] of rendered) {
-			expect(
+			assert.equal(
 				readPackageFile(relativePath),
+				expected,
 				`${relativePath} is stale; run npm run generate:schemas --workspace=@bastani/atomic`,
-			).toBe(expected);
+			);
 		}
 	});
 
 	it("identifies each artifact with its published location", () => {
 		for (const name of ["models", "settings", "keybindings", "theme"] as const) {
-			expect(renderedSchema(name)).toMatchObject({
-				$schema: "https://json-schema.org/draft/2020-12/schema",
-				$id: schemaUrl(name),
-			});
+			const schema = renderedSchema(name);
+			assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+			assert.equal(schema.$id, schemaUrl(name));
 		}
 	});
 
 	it("compiles every artifact with an independent JSON Schema validator", () => {
 		for (const name of ["models", "settings", "keybindings", "theme"] as const) {
-			expect(() => new Ajv2020({ allErrors: true }).compile(renderedSchema(name)), name).not.toThrow();
+			assert.doesNotThrow(() => new Ajv2020({ allErrors: true }).compile(renderedSchema(name)), name);
 		}
 	});
 });
@@ -112,22 +130,14 @@ describe("theme schema", () => {
 	it("preserves editor guidance", () => {
 		const schema = renderedSchema("theme");
 		const colors = schema.properties.colors;
-		expect(schema).toMatchObject({
-			title: "Atomic Coding Agent Theme",
-			description: "Theme schema for the Atomic coding agent",
-			properties: {
-				colors: {
-					description: expect.stringContaining("fall back to compatible colors"),
-					properties: {
-						scrollbarThumb: { description: expect.stringContaining("falls back to selectedBg") },
-						accent: { description: "Primary accent color (logo, selected items, cursor)" },
-					},
-				},
-				workingIndicator: { description: expect.stringContaining("six-tone palette") },
-				export: { description: expect.stringContaining("defaults derived from userMessageBg") },
-			},
-		});
-		expect(Object.keys(schema.properties.workingIndicator.properties ?? {})).toEqual([
+		assert.equal(schema.title, "Atomic Coding Agent Theme");
+		assert.equal(schema.description, "Theme schema for the Atomic coding agent");
+		assertDescriptionIncludes(colors, "fall back to compatible colors");
+		assertDescriptionIncludes(colors.properties?.scrollbarThumb, "falls back to selectedBg");
+		assert.equal(colors.properties?.accent?.description, "Primary accent color (logo, selected items, cursor)");
+		assertDescriptionIncludes(schema.properties.workingIndicator, "six-tone palette");
+		assertDescriptionIncludes(schema.properties.export, "defaults derived from userMessageBg");
+		assert.deepEqual(Object.keys(schema.properties.workingIndicator.properties ?? {}), [
 			"dark",
 			"lift",
 			"muted",
@@ -135,20 +145,22 @@ describe("theme schema", () => {
 			"bright",
 			"peak",
 		]);
-		expect(schema.$defs.ColorValue).toMatchObject({
-			anyOf: [{ description: expect.stringContaining("Hex color") }, expect.any(Object)],
-		});
-		expect(colors.properties?.accent).toMatchObject({ $ref: "#/$defs/ColorValue" });
+		const colorValueVariants = schema.$defs.ColorValue.anyOf;
+		assert.ok(Array.isArray(colorValueVariants));
+		assert.equal(colorValueVariants.length, 2);
+		assertDescriptionIncludes(colorValueVariants[0], "Hex color");
+		assert.equal(typeof colorValueVariants[1], "object");
+		assert.equal(colors.properties?.accent?.$ref, "#/$defs/ColorValue");
 	});
 
 	it("declares exactly the tokens the runtime theme resolves, requiring those without a fallback", () => {
 		const schema = renderedSchema("theme");
 		const colors = schema.properties.colors as JsonSchemaNode & { required: string[] };
-		expect(Object.keys(colors.properties ?? {})).toEqual(Object.keys(THEME_TOKENS));
+		assert.deepEqual(Object.keys(colors.properties ?? {}), Object.keys(THEME_TOKENS));
 		const requiredTokens = Object.entries(THEME_TOKENS)
 			.filter(([, descriptor]) => !("fallback" in descriptor))
 			.map(([name]) => name);
-		expect(colors.required).toEqual(requiredTokens);
+		assert.deepEqual(colors.required, requiredTokens);
 	});
 
 	it("resolves every declared token on the runtime theme, applying fallbacks for omitted optional tokens", () => {
@@ -161,34 +173,38 @@ describe("theme schema", () => {
 		}
 		const theme = loadThemeFromContent("required-only.json", JSON.stringify(required), "truecolor");
 		for (const [name, descriptor] of Object.entries(THEME_TOKENS)) {
-			if (descriptor.slot === "foreground") expect(theme.getFgAnsi(name as ThemeColor), name).toContain("\x1b[");
-			else expect(theme.getBgAnsi(name as ThemeBg), name).toContain("\x1b[");
+			if (descriptor.slot === "foreground") assert.ok(theme.getFgAnsi(name as ThemeColor).includes("\x1b["), name);
+			else assert.ok(theme.getBgAnsi(name as ThemeBg).includes("\x1b["), name);
 		}
-		expect(theme.getBgAnsi("scrollbarThumb")).toBe(theme.getBgAnsi("selectedBg"));
-		expect(theme.getFgAnsi("searchMatchText")).toBe(theme.getFgAnsi("text"));
+		assert.equal(theme.getBgAnsi("scrollbarThumb"), theme.getBgAnsi("selectedBg"));
+		assert.equal(theme.getFgAnsi("searchMatchText"), theme.getFgAnsi("text"));
 	});
 
 	it("documents every token in the theme reference", () => {
 		const reference = readPackageFile("docs/themes/reference.md");
 		for (const token of Object.keys(THEME_TOKENS)) {
-			expect(reference, token).toContain(`\`${token}\``);
+			assert.ok(reference.includes(`\`${token}\``), token);
 		}
 	});
 
 	it("accepts $schema and rejects malformed or unknown properties", () => {
 		const builtIn = JSON.parse(readPackageFile("src/modes/interactive/theme/dark.json")) as Record<string, unknown>;
-		expect(parseThemeJson("custom", { ...builtIn, $schema: schemaUrl("theme"), name: "custom" }).name).toBe("custom");
-		expect(() => parseThemeJson("invalid", { ...builtIn, name: "invalid/name" })).toThrow(
-			"theme names cannot contain",
+		assert.equal(
+			parseThemeJson("custom", { ...builtIn, $schema: schemaUrl("theme"), name: "custom" }).name,
+			"custom",
 		);
-		expect(() => parseThemeJson("invalid", { ...builtIn, colors: {} })).toThrow("Missing required color tokens");
+		assert.throws(
+			() => parseThemeJson("invalid", { ...builtIn, name: "invalid/name" }),
+			/theme names cannot contain/,
+		);
+		assert.throws(() => parseThemeJson("invalid", { ...builtIn, colors: {} }), /Missing required color tokens/);
 		for (const invalid of [
 			{ ...builtIn, unexpected: true },
 			{ ...builtIn, colors: { ...(builtIn.colors as Record<string, unknown>), scrollbarThmb: "" } },
 			{ ...builtIn, export: { unexpected: "" } },
 			{ ...builtIn, workingIndicator: { unexpected: "" } },
 		]) {
-			expect(() => parseThemeJson("invalid", invalid)).toThrow(/additional properties/i);
+			assert.throws(() => parseThemeJson("invalid", invalid), /additional properties/i);
 		}
 	});
 });
@@ -198,30 +214,29 @@ describe("models.json schema", () => {
 
 	it("preserves moved model guidance", () => {
 		const models = renderedSchema("models");
-		expect(models.$defs.ModelCost.properties).toMatchObject({
-			input: { description: expect.stringContaining("USD per million tokens") },
-			tiers: { description: expect.stringContaining("highest matching input threshold") },
-		});
-		expect(models.$defs.ModelInputLimits.properties).toMatchObject({
-			maxRequestBytes: { description: expect.stringContaining("serialized provider request size") },
-		});
+		assertDescriptionIncludes(models.$defs.ModelCost.properties?.input, "USD per million tokens");
+		assertDescriptionIncludes(models.$defs.ModelCost.properties?.tiers, "highest matching input threshold");
+		assertDescriptionIncludes(
+			models.$defs.ModelInputLimits.properties?.maxRequestBytes,
+			"serialized provider request size",
+		);
 	});
 
 	it("describes Atomic's provider and compatibility fields", () => {
 		const models = renderedSchema("models");
 		const compatProperties = Object.keys(models.$defs.ProviderCompat.properties ?? {});
-		expect(compatProperties).toEqual(
-			expect.arrayContaining([
-				"supportsForcedToolChoice",
-				"supportsTemperature",
-				"enforcesPreservedThinkingBinding",
-				"delegatesThinkingModelBinding",
-				"supportsMidConvoToolChanges",
-				"supportsAdditionalTools",
-				"supportsGrammarTools",
-			]),
-		);
-		expect(
+		for (const property of [
+			"supportsForcedToolChoice",
+			"supportsTemperature",
+			"enforcesPreservedThinkingBinding",
+			"delegatesThinkingModelBinding",
+			"supportsMidConvoToolChanges",
+			"supportsAdditionalTools",
+			"supportsGrammarTools",
+		]) {
+			assert.ok(compatProperties.includes(property), property);
+		}
+		assert.equal(
 			validator().Check({
 				providers: {
 					radius: { oauth: "radius", authHeader: true },
@@ -246,29 +261,33 @@ describe("models.json schema", () => {
 					},
 				},
 			}),
-		).toBe(true);
-		expect(validator().Check({ providers: { local: { models: [{ id: "" }] } } })).toBe(false);
-		expect(validator().Check({ providers: { local: { compat: { delegatesThinkingModelBinding: "yes" } } } })).toBe(
+			true,
+		);
+		assert.equal(validator().Check({ providers: { local: { models: [{ id: "" }] } } }), false);
+		assert.equal(
+			validator().Check({ providers: { local: { compat: { delegatesThinkingModelBinding: "yes" } } } }),
 			false,
 		);
-		expect(validator().Check({ providers: { local: { compat: { supportsGrammarTools: "yes" } } } })).toBe(false);
+		assert.equal(validator().Check({ providers: { local: { compat: { supportsGrammarTools: "yes" } } } }), false);
 	});
 
 	it("rejects non-positive model token limits", () => {
 		const schema = validator();
 		for (const field of ["contextWindow", "maxTokens"] as const) {
 			for (const value of [0, -1]) {
-				expect(
+				assert.equal(
 					schema.Check({ providers: { local: { models: [{ id: "model", [field]: value }] } } }),
+					false,
 					`models[].${field}=${value}`,
-				).toBe(false);
-				expect(
+				);
+				assert.equal(
 					schema.Check({ providers: { local: { modelOverrides: { model: { [field]: value } } } } }),
+					false,
 					`modelOverrides.${field}=${value}`,
-				).toBe(false);
+				);
 			}
 		}
-		expect(
+		assert.equal(
 			schema.Check({
 				providers: {
 					local: {
@@ -277,7 +296,8 @@ describe("models.json schema", () => {
 					},
 				},
 			}),
-		).toBe(true);
+			true,
+		);
 	});
 
 	it("accepts custom compatibility settings and rejects malformed known fields at runtime", async () => {
@@ -291,11 +311,11 @@ describe("models.json schema", () => {
 		writeFileSync(path, JSON.stringify({ providers: { demo: { api: "custom-api", compat } } }));
 
 		const config = await ModelConfig.load(path);
-		expect(config.getError()).toBeUndefined();
-		expect(config.getProvider("demo")?.compat).toEqual(compat);
+		assert.equal(config.getError(), undefined);
+		assert.deepEqual(config.getProvider("demo")?.compat, compat);
 
 		writeFileSync(path, JSON.stringify({ providers: { demo: { compat: { supportsLongCacheRetention: "yes" } } } }));
-		expect((await ModelConfig.load(path)).getError()).toContain("Invalid models.json schema");
+		assert.ok((await ModelConfig.load(path)).getError().includes("Invalid models.json schema"));
 	});
 
 	it("validates $schema in models.json at runtime", async () => {
@@ -310,32 +330,31 @@ describe("models.json schema", () => {
 		);
 
 		const config = await ModelConfig.load(path);
-		expect(config.getError()).toBeUndefined();
-		expect(config.getProvider("demo")?.models?.[0]?.id).toBe("demo");
+		assert.equal(config.getError(), undefined);
+		assert.equal(config.getProvider("demo")?.models?.[0]?.id, "demo");
 
 		writeFileSync(
 			path,
 			JSON.stringify({ $schema: schemaUrl("models"), providers: { demo: { models: [{ id: "" }] } } }),
 		);
-		expect((await ModelConfig.load(path)).getError()).toContain("Invalid models.json schema");
+		assert.ok((await ModelConfig.load(path)).getError().includes("Invalid models.json schema"));
 
 		writeFileSync(path, JSON.stringify({ $schema: 42, providers: {} }));
-		expect((await ModelConfig.load(path)).getError()).toContain("$schema");
+		assert.ok((await ModelConfig.load(path)).getError().includes("$schema"));
 	});
 });
 
 describe("settings.json schema", () => {
 	it("preserves moved settings guidance", () => {
-		expect(renderedSchema("settings").properties).toMatchObject({
-			quietStartup: { description: expect.stringContaining("hide all startup output") },
-			defaultTools: { description: expect.stringContaining("+name and -name") },
-			fullscreenWheelScrollLines: { description: expect.stringContaining("1 to 100") },
-		});
+		const properties = renderedSchema("settings").properties;
+		assertDescriptionIncludes(properties.quietStartup, "hide all startup output");
+		assertDescriptionIncludes(properties.defaultTools, "+name and -name");
+		assertDescriptionIncludes(properties.fullscreenWheelScrollLines, "1 to 100");
 	});
 
 	it("validates representative documents including Atomic's settings", () => {
 		const validator = Compile(renderedSchema("settings"));
-		expect(
+		assert.equal(
 			validator.Check({
 				theme: "dark",
 				cacheWarming: "idle",
@@ -366,10 +385,11 @@ describe("settings.json schema", () => {
 				streamDeadlineMs: "5m",
 				codemode: { mode: "only", inlineBudget: 0 },
 			}),
-		).toBe(true);
-		expect(validator.Check({ cacheWarming: "always" })).toBe(false);
-		expect(validator.Check({ workflows: { durability: { unknownKey: "x" } } })).toBe(false);
-		expect(validator.Check({ compaction: { compression_ratio: 1 } })).toBe(false);
+			true,
+		);
+		assert.equal(validator.Check({ cacheWarming: "always" }), false);
+		assert.equal(validator.Check({ workflows: { durability: { unknownKey: "x" } } }), false);
+		assert.equal(validator.Check({ compaction: { compression_ratio: 1 } }), false);
 	});
 
 	it("rejects settings values that runtime accessors reject", () => {
@@ -389,15 +409,15 @@ describe("settings.json schema", () => {
 			{ codemode: { inlineBudget: -1 } },
 		];
 		for (const invalid of invalidSettings) {
-			expect(validator.Check(invalid), JSON.stringify(invalid)).toBe(false);
+			assert.equal(validator.Check(invalid), false, JSON.stringify(invalid));
 		}
-		expect(() => SettingsManager.inMemory(invalidSettings[0]).getCompactionReserveTokens()).toThrow();
-		expect(() => SettingsManager.inMemory(invalidSettings[1]).getCompactionPreserveRecent()).toThrow();
-		expect(() => SettingsManager.inMemory(invalidSettings[3]).getHttpIdleTimeoutMs()).toThrow();
-		expect(() => SettingsManager.inMemory(invalidSettings[4]).getWebSocketConnectTimeoutMs()).toThrow();
-		expect(() => SettingsManager.inMemory(invalidSettings[5]).getHttpIdleTimeoutMs()).toThrow();
-		expect(() => SettingsManager.inMemory(invalidSettings[6]).getStreamDeadlineMs()).toThrow();
-		expect(
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[0]).getCompactionReserveTokens());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[1]).getCompactionPreserveRecent());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[3]).getHttpIdleTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[4]).getWebSocketConnectTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[5]).getHttpIdleTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[6]).getStreamDeadlineMs());
+		assert.equal(
 			validator.Check({
 				compaction: {
 					reserveTokens: 0,
@@ -408,18 +428,19 @@ describe("settings.json schema", () => {
 				websocketConnectTimeoutMs: "disabled",
 				codemode: { inlineBudget: 0 },
 			}),
-		).toBe(true);
+			true,
+		);
 	});
 
 	it("accepts every timeout form the runtime parses", () => {
 		const validator = Compile(SettingsSchema);
 		for (const value of [0, 30_000, "0", "30000", "500ms", "30s", "5m", "1h", "30S", "disabled", "Disabled"]) {
-			expect(parseHttpIdleTimeoutMs(value), String(value)).not.toBeUndefined();
-			expect(validator.Check({ streamDeadlineMs: value }), String(value)).toBe(true);
+			assert.notEqual(parseHttpIdleTimeoutMs(value), undefined, String(value));
+			assert.equal(validator.Check({ streamDeadlineMs: value }), true, String(value));
 		}
 		for (const value of ["", "bogus", "-1", "5 minutes", "m"]) {
-			expect(parseHttpIdleTimeoutMs(value), value).toBeUndefined();
-			expect(validator.Check({ streamDeadlineMs: value }), value).toBe(false);
+			assert.equal(parseHttpIdleTimeoutMs(value), undefined, value);
+			assert.equal(validator.Check({ streamDeadlineMs: value }), false, value);
 		}
 	});
 
@@ -430,8 +451,8 @@ describe("settings.json schema", () => {
 				retry: { properties: { maxDelayMs: { description: string } } };
 			};
 		};
-		expect(schema.properties.retry.properties.maxDelayMs.description).toContain("provider.maxRetryDelayMs");
-		expect(schema.properties.queueMode.description).toBe("Legacy setting migrated to steeringMode.");
+		assert.ok(schema.properties.retry.properties.maxDelayMs.description.includes("provider.maxRetryDelayMs"));
+		assert.equal(schema.properties.queueMode.description, "Legacy setting migrated to steeringMode.");
 	});
 
 	it("documents every setting in the settings reference", () => {
@@ -440,67 +461,67 @@ describe("settings.json schema", () => {
 			.split("\n")
 			.map((line) => /^\| `([a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*)` \|/.exec(line)?.[1])
 			.filter((setting): setting is string => setting !== undefined);
-		expect(documented.length).toBeGreaterThan(60);
+		assert.ok(documented.length > 60);
 		const missing = documented.filter((setting) => findSchemaNode(schema, setting.split(".")) === undefined);
-		expect(missing).toEqual([]);
+		assert.deepEqual(missing, []);
 	});
 
 	it("publishes the runtime defaults", () => {
 		const schema = renderedSchema("settings");
 		for (const path of defaultLeaves(SETTINGS_DEFAULTS)) {
 			const node = findSchemaNode(schema, path);
-			expect(node, path.join(".")).toBeDefined();
-			expect(node?.default, path.join(".")).toEqual(defaultAt(SETTINGS_DEFAULTS, path));
+			assert.notEqual(node, undefined, path.join("."));
+			assert.deepEqual(node?.default, defaultAt(SETTINGS_DEFAULTS, path), path.join("."));
 		}
 	});
 
 	it("returns the published defaults from accessors when nothing is configured", () => {
 		const settings = SettingsManager.inMemory();
 		const defaults = SETTINGS_DEFAULTS;
-		expect(settings.getRouterModel()).toBe(defaults.routerModel);
-		expect(settings.getTransport()).toBe(defaults.transport);
-		expect(settings.getSteeringMode()).toBe(defaults.steeringMode);
-		expect(settings.getFollowUpMode()).toBe(defaults.followUpMode);
-		expect(settings.getCompactionSettings()).toEqual(defaults.compaction);
-		expect(settings.getBranchSummarySettings()).toEqual(defaults.branchSummary);
-		expect(settings.getSessionSummarySettings()).toEqual(defaults.sessionSummary);
-		expect(settings.getRetrySettings()).toEqual({
+		assert.equal(settings.getRouterModel(), defaults.routerModel);
+		assert.equal(settings.getTransport(), defaults.transport);
+		assert.equal(settings.getSteeringMode(), defaults.steeringMode);
+		assert.equal(settings.getFollowUpMode(), defaults.followUpMode);
+		assert.deepEqual(settings.getCompactionSettings(), defaults.compaction);
+		assert.deepEqual(settings.getBranchSummarySettings(), defaults.branchSummary);
+		assert.deepEqual(settings.getSessionSummarySettings(), defaults.sessionSummary);
+		assert.deepEqual(settings.getRetrySettings(), {
 			enabled: defaults.retry.enabled,
 			maxRetries: defaults.retry.maxRetries,
 			baseDelayMs: defaults.retry.baseDelayMs,
 			maxAgentDelayMs: defaults.retry.maxAgentDelayMs,
 		});
-		expect(settings.getProviderRetrySettings().maxRetryDelayMs).toBe(defaults.retry.provider.maxRetryDelayMs);
-		expect(settings.getHideThinkingBlock()).toBe(defaults.hideThinkingBlock);
-		expect(settings.getShowCacheMissNotices()).toBe(defaults.showCacheMissNotices);
-		expect(settings.getQuietStartup()).toBe(defaults.quietStartup);
-		expect(settings.getDefaultProjectTrust()).toBe(defaults.defaultProjectTrust);
-		expect(settings.getBashInterceptorEnabled()).toBe(defaults.bashInterceptor.enabled);
-		expect(settings.getSearchContextBefore()).toBe(defaults.search.contextBefore);
-		expect(settings.getSearchContextAfter()).toBe(defaults.search.contextAfter);
-		expect(settings.getCollapseChangelog()).toBe(defaults.collapseChangelog);
-		expect(settings.getEnableInstallTelemetry()).toBe(defaults.enableInstallTelemetry);
-		expect(settings.getEnableSkillCommands()).toBe(defaults.enableSkillCommands);
-		expect(settings.getShowImages()).toBe(defaults.terminal.showImages);
-		expect(settings.getImageWidthCells()).toBe(defaults.terminal.imageWidthCells);
-		expect(settings.getShowTerminalProgress()).toBe(defaults.terminal.showTerminalProgress);
-		expect(settings.getImageAutoResize()).toBe(defaults.images.autoResize);
-		expect(settings.getBlockImages()).toBe(defaults.images.blockImages);
-		expect(settings.getDoubleEscapeAction()).toBe(defaults.doubleEscapeAction);
-		expect(settings.getTreeFilterMode()).toBe(defaults.treeFilterMode);
-		expect(settings.getEditorPaddingX()).toBe(defaults.editorPaddingX);
-		expect(settings.getOutputPad()).toBe(defaults.outputPad);
-		expect(settings.getAutocompleteMaxVisible()).toBe(defaults.autocompleteMaxVisible);
-		expect(settings.getFullscreenScrollbar()).toBe(defaults.fullscreenScrollbar);
-		expect(settings.getFullscreenExitOutput()).toBe(defaults.fullscreenExitOutput);
-		expect(settings.getFullscreenCopyOnSelect()).toBe(defaults.fullscreenCopyOnSelect);
-		expect(settings.getFullscreenWheelScrollLines()).toBe(defaults.fullscreenWheelScrollLines);
-		expect(settings.getCodemodeInlineBudget()).toBe(defaults.codemode.inlineBudget);
-		expect(settings.getCodeBlockIndent()).toBe(defaults.markdown.codeBlockIndent);
-		expect(settings.getMermaidRenderingMode()).toBe(defaults.markdown.mermaid);
-		expect(settings.getLatexRenderingEnabled()).toBe(defaults.markdown.latex);
-		expect(settings.getHttpIdleTimeoutMs()).toBe(defaults.httpIdleTimeoutMs);
-		expect(settings.getCacheWarmingMode()).toBe(defaults.cacheWarming);
+		assert.equal(settings.getProviderRetrySettings().maxRetryDelayMs, defaults.retry.provider.maxRetryDelayMs);
+		assert.equal(settings.getHideThinkingBlock(), defaults.hideThinkingBlock);
+		assert.equal(settings.getShowCacheMissNotices(), defaults.showCacheMissNotices);
+		assert.equal(settings.getQuietStartup(), defaults.quietStartup);
+		assert.equal(settings.getDefaultProjectTrust(), defaults.defaultProjectTrust);
+		assert.equal(settings.getBashInterceptorEnabled(), defaults.bashInterceptor.enabled);
+		assert.equal(settings.getSearchContextBefore(), defaults.search.contextBefore);
+		assert.equal(settings.getSearchContextAfter(), defaults.search.contextAfter);
+		assert.equal(settings.getCollapseChangelog(), defaults.collapseChangelog);
+		assert.equal(settings.getEnableInstallTelemetry(), defaults.enableInstallTelemetry);
+		assert.equal(settings.getEnableSkillCommands(), defaults.enableSkillCommands);
+		assert.equal(settings.getShowImages(), defaults.terminal.showImages);
+		assert.equal(settings.getImageWidthCells(), defaults.terminal.imageWidthCells);
+		assert.equal(settings.getShowTerminalProgress(), defaults.terminal.showTerminalProgress);
+		assert.equal(settings.getImageAutoResize(), defaults.images.autoResize);
+		assert.equal(settings.getBlockImages(), defaults.images.blockImages);
+		assert.equal(settings.getDoubleEscapeAction(), defaults.doubleEscapeAction);
+		assert.equal(settings.getTreeFilterMode(), defaults.treeFilterMode);
+		assert.equal(settings.getEditorPaddingX(), defaults.editorPaddingX);
+		assert.equal(settings.getOutputPad(), defaults.outputPad);
+		assert.equal(settings.getAutocompleteMaxVisible(), defaults.autocompleteMaxVisible);
+		assert.equal(settings.getFullscreenScrollbar(), defaults.fullscreenScrollbar);
+		assert.equal(settings.getFullscreenExitOutput(), defaults.fullscreenExitOutput);
+		assert.equal(settings.getFullscreenCopyOnSelect(), defaults.fullscreenCopyOnSelect);
+		assert.equal(settings.getFullscreenWheelScrollLines(), defaults.fullscreenWheelScrollLines);
+		assert.equal(settings.getCodemodeInlineBudget(), defaults.codemode.inlineBudget);
+		assert.equal(settings.getCodeBlockIndent(), defaults.markdown.codeBlockIndent);
+		assert.equal(settings.getMermaidRenderingMode(), defaults.markdown.mermaid);
+		assert.equal(settings.getLatexRenderingEnabled(), defaults.markdown.latex);
+		assert.equal(settings.getHttpIdleTimeoutMs(), defaults.httpIdleTimeoutMs);
+		assert.equal(settings.getCacheWarmingMode(), defaults.cacheWarming);
 	});
 
 	it("accepts $schema in settings.json and preserves unknown settings", async () => {
@@ -511,42 +532,40 @@ describe("settings.json schema", () => {
 		);
 
 		const manager = SettingsManager.create(directory, directory);
-		expect(manager.getTheme()).toBe("light");
-		expect(manager.getGlobalSettings()).toMatchObject({
-			$schema: schemaUrl("settings"),
-			extensionSetting: { enabled: true },
-		});
+		assert.equal(manager.getTheme(), "light");
+		const globalSettings = manager.getGlobalSettings() as {
+			$schema?: string;
+			extensionSetting?: { enabled: boolean };
+		};
+		assert.equal(globalSettings.$schema, schemaUrl("settings"));
+		assert.deepEqual(globalSettings.extensionSetting, { enabled: true });
 		manager.setTheme("dark");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(join(directory, "settings.json"), "utf-8"))).toMatchObject({
-			$schema: schemaUrl("settings"),
-			theme: "dark",
-			extensionSetting: { enabled: true },
-		});
+		const savedSettings = JSON.parse(readFileSync(join(directory, "settings.json"), "utf-8")) as {
+			$schema?: string;
+			theme?: string;
+			extensionSetting?: { enabled: boolean };
+		};
+		assert.equal(savedSettings.$schema, schemaUrl("settings"));
+		assert.equal(savedSettings.theme, "dark");
+		assert.deepEqual(savedSettings.extensionSetting, { enabled: true });
 	});
 });
 
 describe("keybindings.json schema", () => {
 	it("describes every keybinding, including Atomic's", () => {
 		const properties = Object.keys(renderedSchema("keybindings").properties);
-		expect(properties).toEqual(["$schema", ...Object.keys(KEYBINDINGS)]);
-		expect(properties).toEqual(
-			expect.arrayContaining([
-				"app.workflows.scrollUp",
-				"app.tasks.open",
-				"app.auth.copyUrl",
-				"tui.altScreen.search",
-			]),
-		);
-		expect(renderedSchema("keybindings").properties["app.suspend"]).toMatchObject({
-			description: expect.stringContaining("PowerShell"),
-		});
+		assert.deepEqual(properties, ["$schema", ...Object.keys(KEYBINDINGS)]);
+		for (const property of ["app.workflows.scrollUp", "app.tasks.open", "app.auth.copyUrl", "tui.altScreen.search"]) {
+			assert.ok(properties.includes(property), property);
+		}
+		assertDescriptionIncludes(renderedSchema("keybindings").properties["app.suspend"], "PowerShell");
 	});
 
 	it("accepts the default keys of every keybinding", () => {
 		const validator = Compile(KeybindingValueSchema);
 		for (const [id, definition] of Object.entries(KEYBINDINGS)) {
-			expect(validator.Check(definition.defaultKeys), id).toBe(true);
+			assert.equal(validator.Check(definition.defaultKeys), true, id);
 		}
 	});
 
@@ -555,27 +574,31 @@ describe("keybindings.json schema", () => {
 			.split("\n")
 			.map((line) => /^\| `((?:app|tui)\.[A-Za-z.]+)` \|/.exec(line)?.[1])
 			.filter((id): id is string => id !== undefined);
-		expect(documented.length).toBeGreaterThan(60);
-		expect(documented.filter((id) => !(id in KEYBINDINGS))).toEqual([]);
+		assert.ok(documented.length > 60);
+		assert.deepEqual(
+			documented.filter((id) => !(id in KEYBINDINGS)),
+			[],
+		);
 	});
 
 	it("validates representative documents", () => {
 		const validator = Compile(renderedSchema("keybindings"));
-		expect(
+		assert.equal(
 			validator.Check({
 				$schema: schemaUrl("keybindings"),
 				"app.session.new": "ctrl+n",
 				"app.workflows.scrollUp": ["ctrl+alt+k"],
 				"extension.action": ["alt+x"],
 			}),
-		).toBe(true);
-		expect(validator.Check({ "app.session.new": 42 })).toBe(false);
+			true,
+		);
+		assert.equal(validator.Check({ "app.session.new": 42 }), false);
 	});
 
 	it("validates keybinding syntax", () => {
 		const validator = Compile(renderedSchema("keybindings"));
 		for (const binding of ["a", "9", "pageUp", "+", "ctrl+shift+x", "alt+ctrl+?", "ctrl+shift+alt+super+f12"]) {
-			expect(validator.Check({ "extension.action": binding }), binding).toBe(true);
+			assert.equal(validator.Check({ "extension.action": binding }), true, binding);
 		}
 		for (const binding of [
 			"",
@@ -585,7 +608,7 @@ describe("keybindings.json schema", () => {
 			"ctrl+ctrl+x",
 			"ctrl+shift+alt+super+ctrl+x",
 		]) {
-			expect(validator.Check({ "extension.action": binding }), binding).toBe(false);
+			assert.equal(validator.Check({ "extension.action": binding }), false, binding);
 		}
 	});
 
@@ -597,7 +620,7 @@ describe("keybindings.json schema", () => {
 		);
 
 		const manager = KeybindingsManager.create(directory);
-		expect(manager.getUserBindings()).toEqual({ "app.session.new": "ctrl+n" });
-		expect(manager.getEffectiveConfig()["app.session.new"]).toBe("ctrl+n");
+		assert.deepEqual(manager.getUserBindings(), { "app.session.new": "ctrl+n" });
+		assert.equal(manager.getEffectiveConfig()["app.session.new"], "ctrl+n");
 	});
 });
