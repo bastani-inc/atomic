@@ -4,6 +4,17 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.29] - 2026-10-09
+
+### Added
+
+- Added the `ultrafast` service tier to `gpt-6.1-sol` and `gpt-5.6-sol` on `openai` and `openai-api`, and to `gpt-6.1-sol` on `openai-codex`. GPT-6.1 Sol uses OpenAI's published Ultrafast rates ($12 input, $60 output per million tokens), with cache rates derived at the same six-times-Standard ratio; GPT-5.6 Sol Ultrafast is a preview without published rates and is priced at six times its Standard rates ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+- Added the `openai-images` provider (`openaiImagesProvider()`) and the `openai-images` image API for OpenAI's Images API, with `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`. Text input becomes the prompt; image inputs send the request to `/images/edits`. `OpenAIImagesOptions` adds `size`, `quality`, `n`, and `background`, and `Models.generateImages()` options are now typed per image API through `ImageApiOptionsMap`. Like `openai-decisions`, the provider has no login of its own: it reuses the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`, and skips a ChatGPT sign-in on `openai` ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+
+### Changed
+
+- OpenAI Responses and OpenAI Codex Responses requests now retry once at the default tier when the server rejects the requested `service_tier` before producing output, and record a `service_tier_unavailable` warning diagnostic on the assistant message once the default-tier request is accepted. On OpenAI Responses with an API key, a response that reports a slower tier than requested records the same warning. Requests made with a ChatGPT sign-in token, on `openai` or `openai-codex`, do not warn on a reported `default` and are priced at the requested tier, because the ChatGPT backend reports `default` for every tier it applies. Otherwise pricing follows the tier the server reports ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
 ## [0.9.29-alpha.1] - 2026-10-08
 
 ### Added

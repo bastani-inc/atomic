@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.29] - 2026-10-09
+
+### Added
+
+- Added the `/tools` command, which shows the tools the model can use, why each other tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion for likely typos such as `+tool-search` instead of `+tool_search`. SDK hosts get the same report from `session.getToolStatus()` and render it with `formatToolStatus()`; RPC clients use the `get_tools` command or `RpcClient.getTools()`. See [Checking tool status](docs/sdk/reference.md#checking-tool-status) and [get_tools](docs/rpc/protocol.md#get_tools).
+- Added `gpt-6.1-sol-ultrafast` and `gpt-5.6-sol-ultrafast` model variants for `openai` and `openai-api`, and `gpt-6.1-sol-ultrafast` for `openai-codex`. GPT-6.1 Sol Ultrafast is priced at OpenAI's published $12 input and $60 output per million tokens; GPT-5.6 Sol Ultrafast is a limited preview without published rates, priced at six times Standard. Ultrafast access depends on your OpenAI account ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+- Added OpenAI's GPT Image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) as `openai-images` image models for codemode's `models.generateImages()`, extensions, and workflow `generateImages()` calls. They reuse your OpenAI API key, saved for `openai-api` or `openai` or set in `OPENAI_API_KEY`, and have no separate login; a ChatGPT sign-in cannot use them. See [Subscription and API key at the same time](docs/providers.md#subscription-and-api-key-at-the-same-time) ([#3527](https://github.com/bastani-inc/atomic/issues/3527)).
+- Added the `modelRouting.allowedModels` and `modelRouting.excludedModels` settings, which keep workflow stages and subagents with `model: "auto"` from routing to models you did not allow, including through fallbacks. They take full model IDs or glob patterns, matched like `enabledModels` and `--models`. If they leave no eligible model, the stage or subagent fails before launch with an error naming the setting. `routerSelection` now also lists the `candidates` the router could choose from after filtering. See [modelRouting](docs/settings.md#modelrouting) ([#3528](https://github.com/bastani-inc/atomic/issues/3528)).
+
+### Changed
+
+- When the OpenAI API or the ChatGPT Codex backend rejects a Fast or Ultrafast tier, Atomic retries the request once at the default tier instead of failing the turn and shows a warning, for example `ultrafast isn't available for gpt-5.6-sol on this account; ran at default`. With an OpenAI API key, Atomic shows the same warning when the server reports a slower tier than the model you selected. Interactive sessions show it under the response, print mode writes it to stderr, and JSON mode includes it in the message's `diagnostics`. With ChatGPT sign-in (`openai` or `openai-codex`) there is no such warning, because the ChatGPT backend reports `default` for every tier it applies ([#3529](https://github.com/bastani-inc/atomic/issues/3529)).
+
+### Fixed
+
+- Fixed sessions created with the SDK's `createAgentSession()` or a `DefaultResourceLoader` ignoring `defaultTools: ["+codemode"]` and `tools: ["+tool_search"]`, and lacking the llama.cpp provider. Every `DefaultResourceLoader` now includes the `codemode`, `tool-search`, and `llama.cpp` built-in extensions; codemode and tool search remain opt-in. `loader.getExtensions()` now lists these three with `builtin:<name>` paths.
+- Fixed `defaultTools: ["+codemode"]` and `--tools +codemode` leaving codemode inactive in interactive sessions. Opt-in tools that your tool selection names now activate when their extension finishes loading after startup, and `/tools` no longer tells you to add a tool that is already selected.
+
 ## [0.9.29-alpha.2] - 2026-10-09
 
 ### Added
