@@ -5,7 +5,7 @@
  * `research/pi-0.83.0-port-matrix.md` for the full classification.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -422,6 +422,62 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		writeFileSync(join(worktree, "AGENTS.override.md"), "worktree override");
 		const agentDir = join(root, "agent");
 		mkdirSync(agentDir, { recursive: true });
+
+		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
+
+		expect(files.map((file) => file.content)).toEqual(["worktree override"]);
+	});
+
+	function nestedWorktreeFixture(prefix: string): {
+		root: string;
+		mainRepo: string;
+		worktree: string;
+		agentDir: string;
+	} {
+		const root = tempDir(prefix);
+		const mainRepo = join(root, "repo");
+		const gitDir = join(mainRepo, ".git");
+		const worktree = join(mainRepo, "feature-checkout");
+		const worktreeGitDir = join(gitDir, "worktrees", "feature");
+		mkdirSync(worktreeGitDir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(worktreeGitDir, "HEAD"), "ref: refs/heads/feature\n");
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		return { root, mainRepo, worktree, agentDir };
+	}
+
+	it("f1b2e77f: loads a nested worktree's AGENTS.md once when it symlinks to the main repo's file", () => {
+		const { mainRepo, worktree, agentDir } = nestedWorktreeFixture("atomic-nested-worktree-symlink-");
+		writeFileSync(join(mainRepo, "AGENTS.md"), "main repo instructions");
+		symlinkSync(join(mainRepo, "AGENTS.md"), join(worktree, "AGENTS.md"));
+
+		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
+
+		expect(files.map((file) => file.path)).toEqual([join(worktree, "AGENTS.md")]);
+	});
+
+	it("f1b2e77f: skips the main repo's duplicate when the main repo's AGENTS.md is a symlink", () => {
+		const { root, mainRepo, worktree, agentDir } = nestedWorktreeFixture("atomic-nested-worktree-shared-");
+		const shared = join(root, "shared-agents.md");
+		writeFileSync(shared, "shared instructions");
+		symlinkSync(shared, join(mainRepo, "AGENTS.md"));
+		symlinkSync(shared, join(worktree, "AGENTS.md"));
+
+		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
+
+		expect(files.map((file) => file.path)).toEqual([join(worktree, "AGENTS.md")]);
+	});
+
+	it("f1b2e77f: skips the main repo's symlinked AGENTS.md when the worktree has an override", () => {
+		const { root, mainRepo, worktree, agentDir } = nestedWorktreeFixture("atomic-nested-worktree-override-link-");
+		const shared = join(root, "shared-agents.md");
+		writeFileSync(shared, "shared instructions");
+		symlinkSync(shared, join(mainRepo, "AGENTS.md"));
+		writeFileSync(join(worktree, "AGENTS.override.md"), "worktree override");
 
 		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
 
