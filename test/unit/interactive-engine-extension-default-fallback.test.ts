@@ -197,6 +197,44 @@ serialTest(
 );
 
 serialTest(
+	"isolated interactive startup resolves a settings-configured extension provider default",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-extension-default-"));
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "isolation-fixture",
+				defaultModel: "blocking-model",
+				extensions: [join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts")],
+				lastChangelogVersion: "0.0.0",
+				firstRunOnboardingStartedVersion: "0.0.0",
+				onboardedVersion: "0.0.0",
+			}),
+		);
+		const driver = new Driver(
+			["--no-session", "--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve"],
+			{ ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_SKIP_VERSION_CHECK: "1", NO_COLOR: "1" },
+		);
+		try {
+			const settled = await waitForInputLoopState(driver);
+			assert.equal(settled.modelProvider, "isolation-fixture");
+			assert.equal(settled.modelId, "blocking-model");
+			assert.equal(settled.modelFallbackMessage, undefined);
+			assert.deepEqual(
+				driver.reports.filter((report) => report.type === "warning"),
+				[],
+			);
+		} finally {
+			await driver.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_EXTENSION_FALLBACK_TEST_TIMEOUT_MS,
+);
+
+serialTest(
 	"isolated interactive persisted stale state shows one generic warning and remains live",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-persisted-stale-interactive-"));
