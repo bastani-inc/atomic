@@ -156,7 +156,14 @@ describe("package metadata", () => {
 	});
 
 	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {
-		assert.deepEqual(atomicPackageJson.files, ["dist", "docs", "examples", "CHANGELOG.md", "npm-shrinkwrap.json"]);
+		assert.deepEqual(atomicPackageJson.files, [
+			"dist",
+			"docs",
+			"examples",
+			"schemas",
+			"CHANGELOG.md",
+			"npm-shrinkwrap.json",
+		]);
 		assert.equal(Object.hasOwn(atomicPackageJson, "contentPolicy"), false);
 
 		const buildTsconfig = (await readJson("packages/coding-agent/tsconfig.build.json")) as {

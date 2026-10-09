@@ -11,7 +11,7 @@ import {
 	type TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { getThemesDir } from "../src/config.ts";
 import { type KeybindingsConfig, KeybindingsManager } from "../src/core/keybindings.ts";
@@ -259,8 +259,10 @@ describe("search match theme colors", () => {
 	});
 
 	test("both schema forms accept a theme with and without the colors", () => {
-		const schema = JSON.parse(readFileSync(join(getThemesDir(), "theme-schema.json"), "utf8")) as object;
-		const validateJsonSchema = new Ajv({ allErrors: true }).compile(schema);
+		const schema = JSON.parse(
+			readFileSync(new URL("../schemas/theme.schema.json", import.meta.url), "utf8"),
+		) as object;
+		const validateJsonSchema = new Ajv2020({ allErrors: true }).compile(schema);
 
 		const withColors = loadDarkThemeJson();
 		withColors.name = "schema-search-theme";

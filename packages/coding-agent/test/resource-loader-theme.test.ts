@@ -16,7 +16,7 @@ import {
 
 const THEME_RELOAD_TIMEOUT_MS = 5_000;
 
-type ThemeFile = { name: string; colors: Record<string, string | number> };
+type ThemeFile = { name: string; colors: Record<string, string | number>; unsupported?: boolean };
 
 describe("DefaultResourceLoader theme color mode", () => {
 	let tempDir: string;
@@ -161,5 +161,38 @@ describe("DefaultResourceLoader theme color mode", () => {
 		await vi.waitFor(() => reloaded, { timeout: THEME_RELOAD_TIMEOUT_MS });
 
 		assert.equal(theme.bg("userMessageBg", "x"), "\x1b[48;2;68;60;80mx\x1b[49m");
+	});
+
+	it("applies strict validation on initial load and reload", async () => {
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			additionalThemePaths: [themePath],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+		});
+
+		themeJson.unsupported = true;
+		writeFileSync(themePath, JSON.stringify(themeJson));
+		await loader.reload();
+		const initialDiagnostics = loader.getThemes().diagnostics;
+		assert.equal(initialDiagnostics.length, 1);
+		assert.equal(initialDiagnostics[0]?.type, "warning");
+		assert.equal(initialDiagnostics[0]?.path, themePath);
+		assert.match(initialDiagnostics[0]?.message ?? "", /\/unsupported/);
+
+		delete themeJson.unsupported;
+		writeFileSync(themePath, JSON.stringify(themeJson));
+		await loader.reload();
+		assert.deepEqual(loader.getThemes().diagnostics, []);
+		assert.ok(loader.getThemes().themes.some((candidate) => candidate.name === themeJson.name));
+
+		themeJson.unsupported = true;
+		writeFileSync(themePath, JSON.stringify(themeJson));
+		await loader.reload();
+		assert.deepEqual(loader.getThemes().diagnostics, initialDiagnostics);
 	});
 });

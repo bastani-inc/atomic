@@ -11,6 +11,9 @@ export function assertThemeNameIsValid(name: string): void {
 }
 
 export function parseThemeJson(label: string, json: unknown): ThemeJson {
+	if (typeof json === "object" && json !== null && "name" in json && typeof json.name === "string") {
+		assertThemeNameIsValid(json.name);
+	}
 	if (!validateThemeJson.Check(json)) {
 		const errors = Array.from(validateThemeJson.Errors(json));
 		const missingColors = new Set<string>();

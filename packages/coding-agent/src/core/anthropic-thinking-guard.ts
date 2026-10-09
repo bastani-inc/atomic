@@ -37,7 +37,7 @@ function isSameModelAssistant(message: AssistantMessage, model: Model<Api>): boo
  */
 function delegatesForeignThinkingBinding(message: AssistantMessage, model: Model<Api>): boolean {
 	if (message.provider !== model.provider || message.api !== model.api) return false;
-	return isObject(model.compat) && model.compat.delegatesThinkingModelBinding === true;
+	return isObject(model.compat) && (model.compat as JsonObject).delegatesThinkingModelBinding === true;
 }
 
 /**
@@ -297,7 +297,7 @@ export function restoreAnthropicReplayThinkingBlocks(
 	// ordinal restoration must never splice thinking into a different assistant.
 	if (emittingSourceAssistants.length !== assistantPayloads.length) return payload;
 
-	const allowEmptySignature = isObject(model.compat) && model.compat.allowEmptySignature === true;
+	const allowEmptySignature = isObject(model.compat) && (model.compat as JsonObject).allowEmptySignature === true;
 	let nextPayloadMessages: unknown[] | undefined;
 
 	for (const [assistantPayloadOrdinal, sourceMessage] of emittingSourceAssistants.entries()) {

@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "../../core/extensions/types.ts";
+import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
 import { createCodemodeToolDefinition } from "./tool.js";
 
@@ -16,7 +17,8 @@ export function createCodemodeExtension(options: CodemodeExtensionOptions = {}):
 				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
 				getToolGuidelines: () =>
 					new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
-				getMode: () => options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : "on"),
+				getMode: () =>
+					options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : SETTINGS_DEFAULTS.codemode.mode),
 				getInlineBudget: () => options.inlineBudget ?? pi.getSettings().codemode?.inlineBudget,
 				getModelOnlyTools: () => {
 					const active = new Set(pi.getActiveTools());

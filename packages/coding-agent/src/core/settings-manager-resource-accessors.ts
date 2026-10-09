@@ -1,3 +1,4 @@
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
@@ -53,7 +54,7 @@ declare module "./settings-manager-core.ts" {
 
 const resourceAccessors: SettingsManagerResourceAccessors = {
 	getHideThinkingBlock() {
-		return settingsInternals(this).settings.hideThinkingBlock ?? false;
+		return settingsInternals(this).settings.hideThinkingBlock ?? SETTINGS_DEFAULTS.hideThinkingBlock;
 	},
 
 	getExternalEditorCommand() {
@@ -88,7 +89,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 
 	getDefaultProjectTrust() {
 		const value = settingsInternals(this).globalSettings.defaultProjectTrust;
-		return value === "always" || value === "never" ? value : "ask";
+		return value === "always" || value === "never" ? value : SETTINGS_DEFAULTS.defaultProjectTrust;
 	},
 
 	setDefaultProjectTrust(defaultProjectTrust) {
@@ -100,7 +101,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 
 	getQuietStartup() {
 		const value = settingsInternals(this).settings.quietStartup;
-		return value === true || value === "header" ? value : false;
+		return value === true || value === "header" ? value : SETTINGS_DEFAULTS.quietStartup;
 	},
 
 	setQuietStartup(quiet) {
@@ -122,7 +123,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getBashInterceptorEnabled() {
-		return settingsInternals(this).settings.bashInterceptor?.enabled ?? false;
+		return settingsInternals(this).settings.bashInterceptor?.enabled ?? SETTINGS_DEFAULTS.bashInterceptor.enabled;
 	},
 
 	setBashInterceptorEnabled(enabled) {
@@ -133,11 +134,11 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getSearchContextBefore() {
-		return settingsInternals(this).settings.search?.contextBefore ?? 1;
+		return settingsInternals(this).settings.search?.contextBefore ?? SETTINGS_DEFAULTS.search.contextBefore;
 	},
 
 	getSearchContextAfter() {
-		return settingsInternals(this).settings.search?.contextAfter ?? 3;
+		return settingsInternals(this).settings.search?.contextAfter ?? SETTINGS_DEFAULTS.search.contextAfter;
 	},
 
 	getNpmCommand() {
@@ -153,7 +154,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getCollapseChangelog() {
-		return settingsInternals(this).settings.collapseChangelog ?? false;
+		return settingsInternals(this).settings.collapseChangelog ?? SETTINGS_DEFAULTS.collapseChangelog;
 	},
 
 	setCollapseChangelog(collapse) {
@@ -164,7 +165,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getEnableInstallTelemetry() {
-		return settingsInternals(this).settings.enableInstallTelemetry ?? true;
+		return settingsInternals(this).settings.enableInstallTelemetry ?? SETTINGS_DEFAULTS.enableInstallTelemetry;
 	},
 
 	setEnableInstallTelemetry(enabled) {
@@ -293,7 +294,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getEnableSkillCommands() {
-		return settingsInternals(this).settings.enableSkillCommands ?? true;
+		return settingsInternals(this).settings.enableSkillCommands ?? SETTINGS_DEFAULTS.enableSkillCommands;
 	},
 
 	setEnableSkillCommands(enabled) {

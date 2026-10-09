@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
-export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
+export const DEFAULT_HTTP_IDLE_TIMEOUT_MS: number = SETTINGS_DEFAULTS.httpIdleTimeoutMs;
 
 const originalGlobalFetch = globalThis.fetch;
 let installedGlobalFetch: typeof globalThis.fetch | undefined;

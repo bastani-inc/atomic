@@ -8,6 +8,8 @@ Older configs using pre-namespaced ids such as `cursorUp` or `expandTools` are m
 
 After editing `keybindings.json`, run `/reload` in Atomic to apply the changes without restarting the session.
 
+For editor completion of every action id and validation of key syntax, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` to `keybindings.json`. Atomic ignores `$schema` when it loads your bindings.
+
 ## Workflow widget scrolling
 
 `app.workflows.scrollUp` defaults to `["alt+k", "alt+pageUp"]`; `app.workflows.scrollDown` defaults to `["alt+j", "alt+pageDown"]`. These scroll the main-chat workflow list without leaving the editor. Any other configured editor binding takes precedence, including the Vim Alt+J/K cursor bindings. Alt+Up remains available for queued messages.

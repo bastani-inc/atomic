@@ -52,7 +52,7 @@ for (const path of paths) {
 	test(`fallback ${path} preserves unrelated compat permissiveness and Atomic fields`, async () => {
 		const extraCompat = {
 			futureExtension: { value: null },
-			supportsStore: "still accepted by another union branch",
+			supportsStore: true,
 			vllmPriority: -1,
 			enforcesPreservedThinkingBinding: true,
 		};

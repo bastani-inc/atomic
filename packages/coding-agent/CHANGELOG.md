@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Moved the published theme JSON Schema to `schemas/theme.schema.json` and made theme loading reject unknown top-level properties and unknown properties under `colors`, `workingIndicator`, or `export`. Update existing theme `$schema` references to `https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json`, define reusable custom colors under `vars`, and remove unsupported metadata.
+
+### Added
+
+- Added JSON Schemas for `settings.json`, `keybindings.json`, `models.json`, and theme files, published in the package's `schemas/` directory. Add `$schema` to a file for editor completion and validation; Atomic ignores `$schema` in `keybindings.json` instead of treating it as an action. See [Settings](docs/settings.md), [Keybindings](docs/keybindings.md), [Custom models](docs/models.md), and [Themes](docs/themes.md).
+
+### Changed
+
+- `models.json` now checks the type of every `compat` field, including `thinkingTokenBudgetField`, `zaiToolStream`, and `delegatesThinkingModelBinding`, which were previously accepted unchecked, and rejects non-positive `contextWindow` and `maxTokens` values in `modelOverrides`.
+
 ### Fixed
 
 - Fixed Mistral streams being aborted mid-generation (e.g. during long thinking) after the request timeout; the timeout now applies only to waiting for response headers ([#10609](https://github.com/earendil-works/pi/issues/10609))

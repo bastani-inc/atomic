@@ -80,7 +80,7 @@ vim ~/.atomic/agent/themes/my-theme.json
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json",
   "name": "my-theme",
   "vars": {
     "primary": "#00aaff",
@@ -146,6 +146,8 @@ vim ~/.atomic/agent/themes/my-theme.json
 3. Select the theme via `/settings`.
 
 Atomic automatically reloads the active custom theme when you edit its file, so you can see changes immediately.
+
+Theme files are strict. Atomic accepts only the documented top-level fields and color tokens; custom keys under `colors`, `workingIndicator`, or `export` and extra top-level metadata make the theme invalid. Define reusable custom colors under `vars`. The [theme JSON schema](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/schemas/theme.schema.json) lists every accepted property, the required colors, and the accepted value types. Atomic reports invalid theme files during startup and `/reload`.
 
 ## Theme Format
 

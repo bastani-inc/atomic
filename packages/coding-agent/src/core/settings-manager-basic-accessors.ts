@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model, normalizeProviderId } from "@bastani/pi-ai";
+import { type Model, normalizeProviderId } from "@bastani/pi-ai";
 import { normalizePath } from "../utils/paths.ts";
-import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import { resolveDefaultTools } from "./settings-merge.js";
@@ -49,7 +50,13 @@ function resolveCompactionSetting(
 			`Invalid compaction.modelOverrides["${modelKey}"].${field} setting: ${String(override)}. Expected a non-negative safe integer.`,
 		);
 	}
-	return override ?? ordinary ?? (field === "reserveTokens" ? 16384 : 2);
+	return (
+		override ??
+		ordinary ??
+		(field === "reserveTokens"
+			? SETTINGS_DEFAULTS.compaction.reserveTokens
+			: SETTINGS_DEFAULTS.compaction.preserve_recent)
+	);
 }
 
 interface SettingsManagerBasicAccessors {
@@ -140,7 +147,7 @@ declare module "./settings-manager-core.ts" {
 const basicAccessors: SettingsManagerBasicAccessors = {
 	getCacheWarmingMode() {
 		const mode = settingsInternals(this).globalSettings.cacheWarming;
-		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : "streaming";
+		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : SETTINGS_DEFAULTS.cacheWarming;
 	},
 	setCacheWarmingMode(mode) {
 		const state = settingsInternals(this);
@@ -196,7 +203,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getRouterModel() {
 		const value = settingsInternals(this).settings.routerModel;
-		if (value === undefined) return "";
+		if (value === undefined) return SETTINGS_DEFAULTS.routerModel;
 		if (typeof value !== "string" || value.trim() !== value) {
 			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
 		}
@@ -289,7 +296,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getSteeringMode() {
-		return settingsInternals(this).settings.steeringMode || "one-at-a-time";
+		return settingsInternals(this).settings.steeringMode || SETTINGS_DEFAULTS.steeringMode;
 	},
 
 	setSteeringMode(mode) {
@@ -300,7 +307,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getFollowUpMode() {
-		return settingsInternals(this).settings.followUpMode || "one-at-a-time";
+		return settingsInternals(this).settings.followUpMode || SETTINGS_DEFAULTS.followUpMode;
 	},
 
 	setFollowUpMode(mode) {
@@ -358,7 +365,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getShowCacheMissNotices() {
-		return settingsInternals(this).settings.showCacheMissNotices ?? false;
+		return settingsInternals(this).settings.showCacheMissNotices ?? SETTINGS_DEFAULTS.showCacheMissNotices;
 	},
 
 	setShowCacheMissNotices(enabled) {
@@ -417,7 +424,9 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 	getCodemodeInlineBudget() {
 		const budget = settingsInternals(this).settings.codemode?.inlineBudget;
-		return typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? Math.floor(budget) : 3000;
+		return typeof budget === "number" && Number.isFinite(budget) && budget >= 0
+			? Math.floor(budget)
+			: SETTINGS_DEFAULTS.codemode.inlineBudget;
 	},
 
 	getDefaultTools() {
@@ -439,7 +448,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getTransport() {
-		return settingsInternals(this).settings.transport ?? "auto";
+		return settingsInternals(this).settings.transport ?? SETTINGS_DEFAULTS.transport;
 	},
 
 	setTransport(transport) {
@@ -450,7 +459,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getCompactionEnabled() {
-		return settingsInternals(this).settings.compaction?.enabled ?? true;
+		return settingsInternals(this).settings.compaction?.enabled ?? SETTINGS_DEFAULTS.compaction.enabled;
 	},
 
 	setCompactionEnabled(enabled) {
@@ -469,7 +478,9 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getCompactionCompressionRatio() {
 		const value = settingsInternals(this).settings.compaction?.compression_ratio;
-		return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : 0.5;
+		return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1
+			? value
+			: SETTINGS_DEFAULTS.compaction.compression_ratio;
 	},
 
 	getCompactionPreserveRecent(model) {
@@ -494,23 +505,26 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getBranchSummarySettings() {
 		return {
-			reserveTokens: settingsInternals(this).settings.branchSummary?.reserveTokens ?? 16384,
-			skipPrompt: settingsInternals(this).settings.branchSummary?.skipPrompt ?? false,
+			reserveTokens:
+				settingsInternals(this).settings.branchSummary?.reserveTokens ??
+				SETTINGS_DEFAULTS.branchSummary.reserveTokens,
+			skipPrompt:
+				settingsInternals(this).settings.branchSummary?.skipPrompt ?? SETTINGS_DEFAULTS.branchSummary.skipPrompt,
 		};
 	},
 
 	getBranchSummarySkipPrompt() {
-		return settingsInternals(this).settings.branchSummary?.skipPrompt ?? false;
+		return settingsInternals(this).settings.branchSummary?.skipPrompt ?? SETTINGS_DEFAULTS.branchSummary.skipPrompt;
 	},
 
 	getSessionSummarySettings() {
 		return {
-			enabled: settingsInternals(this).settings.sessionSummary?.enabled ?? true,
+			enabled: settingsInternals(this).settings.sessionSummary?.enabled ?? SETTINGS_DEFAULTS.sessionSummary.enabled,
 		};
 	},
 
 	getRetryEnabled() {
-		return settingsInternals(this).settings.retry?.enabled ?? true;
+		return settingsInternals(this).settings.retry?.enabled ?? SETTINGS_DEFAULTS.retry.enabled;
 	},
 
 	setRetryEnabled(enabled) {
@@ -526,9 +540,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	getRetrySettings() {
 		return {
 			enabled: this.getRetryEnabled(),
-			maxRetries: settingsInternals(this).settings.retry?.maxRetries ?? 3,
-			baseDelayMs: settingsInternals(this).settings.retry?.baseDelayMs ?? 2000,
-			maxAgentDelayMs: settingsInternals(this).settings.retry?.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
+			maxRetries: settingsInternals(this).settings.retry?.maxRetries ?? SETTINGS_DEFAULTS.retry.maxRetries,
+			baseDelayMs: settingsInternals(this).settings.retry?.baseDelayMs ?? SETTINGS_DEFAULTS.retry.baseDelayMs,
+			maxAgentDelayMs:
+				settingsInternals(this).settings.retry?.maxAgentDelayMs ?? SETTINGS_DEFAULTS.retry.maxAgentDelayMs,
 		};
 	},
 
@@ -552,7 +567,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		if (value !== undefined) {
 			throw new Error(`Invalid httpIdleTimeoutMs setting: ${String(value)}`);
 		}
-		return DEFAULT_HTTP_IDLE_TIMEOUT_MS;
+		return SETTINGS_DEFAULTS.httpIdleTimeoutMs;
 	},
 
 	setHttpIdleTimeoutMs(timeoutMs) {
@@ -594,7 +609,9 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return {
 			timeoutMs: settingsInternals(this).settings.retry?.provider?.timeoutMs,
 			maxRetries: settingsInternals(this).settings.retry?.provider?.maxRetries,
-			maxRetryDelayMs: settingsInternals(this).settings.retry?.provider?.maxRetryDelayMs ?? 60000,
+			maxRetryDelayMs:
+				settingsInternals(this).settings.retry?.provider?.maxRetryDelayMs ??
+				SETTINGS_DEFAULTS.retry.provider.maxRetryDelayMs,
 		};
 	},
 };

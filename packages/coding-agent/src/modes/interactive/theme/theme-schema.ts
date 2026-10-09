@@ -1,98 +1,95 @@
-import { type Static, Type } from "typebox";
+import { type Static, type TProperties, Type } from "typebox";
 import { Compile } from "typebox/compile";
+import { THEME_TOKENS, type ThemeColorValues, type ThemeTokenDescriptors } from "./theme-tokens.ts";
 
-export const ColorValueSchema = Type.Union([
-	Type.String(), // hex "#ff0000", okhsl(H S L), var ref "primary", or empty ""
-	Type.Integer({ minimum: 0, maximum: 255 }), // 256-color index
-]);
+function colorValue(description?: string) {
+	return Type.Union(
+		[
+			Type.String({
+				description:
+					"Hex color (#RRGGBB), OKHSL color (okhsl(H S L)), variable reference, or empty string for terminal default",
+			}),
+			Type.Integer({
+				minimum: 0,
+				maximum: 255,
+				description: "256-color palette index (0-255)",
+			}),
+		],
+		description ? { description } : {},
+	);
+}
+
+export const ColorValueSchema = colorValue();
 
 export type ColorValue = Static<typeof ColorValueSchema>;
 
-export const ThemeJsonSchema = Type.Object({
-	$schema: Type.Optional(Type.String()),
-	name: Type.String(),
-	vars: Type.Optional(Type.Record(Type.String(), ColorValueSchema)),
-	colors: Type.Object({
-		// Core UI (10 colors)
-		accent: ColorValueSchema,
-		border: ColorValueSchema,
-		borderAccent: ColorValueSchema,
-		borderMuted: ColorValueSchema,
-		success: ColorValueSchema,
-		error: ColorValueSchema,
-		warning: ColorValueSchema,
-		muted: ColorValueSchema,
-		dim: ColorValueSchema,
-		text: ColorValueSchema,
-		thinkingText: ColorValueSchema,
-		// Backgrounds & Content Text (11 required, 3 optional)
-		selectedBg: ColorValueSchema,
-		scrollbarThumb: Type.Optional(ColorValueSchema),
-		searchMatchBg: Type.Optional(ColorValueSchema),
-		searchMatchText: Type.Optional(ColorValueSchema),
-		userMessageBg: ColorValueSchema,
-		userMessageText: ColorValueSchema,
-		customMessageBg: ColorValueSchema,
-		customMessageText: ColorValueSchema,
-		customMessageLabel: ColorValueSchema,
-		toolPendingBg: ColorValueSchema,
-		toolSuccessBg: ColorValueSchema,
-		toolErrorBg: ColorValueSchema,
-		toolTitle: ColorValueSchema,
-		toolOutput: ColorValueSchema,
-		// Markdown (10 colors)
-		mdHeading: ColorValueSchema,
-		mdLink: ColorValueSchema,
-		mdLinkUrl: ColorValueSchema,
-		mdCode: ColorValueSchema,
-		mdCodeBlock: ColorValueSchema,
-		mdCodeBlockBorder: ColorValueSchema,
-		mdQuote: ColorValueSchema,
-		mdQuoteBorder: ColorValueSchema,
-		mdHr: ColorValueSchema,
-		mdListBullet: ColorValueSchema,
-		// Tool Diffs (3 colors)
-		toolDiffAdded: ColorValueSchema,
-		toolDiffRemoved: ColorValueSchema,
-		toolDiffContext: ColorValueSchema,
-		// Syntax Highlighting (9 colors)
-		syntaxComment: ColorValueSchema,
-		syntaxKeyword: ColorValueSchema,
-		syntaxFunction: ColorValueSchema,
-		syntaxVariable: ColorValueSchema,
-		syntaxString: ColorValueSchema,
-		syntaxNumber: ColorValueSchema,
-		syntaxType: ColorValueSchema,
-		syntaxOperator: ColorValueSchema,
-		syntaxPunctuation: ColorValueSchema,
-		// Thinking Level Borders (6 colors)
-		thinkingOff: ColorValueSchema,
-		thinkingMinimal: ColorValueSchema,
-		thinkingLow: ColorValueSchema,
-		thinkingMedium: ColorValueSchema,
-		thinkingHigh: ColorValueSchema,
-		thinkingXhigh: ColorValueSchema,
-		// Bash Mode (1 color)
-		bashMode: ColorValueSchema,
+function themeTokenProperties(tokens: ThemeTokenDescriptors): TProperties {
+	const properties: TProperties = {};
+	for (const [name, descriptor] of Object.entries(tokens)) {
+		const schema = colorValue(descriptor.description);
+		properties[name] = descriptor.fallback === undefined ? schema : Type.Optional(schema);
+	}
+	return properties;
+}
+
+const ThemeColorsSchema = Type.Unsafe<ThemeColorValues<ColorValue>>(
+	Type.Object(themeTokenProperties(THEME_TOKENS), {
+		description:
+			"Theme color definitions (scrollbarThumb and the search highlight colors are optional and fall back to compatible colors)",
+		additionalProperties: false,
 	}),
-	workingIndicator: Type.Optional(
-		Type.Object({
-			dark: Type.Optional(ColorValueSchema),
-			lift: Type.Optional(ColorValueSchema),
-			muted: Type.Optional(ColorValueSchema),
-			accent: Type.Optional(ColorValueSchema),
-			bright: Type.Optional(ColorValueSchema),
-			peak: Type.Optional(ColorValueSchema),
+);
+
+export const ThemeJsonSchema = Type.Object(
+	{
+		$schema: Type.Optional(Type.String({ description: "JSON schema reference" })),
+		name: Type.String({
+			pattern: "^[^/]+$",
+			description:
+				"Theme name. Must not contain '/' because it is reserved for automatic light/dark theme settings.",
 		}),
-	),
-	export: Type.Optional(
-		Type.Object({
-			pageBg: Type.Optional(ColorValueSchema),
-			cardBg: Type.Optional(ColorValueSchema),
-			infoBg: Type.Optional(ColorValueSchema),
-		}),
-	),
-});
+		vars: Type.Optional(
+			Type.Record(Type.String(), ColorValueSchema, {
+				description: "Reusable color variables",
+			}),
+		),
+		colors: ThemeColorsSchema,
+		workingIndicator: Type.Optional(
+			Type.Object(
+				{
+					dark: Type.Optional(ColorValueSchema),
+					lift: Type.Optional(ColorValueSchema),
+					muted: Type.Optional(ColorValueSchema),
+					accent: Type.Optional(ColorValueSchema),
+					bright: Type.Optional(ColorValueSchema),
+					peak: Type.Optional(ColorValueSchema),
+				},
+				{
+					description: "Optional partial six-tone palette for Atomic's ordinary working identity",
+					additionalProperties: false,
+				},
+			),
+		),
+		export: Type.Optional(
+			Type.Object(
+				{
+					pageBg: Type.Optional(colorValue("Page background color")),
+					cardBg: Type.Optional(colorValue("Card/container background color")),
+					infoBg: Type.Optional(colorValue("Info sections background (system prompt, notices)")),
+				},
+				{
+					description: "Optional colors for HTML export (defaults derived from userMessageBg if not specified)",
+					additionalProperties: false,
+				},
+			),
+		),
+	},
+	{
+		title: "Atomic Coding Agent Theme",
+		description: "Theme schema for the Atomic coding agent",
+		additionalProperties: false,
+	},
+);
 
 export type ThemeJson = Static<typeof ThemeJsonSchema>;
 

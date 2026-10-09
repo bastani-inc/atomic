@@ -1,73 +1,15 @@
 import chalk from "chalk";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { bgAnsi, type ColorMode, fgAnsi } from "./color-utils.ts";
+import {
+	splitThemeColors,
+	type ThemeBg,
+	type ThemeColor,
+	type ThemeColorValues,
+	withThemeTokenFallbacks,
+} from "./theme-tokens.ts";
 
-export type ThemeColor =
-	| "accent"
-	| "border"
-	| "borderAccent"
-	| "borderMuted"
-	| "success"
-	| "error"
-	| "warning"
-	| "muted"
-	| "dim"
-	| "text"
-	| "thinkingText"
-	| "searchMatchText"
-	| "userMessageText"
-	| "customMessageText"
-	| "customMessageLabel"
-	| "toolTitle"
-	| "toolOutput"
-	| "mdHeading"
-	| "mdLink"
-	| "mdLinkUrl"
-	| "mdCode"
-	| "mdCodeBlock"
-	| "mdCodeBlockBorder"
-	| "mdQuote"
-	| "mdQuoteBorder"
-	| "mdHr"
-	| "mdListBullet"
-	| "toolDiffAdded"
-	| "toolDiffRemoved"
-	| "toolDiffContext"
-	| "syntaxComment"
-	| "syntaxKeyword"
-	| "syntaxFunction"
-	| "syntaxVariable"
-	| "syntaxString"
-	| "syntaxNumber"
-	| "syntaxType"
-	| "syntaxOperator"
-	| "syntaxPunctuation"
-	| "thinkingOff"
-	| "thinkingMinimal"
-	| "thinkingLow"
-	| "thinkingMedium"
-	| "thinkingHigh"
-	| "thinkingXhigh"
-	| "bashMode";
-
-export type ThemeBg =
-	| "selectedBg"
-	| "scrollbarThumb"
-	| "searchMatchBg"
-	| "userMessageBg"
-	| "customMessageBg"
-	| "toolPendingBg"
-	| "toolSuccessBg"
-	| "toolErrorBg";
-
-/**
- * Colors a theme may omit. Each one resolves from a color every theme already
- * defines, so a theme written before the token existed keeps validating and
- * keeps rendering: `searchMatchText` falls back to `text` and `searchMatchBg`
- * to `selectedBg`.
- */
-type OptionalThemeColor = "searchMatchText";
-type OptionalThemeBg = "scrollbarThumb" | "searchMatchBg";
+export type { ThemeBg, ThemeColor } from "./theme-tokens.ts";
 
 export type WorkingIndicatorTone = "dark" | "lift" | "muted" | "accent" | "bright" | "peak";
 
@@ -81,10 +23,8 @@ export class Theme {
 	private workingIndicatorColors: Map<WorkingIndicatorTone, string>;
 
 	constructor(
-		fgColors: Record<Exclude<ThemeColor, OptionalThemeColor>, string | number> &
-			Partial<Record<OptionalThemeColor, string | number>>,
-		bgColors: Record<Exclude<ThemeBg, OptionalThemeBg>, string | number> &
-			Partial<Record<OptionalThemeBg, string | number>>,
+		fgColors: Pick<ThemeColorValues<string | number>, ThemeColor>,
+		bgColors: Pick<ThemeColorValues<string | number>, ThemeBg>,
 		mode: ColorMode,
 		options: {
 			name?: string;
@@ -98,20 +38,14 @@ export class Theme {
 		this.sourcePath = options.sourcePath;
 		this.sourceInfo = options.sourceInfo;
 		this.mode = mode;
+		const { fgColors: foregrounds, bgColors: backgrounds } = splitThemeColors(
+			withThemeTokenFallbacks({ ...fgColors, ...bgColors }),
+		);
 		this.fgColors = new Map();
-		const foregrounds = {
-			...fgColors,
-			searchMatchText: fgColors.searchMatchText ?? fgColors.text,
-		};
 		for (const [key, value] of Object.entries(foregrounds) as [ThemeColor, string | number][]) {
 			this.fgColors.set(key, `${options.dim?.includes(key) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
 		}
 		this.bgColors = new Map();
-		const backgrounds = {
-			...bgColors,
-			scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
-			searchMatchBg: bgColors.searchMatchBg ?? bgColors.selectedBg,
-		};
 		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
 			this.bgColors.set(key, bgAnsi(value, mode));
 		}

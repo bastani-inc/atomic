@@ -9,6 +9,7 @@ import {
 	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
+import { SETTINGS_DEFAULTS } from "../../../core/settings-defaults.ts";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
 import {
 	getSelectListTheme,
@@ -43,7 +44,8 @@ export class WarningSettingsSubmenu extends Container {
 				id: "anthropic-extra-usage",
 				label: "Anthropic extra usage",
 				description: "Warn when Anthropic subscription auth may use paid extra usage",
-				currentValue: (this.state.anthropicExtraUsage ?? true) ? "true" : "false",
+				currentValue:
+					(this.state.anthropicExtraUsage ?? SETTINGS_DEFAULTS.warnings.anthropicExtraUsage) ? "true" : "false",
 				values: ["true", "false"],
 			},
 		];

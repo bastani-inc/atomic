@@ -9,7 +9,7 @@ description: Theme file format, every color token, and accepted color values.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json",
   "name": "my-theme",
   "vars": {
     "blue": "#0066cc",
@@ -40,7 +40,7 @@ description: Theme file format, every color token, and accepted color values.
   - When an index from 0 through 15 seeds an omitted tone, Atomic mixes from its built-in approximation of the common ANSI RGB value. The terminal still controls the explicit index's actual appearance.
   - Both explicit and derived tones update on theme hot reload.
 
-The `$schema` field enables editor auto-completion and validation.
+The `$schema` field enables editor auto-completion and validation against the [theme JSON schema](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/schemas/theme.schema.json). Atomic itself rejects theme files with unknown top-level fields or unknown properties under `colors`, `workingIndicator`, or `export`; define reusable custom colors under `vars` instead.
 
 ## Color Tokens
 
