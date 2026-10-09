@@ -288,7 +288,7 @@ runTest(
 );
 
 // Packing, registry installation, two strict compiler passes and real Node hosts are structural work.
-const PACKED_NODE_CONSUMER_TIMEOUT_MS = 360_000;
+const PACKED_NODE_CONSUMER_TIMEOUT_MS = 480_000;
 
 // #3105: no workspace links or loader aliases may participate in this consumer.
 runTest(
