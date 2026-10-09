@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- Fixed Mistral streams being aborted mid-generation (e.g. during long thinking) after the request timeout; the timeout now applies only to waiting for response headers ([#10609](https://github.com/earendil-works/pi/issues/10609))
+- Fixed Mistral streams being aborted mid-generation (e.g. during long thinking) after the request timeout; the timeout now applies only to waiting for response headers and to reading an error response, and cancelling a request also stops a stalled error response ([#10609](https://github.com/earendil-works/pi/issues/10609))
 - Fixed compaction failing with `Invalid compactionModel: project settings may not select morph/*.` when a trusted project's `.atomic/settings.json` sets `compactionModel` to `morph/morph-compactor`. Project settings can now select Morph like any other compaction model, and the project compaction picker lists it.
 
 ## [0.9.29] - 2026-10-09

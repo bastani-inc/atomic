@@ -341,7 +341,7 @@ async function requestMistralStream(
 	await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 
 	if (!response.ok) {
-		const body = await response.text();
+		const body = await readMistralErrorBody(response, requestSignal, timeoutMs);
 		throw new MistralHttpError(response.status, body, response.statusText);
 	}
 	if (!response.body) {
@@ -349,6 +349,37 @@ async function requestMistralStream(
 	}
 
 	return readMistralEvents(response.body, requestSignal);
+}
+
+async function readMistralErrorBody(
+	response: Response,
+	requestSignal: AbortSignal | undefined,
+	timeoutMs: number,
+): Promise<string> {
+	if (!response.body) return "";
+	const bodyTimeoutSignal = AbortSignal.timeout(timeoutMs);
+	const combinedSignal = combineAbortSignals([requestSignal, bodyTimeoutSignal]);
+	const reader = response.body.getReader();
+	const onAbort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	combinedSignal.signal?.addEventListener("abort", onAbort, { once: true });
+	const decoder = new TextDecoder();
+	let text = "";
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (combinedSignal.signal?.aborted) break;
+			if (done) return text + decoder.decode();
+			text += decoder.decode(value, { stream: true });
+		}
+		if (requestSignal?.aborted) throw requestSignal.reason;
+		return `Mistral error response body timed out after ${timeoutMs}ms`;
+	} finally {
+		combinedSignal.signal?.removeEventListener("abort", onAbort);
+		combinedSignal.cleanup();
+		void reader.cancel().catch(() => {});
+	}
 }
 
 class MistralHttpError extends Error {

@@ -539,4 +539,39 @@ describe("Mistral HTTP transport", () => {
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toBe('Mistral API error (403): {"message":"blocked by gateway"}');
 	});
+
+	it("aborts while reading a stalled error response body", async () => {
+		const model = getModel("mistral", "mistral-large-latest");
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		});
+		const controller = new AbortController();
+		const fetch: FetchFunction = async () => {
+			setTimeout(() => controller.abort(), 5);
+			return new Response(new ReadableStream({ start() {} }), { status: 503, statusText: "Service Unavailable" });
+		};
+
+		const message = await streamMistral(model, context, {
+			apiKey: "test",
+			fetch,
+			signal: controller.signal,
+			timeoutMs: 60_000,
+		}).result();
+
+		expect(message.stopReason).toBe("aborted");
+	});
+
+	it("applies the request timeout while reading an error response body", async () => {
+		const model = getModel("mistral", "mistral-large-latest");
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		});
+		const fetch: FetchFunction = async () =>
+			new Response(new ReadableStream({ start() {} }), { status: 503, statusText: "Service Unavailable" });
+
+		const message = await streamMistral(model, context, { apiKey: "test", fetch, timeoutMs: 5 }).result();
+
+		expect(message.stopReason).toBe("error");
+		expect(message.errorMessage).toBe("Mistral API error (503): Mistral error response body timed out after 5ms");
+	});
 });
