@@ -104,6 +104,7 @@ import {
 import type { MainOptions } from "./main-types.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
@@ -766,7 +767,11 @@ export async function main(argv: string[], options?: MainOptions) {
 						throw error;
 					}));
 			}
-			if (deferInteractiveEngineResources && !services.completeStartup && !created.session.model) {
+			if (
+				deferInteractiveEngineResources &&
+				!services.completeStartup &&
+				(!created.session.model || isUnknownModel(created.session.model))
+			) {
 				await created.session.dispose();
 				forceEagerInteractiveEngineResources = true;
 				return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
