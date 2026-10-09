@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.30] - 2026-10-09
+
+### Breaking Changes
+
+- Moved the published theme JSON Schema to `schemas/theme.schema.json` and made theme loading reject unknown top-level properties and unknown properties under `colors`, `workingIndicator`, or `export`. Update existing theme `$schema` references to `https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json`, define reusable custom colors under `vars`, and remove unsupported metadata.
+
+### Added
+
+- Added JSON Schemas for `settings.json`, `keybindings.json`, `models.json`, and theme files, published in the package's `schemas/` directory. Add `$schema` to a file for editor completion and validation; Atomic ignores `$schema` in `keybindings.json` instead of treating it as an action. See [Settings](docs/settings.md), [Keybindings](docs/keybindings.md), [Custom models](docs/models.md), and [Themes](docs/themes.md).
+
+### Changed
+
+- `models.json` now checks the type of every `compat` field, including `thinkingTokenBudgetField`, `zaiToolStream`, and `delegatesThinkingModelBinding`, which were previously accepted unchecked, and rejects non-positive `contextWindow` and `maxTokens` values in `modelOverrides`.
+
+### Fixed
+
+- Fixed Mistral streams being aborted mid-generation (e.g. during long thinking) after the request timeout; the timeout now applies only to waiting for response headers and to reading an error response, and cancelling a request also stops a stalled error response ([#10609](https://github.com/earendil-works/pi/issues/10609))
+- Fixed compaction failing with `Invalid compactionModel: project settings may not select morph/*.` when a trusted project's `.atomic/settings.json` sets `compactionModel` to `morph/morph-compactor`. Project settings can now select Morph like any other compaction model, and the project compaction picker lists it.
+- Updated the `music-metadata` dependency used for audio file conversion to 11.16.1, resolving the crafted-file denial-of-service advisories [GHSA-f94x-6692-553q](https://github.com/advisories/GHSA-f94x-6692-553q), [GHSA-5gfj-9q3v-qfp3](https://github.com/advisories/GHSA-5gfj-9q3v-qfp3), and [GHSA-8j4c-6x6g-rq3j](https://github.com/advisories/GHSA-8j4c-6x6g-rq3j).
+- Updated the native module's `anyhow` (1.0.104) and `crossbeam-epoch` (0.9.21) crates, resolving [RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190) and [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204).
+- Fixed no project context file loading in a git worktree nested inside its main repo when the worktree's `AGENTS.md` is a symlink to the main repo's copy ([#10681](https://github.com/earendil-works/pi/issues/10681))
+
 ## [0.9.30-alpha.2] - 2026-10-09
 
 ### Fixed
