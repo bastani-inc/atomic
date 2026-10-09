@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed compaction failing with `Invalid compactionModel: project settings may not select morph/*.` when a trusted project's `.atomic/settings.json` sets `compactionModel` to `morph/morph-compactor`. Project settings can now select Morph like any other compaction model, and the project compaction picker lists it.
+
 ## [0.9.29] - 2026-10-09
 
 ### Added

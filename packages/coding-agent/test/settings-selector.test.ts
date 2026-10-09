@@ -356,21 +356,19 @@ test("compaction picker selects chat, classifier and Morph models without changi
 	assert.equal(config.availableDefaultModels?.[0].id, "chat");
 });
 
-test("project compaction picker excludes Morph even from chat catalogs and configured IDs (#3470)", () => {
+test("project compaction picker offers Morph and keeps a configured Morph selection", () => {
 	const config = settingsConfig({
 		compactionModelScope: "project",
 		compactionModel: "morph/morph-compactor",
-		availableDefaultModels: [
-			{ provider: "morph", id: "chat", name: "Morph chat" },
-		] as SettingsConfig["availableDefaultModels"],
 		availableCompactorModels: [{ type: "compactor", provider: "morph", id: "morph-compactor", name: "Morph" }],
 	});
 	const selected: string[] = [];
 	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
-	assert.ok(render(menu).includes("project settings"));
-	assert.ok(!render(menu).includes("morph/"));
+	const output = render(menu);
+	assert.ok(output.includes("project settings"));
+	assert.ok(output.includes("morph/morph-compactor"));
 	menu.handleInput?.("\r");
-	assert.deepEqual(selected, [""]);
+	assert.deepEqual(selected, ["morph/morph-compactor"]);
 });
 
 test("compaction picker persists global and project selections and Auto without changing chat settings (#3470)", async () => {
