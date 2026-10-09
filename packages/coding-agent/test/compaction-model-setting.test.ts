@@ -15,13 +15,14 @@ test("persists compactionModel independently at global and project scope (#3470)
 	assert.equal(settings.getCompactionModel(), "openai/gpt-5");
 });
 
-test("rejects project Morph compaction selections on write and load (#3470)", () => {
+test("accepts project Morph compaction selections on write and load", async () => {
 	const settings = SettingsManager.inMemory();
-	assert.throws(() => settings.setCompactionModel("morph/morph-compactor", "project"), /compactionModel/);
-	settings.setCompactionModel("morph/morph-compactor");
+	settings.setCompactionModel("morph/morph-compactor", "project");
+	await settings.flush();
 	assert.equal(settings.getCompactionModel(), "morph/morph-compactor");
 	const storage = new InMemorySettingsStorage();
 	storage.withLock("project", () => JSON.stringify({ compactionModel: "morph/morph-compactor" }));
-	assert.throws(() => SettingsManager.fromStorage(storage).getCompactionModel(), /compactionModel/);
+	assert.equal(SettingsManager.fromStorage(storage).getCompactionModel(), "morph/morph-compactor");
+	assert.equal(SettingsManager.fromStorage(storage, { projectTrusted: false }).getCompactionModel(), "");
 	assert.throws(() => settings.setCompactionModel(" auto"), /compactionModel/);
 });

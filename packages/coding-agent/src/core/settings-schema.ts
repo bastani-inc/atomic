@@ -385,7 +385,7 @@ export const SettingsSchema = Type.Object(
 		compactionModel: Type.Optional(
 			Type.String({
 				description:
-					'Compaction model: "auto" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor. Project settings may not select morph/*.',
+					'Compaction model: "auto" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor.',
 			}),
 		),
 		modelRouting: Type.Optional(ModelRoutingSettingsSchema),

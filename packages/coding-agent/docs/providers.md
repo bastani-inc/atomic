@@ -626,7 +626,7 @@ Use `/login morph` to save a Morph API key under `morph` in `~/.atomic/agent/aut
 
 Then choose `morph/morph-compactor` through `/settings` → **Compaction model**, or set `"compactionModel": "morph/morph-compactor"` in global settings. Without credentials, the selector marks it as `requires /login morph`. Morph receives the compactable transcript, including serialized thinking; the preserved recent tail is not sent. Atomic retains the original surviving lines and enforces `<keepContext>` protection. Choose Morph only if it is permitted to receive your transcript.
 
-Morph is a compactor, not a chat model. It does not appear in `/model` or automatic model routing. Project settings cannot select `morph/*`. Missing credentials, HTTP errors, policy refusals, or unusable results advance directly to your configured fallback models without a Morph summary request. `/logout morph` removes the saved credential; an environment key remains active until you unset it. See [Compaction model](/compaction#compaction-model).
+Morph is a compactor, not a chat model. It does not appear in `/model` or automatic model routing. Missing credentials, HTTP errors, policy refusals, or unusable results advance directly to your configured fallback models without a Morph summary request. `/logout morph` removes the saved credential; an environment key remains active until you unset it. See [Compaction model](/compaction#compaction-model).
 
 ## Custom Providers
 
