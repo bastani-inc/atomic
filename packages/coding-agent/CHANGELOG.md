@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.30-alpha.2] - 2026-10-09
+
 ### Fixed
 
 - Updated the `music-metadata` dependency used for audio file conversion to 11.16.1, resolving the crafted-file denial-of-service advisories [GHSA-f94x-6692-553q](https://github.com/advisories/GHSA-f94x-6692-553q), [GHSA-5gfj-9q3v-qfp3](https://github.com/advisories/GHSA-5gfj-9q3v-qfp3), and [GHSA-8j4c-6x6g-rq3j](https://github.com/advisories/GHSA-8j4c-6x6g-rq3j).
