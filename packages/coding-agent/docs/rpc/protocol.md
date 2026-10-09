@@ -643,6 +643,67 @@ Response:
 
 `latestAssistantUsage` is the usage reported by the newest assistant message, including an aborted or failed one; the interactive footer reads its cache-hit rate from it. It is omitted until the session has an assistant message.
 
+#### get_tools
+
+Explain which tools are active, which are not and why, and which selected tool names nothing registered.
+
+```json
+{"type": "get_tools"}
+```
+
+Response, shortened to three tools, for `"defaultTools": ["+codemode", "+tool-search"]`:
+```json
+{
+  "type": "response",
+  "command": "get_tools",
+  "success": true,
+  "data": {
+    "selection": {
+      "source": "default-tools-setting",
+      "description": "the defaultTools setting",
+      "names": ["read", "bash", "kill", "edit", "write", "find", "search", "ask_user_question", "todo", "codemode", "tool-search"],
+      "modifiers": []
+    },
+    "tools": [
+      {
+        "name": "read",
+        "active": true,
+        "exposure": "direct",
+        "source": "built-in",
+        "sourcePath": "<builtin:read>",
+        "summary": "Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string."
+      },
+      {
+        "name": "codemode",
+        "active": true,
+        "exposure": "model-only",
+        "source": "built-in extension \"codemode\"",
+        "sourcePath": "builtin:codemode",
+        "summary": "Run JavaScript that composes tool calls in a fresh QuickJS worker sandbox."
+      },
+      {
+        "name": "tool_search",
+        "active": false,
+        "exposure": "model-only",
+        "source": "built-in extension \"tool-search\"",
+        "sourcePath": "builtin:tool-search",
+        "summary": "Search deferred tool metadata with BM25 and load matching tools for the next model call. Some tools may not have been provided upfront; use tool_search to discover currently registered tools.",
+        "inactiveReason": "opt-in; add \"+tool_search\" to defaultTools or --tools to enable it"
+      }
+    ],
+    "missing": [
+      {
+        "name": "tool-search",
+        "reason": "selected by the defaultTools setting, but no built-in, extension, SDK custom tool, or MCP server has registered a tool named \"tool-search\"; did you mean \"tool_search\"?"
+      }
+    ],
+    "excluded": []
+  }
+}
+```
+
+`selection.source` is one of `default-tools-setting`, `built-in-defaults`, `tools-allowlist`, `explicit-selection`, `no-built-in-tools`, or `no-tools`; `modifiers` lists `+name`/`-name` entries from `--tools`. `tools` lists active tools first. `excluded` lists selected names that `--exclude-tools` or a mode without user input removed. The command waits until extensions finish loading, so the report includes their tools. `RpcClient.getTools()` returns the same `data`.
+
 #### export_html
 
 Export session to an HTML file.

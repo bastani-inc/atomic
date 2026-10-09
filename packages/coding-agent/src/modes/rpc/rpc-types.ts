@@ -30,6 +30,7 @@ import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 // ============================================================================
@@ -121,6 +122,7 @@ export type RpcCommand =
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
+	| { id?: string; type: "get_tools" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string; cwdOverride?: string }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
@@ -344,6 +346,7 @@ export type RpcResponse =
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
+	| { id?: string; type: "response"; command: "get_tools"; success: true; data: ToolStatusReport }
 	| { id?: string; type: "response"; command: "import_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }

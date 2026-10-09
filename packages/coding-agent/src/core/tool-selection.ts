@@ -65,3 +65,34 @@ export function isToolActivatable(
 	if ((selection._subagentPolicy?.depth ?? 0) >= 1) return true;
 	return exposure !== "direct" && exposure !== "hidden" && hasToolSearch;
 }
+
+interface SelectedTools {
+	_usesDefaultTools: boolean;
+	_appliedDefaultTools: ReadonlySet<string>;
+	_allowedToolNames?: ReadonlySet<string>;
+	_initialActiveToolNames?: readonly string[];
+}
+
+/** Tool names the session's selection asked for, whether or not a tool with each name has registered yet. */
+export function selectedToolNames(selection: SelectedTools): ReadonlySet<string> {
+	if (selection._usesDefaultTools) return selection._appliedDefaultTools;
+	return new Set(selection._allowedToolNames ?? selection._initialActiveToolNames ?? []);
+}
+
+/**
+ * Default-active tools activate whenever they register. An opt-in tool (`defaultActive: false`)
+ * activates only on its first registration, and only when the selection names it, such as
+ * `defaultTools: ["+codemode"]` whose extension loads after the session starts. A reload keeps
+ * whatever activation the session has given an already registered opt-in tool since.
+ */
+export function activatesOnRegistration(
+	selection: SelectedTools,
+	name: string,
+	definition: { exposure?: string; defaultActive?: boolean } | undefined,
+	alreadyRegistered: boolean,
+): boolean {
+	const exposure = definition?.exposure ?? "direct";
+	if (exposure !== "direct" && exposure !== "model-only") return false;
+	if (definition?.defaultActive !== false) return true;
+	return !alreadyRegistered && selectedToolNames(selection).has(name);
+}

@@ -23,6 +23,7 @@ import type { ExtensionFactory } from "../../packages/coding-agent/src/core/exte
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { defaultBuiltinExtensions } from "../../packages/coding-agent/src/extensions/default-builtins.ts";
 import { keyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -99,8 +100,8 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 		});
 		assert.equal(
 			services.resourceLoader.getExtensions().extensions.length,
-			extensionFactory ? 6 : 5,
-			"#3105: service creation loads all five shipped builtins and explicit factories",
+			(extensionFactory ? 6 : 5) + defaultBuiltinExtensions.length,
+			"#3105: service creation loads all five shipped builtins, the inline builtins, and explicit factories",
 		);
 		return {
 			...(await createAgentSessionFromServices({

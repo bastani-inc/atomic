@@ -296,6 +296,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/tools") {
+				this.editor.setText("");
+				await this.handleToolsCommand();
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");

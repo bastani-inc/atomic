@@ -8,6 +8,7 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
 	RpcCommand,
@@ -198,6 +199,10 @@ export abstract class RpcClientApi {
 	}
 	async getSessionStats(): Promise<SessionStats> {
 		return this.data(await this.request({ type: "get_session_stats" }));
+	}
+	/** Which tools are active, which are not (and why), and which selected names nothing registered. */
+	async getTools(): Promise<ToolStatusReport> {
+		return this.data(await this.request({ type: "get_tools" }));
 	}
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {
 		return this.data(await this.request({ type: "export_html", outputPath }));

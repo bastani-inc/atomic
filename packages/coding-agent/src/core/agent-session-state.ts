@@ -13,6 +13,13 @@ import {
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
 import { applyToolLoadout, isToolDeclarationHidden } from "./tool-loadout.js";
+import { selectedToolNames } from "./tool-selection.ts";
+import {
+	buildToolStatusReport,
+	describeToolSelection,
+	type ToolSelectionSource,
+	type ToolStatusReport,
+} from "./tool-status.js";
 
 export function getActiveToolNames(this: AgentSession): string[] {
 	return this.agent.state.tools.map((t) => t.name);
@@ -44,6 +51,35 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 
 export function getToolDefinition(this: AgentSession, name: string): ToolDefinition | undefined {
 	return this._toolDefinitions.get(name)?.definition;
+}
+
+function toolSelectionSource(session: AgentSession): ToolSelectionSource {
+	if (session._usesDefaultTools) {
+		return session.settingsManager.getDefaultTools() === undefined ? "built-in-defaults" : "default-tools-setting";
+	}
+	if (session._allowedToolNames) return session._allowedToolNames.size === 0 ? "no-tools" : "tools-allowlist";
+	return (session._initialActiveToolNames?.length ?? 0) > 0 ? "explicit-selection" : "no-built-in-tools";
+}
+
+/**
+ * Explain every registered tool (active or not, and why), where the tool selection came from,
+ * and which selected names nothing registered. Format it with `formatToolStatus()`.
+ */
+export function getToolStatus(this: AgentSession): ToolStatusReport {
+	const source = toolSelectionSource(this);
+	const modifiers = [...this._defaultToolModifiers];
+	return buildToolStatusReport({
+		tools: [...this._toolDefinitions.values()],
+		activeToolNames: this.getActiveToolNames(),
+		selection: {
+			source,
+			description: describeToolSelection(source, modifiers),
+			names: [...selectedToolNames(this)],
+			modifiers,
+		},
+		isExcluded: this._excludedTools,
+		isAllowed: this._allowedTools,
+	});
 }
 
 /**
@@ -201,6 +237,7 @@ export const agentSessionStateMethods = {
 	getCallableToolNames,
 	getAllTools,
 	getToolDefinition,
+	getToolStatus,
 	setActiveToolsByName,
 	_setActiveTools,
 	setScopedModels,

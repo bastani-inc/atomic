@@ -213,6 +213,49 @@ const { session } = await createAgentSession({
 });
 ```
 
+#### Checking tool status
+
+`session.getToolStatus()` explains a session's tools: where the tool selection came from, every registered tool with its exposure, owner, and active state, why each inactive tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion when a name looks like a typo. `formatToolStatus()` renders the report as plain text.
+
+```typescript
+import { createAgentSession, formatToolStatus } from "@bastani/atomic";
+
+const { session } = await createAgentSession({ tools: ["+codemode"] });
+console.log(formatToolStatus(session.getToolStatus()));
+```
+
+```text
+Tool selection: Atomic's default tool set with +codemode
+  read, bash, kill, edit, write, find, search, ask_user_question, todo, codemode
+
+Active (17)
+  read                direct      built-in
+  bash                direct      built-in
+  kill                direct      built-in
+  edit                direct      built-in
+  write               direct      built-in
+  find                direct      built-in
+  search              direct      built-in
+  ask_user_question   model-only  built-in
+  todo                direct      built-in
+  workflow            model-only  bundled package "workflows"
+  subagent            model-only  bundled package "subagents"
+  web_search          direct      bundled package "web-access"
+  code_search         direct      bundled package "web-access"
+  fetch_content       direct      bundled package "web-access"
+  get_search_content  direct      bundled package "web-access"
+  intercom            model-only  bundled package "intercom"
+  codemode            model-only  built-in extension "codemode"
+
+Inactive (2)
+  ls                  direct      built-in
+    not selected; add "+ls" to defaultTools or --tools to enable it
+  tool_search         model-only  built-in extension "tool-search"
+    opt-in; add "+tool_search" to defaultTools or --tools to enable it
+```
+
+Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or an extension that failed to load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` to add terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
+
 #### Bash tool behavior
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
@@ -378,6 +421,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 `createAgentSession()` preserves the resources from a supplied loader and adds Atomic's shipped builtin extensions and resources. Repeated references to a shipped builtin load it once. Your loader's arrays and discovery options are not rewritten. Existing tool selection and collision rules still apply.
 
 Named `extensionFactories` descriptors may set `builtin: true` to expose the factory as a synthetic `builtin:<name>` resource, and `replaceable: true` to omit it when another extension claims the same tool, command, or flag. Use `additionalExtensionPaths: ["builtin:codemode"]` for explicit built-in loading, including with `noExtensions: true`. These inline resource controls are separate from the companion-package `builtins` map. See [built-in extension resources](/extensions#built-in-extension-resources).
+
+Every `DefaultResourceLoader` includes Atomic's inline built-in extensions, `codemode`, `tool-search`, and `llama.cpp`, so `defaultTools: ["+codemode"]` or `tools: ["+tool_search"]` works in SDK sessions without extra factories. `loader.getExtensions()` lists them with `builtin:<name>` paths. Registering them does not activate `codemode` or `tool_search`; both stay opt-in. A descriptor you pass with the same name replaces the default one, and `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or an `extensions` setting such as `"-builtin:codemode"` turns one off.
 
 Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler` or `onError` before startup hooks run. Creation awaits startup and resource discovery. A failed startup shuts down the partially created session before rejecting. Rebinding updates the host without replaying `session_start`; reload emits one start for its new generation. Remove manual post-creation startup calls from integrations that only used them to initialize extensions.
 

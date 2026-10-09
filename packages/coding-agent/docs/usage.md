@@ -76,6 +76,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session file, ID, messages, tokens, and cost |
+| `/tools` | Show active tools, why other tools are off, and selected tool names that nothing registered |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |

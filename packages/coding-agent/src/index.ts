@@ -421,6 +421,15 @@ export {
 	type StructuredOutputResult,
 } from "./core/structured-output/index.js";
 export type { NormalizedBuildSystemPromptOptions } from "./core/system-prompt.ts";
+export {
+	formatToolStatus,
+	type ToolSelectionSource,
+	type ToolSelectionStatus,
+	type ToolStatus,
+	type ToolStatusFormatStyle,
+	type ToolStatusReport,
+	type UnavailableToolStatus,
+} from "./core/tool-status.js";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Builtin tool definitions reusable by first-party extensions (e.g. workflows
 // invoking the structured ask_user_question UI deterministically).

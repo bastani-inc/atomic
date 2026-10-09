@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import type { ResolvedResource } from "../src/core/package-manager.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.js";
 
 describe("DefaultResourceLoader", () => {
 	let tempDir: string;
@@ -492,7 +493,7 @@ export default function(pi) {
 
 			expect(preTrustExtensionCount).toBe(1);
 			expect(factoryCalls).toBe(1);
-			expect(loader.getExtensions().extensions).toHaveLength(1);
+			assert.equal(withoutDefaultBuiltins(loader.getExtensions().extensions).length, 1);
 		});
 		it("should discover skills from agentDir", async () => {
 			const skillsDir = join(agentDir, "skills");

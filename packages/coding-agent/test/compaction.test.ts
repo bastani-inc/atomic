@@ -31,6 +31,9 @@ import {
 function loadLargeSessionEntries(): SessionEntry[] {
 	const sessionPath = join(__dirname, "fixtures/large-session.jsonl");
 	const content = readFileSync(sessionPath, "utf-8");
+	if (content.startsWith("version https://git-lfs.github.com/spec/")) {
+		throw new Error(`${sessionPath} is a Git LFS pointer. Install git-lfs and run \`git lfs pull\`.`);
+	}
 	const entries = parseSessionEntries(content);
 	migrateSessionEntries(entries); // Add id/parentId for v1 fixtures
 	return entries.filter((e): e is SessionEntry => e.type !== "session");

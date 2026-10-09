@@ -17,11 +17,13 @@ import {
 import { getBuiltinPackagePaths } from "../src/core/builtin-packages.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import { ModelRuntime } from "../src/core/model-runtime.js";
+import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.ts";
 import type { AtomicBuiltin, CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
 import { getDefaultToolNames } from "../src/core/tools/index.ts";
 import {
 	type ExtensionBindings,
@@ -35,6 +37,11 @@ import {
 	registerExtensionContextRetirementEffect,
 } from "../src/index.js";
 import { startOAuthMcpServer } from "./mcp-client/native-oauth-server.js";
+
+function packageExtensionCount(loader: ResourceLoader): number {
+	return loader.getExtensions().extensions.filter((extension) => !extension.path.startsWith(BUILTIN_PATH_PREFIX))
+		.length;
+}
 
 // #3105: the ordinary SDK factory, not CLI setup, supplies Atomic's shipped capabilities.
 test("default SDK creation returns an Atomic AgentSession with builtin tools and resources", async () => {
@@ -66,6 +73,44 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test.each([
+	{ loader: "default", defaultTools: ["+codemode"], codemodeActive: true },
+	{ loader: "default", defaultTools: undefined, codemodeActive: false },
+	{ loader: "caller-built", defaultTools: ["+codemode"], codemodeActive: true },
+] as const)(
+	"SDK registers inline builtin tools for a $loader loader (defaultTools: $defaultTools)",
+	async ({ loader, defaultTools, codemodeActive }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-inline-builtins-"));
+		const agentDir = join(cwd, "agent");
+		const settingsManager = SettingsManager.inMemory(
+			defaultTools === undefined ? {} : { defaultTools: [...defaultTools] },
+		);
+		try {
+			const resourceLoader =
+				loader === "caller-built" ? new DefaultResourceLoader({ cwd, agentDir, settingsManager }) : undefined;
+			await resourceLoader?.reload();
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				settingsManager,
+				resourceLoader,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				sessionManager: SessionManager.inMemory(cwd),
+			});
+			try {
+				const registered = new Set(session.getAllTools().map((tool) => tool.name));
+				assert.ok(registered.has("codemode"), "codemode is not registered");
+				assert.ok(registered.has("tool_search"), "tool_search is not registered");
+				assert.equal(session.getActiveToolNames().includes("codemode"), codemodeActive);
+			} finally {
+				await session.dispose();
+			}
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	},
+);
 
 // Two full builtin-package loads (session creation, then `session.reload()`) are
 // structural; under a loaded full-suite run they exceed the 30 s default.
@@ -179,7 +224,7 @@ test("missing shipped builtin assets reject with the package identity", async ()
 			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
 		});
 		try {
-			assert.equal(session.resourceLoader.getExtensions().extensions.length, 0);
+			assert.equal(packageExtensionCount(session.resourceLoader), 0);
 			assert.ok(session.getActiveToolNames().includes("read"));
 		} finally {
 			await session.dispose();
@@ -274,10 +319,10 @@ test("repeated shipped roots and loader identities compose once without rewritin
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 		try {
-			assert.equal(extensionsResult.extensions.length, roots.length);
+			assert.equal(extensionsResult.extensions.length, loaded.extensions.length);
 			assert.deepEqual(builtinPackagePaths, originalPaths);
 			assert.equal(caller.getExtensions().extensions, repeated);
-			assert.equal(repeated.length, roots.length * 2);
+			assert.equal(repeated.length, loaded.extensions.length * 2);
 			assert.deepEqual(
 				extensionsResult.extensions.map((extension) => extension.resolvedPath),
 				loaded.extensions.map((extension) => extension.resolvedPath),
@@ -532,7 +577,7 @@ test.each(["inherited getter", "nonenumerable"])("builtin %s false flags survive
 		});
 		try {
 			for (let generation = 0; generation < 2; generation++) {
-				assert.equal(session.resourceLoader.getExtensions().extensions.length, 0);
+				assert.equal(packageExtensionCount(session.resourceLoader), 0);
 				assert.equal(session.resourceLoader.getSkills().skills.length, 0);
 				assert.ok(session.getActiveToolNames().includes("read"));
 				assert.equal(
@@ -601,7 +646,7 @@ test.each(["preferred", "dist"])(
 				});
 				try {
 					for (let generation = 0; generation < 2; generation++) {
-						assert.equal(session.resourceLoader.getExtensions().extensions.length, 0);
+						assert.equal(packageExtensionCount(session.resourceLoader), 0);
 						assert.equal(session.resourceLoader.getSkills().skills.length, 0);
 						assert.equal(session.resourceLoader.getPrompts().prompts.length, 0);
 						assert.ok(session.getActiveToolNames().includes("read"));

@@ -6,6 +6,7 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../.
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { sleep } from "../../utils/sleep.ts";
@@ -191,6 +192,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async openTaskInspector(taskId?: string): Promise<void> {
 		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
+	}
+	/** The engine owns extensions and tools; the host session has neither. */
+	async getToolStatus(): Promise<ToolStatusReport> {
+		return this.client.requestInternal<ToolStatusReport>({ type: "get_tools" });
 	}
 	async initializeFromEngine(generation = this.client.getGeneration?.()): Promise<void> {
 		const run = this.initializationTail

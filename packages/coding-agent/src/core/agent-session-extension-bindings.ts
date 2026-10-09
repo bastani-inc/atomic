@@ -37,7 +37,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
-import { isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
+import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.js";
 
 class ExtensionPublicationGate {
@@ -394,11 +394,9 @@ export function _bindExtensionCore(
 	const refreshCandidateTools = () => {
 		const definitions = candidateDefinitions();
 		for (const [name, { definition }] of definitions) {
-			const exposure = definition.exposure ?? "direct";
 			if (
 				!candidateRegistryNames.has(name) &&
-				definition.defaultActive !== false &&
-				(exposure === "direct" || exposure === "model-only")
+				activatesOnRegistration(this, name, definition, this._toolRegistry.has(name))
 			)
 				candidateActiveTools.push(name);
 			candidateRegistryNames.add(name);

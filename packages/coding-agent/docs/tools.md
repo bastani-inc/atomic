@@ -14,6 +14,8 @@ Atomic enables these coding tools in normal sessions by default: `read`, `write`
 
 Bundled integrations also provide [public repository search](#code_search), [web fetching](/web-access), and [MCP tools](/mcp-servers).
 
+Run `/tools` to see which tools are active, why the others are off and how to turn them on, and which selected names nothing registered, such as a misspelled `defaultTools` entry. SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools).
+
 ## `codemode`
 
 Codemode lets the model compose permitted tool calls in JavaScript and return only the useful output. It is shipped but inactive by default. Enable it alongside Atomic's defaults in `~/.atomic/agent/settings.json` or project `.atomic/settings.json`:
@@ -31,6 +33,8 @@ const files = await Promise.all([
 ]);
 return files.map((text) => text.slice(0, 1000));
 ```
+
+Codemode works with every provider. On models that support OpenAI grammar tools, Atomic also constrains its input to JavaScript source; other models receive it as an ordinary tool. Run `/tools` to confirm it is active.
 
 Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Workflow, subagent, Intercom/supervisor, and user-question tools are model-only and cannot be called from scripts. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
 
