@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, test } from "vitest";
+import { SETTINGS_DEFAULTS } from "../../packages/coding-agent/src/core/settings-defaults.js";
+import { SettingsSchema } from "../../packages/coding-agent/src/core/settings-schema.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 /**
@@ -138,9 +140,8 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(settings, /C:\/Program Files\/Git\/bin\/bash\.exe/u);
 		assert.match(settings, /C:\\\\Program Files\\\\Git\\\\bin\\\\bash\.exe/u);
 		// The documented settings exist in the shipped settings schema.
-		const settingsTypes = packageFile("coding-agent", "src/core/settings-types.ts");
-		assert.match(settingsTypes, /fullscreenExitOutput\?:/u);
-		assert.match(settingsTypes, /defaultTools\?:/u);
+		assert.ok("fullscreenExitOutput" in SettingsSchema.properties);
+		assert.ok("defaultTools" in SettingsSchema.properties);
 	});
 
 	test("themes docs document leftover search colors and --use-theme", () => {
@@ -250,13 +251,12 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(sessions, /`branchSummary\.skipPrompt`/u);
 
 		// The three documented choices are the three the selector offers, and the
-		// skip-prompt default is the one the settings type declares.
+		// skip-prompt default is the one the settings defaults declare.
 		const routing = packageFile("coding-agent", "src/modes/interactive/interactive-session-routing.ts");
 		for (const choice of ["No summary", "Summarize", "Summarize with custom prompt"]) {
 			assert.ok(routing.includes(`"${choice}"`), `the branch summary selector must still offer ${choice}`);
 		}
-		const settingsTypes = packageFile("coding-agent", "src/core/settings-types.ts");
-		assert.match(settingsTypes, /skipPrompt\?: boolean; \/\/ default: false/u);
+		assert.equal(SETTINGS_DEFAULTS.branchSummary.skipPrompt, false);
 	});
 
 	test("programmatic.md names mode flags the CLI parser accepts", () => {

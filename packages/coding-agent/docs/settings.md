@@ -9,6 +9,8 @@ Atomic uses JSON settings files with project settings overriding global settings
 
 Edit directly or use `/settings` for common options. Choosing a model or thinking level with `/model`, `/thinking`, or their cycling shortcuts automatically saves it as the startup default. Thinking choices also update the active model's saved thinking level. `/scoped-models` saves cycle-list changes automatically. SDK calls, session restoration, and automatic fallbacks do not overwrite these defaults unless persistence is explicitly requested. Atomic also reads legacy `~/.pi/agent/settings.json` and `.pi/settings.json` as compatibility fallbacks, with `.atomic` paths taking precedence.
 
+For editor completion and validation, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/settings.schema.json"` to `settings.json`. Atomic preserves `$schema` and settings it does not recognize, such as extension settings, when it saves.
+
 Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
 
 ## On this page and its guide

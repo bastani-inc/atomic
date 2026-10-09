@@ -4,9 +4,10 @@ import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import { type ColorMode, detectColorMode, resolveThemeColors } from "./color-utils.ts";
 import { generateSystemThemeColors, SYSTEM_THEME_NAME } from "./system-theme.js";
 import { areTerminalColorsPending, getTerminalColors, getTerminalTheme } from "./terminal-colors.js";
-import { Theme, type ThemeBg, type ThemeColor, type WorkingIndicatorTone } from "./theme-class.ts";
+import { Theme, type ThemeColor, type WorkingIndicatorTone } from "./theme-class.ts";
 import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts";
 import type { ThemeJson } from "./theme-schema.ts";
+import { splitThemeColors, withThemeTokenFallbacks } from "./theme-tokens.ts";
 
 let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
 const registeredThemes = new Map<string, Theme>();
@@ -21,7 +22,7 @@ export function getBuiltinThemes(): Record<string, ThemeJson> {
 		const themesDir = getThemesDir();
 		const themes: Record<string, ThemeJson> = {};
 		for (const file of fs.readdirSync(themesDir).sort()) {
-			if (!file.endsWith(".json") || file === "theme-schema.json") {
+			if (!file.endsWith(".json")) {
 				continue;
 			}
 			const themePath = path.join(themesDir, file);
@@ -129,25 +130,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 	const workingIndicator = themeJson.workingIndicator
 		? resolveThemeColors(themeJson.workingIndicator, themeJson.vars)
 		: undefined;
-	const fgColors: Record<ThemeColor, string | number> = {} as Record<ThemeColor, string | number>;
-	const bgColors: Record<ThemeBg, string | number> = {} as Record<ThemeBg, string | number>;
-	const bgColorKeys: Set<string> = new Set([
-		"selectedBg",
-		"scrollbarThumb",
-		"searchMatchBg",
-		"userMessageBg",
-		"customMessageBg",
-		"toolPendingBg",
-		"toolSuccessBg",
-		"toolErrorBg",
-	]);
-	for (const [key, value] of Object.entries(resolvedColors)) {
-		if (bgColorKeys.has(key)) {
-			bgColors[key as ThemeBg] = value;
-		} else {
-			fgColors[key as ThemeColor] = value;
-		}
-	}
+	const { fgColors, bgColors } = splitThemeColors(withThemeTokenFallbacks(resolvedColors));
 	return new Theme(fgColors, bgColors, colorMode, {
 		name: themeJson.name,
 		sourcePath,

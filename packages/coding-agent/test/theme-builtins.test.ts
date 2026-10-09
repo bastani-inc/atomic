@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020";
 import { describe, expect, it } from "vitest";
 import { getThemesDir } from "../src/config.ts";
 import {
@@ -38,7 +38,7 @@ const CATPPUCCIN_THEMES = [
 ] as const;
 
 const ATOMIC_THEME_SCHEMA_URL =
-	"https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
+	"https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json";
 
 describe("built-in themes", () => {
 	it("includes the bundled Catppuccin themes", () => {
@@ -68,13 +68,13 @@ describe("built-in themes", () => {
 		expect(isLightTheme("catppuccin-mocha")).toBe(false);
 	});
 
-	it("validates every bundled theme against its declared Atomic-owned local schema", () => {
+	it("validates every bundled theme against its declared Atomic-owned published schema", () => {
 		const themesDir = getThemesDir();
-		const schemaPath = join(themesDir, "theme-schema.json");
-		const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+		const schema = JSON.parse(readFileSync(new URL("../schemas/theme.schema.json", import.meta.url), "utf8"));
+		expect(schema.$id).toBe(ATOMIC_THEME_SCHEMA_URL);
 		expect(schema.title).toBe("Atomic Coding Agent Theme");
 		expect(schema.description).toBe("Theme schema for the Atomic coding agent");
-		const validateDeclaredSchema = new Ajv({ allErrors: true }).compile(schema);
+		const validateDeclaredSchema = new Ajv2020({ allErrors: true }).compile(schema);
 
 		for (const name of BUNDLED_THEME_NAMES) {
 			const content = JSON.parse(readFileSync(join(themesDir, `${name}.json`), "utf8"));

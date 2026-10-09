@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020";
 import { describe, expect, it } from "vitest";
-import { getThemesDir } from "../src/config.ts";
 import { loadThemeFromContent } from "../src/modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "../src/modes/interactive/theme/theme-schema.ts";
 
@@ -41,8 +39,10 @@ describe("scrollbar theme color", () => {
 		const themeJson = loadDarkTheme();
 		themeJson.name = "schema-scrollbar-theme";
 		themeJson.colors.scrollbarThumb = "#123456";
-		const schema = JSON.parse(readFileSync(join(getThemesDir(), "theme-schema.json"), "utf8")) as object;
-		const validateJsonSchema = new Ajv({ allErrors: true }).compile(schema);
+		const schema = JSON.parse(
+			readFileSync(new URL("../schemas/theme.schema.json", import.meta.url), "utf8"),
+		) as object;
+		const validateJsonSchema = new Ajv2020({ allErrors: true }).compile(schema);
 
 		expect(validateJsonSchema(themeJson), JSON.stringify(validateJsonSchema.errors)).toBe(true);
 		expect(validateThemeJson.Check(themeJson)).toBe(true);

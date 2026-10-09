@@ -12,6 +12,7 @@ import { type Static, Type } from "typebox";
 import { getDocsPath } from "../../config.js";
 import type { ToolDefinition, ToolInfo, ToolLoadout, ToolNamespace } from "../../core/extensions/types.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
+import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
 import { codemodeRenderers } from "./renderer.js";
@@ -19,7 +20,7 @@ import { codemodeRenderers } from "./renderer.js";
 export const CODEMODE_TOOL_NAME = "codemode";
 export const CODEMODE_DOCS_PATH = join(getDocsPath(), "codemode.md");
 export const CODEMODE_STORE_ENTRY_TYPE = "codemode-store";
-export const DEFAULT_CODEMODE_INLINE_BUDGET = 3000;
+export const DEFAULT_CODEMODE_INLINE_BUDGET: number = SETTINGS_DEFAULTS.codemode.inlineBudget;
 export interface CodemodeStoreEntryData {
 	set: Record<string, unknown>;
 	delete: string[];

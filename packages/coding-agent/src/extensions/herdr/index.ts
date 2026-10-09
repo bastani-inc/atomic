@@ -2,6 +2,7 @@ import { APP_NAME } from "../../config.js";
 import { getExtensionContextOwner, publishExtensionContextEffect } from "../../core/extensions/runner-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../../core/extensions/types.ts";
 import type { WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
+import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import { SettingsManager } from "../../core/settings-manager.ts";
 import { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { deriveSessionActivity } from "./activity.js";
@@ -36,7 +37,11 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 
 function enabled(ctx: ExtensionContext): boolean {
 	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
-	return (settings.getProjectSettings().herdr?.enabled ?? settings.getGlobalSettings().herdr?.enabled) !== false;
+	return (
+		(settings.getProjectSettings().herdr?.enabled ??
+			settings.getGlobalSettings().herdr?.enabled ??
+			SETTINGS_DEFAULTS.herdr.enabled) !== false
+	);
 }
 
 export function createHerdrExtension(options: HerdrExtensionOptions = {}): ExtensionFactory {

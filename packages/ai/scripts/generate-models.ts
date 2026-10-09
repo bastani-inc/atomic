@@ -3005,58 +3005,6 @@ async function generateModels() {
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
 
-	// Add Claude Opus 5.5 until models.dev includes it.
-	// https://platform.claude.com/docs/en/models/opus-5-5/overview
-	if (!allModels.some((model) => model.provider === "anthropic" && model.id === "claude-opus-5-5")) {
-		allModels.push({
-			id: "claude-opus-5-5",
-			name: "Claude Opus 5.5",
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl: "https://api.anthropic.com",
-			reasoning: true,
-			thinkingLevelMap: {
-				off: null,
-				minimal: null,
-				low: "low",
-				medium: "medium",
-				high: "high",
-				xhigh: "xhigh",
-				max: "max",
-			},
-			input: ["text", "image"],
-			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-			contextWindow: 1000000,
-			maxTokens: 128000,
-		});
-	}
-
-	// Add Claude Sonnet 5.5 until models.dev includes it.
-	// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
-	if (!allModels.some((model) => model.provider === "anthropic" && model.id === "claude-sonnet-5-5")) {
-		allModels.push({
-			id: "claude-sonnet-5-5",
-			name: "Claude Sonnet 5.5",
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl: "https://api.anthropic.com",
-			reasoning: true,
-			thinkingLevelMap: {
-				off: null,
-				minimal: null,
-				low: "low",
-				medium: "medium",
-				high: "high",
-				xhigh: "xhigh",
-				max: "max",
-			},
-			input: ["text", "image"],
-			cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-			contextWindow: 1000000,
-			maxTokens: 128000,
-		});
-	}
-
 	// The authenticated Copilot catalog advertised these models on 2026-09-22,
 	// but models.dev did not include them yet.
 	const missingCopilotModels: Model<Api>[] = [

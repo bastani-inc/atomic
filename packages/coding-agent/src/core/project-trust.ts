@@ -1,6 +1,7 @@
 import { APP_TITLE, CONFIG_DIR_NAME } from "../config.js";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,
@@ -89,7 +90,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return decision;
 	}
 
-	switch (options.defaultProjectTrust ?? "ask") {
+	switch (options.defaultProjectTrust ?? SETTINGS_DEFAULTS.defaultProjectTrust) {
 		case "always":
 			return true;
 		case "never":

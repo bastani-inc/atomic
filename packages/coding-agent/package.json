@@ -57,6 +57,7 @@
     "dist",
     "docs",
     "examples",
+    "schemas",
     "CHANGELOG.md",
     "npm-shrinkwrap.json"
   ],
@@ -75,6 +76,7 @@
     "copy-builtin-workflows": "bun run copy-builtin-packages",
     "assert-binary-assets": "bun run scripts/assert-pi-runtime-assets.ts --app dist/app.js",
     "docs:check": "bun run scripts/validate-docs-links.ts",
+    "generate:schemas": "bun run scripts/generate-schemas.ts",
     "test": "vitest --run",
     "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap"

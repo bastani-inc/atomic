@@ -1,5 +1,6 @@
 import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@earendil-works/pi-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.js";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
@@ -55,7 +56,7 @@ declare module "./settings-manager-core.ts" {
 
 const uiAccessors: SettingsManagerUiAccessors = {
 	getShowImages() {
-		return settingsInternals(this).settings.terminal?.showImages ?? true;
+		return settingsInternals(this).settings.terminal?.showImages ?? SETTINGS_DEFAULTS.terminal.showImages;
 	},
 
 	setShowImages(show) {
@@ -71,7 +72,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	getImageWidthCells() {
 		const width = settingsInternals(this).settings.terminal?.imageWidthCells;
 		if (typeof width !== "number" || !Number.isFinite(width)) {
-			return 60;
+			return SETTINGS_DEFAULTS.terminal.imageWidthCells;
 		}
 		return Math.max(1, Math.floor(width));
 	},
@@ -92,7 +93,8 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		if (terminal?.clearOnShrink !== undefined) {
 			return terminal.clearOnShrink;
 		}
-		return getEnvValue(ENV_CLEAR_ON_SHRINK) === "1";
+		if (getEnvValue(ENV_CLEAR_ON_SHRINK) === "1") return true;
+		return SETTINGS_DEFAULTS.terminal.clearOnShrink;
 	},
 
 	setClearOnShrink(enabled) {
@@ -106,7 +108,10 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getShowTerminalProgress() {
-		return settingsInternals(this).settings.terminal?.showTerminalProgress ?? false;
+		return (
+			settingsInternals(this).settings.terminal?.showTerminalProgress ??
+			SETTINGS_DEFAULTS.terminal.showTerminalProgress
+		);
 	},
 
 	setShowTerminalProgress(enabled) {
@@ -120,7 +125,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getImageAutoResize() {
-		return settingsInternals(this).settings.images?.autoResize ?? true;
+		return settingsInternals(this).settings.images?.autoResize ?? SETTINGS_DEFAULTS.images.autoResize;
 	},
 
 	setImageAutoResize(enabled) {
@@ -134,7 +139,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getBlockImages() {
-		return settingsInternals(this).settings.images?.blockImages ?? false;
+		return settingsInternals(this).settings.images?.blockImages ?? SETTINGS_DEFAULTS.images.blockImages;
 	},
 
 	setBlockImages(blocked) {
@@ -159,7 +164,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getDoubleEscapeAction() {
-		return settingsInternals(this).settings.doubleEscapeAction ?? "tree";
+		return settingsInternals(this).settings.doubleEscapeAction ?? SETTINGS_DEFAULTS.doubleEscapeAction;
 	},
 
 	setDoubleEscapeAction(action) {
@@ -172,7 +177,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	getTreeFilterMode() {
 		const mode = settingsInternals(this).settings.treeFilterMode;
 		const valid = ["default", "no-tools", "user-only", "labeled-only", "all"];
-		return mode && valid.includes(mode) ? mode : "default";
+		return mode && valid.includes(mode) ? mode : SETTINGS_DEFAULTS.treeFilterMode;
 	},
 
 	setTreeFilterMode(mode) {
@@ -195,7 +200,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 
 	getFullscreenScrollbar() {
 		const mode = settingsInternals(this).settings.fullscreenScrollbar;
-		return mode === "always" || mode === "hidden" ? mode : "auto";
+		return mode === "always" || mode === "hidden" ? mode : SETTINGS_DEFAULTS.fullscreenScrollbar;
 	},
 
 	setFullscreenScrollbar(mode) {
@@ -206,7 +211,9 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getFullscreenExitOutput() {
-		return settingsInternals(this).settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+		return settingsInternals(this).settings.fullscreenExitOutput === "resume-hint"
+			? "resume-hint"
+			: SETTINGS_DEFAULTS.fullscreenExitOutput;
 	},
 
 	setFullscreenExitOutput(output) {
@@ -217,7 +224,8 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getFullscreenCopyOnSelect() {
-		return settingsInternals(this).settings.fullscreenCopyOnSelect !== false;
+		const copyOnSelect = settingsInternals(this).settings.fullscreenCopyOnSelect;
+		return typeof copyOnSelect === "boolean" ? copyOnSelect : SETTINGS_DEFAULTS.fullscreenCopyOnSelect;
 	},
 
 	setFullscreenCopyOnSelect(enabled) {
@@ -231,7 +239,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const lines = settingsInternals(this).settings.fullscreenWheelScrollLines;
 		return typeof lines === "number" && Number.isFinite(lines)
 			? Math.max(1, Math.min(100, Math.floor(lines)))
-			: "auto";
+			: SETTINGS_DEFAULTS.fullscreenWheelScrollLines;
 	},
 	setFullscreenWheelScrollLines(lines) {
 		const state = settingsInternals(this);
@@ -252,7 +260,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getEditorPaddingX() {
-		return settingsInternals(this).settings.editorPaddingX ?? 0;
+		return settingsInternals(this).settings.editorPaddingX ?? SETTINGS_DEFAULTS.editorPaddingX;
 	},
 
 	setEditorPaddingX(padding) {
@@ -263,7 +271,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getOutputPad() {
-		return settingsInternals(this).settings.outputPad === 0 ? 0 : 1;
+		return settingsInternals(this).settings.outputPad === 0 ? 0 : SETTINGS_DEFAULTS.outputPad;
 	},
 
 	setOutputPad(padding) {
@@ -274,7 +282,7 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getAutocompleteMaxVisible() {
-		return settingsInternals(this).settings.autocompleteMaxVisible ?? 5;
+		return settingsInternals(this).settings.autocompleteMaxVisible ?? SETTINGS_DEFAULTS.autocompleteMaxVisible;
 	},
 
 	setAutocompleteMaxVisible(maxVisible) {
@@ -285,12 +293,12 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getCodeBlockIndent() {
-		return settingsInternals(this).settings.markdown?.codeBlockIndent ?? "  ";
+		return settingsInternals(this).settings.markdown?.codeBlockIndent ?? SETTINGS_DEFAULTS.markdown.codeBlockIndent;
 	},
 
 	getMermaidRenderingMode() {
 		const mode = settingsInternals(this).settings.markdown?.mermaid;
-		return mode === "off" || mode === "final" ? mode : "streaming";
+		return mode === "off" || mode === "final" ? mode : SETTINGS_DEFAULTS.markdown.mermaid;
 	},
 
 	setMermaidRenderingMode(mode) {
@@ -302,7 +310,8 @@ const uiAccessors: SettingsManagerUiAccessors = {
 	},
 
 	getLatexRenderingEnabled() {
-		return settingsInternals(this).settings.markdown?.latex !== false;
+		const latex = settingsInternals(this).settings.markdown?.latex;
+		return typeof latex === "boolean" ? latex : SETTINGS_DEFAULTS.markdown.latex;
 	},
 
 	setLatexRenderingEnabled(enabled) {
