@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.30-alpha.1] - 2026-10-09
+
 ### Breaking Changes
 
 - Moved the published theme JSON Schema to `schemas/theme.schema.json` and made theme loading reject unknown top-level properties and unknown properties under `colors`, `workingIndicator`, or `export`. Update existing theme `$schema` references to `https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json`, define reusable custom colors under `vars`, and remove unsupported metadata.

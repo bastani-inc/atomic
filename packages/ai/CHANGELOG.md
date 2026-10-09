@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.30-alpha.1] - 2026-10-09
+
 ### Added
 
 - Added the `providers/compat-schema` and `providers/model-schema` modules, which export the TypeBox schemas behind the compatibility, cost, input-limit, prompt-cache, and thinking-level types. The existing types, such as `OpenAICompletionsCompat` and `ModelCost`, are now derived from these schemas and remain exported from the package entry points, and `ProviderCompatSchema` combines every API's compatibility fields.
