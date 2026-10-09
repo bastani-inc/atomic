@@ -5,5 +5,8 @@
 	"defaultProvider": "anthropic",
 	"defaultModel": "claude-opus-5-5",
 	"defaultThinkingLevel": "medium",
-	"fallbackModels": ["openai/gpt-6.1-sol:medium"]
+	"fallbackModels": ["openai/gpt-6.1-sol:medium"],
+	"modelRouting": {
+		"allowedProviders": ["openai", "anthropic"]
+	}
 }
