@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed sessions created with the SDK's `createAgentSession()` or a `DefaultResourceLoader` ignoring `defaultTools: ["+codemode"]` and `tools: ["+tool_search"]`, and lacking the llama.cpp provider. Every `DefaultResourceLoader` now includes the `codemode`, `tool-search`, and `llama.cpp` built-in extensions; codemode and tool search remain opt-in. `loader.getExtensions()` now lists these three with `builtin:<name>` paths.
+
 ## [0.9.29-alpha.1] - 2026-10-08
 
 ### Added

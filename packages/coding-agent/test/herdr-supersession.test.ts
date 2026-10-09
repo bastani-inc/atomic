@@ -23,6 +23,7 @@ import {
 	isHerdrFileIntegrationPath,
 } from "../src/core/extensions/herdr-file-integration.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
 
 /** A complete pane environment, matching the builtin's four-variable gate. */
 const PANE_ENV: NodeJS.ProcessEnv = {
@@ -139,9 +140,8 @@ describe("herdr file-integration supersession through the real resource loader",
 	});
 
 	function loadedBasenames(loader: DefaultResourceLoader): string[] {
-		return loader
-			.getExtensions()
-			.extensions.filter((extension) => !extension.path.startsWith("<"))
+		return withoutDefaultBuiltins(loader.getExtensions().extensions)
+			.filter((extension) => !extension.path.startsWith("<"))
 			.map((extension) => extension.resolvedPath.split(/[\\/]/).at(-1) ?? "")
 			.sort();
 	}

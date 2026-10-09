@@ -8,6 +8,7 @@ import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describe("DefaultResourceLoader", () => {
@@ -150,12 +151,13 @@ Project skill`,
 			await loader.reload();
 
 			const extensionsResult = loader.getExtensions();
-			expect(extensionsResult.extensions).toHaveLength(1);
+			const extensions = withoutDefaultBuiltins(extensionsResult.extensions);
+			expect(extensions).toHaveLength(1);
 			expect(extensionsResult.errors).toEqual([]);
 
 			// mergePaths processes project paths before user paths, so the project
 			// alias is the canonical survivor.
-			expect(extensionsResult.extensions[0].path).toBe(join(cwd, ".pi", "extensions", "shared.ts"));
+			expect(extensions[0].path).toBe(join(cwd, ".pi", "extensions", "shared.ts"));
 		});
 		it("should keep both extensions loaded when command names collide", async () => {
 			const userExtDir = join(agentDir, "extensions");
@@ -195,19 +197,14 @@ Project skill`,
 			await loader.reload();
 
 			const extensionsResult = loader.getExtensions();
-			expect(extensionsResult.extensions).toHaveLength(2);
+			const extensions = withoutDefaultBuiltins(extensionsResult.extensions);
+			expect(extensions).toHaveLength(2);
 			expect(extensionsResult.errors.some((e) => e.error.includes('Command "/deploy" conflicts'))).toBe(false);
 
 			const sessionManager = SessionManager.inMemory();
 			const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 			const modelRegistry = await createModelRegistry(authStorage);
-			const runner = new ExtensionRunner(
-				extensionsResult.extensions,
-				extensionsResult.runtime,
-				cwd,
-				sessionManager,
-				modelRegistry,
-			);
+			const runner = new ExtensionRunner(extensions, extensionsResult.runtime, cwd, sessionManager, modelRegistry);
 
 			expect(runner.getCommand("deploy:1")?.description).toBe("project deploy");
 			expect(runner.getCommand("deploy:2")?.description).toBe("user deploy");

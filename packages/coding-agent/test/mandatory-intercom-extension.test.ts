@@ -7,6 +7,7 @@ import { getMandatoryBuiltinPackagePaths } from "../src/core/builtin-packages.ts
 import { withMandatoryResourceLoader } from "../src/core/mandatory-resource-loader.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
 
 describe("mandatory bundled Intercom extension", () => {
 	let tempDir = "";
@@ -53,11 +54,12 @@ describe("mandatory bundled Intercom extension", () => {
 			builtinPackagePaths: getMandatoryBuiltinPackagePaths(),
 		});
 		await loader.reload();
-		const loaded = loader.getExtensions().extensions;
+		const loaded = withoutDefaultBuiltins(loader.getExtensions().extensions);
 		expect(loaded).toHaveLength(1);
 
 		const wrapped = await withMandatoryResourceLoader(loader, tempDir);
-		expect(wrapped.getExtensions().extensions).toEqual([loaded[0]]);
-		expect(wrapped.getExtensions().extensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
+		const wrappedExtensions = withoutDefaultBuiltins(wrapped.getExtensions().extensions);
+		expect(wrappedExtensions).toEqual([loaded[0]]);
+		expect(wrappedExtensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
 	});
 });

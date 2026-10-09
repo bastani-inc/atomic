@@ -331,7 +331,10 @@ describe("built-in inline extension", () => {
 		});
 		await loader.reload();
 		assert.deepEqual(
-			loader.getExtensions().extensions.map(({ path, hidden }) => ({ path, hidden })),
+			loader
+				.getExtensions()
+				.extensions.filter(({ path }) => path.startsWith("<inline:"))
+				.map(({ path, hidden }) => ({ path, hidden })),
 			[
 				{ path: "<inline:1>", hidden: undefined },
 				{ path: "<inline:named>", hidden: true },

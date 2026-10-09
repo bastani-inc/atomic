@@ -7,6 +7,7 @@ import { DefaultPackageManager } from "../src/core/package-manager.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { buildGroups, ResourceList } from "../src/modes/interactive/components/config-selector-list.js";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
 
 test("builtin extension paths remain synthetic and explicit loading overrides no-extensions", async () => {
 	const root = mkdtempSync(join(tmpdir(), "builtin-resource-"));
@@ -70,7 +71,10 @@ test("trusted project builtin settings override global exclusions only after tru
 			},
 		});
 		assert.equal(loads, 1);
-		assert.equal(loader.getExtensions().extensions[0].sourceInfo.scope, "project");
+		assert.equal(
+			loader.getExtensions().extensions.find((extension) => extension.path === "builtin:fixture")?.sourceInfo.scope,
+			"project",
+		);
 		const disabled = new DefaultResourceLoader({
 			cwd: root,
 			agentDir,
@@ -107,7 +111,7 @@ test("replacing an opt-in builtin reports the owner and Atomic recovery command"
 		await loader.reload();
 		const result = loader.getExtensions();
 		assert.deepEqual(
-			result.extensions.map((extension) => extension.path),
+			withoutDefaultBuiltins(result.extensions).map((extension) => extension.path),
 			["<inline:replacement>"],
 		);
 		assert.deepEqual(result.errors, []);

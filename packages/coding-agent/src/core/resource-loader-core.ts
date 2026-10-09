@@ -1,3 +1,4 @@
+import { withDefaultBuiltinExtensions } from "../extensions/default-builtins.js";
 import type { Theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
@@ -130,10 +131,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			options.builtinPackagePaths !== undefined
 				? clonePackageSources(options.builtinPackagePaths)
 				: clonePackageSources(inheritanceSnapshot?.builtinPackagePaths);
-		this.extensionFactories = [
+		this.extensionFactories = withDefaultBuiltinExtensions([
 			...(inheritanceSnapshot?.extensionFactories ?? []),
 			...(options.extensionFactories ?? []),
-		];
+		]);
 		this.packageManager = new DefaultPackageManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,

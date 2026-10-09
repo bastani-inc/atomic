@@ -85,6 +85,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			[
 				"ask_user_question",
 				"bash",
+				"codemode",
 				"dynamic_tool",
 				"edit",
 				"find",
@@ -95,6 +96,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				"read",
 				"search",
 				"todo",
+				"tool_search",
 				"write",
 			].sort(),
 		);

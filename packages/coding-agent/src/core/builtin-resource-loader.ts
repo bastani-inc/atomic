@@ -16,6 +16,7 @@ import type { AtomicBuiltin } from "./sdk-types.ts";
 import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog } from "./skill-catalog.ts";
+import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
 function canonical(path: string): string {
 	try {
@@ -81,7 +82,13 @@ class BuiltinResourceLoader implements ResourceLoader {
 		const discovered = this.delegate.getExtensions();
 		const scope = lifecycleScopeForOwner(this);
 		const identities = new Set<string>();
+		const inlineBuiltinPaths = new Set<string>();
 		const selected = discovered.extensions.filter((extension) => {
+			if (extension.path.startsWith(BUILTIN_PATH_PREFIX)) {
+				if (inlineBuiltinPaths.has(extension.path)) return false;
+				inlineBuiltinPaths.add(extension.path);
+				return true;
+			}
 			if (this.isDisabledPath(extension.resolvedPath)) return false;
 			const path = canonical(extension.resolvedPath);
 			const builtin = locations.find((location) => {

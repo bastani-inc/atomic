@@ -72,6 +72,9 @@ const BUILTIN_EXTENSION_TOOLS = [
 	"get_search_content",
 ] as const;
 
+/** Registered by Atomic's inline built-in extensions in every loader, but inactive until selected. */
+const OPT_IN_INLINE_BUILTIN_TOOLS = ["codemode", "tool_search"] as const;
+
 type ToolOptions = Pick<CreateAgentSessionOptions, "tools" | "excludedTools" | "noTools" | "customTools">;
 
 async function createSessionFromManager(
@@ -228,7 +231,14 @@ describe("defaultTools setting", () => {
 					.sort();
 				assert.deepEqual(
 					registered,
-					[...registrableToolNames, ...BUILTIN_EXTENSION_TOOLS, "dynamic_tool", "sdk_tool", "static_tool"].sort(),
+					[
+						...registrableToolNames,
+						...BUILTIN_EXTENSION_TOOLS,
+						...OPT_IN_INLINE_BUILTIN_TOOLS,
+						"dynamic_tool",
+						"sdk_tool",
+						"static_tool",
+					].sort(),
 				);
 			} finally {
 				session.dispose();
