@@ -19,7 +19,7 @@ import {
 	describeToolSelection,
 	type ToolSelectionSource,
 	type ToolStatusReport,
-} from "./tool-status.ts";
+} from "./tool-status.js";
 
 export function getActiveToolNames(this: AgentSession): string[] {
 	return this.agent.state.tools.map((t) => t.name);

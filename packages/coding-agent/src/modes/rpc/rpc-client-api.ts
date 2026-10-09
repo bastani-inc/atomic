@@ -8,7 +8,7 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
-import type { ToolStatusReport } from "../../core/tool-status.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
 	RpcCommand,

@@ -30,7 +30,7 @@ import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import type { ToolStatusReport } from "../../core/tool-status.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 // ============================================================================

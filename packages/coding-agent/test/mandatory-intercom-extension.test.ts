@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { getMandatoryBuiltinPackagePaths } from "../src/core/builtin-packages.ts
 import { withMandatoryResourceLoader } from "../src/core/mandatory-resource-loader.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.js";
 
 describe("mandatory bundled Intercom extension", () => {
 	let tempDir = "";
@@ -55,11 +56,11 @@ describe("mandatory bundled Intercom extension", () => {
 		});
 		await loader.reload();
 		const loaded = withoutDefaultBuiltins(loader.getExtensions().extensions);
-		expect(loaded).toHaveLength(1);
+		assert.equal(loaded.length, 1);
 
 		const wrapped = await withMandatoryResourceLoader(loader, tempDir);
 		const wrappedExtensions = withoutDefaultBuiltins(wrapped.getExtensions().extensions);
-		expect(wrappedExtensions).toEqual([loaded[0]]);
-		expect(wrappedExtensions[0]?.sourceInfo.configurationOrigin).toBe("bundled");
+		assert.deepEqual(wrappedExtensions, [loaded[0]]);
+		assert.equal(wrappedExtensions[0]?.sourceInfo.configurationOrigin, "bundled");
 	});
 });

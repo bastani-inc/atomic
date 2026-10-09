@@ -1,5 +1,5 @@
 import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
-import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.ts";
+import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";

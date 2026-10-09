@@ -80,16 +80,19 @@ export function selectedToolNames(selection: SelectedTools): ReadonlySet<string>
 }
 
 /**
- * Default-active tools activate as they register. Opt-in tools (`defaultActive: false`) activate only
- * when the selection names them, such as `defaultTools: ["+codemode"]` whose extension loads after
- * the session starts.
+ * Default-active tools activate whenever they register. An opt-in tool (`defaultActive: false`)
+ * activates only on its first registration, and only when the selection names it, such as
+ * `defaultTools: ["+codemode"]` whose extension loads after the session starts. A reload keeps
+ * whatever activation the session has given an already registered opt-in tool since.
  */
 export function activatesOnRegistration(
 	selection: SelectedTools,
 	name: string,
 	definition: { exposure?: string; defaultActive?: boolean } | undefined,
+	alreadyRegistered: boolean,
 ): boolean {
 	const exposure = definition?.exposure ?? "direct";
 	if (exposure !== "direct" && exposure !== "model-only") return false;
-	return definition?.defaultActive !== false || selectedToolNames(selection).has(name);
+	if (definition?.defaultActive !== false) return true;
+	return !alreadyRegistered && selectedToolNames(selection).has(name);
 }

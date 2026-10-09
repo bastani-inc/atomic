@@ -394,7 +394,10 @@ export function _bindExtensionCore(
 	const refreshCandidateTools = () => {
 		const definitions = candidateDefinitions();
 		for (const [name, { definition }] of definitions) {
-			if (!candidateRegistryNames.has(name) && activatesOnRegistration(this, name, definition))
+			if (
+				!candidateRegistryNames.has(name) &&
+				activatesOnRegistration(this, name, definition, this._toolRegistry.has(name))
+			)
 				candidateActiveTools.push(name);
 			candidateRegistryNames.add(name);
 		}

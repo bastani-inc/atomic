@@ -107,7 +107,12 @@ export function _refreshToolRegistry(
 	).filter((name) => isExposedTool(name) || selectedMcpNames.has(name));
 
 	const activatesOnRegistration = (name: string): boolean =>
-		toolActivatesOnRegistration(this, name, this._toolDefinitions.get(name)?.definition);
+		toolActivatesOnRegistration(
+			this,
+			name,
+			this._toolDefinitions.get(name)?.definition,
+			previousRegistryNames.has(name),
+		);
 	if (allowedTools) {
 		for (const toolName of this._toolRegistry.keys()) {
 			const exposure = this._toolDefinitions.get(toolName)?.definition.exposure ?? "direct";

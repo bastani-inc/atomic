@@ -5,23 +5,23 @@ import { join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, test } from "vitest";
-import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import {
 	type AgentSessionServices,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "../src/core/agent-session-services.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import type { CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { SourceInfo } from "../src/core/source-info.ts";
-import { buildToolStatusReport, formatToolStatus, type ToolStatusReport } from "../src/core/tool-status.ts";
+} from "../src/core/agent-session-services.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import type { SourceInfo } from "../src/core/source-info.js";
+import { buildToolStatusReport, formatToolStatus, type ToolStatusReport } from "../src/core/tool-status.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import "../src/modes/interactive/interactive-slash-commands.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
 import { stripAnsi } from "../src/utils/ansi.js";
 
 beforeAll(() => {
@@ -88,6 +88,24 @@ async function withSession<T>(
 		rmSync(cwd, { recursive: true, force: true });
 	}
 }
+
+test("a selected opt-in tool turned off during the session stays off after reload", async () => {
+	await withSession(
+		{ settingsManager: SettingsManager.inMemory({ defaultTools: ["+codemode"] }) },
+		async (session) => {
+			assert.ok(session.getActiveToolNames().includes("codemode"));
+			session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "codemode"));
+
+			await session.reload();
+
+			assert.equal(session.getActiveToolNames().includes("codemode"), false);
+			assert.equal(
+				session.getToolStatus().tools.find((tool) => tool.name === "codemode")?.inactiveReason,
+				"selected by the defaultTools setting, but deactivated during this session",
+			);
+		},
+	);
+});
 
 test("tool status explains active, opt-in, unselected, and missing tools", async () => {
 	await withSession(

@@ -7,7 +7,7 @@ import { DefaultPackageManager } from "../src/core/package-manager.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { buildGroups, ResourceList } from "../src/modes/interactive/components/config-selector-list.js";
-import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.js";
 
 test("builtin extension paths remain synthetic and explicit loading overrides no-extensions", async () => {
 	const root = mkdtempSync(join(tmpdir(), "builtin-resource-"));

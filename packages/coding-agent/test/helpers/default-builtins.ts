@@ -1,6 +1,6 @@
-import type { Extension } from "../../src/core/extensions/types.ts";
-import { BUILTIN_PATH_PREFIX } from "../../src/core/source-info.ts";
-import { defaultBuiltinExtensions } from "../../src/extensions/default-builtins.ts";
+import type { Extension } from "../../src/core/extensions/types.js";
+import { BUILTIN_PATH_PREFIX } from "../../src/core/source-info.js";
+import { defaultBuiltinExtensions } from "../../src/extensions/default-builtins.js";
 
 const defaultBuiltinPaths = new Set(
 	defaultBuiltinExtensions.flatMap((input) =>

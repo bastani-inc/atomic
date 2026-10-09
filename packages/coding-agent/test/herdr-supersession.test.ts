@@ -23,7 +23,7 @@ import {
 	isHerdrFileIntegrationPath,
 } from "../src/core/extensions/herdr-file-integration.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { withoutDefaultBuiltins } from "./helpers/default-builtins.ts";
+import { withoutDefaultBuiltins } from "./helpers/default-builtins.js";
 
 /** A complete pane environment, matching the builtin's four-variable gate. */
 const PANE_ENV: NodeJS.ProcessEnv = {

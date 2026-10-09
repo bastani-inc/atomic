@@ -6,7 +6,7 @@ import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../.
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
-import type { ToolStatusReport } from "../../core/tool-status.ts";
+import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { sleep } from "../../utils/sleep.ts";

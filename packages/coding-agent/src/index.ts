@@ -429,7 +429,7 @@ export {
 	type ToolStatusFormatStyle,
 	type ToolStatusReport,
 	type UnavailableToolStatus,
-} from "./core/tool-status.ts";
+} from "./core/tool-status.js";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Builtin tool definitions reusable by first-party extensions (e.g. workflows
 // invoking the structured ask_user_question UI deterministically).

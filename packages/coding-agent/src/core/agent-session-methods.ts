@@ -68,7 +68,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
-import type { ToolStatusReport } from "./tool-status.ts";
+import type { ToolStatusReport } from "./tool-status.js";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 

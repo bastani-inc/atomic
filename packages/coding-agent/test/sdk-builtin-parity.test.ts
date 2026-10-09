@@ -17,13 +17,13 @@ import {
 import { getBuiltinPackagePaths } from "../src/core/builtin-packages.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.ts";
 import type { AtomicBuiltin, CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.ts";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
 import { getDefaultToolNames } from "../src/core/tools/index.ts";
 import {
 	type ExtensionBindings,
