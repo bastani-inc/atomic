@@ -104,9 +104,11 @@ function isDescendantOf(directory: string, child: string): boolean {
  * occupy the same logical repository scope, so loading both applies that context twice. Returns
  * undefined when nothing is shadowed, leaving normal ancestor inheritance alone.
  *
- * Returned canonicalized (realpath), because `git worktree add` writes the `.git`
- * file's `gitdir:` target in realpath form while cwd may still be symlinked
- * (macOS `/tmp` -> `/private/tmp`) or short-named (Windows `RUNNER~1`).
+ * Returned as the main repo root's real path joined with the selected file name, not
+ * the file's own real path: `git worktree add` writes the `.git` file's `gitdir:` target
+ * in realpath form while cwd may still be symlinked (macOS `/tmp` -> `/private/tmp`) or
+ * short-named (Windows `RUNNER~1`), and a worktree context file that symlinks to the main
+ * repo's copy would otherwise resolve to the shadowed path itself.
  */
 function findShadowedContextFile(cwd: string): string | undefined {
 	const gitPaths = findGitPaths(cwd);
@@ -128,9 +130,9 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	// the main checkout's selected candidate even when the filenames differ.
 	if (basename(worktreeContextFile.path) === "AGENTS.override.md") {
 		const mainRepoContextFile = loadContextFileFromDir(mainRepoRoot);
-		return mainRepoContextFile ? realPath(mainRepoContextFile.path) : undefined;
+		return mainRepoContextFile ? join(mainRepoRoot, basename(mainRepoContextFile.path)) : undefined;
 	}
-	return realPath(join(mainRepoRoot, basename(worktreeContextFile.path)));
+	return join(mainRepoRoot, basename(worktreeContextFile.path));
 }
 
 export function loadProjectContextFiles(options: {
@@ -165,10 +167,12 @@ export function loadProjectContextFiles(options: {
 		const contextFile = loadContextFileFromDir(currentDir);
 		// A nested linked worktree's context file and the main repo's selected copy
 		// occupy one logical repository scope; skip the main repo's copy so it is not loaded twice.
+		// Compare the directory's real path, not the file's, so a symlinked context file is not
+		// mistaken for the main repo's copy it points to.
 		const isShadowed =
 			shadowedContextFile !== undefined &&
 			contextFile !== null &&
-			samePath(realPath(contextFile.path), shadowedContextFile);
+			samePath(join(realPath(currentDir), basename(contextFile.path)), shadowedContextFile);
 		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
