@@ -1,3 +1,5 @@
 {
-	"defaultTools": ["+codemode"]
+	"defaultTools": ["+codemode"],
+	"compactionModel": "morph/morph-compactor",
+	"routerModel": "typesafe/jev-latest"
 }
