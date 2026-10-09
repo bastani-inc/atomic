@@ -204,14 +204,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getCompactionModel() {
-		const state = settingsInternals(this);
-		const value = state.settings.compactionModel;
+		const value = settingsInternals(this).settings.compactionModel;
 		if (value === undefined) return "";
 		if (typeof value !== "string" || value.trim() !== value) {
 			throw new Error("Invalid compactionModel: expected an exact provider/model ID, auto, or an empty string.");
-		}
-		if (state.projectSettings.compactionModel === value && value.startsWith("morph/")) {
-			throw new Error("Invalid compactionModel: project settings may not select morph/*.");
 		}
 		return value;
 	},
@@ -222,8 +218,6 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		}
 		const state = settingsInternals(this);
 		if (scope === "project") {
-			if (model.startsWith("morph/"))
-				throw new Error("Invalid compactionModel: project settings may not select morph/*.");
 			state.markProjectModified("compactionModel");
 			state.saveProjectSettings({ ...state.projectSettings, compactionModel: model });
 			return;

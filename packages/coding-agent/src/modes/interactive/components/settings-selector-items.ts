@@ -343,14 +343,12 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					? config.compactionModel
 					: "Auto (current model)",
 			submenu: (_currentValue, done) => {
-				const configured = config.compactionModel === "auto" ? "" : (config.compactionModel ?? "");
-				const permitsModel = (id: string) => config.compactionModelScope !== "project" || !id.startsWith("morph/");
-				const current = permitsModel(configured) ? configured : "";
+				const current = config.compactionModel === "auto" ? "" : (config.compactionModel ?? "");
 				const models = [
 					...(config.availableDefaultModels ?? []).filter((model) => isModelType(model, "chat")),
 					...(config.availableClassifierModels ?? []),
 					...(config.availableCompactorModels ?? []),
-				].filter((model) => permitsModel(`${model.provider}/${model.id}`));
+				];
 				const options = [
 					{ value: "", label: "Auto (current model)", description: "Use the current chat model" },
 					...models.map((model) => ({

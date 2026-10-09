@@ -259,7 +259,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
 | `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
 
-The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. Project settings may not select `morph/*`. See [Compaction model](/compaction#compaction-model).
+The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. See [Compaction model](/compaction#compaction-model).
 
 Fallback borrowing reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list used for chat fallback. It skips entries equal to the selected compaction model. A policy refusal from any chat compaction model, including `auto`, explicit chat-model IDs, and borrowed fallback entries, first tries pi's summary compaction on the same model. Classifier and Morph refusals skip summary fallback and advance directly to the next configured model. Other failures and failed summaries also advance to the next configured model. Only load-bearing recovery may clear older context after all attempts fail.
 
