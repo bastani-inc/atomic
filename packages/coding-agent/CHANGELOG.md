@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated the `music-metadata` dependency used for audio file conversion to 11.16.1, resolving the crafted-file denial-of-service advisories [GHSA-f94x-6692-553q](https://github.com/advisories/GHSA-f94x-6692-553q), [GHSA-5gfj-9q3v-qfp3](https://github.com/advisories/GHSA-5gfj-9q3v-qfp3), and [GHSA-8j4c-6x6g-rq3j](https://github.com/advisories/GHSA-8j4c-6x6g-rq3j).
+- Updated the native module's `anyhow` (1.0.104) and `crossbeam-epoch` (0.9.21) crates, resolving [RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190) and [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204).
+
 ## [0.9.30-alpha.1] - 2026-10-09
 
 ### Breaking Changes
