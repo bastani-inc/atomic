@@ -717,6 +717,7 @@ export class InteractiveModeBase {
 				};
 			},
 			this.keybindings,
+			(frame) => this.programStatus.handleWorkflowActivity(frame),
 		);
 	}
 

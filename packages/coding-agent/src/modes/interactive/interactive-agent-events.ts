@@ -1,6 +1,7 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
+import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -70,11 +71,17 @@ function createToolComponent(
 
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
-	const unsubscribe = this.session.subscribe(async (event) => {
+	const session = this.session;
+	const unsubscribe = session.subscribe(async (event) => {
 		await this.handleEvent(event);
+	});
+	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
+	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
+		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
 	});
 	this.unsubscribe = () => {
 		unsubscribe();
+		disposeWorkflowActivity();
 		disposeInteractiveTasks(this);
 	};
 };

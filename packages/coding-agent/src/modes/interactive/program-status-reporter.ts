@@ -1,12 +1,18 @@
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
+import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 export type BlockedStatus = { kind: NonNullable<ProgramStatus["kind"]>; message: string };
 
 function firstLine(text: string | undefined): string {
 	return text?.split(/\r?\n/, 1)[0]?.trim() || "Error";
+}
+
+/** A root whose run ended failed (or blocked) and awaits inspection; no execution or open prompt remains. */
+function isSettledFailure(root: WorkflowRootActivity): boolean {
+	return root.state === "idle" && root.actionableBlockCount === 0 && root.needsAttention;
 }
 
 export class ProgramStatusReporter {
@@ -16,6 +22,11 @@ export class ProgramStatusReporter {
 	private restingStatus: ProgramStatus = { state: "idle" };
 	private readonly blocked = new Map<string, BlockedStatus>();
 	private lastReport: string | undefined;
+	private readonly roots = new Map<string, WorkflowRootActivity>();
+	/** Roots that failed while this session watched; held until the user's next input. */
+	private readonly failedRoots = new Set<string>();
+	/** A ready snapshot is the baseline; frames before it describe history, not new outcomes. */
+	private workflowsReady = false;
 
 	private readonly getTerminal: () => Terminal;
 	private readonly getSessionName: () => string | undefined;
@@ -30,6 +41,11 @@ export class ProgramStatusReporter {
 			case "agent_start":
 				this.runActive = true;
 				this.runResult = { state: "done" };
+				break;
+			case "message_start":
+				// The user's next message answers a held workflow failure; lifecycle notices are custom messages.
+				if (event.message.role !== "user" || this.failedRoots.size === 0) return;
+				this.failedRoots.clear();
 				break;
 			case "message_end":
 				if (event.message.role !== "assistant") return;
@@ -66,6 +82,44 @@ export class ProgramStatusReporter {
 		this.report();
 	}
 
+	handleWorkflowActivity(frame: WorkflowActivityFrame): void {
+		if (frame.kind === "snapshot") {
+			this.roots.clear();
+			this.workflowsReady = frame.availability === "ready";
+			if (frame.availability === "ready") {
+				for (const root of frame.roots) this.roots.set(root.rootRunId, root);
+				for (const id of this.failedRoots) {
+					const root = this.roots.get(id);
+					if (!root || !isSettledFailure(root)) this.failedRoots.delete(id);
+				}
+			}
+		} else if (frame.kind === "changed") {
+			const previous = this.roots.get(frame.root.rootRunId);
+			this.roots.set(frame.root.rootRunId, frame.root);
+			if (this.workflowsReady) this.recordOutcome(previous, frame.root);
+		} else {
+			this.roots.delete(frame.rootRunId);
+			this.failedRoots.delete(frame.rootRunId);
+		}
+		this.report();
+	}
+
+	private recordOutcome(previous: WorkflowRootActivity | undefined, root: WorkflowRootActivity): void {
+		if (isSettledFailure(root)) {
+			if (!previous || !isSettledFailure(previous)) this.failedRoots.add(root.rootRunId);
+			return;
+		}
+		this.failedRoots.delete(root.rootRunId);
+		const finished =
+			previous !== undefined &&
+			previous.state !== "idle" &&
+			previous.reason !== "stopping" &&
+			root.state === "idle" &&
+			root.reason !== "paused" &&
+			!root.needsAttention;
+		if (finished && this.restingStatus.state === "idle") this.restingStatus = { state: "done" };
+	}
+
 	setBlocked(source: string, status: BlockedStatus | undefined): void {
 		this.blocked.delete(source);
 		if (status) this.blocked.set(source, status);
@@ -91,9 +145,27 @@ export class ProgramStatusReporter {
 	private currentStatus(): ProgramStatus {
 		const blocked = [...this.blocked.values()].at(-1);
 		if (blocked) return { state: "blocked", ...blocked };
+		const workflowBlocked = this.workflowBlockedStatus();
+		if (workflowBlocked) return workflowBlocked;
 		if (this.compacting) return { state: "working", message: "Compacting context" };
-		const status = this.runActive ? { state: "working" as const } : this.restingStatus;
+		const workflowWorking = [...this.roots.values()].some((root) => root.state === "working");
+		if (!this.runActive && !workflowWorking && this.failedRoots.size > 0) {
+			return { state: "error", message: "Workflow failed" };
+		}
+		const status = this.runActive || workflowWorking ? { state: "working" as const } : this.restingStatus;
 		if (status.state === "working" || status.state === "done") return { ...status, message: this.getSessionName() };
 		return status;
+	}
+
+	/** Fixed text only: prompts raised by workflows never reach the terminal. */
+	private workflowBlockedStatus(): ProgramStatus | undefined {
+		const blocked = [...this.roots.values()].filter((root) => root.state === "blocked");
+		if (blocked.length === 0) return undefined;
+		const awaitingInput = blocked.some((root) => root.reason === "awaiting_input");
+		return {
+			state: "blocked",
+			kind: "question",
+			message: awaitingInput ? "Workflow waiting for input" : "Workflow needs attention",
+		};
 	}
 }

@@ -5,6 +5,7 @@ import type {
 	WidgetScrollRequest,
 	WidgetScrollState,
 } from "../../core/extensions/ui-types.js";
+import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
 
 /**
@@ -69,6 +70,8 @@ export type InteractiveEngineMessage =
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
+	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
+	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
 	 * command and is about to run it. Emitted and flushed BEFORE any handler
@@ -207,6 +210,66 @@ function isCallbackActivity(value: JsonValue): value is JsonObject & CallbackAct
 		typeof value.name === "string" &&
 		typeof value.startedAt === "number"
 	);
+}
+
+const WORKFLOW_ACTIVITY_STATES: readonly string[] = ["working", "idle", "blocked"];
+const WORKFLOW_ACTIVITY_REASONS: readonly string[] = [
+	"executing",
+	"automatic_continuation",
+	"retrying",
+	"stopping",
+	"awaiting_input",
+	"manual_intervention",
+	"paused",
+	"quiescent",
+];
+
+function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
+	if (
+		!isJsonObject(value) ||
+		typeof value.rootRunId !== "string" ||
+		typeof value.ownerSessionId !== "string" ||
+		typeof value.state !== "string" ||
+		!WORKFLOW_ACTIVITY_STATES.includes(value.state) ||
+		typeof value.reason !== "string" ||
+		!WORKFLOW_ACTIVITY_REASONS.includes(value.reason) ||
+		typeof value.activeExecutionCount !== "number" ||
+		typeof value.actionableBlockCount !== "number" ||
+		typeof value.needsAttention !== "boolean"
+	)
+		return undefined;
+	return {
+		rootRunId: value.rootRunId,
+		ownerSessionId: value.ownerSessionId,
+		state: value.state as WorkflowRootActivity["state"],
+		reason: value.reason as WorkflowRootActivity["reason"],
+		activeExecutionCount: value.activeExecutionCount,
+		actionableBlockCount: value.actionableBlockCount,
+		needsAttention: value.needsAttention,
+	};
+}
+
+function parseWorkflowActivityFrame(value: JsonValue | undefined): WorkflowActivityFrame | undefined {
+	if (value === undefined || !isJsonObject(value) || !isJsonObject(value.cursor)) return undefined;
+	const { epoch, revision } = value.cursor;
+	if (typeof epoch !== "string" || typeof revision !== "number") return undefined;
+	const cursor = { epoch, revision };
+	if (value.kind === "removed") {
+		return typeof value.rootRunId === "string" ? { kind: "removed", cursor, rootRunId: value.rootRunId } : undefined;
+	}
+	if (value.kind === "changed") {
+		const root = value.root === undefined ? undefined : parseWorkflowRoot(value.root);
+		return root ? { kind: "changed", cursor, root } : undefined;
+	}
+	if (value.kind !== "snapshot") return undefined;
+	if (value.availability === "recovering" || value.availability === "unavailable") {
+		return { kind: "snapshot", cursor, availability: value.availability };
+	}
+	if (value.availability !== "ready" || !Array.isArray(value.roots)) return undefined;
+	const roots = value.roots.map(parseWorkflowRoot);
+	return roots.every((root) => root !== undefined)
+		? { kind: "snapshot", cursor, availability: "ready", roots }
+		: undefined;
 }
 
 function parseEngineTerminalControl(value: JsonValue | undefined): EngineTerminalControl | undefined {
@@ -391,6 +454,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
 			return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;
+		case "engine_workflow_activity": {
+			const frame = parseWorkflowActivityFrame(value.frame);
+			return frame ? { type: value.type, frame } : undefined;
+		}
 		case "engine_request_accepted":
 			return typeof value.requestId === "string" && typeof value.command === "string"
 				? { type: value.type, requestId: value.requestId, command: value.command }
