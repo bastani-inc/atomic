@@ -92,6 +92,7 @@ import {
 	inspectPostgresConsumers,
 	type ManagedPostgresMetadata,
 	type ManagedPostgresServer,
+	managedPostgresIdentityMismatches,
 	managedPostgresMetadata,
 	type PostgresConsumerLease,
 	postgresOwnershipDirectory,
@@ -255,13 +256,12 @@ async function ensureCluster(
 			if (unregisteredData) adoptedRegistry = postgresOwnershipDirectory(root, EMBEDDED_PG_MAJOR);
 			if (options.recovery && !metadata)
 				throw new Error("Managed Postgres recovery requires existing ownership records.");
-			if (
-				options.recovery &&
-				(metadata?.clusterId !== options.recovery.clusterId ||
-					metadata.directoryIdentity !== options.recovery.directoryIdentity ||
-					metadata.server?.systemIdentifier !== options.recovery.server?.systemIdentifier)
-			) {
-				throw new Error("Managed Postgres recovery identity changed while waiting for ownership.");
+			const recoveryMismatches =
+				options.recovery && metadata ? managedPostgresIdentityMismatches(options.recovery, metadata) : [];
+			if (recoveryMismatches.length > 0) {
+				throw new Error(
+					`Managed Postgres recovery identity changed (${recoveryMismatches.join(", ")}) while waiting for ownership.`,
+				);
 			}
 			const existing = metadata && managedPostmaster(metadata);
 			let port = existing?.port ?? metadata?.server?.port ?? preferredPort;
@@ -552,13 +552,10 @@ async function ensureCluster(
 				};
 				const inspect = async (probe = options.probeIdentity) => {
 					const current = managedPostgresMetadata(root, EMBEDDED_PG_MAJOR, false);
-					if (
-						current.clusterId !== pinned.clusterId ||
-						current.directoryIdentity !== pinned.directoryIdentity ||
-						current.server?.systemIdentifier !== pinned.server.systemIdentifier
-					) {
+					const mismatches = managedPostgresIdentityMismatches(pinned, current);
+					if (mismatches.length > 0) {
 						throw new Error(
-							"Managed Postgres health identity mismatch. Preserve the data and ownership records.",
+							`Managed Postgres health identity mismatch (${mismatches.join(", ")}). Preserve the data and ownership records.`,
 						);
 					}
 					const server = current.server;
@@ -633,8 +630,11 @@ async function stopBrokenManagedPostmaster(
 ): Promise<boolean> {
 	const check = () => {
 		const current = managedPostgresMetadata(context.baseDir, metadata.major, false);
-		if (current.clusterId !== metadata.clusterId || current.directoryIdentity !== metadata.directoryIdentity) {
-			throw new Error("Managed Postgres restart identity changed. Preserve the server and data directory.");
+		const mismatches = managedPostgresIdentityMismatches(metadata, current, false);
+		if (mismatches.length > 0) {
+			throw new Error(
+				`Managed Postgres restart identity changed (${mismatches.join(", ")}). Preserve the server and data directory.`,
+			);
 		}
 		return { current, process: verifyManagedPostmasterProcess(current, verified) };
 	};

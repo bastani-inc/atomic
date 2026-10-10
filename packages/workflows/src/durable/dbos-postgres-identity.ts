@@ -1,12 +1,12 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { endianness } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { Client } from "pg";
 import { isMonitoringConnectionTimeout, isQueryReadTimeout } from "./dbos-postgres-health.js";
 import {
 	assertManagedPostmaster,
+	controlFileSystemIdentifier,
 	type ManagedPostgresMetadata,
 	type ManagedPostgresServer,
 } from "./dbos-postgres-ownership.js";
@@ -114,13 +114,7 @@ export function managedPostmaster(metadata: ManagedPostgresMetadata): ManagedPos
 }
 
 function managedSystemIdentifier(metadata: ManagedPostgresMetadata): string {
-	const controlPath = join(metadata.dataDir, "global", "pg_control");
-	if (!lstatSync(controlPath).isFile()) throw new Error("Untrusted managed Postgres control file.");
-	const control = readFileSync(controlPath);
-	// PostgreSQL's ControlFileData starts with the native-endian uint64 system identifier.
-	const systemIdentifier = (
-		endianness() === "LE" ? control.readBigUInt64LE(0) : control.readBigUInt64BE(0)
-	).toString();
+	const systemIdentifier = controlFileSystemIdentifier(metadata.dataDir);
 	if (metadata.server && metadata.server.systemIdentifier !== systemIdentifier) {
 		throw new Error("Managed Postgres system identity mismatch. Preserve the existing data.");
 	}

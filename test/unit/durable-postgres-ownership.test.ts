@@ -90,6 +90,50 @@ test("replaced data and malformed or displaced ownership evidence fail closed", 
 	assert.equal(readTextSync(join(`${data}.preserved`, "PG_VERSION"), "utf8"), "18\n");
 });
 
+const driftedDevice = (identity: string) => {
+	const [device, inode] = identity.split(":");
+	return `${BigInt(device!) + 1n}:${inode}`;
+};
+const writeClusterRecord = (root: string, record: object) =>
+	writeTextSync(join(postgresOwnershipDirectory(root, 18), "cluster.json"), JSON.stringify(record));
+
+test("reads a registered cluster after device-only drift (#3555)", () => {
+	const { root } = fixture();
+	const metadata = managedPostgresMetadata(root, 18, true);
+	const server = { port: 5439, pid: 6006, started: 1, systemIdentifier: "4702111234474983745" };
+	writeClusterRecord(root, { ...metadata, directoryIdentity: driftedDevice(metadata.directoryIdentity), server });
+	assert.deepEqual(managedPostgresMetadata(root, 18, false), { ...metadata, server });
+});
+
+test("ownership mismatches fail closed and name the mismatched fields (#3555)", () => {
+	const { root, data } = fixture();
+	const metadata = managedPostgresMetadata(root, 18, true);
+	const [device, inode] = metadata.directoryIdentity.split(":");
+	const server = { port: 5439, pid: 6006, started: 1, systemIdentifier: "4702111234474983745" };
+	const cases: [object, RegExp][] = [
+		[
+			{ ...metadata, directoryIdentity: `${device}:${BigInt(inode!) + 1n}` },
+			/identity mismatch \(inode\): .*Preserve/,
+		],
+		[
+			{
+				...metadata,
+				directoryIdentity: driftedDevice(metadata.directoryIdentity),
+				server: { ...server, systemIdentifier: "1" },
+			},
+			/identity mismatch \(systemIdentifier\)/,
+		],
+		[
+			{ ...metadata, dataDir: `${data}-moved`, clusterId: "x", major: 17 },
+			/identity mismatch \(clusterId, dataDir, major\)/,
+		],
+	];
+	for (const [record, message] of cases) {
+		writeClusterRecord(root, record);
+		assert.throws(() => managedPostgresMetadata(root, 18, false), message);
+	}
+});
+
 test("stale-looking live or reused PIDs are retained, only proven dead consumers are reaped", () => {
 	const { root } = fixture();
 	const metadata = managedPostgresMetadata(root, 18, true);

@@ -9,6 +9,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { endianness } from "node:os";
 import { join } from "node:path";
 
 export interface ManagedPostgresServer {
@@ -54,7 +55,41 @@ export function postgresOwnershipDirectory(baseDir: string, major: number): stri
 	return join(baseDir, `v${major}.shared`);
 }
 
-/** Called under the cluster setup lock. Never rewrites identity or initializes data. */
+/** PostgreSQL's ControlFileData starts with the native-endian uint64 system identifier. */
+export function controlFileSystemIdentifier(dataDir: string): string {
+	const controlPath = join(dataDir, "global", "pg_control");
+	if (!lstatSync(controlPath).isFile()) throw new Error("Untrusted managed Postgres control file.");
+	const control = readFileSync(controlPath);
+	return (endianness() === "LE" ? control.readBigUInt64LE(0) : control.readBigUInt64BE(0)).toString();
+}
+
+const directoryInode = (identity: string) => /^\d+:(\d+)$/.exec(identity)?.[1];
+
+/**
+ * Names the ownership fields that differ. The device half of `directoryIdentity` is not compared:
+ * APFS assigns device numbers per boot, so only the inode identifies the directory across reboots.
+ */
+export function managedPostgresIdentityMismatches(
+	expected: ManagedPostgresMetadata,
+	current: ManagedPostgresMetadata,
+	compareSystemIdentifier = true,
+): string[] {
+	const inode = directoryInode(expected.directoryIdentity);
+	return [
+		current.clusterId !== expected.clusterId && "clusterId",
+		current.dataDir !== expected.dataDir && "dataDir",
+		(inode === undefined || inode !== directoryInode(current.directoryIdentity)) && "inode",
+		current.major !== expected.major && "major",
+		compareSystemIdentifier &&
+			current.server?.systemIdentifier !== expected.server?.systemIdentifier &&
+			"systemIdentifier",
+	].filter((field): field is string => field !== false);
+}
+
+/**
+ * Never rewrites identity or initializes data. A record whose directory differs only by device
+ * number is returned with the current identity; the setup-lock holder persists it on publish.
+ */
 export function managedPostgresMetadata(baseDir: string, major: number, create: boolean): ManagedPostgresMetadata {
 	if (!lstatSync(join(baseDir, `v${major}`)).isDirectory()) {
 		throw new Error("Managed Postgres data must be a real directory, not a link.");
@@ -87,26 +122,43 @@ export function managedPostgresMetadata(baseDir: string, major: number, create: 
 	}
 	trustedPath(path);
 	const record = JSON.parse(readFileSync(path, "utf8")) as ManagedPostgresMetadata | null;
-	if (
-		record?.version !== 1 ||
-		typeof record.clusterId !== "string" ||
-		!/^[0-9a-f-]{36}$/.test(record.clusterId) ||
-		record.dataDir !== dataDir ||
-		record.directoryIdentity !== directoryIdentity ||
-		record.major !== major ||
-		(record.server !== undefined &&
-			(!Number.isInteger(record.server?.port) ||
-				record.server.port < 1 ||
-				record.server.port > 65535 ||
-				!Number.isSafeInteger(record.server.pid) ||
-				record.server.pid <= 0 ||
-				!Number.isSafeInteger(record.server.started) ||
-				record.server.started <= 0 ||
-				!/^\d+$/.test(record.server.systemIdentifier)))
-	) {
-		throw new Error(`Managed Postgres cluster identity mismatch: ${path}. Preserve the data and ownership records.`);
+	const mismatches = [
+		...(record?.version !== 1 ? ["version"] : []),
+		...(typeof record?.clusterId !== "string" || !/^[0-9a-f-]{36}$/.test(record.clusterId) ? ["clusterId"] : []),
+		...(record?.dataDir !== dataDir ? ["dataDir"] : []),
+		...(typeof record?.directoryIdentity !== "string" || directoryInode(record.directoryIdentity) !== String(stat.ino)
+			? ["inode"]
+			: []),
+		...(record?.major !== major ? ["major"] : []),
+		...(record?.server !== undefined &&
+		(!Number.isInteger(record.server?.port) ||
+			record.server.port < 1 ||
+			record.server.port > 65535 ||
+			!Number.isSafeInteger(record.server.pid) ||
+			record.server.pid <= 0 ||
+			!Number.isSafeInteger(record.server.started) ||
+			record.server.started <= 0 ||
+			!/^\d+$/.test(record.server.systemIdentifier))
+			? ["server"]
+			: []),
+	];
+	const mismatch = (fields: readonly string[]) =>
+		new Error(
+			`Managed Postgres cluster identity mismatch (${fields.join(", ")}): ${path}. Preserve the data and ownership records.`,
+		);
+	if (record === null || mismatches.length > 0) throw mismatch(mismatches);
+	if (record.directoryIdentity === directoryIdentity) return record;
+	const control = record.server && controlSystemIdentifierIfReadable(dataDir);
+	if (control !== undefined && control !== record.server?.systemIdentifier) throw mismatch(["systemIdentifier"]);
+	return { ...record, directoryIdentity };
+}
+
+function controlSystemIdentifierIfReadable(dataDir: string): string | undefined {
+	try {
+		return controlFileSystemIdentifier(dataDir);
+	} catch {
+		return undefined;
 	}
-	return record;
 }
 
 /** Publish only under the setup lock, after SQL and local identity agree. */

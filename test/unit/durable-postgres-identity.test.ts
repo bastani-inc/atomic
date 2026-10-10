@@ -714,6 +714,97 @@ test("changed PostgreSQL system identity fails before any restart", async () => 
 	assert.equal(starts, 0);
 });
 
+const driftedDevice = (identity: string) => {
+	const [device, inode] = identity.split(":");
+	return `${BigInt(device!) + 1n}:${inode}`;
+};
+const changedInode = (identity: string) => {
+	const [device, inode] = identity.split(":");
+	return `${device}:${BigInt(inode!) + 1n}`;
+};
+const writeClusterRecord = (f: ReturnType<typeof fixture>, record: object) =>
+	writeTextSync(join(f.root, "v18.shared", "cluster.json"), JSON.stringify(record));
+
+test("attaches a cleanly stopped registered cluster after device-only drift and re-stamps its record (#3555)", async () => {
+	const f = fixture();
+	f.pidfile(12345);
+	publishPostgresServer(f.root, f.metadata, managedPostmaster(f.metadata)!);
+	rmSync(join(f.data, "postmaster.pid"));
+	const recorded = managedPostgresMetadata(f.root, 18, false);
+	writeClusterRecord(f, { ...recorded, directoryIdentity: driftedDevice(recorded.directoryIdentity) });
+	let starts = 0;
+	hooks.setRetainedPostgresSpawner((options) => {
+		starts++;
+		f.pidfile(Number(options.args[options.args.indexOf("-p") + 1]));
+		return {
+			pid: process.pid,
+			wait: async () => {
+				throw new Error("Timed out waiting for the retained Postgres process to exit");
+			},
+			interruptAndWait: async () => ({ exited: true, signaled: true }),
+			release() {},
+		};
+	});
+	await hooks.ensureCluster(f.options);
+	await shutdownEmbeddedDbosPostgres();
+	assert.equal(starts, 1);
+	const path = join(f.root, "v18.shared", "cluster.json");
+	const restamped = JSON.parse(readTextSync(path, "utf8")) as typeof recorded;
+	assert.equal(restamped.directoryIdentity, recorded.directoryIdentity);
+	assert.deepEqual({ ...restamped, server: undefined }, { ...recorded, server: undefined });
+	assert.equal(restamped.server?.systemIdentifier, recorded.server?.systemIdentifier);
+	if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+});
+
+test("health and recovery checks accept device-only drift and name a changed inode (#3555)", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	await hooks.ensureCluster(f.options);
+	const pinned = managedPostgresMetadata(f.root, 18, false);
+	const drifted = { ...pinned, directoryIdentity: driftedDevice(pinned.directoryIdentity) };
+	writeClusterRecord(f, drifted);
+	assert.equal(await embeddedPostgresHealth()!.check(), embeddedDbosSystemDatabaseUrl());
+	await hooks.ensureCluster({ ...f.options, recovery: drifted });
+	assert.equal(managedPostgresMetadata(f.root, 18, false).directoryIdentity, pinned.directoryIdentity);
+	await assert.rejects(
+		hooks.ensureCluster({
+			...f.options,
+			recovery: { ...pinned, directoryIdentity: changedInode(pinned.directoryIdentity) },
+		}),
+		/recovery identity changed \(inode\)/,
+	);
+});
+
+test("restart checks accept device-only drift and name a changed inode (#3555)", async () => {
+	const f = fixture();
+	const port = await availablePostgresPort(0);
+	f.pidfile(port);
+	externalPostmaster(f, port);
+	const server = managedPostmaster(f.metadata)!;
+	publishPostgresServer(f.root, f.metadata, server);
+	const recorded = managedPostgresMetadata(f.root, 18, false);
+	writeClusterRecord(f, { ...recorded, directoryIdentity: driftedDevice(recorded.directoryIdentity) });
+	const stop = (metadata: typeof recorded) =>
+		hooks.stopBrokenManagedPostmaster(
+			metadata,
+			server,
+			f.options.binaries.pg_ctl,
+			{
+				baseDir: f.root,
+				runAsOwner: async () => {
+					throw new Error("unsafe pg_ctl");
+				},
+			},
+			{ ownerToken: "fixture", refresh: () => true },
+		);
+	assert.equal(await stop({ ...f.metadata, directoryIdentity: driftedDevice(f.metadata.directoryIdentity) }), false);
+	await assert.rejects(
+		stop({ ...f.metadata, directoryIdentity: changedInode(f.metadata.directoryIdentity) }),
+		/restart identity changed \(inode\)/,
+	);
+});
+
 // #3074: all network fixtures own ephemeral loopback listeners; no existing service is touched.
 test("occupied preferred port is persisted atomically and rediscovered after reload", async () => {
 	const foreign = await listener();
