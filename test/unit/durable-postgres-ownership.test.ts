@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { renameSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
@@ -132,6 +132,14 @@ test("ownership mismatches fail closed and name the mismatched fields (#3555)", 
 		writeClusterRecord(root, record);
 		assert.throws(() => managedPostgresMetadata(root, 18, false), message);
 	}
+});
+test("device-only drift fails closed when pg_control cannot be verified (#3555)", () => {
+	const { root, data } = fixture();
+	const metadata = managedPostgresMetadata(root, 18, true);
+	const server = { port: 5439, pid: 6006, started: 1, systemIdentifier: "4702111234474983745" };
+	writeClusterRecord(root, { ...metadata, directoryIdentity: driftedDevice(metadata.directoryIdentity), server });
+	rmSync(join(data, "global", "pg_control"));
+	assert.throws(() => managedPostgresMetadata(root, 18, false), /identity mismatch \(systemIdentifier\)/);
 });
 
 test("stale-looking live or reused PIDs are retained, only proven dead consumers are reaped", () => {

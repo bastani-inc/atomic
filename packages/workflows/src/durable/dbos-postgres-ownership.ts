@@ -148,12 +148,13 @@ export function managedPostgresMetadata(baseDir: string, major: number, create: 
 		);
 	if (record === null || mismatches.length > 0) throw mismatch(mismatches);
 	if (record.directoryIdentity === directoryIdentity) return record;
-	const control = record.server && controlSystemIdentifierIfReadable(dataDir);
-	if (control !== undefined && control !== record.server?.systemIdentifier) throw mismatch(["systemIdentifier"]);
+	if (record.server && controlSystemIdentifierOrUndefined(dataDir) !== record.server.systemIdentifier) {
+		throw mismatch(["systemIdentifier"]);
+	}
 	return { ...record, directoryIdentity };
 }
 
-function controlSystemIdentifierIfReadable(dataDir: string): string | undefined {
+function controlSystemIdentifierOrUndefined(dataDir: string): string | undefined {
 	try {
 		return controlFileSystemIdentifier(dataDir);
 	} catch {
