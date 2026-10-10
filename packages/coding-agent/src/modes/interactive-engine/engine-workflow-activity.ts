@@ -11,10 +11,7 @@ function withoutGraph({ graph: _graph, ...summary }: WorkflowRootActivity): Work
  * program status, which needs each root's state and outcome but never its graph, so frames that
  * change only the graph are not sent.
  */
-export function forwardWorkflowActivity(
-	session: AgentSession,
-	write: (line: string) => void,
-): () => void {
+export function forwardWorkflowActivity(session: AgentSession, write: (line: string) => void): () => void {
 	const sent = new Map<string, string>();
 	const subscription = session.workflows.observe((frame) => {
 		let forward: WorkflowActivityFrame;
