@@ -5,6 +5,7 @@ import type { AgentSession, CompactionReason } from "../../core/agent-session.js
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
@@ -291,6 +292,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		return this.client.onInteractiveEngineMessage(listener);
+	}
+	/** Workflow activity of the engine child, starting from its current snapshot. */
+	onWorkflowActivity(listener: (frame: WorkflowActivityFrame) => void): () => void {
+		return this.client.onInteractiveEngineWorkflowActivity(listener);
 	}
 	onKeybindingState(listener: (state: EngineKeybindingState) => void): () => void {
 		return this.client.onInteractiveEngineKeybindingState(listener);

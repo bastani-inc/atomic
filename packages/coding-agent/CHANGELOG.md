@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed workflows falling back to a non-durable in-memory backend after a macOS reboot because the managed PostgreSQL cluster was refused with `Managed Postgres cluster identity mismatch` when only the data volume's device number changed. The cluster now attaches and its ownership record is updated when the data directory inode, path, cluster ID, major version, and PostgreSQL system identifier still match; genuine identity mismatches name the fields that differ ([#3555](https://github.com/bastani-inc/atomic/issues/3555)).
+- Fixed terminal program status (OSC 7501) ignoring workflow runs: it now reports `working` while a workflow run executes, `blocked` while a run or stage waits for your input, `error` when a run fails (held until your next message, even after the run-end notice turn settles), and `done` once the agent and all runs finish ([#3556](https://github.com/bastani-inc/atomic/issues/3556)).
 
 ## [0.9.32] - 2026-10-10
 
