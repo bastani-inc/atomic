@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the managed PostgreSQL cluster being refused with `Managed Postgres cluster identity mismatch` after a macOS reboot changed the data volume's device number. Atomic now attaches the cluster and updates its ownership record when the data directory inode, path, cluster ID, major version, and PostgreSQL system identifier still match, and genuine identity mismatches name the fields that differ ([#3555](https://github.com/bastani-inc/atomic/issues/3555)).
+
 ## [0.9.32] - 2026-10-10
 
 ### Fixed
