@@ -41,3 +41,39 @@ export function forwardWorkflowActivity(
 	});
 	return () => subscription.dispose();
 }
+
+/**
+ * The host's view of the engine's workflow activity. The engine publishes its snapshot as soon as it
+ * binds, which can be before the host attaches an observer, so the host keeps the frames folded into
+ * one current snapshot and replays that to every observer that attaches later.
+ */
+export class WorkflowActivityMirror {
+	private cursor: WorkflowActivityFrame["cursor"] | undefined;
+	private availability: "ready" | "recovering" | "unavailable" = "unavailable";
+	private readonly roots = new Map<string, WorkflowRootActivity>();
+
+	apply(frame: WorkflowActivityFrame): void {
+		this.cursor = frame.cursor;
+		if (frame.kind === "snapshot") {
+			this.availability = frame.availability;
+			this.roots.clear();
+			if (frame.availability === "ready") for (const root of frame.roots) this.roots.set(root.rootRunId, root);
+		} else if (frame.kind === "changed") this.roots.set(frame.root.rootRunId, frame.root);
+		else this.roots.delete(frame.rootRunId);
+	}
+
+	/** The snapshot a late observer starts from; absent until the engine published something. */
+	current(): WorkflowActivityFrame | undefined {
+		if (!this.cursor) return undefined;
+		const cursor = { ...this.cursor };
+		return this.availability === "ready"
+			? { kind: "snapshot", cursor, availability: "ready", roots: [...this.roots.values()] }
+			: { kind: "snapshot", cursor, availability: this.availability };
+	}
+
+	reset(): void {
+		this.cursor = undefined;
+		this.availability = "unavailable";
+		this.roots.clear();
+	}
+}

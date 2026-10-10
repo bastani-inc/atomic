@@ -157,15 +157,22 @@ export class ProgramStatusReporter {
 		return status;
 	}
 
-	/** Fixed text only: prompts raised by workflows never reach the terminal. */
+	/**
+	 * A root waits for the user when it is blocked, or when a wait is open beside executing work: the
+	 * projection reports such a root as `working`. Fixed text only: prompts raised by workflows never
+	 * reach the terminal.
+	 */
 	private workflowBlockedStatus(): ProgramStatus | undefined {
-		const blocked = [...this.roots.values()].filter((root) => root.state === "blocked");
-		if (blocked.length === 0) return undefined;
-		const awaitingInput = blocked.some((root) => root.reason === "awaiting_input");
+		const waiting = [...this.roots.values()].filter(
+			(root) => root.state === "blocked" || root.actionableBlockCount > 0,
+		);
+		if (waiting.length === 0) return undefined;
+		// A root that is still working cannot say whether its wait is a prompt or a manual decision.
+		const needsDecision = waiting.every((root) => root.reason === "manual_intervention");
 		return {
 			state: "blocked",
 			kind: "question",
-			message: awaitingInput ? "Workflow waiting for input" : "Workflow needs attention",
+			message: needsDecision ? "Workflow needs attention" : "Workflow waiting for input",
 		};
 	}
 }

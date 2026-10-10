@@ -6,7 +6,10 @@ import type {
 	WorkflowActivityObserver,
 	WorkflowRootActivity,
 } from "../src/core/extensions/workflow-events.js";
-import { forwardWorkflowActivity } from "../src/modes/interactive-engine/engine-workflow-activity.js";
+import {
+	forwardWorkflowActivity,
+	WorkflowActivityMirror,
+} from "../src/modes/interactive-engine/engine-workflow-activity.js";
 import {
 	type InteractiveEngineMessage,
 	parseInteractiveEngineMessage,
@@ -108,4 +111,30 @@ test("round-trips workflow activity frames through the engine protocol and rejec
 			undefined,
 		);
 	}
+});
+
+test("mirrors the frames seen so far as one current snapshot for a late observer (#3556)", () => {
+	const mirror = new WorkflowActivityMirror();
+	assert.equal(mirror.current(), undefined, "nothing was published yet");
+	mirror.apply({ kind: "snapshot", cursor, availability: "ready", roots: [root({ rootRunId: "a" })] });
+	mirror.apply({ kind: "changed", cursor, root: root({ rootRunId: "b" }) });
+	mirror.apply({ kind: "changed", cursor, root: root({ rootRunId: "a", activeExecutionCount: 2 }) });
+	mirror.apply({ kind: "removed", cursor, rootRunId: "b" });
+	mirror.apply({ kind: "changed", cursor: { epoch: "e", revision: 7 }, root: root({ rootRunId: "c" }) });
+	assert.deepEqual(mirror.current(), {
+		kind: "snapshot",
+		cursor: { epoch: "e", revision: 7 },
+		availability: "ready",
+		roots: [root({ rootRunId: "a", activeExecutionCount: 2 }), root({ rootRunId: "c" })],
+	});
+});
+
+test("mirrors an unavailable source without roots and starts over on reset (#3556)", () => {
+	const mirror = new WorkflowActivityMirror();
+	mirror.apply({ kind: "snapshot", cursor, availability: "ready", roots: [root()] });
+	mirror.apply({ kind: "snapshot", cursor, availability: "recovering" });
+	assert.deepEqual(mirror.current(), { kind: "snapshot", cursor, availability: "recovering" });
+	mirror.apply({ kind: "snapshot", cursor, availability: "ready", roots: [root()] });
+	mirror.reset();
+	assert.equal(mirror.current(), undefined, "a replaced engine generation owns none of the old runs");
 });

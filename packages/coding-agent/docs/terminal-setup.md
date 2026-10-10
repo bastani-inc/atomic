@@ -190,7 +190,7 @@ Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://w
 | State | When |
 |---|---|
 | `working` | An agent run, compaction, or [workflow](/workflows) run is in progress, even when the chat agent is idle. The message is the session name, or `Compacting context`. |
-| `blocked` | An extension dialog, login, or workflow run or stage waits for you. The message is the dialog title, or `Workflow waiting for input` or `Workflow needs attention`. |
+| `blocked` | An extension dialog, login, or workflow run or stage waits for you, even while other stages of that run are still executing. The message is the dialog title, or `Workflow waiting for input` or `Workflow needs attention`. |
 | `done` | The agent run and workflow runs finished successfully. The message is the session name. |
 | `error` | A run ended with an error that is not retried, or a workflow run failed. The message is the first line of the error, or `Workflow failed`. |
 | `idle` | Atomic started, or you cancelled the run. |

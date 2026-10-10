@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
+import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { sleep } from "../../utils/sleep.ts";
@@ -11,6 +12,7 @@ import type {
 	InteractiveEngineGenerationEndKind,
 } from "../interactive-engine/engine-generation.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
+import { WorkflowActivityMirror } from "../interactive-engine/engine-workflow-activity.ts";
 import {
 	type EngineKeybindingState,
 	type InteractiveEngineCommand,
@@ -84,6 +86,7 @@ export class RpcClient extends RpcClientApi {
 	private readonly pendingExtensionUIRequests = new GenerationBuffer<RpcExtensionUIRequest>();
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private latestEngineKeybindingState: EngineKeybindingState | undefined;
+	private readonly workflowActivity = new WorkflowActivityMirror();
 	private readonly pendingEngineMessages = new GenerationBuffer<InteractiveEngineMessage>();
 	private readonly pendingProjectTrustFrames = new GenerationBuffer<string>();
 	private boundGeneration = 0;
@@ -339,6 +342,23 @@ export class RpcClient extends RpcClientApi {
 	}
 
 	/**
+	 * Subscribe to the engine's workflow activity. The engine publishes its snapshot as soon as it binds,
+	 * so an observer that attaches later starts from the current snapshot instead of missing it.
+	 */
+	onInteractiveEngineWorkflowActivity(listener: (frame: WorkflowActivityFrame) => void): () => void {
+		const messageListener = (message: InteractiveEngineMessage): void => {
+			if (message.type === "engine_workflow_activity") listener(message.frame);
+		};
+		this.engineMessageListeners.push(messageListener);
+		const current = this.workflowActivity.current();
+		if (current) listener(current);
+		return () => {
+			const index = this.engineMessageListeners.indexOf(messageListener);
+			if (index !== -1) this.engineMessageListeners.splice(index, 1);
+		};
+	}
+
+	/**
 	 * Subscribe to host-local generation death. Fires at most once per
 	 * generation, synchronously, before any restart work. A death that has
 	 * already happened for the current generation replays immediately, so a
@@ -502,6 +522,7 @@ export class RpcClient extends RpcClientApi {
 			}
 		}
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
+		if (message.type === "engine_workflow_activity") this.workflowActivity.apply(message.frame);
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
 		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
@@ -544,6 +565,7 @@ export class RpcClient extends RpcClientApi {
 		// BEFORE teardown runs, so no listener can drain a stale mount frame
 		// while it is closing that very generation's components.
 		this.pendingEngineMessages.dropGeneration(generation);
+		this.workflowActivity.reset();
 		this.pendingExtensionUIRequests.dropGeneration(generation);
 		this.pendingProjectTrustFrames.dropGeneration(generation);
 		for (const listener of [...this.generationEndedListeners]) listener(event);

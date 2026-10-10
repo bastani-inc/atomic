@@ -115,9 +115,9 @@ function observeEngineWorkflowActivity(
 	runtime: IsolatedInteractiveRuntime,
 	observer: (frame: WorkflowActivityFrame) => void,
 ): () => void {
-	const disposeMessages = runtime.onEngineMessage((message) => {
-		if (message.type === "engine_workflow_activity") observer(message.frame);
-	});
+	// The runtime replays the engine's current snapshot: the engine published it at bind time, which can
+	// be long before this observer attaches.
+	const disposeMessages = runtime.onWorkflowActivity(observer);
 	const disposeEnded = runtime.onGenerationEnded(() => observer(unavailableWorkflowActivity));
 	return () => {
 		disposeMessages();

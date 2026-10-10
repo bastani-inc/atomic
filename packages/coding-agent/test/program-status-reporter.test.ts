@@ -173,6 +173,48 @@ test("reports blocked while a workflow run or stage waits for input without expo
 	assert.ok(!JSON.stringify(reports).includes("approve"));
 });
 
+// The projection reports a root `working` whenever anything executes, even while it also waits for the user.
+const waitingBesideWork = (id = "run") =>
+	root(id, {
+		state: "working",
+		reason: "executing",
+		activeExecutionCount: 1,
+		actionableBlockCount: 1,
+		needsAttention: true,
+	});
+
+test("reports blocked for a stage question or run gate beside executing work in the same run (#3556)", () => {
+	const { reporter, send, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working()));
+	reporter.handleWorkflowActivity(changed(waitingBesideWork()));
+	assert.deepEqual(last(), {
+		state: "blocked",
+		kind: "question",
+		message: "Workflow waiting for input",
+		app: APP_NAME,
+	});
+	send({ type: "agent_start" });
+	assert.equal(last()?.state, "blocked", "a main turn does not hide a wait beside executing work");
+	send(assistantEnd("stop"), settled);
+	assert.equal(last()?.state, "blocked", "a settling main turn does not hide it either");
+	// Answering resolves the wait while the sibling work keeps executing.
+	reporter.handleWorkflowActivity(changed(working()));
+	assert.equal(last()?.state, "working");
+	reporter.handleWorkflowActivity(changed(completed()));
+	assert.equal(last()?.state, "done");
+});
+
+test("reports blocked for a wait beside executing work in another run and keeps dialogs first (#3556)", () => {
+	const { reporter, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working("a"), waitingBesideWork("b")));
+	assert.equal(last()?.state, "blocked");
+	reporter.setBlocked("extension-dialog", { kind: "permission", message: "Allow bash?" });
+	assert.equal(last()?.kind, "permission");
+	reporter.setBlocked("extension-dialog", undefined);
+	reporter.handleWorkflowActivity(changed(working("b")));
+	assert.equal(last()?.state, "working");
+});
+
 test("keeps extension dialogs ahead of workflow state (#3556)", () => {
 	const { reporter, last } = setup();
 	reporter.handleWorkflowActivity(snapshot(awaitingInput()));
