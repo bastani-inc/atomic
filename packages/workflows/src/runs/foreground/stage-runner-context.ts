@@ -13,6 +13,7 @@ import {
 	stageOutputInstruction,
 	validatePromptOutputOptions,
 } from "./stage-runner-output.js";
+import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
 import {
 	formatStructuredOutputCorrectionPrompt,
 	isStructuredOutputContractFailure,
@@ -27,6 +28,12 @@ import type { InternalStageContext, StageRunnerOpts } from "./stage-runner-types
 
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
 	const { stageId, stageName, adapters, runId, workflowIntercomGroup, signal, stageOptions, executionMode } = opts;
+	const stageCwd =
+		stageOptions?.cwd ??
+		stageOptions?.sessionManager?.getCwd() ??
+		agentSessionAdapterDefaultCwd(adapters.agentSession) ??
+		opts.defaultCwd ??
+		process.cwd();
 	const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<Static<TSchema>>() : undefined;
 	const structuredOutputExecutionCapture: StructuredOutputExecutionCapture<Static<TSchema>> | undefined =
 		stageOptions?.schema ? {} : undefined;
@@ -44,7 +51,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		stageOptions: effectiveStageOptions,
 		executionMode,
 	};
-	const controller = new StageSessionController(opts, meta, effectiveStageOptions, structuredOutputCapture);
+	const controller = new StageSessionController(
+		{ ...opts, defaultCwd: stageCwd },
+		meta,
+		effectiveStageOptions,
+		structuredOutputCapture,
+	);
 	let lastAssistantText: string | undefined;
 	let lastFinalizedOutput: string | undefined;
 	let lastFinalizedMessageCount: number | undefined;
@@ -61,7 +73,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			lastFinalizedOutput = await finalizePromptOutput(
 				text,
 				artifactOptions!,
-				runtimeCwd(),
+				stageCwd,
 				runId,
 				controller.currentSession?.messages,
 			);
@@ -69,10 +81,6 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			lastAssistantText = lastFinalizedOutput;
 		}
 		return lastFinalizedOutput!;
-	}
-
-	function runtimeCwd(): string {
-		return typeof effectiveStageOptions?.cwd === "string" ? effectiveStageOptions.cwd : process.cwd();
 	}
 
 	function finalizedOutputIsCurrent(): boolean {
@@ -123,13 +131,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				);
 				if (typeof rawText !== "string") return rawText as never;
 				adapterMessages = assistantMessage(rawText);
-				lastAssistantText = await finalizePromptOutput(
-					rawText,
-					outputOptions,
-					runtimeCwd(),
-					runId,
-					adapterMessages,
-				);
+				lastAssistantText = await finalizePromptOutput(rawText, outputOptions, stageCwd, runId, adapterMessages);
 				lastFinalizedOutput = lastAssistantText;
 				lastFinalizedMessageCount = controller.currentSession?.messages.length;
 				return lastAssistantText;
@@ -192,7 +194,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				lastAssistantText = await finalizePromptOutput(
 					rawOutputText,
 					outputOptions,
-					runtimeCwd(),
+					stageCwd,
 					runId,
 					sessionMessages,
 				);
@@ -207,7 +209,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			lastAssistantText = await finalizePromptOutput(
 				rawText,
 				outputOptions,
-				runtimeCwd(),
+				stageCwd,
 				runId,
 				controller.currentSession?.messages,
 			);

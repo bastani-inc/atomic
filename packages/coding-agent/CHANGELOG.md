@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow stages in SDK-hosted sessions losing extensions supplied through `additionalExtensionPaths` and `extensionFactories`, and using the host process directory instead of the owning session's working directory when no stage `cwd` is set. Stage reports use that same resolved directory ([#3551](https://github.com/bastani-inc/atomic/issues/3551)).
+
 ## [0.9.31] - 2026-10-09
 
 ### Fixed

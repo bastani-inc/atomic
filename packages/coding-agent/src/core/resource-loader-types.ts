@@ -56,6 +56,7 @@ export interface ResourceLoaderReloadTransaction {
 
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
+	getInheritanceSnapshot?(): DefaultResourceLoaderInheritanceSnapshot;
 	getWorkflowResources?(): ResolvedResource[];
 	refreshWorkflowResources?(): Promise<ResolvedResource[]>;
 	getMcpServerContributions?(): McpServerContribution[];

@@ -763,6 +763,8 @@ readonly agentDir?: string;
 
 Select the stage working directory and agent configuration directory. Worktree-enabled cwd values are remapped and contained by the rules above.
 
+Without a stage `cwd`, stages use the workflow invocation directory. For workflows launched from an SDK session, this is the owning session's `cwd`, even when the host process runs elsewhere. A `cwd` configured through `createAgentSessionAdapter()` takes precedence over that default.
+
 ### Host-supplied SDK seams
 
 ```typescript

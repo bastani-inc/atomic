@@ -147,6 +147,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 				getMcpServers: () => this.delegate.getMcpServerContributions?.() ?? [],
 			},
 			target.runtime,
+			() => this.delegate.getInheritanceSnapshot?.() ?? {},
 		);
 		for (const extension of loaded.extensions) markTrustedMandatoryRuntimeExtension(extension);
 		this.extensions = {

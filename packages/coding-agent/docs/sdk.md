@@ -353,13 +353,15 @@ Observation can start before the workflows package has finished loading; the fir
 
 Children inherit the invoking session's model/auth runtime, settings, agent directory, human-input callbacks, and diagnostic sink. Choosing a child model or fallback does not switch to global credentials.
 
+Workflow stages also inherit extensions supplied to the parent's `DefaultResourceLoader` through `additionalExtensionPaths` and `extensionFactories`. Factories run again for each stage. Keep parent-only setup in a session callback such as `session_start`, and return early from that callback when `ctx.subagentPolicy` is set. This skips the setup, not factory construction or handler registration. Do not rely on `pi.subagentPolicy` during factory construction: stage resources can load before the session policy is attached.
+
 The child working directory resolves in this order:
 
 1. Explicit child `cwd`.
 2. A supplied child `sessionManager.getCwd()`.
 3. The invoking session's directory.
 
-Relative paths resolve from the invoking session without changing the process working directory.
+Child-relative paths, including workflow report outputs, use the resolved child directory without changing the process working directory.
 
 Omitted or `undefined` child options retain inherited configuration, including individual builtin flags and host bindings. Use `humanInput: null` to withdraw input explicitly; empty arrays and other explicit values keep their normal meanings, subject to the parent's capability ceiling.
 

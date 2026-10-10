@@ -498,7 +498,7 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 	test(
-		"inherits package extension tools through the real workflow stage session factory",
+		"inherits package tools and guards parent-only setup in session callbacks (#3551)",
 		async () => {
 			const savedNodeEnv = process.env.NODE_ENV;
 			const savedNodeTestContext = process.env.NODE_TEST_CONTEXT;
@@ -525,6 +525,9 @@ describe("workflow stage bundled resources", () => {
 				"utf-8",
 			);
 
+			let factoryCalls = 0;
+			let parentStarts = 0;
+			let stageStarts = 0;
 			const parentSettingsManager = SettingsManager.inMemory();
 			const parentLoader = new DefaultResourceLoader({
 				cwd,
@@ -532,6 +535,18 @@ describe("workflow stage bundled resources", () => {
 				settingsManager: parentSettingsManager,
 				additionalExtensionPaths: [packageDir],
 				builtinPackagePaths: getBuiltinPackagePaths(),
+				extensionFactories: [
+					(pi) => {
+						factoryCalls += 1;
+						pi.on("session_start", (_event, ctx) => {
+							if (ctx.subagentPolicy !== undefined) {
+								stageStarts += 1;
+								return;
+							}
+							parentStarts += 1;
+						});
+					},
+				],
 			});
 			await parentLoader.reload({ resolveBorrowedProjectTrust: async () => true });
 			const { session: parentSession } = await createAgentSession({
@@ -546,6 +561,10 @@ describe("workflow stage bundled resources", () => {
 			const parentToolNames = parentSession.getAllTools().map((tool) => tool.name);
 			assert.ok(parentToolNames.includes("package_tool_alpha"));
 			assert.ok(parentToolNames.includes("package_tool_beta"));
+			assert.ok(factoryCalls > 0);
+			const parentFactoryCalls = factoryCalls;
+			assert.equal(parentStarts, 1);
+			assert.equal(stageStarts, 0);
 
 			delete process.env.NODE_ENV;
 			delete process.env.NODE_TEST_CONTEXT;
@@ -568,6 +587,9 @@ describe("workflow stage bundled resources", () => {
 					assert.ok(allToolNames.includes("package_tool_beta"), `registered tools: ${allToolNames.join(", ")}`);
 					// #3105: custom-tool allowlists exclude unselected Intercom too.
 					assert.equal(allToolNames.includes("intercom"), false);
+					assert.ok(factoryCalls > parentFactoryCalls);
+					assert.equal(parentStarts, 1);
+					assert.equal(stageStarts, 1);
 					assert.deepEqual(activeToolNames.sort(), ["package_tool_alpha", "package_tool_beta"]);
 				} finally {
 					session.dispose();
