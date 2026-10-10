@@ -8,7 +8,7 @@ import type { EngineCustomUiService } from "../interactive-engine/engine-custom-
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
-import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.js";
+import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";

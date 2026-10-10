@@ -12,7 +12,7 @@ import type {
 	InteractiveEngineGenerationEndKind,
 } from "../interactive-engine/engine-generation.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { WorkflowActivityMirror } from "../interactive-engine/engine-workflow-activity.js";
+import { WorkflowActivityMirror } from "../interactive-engine/engine-workflow-activity.ts";
 import {
 	type EngineKeybindingState,
 	type InteractiveEngineCommand,
