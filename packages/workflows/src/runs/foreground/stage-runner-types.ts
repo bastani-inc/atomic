@@ -153,6 +153,7 @@ export interface StageRunnerOpts {
 	executionMode?: WorkflowExecutionMode;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
 	defaultSessionDir?: string;
+	defaultCwd?: string;
 	/** Internal: notifies the executor when an in-flight fallback changes model metadata. */
 	onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 	/** Internal: persist stage-session identity once the SDK has created its path. */

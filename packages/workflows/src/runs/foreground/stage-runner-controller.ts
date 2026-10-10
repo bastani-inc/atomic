@@ -1584,7 +1584,10 @@ export class StageSessionController {
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionFile: this.reattachSessionFile,
 			sharedModelRuntime: this.sharedModelRuntime,
-			defaultCwd: agentSessionAdapterDefaultCwd(this.opts.adapters.agentSession),
+			defaultCwd:
+				this.effectiveStageOptions?.sessionManager?.getCwd() ??
+				agentSessionAdapterDefaultCwd(this.opts.adapters.agentSession) ??
+				this.opts.defaultCwd,
 		});
 		if (stageOptions && this.modelRoute) stageOptions.isFallbackModelAllowed = this.modelRoute.allowsModel;
 		let created: StageSessionRuntime | StageSessionCreateResult;

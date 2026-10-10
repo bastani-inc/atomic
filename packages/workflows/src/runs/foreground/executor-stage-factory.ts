@@ -215,6 +215,7 @@ export function createWorkflowStageFactory(input: {
 			models: input.opts.models,
 			executionMode: input.opts.executionMode,
 			defaultSessionDir: input.opts.defaultSessionDir,
+			defaultCwd: input.workflowInvocationCwd,
 			onStartupChange(startup) {
 				// Never add a retired stage to a replacement run with the same identity.
 				const current = input.activeStore.runs().find((run) => run.id === input.runId);
