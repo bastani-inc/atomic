@@ -1,6 +1,6 @@
 import type { AgentSession } from "../../core/agent-session.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
-import { serializeInteractiveEngineMessage } from "./protocol.ts";
+import { serializeInteractiveEngineMessage } from "./protocol.js";
 
 function withoutGraph({ graph: _graph, ...summary }: WorkflowRootActivity): WorkflowRootActivity {
 	return summary;

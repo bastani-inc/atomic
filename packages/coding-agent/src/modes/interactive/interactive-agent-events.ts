@@ -1,7 +1,7 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
-import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
+import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
