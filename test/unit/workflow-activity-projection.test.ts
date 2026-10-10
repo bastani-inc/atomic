@@ -135,6 +135,65 @@ test("live author continuation stays working after its tool settles, but not whi
 	]);
 });
 
+test("a live run stays working between node admissions and settles, but not when parked or recovered (#3556)", () => {
+	const live = { liveRunIds: new Set(["root"]) };
+	const continuing = activity({ state: "working", reason: "automatic_continuation" });
+	const first = { ...tool("first"), status: "completed" as const };
+	const admitted = (parentIds: string[]) => ({ ...tool("next"), status: "pending" as const, parentIds });
+
+	// A tool node is admitted pending before its executor is recorded.
+	assert.deepEqual(project([run({ toolNodes: [admitted([])] })], live), [continuing]);
+	assert.deepEqual(project([run({ toolNodes: [first, admitted(["first"])] })], live), [continuing]);
+	assert.deepEqual(project([run({ toolNodes: [{ ...first, status: "cached" }, admitted(["first"])] })], live), [
+		continuing,
+	]);
+	assert.deepEqual(
+		project([run({ toolNodes: [{ ...tool("first"), status: "running" }, admitted(["first"])] })], live),
+		[activity()],
+	);
+	assert.deepEqual(project([run({ toolNodes: [admitted([])] })]), [activity()]);
+	assert.deepEqual(project([run({ status: "paused", toolNodes: [admitted([])] })], live), [
+		activity({ reason: "paused" }),
+	]);
+	assert.deepEqual(project([run({ toolNodes: [admitted([])] })], { ...live, stoppingRunIds: new Set(["root"]) }), [
+		activity(),
+	]);
+
+	// A replayed or failed tool settles; the run either continues or ends, never idles in between.
+	assert.deepEqual(project([run({ toolNodes: [{ ...first, status: "cached" }] })], live), [continuing]);
+	assert.deepEqual(project([run({ toolNodes: [{ ...first, status: "failed" }] })], live), [continuing]);
+	assert.deepEqual(project([run({ toolNodes: [{ ...first, status: "failed" }] })]), [activity()]);
+	assert.deepEqual(
+		project([run({ status: "failed", endedAt: 1, toolNodes: [{ ...first, status: "failed" }] })], live),
+		[activity({ needsAttention: true })],
+	);
+});
+
+test("a live run stays working while its nested workflow boundary has no executor, unless something waits (#3556)", () => {
+	const live = { liveRunIds: new Set(["root"]) };
+	const boundary = (patch: Partial<StageSnapshot> = {}): StageSnapshot => ({
+		...stage("workflow:child", "running"),
+		workflowChildRun: { alias: "child", workflow: "child", runId: "child-run" },
+		...patch,
+	});
+	const before = { ...tool("before"), status: "completed" as const };
+	const parent = run({ toolNodes: [before], stages: [boundary()] });
+	const child = (patch: Partial<RunSnapshot> = {}) =>
+		run({ id: "child-run", parentRunId: "root", rootRunId: "root", ...patch });
+	const continuing = activity({ state: "working", reason: "automatic_continuation" });
+
+	// Child not live yet, and child finished before the parent's boundary stage settled.
+	assert.deepEqual(project([parent, child()], live), [continuing]);
+	assert.deepEqual(project([parent, child({ status: "completed" })], live), [continuing]);
+	assert.deepEqual(project([parent]), [activity()]);
+	// A wait inside the child, or a pause, is not hidden behind the boundary.
+	assert.deepEqual(project([parent, child({ pendingPrompt: prompt })], live), [activity(waiting)]);
+	assert.deepEqual(project([parent, child({ stages: [stage("ask", "awaiting_input")] })], live), [activity(waiting)]);
+	assert.deepEqual(project([{ ...parent, status: "paused" }, child({ status: "paused" })], live), [
+		activity({ reason: "paused" }),
+	]);
+});
+
 // #2891: RFC 5.3 state precedence and ownership, rather than historical status.
 test("workflow activity state table", () => {
 	const cases: {

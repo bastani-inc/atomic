@@ -15,7 +15,7 @@ import {
 	type ExpandedWorkflowGraph,
 	type ExpandedWorkflowNode,
 } from "./expanded-workflow-graph.js";
-import type { PendingPrompt, RunSnapshot, StoreSnapshot } from "./store-types.js";
+import type { PendingPrompt, RunSnapshot, StageSnapshot, StoreSnapshot } from "./store-types.js";
 
 /**
  * Runtime execution ownership for one session. executingStageIds,
@@ -83,6 +83,7 @@ function projectRoot(
 	let paused = false;
 	let stoppingExecutionCount = 0;
 	let independentContinuation = false;
+	let childContinuation = false;
 	for (const run of runs) {
 		const runStopping = isStoppingRun(run, rootRunId, runById, ownership.stoppingRunIds);
 		let runExecutionCount = (run.toolNodes ?? []).filter((tool) =>
@@ -105,7 +106,27 @@ function projectRoot(
 			if (run.endedAt !== undefined && run.budgetState?.systemOwnedStop !== true) settledFailure = true;
 			else manualWaits++;
 		}
-		const statuses = new Map([...run.stages, ...(run.toolNodes ?? [])].map((node) => [node.id, node.status]));
+		// A replayed (cached) tool settles like a completed one: its successors are runnable.
+		const statuses = new Map(
+			[...run.stages, ...(run.toolNodes ?? [])].map((node) => [
+				node.id,
+				node.status === "cached" ? "completed" : node.status,
+			]),
+		);
+		const live = ownership.liveRunIds?.has(run.id) === true;
+		for (const tool of run.toolNodes ?? []) {
+			// A tool node is admitted pending, before its executor is recorded; the live run is still working.
+			if (
+				live &&
+				run.status === "running" &&
+				!runStopping &&
+				tool.status === "pending" &&
+				tool.parentIds.every((id) => statuses.get(id) === "completed")
+			) {
+				runnable = true;
+				independentContinuation = true;
+			}
+		}
 		for (const stage of run.stages) {
 			if (run.status === "running" && stage.status === "paused") paused = true;
 			if (stage.status === "awaiting_input" || stage.pendingPrompt) {
@@ -131,25 +152,43 @@ function projectRoot(
 		// Author code can admit its successor only after the previous primitive
 		// settles. Retain the live executor's continuation across that gap, but
 		// never treat a parked node or historical running status as runnable work.
+		// A failed tool settles too: author code may handle it, and when it does
+		// not, the run ends failed without ever having been idle.
+		// A nested workflow's boundary stage is owned by the child run, which has
+		// its own gaps (before it goes live, and after it ends before the parent
+		// stage settles), so the parent continues unless something waits or pauses.
+		const childBoundary = (stage: StageSnapshot) =>
+			stage.status === "running" && stage.workflowChildRun !== undefined;
 		if (
-			ownership.liveRunIds?.has(run.id) &&
+			live &&
 			run.status === "running" &&
 			!runStopping &&
 			!run.pendingPrompt &&
 			run.blockedAt === undefined &&
 			run.failureDisposition !== "active_blocked" &&
 			run.stages.every(
-				(stage) => !stage.pendingPrompt && (stage.status === "completed" || stage.status === "skipped"),
+				(stage) =>
+					!stage.pendingPrompt &&
+					(stage.status === "completed" || stage.status === "skipped" || childBoundary(stage)),
 			) &&
-			(run.toolNodes ?? []).every((tool) => tool.status === "completed")
+			(run.toolNodes ?? []).every(
+				(tool) => tool.status === "completed" || tool.status === "cached" || tool.status === "failed",
+			)
 		) {
-			runnable = true;
-			independentContinuation = true;
+			if (run.stages.some(childBoundary)) childContinuation = true;
+			else {
+				runnable = true;
+				independentContinuation = true;
+			}
 		}
 		activeExecutionCount += runExecutionCount;
 		if (runStopping) stoppingExecutionCount += runExecutionCount;
 	}
 	const actionableBlockCount = humanWaits + manualWaits;
+	if (childContinuation && actionableBlockCount === 0 && !paused) {
+		runnable = true;
+		independentContinuation = true;
+	}
 	let state: WorkflowRootActivity["state"] = "idle";
 	let reason: WorkflowRootActivity["reason"] = paused ? "paused" : "quiescent";
 	if (activeExecutionCount > 0 || retrying || runnable) {
