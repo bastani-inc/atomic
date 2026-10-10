@@ -1,6 +1,6 @@
 import type { AgentSession } from "../../core/agent-session.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
-import type { InteractiveEngineMessage } from "./protocol.ts";
+import { serializeInteractiveEngineMessage } from "./protocol.ts";
 
 function withoutGraph({ graph: _graph, ...summary }: WorkflowRootActivity): WorkflowRootActivity {
 	return summary;
@@ -13,7 +13,7 @@ function withoutGraph({ graph: _graph, ...summary }: WorkflowRootActivity): Work
  */
 export function forwardWorkflowActivity(
 	session: AgentSession,
-	send: (message: InteractiveEngineMessage) => void,
+	write: (line: string) => void,
 ): () => void {
 	const sent = new Map<string, string>();
 	const subscription = session.workflows.observe((frame) => {
@@ -37,7 +37,7 @@ export function forwardWorkflowActivity(
 			sent.delete(frame.rootRunId);
 			forward = frame;
 		}
-		send({ type: "engine_workflow_activity", frame: forward });
+		write(serializeInteractiveEngineMessage({ type: "engine_workflow_activity", frame: forward }));
 	});
 	return () => subscription.dispose();
 }

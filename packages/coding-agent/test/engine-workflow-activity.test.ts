@@ -45,7 +45,11 @@ function harness() {
 		},
 	} as unknown as AgentSession;
 	const sent: InteractiveEngineMessage[] = [];
-	const dispose = forwardWorkflowActivity(session, (message) => sent.push(message));
+	const dispose = forwardWorkflowActivity(session, (line) => {
+		const message = parseInteractiveEngineMessage(line.trimEnd());
+		assert.ok(message, `unparseable engine line: ${line}`);
+		sent.push(message);
+	});
 	return {
 		sent,
 		dispose,

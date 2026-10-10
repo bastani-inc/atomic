@@ -9,7 +9,6 @@ import type { EngineInputFormService } from "../interactive-engine/engine-input-
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
-import type { InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
@@ -25,7 +24,7 @@ interface RpcSessionBindingOptions {
 	sessionPicker?: EngineSessionPickerService;
 	inputForm?: EngineInputFormService;
 	/** Present in the interactive engine child, which reports workflow activity to its host. */
-	writeEngineMessage?: (message: InteractiveEngineMessage) => void;
+	writeEngineLine?: (line: string) => void;
 	requestShutdown: () => void;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 }
@@ -44,7 +43,7 @@ export class RpcSessionBinding {
 	private readonly renderService: EngineRenderService | undefined;
 	private readonly sessionPicker: EngineSessionPickerService | undefined;
 	private readonly inputForm: EngineInputFormService | undefined;
-	private readonly writeEngineMessage: ((message: InteractiveEngineMessage) => void) | undefined;
+	private readonly writeEngineLine: ((line: string) => void) | undefined;
 	private readonly requestShutdown: () => void;
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
 
@@ -58,7 +57,7 @@ export class RpcSessionBinding {
 		renderService,
 		sessionPicker,
 		inputForm,
-		writeEngineMessage,
+		writeEngineLine,
 		reloadCoordinator,
 	}: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
@@ -69,7 +68,7 @@ export class RpcSessionBinding {
 		this.renderService = renderService;
 		this.sessionPicker = sessionPicker;
 		this.inputForm = inputForm;
-		this.writeEngineMessage = writeEngineMessage;
+		this.writeEngineLine = writeEngineLine;
 		this.reloadCoordinator = reloadCoordinator;
 		this.session = runtimeHost.session;
 		this.runtimeHost.setProjectTrustContextFactory?.((cwd) => this.createProjectTrustContext(cwd));
@@ -182,8 +181,8 @@ export class RpcSessionBinding {
 		}
 
 		if (this.customUi) this.unsubscribeTasks = bindEngineTaskWidget(session, session.extensionRunner.getUIContext());
-		if (this.writeEngineMessage) {
-			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineMessage);
+		if (this.writeEngineLine) {
+			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
 		}
 		this.unsubscribe = session.subscribe((event) => {
 			this.output(toJsonEvent(event));

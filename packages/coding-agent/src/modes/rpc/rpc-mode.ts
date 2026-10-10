@@ -107,9 +107,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		renderService,
 		sessionPicker,
 		inputForm,
-		writeEngineMessage: interactiveEngineChild
-			? (message) => writeRawStdout(serializeInteractiveEngineMessage(message))
-			: undefined,
+		writeEngineLine: interactiveEngineChild ? writeRawStdout : undefined,
 		reloadCoordinator,
 	});
 	const loadDeferredResources = () =>
