@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.33-alpha.1] - 2026-10-10
+
 ### Fixed
 
 - Fixed workflows falling back to a non-durable in-memory backend after a macOS reboot because the managed PostgreSQL cluster was refused with `Managed Postgres cluster identity mismatch` when only the data volume's device number changed. The cluster now attaches and its ownership record is updated when the data directory inode, path, cluster ID, major version, and PostgreSQL system identifier still match; genuine identity mismatches name the fields that differ ([#3555](https://github.com/bastani-inc/atomic/issues/3555)).
