@@ -68,6 +68,9 @@ function isStoppingRun(
 	return stoppingRunIds.has(rootRunId);
 }
 
+/** Node statuses after which the node has run its course, whether it succeeded, failed or was abandoned. */
+const endedStatuses: ReadonlySet<string> = new Set(["completed", "cached", "failed", "cancelled"]);
+
 function projectRoot(
 	rootRunId: string,
 	runs: readonly RunSnapshot[],
@@ -106,11 +109,12 @@ function projectRoot(
 			if (run.endedAt !== undefined && run.budgetState?.systemOwnedStop !== true) settledFailure = true;
 			else manualWaits++;
 		}
-		// A replayed (cached) tool settles like a completed one: its successors are runnable.
+		// A node that ended, successfully or not, no longer holds its successors back: a replayed (cached)
+		// tool settles like a completed one, and author code may catch a failure and carry on.
 		const statuses = new Map(
 			[...run.stages, ...(run.toolNodes ?? [])].map((node) => [
 				node.id,
-				node.status === "cached" ? "completed" : node.status,
+				endedStatuses.has(node.status) ? "ended" : node.status,
 			]),
 		);
 		const live = ownership.liveRunIds?.has(run.id) === true;
@@ -121,7 +125,7 @@ function projectRoot(
 				run.status === "running" &&
 				!runStopping &&
 				tool.status === "pending" &&
-				tool.parentIds.every((id) => statuses.get(id) === "completed")
+				tool.parentIds.every((id) => statuses.get(id) === "ended")
 			) {
 				runnable = true;
 				independentContinuation = true;
@@ -143,7 +147,7 @@ function projectRoot(
 				run.status === "running" &&
 				!runStopping &&
 				stage.status === "pending" &&
-				stage.parentIds.every((id) => statuses.get(id) === "completed")
+				stage.parentIds.every((id) => statuses.get(id) === "ended")
 			) {
 				runnable = true;
 				independentContinuation = true;
@@ -152,8 +156,8 @@ function projectRoot(
 		// Author code can admit its successor only after the previous primitive
 		// settles. Retain the live executor's continuation across that gap, but
 		// never treat a parked node or historical running status as runnable work.
-		// A failed tool settles too: author code may handle it, and when it does
-		// not, the run ends failed without ever having been idle.
+		// A failed (or, once the run is failing, cancelled) node settles too: author code may handle
+		// the failure, and when it does not, the run ends failed without ever having been idle.
 		// A nested workflow's boundary stage is owned by the child run, which has
 		// its own gaps (before it goes live, and after it ends before the parent
 		// stage settles), so the parent continues unless something waits or pauses.
@@ -169,11 +173,12 @@ function projectRoot(
 			run.stages.every(
 				(stage) =>
 					!stage.pendingPrompt &&
-					(stage.status === "completed" || stage.status === "skipped" || childBoundary(stage)),
+					(stage.status === "completed" ||
+						stage.status === "failed" ||
+						stage.status === "skipped" ||
+						childBoundary(stage)),
 			) &&
-			(run.toolNodes ?? []).every(
-				(tool) => tool.status === "completed" || tool.status === "cached" || tool.status === "failed",
-			)
+			(run.toolNodes ?? []).every((tool) => endedStatuses.has(tool.status))
 		) {
 			if (run.stages.some(childBoundary)) childContinuation = true;
 			else {

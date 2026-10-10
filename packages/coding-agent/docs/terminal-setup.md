@@ -195,6 +195,6 @@ Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://w
 | `error` | A run ended with an error that is not retried, or a workflow run failed. The message is the first line of the error, or `Workflow failed`. |
 | `idle` | Atomic started, or you cancelled the run. |
 
-A workflow failure stays reported as `error` while the chat agent replies to the run-end notice, until you send your next message. While a workflow run is working or waiting for you, the chat agent finishing a turn does not report `done`.
+After a workflow failure the status stays `error` until you send your next message, except while the chat agent replies to the run-end notice: it is `working` then, and returns to `error` when that reply finishes. While a workflow run is working or waiting for you, the chat agent finishing a turn does not report `done`.
 
 Reports never contain prompts or model output. Atomic sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to disable reports.

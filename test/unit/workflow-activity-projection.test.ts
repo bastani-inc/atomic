@@ -169,6 +169,53 @@ test("a live run stays working between node admissions and settles, but not when
 	);
 });
 
+test("a live run stays working past a failed or abandoned node, but not when parked, recovered or settled (#3556)", () => {
+	const live = { liveRunIds: new Set(["root"]) };
+	const continuing = activity({ state: "working", reason: "automatic_continuation" });
+	const failedTool = { ...tool("bad"), status: "failed" as const };
+	const admitted = { ...tool("next"), status: "pending" as const, parentIds: ["bad"] };
+	const failedStage = stage("bad-stage", "failed");
+
+	// Author code can catch a failure and admit a successor; the run is working throughout.
+	assert.deepEqual(project([run({ stages: [failedStage] })], live), [continuing]);
+	assert.deepEqual(project([run({ toolNodes: [failedTool, admitted] })], live), [continuing]);
+	assert.deepEqual(
+		project([run({ stages: [failedStage], toolNodes: [{ ...admitted, parentIds: ["bad-stage"] }] })], live),
+		[continuing],
+	);
+	assert.deepEqual(project([run({ stages: [failedStage, stage("next-stage", "pending", ["bad-stage"])] })], live), [
+		continuing,
+	]);
+	// A sibling abandoned once another node failed is settled; the run is about to end.
+	assert.deepEqual(
+		project([run({ toolNodes: [failedTool, { ...tool("slow"), status: "cancelled" as const }] })], live),
+		[continuing],
+	);
+	// A node still executing keeps the run's own execution accounting, not the continuation.
+	assert.deepEqual(
+		project([run({ toolNodes: [failedTool, { ...tool("slow"), status: "running" as const }] })], live),
+		[activity()],
+	);
+
+	// Recovered, parked, stopping or finished runs are not continuing.
+	assert.deepEqual(project([run({ stages: [failedStage] })]), [activity()]);
+	assert.deepEqual(project([run({ toolNodes: [failedTool, admitted] })]), [activity()]);
+	assert.deepEqual(project([run({ status: "paused", stages: [failedStage] })], live), [
+		activity({ reason: "paused" }),
+	]);
+	assert.deepEqual(project([run({ stages: [failedStage] })], { ...live, stoppingRunIds: new Set(["root"]) }), [
+		activity(),
+	]);
+	assert.deepEqual(project([run({ status: "failed", endedAt: 1, stages: [failedStage] })], live), [
+		activity({ needsAttention: true }),
+	]);
+	// A failure parked for a user decision stays a manual wait, never working.
+	assert.deepEqual(
+		project([run({ blockedAt: 0, failureDisposition: "active_blocked", stages: [failedStage] })], live),
+		[activity({ state: "blocked", reason: "manual_intervention", actionableBlockCount: 1, needsAttention: true })],
+	);
+});
+
 test("a live run stays working while its nested workflow boundary has no executor, unless something waits (#3556)", () => {
 	const live = { liveRunIds: new Set(["root"]) };
 	const boundary = (patch: Partial<StageSnapshot> = {}): StageSnapshot => ({
