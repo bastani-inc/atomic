@@ -312,3 +312,44 @@ test("ignores workflow outcomes that arrive before a ready snapshot (#3556)", ()
 	reporter.handleWorkflowActivity(changed(failed()));
 	assert.equal(last()?.state, "idle");
 });
+
+const recovering = (epoch = cursor.epoch): WorkflowActivityFrame => ({
+	kind: "snapshot",
+	cursor: { ...cursor, epoch },
+	availability: "recovering",
+});
+
+test("keeps reporting working while the same workflow source recovers (#3556)", () => {
+	const { reporter, send, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working()));
+	reporter.handleWorkflowActivity(recovering());
+	assert.equal(last()?.state, "working", "catalog or inspection recovery does not end a running run");
+	send({ type: "agent_start" }, assistantEnd("stop"), settled);
+	assert.equal(last()?.state, "working", "a settling main turn does not report done during recovery");
+	reporter.handleWorkflowActivity(snapshot(completed()));
+	assert.deepEqual(last(), { state: "done", message: "Session", app: APP_NAME });
+});
+
+test("reports error for a run that failed while the workflow source recovered (#3556)", () => {
+	const { reporter, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working("a"), failed("old")));
+	reporter.handleWorkflowActivity(recovering());
+	reporter.handleWorkflowActivity(snapshot(failed("a"), failed("old"), failed("unwatched")));
+	assert.deepEqual(last(), { state: "error", message: "Workflow failed", app: APP_NAME });
+	reporter.handleWorkflowActivity({ kind: "removed", cursor, rootRunId: "a" });
+	assert.equal(last()?.state, "idle", "failures settled before recovery or never watched are history");
+});
+
+test("treats a ready snapshot from a new workflow source as history (#3556)", () => {
+	const { reporter, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working()));
+	reporter.handleWorkflowActivity(recovering("next"));
+	assert.equal(last()?.state, "idle");
+	reporter.handleWorkflowActivity({
+		kind: "snapshot",
+		cursor: { ...cursor, epoch: "next" },
+		availability: "ready",
+		roots: [failed()],
+	});
+	assert.equal(last()?.state, "idle");
+});

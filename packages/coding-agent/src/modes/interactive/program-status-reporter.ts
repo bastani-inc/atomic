@@ -25,8 +25,8 @@ export class ProgramStatusReporter {
 	private readonly roots = new Map<string, WorkflowRootActivity>();
 	/** Roots that failed while this session watched; held until the user's next input. */
 	private readonly failedRoots = new Set<string>();
-	/** A ready snapshot is the baseline; frames before it describe history, not new outcomes. */
-	private workflowsReady = false;
+	/** Epoch of the source whose ready snapshot is the baseline; frames before it describe history, not new outcomes. */
+	private baselineEpoch: string | undefined;
 
 	private readonly getTerminal: () => Terminal;
 	private readonly getSessionName: () => string | undefined;
@@ -84,10 +84,20 @@ export class ProgramStatusReporter {
 
 	handleWorkflowActivity(frame: WorkflowActivityFrame): void {
 		if (frame.kind === "snapshot") {
+			const sameSource = this.baselineEpoch === frame.cursor.epoch;
+			if (frame.availability === "recovering" && sameSource) {
+				this.report();
+				return;
+			}
+			const watched = sameSource ? new Map(this.roots) : new Map<string, WorkflowRootActivity>();
 			this.roots.clear();
-			this.workflowsReady = frame.availability === "ready";
+			this.baselineEpoch = frame.availability === "ready" ? frame.cursor.epoch : undefined;
 			if (frame.availability === "ready") {
-				for (const root of frame.roots) this.roots.set(root.rootRunId, root);
+				for (const root of frame.roots) {
+					this.roots.set(root.rootRunId, root);
+					const previous = watched.get(root.rootRunId);
+					if (previous) this.recordOutcome(previous, root);
+				}
 				for (const id of this.failedRoots) {
 					const root = this.roots.get(id);
 					if (!root || !isSettledFailure(root)) this.failedRoots.delete(id);
@@ -96,7 +106,7 @@ export class ProgramStatusReporter {
 		} else if (frame.kind === "changed") {
 			const previous = this.roots.get(frame.root.rootRunId);
 			this.roots.set(frame.root.rootRunId, frame.root);
-			if (this.workflowsReady) this.recordOutcome(previous, frame.root);
+			if (this.baselineEpoch === frame.cursor.epoch) this.recordOutcome(previous, frame.root);
 		} else {
 			this.roots.delete(frame.rootRunId);
 			this.failedRoots.delete(frame.rootRunId);
