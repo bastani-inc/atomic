@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { SessionManager } from "@bastani/atomic";
 import { test } from "vitest";
 import { setAgentSessionAdapterDefaultCwd } from "../../packages/workflows/src/runs/foreground/stage-runner-session-options.js";
 import type { StageOptions } from "../../packages/workflows/src/shared/types.js";
+import { fileExists, readText, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { appendProseTurn, mockSession, run, workflow } from "./executor-shared.js";
 import type { AgentSessionAdapter, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import { mkdtemp, rm, tmpdir } from "./stage-runner-helpers.js";
@@ -94,6 +95,64 @@ for (const override of ["adapter", "cwd", "sessionManager", "sessionManagerWithA
 			if (stageOptions?.sessionManager) assert.equal(created?.sessionManager, stageOptions.sessionManager);
 		} finally {
 			await rm(root, { recursive: true, force: true });
+		}
+	});
+}
+
+for (const source of ["invocation", "adapter", "cwd", "sessionManager", "sessionManagerWithAdapter"] as const) {
+	test(`stage reports use the ${source} directory for project-relative handoff (#3551)`, async () => {
+		const root = await mkdtemp(join(tmpdir(), "workflow-report-cwd-"));
+		const expectedCwd = source === "invocation" ? root : join(root, source);
+		const report = `${basename(root)}.md`;
+		const stageOptions =
+			source === "cwd"
+				? { cwd: expectedCwd }
+				: source === "sessionManager" || source === "sessionManagerWithAdapter"
+					? { sessionManager: SessionManager.inMemory(expectedCwd) }
+					: undefined;
+		const createdCwds: string[] = [];
+		const adapter: AgentSessionAdapter = {
+			async create(options, meta) {
+				assert.ok(options.cwd);
+				assert.ok(meta);
+				const cwd = options.cwd;
+				createdCwds.push(cwd);
+				const session = mockSession();
+				session.prompt = async () => {
+					if (meta.stageName === "reader") {
+						assert.equal(await readText(join(cwd, report)), "prose answer without the tool");
+					}
+					appendProseTurn(session.messages);
+				};
+				return session;
+			},
+		};
+		if (source === "adapter" || source === "sessionManagerWithAdapter") {
+			setAgentSessionAdapterDefaultCwd(adapter, join(root, "adapter"));
+		}
+		try {
+			await writeFileEnsuringDir(join(expectedCwd, "project.txt"), "project");
+			const result = await run(
+				workflow({
+					name: "report-handoff",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async (ctx) => {
+						await ctx.stage("writer", stageOptions).prompt("write report", { output: report });
+						await ctx.stage("reader", stageOptions).prompt("read report");
+						return {};
+					},
+				}),
+				{},
+				{ cwd: root, adapters: { agentSession: adapter } },
+			);
+			assert.equal(result.status, "completed", result.error);
+			assert.deepEqual(createdCwds, [expectedCwd, expectedCwd]);
+			assert.equal(await fileExists(join(process.cwd(), report)), false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+			await rm(join(process.cwd(), report), { force: true });
 		}
 	});
 }

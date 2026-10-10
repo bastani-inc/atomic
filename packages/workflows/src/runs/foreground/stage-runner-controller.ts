@@ -59,7 +59,7 @@ import {
 	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
 } from "./stage-runner-session.js";
-import { agentSessionAdapterDefaultCwd, buildStageSessionOptions } from "./stage-runner-session-options.js";
+import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
 	isStructuredOutputContractFailure,
 	STRUCTURED_OUTPUT_MISSING_ERROR,
@@ -1584,10 +1584,7 @@ export class StageSessionController {
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionFile: this.reattachSessionFile,
 			sharedModelRuntime: this.sharedModelRuntime,
-			defaultCwd:
-				this.effectiveStageOptions?.sessionManager?.getCwd() ??
-				agentSessionAdapterDefaultCwd(this.opts.adapters.agentSession) ??
-				this.opts.defaultCwd,
+			defaultCwd: this.opts.defaultCwd,
 		});
 		if (stageOptions && this.modelRoute) stageOptions.isFallbackModelAllowed = this.modelRoute.allowsModel;
 		let created: StageSessionRuntime | StageSessionCreateResult;
