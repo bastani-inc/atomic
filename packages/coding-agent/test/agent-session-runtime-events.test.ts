@@ -579,14 +579,18 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const old = runtimeHost.session;
 
 			const command = old.prompt("/replace");
-			await switched.promise;
-			await asyncWidgetSet.promise;
-			const current = runtimeHost.session.sessionManager.getSessionId();
-			assert.notEqual(runtimeHost.session, old);
-			releaseCommand.resolve();
-			await command;
-			// The retiring session's closing chain settles only after its calling work ends.
-			await old.dispose();
+			let current: string;
+			try {
+				await switched.promise;
+				await asyncWidgetSet.promise;
+				current = runtimeHost.session.sessionManager.getSessionId();
+				assert.notEqual(runtimeHost.session, old);
+			} finally {
+				releaseCommand.resolve();
+				await command;
+				// The retiring session's closing chain settles only after its calling work ends.
+				await old.dispose();
+			}
 
 			assert.deepEqual(phases, ["beforeSessionInvalidate", "session_start", "rebindSession"]);
 			assert.deepEqual(Object.fromEntries(widgets), { sync: current, async: current });
@@ -650,12 +654,16 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const old = runtimeHost.session;
 
 			const command = old.prompt("/replace");
-			await switched.promise;
-			const current = runtimeHost.session.sessionManager.getSessionId();
-			assert.equal(widgets.get("status"), current);
-			releaseCommand.resolve();
-			await command;
-			await old.dispose();
+			let current: string;
+			try {
+				await switched.promise;
+				current = runtimeHost.session.sessionManager.getSessionId();
+				assert.equal(widgets.get("status"), current);
+			} finally {
+				releaseCommand.resolve();
+				await command;
+				await old.dispose();
+			}
 
 			assert.equal(widgets.get("status"), current);
 			runtimeHost.setRebindSession(undefined);
