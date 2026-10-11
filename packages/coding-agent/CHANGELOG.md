@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.34-alpha.1] - 2026-10-11
+
 ### Fixed
 
 - Fixed extension widgets, footer, header, and statuses set by the new session's `session_start` being cleared after switching sessions (`/resume`, new session, fork, `ctx.switchSession`). The default interactive mode cleared them after a built-in `/resume`, new session, or fork, and a switch made from an extension command cleared them when the previous session still had tracked work running. The previous session's `session_shutdown` handlers can no longer clear the new session's UI either ([#3561](https://github.com/bastani-inc/atomic/issues/3561)).
