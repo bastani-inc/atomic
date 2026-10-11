@@ -127,6 +127,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		projectTrust?.dispose();
 		await sessionBinding.rebindSession();
 	});
+	// The host mirrors this child's extension UI. Tell it to reset when a session retires, on the same
+	// stdout stream as the UI requests, so the reset precedes those of the session that replaces it.
+	if (interactiveEngineChild) {
+		runtimeHost.setBeforeSessionInvalidate(() =>
+			writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_extension_ui_reset" })),
+		);
+	}
 
 	const handleCommand = createRpcCommandHandler({
 		runtimeHost,

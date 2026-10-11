@@ -1891,6 +1891,7 @@ describe("credential egress chokepoint", () => {
 		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,
 		`modes/rpc/rpc-mode.ts: writeRawStdout( serializeInteractiveEngineMessage({ type: "engine_request_accepted", requestId, command }), )`,
+		`modes/rpc/rpc-mode.ts: writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_extension_ui_reset" }))`,
 		`modes/rpc/rpc-mode.ts: writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state }))`,
 		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
 		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,

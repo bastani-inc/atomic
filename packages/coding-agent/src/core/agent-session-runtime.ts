@@ -371,6 +371,14 @@ export class AgentSessionRuntime {
 	 * Set a synchronous callback that runs after `session_shutdown` handlers finish
 	 * but before the current session is invalidated.
 	 *
+	 * When a replacement is requested from inside the outgoing session's own tracked
+	 * work (for example an extension command calling `ctx.switchSession()`), the
+	 * outgoing session finishes closing only after that work ends, which is after the
+	 * replacement is published. In that case the callback runs once when the outgoing
+	 * session's extension authority is retired, before the replacement binds and
+	 * before the outgoing `session_shutdown` handlers run, so it never resets UI that
+	 * the replacement session has already set.
+	 *
 	 * This is for host-owned UI teardown that must not yield to the event loop,
 	 * such as detaching extension-provided TUI components before the old extension
 	 * context becomes stale.

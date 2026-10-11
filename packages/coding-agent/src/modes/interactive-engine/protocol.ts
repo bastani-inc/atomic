@@ -67,6 +67,12 @@ export type InteractiveEngineMessage =
 	| { type: "engine_resources_ready" }
 	| { type: "engine_resources_failed"; message: string }
 	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
+	/**
+	 * The engine retired the session whose extension UI the host mirrors. Sent by the child before the
+	 * replacement session binds, on the stream that carries the replacement's `session_start` UI requests,
+	 * so the host resets the old UI first and never clears what the new session just set.
+	 */
+	| { type: "engine_extension_ui_reset" }
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
@@ -439,6 +445,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return { type: value.type };
 		case "engine_project_trust_resolved":
 		case "engine_explicit_quit_ack":
+		case "engine_extension_ui_reset":
 			return { type: value.type };
 		case "engine_resources_ready":
 			return { type: value.type };

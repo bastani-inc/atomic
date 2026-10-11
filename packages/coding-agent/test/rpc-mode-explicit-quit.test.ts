@@ -54,11 +54,13 @@ async function startChild(engineChild: boolean) {
 	rpcIo.lineHandler = undefined;
 	const harness: Harness = await createHarness();
 	const dispose = vi.fn(async (_options?: { fromSignal?: boolean }) => {});
+	const setBeforeSessionInvalidate = vi.fn<(callback?: () => void) => void>();
 	const runtimeHost = {
 		session: harness.session,
 		services: { agentDir: harness.tempDir },
 		dispose,
 		setRebindSession: vi.fn(),
+		setBeforeSessionInvalidate,
 	} as unknown as AgentSessionRuntime;
 
 	const signalHandlers = new Map<string, Listener>();
@@ -84,6 +86,8 @@ async function startChild(engineChild: boolean) {
 
 	return {
 		announceExplicitQuit: () => rpcIo.lineHandler?.(JSON.stringify({ type: "engine_explicit_quit" })),
+		/** What the child registered to run when its session retires. */
+		beforeSessionInvalidate: () => setBeforeSessionInvalidate.mock.calls.at(-1)?.[0],
 		signal: () => signalHandlers.get("SIGTERM")?.(),
 		endInput: () => inputEnd?.(),
 		async disposeOptions() {
@@ -161,6 +165,39 @@ describe("RPC mode shutdown cause", () => {
 			assert.deepEqual(await closed.disposeOptions(), { fromSignal: false });
 		} finally {
 			closed.cleanup();
+		}
+	});
+});
+
+describe("RPC mode extension UI reset", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("an engine child tells its host to reset the extension UI when a session retires (#3561)", async () => {
+		const child = await startChild(true);
+		try {
+			const retire = child.beforeSessionInvalidate();
+			assert.ok(retire, "the engine child registers a beforeSessionInvalidate hook");
+			rpcIo.output = [];
+
+			retire();
+
+			assert.deepEqual(
+				rpcIo.output.map((line) => JSON.parse(line)),
+				[{ type: "engine_extension_ui_reset" }],
+			);
+		} finally {
+			child.cleanup();
+		}
+	});
+
+	test("a standalone RPC process has no host extension UI to reset (#3561)", async () => {
+		const child = await startChild(false);
+		try {
+			assert.equal(child.beforeSessionInvalidate(), undefined);
+		} finally {
+			child.cleanup();
 		}
 	});
 });
