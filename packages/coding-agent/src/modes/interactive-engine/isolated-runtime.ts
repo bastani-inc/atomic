@@ -121,6 +121,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private initializationTail: Promise<void> | undefined;
 	private engineRecoveryFailure: Error | undefined;
 	private promptCancellationEpoch = 0;
+	private hostExtensionUIReset: (() => void) | undefined;
 
 	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
@@ -169,6 +170,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_extension_ui_reset") {
+				this.hostExtensionUIReset?.();
+				return;
+			}
 			if (message.type !== "engine_resources_ready" && message.type !== "engine_resources_failed") return;
 			const observedGeneration = this.client.getGeneration();
 			void this.waitUntilResourcesReady().catch((error: Error) => {
@@ -515,6 +520,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	emitDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void {
 		if (diagnostic.source !== "stderr") this.engineCallbackActive = true;
 		this.health.publish(diagnostic);
+	}
+
+	/**
+	 * Extension UI belongs to the engine's sessions, not to this host's mirror session. The mirror is torn
+	 * down only after the engine has already switched and the new session's `session_start` has set its UI
+	 * (see `switchSession`), so a reset tied to that teardown would clear the new session's UI. The reset
+	 * therefore follows the engine's own lifecycle: `engine_extension_ui_reset` arrives on the same stream,
+	 * ahead of the new session's UI requests. Quitting still resets here, as it always has.
+	 */
+	override setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
+		this.hostExtensionUIReset = beforeSessionInvalidate;
+		super.setBeforeSessionInvalidate(
+			beforeSessionInvalidate &&
+				(() => {
+					if (this.disposed) beforeSessionInvalidate();
+				}),
+		);
 	}
 
 	override async switchSession(
