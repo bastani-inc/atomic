@@ -17,6 +17,8 @@ import {
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus, type EventBus } from "../src/core/event-bus.ts";
+import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
+import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
@@ -580,15 +582,82 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await switched.promise;
 			await asyncWidgetSet.promise;
 			const current = runtimeHost.session.sessionManager.getSessionId();
-			expect(runtimeHost.session).not.toBe(old);
+			assert.notEqual(runtimeHost.session, old);
 			releaseCommand.resolve();
 			await command;
 			// The retiring session's closing chain settles only after its calling work ends.
 			await old.dispose();
 
-			expect(phases).toEqual(["beforeSessionInvalidate", "session_start", "rebindSession"]);
-			expect(Object.fromEntries(widgets)).toEqual({ sync: current, async: current });
+			assert.deepEqual(phases, ["beforeSessionInvalidate", "session_start", "rebindSession"]);
+			assert.deepEqual(Object.fromEntries(widgets), { sync: current, async: current });
 			runtimeHost.setBeforeSessionInvalidate(undefined);
+			runtimeHost.setRebindSession(undefined);
+		},
+	);
+
+	it.each(["new", "resume", "fork"] as const)(
+		"keeps the new session's widget when the retiring session's session_shutdown clears it after %s inside calling-session work (#3561)",
+		async (reason) => {
+			const widgets = new Map<string, string>();
+			const uiContext: ExtensionUIContext = {
+				...noOpUIContext,
+				setWidget: (key: string, content: unknown) => {
+					if (Array.isArray(content)) widgets.set(key, content.join("\n"));
+					else widgets.delete(key);
+				},
+			};
+			const switched = Promise.withResolvers<void>();
+			const releaseCommand = Promise.withResolvers<void>();
+			let replace!: (ctx: ExtensionCommandContext) => Promise<unknown>;
+			const { runtimeHost } = await createRuntimeHost((pi) => {
+				pi.on("session_start", (_event, ctx) => {
+					ctx.ui.setWidget("status", [ctx.sessionManager.getSessionId()]);
+				});
+				pi.on("session_shutdown", (_event, ctx) => {
+					ctx.ui.setWidget("status", undefined);
+				});
+				pi.registerCommand("replace", {
+					description: "replaces the session from inside tracked command work",
+					handler: async (_args, ctx) => {
+						await replace(ctx);
+						switched.resolve();
+						await releaseCommand.promise;
+					},
+				});
+			});
+			const commandContextActions: ExtensionCommandContextActions = {
+				waitForIdle: async () => {},
+				newSession: (options) => runtimeHost.newSession(options),
+				fork: (entryId, options) => runtimeHost.fork(entryId, options),
+				navigateTree: (targetId, options) => runtimeHost.session.navigateTree(targetId, options),
+				switchSession: (sessionPath, options) => runtimeHost.switchSession(sessionPath, options),
+				reload: () => runtimeHost.session.reload(),
+			};
+			await runtimeHost.session.bindExtensions({ commandContextActions, uiContext, mode: "tui" });
+			await runtimeHost.session.prompt("hello");
+			const forkEntryId = runtimeHost.session.getUserMessagesForForking()[0].entryId;
+			const target = SessionManager.create(runtimeHost.cwd);
+			target.appendMessage(fauxAssistantMessage("saved"));
+			replace = (ctx) =>
+				reason === "new"
+					? ctx.newSession()
+					: reason === "resume"
+						? ctx.switchSession(target.getSessionFile()!)
+						: ctx.fork(forkEntryId);
+			runtimeHost.setRebindSession(async (session) => {
+				await session.bindExtensions({ commandContextActions, uiContext, mode: "tui" });
+			});
+			const old = runtimeHost.session;
+
+			const command = old.prompt("/replace");
+			await switched.promise;
+			const current = runtimeHost.session.sessionManager.getSessionId();
+			assert.equal(widgets.get("status"), current);
+			releaseCommand.resolve();
+			await command;
+			await old.dispose();
+
+			assert.equal(widgets.get("status"), current);
 			runtimeHost.setRebindSession(undefined);
 		},
 	);
@@ -621,13 +690,18 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		await runtimeHost.switchSession(target.getSessionFile()!);
 		const current = runtimeHost.session.sessionManager.getSessionId();
-		expect(phases).toEqual(["session_shutdown:resume", "beforeSessionInvalidate", "session_start", "rebindSession"]);
-		expect(Object.fromEntries(widgets)).toEqual({ sync: current });
+		assert.deepEqual(phases, [
+			"session_shutdown:resume",
+			"beforeSessionInvalidate",
+			"session_start",
+			"rebindSession",
+		]);
+		assert.deepEqual(Object.fromEntries(widgets), { sync: current });
 
 		phases.length = 0;
 		await runtimeHost.dispose();
-		expect(phases).toEqual(["session_shutdown:quit", "beforeSessionInvalidate"]);
-		expect(widgets.size).toBe(0);
+		assert.deepEqual(phases, ["session_shutdown:quit", "beforeSessionInvalidate"]);
+		assert.equal(widgets.size, 0);
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		runtimeHost.setRebindSession(undefined);
 	});

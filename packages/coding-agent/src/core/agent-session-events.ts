@@ -596,6 +596,7 @@ export function closeAgentSession(
 		if (handoff) {
 			await attempt("peer work", () => drainSessionWork(session, true, true));
 			await attempt("retired authority", () => session._extensionRunner.revokeAuthority());
+			await attempt("retired presentation", () => session._extensionRunner.detachPresentation());
 			// The successor binds as soon as retirement resolves, so host UI owned by this
 			// session must be reset now; a later reset would clear the successor's UI.
 			await attempt("host subscriptions", () => beforeInvalidate?.());

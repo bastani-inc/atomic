@@ -676,6 +676,11 @@ export class ExtensionRunner {
 		this.mcpDiagnosticUnsubscriber = undefined;
 	}
 
+	/** A retired session's late cleanup must not write into presentation its successor now owns. */
+	detachPresentation(): void {
+		this.setUIContext(undefined, this.mode, this.presentationOnly);
+	}
+
 	revokeAuthority(): void {
 		try {
 			this.retireObservation();
