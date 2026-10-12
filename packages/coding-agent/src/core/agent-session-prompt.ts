@@ -23,16 +23,10 @@ import {
 } from "./session-lifecycle-work.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 
-const customPreparations = new WeakMap<AgentSession, { promise: Promise<void>; cancel: () => void }>();
+const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 
 export async function waitForCustomMessagePreparation(session: AgentSession): Promise<void> {
-	await customPreparations.get(session)?.promise;
-}
-
-export function cancelCustomMessagePreparation(session: AgentSession): Promise<void> | undefined {
-	const preparation = customPreparations.get(session);
-	preparation?.cancel();
-	return preparation?.promise;
+	await customPreparations.get(session);
 }
 
 type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
@@ -378,20 +372,12 @@ export async function _runAgentPrompt(
 		: undefined;
 	const ownsPreparation = prepared || customMessage !== undefined;
 	const preparation = customMessage ? Promise.withResolvers<void>() : undefined;
-	const cancelled = Promise.withResolvers<undefined>();
-	let preparationCancelled = false;
 	if (preparation) {
-		customPreparations.set(this, {
-			promise: preparation.promise,
-			cancel: () => {
-				preparationCancelled = true;
-				cancelled.resolve(undefined);
-			},
-		});
+		customPreparations.set(this, preparation.promise);
 		this._isPreparingRun = "custom";
 	}
 	const releasePreparation = () => {
-		if (preparation && customPreparations.get(this)?.promise === preparation.promise) {
+		if (preparation && customPreparations.get(this) === preparation.promise) {
 			customPreparations.delete(this);
 			this._isPreparingRun = false;
 			preparation.resolve();
@@ -426,13 +412,13 @@ export async function _runAgentPrompt(
 		if (customMessage?.role === "custom") {
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) await this._checkCompaction(lastAssistant, false);
-			if (preparationCancelled) return;
 			const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools ?? [];
-			const result = await Promise.race([
-				this._extensionRunner.emitBeforeAgentStart("", undefined, this._baseSystemPromptOptions, customMessage),
-				cancelled.promise,
-			]);
-			if (!result || preparationCancelled) return;
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				"",
+				undefined,
+				this._baseSystemPromptOptions,
+				customMessage,
+			);
 			const nextTools = result.systemPromptOptions.selectedTools;
 			const handlerEditedTools =
 				nextTools.length !== selectedToolsBefore.length ||

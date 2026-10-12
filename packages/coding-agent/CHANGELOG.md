@@ -18,7 +18,7 @@
 - Fixed code mode taking excessive time to join large numbers of text output items.
 - Fixed transient Windows permission errors when acquiring the authentication lock, while keeping persistent permission failures bounded.
 - Fixed runs started by `pi.sendMessage(..., { triggerTurn: true })`, including protected workflow task completions, skipping `before_agent_start` and losing handler-added system prompt sections after tool calls. The event now distinguishes user and custom messages with `messageType`; handlers reading `prompt` or `images` must first narrow to `"user"`.
-- Fixed interrupt messages dropping an earlier custom message while its `before_agent_start` handler was still running, and explicit abort leaving that pending preparation stuck.
+- Fixed interrupt messages dropping an earlier custom message while its `before_agent_start` handler was still running.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 
