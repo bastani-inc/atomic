@@ -6,6 +6,10 @@
 
 - Removed the experimental `@bastani/atomic/client` entrypoint and the `@earendil-works/pi-client` and `@earendil-works/pi-protocol` dependencies, which upstream Pi no longer publishes. SDK code that imported `@bastani/atomic/client` should use `createAgentSession()` from `@bastani/atomic` in-process or RPC mode (`--mode rpc` / `@bastani/atomic/rpc-entry`), or pin the previous release. The CLI, RPC mode, extensions and workflows are unaffected.
 
+### Added
+
+- Added `ATOMIC_CLIPBOARD_OSC52=1`, with legacy alias `PI_CLIPBOARD_OSC52=1`, to send copied text through OSC 52 after the local clipboard write. Use it when a multiplexer or remote IDE session leaves no SSH markers for Atomic to detect.
+
 ## [0.9.35-alpha.3] - 2026-10-12
 
 ### Added

@@ -14,6 +14,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | Override version-adoption / first-interactive-launch pings (`1`/`true`/`yes` or `0`/`false`/`no`). Does not disable update checks. The Atomic-prefixed value wins when both are set |
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
 | `ATOMIC_EXPERIMENTAL` | `PI_EXPERIMENTAL` | Set to `1` to enable experimental features and preferred strict JSON-schema constrained sampling for additional built-in tools; `read`, `edit`, `write`, `bash`, and PowerShell already prefer strict sampling by default. The footer shows an `xp` badge |
+| `ATOMIC_CLIPBOARD_OSC52` | `PI_CLIPBOARD_OSC52` | Set to `1` to also send copied text to the terminal with OSC 52 after the local clipboard write, as Atomic does over SSH. Use it when a remote client reaches Atomic without SSH variables, such as a multiplexer attached from another machine or a remote IDE daemon |
 
 `VISUAL` and `EDITOR` select the Ctrl+G external editor when `externalEditor` is unset.
 

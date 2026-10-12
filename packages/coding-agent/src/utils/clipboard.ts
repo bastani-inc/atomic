@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { unlinkSync, writeFileSync } from "fs";
 import { platform, tmpdir } from "os";
 import { join } from "path";
+import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.ts";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
@@ -25,8 +26,16 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
 
+/**
+ * Remote sessions also emit OSC 52 so the client terminal receives the copy. ATOMIC_CLIPBOARD_OSC52=1
+ * (or its PI_CLIPBOARD_OSC52 alias) covers remote clients that leave no SSH markers, such as
+ * multiplexer attaches or remote IDE daemons.
+ */
 function isRemoteSession(env: NodeJS.ProcessEnv): boolean {
-	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
+	const forceOsc52 = getEnvNames(ENV_CLIPBOARD_OSC52)
+		.map((name) => env[name])
+		.find((value) => value !== undefined);
+	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION || forceOsc52 === "1");
 }
 
 function emitOsc52(text: string): boolean {
