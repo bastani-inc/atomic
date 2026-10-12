@@ -153,3 +153,26 @@ test("DBOS metadata rejects invalid workflow failure enums", () => {
 		assert.equal(parseCurrentMetadataRecord(record, metadata.workflowId), undefined);
 	}
 });
+
+test("generated workflow summaries survive durable metadata hydration and catalog lookup", async () => {
+	const sdk = createMockSdk();
+	const backend = new DbosDurableBackend(sdk);
+	backend.registerWorkflow({
+		workflowId: "summary",
+		name: "repair",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+		completedCheckpoints: 1,
+	});
+	await backend.flush();
+	assert.equal(await backend.persistSummary("summary", "Repairing compiler output", 123), true);
+	backend.setWorkflowStatus("summary", "paused");
+	await backend.flush();
+	const restored = new DbosDurableBackend(sdk);
+	await restored.hydrateResumableWorkflows();
+	const entries = restored.listResumableWorkflows();
+	const entry = entries.find((candidate) => candidate.workflowId === "summary");
+	assert.equal(entry?.summary, "Repairing compiler output");
+	assert.equal(entry?.summarizedThrough, 123);
+});

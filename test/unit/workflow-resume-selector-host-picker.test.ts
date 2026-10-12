@@ -148,7 +148,8 @@ describe("workflow resume selector host-picker path", () => {
 		assert.equal(durableRow.firstMessage, "durable-a");
 		assert.equal(durableRow.summary, "paused  2 checkpoints  paused-workflow");
 		assert.ok(durableRow.allMessagesText);
-		assert.match(durableRow.allMessagesText, /durable-a paused-workflow/);
+		assert.match(durableRow.allMessagesText, /durable-a/);
+		assert.match(durableRow.allMessagesText, /paused-workflow/);
 
 		picker.select("workflow-durable:durable-a");
 		const outcome = await promise;

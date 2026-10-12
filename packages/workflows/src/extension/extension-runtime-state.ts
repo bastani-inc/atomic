@@ -56,6 +56,7 @@ import { type WorkflowModelContext, workflowModelCatalogFromContext } from "./wo
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
 import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
 import { type WorkflowReloadReport, workflowReloadDiagnostics } from "./workflow-reload-report.js";
+import { disposeWorkflowSummaryService, requestWorkflowSummary } from "./workflow-summary.js";
 
 interface DurabilityWarningContext extends PiModelContext {
 	readonly hasUI?: boolean;
@@ -164,6 +165,7 @@ export function createWorkflowExtensionRuntimeState(
 			});
 	});
 	pi.on?.("session_shutdown", () => {
+		disposeWorkflowSummaryService(store);
 		detachHumanInput?.();
 		detachHumanInput = undefined;
 	});
@@ -312,6 +314,7 @@ export function createWorkflowExtensionRuntimeState(
 			store,
 			state: workflowHeartbeatSchedulerState,
 			sendMessage: sendWorkflowNotificationMessage,
+			onSummaryBoundary: (runId) => requestWorkflowSummary(store, runId),
 			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
 			parentAvailabilityReported,
 			anchorStore: durableWorkflowHeartbeatAnchorStore(),
@@ -430,7 +433,8 @@ export function createWorkflowExtensionRuntimeState(
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
 		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext);
 		const durabilityWarningSink = durabilityWarningSinkFromContext(ctx);
-		if (models === undefined && durabilityWarningSink === undefined) return runtimeProxy;
+		if (models === undefined && durabilityWarningSink === undefined && !ctx?.generateWorkflowSummary)
+			return runtimeProxy;
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
 			cwd: resolveCwd(),
@@ -443,6 +447,7 @@ export function createWorkflowExtensionRuntimeState(
 			config: runtimeConfigRef.current,
 			resolvePossibleStageEntry,
 			...(models === undefined ? {} : { models }),
+			summaryContext: ctx,
 			...(durabilityWarningSink === undefined ? {} : { durabilityWarningSink }),
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,

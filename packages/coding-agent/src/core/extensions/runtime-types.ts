@@ -202,6 +202,8 @@ export interface ExtensionContextActions {
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
+	isSessionSummaryEnabled?: () => boolean;
+	generateWorkflowSummary?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;

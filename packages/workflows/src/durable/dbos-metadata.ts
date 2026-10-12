@@ -69,6 +69,8 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			...(metadata.legacyRecoveryPending === true ? { legacyRecoveryPending: true } : {}),
 			...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
 			...(metadata.label !== undefined ? { label: metadata.label } : {}),
+			...(metadata.summary !== undefined ? { summary: metadata.summary } : {}),
+			...(metadata.summarizedThrough !== undefined ? { summarizedThrough: metadata.summarizedThrough } : {}),
 			...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
 			...(metadata.resumable !== undefined ? { resumable: metadata.resumable } : {}),
 			...(metadata.exited !== undefined ? { exited: metadata.exited } : {}),
@@ -177,6 +179,9 @@ function parseDurableWorkflowMetadata(
 		(metadata.legacyRecoveryPending !== undefined && metadata.legacyRecoveryPending !== true) ||
 		(metadata.sessionFile !== undefined && typeof metadata.sessionFile !== "string") ||
 		(metadata.label !== undefined && typeof metadata.label !== "string") ||
+		(metadata.summary !== undefined && typeof metadata.summary !== "string") ||
+		(metadata.summarizedThrough !== undefined &&
+			(typeof metadata.summarizedThrough !== "number" || !Number.isFinite(metadata.summarizedThrough))) ||
 		(metadata.rootWorkflowId !== undefined && typeof metadata.rootWorkflowId !== "string") ||
 		(metadata.resumable !== undefined && typeof metadata.resumable !== "boolean") ||
 		(metadata.exited !== undefined && typeof metadata.exited !== "boolean") ||

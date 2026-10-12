@@ -83,12 +83,22 @@ function workflowStatusPresentation(
 	return { label: status };
 }
 
+function workflowIdentity(id: string, label: string | undefined, inputs: Record<string, unknown> | undefined): string {
+	const text =
+		label?.trim() ||
+		[inputs?.objective, inputs?.prompt, inputs?.task, inputs?.request, ...Object.values(inputs ?? {})].find(
+			(value): value is string => typeof value === "string" && value.trim().length > 0,
+		);
+	return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : id;
+}
+
 function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
 	const presentation = workflowStatusPresentation(run.status, "live");
 	const stageText = `${completed}/${total} stages`;
+	const identity = workflowIdentity(run.id, run.label, run.inputs);
 	return {
 		result: { kind: "live", runId: run.id },
 		session: {
@@ -98,9 +108,9 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
 			created: new Date(run.startedAt),
 			modified,
 			messageCount: total,
-			firstMessage: run.id,
-			summary: `${presentation.label}  ${stageText}  ${run.name}`,
-			allMessagesText: `${run.id} ${run.name} ${presentation.label} ${stageText}`,
+			firstMessage: identity,
+			summary: `${presentation.label}  ${stageText}  ${run.name}${run.summary ? `  ${run.summary}` : ""}`,
+			allMessagesText: `${run.id} ${identity} ${run.summary ?? ""} ${run.name} ${presentation.label} ${stageText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};
@@ -112,6 +122,7 @@ function durableWorkflowSession(
 ): WorkflowResumeSelectorItem {
 	const checkpointText = `${entry.completedCheckpoints} checkpoints`;
 	const presentation = workflowStatusPresentation(entry.status, kind);
+	const identity = workflowIdentity(entry.workflowId, entry.label, entry.inputs);
 	return {
 		result: { kind, workflowId: entry.workflowId },
 		session: {
@@ -121,9 +132,9 @@ function durableWorkflowSession(
 			created: new Date(entry.createdAt),
 			modified: new Date(entry.updatedAt),
 			messageCount: entry.completedCheckpoints,
-			firstMessage: entry.workflowId,
-			summary: `${presentation.label}  ${checkpointText}  ${entry.name}`,
-			allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText}`,
+			firstMessage: identity,
+			summary: `${presentation.label}  ${checkpointText}  ${entry.name}${entry.summary ? `  ${entry.summary}` : ""}`,
+			allMessagesText: `${entry.workflowId} ${identity} ${entry.summary ?? ""} ${entry.name} ${presentation.label} ${checkpointText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};

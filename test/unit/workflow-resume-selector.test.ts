@@ -213,6 +213,29 @@ describe("workflow resume selector rows", () => {
 });
 
 describe("workflow resume selector row presentation", () => {
+	test("uses a label then objective input for identity and keeps generated summaries searchable", () => {
+		const rows = workflowResumeSelectorItems(
+			[],
+			[
+				{
+					...entry("label-id", "paused"),
+					label: " Ship\n feature ",
+					inputs: { objective: "Ignored" },
+					summary: "Implementation verified",
+					summarizedThrough: 100,
+				},
+				{ ...entry("objective-id", "paused"), inputs: { other: "Fallback", objective: "Fix\n resume" } },
+				{ ...entry("fallback-id", "paused"), inputs: { count: 2, custom: "First string" } },
+			],
+		);
+		const byId = new Map(rows.map(({ session }) => [session.id, session]));
+		assert.equal(byId.get("label-id")?.firstMessage, "Ship feature");
+		assert.match(byId.get("label-id")!.summary!, /Implementation verified/);
+		assert.match(byId.get("label-id")!.summary!, /paused.*2 checkpoints.*paused-workflow/);
+		assert.match(byId.get("label-id")!.allMessagesText, /label-id.*Ship feature.*Implementation verified/);
+		assert.equal(byId.get("objective-id")?.firstMessage, "Fix resume");
+		assert.equal(byId.get("fallback-id")?.firstMessage, "First string");
+	});
 	test("keeps the full live run ID in the label and search text with status, count and name in the summary", () => {
 		const id = "11111111-1111-4111-8111-111111111111";
 		const [item] = workflowResumeSelectorItems([pausedLiveRun(id)], []);

@@ -139,6 +139,7 @@ export function resetWorkflowHeartbeatSchedulerState(state: WorkflowHeartbeatSch
 
 export interface WorkflowHeartbeatSchedulerOptions {
 	readonly store: Store;
+	readonly onSummaryBoundary?: (runId: string) => void;
 	readonly sendMessage?: ExtensionAPI["sendMessage"];
 	/**
 	 * Resolved cadence for a workflow name, read from the compiled definition.
@@ -720,6 +721,7 @@ export function installWorkflowHeartbeatScheduler(
 			state.scheduled.delete(details.runId);
 			const run = findRun(snapshot, details.runId);
 			if (run === undefined || !isWorkflowHeartbeatEligibleRun(run)) continue;
+			options.onSummaryBoundary?.(run.id);
 			enqueueWorkflowHeartbeat(details);
 		}
 		refresh();

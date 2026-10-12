@@ -5,6 +5,7 @@ import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
+import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner } from "./extensions/index.js";
 import {
@@ -29,6 +30,7 @@ import {
 	renewSessionWork,
 	retireSessionReloadGeneration,
 	sessionGenerationClosing,
+	sessionLifetime,
 	trackSessionReload,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
@@ -593,6 +595,31 @@ export function _bindExtensionCore(
 				else this.abort();
 			},
 			hasPendingMessages: () => this.pendingMessageCount > 0,
+			isSessionSummaryEnabled: () => this.settingsManager.getSessionSummarySettings().enabled,
+			generateWorkflowSummary: async (text, requestSignal) => {
+				if (this._disposed || sessionGenerationClosing.has(this)) return undefined;
+				if (!this.settingsManager.getSessionSummarySettings().enabled) return undefined;
+				const model = this.model;
+				if (!model) return undefined;
+				const signal = AbortSignal.any([requestSignal, sessionLifetime(this)]);
+				return trackSessionWork(this, async () => {
+					try {
+						if (signal.aborted) return undefined;
+						const auth = await this._getRequiredRequestAuth(model);
+						if (signal.aborted) return undefined;
+						const result = await generateWorkflowSummary(text, {
+							model,
+							...auth,
+							signal,
+							streamFn: this.agent.streamFunction,
+							retry: this.settingsManager.getRetrySettings(),
+						});
+						return signal.aborted || result.error || result.aborted ? undefined : result.summary;
+					} catch {
+						return undefined;
+					}
+				});
+			},
 			shutdown: () => {
 				if (publication) publication.defer(() => this._extensionShutdownHandler?.());
 				else this._extensionShutdownHandler?.();

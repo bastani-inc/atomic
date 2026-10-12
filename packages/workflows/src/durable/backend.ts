@@ -88,6 +88,7 @@ export interface DurableWorkflowBackend {
 		workflowId: string,
 		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },
 	): Promise<boolean>;
+	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
 	/** Retire possibly committed admission metadata without waiting on its abandoned queue. */
@@ -342,6 +343,12 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			pendingPrompts,
 			updatedAt,
 			...(handle.label !== undefined ? { label: handle.label } : {}),
+			...((handle.summary ?? existing?.handle.summary) !== undefined
+				? {
+						summary: handle.summary ?? existing?.handle.summary,
+						summarizedThrough: handle.summarizedThrough ?? existing?.handle.summarizedThrough,
+					}
+				: {}),
 			...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
 			...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
 			...workflowFailureFields(
@@ -455,6 +462,13 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 					: pendingDeliveryReceiptKey(messageId, delivery, logicalId);
 			return this.stickyReceipts.get(workflowId)?.has(name) ?? false;
 		});
+	}
+
+	async persistSummary(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean> {
+		const handle = this.getWorkflow(workflowId);
+		if (!handle || (handle.summarizedThrough ?? -Infinity) > summarizedThrough) return false;
+		this.registerWorkflow({ ...handle, summary, summarizedThrough });
+		return true;
 	}
 
 	async persistPendingStageMessages(
@@ -741,6 +755,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			...(h.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
+			...(h.summary !== undefined ? { summary: h.summary, summarizedThrough: h.summarizedThrough } : {}),
 			...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),
 			...(h.resumable !== undefined ? { resumable: h.resumable } : {}),
 			...workflowFailureFields(h),
@@ -845,6 +860,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		pendingPrompts: handle.pendingPrompts,
 		...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
 		...(handle.label !== undefined ? { label: handle.label } : {}),
+		...(handle.summary !== undefined ? { summary: handle.summary, summarizedThrough: handle.summarizedThrough } : {}),
 		...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
 		...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
 		...workflowFailureFields(handle),

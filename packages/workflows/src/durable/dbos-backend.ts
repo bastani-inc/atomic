@@ -625,6 +625,27 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return false;
 	}
 
+	async persistSummary(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean> {
+		let persisted = false;
+		await this.enqueueBestEffortWrite(workflowId, async () => {
+			const handle = this.mem.getWorkflow(workflowId);
+			const value = this.mem.toMetadata(workflowId);
+			if (!handle || !value || !this.isWorkflowLoadable(workflowId)) return;
+			if ((handle.summarizedThrough ?? -Infinity) > summarizedThrough) return;
+			const updatedAt = Math.max(Date.now(), handle.updatedAt + 1);
+			const metadata = {
+				...this.promptReservations.metadata(workflowId, value),
+				summary,
+				summarizedThrough,
+				updatedAt,
+			};
+			await this.sdk.recordStepOutput(workflowId, metadataStepName(updatedAt), encodeMetadata(metadata));
+			this.mem.registerWorkflow({ ...handle, summary, summarizedThrough, updatedAt });
+			persisted = true;
+		});
+		return persisted;
+	}
+
 	async persistPendingStageMessages(
 		workflowId: string,
 		messages: readonly import("../shared/store-types.js").PendingStageMessage[],

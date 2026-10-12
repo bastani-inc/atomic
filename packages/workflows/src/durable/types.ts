@@ -65,6 +65,8 @@ export interface DurableWorkflowHandle {
 	readonly pendingPrompts: number;
 	/** Optional human-readable label. */
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	/** Root workflow id. Omitted or equal to workflowId means top-level. */
 	readonly rootWorkflowId?: string;
 	/** Explicit resumability flag for failed/blocked runs. */
@@ -304,6 +306,8 @@ export interface DurableWorkflowMetadata {
 	readonly legacyRecoveryPending?: true;
 	readonly sessionFile?: string;
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly error?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -340,6 +344,8 @@ export interface ResumableWorkflowEntry {
 	readonly pendingPrompts: number;
 	readonly sessionFile?: string;
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly error?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;

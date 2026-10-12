@@ -151,6 +151,7 @@ function factory(pi: ExtensionAPI): void {
 		runtimeState.reloadWorkflowResources,
 		runtimeState.ensureWorkflowResourcesLoaded,
 		owner,
+		pi,
 	);
 	let sessionContext: PiEventContext | undefined;
 	pi.on?.("session_start", (_event, ctx) => {

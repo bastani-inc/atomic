@@ -48,6 +48,7 @@ export interface WorkflowControlActionDeps {
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 	signal?: AbortSignal;
 	onRunAccepted?: (runId: string) => void;
+	beforeResume?: (runId: string) => Promise<void>;
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
 	authorize?: (runId: string) => void;
@@ -403,7 +404,14 @@ async function resumeDurableShadow(
 	runId: string,
 	deps: Pick<
 		WorkflowControlActionDeps,
-		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted" | "owner" | "authorize"
+		| "getRuntime"
+		| "policy"
+		| "ensureWorkflowResourcesLoaded"
+		| "signal"
+		| "beforeResume"
+		| "onRunAccepted"
+		| "owner"
+		| "authorize"
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
@@ -439,7 +447,10 @@ async function resumeDurableShadow(
 
 async function resumePreparedDurableTarget(
 	runId: string,
-	deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "signal" | "onRunAccepted" | "authorize">,
+	deps: Pick<
+		WorkflowControlActionDeps,
+		"getRuntime" | "policy" | "signal" | "beforeResume" | "onRunAccepted" | "authorize"
+	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
 	deps.authorize?.(runId);
@@ -481,7 +492,14 @@ async function resolveExplicitDurableTarget(
 	args: WorkflowToolArgs,
 	deps: Pick<
 		WorkflowControlActionDeps,
-		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted" | "owner" | "authorize"
+		| "getRuntime"
+		| "policy"
+		| "ensureWorkflowResourcesLoaded"
+		| "signal"
+		| "beforeResume"
+		| "onRunAccepted"
+		| "owner"
+		| "authorize"
 	>,
 	liveRuns: readonly RunSnapshot[] = [],
 ): Promise<WorkflowToolResult> {
@@ -569,7 +587,14 @@ export async function workflowResumeAction(
 	args: WorkflowToolArgs,
 	deps: Pick<
 		WorkflowControlActionDeps,
-		"getRuntime" | "policy" | "ensureWorkflowResourcesLoaded" | "signal" | "onRunAccepted" | "owner" | "authorize"
+		| "getRuntime"
+		| "policy"
+		| "ensureWorkflowResourcesLoaded"
+		| "signal"
+		| "beforeResume"
+		| "onRunAccepted"
+		| "owner"
+		| "authorize"
 	>,
 ): Promise<WorkflowToolResult> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
@@ -685,6 +710,7 @@ export async function workflowResumeAction(
 			warning = formatWorkflowResourceLoadWarning(error);
 		}
 		deps.signal?.throwIfAborted();
+		await deps.beforeResume?.(stageRunId);
 		const continuation = await deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, {
 			policy: deps.policy,
 			actor: "agent",
@@ -702,6 +728,7 @@ export async function workflowResumeAction(
 		};
 	}
 	try {
+		await deps.beforeResume?.(stageRunId);
 		const result = await resumeRun(stageRunId, {
 			...owner,
 			stageId: stage.stageId,

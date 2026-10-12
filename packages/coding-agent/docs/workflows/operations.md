@@ -685,7 +685,11 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no id, it builds one newest-first picker from live runs that satisfy the shared resumability predicate and current DBOS resumable/completed records. DBOS is the authoritative catalog; selected records are hydrated and revalidated before resume or inspection. Running workflows never appear: fresh-heartbeat rows are excluded in every session to prevent double dispatch, and stale ones surface as `crashed`. A row whose durable checkpoint or referenced artifact is missing is not resumable and is omitted rather than offered and rejected later. Naming such an id explicitly still produces the existing clear no-checkpoint/not-resumable error.
 
-Picker rows use the workflow ID as the primary label for search and direct resume. The adjacent details show status, completed stages or checkpoints, then the workflow name; on narrow terminals, the picker may truncate the ID or name visually, but searching the full ID still works.
+Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. The adjacent details retain status, completed stages or checkpoints, and the workflow name, plus the latest generated progress summary when available. Search matches the identity, summary, and full run ID, even when the terminal truncates the visible row.
+
+Progress summaries are generated in the background at workflow heartbeat intervals and once when a run finishes or becomes blocked. The latest saved summary remains available without the original session; it may lag behind current progress. If generation is unavailable, the picker keeps showing the status details. Set `sessionSummary.enabled` to `false` to disable summary generation and resume-context messages.
+
+Resuming through the picker, `/workflow resume <id>`, or the workflow tool adds the saved summary to the main chat as model-visible context, including the run ID, workflow name, status, and summarized-through timestamp. This does not start an extra model turn. Repeating resume for the same live attachment does not duplicate the message; runs without a summary add no message.
 
 If resume reports a checkpoint decoding error or an unavailable serializer, retain the full run ID and original diagnostic when reporting the problem. Do not delete saved progress or launch a fresh copy just to bypass the error: that can repeat completed side effects.
 
