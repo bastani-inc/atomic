@@ -81,11 +81,13 @@ try {
   }
   let closed = false;
   const closing = (mode === "summary-reload" ? session.reload() : session.dispose()).then(() => { closed = true; });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const beforeRelease = closed;
+  const deadline = Date.now() + 5000;
+  while (!closed && Date.now() < deadline) await tick();
+  assert.equal(closed, true, "lifecycle operation completes before provider release");
+  assert.equal(active.size, mode === "summary-superseded" ? 2 : 1);
+  assert.equal(signals.length, active.size);
   assert.ok(signals.every(signal => signal.aborted));
-  release.resolve(); await closing;
-  assert.equal(beforeRelease, false);
+  release.resolve(); await closing; await tick();
   assert.equal(session.sessionManager.getEntries().some(entry => entry.type === "session_summary"), false);
  }
  assert.equal(active.size, 0);

@@ -279,9 +279,17 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 			await this._continueQueuedAgentMessages();
 		}
 	});
-	if ((this._extensionMode === "tui" || this._extensionMode === "rpc") && !sessionSummaryBackfills.has(this)) {
-		sessionSummaryBackfills.add(this);
-		void this._maybeGenerateSessionSummary();
+	scheduleOpeningSummary(this);
+}
+
+function scheduleOpeningSummary(session: AgentSession): void {
+	if (
+		!presentationOnlyBindings.get(session) &&
+		(session._extensionMode === "tui" || session._extensionMode === "rpc") &&
+		!sessionSummaryBackfills.has(session)
+	) {
+		sessionSummaryBackfills.add(session);
+		void session._maybeGenerateSessionSummary();
 	}
 }
 
@@ -688,6 +696,10 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 		throw error;
 	} finally {
 		sessionGenerationClosing.delete(this);
+	}
+	if (options?.reason === "startup") {
+		sessionSummaryBackfills.delete(this);
+		scheduleOpeningSummary(this);
 	}
 }
 

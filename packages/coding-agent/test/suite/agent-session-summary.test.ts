@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { join } from "node:path";
+import { fauxAssistantMessage, getApiProvider } from "@bastani/pi-ai/compat";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionSummaryEntry } from "../../src/core/session-manager.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.js";
+import { DefaultResourceLoader } from "../../src/core/resource-loader.js";
+import type { SessionSummaryEntry } from "../../src/core/session-manager.js";
+import { SessionManager } from "../../src/core/session-manager.js";
+import { RpcSessionBinding } from "../../src/modes/rpc/rpc-session-binding.js";
+import { createHarness, type Harness } from "./harness.js";
 
 /**
  * `_maybeGenerateSessionSummary` runs fire-and-forget after `agent_end`. These tests drive real
@@ -61,6 +66,109 @@ describe("session summary generation", () => {
 
 		assert.equal((await waitForSummary(harness)).summary, "Backfilled summary");
 	});
+
+	it("leaves shared-file opening summaries to the engine rather than its presentation host", async () => {
+		const host = await createHarness();
+		harnesses.push(host);
+		const manager = SessionManager.create(host.tempDir, join(host.tempDir, "sessions"));
+		for (let turn = 0; turn < 2; turn++) {
+			manager.appendMessage({ role: "user", content: "old work", timestamp: turn });
+			manager.appendMessage(fauxAssistantMessage("old response"));
+		}
+		const presentation = await createHarness({ sessionManager: manager });
+		harnesses.push(presentation);
+		const releaseHost = Promise.withResolvers<void>();
+		presentation.setResponses([
+			async () => {
+				await releaseHost.promise;
+				return fauxAssistantMessage("Stale host summary");
+			},
+		]);
+		const child = await createHarness({ sessionManager: SessionManager.open(manager.getSessionFile()!) });
+		harnesses.push(child);
+		child.sessionManager.appendMessage({ role: "user", content: "new engine work", timestamp: 3 });
+		const newest = child.sessionManager.appendMessage(fauxAssistantMessage("new engine response"));
+		child.setResponses([fauxAssistantMessage("Engine summary")]);
+
+		await presentation.session.bindExtensions({ mode: "tui", isPresentationOnly: true });
+		await child.session.bindExtensions({ mode: "rpc" });
+		await waitForSummary(child);
+		releaseHost.resolve();
+		await settle();
+
+		assert.equal(presentation.getPendingResponseCount(), 1);
+		const reopened = SessionManager.open(manager.getSessionFile()!);
+		assert.equal(
+			reopened.getBranch().some((entry) => entry.id === newest),
+			true,
+		);
+		assert.equal(reopened.getEntries().filter((entry) => entry.type === "session_summary").length, 1);
+	});
+
+	it.each([false, true])(
+		"backfills after deferred RPC startup cancels an opening request (stale: %s)",
+		async (stale) => {
+			const directory = await createHarness();
+			harnesses.push(directory);
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: directory.tempDir,
+				agentDir: directory.tempDir,
+				builtinPackagePaths: [],
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+			});
+			await resourceLoader.reload();
+			const harness = await createHarness({ resourceLoader });
+			harnesses.push(harness);
+			harness.session.agent.streamFunction = getApiProvider(harness.faux.api)!.streamSimple;
+			if (stale) {
+				const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier", timestamp: 0 });
+				harness.sessionManager.appendSessionSummary("Old summary", anchor);
+			}
+			for (let turn = 0; turn < 2; turn++) {
+				harness.sessionManager.appendMessage({ role: "user", content: "restore work", timestamp: turn + 1 });
+				harness.sessionManager.appendMessage(fauxAssistantMessage("response"));
+			}
+			const started = Promise.withResolvers<void>();
+			harness.setResponses([
+				async (_context, options) => {
+					started.resolve();
+					await new Promise<void>((resolve) =>
+						options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+					);
+					return fauxAssistantMessage("Cancelled opening summary");
+				},
+				fauxAssistantMessage("Startup summary"),
+			]);
+			await harness.session.bindExtensions({ mode: "rpc" });
+			await started.promise;
+			const runtime = new AgentSessionRuntime(
+				harness.session,
+				{
+					cwd: harness.tempDir,
+					agentDir: harness.tempDir,
+					modelRuntime: harness.session.modelRuntime,
+					settingsManager: harness.settingsManager,
+					resourceLoader,
+					diagnostics: [],
+				},
+				async () => {
+					throw new Error("unused runtime factory");
+				},
+			);
+			const binding = new RpcSessionBinding({
+				runtimeHost: runtime,
+				output: () => {},
+				pendingExtensionRequests: new Map(),
+				requestShutdown: () => {},
+			});
+			await binding.loadDeferredResources();
+			assert.equal((await waitForSummary(harness, stale ? 2 : 1)).summary, "Startup summary");
+		},
+	);
 
 	it("refreshes a stale summary when a session is resumed", async () => {
 		const harness = await createHarness();

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { getModel, streamSimple } from "@bastani/pi-ai/compat";
 import { describe, it } from "vitest";
-import { generateSessionSummary } from "../src/core/compaction/session-summarization.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import { generateSessionSummary } from "../src/core/compaction/session-summarization.js";
+import type { SessionEntry } from "../src/core/session-manager.js";
 
 describe("session summarization with required reasoning", () => {
 	it("does not disable required thinking in the Anthropic Opus 5.5 request", async () => {
