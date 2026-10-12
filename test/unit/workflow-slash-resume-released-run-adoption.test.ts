@@ -282,7 +282,7 @@ test.sequential("cross-project tool and headless resume give an actionable error
 	const result = await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));
 	assert.match(result.errors.join("\n"), /\/workflow resume.*interactive/);
 	await assert.rejects(
-		execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION)),
+		execute({ action: "resume", runId }, modelContext(PREVIOUS_SESSION)),
 		/\/workflow resume.*interactive/,
 	);
 	assert.deepEqual(backend.getWorkflow(runId), original);

@@ -178,20 +178,6 @@ async function resumeDurableWorkflowClaimed(
 		initial?.invocationCwd !== undefined &&
 		currentCwd !== undefined &&
 		canonicalDirectory(initial.invocationCwd) !== canonicalDirectory(currentCwd);
-	if (crossProject) {
-		if (deps.confirmCrossProjectFork === undefined)
-			return {
-				ok: false,
-				reason: "different_project",
-				message: crossProjectResumeMessage(workflowId, initial.invocationCwd!),
-			};
-		if (!(await deps.confirmCrossProjectFork(initial.invocationCwd!)))
-			return {
-				ok: false,
-				reason: "different_project",
-				message: "Workflow resume cancelled; the source run was not changed.",
-			};
-	}
 	const recovering = backend.isAdmissionUnavailable?.(workflowId) || backend.isCheckpointUnavailable?.(workflowId);
 	if (recovering && hasActiveLiveRun(deps.baseRunOpts.store, workflowId)) {
 		return alreadyRunningResult(
@@ -270,8 +256,23 @@ async function resumeDurableWorkflowClaimed(
 		requestedOwner !== undefined &&
 		requestedOwner !== handle.modelOwner &&
 		(handle.modelOwner !== undefined || handle.origin === "agent");
-	if (!crossProject && adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd)) {
+	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd)) {
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
+	}
+
+	if (crossProject) {
+		if (deps.confirmCrossProjectFork === undefined)
+			return {
+				ok: false,
+				reason: "different_project",
+				message: crossProjectResumeMessage(workflowId, initial.invocationCwd!),
+			};
+		if (!(await deps.confirmCrossProjectFork(initial.invocationCwd!)))
+			return {
+				ok: false,
+				reason: "different_project",
+				message: "Workflow resume cancelled; the source run was not changed.",
+			};
 	}
 
 	const def = crossProject

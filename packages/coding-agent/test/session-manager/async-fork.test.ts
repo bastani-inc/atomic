@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as fs from "fs";
 import { test, vi } from "vitest";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionManager } from "../../src/core/session-manager.js";
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -83,6 +83,23 @@ test("streamed forks reject missing and invalid sources without creating a sessi
 		await writeFile(source, "not a session\n");
 		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), /empty or invalid/);
 		await assert.rejects(fsPromises.access(destination), { code: "ENOENT" });
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("opening a missing explicit session creates its directory and persists at that path (#3577)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "session-missing-open-"));
+	try {
+		const sessionDir = join(dir, "nested", "sessions");
+		const path = join(sessionDir, "explicit.jsonl");
+		const session = SessionManager.open(path, sessionDir, dir);
+		assert.equal(session.getSessionFile(), path);
+		assert.equal((await fsPromises.stat(sessionDir)).isDirectory(), true);
+		session.appendMessage({ role: "user", content: "first message", timestamp: Date.now() });
+		const reopened = SessionManager.open(path);
+		assert.equal(reopened.getSessionId(), session.getSessionId());
+		assert.deepEqual(reopened.getEntries(), session.getEntries());
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

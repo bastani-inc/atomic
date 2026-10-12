@@ -92,7 +92,7 @@ export async function forkDurableWorkflow(
 					}),
 		});
 	}
-	backend.registerWorkflow({
+	const fork = {
 		...source,
 		workflowId,
 		rootWorkflowId: undefined,
@@ -111,9 +111,16 @@ export async function forkDurableWorkflow(
 			...message,
 			runId: mapId(message.runId),
 		})),
-	});
+	};
+	backend.registerWorkflow({ ...fork, status: "running", resumable: false });
 	await backend.flush(workflowId);
 	for (const checkpoint of checkpoints) await backend.recordCheckpointAsync(checkpoint);
+	await backend.flush(workflowId);
+	backend.registerWorkflow({
+		...fork,
+		resumable: source.resumable ?? true,
+		completedCheckpoints: backend.getWorkflow(workflowId)!.completedCheckpoints,
+	});
 	await backend.flush(workflowId);
 	return workflowId;
 }

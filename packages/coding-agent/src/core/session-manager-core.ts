@@ -95,7 +95,7 @@ export class SessionManager {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
-		if (persist && this.sessionDir && !preloadedFileEntries) {
+		if (persist && this.sessionDir && !preloadedFileEntries?.length) {
 			ensureDirectory(this.sessionDir);
 		}
 
@@ -130,7 +130,7 @@ export class SessionManager {
 
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
-		if (preloadedFileEntries || existsSync(this.sessionFile)) {
+		if (preloadedFileEntries?.length || existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a session, fail without modifying it.
@@ -597,7 +597,7 @@ export class SessionManager {
 		const header = entries.find((entry) => entry.type === "session") as SessionHeader | undefined;
 		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, entries);
+		return new SessionManager(cwd, dir, resolvedPath, true);
 	}
 
 	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */
@@ -621,7 +621,7 @@ export class SessionManager {
 		options?: NewSessionOptions,
 	): SessionManager {
 		const forked = forkSessionFromFile(sourcePath, targetCwd, sessionDir, options);
-		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true, undefined, forked.fileEntries);
+		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true);
 	}
 
 	static async forkFromAsync(

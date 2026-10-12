@@ -281,3 +281,42 @@ test("cross-project fork retries an interrupted tool frontier and replays earlie
 	assert.equal(retryCalls, 2);
 	assert.deepEqual(backend.getWorkflow(id), source);
 });
+
+test("interrupted cross-project checkpoint copies never become resumable (#3577)", async () => {
+	const backend = new InMemoryDurableBackend();
+	const sourceId = testRunId("interrupted-copy");
+	backend.registerWorkflow({ workflowId: sourceId, name: "copy", inputs: {}, status: "paused", createdAt: 1 });
+	for (const name of ["first", "second"]) {
+		backend.recordCheckpoint({
+			kind: "tool",
+			workflowId: sourceId,
+			checkpointId: name,
+			name,
+			argsHash: name,
+			output: "saved",
+			completedAt: 1,
+		});
+	}
+	const original = backend.recordCheckpointAsync.bind(backend);
+	let incompleteId: string | undefined;
+	const copy = vi.spyOn(backend, "recordCheckpointAsync").mockImplementation(async (checkpoint) => {
+		incompleteId = checkpoint.workflowId;
+		assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
+		if (checkpoint.kind === "tool" && checkpoint.name === "second") throw new Error("copy interrupted");
+		await original(checkpoint);
+	});
+	try {
+		await assert.rejects(
+			forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined),
+			/copy interrupted/,
+		);
+	} finally {
+		copy.mockRestore();
+	}
+	assert.ok(incompleteId);
+	assert.equal(backend.listCheckpoints(incompleteId).length, 1);
+	assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
+	const completedId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	assert.equal(backend.listCheckpoints(completedId).length, 2);
+	assert.ok(backend.listResumableWorkflows().some((entry) => entry.workflowId === completedId));
+});
