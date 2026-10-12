@@ -92,13 +92,14 @@ function workflowIdentity(id: string, label: string | undefined, inputs: Record<
 	return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : id;
 }
 
-function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
+function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
 	const presentation = workflowStatusPresentation(run.status, "live");
 	const stageText = `${completed}/${total} stages`;
-	const identity = workflowIdentity(run.id, run.label, run.inputs);
+	const identity = workflowIdentity(run.id, run.label ?? saved?.label, run.inputs);
+	const summary = run.summary ?? saved?.summary;
 	return {
 		result: { kind: "live", runId: run.id },
 		session: {
@@ -109,8 +110,8 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
 			modified,
 			messageCount: total,
 			firstMessage: identity,
-			summary: `${presentation.label}  ${stageText}  ${run.name}${run.summary ? `  ${run.summary}` : ""}`,
-			allMessagesText: `${run.id} ${identity} ${run.summary ?? ""} ${run.name} ${presentation.label} ${stageText}`,
+			summary: `${presentation.label}  ${stageText}  ${run.name}${summary ? `  ${summary}` : ""}`,
+			allMessagesText: `${run.id} ${identity} ${summary ?? ""} ${run.name} ${presentation.label} ${stageText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};
@@ -166,8 +167,10 @@ export function workflowResumeSelectorItems(
 	);
 	const visibleDurableEntries = durableEntries.filter((entry) => !suppressedLiveIds.has(entry.workflowId));
 	const durableIds = new Set(visibleDurableEntries.map((entry) => entry.workflowId));
+	const savedEntries = new Map(completedEntries.map((entry) => [entry.workflowId, entry]));
+	for (const entry of durableEntries) savedEntries.set(entry.workflowId, entry);
 	return [
-		...eligibleLiveRuns.map(liveRunSession),
+		...eligibleLiveRuns.map((run) => liveRunSession(run, savedEntries.get(run.id))),
 		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable")),
 		...completedEntries
 			.filter((entry) => !visibleLiveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))

@@ -118,6 +118,40 @@ describe("workflow resume selector rows", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+	test.each(["durable", "completed"] as const)(
+		"keeps saved presentation metadata on a live row from the %s catalog",
+		(catalog) => {
+			const run = pausedLiveRun();
+			const saved = {
+				...entry(run.id, "paused"),
+				label: "Saved objective",
+				summary: "Implementation finished; validation remains",
+				summarizedThrough: 90,
+			};
+			const rows = workflowResumeSelectorItems(
+				[run],
+				catalog === "durable" ? [saved] : [],
+				catalog === "completed" ? [saved] : [],
+			);
+			assert.equal(rows.length, 1);
+			assert.deepEqual(rows[0]!.result, { kind: "live", runId: run.id });
+			assert.equal(rows[0]!.session.firstMessage, saved.label);
+			assert.ok(rows[0]!.session.summary!.startsWith("paused  0/0 stages  live-workflow"));
+			assert.ok(rows[0]!.session.summary!.includes(saved.summary));
+			assert.ok(rows[0]!.session.allMessagesText.includes(saved.summary));
+			assert.ok(rows[0]!.session.allMessagesText.includes(saved.label));
+			assert.equal(run.label, undefined);
+			assert.equal(run.summary, undefined);
+
+			const [current] = workflowResumeSelectorItems(
+				[{ ...run, label: "Current objective", summary: "Current progress" }],
+				[saved],
+			);
+			assert.equal(current!.session.firstMessage, "Current objective");
+			assert.ok(current!.session.summary!.endsWith("Current progress"));
+		},
+	);
+
 	test("globally orders mixed rows and renders completed rows with a green semantic", () => {
 		const items = workflowResumeSelectorItems(
 			[pausedLiveRun()],
