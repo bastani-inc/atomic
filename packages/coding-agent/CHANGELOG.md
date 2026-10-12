@@ -12,6 +12,7 @@
 - Fixed print mode returning success for responses truncated by the model output limit. Partial text remains on stdout, with a warning on stderr and exit code 1.
 - Fixed home-directory (`~`) expansion in resource include and exclude patterns.
 - Fixed MCP tool calls rejecting array, null, or primitive structured content.
+- Fixed cancelled MCP requests being retried after a shared authorization refresh.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 

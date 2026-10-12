@@ -316,6 +316,57 @@ describe("StreamableHttpTransport", () => {
 		);
 	});
 
+	it("does not retry cancelled requests after a shared auth refresh (#10598)", async () => {
+		let token = "old";
+		const executed: string[] = [];
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method === "tools/call" && request.headers.authorization === "Bearer old") {
+				response.writeHead(401, { "www-authenticate": "Bearer" }).end();
+				return;
+			}
+			if (message.method === "tools/call") executed.push((message.params as { name: string }).name);
+			return protocolHandler(request, response, requests, message);
+		});
+		let releaseRefresh = () => {};
+		const refresh = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		let waiting = 0;
+		let allWaiting = () => {};
+		const waitingGate = new Promise<void>((resolve) => {
+			allWaiting = resolve;
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(
+			new StreamableHttpTransport({
+				url,
+				openGetStream: false,
+				authProvider: {
+					token: async () => token,
+					onUnauthorized: async () => {
+						if (++waiting === 2) allWaiting();
+						await refresh;
+						token = "new";
+					},
+				},
+			}),
+		);
+		const controller = new AbortController();
+		const aborted = assert.rejects(client.callTool("aborted", {}, { signal: controller.signal }), {
+			name: "AbortError",
+		});
+		const kept = client.callTool("kept");
+		await waitingGate;
+		controller.abort();
+		await aborted;
+		releaseRefresh();
+		assert.deepEqual(await kept, { content: [{ type: "text", text: "hello" }] });
+		assert.deepEqual(executed, ["kept"]);
+		await client.close();
+	});
+
 	it("hands 401 and insufficient-scope 403 responses to the auth provider with the rejected token", async () => {
 		const seen: { status: number; token?: string }[] = [];
 		let token = "old";
