@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
-import { createModels, createProvider, InMemoryModelsStore, type Model, type ModelsStore } from "@bastani/pi-ai";
+import {
+	createModels,
+	createProvider,
+	type ImageModel,
+	InMemoryModelsStore,
+	type Model,
+	type ModelsStore,
+	type Provider,
+} from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
-import { REMOTE_CATALOG_MODEL_TYPES, withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
+import {
+	type PersonalizeCatalog,
+	REMOTE_CATALOG_MODEL_TYPES,
+	withPersonalizedCatalog,
+	withRemoteCatalog,
+} from "../src/core/remote-catalog-provider.ts";
 import { makeRefreshContext } from "./helpers/refresh-context.ts";
 
 function model(id: string): Model<"openai-completions"> {
@@ -20,24 +33,24 @@ function model(id: string): Model<"openai-completions"> {
 	};
 }
 
-function testProvider(localGeneratedAt?: number) {
-	return withRemoteCatalog(
-		createProvider({
-			id: "test-provider",
-			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
-			models: [model("static")],
-			api: {
-				stream: () => {
-					throw new Error("not used");
-				},
-				streamSimple: () => {
-					throw new Error("not used");
-				},
+function builtinProvider(): Provider {
+	return createProvider({
+		id: "test-provider",
+		auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+		models: [model("static")],
+		api: {
+			stream: () => {
+				throw new Error("not used");
 			},
-		}),
-		"https://pi.dev",
-		localGeneratedAt,
-	);
+			streamSimple: () => {
+				throw new Error("not used");
+			},
+		},
+	});
+}
+
+function testProvider(localGeneratedAt?: number) {
+	return withRemoteCatalog(builtinProvider(), "https://pi.dev", localGeneratedAt);
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -296,5 +309,78 @@ describe("remote catalog provider", () => {
 		// therefore leaves the restored cached overlay visible and does not expose
 		// the newly fetched catalog as if it had been committed.
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "stale"]);
+	});
+});
+
+describe("personalized catalog provider", () => {
+	const imageModel: ImageModel<"openrouter-images"> = {
+		type: "image",
+		id: "image",
+		name: "image",
+		api: "openrouter-images",
+		provider: "test-provider",
+		baseUrl: "https://example.test/v1",
+		input: ["text"],
+		output: ["image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+
+	it("personalizes the built-in models plus a newer pi.dev catalog and saves the result", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			Response.json([model("remote")], { headers: { "last-modified": new Date(2_000).toUTCString() } }),
+		);
+		const seen: string[][] = [];
+		const personalize: PersonalizeCatalog = async (catalog) => {
+			seen.push(catalog.map((entry) => entry.id));
+			return catalog.filter((entry) => entry.id === "remote");
+		};
+		const store = new InMemoryModelsStore();
+		const provider = withPersonalizedCatalog(builtinProvider(), personalize, "https://pi.dev", 1_000);
+
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
+
+		expect(seen).toEqual([["static", "remote"]]);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["remote"]);
+		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["remote"]);
+	});
+
+	it("keeps the saved list and saves nothing when personalization fails", async () => {
+		// Saving the catalog without personalization would replace the key's list with every model.
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not found", { status: 404 }));
+		const store = new InMemoryModelsStore();
+		const saved = { models: [model("allowed")], checkedAt: 1 };
+		await store.write("test-provider", saved);
+		const personalize: PersonalizeCatalog = async () => {
+			throw new Error("user models request failed");
+		};
+		const provider = withPersonalizedCatalog(builtinProvider(), personalize);
+
+		await expect(
+			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
+		).rejects.toThrow("user models request failed");
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["allowed"]);
+		expect(await store.read(provider.id)).toEqual(saved);
+	});
+
+	it("restores a saved list as is, and falls back to the built-in models only when it is empty", async () => {
+		const personalize: PersonalizeCatalog = async () => {
+			throw new Error("not used offline");
+		};
+		const store = new InMemoryModelsStore();
+		const provider = withPersonalizedCatalog(builtinProvider(), personalize);
+		const offline = () =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" }, allowNetwork: false });
+
+		// Versions before per-key lists stored the plain pi.dev catalog here, and saved an empty list
+		// after a missing pi.dev catalog or a failed first request. Only such an entry can be empty.
+		await store.write(provider.id, { models: [], checkedAt: 1 });
+		await provider.refreshModels?.(await offline());
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
+
+		// A key that may use no chat models keeps its image models and shows no chat models.
+		await store.write(provider.id, { models: [imageModel], checkedAt: 1 });
+		await provider.refreshModels?.(await offline());
+		expect(provider.getModels()).toEqual([]);
+		expect(provider.getAllModels?.().map((entry) => entry.id)).toEqual(["image"]);
 	});
 });

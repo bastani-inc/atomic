@@ -1,32 +1,11 @@
-import type { ClassifierModel, ImageModel, Model, ModelCost } from "../src/types.ts";
+import { type OpenRouterModel, openRouterCost } from "../src/providers/openrouter-api.ts";
+import type { ClassifierModel, ImageModel, Model } from "../src/types.ts";
 import { getOpenRouterThinkingLevelMap, type OpenRouterReasoningMetadata } from "./openrouter-reasoning-options.ts";
 
-export interface OpenRouterModelListItem {
-	id: string;
+export interface OpenRouterModelListItem extends OpenRouterModel {
 	name: string;
 	supported_parameters?: string[];
 	architecture?: { modality?: string; input_modalities?: string[]; output_modalities?: string[] };
-	pricing?: {
-		prompt?: string;
-		completion?: string;
-		input_cache_read?: string;
-		input_cache_write?: string;
-		overrides?: Array<{
-			min_prompt_tokens?: number;
-			utc_start?: number;
-			utc_end?: number;
-			utc_days?: string[];
-			prompt?: string;
-			completion?: string;
-			input_cache_read?: string;
-			input_cache_write?: string;
-		}>;
-	};
-	top_provider?: {
-		context_length?: number;
-		max_completion_tokens?: number;
-	};
-	context_length?: number;
 	reasoning?: OpenRouterReasoningMetadata;
 }
 
@@ -36,43 +15,10 @@ export interface OpenRouterCatalog {
 	classifiers: ClassifierModel<"typesafe-system-one">[];
 }
 
-function roundCost(value: number): number {
-	return Number(value.toFixed(6));
-}
-
 function modalities(values: string[] | undefined): ("text" | "image")[] {
 	return Array.from(
 		new Set((values ?? []).filter((value): value is "text" | "image" => value === "text" || value === "image")),
 	);
-}
-
-function cost(model: OpenRouterModelListItem): ModelCost {
-	// OpenRouter overrides apply to the entire request once its input threshold is crossed.
-	const rates = model.pricing;
-	const toPrice = (value: string | undefined): number => roundCost(parseFloat(value || "0") * 1_000_000);
-	const tiers = rates?.overrides?.flatMap((override) =>
-		override.min_prompt_tokens === undefined ||
-		override.utc_start !== undefined ||
-		override.utc_end !== undefined ||
-		override.utc_days !== undefined
-			? []
-			: [
-					{
-						inputTokensAbove: override.min_prompt_tokens,
-						input: toPrice(override.prompt ?? rates.prompt),
-						output: toPrice(override.completion ?? rates.completion),
-						cacheRead: toPrice(override.input_cache_read ?? rates.input_cache_read),
-						cacheWrite: toPrice(override.input_cache_write ?? rates.input_cache_write),
-					},
-				],
-	);
-	return {
-		input: toPrice(rates?.prompt),
-		output: toPrice(rates?.completion),
-		cacheRead: toPrice(rates?.input_cache_read),
-		cacheWrite: toPrice(rates?.input_cache_write),
-		...(tiers?.length ? { tiers } : {}),
-	};
 }
 
 /**
@@ -110,7 +56,7 @@ export function buildOpenRouterCatalog(
 			reasoning: model.supported_parameters?.includes("reasoning") || false,
 			...(thinkingLevelMap && { thinkingLevelMap }),
 			input,
-			cost: cost(model),
+			cost: openRouterCost(model.pricing),
 			contextWindow: model.top_provider?.context_length || model.context_length || 4096,
 			maxTokens: model.top_provider?.max_completion_tokens || 4096,
 		});
@@ -131,7 +77,7 @@ export function buildOpenRouterCatalog(
 			baseUrl: "https://openrouter.ai/api/v1",
 			input: input.length > 0 ? input : ["text"],
 			output,
-			cost: cost(model),
+			cost: openRouterCost(model.pricing),
 		});
 	}
 
@@ -150,7 +96,7 @@ export function buildOpenRouterCatalog(
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			input: input.length > 0 ? input : ["text"],
-			cost: cost(model),
+			cost: openRouterCost(model.pricing),
 			contextWindow: model.top_provider?.context_length || model.context_length || 4096,
 		});
 	}
