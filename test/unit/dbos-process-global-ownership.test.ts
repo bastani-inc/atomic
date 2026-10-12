@@ -81,8 +81,10 @@ function createSharedFakeDbos(options: { readonly launch?: () => Promise<void> }
 			launched = true;
 			await options.launch?.();
 		},
-		async shutdown() {
+		async shutdown(options) {
 			shutdowns += 1;
+			launched = false;
+			if (options?.deregister) wrappers.clear();
 		},
 		registerWorkflow(fn, config) {
 			const name = config?.name ?? fn.name;
@@ -92,7 +94,10 @@ function createSharedFakeDbos(options: { readonly launch?: () => Promise<void> }
 			wrappers.set(name, wrapper);
 			return wrapper;
 		},
-		startWorkflow() {
+		startWorkflow(fn) {
+			if (![...wrappers.values()].includes(fn as RegisteredWrapper)) {
+				throw new Error("atomicWorkflowHandle is not a registered DBOS workflow function");
+			}
 			return async () => emptyHandle;
 		},
 		retrieveWorkflow() {
@@ -216,6 +221,37 @@ describe("process-global DBOS ownership", () => {
 				assert.ok(secondConfigured.backend.persistent);
 			} finally {
 				consoleSpy.mockRestore();
+			}
+		},
+		DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
+	);
+
+	test.sequential(
+		"runs durably after the last lease is released and another cwd reloads the SDK registry (#3577)",
+		async () => {
+			const firstSdk = createSharedFakeDbos();
+			const secondSdk = createSharedFakeDbos();
+			for (const sdk of [firstSdk, secondSdk, firstSdk, secondSdk]) {
+				const graph = await evaluateDurabilityGraph(sdk);
+				const release = graph.acquireDbosLease();
+				try {
+					const backend = await graph.initializeDurableBackend();
+					assert.equal(backend.persistent, true);
+					const wrapper = processOwner()?.wrappers?.mainWorkflow;
+					assert.ok(wrapper);
+					await sdk.startWorkflow(wrapper)("noop", {});
+				} finally {
+					await release();
+				}
+				assert.equal(graph.dbosLifecycleState(), "shut_down");
+				assert.equal(processOwner()?.wrappers, undefined);
+				assert.deepEqual(
+					sdk.registeredNames(),
+					Array.from({ length: sdk.shutdownCount() }, () => [
+						"atomicWorkflowHandle",
+						"atomicWorkflowCheckpoint",
+					]).flat(),
+				);
 			}
 		},
 		DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS,

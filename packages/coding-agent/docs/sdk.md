@@ -255,6 +255,8 @@ A healthy connected foreign owner remains read-only, even while a long-running t
 
 A run launched through the model-facing `workflow` tool can also move to another session without a crash. Disposing its owning session with `session.dispose()` stops that session's in-flight runs at their last checkpoint and records in the workflow database that the session released every checkpointed run it paused. Afterward, any authorized SDK session with the same `cwd` and workflow database can call `resume(runId)` with the full UUID, in the same process or after the owning process has exited. The adopting session becomes the run's owner, the run continues under the same UUID, and completed checkpoints replay without rerunning their callbacks.
 
+Workflow resume is project-scoped. SDK and workflow-tool resume calls for a run from a different `cwd` return an actionable error without changing it. To continue in a different project, use `/workflow resume <id>` interactively and confirm the fork into the current directory. The fork receives a new run ID and copies saved progress; the original run is left untouched. To keep the original ID, create the successor session with the original `cwd`.
+
 ```ts
 await owner.dispose(); // quits in-flight runs at their last checkpoint and releases them
 

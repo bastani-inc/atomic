@@ -34,9 +34,10 @@ import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
+import { forkDurableWorkflow } from "./fork-workflow.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
-import { isSdkRunAdoptable } from "./sdk-recovery-scope.js";
+import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
@@ -51,6 +52,7 @@ export type ResumeDurableResult =
 				| "invalid_inputs"
 				| "not_registered"
 				| "stale"
+				| "different_project"
 				| "startup_failed";
 			message: string;
 	  };
@@ -67,6 +69,8 @@ export interface ResumeDurableDeps {
 	readonly jobs?: JobTracker;
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
+	readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
+	readonly forkModelOwner?: string;
 }
 
 /** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
@@ -106,6 +110,10 @@ export function resolveDurableEntry(
 	if (resolution.kind === "not_found") return undefined;
 	if (resolution.kind === "malformed" || resolution.kind === "ambiguous") return resolution;
 	return catalog.find((entry) => entry.workflowId === resolution.runId);
+}
+
+export function crossProjectResumeMessage(workflowId: string, cwd: string): string {
+	return `Workflow run found in different project: ${cwd}. Run /workflow resume ${workflowId} in an interactive session to fork it into the current directory, or open the original project to resume it.`;
 }
 
 const pendingResumes = new WeakMap<DurableWorkflowBackend, Set<string>>();
@@ -164,6 +172,12 @@ async function resumeDurableWorkflowClaimed(
 	} else {
 		workflowId = target.runId;
 	}
+	const initial = backend.getWorkflow(workflowId);
+	const currentCwd = deps.baseRunOpts.cwd;
+	const crossProject =
+		initial?.invocationCwd !== undefined &&
+		currentCwd !== undefined &&
+		canonicalDirectory(initial.invocationCwd) !== canonicalDirectory(currentCwd);
 	const recovering = backend.isAdmissionUnavailable?.(workflowId) || backend.isCheckpointUnavailable?.(workflowId);
 	if (recovering && hasActiveLiveRun(deps.baseRunOpts.store, workflowId)) {
 		return alreadyRunningResult(
@@ -172,7 +186,7 @@ async function resumeDurableWorkflowClaimed(
 			deps.baseRunOpts.store,
 		);
 	}
-	await backend.reconcileWorkflowAdmission?.(workflowId, deps.signal);
+	if (!crossProject) await backend.reconcileWorkflowAdmission?.(workflowId, deps.signal);
 	const resolvedCatalog = recovering
 		? backend.listResumableWorkflows()
 		: (catalog ?? backend.listResumableWorkflows());
@@ -246,8 +260,24 @@ async function resumeDurableWorkflowClaimed(
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
-	const def =
-		handle.invocationCwd === undefined
+	if (crossProject) {
+		if (deps.confirmCrossProjectFork === undefined)
+			return {
+				ok: false,
+				reason: "different_project",
+				message: crossProjectResumeMessage(workflowId, initial.invocationCwd!),
+			};
+		if (!(await deps.confirmCrossProjectFork(initial.invocationCwd!)))
+			return {
+				ok: false,
+				reason: "different_project",
+				message: "Workflow resume cancelled; the source run was not changed.",
+			};
+	}
+
+	const def = crossProject
+		? (deps.registry.get(handle.name) ?? (await deps.resolveDefinition?.(handle.name, handle.invocationCwd)))
+		: handle.invocationCwd === undefined
 			? deps.registry.get(handle.name)
 			: ((await deps.resolveDefinition?.(handle.name, handle.invocationCwd)) ?? deps.registry.get(handle.name));
 	if (def === undefined) {
@@ -270,6 +300,19 @@ async function resumeDurableWorkflowClaimed(
 			reason: "invalid_inputs",
 			message: `invalid_inputs: ${err instanceof Error ? err.message : String(err)}`,
 		};
+	}
+	if (crossProject) {
+		deps.signal?.throwIfAborted();
+		const forkId = await forkDurableWorkflow(backend, handle, currentCwd!, deps.forkModelOwner ?? requestedOwner);
+		const fork = backend.getWorkflow(forkId)!;
+		const result = await resumeDurableWorkflow(
+			forkId,
+			{ ...deps, confirmCrossProjectFork: undefined, resolveDefinition: async () => def },
+			[resumableEntryFromHandle(fork)],
+		);
+		return result.ok
+			? { ...result, message: `Forked workflow ${workflowId} into the current directory. ${result.message}` }
+			: result;
 	}
 	let toolContinuation: RunOpts["continuation"] = deps.baseRunOpts.continuation;
 	if (

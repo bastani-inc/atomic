@@ -1,12 +1,16 @@
+import { createReadStream } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { join } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { createLabelEntry, createSessionFilePath, createSessionHeader } from "./session-manager-entries.ts";
-import { getDefaultSessionDir } from "./session-manager-paths.ts";
+import { migrateToCurrentVersion, parseSessionEntries } from "./session-manager-migrations.ts";
+import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
-	appendSessionEntry,
 	ensureDirectory,
 	hasConversationMessage,
 	loadEntriesFromFile,
+	serializeSessionEntries,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
 import type {
@@ -181,6 +185,7 @@ export interface ForkedSessionFile {
 	cwd: string;
 	sessionDir: string;
 	sessionFile: string;
+	fileEntries: FileEntry[];
 }
 
 export function forkSessionFromFile(
@@ -189,31 +194,57 @@ export function forkSessionFromFile(
 	sessionDir?: string,
 	options?: NewSessionOptions,
 ): ForkedSessionFile {
+	const sourceEntries = loadEntriesFromFile(resolvePath(sourcePath));
+	const forked = prepareFork(sourcePath, targetCwd, sourceEntries, sessionDir, options);
+	ensureDirectory(forked.sessionDir);
+	writeSessionEntries(forked.sessionFile, forked.fileEntries);
+	return forked;
+}
+
+export async function forkSessionFromFileAsync(
+	sourcePath: string,
+	targetCwd: string,
+	sessionDir?: string,
+	options?: NewSessionOptions,
+): Promise<ForkedSessionFile> {
+	const sourceEntries: FileEntry[] = [];
+	const input = createReadStream(resolvePath(sourcePath), { encoding: "utf8" });
+	const lines = createInterface({ input, crlfDelay: Infinity });
+	try {
+		for await (const line of lines) sourceEntries.push(...parseSessionEntries(line));
+	} finally {
+		lines.close();
+		input.destroy();
+	}
+	const forked = prepareFork(sourcePath, targetCwd, sourceEntries, sessionDir, options);
+	await mkdir(forked.sessionDir, { recursive: true });
+	await writeFile(forked.sessionFile, serializeSessionEntries(forked.fileEntries));
+	return forked;
+}
+
+function prepareFork(
+	sourcePath: string,
+	targetCwd: string,
+	sourceEntries: FileEntry[],
+	sessionDir?: string,
+	options?: NewSessionOptions,
+): ForkedSessionFile {
 	const resolvedSourcePath = resolvePath(sourcePath);
 	const resolvedTargetCwd = resolvePath(targetCwd);
-	const sourceEntries = loadEntriesFromFile(resolvedSourcePath);
 	if (sourceEntries.length === 0) {
 		throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
 	}
-
-	const sourceHeader = sourceEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
-	if (!sourceHeader) {
+	const sourceHeader = sourceEntries[0];
+	if (sourceHeader.type !== "session" || typeof sourceHeader.id !== "string") {
 		throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
 	}
-
-	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);
-	ensureDirectory(dir);
-
-	// Create new session file with new ID but forked content
-	if (options?.id !== undefined) {
-		assertValidSessionId(options.id);
-	}
+	migrateToCurrentVersion(sourceEntries);
+	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDirPath(resolvedTargetCwd);
+	if (options?.id !== undefined) assertValidSessionId(options.id);
 	const newSessionId = options?.id ?? createSessionId();
 	const timestamp = new Date().toISOString();
 	const newSessionFile = join(dir, `${timestamp.replace(/[:.]/g, "-")}_${newSessionId}.jsonl`);
-
-	// Write new header pointing to source as parent, with updated cwd
-	const newHeader: SessionHeader = createSessionHeader(
+	const newHeader = createSessionHeader(
 		newSessionId,
 		resolvedTargetCwd,
 		timestamp,
@@ -221,14 +252,10 @@ export function forkSessionFromFile(
 		options?.internal,
 		options?.workflow,
 	);
-	appendSessionEntry(newSessionFile, newHeader);
-
-	// Copy all non-header entries from source
-	for (const entry of sourceEntries) {
-		if (entry.type !== "session") {
-			appendSessionEntry(newSessionFile, entry);
-		}
-	}
-
-	return { cwd: resolvedTargetCwd, sessionDir: dir, sessionFile: newSessionFile };
+	return {
+		cwd: resolvedTargetCwd,
+		sessionDir: dir,
+		sessionFile: newSessionFile,
+		fileEntries: [newHeader, ...sourceEntries.filter((entry) => entry.type !== "session")],
+	};
 }

@@ -119,7 +119,7 @@ import { explicitDbosSystemDatabaseUrl } from "./dbos-system-database-url.js";
 export interface ConfiguredDbosDurability {
 	readonly backend: DbosDurableBackend;
 	readonly launch: () => Promise<void>;
-	readonly shutdown: () => Promise<void>;
+	readonly shutdown: (options?: { readonly deregister: boolean }) => Promise<void>;
 }
 
 const SILENT_DBOS_LOGGER: DbosLogger = {
@@ -204,9 +204,9 @@ export async function configureDbosDurableBackend(config?: {
 				);
 			}
 		},
-		shutdown: async () => {
+		shutdown: async (options) => {
 			const results = await Promise.allSettled([
-				sdk.shutdown(),
+				sdk.shutdown(options),
 				...[...(owner.executorFences ?? [])].map((fence) => fence.close()),
 			]);
 			const errors = results

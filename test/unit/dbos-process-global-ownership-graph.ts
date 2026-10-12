@@ -1,6 +1,7 @@
 /** Single entry so one jiti evaluation shares one durability module graph. */
 export { configureDbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 export {
+	acquireDbosLease,
 	DbosShutdownError,
 	dbosLifecycleState,
 	launchDbosOnce,

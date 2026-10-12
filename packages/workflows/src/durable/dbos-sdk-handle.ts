@@ -68,7 +68,7 @@ export interface DbosConfiguration {
 export interface DbosStatic {
 	setConfig(config: DbosConfiguration): void;
 	launch(): Promise<void>;
-	shutdown(): Promise<void>;
+	shutdown(options?: { readonly deregister?: boolean }): Promise<void>;
 	registerWorkflow<Args extends readonly WorkflowSerializableValue[]>(
 		fn: (...args: Args) => Promise<WorkflowSerializableValue>,
 		config?: { readonly name?: string },

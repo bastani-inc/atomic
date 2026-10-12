@@ -120,7 +120,7 @@ test("a session started after the last lease was released launches durably on a 
 	assert.equal(dbosLifecycleState(), "ready");
 	assert.equal(sdk.launches, 2);
 	assert.equal(started, 2, "re-acquiring a lease re-resolves the managed Postgres");
-	assert.equal(sdk.registrations, 2, "workflow wrappers are registered once, never again");
+	assert.equal(sdk.registrations, 4, "each session generation registers fresh workflow wrappers");
 	await releaseSecond();
 });
 

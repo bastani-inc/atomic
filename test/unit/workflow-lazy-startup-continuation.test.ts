@@ -244,13 +244,23 @@ describe("workflow lazy-startup continuation fixes", () => {
 						...(ownership === "legacy" ? {} : { invocationCwd: projectA }),
 						...(ownership === "agent" ? { origin: "agent", modelOwner: "previous-session" } : {}),
 					});
+					backend.recordCheckpoint({
+						kind: "tool",
+						workflowId: runId,
+						checkpointId: "saved-progress",
+						name: "saved-progress",
+						argsHash: "saved-progress",
+						output: "saved",
+						completedAt: 1,
+					});
 					const before = backend.getWorkflow(runId);
 					let prompts = 0;
+					const notices: string[] = [];
 					const ctx = {
 						cwd: projectB,
 						hasUI: true,
 						ui: {
-							notify: () => undefined,
+							notify: (message: string) => notices.push(message),
 							confirm: async () => {
 								prompts += 1;
 								return true;
@@ -267,9 +277,38 @@ describe("workflow lazy-startup continuation fixes", () => {
 					assert.deepEqual(backend.getWorkflow(runId), before);
 					assert.equal(store.runs().length, 0);
 					if (ownership !== "agent") {
+						if (ownership === "user") {
+							await assert.rejects(
+								async () =>
+									commands
+										.find((entry) => entry.name === "workflow")
+										?.options.handler?.(`resume ${runId}`, {
+											...ctx,
+											hasUI: false,
+										}),
+								/interactive session to fork it into the current directory/,
+							);
+							await cleanupJobs();
+							assert.equal(prompts, 0);
+							assert.deepEqual(backend.getWorkflow(runId), before);
+							assert.equal(store.runs().length, 0);
+						}
 						await commands.find((entry) => entry.name === "workflow")?.options.handler?.(`resume ${runId}`, ctx);
 						await cleanupJobs();
-						assert.equal(backend.getWorkflow(runId)?.status, "completed", backend.getWorkflow(runId)?.error);
+						if (ownership === "user") {
+							assert.equal(prompts, 1);
+							assert.deepEqual(backend.getWorkflow(runId), before);
+							const fork = store.runs().find((run) => run.id !== runId);
+							assert.ok(fork, notices.join("\n"));
+							assert.equal(backend.getWorkflow(fork.id)?.invocationCwd, projectB);
+							assert.equal(
+								backend.getWorkflow(fork.id)?.status,
+								"completed",
+								backend.getWorkflow(fork.id)?.error,
+							);
+						} else {
+							assert.equal(backend.getWorkflow(runId)?.status, "completed", backend.getWorkflow(runId)?.error);
+						}
 					}
 				} finally {
 					process.chdir(originalCwd);
