@@ -859,6 +859,72 @@ test("codemode description points to the models reference only when models are e
 	assert(!createCodemodeDescription([], {}).includes("`models`"));
 });
 
+test("codemode description says tools with output schemas resolve with their value on failure", () => {
+	const description = createCodemodeDescription([]);
+
+	assert(
+		description.includes(
+			"Failed or blocked calls throw, except that a tool with an output schema resolves with its structuredContent on failure too when it returned one; check its fields.",
+		),
+	);
+});
+
+test("codemode resolves a failing tool that declares an output schema and throws for one that does not", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "plain",
+					label: "Plain",
+					description: "Fails with text only",
+					exposure: "codemode",
+					parameters: Type.Object({}),
+					execute: async () => {
+						throw new Error("plain failed");
+					},
+				});
+				pi.registerTool({
+					name: "shaped",
+					label: "Shaped",
+					description: "Fails with a structured value",
+					exposure: "codemode",
+					parameters: Type.Object({}),
+					outputSchema: Type.Object({ exit_code: Type.Number() }),
+					execute: async () => ({
+						content: [{ type: "text", text: "exit 3" }],
+						structuredContent: { exit_code: 3 },
+						details: {},
+						isError: true,
+					}),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: 'const shaped = await tools.shaped({}); const plain = await tools.plain({}).then(() => "resolved", (error) => error.message); return { shaped, plain };',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run failing tools");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
+		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
+		assert.deepEqual(output.shaped, { exit_code: 3 });
+		assert.match(output.plain, /plain failed/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode tells declared tools how scripts call them instead of repeating their declaration", async () => {
 	const harness = await createHarness({
 		extensionFactories: [

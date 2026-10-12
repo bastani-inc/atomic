@@ -11,6 +11,10 @@
 
 - Changed `serializeConversation()` (branch summaries, resume-picker session summaries, and the policy-refusal summary fallback) to omit thinking blocks; replayed thinking is often not in the live context, so including it could make a summarization request larger than the context it summarizes and fail. Verbatim line compaction still serializes thinking lines.
 
+### Fixed
+
+- Fixed the code mode tool description claiming every failed tool call throws; a tool that declares an output schema resolves with its value on failure too (for example `bash` with a non-zero exit), so scripts should check its fields.
+
 ## [0.9.34] - 2026-10-11
 
 ### Fixed
