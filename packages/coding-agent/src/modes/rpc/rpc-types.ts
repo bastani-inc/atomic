@@ -28,7 +28,7 @@ import type {
 	WorkflowRunDetail,
 	WorkflowRunFilterStatus,
 	WorkflowRunSummary,
-} from "../../core/extensions/workflow-run-control.ts";
+} from "../../core/extensions/workflow-run-control.js";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";

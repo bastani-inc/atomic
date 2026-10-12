@@ -16,6 +16,7 @@ import {
 	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import { canonicalDirectory, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowIdentity } from "../shared/workflow-identity.js";
@@ -48,6 +49,7 @@ function executeContext(ctx: PiEventContext | undefined): PiExecuteContext {
 		hasHumanInput: ctx.hasHumanInput,
 		model: ctx.model,
 		modelRegistry: ctx.modelRegistry,
+		isSessionSummaryEnabled: ctx.isSessionSummaryEnabled,
 		cwd: ctx.cwd,
 	};
 }
@@ -175,7 +177,18 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 			if (result.action !== "status")
 				throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
 			const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
-			const entries = [...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])];
+			const cwd = host.context()?.cwd;
+			const canonicalPaths = new Map<string, string>();
+			const canonicalize = (path: string): string => {
+				const cached = canonicalPaths.get(path);
+				if (cached !== undefined) return cached;
+				const canonical = canonicalDirectory(path);
+				canonicalPaths.set(path, canonical);
+				return canonical;
+			};
+			const entries = [...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])].filter((entry) =>
+				isSdkDurableRunInScope(entry, cwd, canonicalize),
+			);
 			const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
 			const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
 			const runs: WorkflowRunSummary[] = result.runs.map((run) => {

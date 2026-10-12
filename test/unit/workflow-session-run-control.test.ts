@@ -27,6 +27,7 @@ import { toolControlRegistry } from "../../packages/workflows/src/engine/run-too
 import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
+import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import { createSessionRunControl } from "../../packages/workflows/src/extension/workflow-session-run-control.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import {
@@ -1673,6 +1674,8 @@ test("SDK workflow history reads stored summaries for durable, completed and liv
 		updatedAt: 10,
 		summary: "Implementation done",
 		summarizedThrough: 10,
+		invocationCwd: process.cwd(),
+		modelOwner: SESSION_ID,
 	};
 	const control = createSessionRunControl({
 		execute,
@@ -1681,8 +1684,26 @@ test("SDK workflow history reads stored summaries for durable, completed and liv
 		catalog: async () => {
 			catalogReads++;
 			return {
-				resumable: [{ ...entry, workflowId: durableId, status: "paused", label: "Saved label" }],
-				completed: [{ ...entry, workflowId: completedId, status: "completed" }],
+				resumable: [
+					{ ...entry, workflowId: durableId, status: "paused", label: "Saved label" },
+					{
+						...entry,
+						workflowId: testRunId("foreign-paused"),
+						status: "paused",
+						invocationCwd: `${process.cwd()}/foreign`,
+					},
+					{ ...entry, workflowId: testRunId("ownerless"), status: "paused", modelOwner: undefined },
+					{ ...entry, workflowId: testRunId("nested"), status: "paused", rootWorkflowId: durableId },
+				],
+				completed: [
+					{ ...entry, workflowId: completedId, status: "completed" },
+					{
+						...entry,
+						workflowId: testRunId("foreign-completed"),
+						status: "completed",
+						invocationCwd: `${process.cwd()}/foreign`,
+					},
+				],
 			};
 		},
 	});
@@ -1730,4 +1751,33 @@ test("SDK details retain stored generated summary metadata for durable and compl
 		assert.equal(detail.identity, "Saved label");
 		assert.equal(detail.status, status);
 	}
+});
+
+test("SDK resume respects disabled summary context while stored summaries remain readable", async () => {
+	const runId = testRunId("disabled-summary-resume");
+	const snapshot = run(runId, { status: "paused", summary: "Stored review context", summarizedThrough: 10 });
+	store.recordRunStart(snapshot);
+	const messages: string[] = [];
+	const { execute } = setup();
+	const control = createSessionRunControl({
+		store,
+		context: () => ({ ...sessionContext(SESSION_ID), isSessionSummaryEnabled: () => false }),
+		execute: async (args, ctx) => {
+			if (args.action !== "resume") return execute(args, ctx);
+			await injectWorkflowResumeSummary(
+				{
+					sendMessage: (message) => {
+						messages.push(String(message.content));
+					},
+				},
+				ctx,
+				runId,
+				snapshot,
+			);
+			return { action: "resume", runId, status: "running", message: "Resumed" };
+		},
+	});
+	assert.equal((await control.getRun(runId)).summary, "Stored review context");
+	await control.resume(runId);
+	assert.deepEqual(messages, []);
 });

@@ -175,3 +175,59 @@ test("recoverable active-blocked runs generate and persist blocked summary conte
 	assert.deepEqual(saved, ["Blocked awaiting credentials"]);
 	service.dispose();
 });
+
+for (const blockedSummary of ["finished", "pending"] as const) {
+	test(`${blockedSummary} blocked summary is replaced when the run is killed`, async () => {
+		const store = fixture();
+		const prompts: string[] = [];
+		const saved: string[] = [];
+		const requests: { signal: AbortSignal; finish: (summary: string) => void }[] = [];
+		const service = createWorkflowSummaryService({
+			store,
+			resolveContext: () => ({
+				generateWorkflowSummary: async (text, signal, options) => {
+					assert.equal(options?.terminal, true);
+					prompts.push(text);
+					return new Promise<string>((resolve) => requests.push({ signal, finish: resolve }));
+				},
+			}),
+			persist: async (_id, summary) => {
+				saved.push(summary);
+			},
+		});
+		try {
+			store.recordRunBlocked("summary-run", "Configure credentials", {
+				failureKind: "auth",
+				failureCode: "missing_api_key",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				failureMessage: "Configure credentials",
+				resumable: true,
+				blockedAt: 2,
+			});
+			assert.match(prompts[0], /Status: blocked/);
+			if (blockedSummary === "finished") {
+				requests[0].finish("Blocked awaiting credentials");
+				await settle();
+			}
+			store.recordRunEnd("summary-run", "killed");
+			assert.equal(prompts.length, 2, "killed status must request a new terminal summary");
+			assert.match(prompts[1], /Status: killed/);
+			if (blockedSummary === "pending") {
+				assert.equal(requests[0].signal.aborted, true);
+				requests[0].finish("Stale blocked summary");
+				await settle();
+				service.request("summary-run");
+				assert.equal(prompts.length, 2, "stale completion must not clear the killed request");
+			}
+			requests[1].finish("Workflow killed");
+			await settle();
+			assert.deepEqual(
+				saved,
+				blockedSummary === "finished" ? ["Blocked awaiting credentials", "Workflow killed"] : ["Workflow killed"],
+			);
+		} finally {
+			service.dispose();
+		}
+	});
+}

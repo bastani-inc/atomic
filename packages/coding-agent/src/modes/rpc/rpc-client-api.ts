@@ -9,7 +9,7 @@ import type {
 	WorkflowRunDetail,
 	WorkflowRunFilterStatus,
 	WorkflowRunSummary,
-} from "../../core/extensions/workflow-run-control.ts";
+} from "../../core/extensions/workflow-run-control.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";

@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed durable workflows failing with `atomicWorkflowHandle is not a registered DBOS workflow function` when a new SDK session uses a different working directory after the last session is disposed. Final session disposal now releases workflow registrations so the next session recreates them in its own SDK ([#3577](https://github.com/bastani-inc/atomic/issues/3577)).
+- Workflow SDK and RPC history now excludes stored runs from other projects. Resuming through either API respects disabled session summaries, and killing a blocked run requests a new final summary.
 
 ## [0.9.35-alpha.1] - 2026-10-12
 

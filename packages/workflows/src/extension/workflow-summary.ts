@@ -55,7 +55,7 @@ export function createWorkflowSummaryService(options: {
 }) {
 	const contexts = new Map<string, WorkflowSummaryContext>();
 	const pending = new Map<string, AbortController>();
-	const finalized = new Set<string>();
+	const finalized = new Map<string, ReturnType<typeof effectiveRunStatus>>();
 	let disposed = false;
 	const request = (runId: string): void => {
 		const run = options.store.runs().find((entry) => entry.id === runId);
@@ -91,9 +91,10 @@ export function createWorkflowSummaryService(options: {
 				const context = options.resolveContext();
 				if (context) contexts.set(run.id, context);
 			}
+			const status = effectiveRunStatus(run);
 			if (!terminal(run)) finalized.delete(run.id);
-			else if (!finalized.has(run.id)) {
-				finalized.add(run.id);
+			else if (finalized.get(run.id) !== status) {
+				finalized.set(run.id, status);
 				pending.get(run.id)?.abort();
 				pending.delete(run.id);
 				request(run.id);
