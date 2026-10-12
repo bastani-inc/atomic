@@ -31,6 +31,10 @@ interface WorkflowLifetime {
 	startupStarted?: boolean;
 	/** Runs the departing session released on a session switch, until the successor announces them. */
 	releasedRunIds?: readonly string[];
+	/** The most recently started generation's quit-and-release handoff; a successor completes it before starting. */
+	pendingSwitchHandoff?: () => Promise<void>;
+	/** A handoff already running, so that closing the lifetime never overlaps it. */
+	activeSwitchHandoff?: Promise<void>;
 }
 
 const startupRecoveries = new Set<Promise<void>>();
@@ -303,11 +307,29 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	};
 	// Captured while the context is live: a retiring generation's shutdown handler must not read it.
 	let sessionCaller: string | undefined;
+	let switchHandoff: Promise<void> | undefined;
+	// A command that awaits `ctx.newSession()` (or switch/fork) starts the successor before this session's
+	// `session_shutdown` handlers run, so the successor completes this same memoized handoff itself.
+	const handOffRunsToSuccessor = (): Promise<void> => {
+		switchHandoff ??= attemptAll([
+			...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
+			async () => {
+				lifetime.releasedRunIds = await releasePausedRunsOfSession(sessionCaller);
+			},
+			flushDbos,
+		]);
+		lifetime.activeSwitchHandoff = switchHandoff;
+		return switchHandoff;
+	};
 	pi.on("session_start", async (event, ctx) => {
+		const departingHandoff = lifetime.pendingSwitchHandoff;
+		lifetime.pendingSwitchHandoff = handOffRunsToSuccessor;
 		if (ctx) {
 			registerExtensionContextRetirementEffect(ctx, closeObservation);
 			sessionCaller = workflowCaller(ctx);
 		}
+		if (isSessionSwitch(eventReason(event)) && departingHandoff !== undefined && lifetime.closing === undefined)
+			await departingHandoff().catch(() => undefined);
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
 			getDurableBackendProcessOwner().injectedBackend === undefined ? acquireDbosLease() : async () => {};
@@ -374,6 +396,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const closeGeneration = closeObservation;
 		if (replacementStopsWorkflows(reason)) {
 			lifetime.closing ??= attemptAll([
+				() => lifetime.activeSwitchHandoff?.catch(() => undefined),
 				closeGeneration,
 				...lifetime.generations,
 				() => releasePausedRunsOfSession(sessionCaller),
@@ -384,14 +407,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			]);
 			await lifetime.closing;
 		} else if (isSessionSwitch(reason)) {
-			await attemptAll([
-				closeGeneration,
-				...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
-				async () => {
-					lifetime.releasedRunIds = await releasePausedRunsOfSession(sessionCaller);
-				},
-				flushDbos,
-			]);
+			await attemptAll([closeGeneration, handOffRunsToSuccessor]);
 		} else {
 			await attemptAll([closeGeneration, () => stageControlRegistry.clearDetached(), flushDbos]);
 		}

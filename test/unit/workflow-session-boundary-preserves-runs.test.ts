@@ -570,7 +570,14 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 	});
 });
 
-type SwitchContext = Record<string, unknown>;
+interface SwitchContext {
+	readonly hasUI?: boolean;
+	readonly ui?: {
+		readonly notify: (message: string) => void;
+		readonly setWidget: () => void;
+		readonly requestRender: () => void;
+	};
+}
 
 function registerPausedOwnedRun(
 	backend: DurableWorkflowBackend,
@@ -614,6 +621,89 @@ function notifyingUi(notices: string[]): SwitchContext {
 const RELEASE_RUN_A = "11111111-1111-4111-8111-111111111111";
 const RELEASE_RUN_B = "22222222-2222-4222-8222-222222222222";
 const RELEASE_RUN_C = "33333333-3333-4333-8333-333333333333";
+
+describe("the successor may start before the departing session's shutdown handlers run (#3569)", () => {
+	for (const reason of ["new", "resume", "fork"] as const) {
+		test(`session_start(${reason}) completes the quit-and-release handoff itself and announces the run (#3569)`, async () => {
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			adoptWorkflowSessionRunState({});
+			const scope = {};
+			const departing = await startSwitchedSession(scope, "session-a", "startup");
+			const own = await ownedCheckpointedWaitingRun(`late-shutdown-own-${reason}`, "session-a").launch();
+			assert.equal(backend.getWorkflow(own)?.status, "running");
+
+			const notices: string[] = [];
+			await startSwitchedSession(scope, "session-b", reason, notifyingUi(notices));
+
+			assert.equal(backend.getWorkflow(own)?.status, "paused");
+			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+			assert.equal(notices.length, 1, notices.join("\n---\n"));
+			assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
+
+			const releases = vi.spyOn(backend, "transitionWorkflowStatus");
+			await departing.get("session_shutdown")!({ reason });
+			assert.equal(
+				releases.mock.calls.length,
+				0,
+				"the late shutdown handler must not release or quit a second time",
+			);
+			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+		});
+	}
+
+	test("a departing shutdown that already ran is not repeated by the successor's session_start (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
+		const scope = {};
+		const departing = await startSwitchedSession(scope, "session-a", "startup");
+		await departing.get("session_shutdown")!({ reason: "new" });
+		const releases = vi.spyOn(backend, "transitionWorkflowStatus");
+		const notices: string[] = [];
+		await startSwitchedSession(scope, "session-b", "new", notifyingUi(notices));
+		assert.equal(releases.mock.calls.length, 0);
+		assert.equal(notices.length, 1);
+	});
+
+	test("disposing the departing session waits for a successor's running handoff instead of overlapping it (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		const scope = {};
+		const departing = await startSwitchedSession(scope, "session-a", "startup");
+		const gate = Promise.withResolvers<void>();
+		const original = backend.transitionWorkflowStatus.bind(backend);
+		const calls: string[] = [];
+		vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
+			calls.push(calls.length === 0 ? "handoff-release" : "later-release");
+			if (calls.length === 1) await gate.promise;
+			return original(...args);
+		});
+
+		const successor = startSwitchedSession(scope, "session-b", "new");
+		await vi.waitFor(() => assert.deepEqual(calls, ["handoff-release"]));
+		const disposing = departing.get("session_shutdown")!({ reason: "quit" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(calls, ["handoff-release"], "dispose must not overlap the handoff");
+
+		gate.resolve();
+		await Promise.all([successor, disposing]);
+		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
+	});
+
+	test("session_start(startup) and session_start(reload) never run the departing handoff (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const scope = {};
+		await startSwitchedSession(scope, "session-a", "startup");
+		const own = await ownedCheckpointedWaitingRun("late-shutdown-reload", "session-a").launch();
+		await startSwitchedSession(scope, "session-a", "reload");
+		assert.equal(backend.getWorkflow(own)?.status, "running");
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
+	});
+});
 
 describe("switching sessions releases the previous session's paused runs for the successor (#3569)", () => {
 	for (const reason of ["new", "resume", "fork"] as const) {

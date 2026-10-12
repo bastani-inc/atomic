@@ -69,7 +69,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, label: strin
 	});
 }
 
-async function switchHost() {
+async function switchHost(extraFactories: readonly ExtensionFactory[] = []) {
 	const originalCwd = process.cwd();
 	const root = await mkdtemp(join(tmpdir(), "atomic-switch-adoption-"));
 	const project = join(root, "project");
@@ -111,7 +111,7 @@ async function switchHost() {
 			settingsManager,
 			builtinPackagePaths: [],
 			noExtensions: true,
-			extensionFactories: [extensionFactory],
+			extensionFactories: [extensionFactory, ...extraFactories],
 		});
 		await resourceLoader.reload();
 		const result = await createAgentSession({
@@ -138,8 +138,18 @@ async function switchHost() {
 		confirm: async () => true,
 		notify: (message: string) => notices.push(message),
 	};
-	runtime.setRebindSession((session) => session.bindExtensions({ uiContext }));
-	await runtime.session.bindExtensions({ uiContext });
+	const commandContextActions = {
+		waitForIdle: async () => {},
+		newSession: (options?: Parameters<typeof runtime.newSession>[0]) => runtime.newSession(options),
+		fork: (entryId: string, options?: Parameters<typeof runtime.fork>[1]) => runtime.fork(entryId, options),
+		navigateTree: (targetId: string, options?: Parameters<typeof runtime.session.navigateTree>[1]) =>
+			runtime.session.navigateTree(targetId, options),
+		switchSession: (sessionPath: string, options?: Parameters<typeof runtime.switchSession>[1]) =>
+			runtime.switchSession(sessionPath, options),
+		reload: () => runtime.session.reload(),
+	};
+	runtime.setRebindSession((session) => session.bindExtensions({ uiContext, commandContextActions }));
+	await runtime.session.bindExtensions({ uiContext, commandContextActions });
 	cleanups.push(async () => {
 		await Promise.allSettled([runtime.dispose()]);
 	});
@@ -201,6 +211,73 @@ for (const reason of ["new", "fork"] as const) {
 				"the adopted run to finish",
 			);
 			assert.equal(getDurableBackend().getWorkflow(runId)?.releasedModelOwner, undefined);
+		},
+		HOST_SWITCH_TIMEOUT_MS,
+	);
+}
+
+for (const reason of ["new", "fork"] as const) {
+	test(
+		`an extension command that awaits ctx.${reason === "new" ? "newSession" : "fork"}() lets the successor adopt the run inside withSession (#3569)`,
+		async () => {
+			const inWithSession: { notices?: string[]; resume?: { status?: string } | { refused: string } } = {};
+			let currentRunId = "";
+			let hostRef: Awaited<ReturnType<typeof switchHost>> | undefined;
+			let forkEntryId = "";
+			const replaceCommand: ExtensionFactory = (pi) => {
+				pi.registerCommand("replace", {
+					description: "replaces the session from inside its own command",
+					handler: async (_args, ctx) => {
+						const afterSwitch = async () => {
+							const host = hostRef;
+							assert.ok(host);
+							inWithSession.notices = [...host.notices];
+							try {
+								const resumed = await callWorkflowTool(host.runtime.session, {
+									action: "resume",
+									runId: currentRunId,
+								});
+								inWithSession.resume = resumed.details as { status?: string };
+							} catch (error) {
+								inWithSession.resume = { refused: error instanceof Error ? error.message : String(error) };
+							}
+						};
+						if (reason === "new") await ctx.newSession({ withSession: afterSwitch });
+						else await ctx.fork(forkEntryId, { withSession: afterSwitch });
+					},
+				});
+			};
+			const host = await switchHost([replaceCommand]);
+			hostRef = host;
+			const { runtime } = host;
+			const first = runtime.session;
+			const firstId = first.sessionManager.getSessionId();
+			forkEntryId = first.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+			const launch = await callWorkflowTool(first, { action: "run", workflow: "switch-adoption", inputs: {} });
+			const runId = (launch.details as { runId?: string }).runId;
+			assert.ok(runId, JSON.stringify(launch));
+			currentRunId = runId;
+			await waitFor(host.reached, "the gate tool node to start");
+
+			await first.prompt("/replace");
+
+			assert.notEqual(runtime.session, first);
+			const successorId = runtime.session.sessionManager.getSessionId();
+			assert.ok(
+				inWithSession.notices?.some((message) => message.includes(`/workflow resume ${runId}`)),
+				`withSession must already see the released-run notice: ${JSON.stringify(inWithSession.notices)}`,
+			);
+			assert.ok(
+				inWithSession.resume !== undefined && !("refused" in inWithSession.resume),
+				`the successor's model resumes inside withSession: ${JSON.stringify(inWithSession.resume)}`,
+			);
+			assert.equal(getDurableBackend().getWorkflow(runId)?.modelOwner, successorId);
+			assert.notEqual(firstId, successorId);
+			await host.release();
+			await waitFor(
+				() => getDurableBackend().getWorkflow(runId)?.status === "completed",
+				"the adopted run to finish",
+			);
 		},
 		HOST_SWITCH_TIMEOUT_MS,
 	);
