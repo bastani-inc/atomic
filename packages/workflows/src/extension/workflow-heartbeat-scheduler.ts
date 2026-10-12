@@ -592,7 +592,10 @@ export function installWorkflowHeartbeatScheduler(
 				continue;
 			}
 			observed.add(run.id);
-			if (state.pending.has(run.id) || !isWorkflowHeartbeatEligibleRun(run)) {
+			if (
+				(state.pending.has(run.id) && options.onSummaryBoundary === undefined) ||
+				!isWorkflowHeartbeatEligibleRun(run)
+			) {
 				state.scheduled.delete(run.id);
 				continue;
 			}

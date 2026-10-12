@@ -24,44 +24,46 @@ function fixture() {
 	return store;
 }
 
-test("workflow summaries deduplicate concurrent requests and finish with terminal context", async () => {
-	const store = fixture();
-	const prompts: string[] = [];
-	const saved: string[] = [];
-	const requests: { signal: AbortSignal; finish: (summary: string) => void }[] = [];
-	const service = createWorkflowSummaryService({
-		store,
-		resolveContext: () => ({
-			generateWorkflowSummary: async (text, signal) => {
-				prompts.push(text);
-				return new Promise<string>((resolve) => {
-					requests.push({ signal, finish: resolve });
-				});
+for (const status of ["completed", "killed", "skipped"] as const) {
+	test(`workflow summaries cancel stale requests and finish with ${status} context`, async () => {
+		const store = fixture();
+		const prompts: string[] = [];
+		const saved: string[] = [];
+		const requests: { signal: AbortSignal; finish: (summary: string) => void }[] = [];
+		const service = createWorkflowSummaryService({
+			store,
+			resolveContext: () => ({
+				generateWorkflowSummary: async (text, signal) => {
+					prompts.push(text);
+					return new Promise<string>((resolve) => {
+						requests.push({ signal, finish: resolve });
+					});
+				},
+			}),
+			persist: async (_id, summary) => {
+				saved.push(summary);
 			},
-		}),
-		persist: async (_id, summary) => {
-			saved.push(summary);
-		},
+		});
+		service.request("summary-run");
+		service.request("summary-run");
+		await settle();
+		assert.equal(prompts.length, 1);
+		assert.match(prompts[0], /Fix the compiler/);
+		store.recordRunEnd("summary-run", status);
+		assert.equal(prompts.length, 2, "terminal generation must be admitted synchronously");
+		assert.equal(requests[0].signal.aborted, true);
+		assert.equal(requests[1].signal.aborted, false);
+		requests[0].finish("Stale heartbeat");
+		await settle();
+		service.request("summary-run");
+		assert.equal(prompts.length, 2, "superseded completion must not clear the active terminal request");
+		assert.ok(prompts[1].includes(`Status: ${status}`));
+		requests[1].finish("Completed compiler repair");
+		await settle();
+		assert.deepEqual(saved, ["Completed compiler repair"]);
+		service.dispose();
 	});
-	service.request("summary-run");
-	service.request("summary-run");
-	await settle();
-	assert.equal(prompts.length, 1);
-	assert.match(prompts[0], /Fix the compiler/);
-	store.recordRunEnd("summary-run", "completed");
-	assert.equal(prompts.length, 2, "terminal generation must be admitted synchronously");
-	assert.equal(requests[0].signal.aborted, true);
-	assert.equal(requests[1].signal.aborted, false);
-	requests[0].finish("Stale heartbeat");
-	await settle();
-	service.request("summary-run");
-	assert.equal(prompts.length, 2, "superseded completion must not clear the active terminal request");
-	assert.match(prompts[1], /Status: completed/);
-	requests[1].finish("Completed compiler repair");
-	await settle();
-	assert.deepEqual(saved, ["Completed compiler repair"]);
-	service.dispose();
-});
+}
 
 test("terminal workflow summaries run without heartbeat scheduling and persist in the durable catalog", async () => {
 	const store = fixture();

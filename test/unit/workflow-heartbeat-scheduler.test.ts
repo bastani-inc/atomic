@@ -2675,5 +2675,8 @@ test("heartbeat boundaries request background summaries separately from the stee
 	harness.clock.advanceBy(MINUTE_MS);
 	assert.deepEqual(requested, [runId]);
 	assert.equal(harness.sent.length, 1);
+	harness.clock.advanceBy(MINUTE_MS);
+	assert.deepEqual(requested, [runId, runId], "an unread steer card must not suppress the next summary");
+	assert.equal(harness.sent.length, 1, "the unread steer card still suppresses duplicate cards");
 	harness.scheduler.dispose();
 });

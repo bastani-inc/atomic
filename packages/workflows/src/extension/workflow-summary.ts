@@ -1,5 +1,6 @@
 import { getAvailableDurableBackend } from "../durable/factory.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { Store } from "../shared/store-public-types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -114,7 +115,8 @@ export function createWorkflowSummaryService(options: {
 }
 
 function terminal(run: RunSnapshot): boolean {
-	return ["completed", "failed", "cancelled", "blocked"].includes(effectiveRunStatus(run));
+	const status = effectiveRunStatus(run);
+	return status === "blocked" || isTerminalRunStatus(status);
 }
 
 export function workflowSummaryInput(run: RunSnapshot): string {
