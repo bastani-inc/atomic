@@ -230,13 +230,17 @@ Rebinding host callbacks preserves pending MCP OAuth ownership. Authorization st
 
 Web provider configuration caches are session-local. Configuration discovery and environment keys are unchanged; create a new session to pick up changed cached settings. GitHub extraction returns the owned clone path for use with file tools, so callers need not predict its directory.
 
+### Stored session summaries
+
+`session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only.
+
 ### Workflow run control
 
 `session.workflows` controls this session's workflow runs without slash commands or the model-facing `workflow` tool. A fresh session can also inspect a durable root from another session by its full UUID, within the same working directory and configured workflow database. Inspection stays read-only and does not add the run to `listRuns()`.
 
 ```typescript
 interface SessionWorkflows {
-  listRuns(filter?: { status?: WorkflowRunFilterStatus }): Promise<readonly WorkflowRunSummary[]>;
+  listRuns(filter?: { status?: WorkflowRunFilterStatus; includeDurable?: boolean }): Promise<readonly WorkflowRunSummary[]>;
   getRun(runId: string): Promise<WorkflowRunDetail>;
   getStages(runId: string, filter?: { status?: WorkflowStageStatus }): Promise<readonly WorkflowRunStageSummary[]>;
   pause(runId: string, options?: { stageId?: string }): Promise<WorkflowRunControlOutcome>;
@@ -246,6 +250,8 @@ interface SessionWorkflows {
   observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
 }
 ```
+
+`listRuns()` and `getRun()` expose `label`, `identity`, `summary`, and `summarizedThrough` (Unix milliseconds). The identity prefers the label, then the objective/prompt input, then the run ID. Use `listRuns({ includeDurable: true })` to include stored resumable and completed runs alongside this session's live runs. The default remains this session's runs only. Saved summaries can lag current progress and remain readable with summary generation disabled.
 
 `listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `getRun()`, `getStages()`, `pause()` and `quit()` resolve a prefix against the runs this session holds and reject it at once when none matches, so pass the full UUID for a run recorded by an earlier process. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect. For `pause({ all: true })` and `quit({ all: true })`, `partial` means this call stopped at least one run and others are still active: `failedRuns` lists each run that is still active with its `runId`, a `reason` (for example `pause_failed` or `no_active_stages`) and a `message`, so check `outcome.status === "partial"` before treating a batch stop as complete. If active runs could not be stopped and this call stopped none, the call rejects with `WorkflowRunControlError` (`WORKFLOW_RUN_CONTROL_FAILED`) whose `failedRuns` carries the same list, even when other runs were already paused. Runs that are already paused or already ended are not failures, and a batch with no active run left to stop resolves as a `noop`. Call `getRun()` before retrying.
 

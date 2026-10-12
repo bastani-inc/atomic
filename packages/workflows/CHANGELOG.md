@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Resuming a workflow from another project with `/workflow resume <id>` now offers to fork its saved progress into the current directory under a new run ID, leaving the source run unchanged. SDK, tool, and headless resume requests return an actionable error instead of running in a different project.
 - Workflow resume history now shows descriptive run identities and saved generated progress summaries, and supplies saved summaries to the main chat when resuming.
+- SDK workflow lists and details expose run labels, identities, saved summaries and summarized-through timestamps. `listRuns({ includeDurable: true })` includes stored resumable and completed history; RPC clients can access the same history.
 
 ### Fixed
 

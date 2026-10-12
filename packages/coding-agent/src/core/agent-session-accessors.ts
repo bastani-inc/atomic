@@ -1,9 +1,15 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
+import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
 export function installAgentSessionAccessors(prototype: AgentSession): void {
 	Object.defineProperties(prototype, {
+		sessionSummary: {
+			get() {
+				return getLatestSessionSummary(this.sessionManager.getBranch());
+			},
+		},
 		orchestrationContext: {
 			get() {
 				return this._orchestrationContext;

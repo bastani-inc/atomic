@@ -218,7 +218,7 @@ async function buildSessionInfo(
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
-		const summary = getLatestSessionSummary(entries)?.summary;
+		const summary = getLatestSessionSummary(entries);
 
 		return {
 			path: filePath,
@@ -233,7 +233,8 @@ async function buildSessionInfo(
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
-			summary,
+			summary: summary?.summary,
+			summarizedThroughId: summary?.summarizedThroughId,
 			allMessagesText: allMessages.join(" "),
 		};
 	} catch {

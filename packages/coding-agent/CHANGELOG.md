@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- SDK and RPC clients can read stored session summaries with their summarized-through message IDs, and list or inspect workflow history with saved summaries and run identities. SDK sessions expose `sessionSummary`; RPC adds `get_session_summary`, `list_sessions`, `list_workflow_runs`, and `get_workflow_run_summary`.
+
 ### Fixed
 
 - Fixed `/resume` and `atomic -r` hiding session summaries after newer messages. The latest summary now stays visible until a branch summary retires it, and opening or resuming an interactive session refreshes missing or stale summaries in the background.

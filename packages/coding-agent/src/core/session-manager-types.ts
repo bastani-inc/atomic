@@ -300,8 +300,9 @@ export interface SessionInfo {
 	modified: Date;
 	messageCount: number;
 	firstMessage: string;
-	/** Generated resume summary. Absent when never generated, or stale against the latest message. */
+	/** Latest stored generated resume summary. */
 	summary?: string;
+	summarizedThroughId?: string;
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";

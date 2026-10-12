@@ -383,6 +383,7 @@ export {
 	type SessionMessageEntry,
 	type SessionNameState,
 	type SessionProjection,
+	type SessionSummaryEntry,
 	type SessionTreeNode,
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
