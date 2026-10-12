@@ -457,6 +457,25 @@ test("codemode read returns text and image blocks accepted by image() (#10251)",
 	}
 });
 
+test("codemode read rejects when the file is too large to read (#3574)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode", "read"],
+	});
+	try {
+		writeFileSync(join(harness.tempDir, "big.json"), JSON.stringify({ a: "x".repeat(93_000) }));
+		const result = await runScript(
+			harness,
+			'try { await tools.read({ path: "big.json" }); return "read ok"; } catch (error) { return "read failed: " + error.message; }',
+		);
+		assert.match(getMessageText(result), /read failed: File read blocked/);
+		const details = result.details as CodemodeToolDetails;
+		assert.equal(details.calls[0]?.status, "error");
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode saves duplicate images once and labels each image in output order (#3429)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],

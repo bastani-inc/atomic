@@ -127,6 +127,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("targeted snippet");
 			expect(output).not.toContain(sentinel);
 			expect(output).not.toContain(fillerPrefix);
+			expect(result.isError).toBe(true);
 			expect(result.details?.oversizedRead?.blocked).toBe(true);
 			expect(result.details?.oversizedRead?.path).toBe(testFile);
 			expect(result.details?.oversizedRead?.chars).toBe(content.length);
