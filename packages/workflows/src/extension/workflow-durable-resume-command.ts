@@ -4,6 +4,7 @@ import { getDurableBackend } from "../durable/factory.js";
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
+import { isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { resolveRunIdTarget } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -12,10 +13,11 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
-import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
+import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
+import { workflowCaller } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
@@ -140,7 +142,11 @@ export async function handleDurableResume(
 			fail(completedAttempt.message);
 			return true;
 		}
-		const result = await runtime.resumeDurableWorkflow(target, { policy, actor: "user" });
+		const result = await runtime.resumeDurableWorkflow(target, {
+			policy,
+			actor: "user",
+			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx),
+		});
 		if (result.ok) {
 			print(result.message);
 			if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -240,6 +246,12 @@ function isExplicitResumeCandidate(run: RunSnapshot, sessionRuns: readonly RunSn
 	);
 }
 
+/** A run released by its previous session moves to the session resuming it; every other run keeps its owner. */
+function releasedRunAdoption(workflowId: string, ctx: PiEventContext): { readonly modelOwner?: string } {
+	const handle = getDurableBackend().getLoadableWorkflow(workflowId);
+	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
+}
+
 async function resumeDurableTarget(
 	workflowId: string,
 	ctx: PiCommandContext,
@@ -250,6 +262,7 @@ async function resumeDurableTarget(
 	const result = await runtime.resumeDurableWorkflow(workflowId, {
 		policy: workflowPolicyFromContext(ctx),
 		actor: "user",
+		...releasedRunAdoption(workflowId, ctx),
 	});
 	if (!result.ok) reporter.error(result.message);
 	else {

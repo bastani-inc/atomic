@@ -81,6 +81,21 @@ function registerRun(
 	});
 }
 
+function recordPredecessorSnapshot(runId: string): void {
+	store.recordRunStart({
+		id: runId,
+		name: "session-run-control",
+		inputs: {},
+		status: "paused",
+		exitReason: "quit",
+		resumable: true,
+		startedAt: 1,
+		stages: [],
+		modelOwner: PREVIOUS_SESSION,
+		origin: "agent",
+	});
+}
+
 async function rejection(operation: Promise<unknown>): Promise<Error> {
 	try {
 		await operation;
@@ -199,25 +214,123 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 		}
 	});
 
-	test.sequential("the model tool still refuses every other action on a run its session does not own (#3569)", async () => {
-		const runId = testRunId("tool-released-non-resume-actions");
+	test.sequential("the model tool still refuses mutating actions on a released run it has not adopted (#3569)", async () => {
+		const runId = testRunId("tool-released-mutating-actions");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		registerRun(backend, runId);
 		const before = structuredClone(backend.getWorkflow(runId));
 		const { execute } = setup();
-		for (const action of ["status", "stages"] as const) {
-			await assert.rejects(
-				execute({ action, runId }, modelContext(SUCCESSOR_SESSION)),
-				WorkflowInstanceOwnershipError,
-				action,
-			);
-		}
 		for (const action of ["pause", "quit"] as const) {
 			const result = await execute({ action, runId }, modelContext(SUCCESSOR_SESSION));
 			assert.equal("code" in result && result.code, "owned_elsewhere", action);
 		}
+		const answered = await execute(
+			{ action: "answer", runId, answer: "yes" } as never,
+			modelContext(SUCCESSOR_SESSION),
+		);
+		assert.equal("status" in answered && answered.status, "noop");
 		assert.deepEqual(backend.getWorkflow(runId), before);
+	});
+
+	test.sequential("the model tool still refuses status and stages on runs that are not released to the caller (#3569)", async () => {
+		const cases = [
+			{ label: "paused run its owner never released", overrides: { releasedModelOwner: undefined } },
+			{ label: "run released by a different owner", overrides: { releasedModelOwner: OTHER_SESSION } },
+			{ label: "released run in another project", overrides: { invocationCwd: "/another-project" } },
+			{ label: "live-owned running run", overrides: { status: "running" as const } },
+			{ label: "completed run owned by the predecessor", overrides: { status: "completed" as const } },
+		];
+		for (const [index, { label, overrides }] of cases.entries()) {
+			for (const inStore of [false, true]) {
+				store.clear();
+				const runId = testRunId(`tool-released-inspection-refusal-${index}-${inStore}`);
+				const backend = new InMemoryDurableBackend();
+				setDurableBackend(backend);
+				registerRun(backend, runId, overrides);
+				if (inStore) recordPredecessorSnapshot(runId);
+				const before = structuredClone(backend.getWorkflow(runId));
+				const { execute } = setup();
+				for (const action of ["status", "stages"] as const) {
+					const error = await rejection(execute({ action, runId }, modelContext(SUCCESSOR_SESSION)));
+					assert.ok(error instanceof WorkflowInstanceOwnershipError, `${label} ${action}: ${error.message}`);
+					assert.equal(error.message, GENERIC_REFUSAL, `${label} ${action}`);
+				}
+				assert.deepEqual(backend.getWorkflow(runId), before, label);
+			}
+		}
+	});
+
+	test.sequential("the successor's model inspects a released run's status before adopting it (#3569)", async () => {
+		const runId = testRunId("tool-released-status-detail");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerRun(backend, runId);
+		const before = structuredClone(backend.getWorkflow(runId));
+		const { execute } = setup();
+		const result = await execute({ action: "status", runId }, modelContext(SUCCESSOR_SESSION));
+		assert.equal(result.action, "statusDetail");
+		assert.equal("error" in result && result.error, false);
+		assert.equal("runId" in result && result.runId, runId);
+		assert.equal("detail" in result && result.detail !== undefined, true);
+		assert.deepEqual(backend.getWorkflow(runId), before);
+	});
+
+	test.sequential("the successor's model inspects a released run whose predecessor snapshot is still in the store (#3569)", async () => {
+		const runId = testRunId("tool-released-status-shared-store");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerRun(backend, runId);
+		recordPredecessorSnapshot(runId);
+		const before = structuredClone(backend.getWorkflow(runId));
+		const { execute } = setup();
+
+		const detail = await execute({ action: "status", runId }, modelContext(SUCCESSOR_SESSION));
+		assert.equal(detail.action, "statusDetail");
+		assert.equal("detail" in detail && detail.detail !== undefined, true);
+
+		const listing = await execute({ action: "status" }, modelContext(SUCCESSOR_SESSION));
+		assert.equal(listing.action, "status");
+		assert.deepEqual("runs" in listing ? listing.runs.map((run) => run.runId) : [], [runId]);
+
+		const stages = await execute({ action: "stages", runId }, modelContext(SUCCESSOR_SESSION));
+		assert.equal(stages.action, "stages");
+		assert.equal("error" in stages && stages.error !== undefined, false);
+		assert.deepEqual(backend.getWorkflow(runId), before);
+	});
+
+	test.sequential("the successor's model inspects a released run's stages without a store snapshot (#3569)", async () => {
+		const runId = testRunId("tool-released-stages-durable");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerRun(backend, runId);
+		const { execute } = setup();
+		const stages = await execute({ action: "stages", runId }, modelContext(SUCCESSOR_SESSION));
+		assert.equal(stages.action, "stages");
+		assert.equal("error" in stages && stages.error !== undefined, false);
+	});
+
+	test.sequential("once another session adopts a released run, the predecessor's inspection is refused again (#3569)", async () => {
+		const runId = testRunId("tool-released-inspection-after-adoption");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerRun(backend, runId);
+		const { execute } = setup();
+		const first = await execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION));
+		assert.equal("status" in first && first.status, "running");
+		await vi.waitFor(() => assert.equal(backend.getWorkflow(runId)?.status, "completed"));
+		for (const action of ["status", "stages"] as const) {
+			assert.notEqual(
+				(await execute({ action, runId }, modelContext(SUCCESSOR_SESSION))).action,
+				undefined,
+				`adopter ${action}`,
+			);
+			await assert.rejects(
+				execute({ action, runId }, modelContext(OTHER_SESSION)),
+				WorkflowInstanceOwnershipError,
+				`other session ${action}`,
+			);
+		}
 	});
 
 	test.sequential("a released run adopted by one session tells the second adopter it is now owned elsewhere (#3569)", async () => {

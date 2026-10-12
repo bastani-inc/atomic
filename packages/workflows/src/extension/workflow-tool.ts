@@ -125,7 +125,12 @@ export function makeExecuteWorkflowTool(
 		};
 		const authorize = (id: string): void => {
 			const handle = getDurableBackend().getLoadableWorkflow(id);
-			if (action === "resume" && handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd)) return;
+			if (
+				(action === "resume" || action === "status" || action === "stages") &&
+				handle !== undefined &&
+				isSdkReleasedRunAdoptable(handle, recoveryCwd)
+			)
+				return;
 			if (
 				access === "sdk" &&
 				isFullRunId(args.runId?.trim() ?? "") &&
