@@ -11,6 +11,10 @@
 - Added `ATOMIC_CLIPBOARD_OSC52=1`, with legacy alias `PI_CLIPBOARD_OSC52=1`, to send copied text through OSC 52 after the local clipboard write. Use it when a multiplexer or remote IDE session leaves no SSH markers for Atomic to detect.
 - Added elapsed time while a codemode script runs and total time when it finishes. Bash commands continued in the background keep their "Observed for" timing label.
 
+### Changed
+
+- MCP tools now describe their content blocks and nested structured-content fields directly in codemode declarations, including schemas with local references.
+
 ## [0.9.35-alpha.3] - 2026-10-12
 
 ### Added

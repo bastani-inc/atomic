@@ -11,6 +11,7 @@ import {
 	type CodemodeToolDetails,
 	createCodemodeDescription,
 } from "../src/extensions/codemode/tool.js";
+import { createMcpResultSchema } from "../src/extensions/mcp/tools.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
 test("codemode joins adjacent output with linear separator checks (#10678)", async () => {
@@ -1013,6 +1014,52 @@ test("codemode tells declared tools how scripts call them instead of repeating t
 		assert.equal(
 			description("stats"),
 			"Report counts\n\nCodemode: `tools.stats(args)` resolves to `{ count, label? }`.",
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode tells scripts the fields of an MCP tool's structured content", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "mcp__docs__search",
+					label: "Search",
+					description: "Search docs",
+					parameters: Type.Object({}),
+					outputSchema: createMcpResultSchema({
+						type: "object",
+						properties: { hits: { type: "array", items: { type: "string" } } },
+						required: ["hits"],
+					}),
+					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
+				});
+				pi.registerTool({
+					name: "mcp__docs__fail",
+					label: "Fail",
+					description: "Fail",
+					parameters: Type.Object({}),
+					outputSchema: createMcpResultSchema(undefined),
+					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["mcp__docs__search", "mcp__docs__fail", "codemode"],
+	});
+	try {
+		const description = (name: string) =>
+			harness.session.agent.state.tools.find((tool) => tool.name === name)?.description;
+
+		assert.equal(
+			description("mcp__docs__search"),
+			"Search docs\n\nCodemode: `tools.mcp__docs__search(args)` resolves to `{ content, structuredContent?: { hits }, isError? }`.",
+		);
+		assert.equal(
+			description("mcp__docs__fail"),
+			"Fail\n\nCodemode: `tools.mcp__docs__fail(args)` resolves to `{ content, structuredContent?, isError? }`.",
 		);
 	} finally {
 		await harness.cleanup();

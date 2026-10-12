@@ -46,7 +46,7 @@ Every tool the session can call is a method of `tools`, named by its identifier:
 What a call resolves to depends on the tool:
 
 - Tools with an output schema resolve to a structured value. `bash` resolves to `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, also for non-zero exit codes. Its `output` is not limited to what the model sees directly: it holds up to 1 MiB, and longer output keeps its first and last 512 KiB around an omission marker, with `truncated` set and the full output in `full_output_path`.
-- MCP tools resolve to their `CallToolResult`, including `isError` and `structuredContent`.
+- MCP tools resolve to their `CallToolResult`, including `isError` and `structuredContent`. Their declarations spell out `content`, `isError`, and `structuredContent` typed from the server's output schema.
 - `read` resolves to the returned text (including path headers and line numbers unless `:raw` is used), or for an image to an image block `{ type: "image", data, mimeType, note }` that `image()` shows. `data` is the base64 image the model would see and `note` the accompanying text, such as resize hints.
 - Other tools, such as `edit` and `write`, resolve to their text output.
 
