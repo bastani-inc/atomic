@@ -245,6 +245,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						writeRawStdout(`${content.text}\n`);
 					}
 				}
+				if (assistantMsg.stopReason === "length") {
+					console.error("Response was truncated: the model reached its output token limit.");
+					exitCode = 1;
+				}
 			}
 		} else if (mode === "text" && !suppressFinalOutput) {
 			if (lastMessage?.role === "custom") {
