@@ -13,6 +13,7 @@
 - Fixed home-directory (`~`) expansion in resource include and exclude patterns.
 - Fixed MCP tool calls rejecting array, null, or primitive structured content.
 - Fixed cancelled MCP requests being retried after a shared authorization refresh.
+- Fixed slow MCP resource listings delaying tools on connection. Resources and templates are now listed only on demand.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 
