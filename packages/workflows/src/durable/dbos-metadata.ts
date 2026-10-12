@@ -83,6 +83,7 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
 			...(metadata.origin !== undefined ? { origin: metadata.origin } : {}),
 			modelOwner: metadata.modelOwner,
+			...(metadata.releasedModelOwner !== undefined ? { releasedModelOwner: metadata.releasedModelOwner } : {}),
 			...(metadata.invocationCwd !== undefined ? { invocationCwd: metadata.invocationCwd } : {}),
 			...(metadata.workflowCwd !== undefined ? { workflowCwd: metadata.workflowCwd } : {}),
 			...(metadata.repositoryRoot !== undefined ? { repositoryRoot: metadata.repositoryRoot } : {}),
@@ -187,6 +188,7 @@ function parseDurableWorkflowMetadata(
 			!isWorkflowFailureRecoverability(metadata.failureRecoverability)) ||
 		(metadata.failureDisposition !== undefined && !isWorkflowFailureDisposition(metadata.failureDisposition)) ||
 		(metadata.failedToolNodeId !== undefined && typeof metadata.failedToolNodeId !== "string") ||
+		(metadata.releasedModelOwner !== undefined && typeof metadata.releasedModelOwner !== "string") ||
 		(metadata.invocationCwd !== undefined && typeof metadata.invocationCwd !== "string") ||
 		(metadata.workflowCwd !== undefined && typeof metadata.workflowCwd !== "string") ||
 		(metadata.repositoryRoot !== undefined && typeof metadata.repositoryRoot !== "string") ||

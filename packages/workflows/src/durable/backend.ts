@@ -212,7 +212,11 @@ export interface DurableWorkflowBackend {
 	): void;
 	/** Explicit resume-only repair of a locally retained, unavailable admission. Never executes author code. */
 	reconcileWorkflowAdmission?(workflowId: string, signal?: AbortSignal): Promise<void>;
-	/** Atomically update status only when the authoritative status is expected. */
+	/**
+	 * Atomically update status only when the authoritative status is expected.
+	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
+	 * the session owning the run was disposed; every transition without it clears that record.
+	 */
 	transitionWorkflowStatus(
 		workflowId: string,
 		expectedStatuses: readonly DurableWorkflowStatus[],
@@ -221,6 +225,7 @@ export interface DurableWorkflowBackend {
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
+		releasedModelOwner?: string,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	adjustPendingPrompts(workflowId: string, delta: number): void;
@@ -310,6 +315,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 					? { origin: existing.handle.origin }
 					: {}),
 			modelOwner: authoritativeOwner ? handle.modelOwner : (existing?.handle.modelOwner ?? handle.modelOwner),
+			...(handle.releasedModelOwner !== undefined ? { releasedModelOwner: handle.releasedModelOwner } : {}),
 			...(handle.workflowCwd !== undefined
 				? { workflowCwd: handle.workflowCwd }
 				: existing?.handle.workflowCwd !== undefined
@@ -633,6 +639,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
+		releasedModelOwner?: string,
 	): Promise<boolean> {
 		const record = this.workflows.get(workflowId);
 		const current = record?.handle;
@@ -643,7 +650,14 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		)
 			return false;
 		this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
-		if (modelOwner !== undefined && record !== undefined) record.handle = { ...record.handle, modelOwner };
+		if (record !== undefined) {
+			const { releasedModelOwner: _previousRelease, ...settled } = record.handle;
+			record.handle = {
+				...settled,
+				...(modelOwner !== undefined ? { modelOwner } : {}),
+				...(releasedModelOwner !== undefined ? { releasedModelOwner } : {}),
+			};
+		}
 		return true;
 	}
 
@@ -733,6 +747,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			...(h.invocationCwd !== undefined ? { invocationCwd: h.invocationCwd } : {}),
 			...(h.origin !== undefined ? { origin: h.origin } : {}),
 			modelOwner: h.modelOwner,
+			...(h.releasedModelOwner !== undefined ? { releasedModelOwner: h.releasedModelOwner } : {}),
 			...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
 			...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),

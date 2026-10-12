@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `session.workflows.resume(runId)` now adopts a paused run that was launched through the model-facing `workflow` tool once its owning session has been disposed, in the same process or after the owning process exits. Disposing a session quits its in-flight runs at their last checkpoint and durably records that it released its checkpointed paused runs; the adopting session becomes the owner and the run continues under the same UUID. Runs whose owner is still open, runs whose owner crashed without disposing, and finished runs are still refused ([#3566](https://github.com/bastani-inc/atomic/issues/3566)).
+
 ## [0.9.34] - 2026-10-11
 
 ### Fixed

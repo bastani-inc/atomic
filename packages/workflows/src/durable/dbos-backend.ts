@@ -811,6 +811,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
+		releasedModelOwner?: string,
 	): Promise<boolean> {
 		this.ensureGeneration();
 		let records: readonly DbosStepRecord[] = [];
@@ -844,6 +845,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 						pendingPrompts,
 						resumable,
 						modelOwner,
+						releasedModelOwner,
 					),
 				write: async () => {
 					const handle = this.mem.getWorkflow(workflowId);
@@ -852,6 +854,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 							{
 								...handle,
 								legacyRecoveryPending: undefined,
+								releasedModelOwner,
 								...(modelOwner !== undefined ? { modelOwner } : {}),
 							},
 							true,
@@ -880,6 +883,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		modelOwner?: string,
+		releasedModelOwner?: string,
 	): Promise<boolean> {
 		const stepName = claimMetadataStepName(generation);
 		const transitionClaimId = crypto.randomUUID();
@@ -889,6 +893,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
 			...(modelOwner === undefined ? {} : { modelOwner }),
+			releasedModelOwner,
 			legacyRecoveryPending: undefined,
 			ownerExecutorId: this.executorId,
 			transitionClaimId,

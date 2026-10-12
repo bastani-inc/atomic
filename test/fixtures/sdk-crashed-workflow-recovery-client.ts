@@ -52,9 +52,12 @@ async function ready(): Promise<AgentSession> {
 import { appendFile, access, writeFile } from "node:fs/promises";
 export default workflow({ name: "sdk-crashed-recovery", description: "SDK durable recovery regression", inputs: {}, outputs: {}, run: async ctx => {
   await ctx.tool("completed-effect", {}, async () => { await appendFile(${JSON.stringify(effectFile)}, "effect\\n"); return "checkpointed"; });
-  await ctx.tool("frontier", {}, async () => {
+  await ctx.tool("frontier", {}, async ({ signal }) => {
     if (process.env.ATOMIC_SDK_RECOVERY_PRODUCER === "1") {
       await writeFile(${JSON.stringify(reachedFile)}, "reached");
+      if (process.env.ATOMIC_SDK_RECOVERY_QUITTABLE === "1") {
+        await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("frontier quit")), { once: true }));
+      }
       if (process.env.ATOMIC_SDK_RECOVERY_RELEASEABLE === "1") {
         while (!(await access(${JSON.stringify(releaseFile)}).then(() => true, () => false))) await new Promise(resolve => setTimeout(resolve, 20));
         await writeFile(${JSON.stringify(sourceReturnedFile)}, "source returned");
@@ -151,6 +154,15 @@ for await (const line of createInterface({ input: process.stdin })) {
 				assert.equal(current.handle.ownerExecutorId, hydrated.handle.ownerExecutorId, "waiting for lock release must not adopt a new owner");
 				return current.handle.ownerLiveness === "dead";
 			}, "terminated owner's executor locks never became available for recovery");
+		} else if (command === "quit") {
+			assert.ok(runId);
+			const host = await ready();
+			await host.workflows.quit(runId);
+			const backend = getDurableBackend();
+			await until(async () => backend.getWorkflow(runId)?.status === "paused", "quit run never became paused");
+			await backend.flush(runId);
+		} else if (command === "dispose") {
+			await session?.dispose();
 		} else if (command === "release-source") {
 			writeFileSync(releaseFile, "release");
 			await until(() => fileExists(sourceReturnedFile), "source callback never returned after fencing");

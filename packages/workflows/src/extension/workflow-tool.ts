@@ -1,6 +1,6 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { getDurableBackend } from "../durable/factory.js";
-import { isSdkCrashedRunAdoptable, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
+import { isSdkDurableRunInScope, isSdkRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import { inspectRun } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
@@ -122,7 +122,7 @@ export function makeExecuteWorkflowTool(
 				isFullRunId(args.runId?.trim() ?? "") &&
 				(action === "status" ||
 					action === "stages" ||
-					(action === "resume" && handle !== undefined && isSdkCrashedRunAdoptable(handle, recoveryCwd))) &&
+					(action === "resume" && handle !== undefined && isSdkRunAdoptable(handle, recoveryCwd))) &&
 				!store.runs().some((run) => run.id === id) &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)

@@ -7,7 +7,10 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 
-function fixture(backend = new InMemoryDurableBackend()) {
+function fixture(
+	backend = new InMemoryDurableBackend(),
+	overrides: Partial<Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]> = {},
+) {
 	const definition = workflow({
 		name: "adoption-startup",
 		description: "",
@@ -28,6 +31,7 @@ function fixture(backend = new InMemoryDurableBackend()) {
 		ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
 		ownerLiveness: "dead",
 		completedCheckpoints: 1,
+		...overrides,
 	});
 	const store = createStore();
 	const source = {
@@ -186,4 +190,28 @@ test("aborted adoption claim retains newer running metadata without launching (#
 	assert.equal(f.backend.getWorkflow(f.id), controlled);
 	assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "new-session");
 	assert.equal(f.deps.jobs.has(f.id), false);
+});
+
+test("failed startup of a released-owner adoption restores the paused run under the adopter (#3566)", async () => {
+	const f = fixture(new InMemoryDurableBackend(), {
+		status: "paused",
+		releasedModelOwner: "old-session",
+		ownerLiveness: "alive",
+	});
+	const result = await resumeDurableWorkflow(f.id, {
+		...f.deps,
+		jobs: Object.assign(createJobTracker(), {
+			register() {
+				throw new Error("startup registration failed");
+			},
+		}),
+	});
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.reason, "startup_failed");
+	const handle = f.backend.getWorkflow(f.id);
+	assert.equal(handle?.status, "paused");
+	assert.equal(handle?.modelOwner, "new-session");
+	assert.equal(handle?.releasedModelOwner, undefined);
+	assert.equal(handle?.completedCheckpoints, 1);
+	assert.equal(f.store.runs()[0], f.source);
 });
