@@ -2933,10 +2933,9 @@ test.each(["override", "cleanup"] as const)("failed reload preparation releases 
 	assert.deepEqual(shutdowns, [2, 1]);
 });
 
-// #3105: cancellation of current and superseded summaries is not their settlement.
-test.each([1, 2])("disposal drains %i admitted background summaries", async (count) => {
+test.each([1, 2])("disposal cancels %i admitted background summaries without waiting", async (count) => {
 	const { createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
-	const cwd = mkdtempSync(join(tmpdir(), "sdk-summary-drain-"));
+	const cwd = mkdtempSync(join(tmpdir(), "sdk-summary-cancel-"));
 	const release = Promise.withResolvers<void>();
 	const signals: AbortSignal[] = [];
 	let active = 0;
@@ -2998,12 +2997,13 @@ test.each([1, 2])("disposal drains %i admitted background summaries", async (cou
 		const closing = session.dispose().then(() => {
 			closed = true;
 		});
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		const beforeRelease = closed;
+		await vi.waitFor(() => assert.equal(closed, true));
+		assert.equal(active, count, "disposal completes while the summary providers remain gated");
+		assert.equal(signals.length, count);
 		assert.ok(signals.every((signal) => signal.aborted));
 		release.resolve();
 		await closing;
-		assert.equal(beforeRelease, false);
+		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(active, 0);
 		assert.equal(
 			session.sessionManager.getEntries().some((entry) => entry.type === "session_summary"),

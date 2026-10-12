@@ -1,8 +1,14 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { fauxAssistantMessage, getApiProvider } from "@bastani/pi-ai/compat";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionSummaryEntry } from "../../src/core/session-manager.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.js";
+import { DefaultResourceLoader } from "../../src/core/resource-loader.js";
+import type { SessionSummaryEntry } from "../../src/core/session-manager.js";
+import { SessionManager } from "../../src/core/session-manager.js";
+import { RpcSessionBinding } from "../../src/modes/rpc/rpc-session-binding.js";
+import { createHarness, type Harness } from "./harness.js";
 
 /**
  * `_maybeGenerateSessionSummary` runs fire-and-forget after `agent_end`. These tests drive real
@@ -18,11 +24,11 @@ function summaryEntries(harness: Harness): SessionSummaryEntry[] {
 	return harness.sessionManager.getEntries().filter((e): e is SessionSummaryEntry => e.type === "session_summary");
 }
 
-async function waitForSummary(harness: Harness): Promise<SessionSummaryEntry> {
+async function waitForSummary(harness: Harness, count = 1): Promise<SessionSummaryEntry> {
 	const deadline = Date.now() + SUMMARY_DEADLINE_MS;
 	while (Date.now() < deadline) {
 		const found = summaryEntries(harness);
-		if (found.length > 0) return found[found.length - 1]!;
+		if (found.length >= count) return found[found.length - 1]!;
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("timed out waiting for a session_summary entry");
@@ -45,6 +51,218 @@ describe("session summary generation", () => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
+	});
+
+	it.each(["tui", "rpc"] as const)("backfills an opened %s session without waiting for another turn", async (mode) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "restore this work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("previous work"));
+		}
+		harness.setResponses([fauxAssistantMessage("Backfilled summary")]);
+
+		await harness.session.bindExtensions({ mode });
+
+		assert.equal((await waitForSummary(harness)).summary, "Backfilled summary");
+	});
+
+	it("leaves shared-file opening summaries to the engine rather than its presentation host", async () => {
+		const host = await createHarness();
+		harnesses.push(host);
+		const manager = SessionManager.create(host.tempDir, join(host.tempDir, "sessions"));
+		for (let turn = 0; turn < 2; turn++) {
+			manager.appendMessage({ role: "user", content: "old work", timestamp: turn });
+			manager.appendMessage(fauxAssistantMessage("old response"));
+		}
+		const presentation = await createHarness({ sessionManager: manager });
+		harnesses.push(presentation);
+		const releaseHost = Promise.withResolvers<void>();
+		presentation.setResponses([
+			async () => {
+				await releaseHost.promise;
+				return fauxAssistantMessage("Stale host summary");
+			},
+		]);
+		const child = await createHarness({ sessionManager: SessionManager.open(manager.getSessionFile()!) });
+		harnesses.push(child);
+		child.sessionManager.appendMessage({ role: "user", content: "new engine work", timestamp: 3 });
+		const newest = child.sessionManager.appendMessage(fauxAssistantMessage("new engine response"));
+		child.setResponses([fauxAssistantMessage("Engine summary")]);
+
+		await presentation.session.bindExtensions({ mode: "tui", isPresentationOnly: true });
+		await child.session.bindExtensions({ mode: "rpc" });
+		await waitForSummary(child);
+		releaseHost.resolve();
+		await settle();
+
+		assert.equal(presentation.getPendingResponseCount(), 1);
+		const reopened = SessionManager.open(manager.getSessionFile()!);
+		assert.equal(
+			reopened.getBranch().some((entry) => entry.id === newest),
+			true,
+		);
+		assert.equal(reopened.getEntries().filter((entry) => entry.type === "session_summary").length, 1);
+	});
+
+	it.each([false, true])(
+		"backfills after deferred RPC startup cancels an opening request (stale: %s)",
+		async (stale) => {
+			const directory = await createHarness();
+			harnesses.push(directory);
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: directory.tempDir,
+				agentDir: directory.tempDir,
+				builtinPackagePaths: [],
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+			});
+			await resourceLoader.reload();
+			const harness = await createHarness({ resourceLoader });
+			harnesses.push(harness);
+			harness.session.agent.streamFunction = getApiProvider(harness.faux.api)!.streamSimple;
+			if (stale) {
+				const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier", timestamp: 0 });
+				harness.sessionManager.appendSessionSummary("Old summary", anchor);
+			}
+			for (let turn = 0; turn < 2; turn++) {
+				harness.sessionManager.appendMessage({ role: "user", content: "restore work", timestamp: turn + 1 });
+				harness.sessionManager.appendMessage(fauxAssistantMessage("response"));
+			}
+			const started = Promise.withResolvers<void>();
+			harness.setResponses([
+				async (_context, options) => {
+					started.resolve();
+					await new Promise<void>((resolve) =>
+						options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+					);
+					return fauxAssistantMessage("Cancelled opening summary");
+				},
+				fauxAssistantMessage("Startup summary"),
+			]);
+			await harness.session.bindExtensions({ mode: "rpc" });
+			await started.promise;
+			const runtime = new AgentSessionRuntime(
+				harness.session,
+				{
+					cwd: harness.tempDir,
+					agentDir: harness.tempDir,
+					modelRuntime: harness.session.modelRuntime,
+					settingsManager: harness.settingsManager,
+					resourceLoader,
+					diagnostics: [],
+				},
+				async () => {
+					throw new Error("unused runtime factory");
+				},
+			);
+			const binding = new RpcSessionBinding({
+				runtimeHost: runtime,
+				output: () => {},
+				pendingExtensionRequests: new Map(),
+				requestShutdown: () => {},
+			});
+			await binding.loadDeferredResources();
+			assert.equal((await waitForSummary(harness, stale ? 2 : 1)).summary, "Startup summary");
+		},
+	);
+
+	it("refreshes a stale summary when a session is resumed", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier work", timestamp: 1 });
+		harness.sessionManager.appendSessionSummary("Old summary", anchor);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "new work", timestamp: turn + 2 });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		harness.setResponses([fauxAssistantMessage("Refreshed summary")]);
+
+		await harness.session.bindExtensions({ mode: "tui" });
+		await waitForSummary(harness, 2);
+
+		assert.deepEqual(
+			summaryEntries(harness).map((entry) => entry.summary),
+			["Old summary", "Refreshed summary"],
+		);
+	});
+
+	it("does not regenerate a current summary on open or repeated binding", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		const anchor = harness.sessionManager.getLeafId()!;
+		harness.sessionManager.appendSessionSummary("Current summary", anchor);
+		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
+
+		await harness.session.bindExtensions({ mode: "tui" });
+		await harness.session.bindExtensions({ mode: "tui" });
+		await settle();
+
+		assert.equal(harness.getPendingResponseCount(), 1);
+		assert.equal(summaryEntries(harness).length, 1);
+	});
+
+	it.each(["print", "json"] as const)("does not backfill when opened in %s mode", async (mode) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
+
+		await harness.session.bindExtensions({ mode });
+		await settle();
+
+		assert.equal(harness.getPendingResponseCount(), 1);
+		assert.equal(summaryEntries(harness).length, 0);
+	});
+
+	it("does not wait for an uncooperative backfill provider on quit or persist its late result", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		harness.setResponses([
+			async () => {
+				started.resolve();
+				await release.promise;
+				return fauxAssistantMessage("Late summary");
+			},
+		]);
+		await harness.session.bindExtensions({ mode: "tui" });
+		await started.promise;
+		const disposal = harness.session.dispose();
+		const DISPOSAL_DEADLINE_MS = 1_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			assert.equal(
+				await Promise.race([
+					disposal.then(() => true),
+					new Promise<boolean>((resolve) => {
+						timer = setTimeout(() => resolve(false), DISPOSAL_DEADLINE_MS);
+					}),
+				]),
+				true,
+			);
+		} finally {
+			clearTimeout(timer);
+			release.resolve();
+			await disposal;
+		}
+		await settle();
+		assert.equal(summaryEntries(harness).length, 0);
 	});
 
 	it("appends a summary anchored to the last conversation message", async () => {

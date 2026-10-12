@@ -196,6 +196,7 @@ const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
 const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
+const sessionSummaryBackfills = new WeakSet<AgentSession>();
 
 function startExtensions(
 	session: AgentSession,
@@ -278,6 +279,18 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 			await this._continueQueuedAgentMessages();
 		}
 	});
+	scheduleOpeningSummary(this);
+}
+
+function scheduleOpeningSummary(session: AgentSession): void {
+	if (
+		!presentationOnlyBindings.get(session) &&
+		(session._extensionMode === "tui" || session._extensionMode === "rpc") &&
+		!sessionSummaryBackfills.has(session)
+	) {
+		sessionSummaryBackfills.add(session);
+		void session._maybeGenerateSessionSummary();
+	}
 }
 
 export async function extendResourcesFromExtensions(this: AgentSession, reason: "startup" | "reload"): Promise<void> {
@@ -683,6 +696,10 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 		throw error;
 	} finally {
 		sessionGenerationClosing.delete(this);
+	}
+	if (options?.reason === "startup") {
+		sessionSummaryBackfills.delete(this);
+		scheduleOpeningSummary(this);
 	}
 }
 

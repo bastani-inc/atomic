@@ -25,7 +25,6 @@ test.each([
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );
 
-// #3105: completion persistence and every candidate/provider acquisition survive closing until settled.
 test.each(["persist", "prepare", "prepare-cleanup", "summary", "summary-superseded", "summary-reload"])(
 	"built Node completion persistence and cleanup (%s)",
 	(mode) => {
