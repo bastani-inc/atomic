@@ -23,6 +23,7 @@ type RunStoreMethods = Pick<
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
+	| "recordRunSummary"
 	| "recordRunExecutionState"
 	| "reconcileRunParentStage"
 	| "recordRunEnd"
@@ -76,6 +77,13 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const index = state.runs.findIndex((existing) => existing.id === run.id);
 			if (index === -1) state.runs.push(run);
 			else state.runs[index] = run;
+			context.bumpAndNotify();
+		},
+
+		recordRunSummary(runId, summary, summarizedThrough): void {
+			const run = context.findRun(runId);
+			if (!run) return;
+			Object.assign(run, { summary, summarizedThrough });
 			context.bumpAndNotify();
 		},
 

@@ -85,6 +85,8 @@ export interface PiRuntimeModelRegistry
 }
 
 export interface PiModelContext {
+	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
+	isSessionSummaryEnabled?(): boolean;
 	readonly model?: PiRuntimeModel;
 	readonly modelRegistry?: PiRuntimeModelRegistry;
 }

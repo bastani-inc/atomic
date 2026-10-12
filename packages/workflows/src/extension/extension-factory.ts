@@ -151,6 +151,7 @@ function factory(pi: ExtensionAPI): void {
 		runtimeState.reloadWorkflowResources,
 		runtimeState.ensureWorkflowResourcesLoaded,
 		owner,
+		pi,
 	);
 	let sessionContext: PiEventContext | undefined;
 	pi.on?.("session_start", (_event, ctx) => {
@@ -160,7 +161,15 @@ function factory(pi: ExtensionAPI): void {
 		sessionContext = undefined;
 	});
 	pi.registerWorkflowRunControl?.(
-		createSessionRunControl({ execute: executeWorkflowTool, context: () => sessionContext, store: owner.store }),
+		createSessionRunControl({
+			execute: executeWorkflowTool,
+			context: () => sessionContext,
+			store: owner.store,
+			catalog: async () => {
+				const runtime = runtimeState.runtimeForContext(sessionContext);
+				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+			},
+		}),
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);

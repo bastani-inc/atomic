@@ -5,6 +5,7 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { workflowIdentity } from "../shared/workflow-identity.js";
 
 export type WorkflowResumeSelectorResult =
 	| { kind: "live"; runId: string }
@@ -83,24 +84,26 @@ function workflowStatusPresentation(
 	return { label: status };
 }
 
-function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
+function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
 	const modified = new Date(latestRunTimestamp(run));
 	const presentation = workflowStatusPresentation(run.status, "live");
 	const stageText = `${completed}/${total} stages`;
+	const identity = workflowIdentity(run.id, run.label ?? saved?.label, run.inputs);
+	const summary = run.summary ?? saved?.summary;
 	return {
 		result: { kind: "live", runId: run.id },
 		session: {
 			path: `workflow-live:${run.id}`,
 			id: run.id,
-			cwd: "Live workflow runs",
+			cwd: "Live",
 			created: new Date(run.startedAt),
 			modified,
 			messageCount: total,
-			firstMessage: run.id,
-			summary: `${presentation.label}  ${stageText}  ${run.name}`,
-			allMessagesText: `${run.id} ${run.name} ${presentation.label} ${stageText}`,
+			firstMessage: summary ? `${presentation.label} ${completed}/${total} ${run.name}  ${identity}` : identity,
+			summary: summary || `${presentation.label}  ${stageText}  ${run.name}`,
+			allMessagesText: `${run.id} ${identity} ${summary ?? ""} ${run.name} ${presentation.label} ${stageText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};
@@ -110,20 +113,20 @@ function durableWorkflowSession(
 	entry: ResumableWorkflowEntry,
 	kind: "durable" | "completed",
 ): WorkflowResumeSelectorItem {
-	const checkpointText = `${entry.completedCheckpoints} checkpoints`;
 	const presentation = workflowStatusPresentation(entry.status, kind);
+	const identity = workflowIdentity(entry.workflowId, entry.label, entry.inputs);
 	return {
 		result: { kind, workflowId: entry.workflowId },
 		session: {
 			path: `workflow-${kind}:${entry.workflowId}`,
 			id: entry.workflowId,
-			cwd: kind === "completed" ? "Completed workflow runs" : "Durable workflow runs",
+			cwd: kind === "completed" ? "Completed" : "Durable",
 			created: new Date(entry.createdAt),
 			modified: new Date(entry.updatedAt),
 			messageCount: entry.completedCheckpoints,
-			firstMessage: entry.workflowId,
-			summary: `${presentation.label}  ${checkpointText}  ${entry.name}`,
-			allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText}`,
+			firstMessage: entry.summary ? `${presentation.label} ${entry.name}  ${identity}` : identity,
+			summary: entry.summary || `${presentation.label}  ${entry.name}`,
+			allMessagesText: `${entry.workflowId} ${identity} ${entry.summary ?? ""} ${entry.name} ${presentation.label}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};
@@ -155,8 +158,10 @@ export function workflowResumeSelectorItems(
 	);
 	const visibleDurableEntries = durableEntries.filter((entry) => !suppressedLiveIds.has(entry.workflowId));
 	const durableIds = new Set(visibleDurableEntries.map((entry) => entry.workflowId));
+	const savedEntries = new Map(completedEntries.map((entry) => [entry.workflowId, entry]));
+	for (const entry of durableEntries) savedEntries.set(entry.workflowId, entry);
 	return [
-		...eligibleLiveRuns.map(liveRunSession),
+		...eligibleLiveRuns.map((run) => liveRunSession(run, savedEntries.get(run.id))),
 		...visibleDurableEntries.map((entry) => durableWorkflowSession(entry, "durable")),
 		...completedEntries
 			.filter((entry) => !visibleLiveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))

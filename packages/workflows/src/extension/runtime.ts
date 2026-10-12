@@ -1,3 +1,4 @@
+import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./workflow-summary.js";
 /**
  * ExtensionRuntime — facade that owns the WorkflowRegistry and delegates
  * tool/slash dispatch through the WorkflowDispatcher.
@@ -78,6 +79,7 @@ export interface ExtensionRuntimeOpts {
 	config?: WorkflowRuntimeConfig;
 	/** Optional model catalog forwarded to workflow runs for fallback resolution. */
 	models?: WorkflowModelCatalogPort;
+	summaryContext?: WorkflowSummaryContext;
 	/** Job tracker forwarded to named detached runs. */
 	jobs?: JobTracker;
 	/** Invocation cwd used for workflow execution. Defaults to process.cwd(). */
@@ -172,6 +174,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const registry = opts.registry ?? createRegistry(opts.definitions ?? []);
 	const adapters = opts.adapters;
 	const activeStore = opts.store ?? currentWorkflowStore();
+	if (opts.summaryContext) ensureWorkflowSummaryService(activeStore, opts.summaryContext);
 	const cancellation = opts.cancellation ?? currentCancellationRegistry();
 	const stageControlRegistry = opts.stageControlRegistry ?? currentStageControlRegistry();
 	const toolControlRegistry = opts.toolControlRegistry ?? currentToolControlRegistry();

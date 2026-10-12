@@ -118,6 +118,40 @@ describe("workflow resume selector rows", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+	test.each(["durable", "completed"] as const)(
+		"keeps saved presentation metadata on a live row from the %s catalog",
+		(catalog) => {
+			const run = pausedLiveRun();
+			const saved = {
+				...entry(run.id, "paused"),
+				label: "Saved objective",
+				summary: "Implementation finished; validation remains",
+				summarizedThrough: 90,
+			};
+			const rows = workflowResumeSelectorItems(
+				[run],
+				catalog === "durable" ? [saved] : [],
+				catalog === "completed" ? [saved] : [],
+			);
+			assert.equal(rows.length, 1);
+			assert.deepEqual(rows[0]!.result, { kind: "live", runId: run.id });
+			assert.equal(rows[0]!.session.firstMessage, `paused 0/0 live-workflow  ${saved.label}`);
+			assert.equal(rows[0]!.session.summary, saved.summary);
+			assert.ok(rows[0]!.session.summary!.includes(saved.summary));
+			assert.ok(rows[0]!.session.allMessagesText.includes(saved.summary));
+			assert.ok(rows[0]!.session.allMessagesText.includes(saved.label));
+			assert.equal(run.label, undefined);
+			assert.equal(run.summary, undefined);
+
+			const [current] = workflowResumeSelectorItems(
+				[{ ...run, label: "Current objective", summary: "Current progress" }],
+				[saved],
+			);
+			assert.equal(current!.session.firstMessage, "paused 0/0 live-workflow  Current objective");
+			assert.ok(current!.session.summary!.endsWith("Current progress"));
+		},
+	);
+
 	test("globally orders mixed rows and renders completed rows with a green semantic", () => {
 		const items = workflowResumeSelectorItems(
 			[pausedLiveRun()],
@@ -213,6 +247,29 @@ describe("workflow resume selector rows", () => {
 });
 
 describe("workflow resume selector row presentation", () => {
+	test("uses a label then objective input for identity and keeps generated summaries searchable", () => {
+		const rows = workflowResumeSelectorItems(
+			[],
+			[
+				{
+					...entry("label-id", "paused"),
+					label: " Ship\n feature ",
+					inputs: { objective: "Ignored" },
+					summary: "Implementation verified",
+					summarizedThrough: 100,
+				},
+				{ ...entry("objective-id", "paused"), inputs: { other: "Fallback", objective: "Fix\n resume" } },
+				{ ...entry("fallback-id", "paused"), inputs: { count: 2, custom: "First string" } },
+			],
+		);
+		const byId = new Map(rows.map(({ session }) => [session.id, session]));
+		assert.equal(byId.get("label-id")?.firstMessage, "paused paused-workflow  Ship feature");
+		assert.match(byId.get("label-id")!.summary!, /Implementation verified/);
+		assert.match(byId.get("label-id")!.firstMessage, /paused.*paused-workflow/);
+		assert.match(byId.get("label-id")!.allMessagesText, /label-id.*Ship feature.*Implementation verified/);
+		assert.equal(byId.get("objective-id")?.firstMessage, "Fix resume");
+		assert.equal(byId.get("fallback-id")?.firstMessage, "First string");
+	});
 	test("keeps the full live run ID in the label and search text with status, count and name in the summary", () => {
 		const id = "11111111-1111-4111-8111-111111111111";
 		const [item] = workflowResumeSelectorItems([pausedLiveRun(id)], []);
@@ -227,11 +284,11 @@ describe("workflow resume selector row presentation", () => {
 		const items = workflowResumeSelectorItems([], [entry(durableId, "paused")], [entry(completedId, "completed")]);
 		const byId = new Map(items.map((item) => [item.session.id, item]));
 		assert.equal(byId.get(durableId)?.session.firstMessage, durableId);
-		assert.equal(byId.get(durableId)?.session.summary, "paused  2 checkpoints  paused-workflow");
+		assert.equal(byId.get(durableId)?.session.summary, "paused  paused-workflow");
 		assert.match(byId.get(durableId)!.session.allMessagesText, new RegExp(durableId));
 		assert.deepEqual(byId.get(durableId)?.result, { kind: "durable", workflowId: durableId });
 		assert.equal(byId.get(completedId)?.session.firstMessage, completedId);
-		assert.equal(byId.get(completedId)?.session.summary, "✓ completed  2 checkpoints  completed-workflow");
+		assert.equal(byId.get(completedId)?.session.summary, "✓ completed  completed-workflow");
 		assert.match(byId.get(completedId)!.session.allMessagesText, new RegExp(completedId));
 		assert.deepEqual(byId.get(completedId)?.result, { kind: "completed", workflowId: completedId });
 	});
@@ -250,20 +307,22 @@ describe("workflow resume selector row presentation", () => {
 		assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
 	});
 
-	test("omits pending prompt counts from durable and completed rows", () => {
+	test("omits checkpoint and pending prompt counts from durable and completed rows", () => {
 		const durable = { ...entry("prompted", "paused"), pendingPrompts: 7 };
 		const completed = { ...entry("completed-prompted", "completed"), pendingPrompts: 3 };
 		const items = workflowResumeSelectorItems([], [durable], [completed]);
 		for (const item of items) {
 			assert.doesNotMatch(item.session.firstMessage, /\b\d+ prompts?\b/);
 			assert.doesNotMatch(item.session.allMessagesText, /\b\d+ prompts?\b/);
-			assert.match(item.session.summary!, /2 checkpoints/);
+			assert.doesNotMatch(item.session.summary!, /checkpoints|\d+ cp/);
+			assert.doesNotMatch(item.session.firstMessage, /checkpoints|\d+ cp/);
+			assert.equal(item.session.messageCount, 2);
 		}
 	});
 	test("presents a stale-heartbeat running durable row as crashed, never running", () => {
 		const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
 		assert.equal(item!.session.firstMessage, "d-crashed");
-		assert.equal(item!.session.summary, "crashed  2 checkpoints  repro-flow");
+		assert.equal(item!.session.summary, "crashed  repro-flow");
 		assert.doesNotMatch(item!.session.summary!, /running/);
 		assert.equal(item!.session.messageColor, "error");
 		assert.match(item!.session.allMessagesText, /crashed/);

@@ -245,6 +245,8 @@ export class ExtensionRunner {
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
+	private isSessionSummaryEnabledFn: ExtensionContextActions["isSessionSummaryEnabled"];
+	private generateWorkflowSummaryFn: ExtensionContextActions["generateWorkflowSummary"];
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
@@ -326,6 +328,8 @@ export class ExtensionRunner {
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
+		this.isSessionSummaryEnabledFn = contextActions.isSessionSummaryEnabled;
+		this.generateWorkflowSummaryFn = contextActions.generateWorkflowSummary;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
@@ -868,6 +872,9 @@ export class ExtensionRunner {
 			getSignal: () => this.getSignalFn(),
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
+			isSessionSummaryEnabled: () => this.isSessionSummaryEnabledFn?.() ?? false,
+			generateWorkflowSummary: (text, signal, options) =>
+				this.generateWorkflowSummaryFn?.(text, signal, options) ?? Promise.resolve(undefined),
 			shutdown: () => this.shutdownHandler(),
 			getContextUsage: () => this.getContextUsageFn(),
 			compact: (options) => this.compactFn(options),

@@ -10,12 +10,16 @@ import {
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	type WorkflowRunSummary,
 	WorkflowStageAmbiguousError,
 	WorkflowStageNotFoundError,
 	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
+import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import { canonicalDirectory, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
+import { workflowIdentity } from "../shared/workflow-identity.js";
 import type { PiEventContext, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import { classifyControlError, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
@@ -32,6 +36,7 @@ export interface SessionRunControlHost {
 	/** The owning session's most recent event context, or `undefined` before it started. */
 	readonly context: () => PiEventContext | undefined;
 	readonly store: Pick<Store, "runs">;
+	readonly catalog?: () => Promise<DurableWorkflowCatalogEntries>;
 }
 
 function executeContext(ctx: PiEventContext | undefined): PiExecuteContext {
@@ -44,6 +49,7 @@ function executeContext(ctx: PiEventContext | undefined): PiExecuteContext {
 		hasHumanInput: ctx.hasHumanInput,
 		model: ctx.model,
 		modelRegistry: ctx.modelRegistry,
+		isSessionSummaryEnabled: ctx.isSessionSummaryEnabled,
 		cwd: ctx.cwd,
 	};
 }
@@ -170,7 +176,59 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 			});
 			if (result.action !== "status")
 				throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
-			return result.runs;
+			const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
+			const cwd = host.context()?.cwd;
+			const canonicalPaths = new Map<string, string>();
+			const canonicalize = (path: string): string => {
+				const cached = canonicalPaths.get(path);
+				if (cached !== undefined) return cached;
+				const canonical = canonicalDirectory(path);
+				canonicalPaths.set(path, canonical);
+				return canonical;
+			};
+			const entries = [...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])].filter((entry) =>
+				isSdkDurableRunInScope(entry, cwd, canonicalize),
+			);
+			const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
+			const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
+			const runs: WorkflowRunSummary[] = result.runs.map((run) => {
+				const snapshot = snapshots.get(run.runId);
+				const entry = saved.get(run.runId);
+				const label = snapshot?.label ?? entry?.label;
+				return {
+					...run,
+					label,
+					identity: workflowIdentity(run.runId, label, snapshot?.inputs ?? entry?.inputs),
+					summary: snapshot?.summary ?? entry?.summary,
+					summarizedThrough: snapshot?.summarizedThrough ?? entry?.summarizedThrough,
+				};
+			});
+			const seen = new Set(runs.map((run) => run.runId));
+			for (const entry of entries) {
+				if (seen.has(entry.workflowId)) continue;
+				if (
+					filter?.status === "awaiting_input"
+						? entry.pendingPrompts === 0
+						: filter?.status !== undefined && filter.status !== entry.status
+				)
+					continue;
+				seen.add(entry.workflowId);
+				runs.push({
+					runId: entry.workflowId,
+					name: entry.name,
+					status: entry.status,
+					startedAt: entry.createdAt,
+					elapsedMs: Math.max(0, entry.updatedAt - entry.createdAt),
+					activeStages: [],
+					awaitingInputCount: entry.pendingPrompts,
+					awaitingInput: [],
+					label: entry.label,
+					identity: workflowIdentity(entry.workflowId, entry.label, entry.inputs),
+					summary: entry.summary,
+					summarizedThrough: entry.summarizedThrough,
+				});
+			}
+			return runs;
 		},
 		async getRun(runId) {
 			const result = await request({ action: "status", runId });

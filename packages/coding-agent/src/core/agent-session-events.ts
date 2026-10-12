@@ -42,6 +42,7 @@ import {
 	hasCallingSessionWork,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
@@ -606,6 +607,7 @@ export function closeAgentSession(
 				);
 			else retired.resolve();
 		}
+		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
 		await attempt("active work", () => drainSessionWork(session));
 		await attempt("events", async () => {
 			await session._agentEventQueue.catch(() => {});

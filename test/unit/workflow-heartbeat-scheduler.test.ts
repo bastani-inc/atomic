@@ -186,6 +186,7 @@ function installHarness(opts: {
 	parentAvailabilityReported?: boolean;
 	anchorStore?: WorkflowHeartbeatAnchorStore;
 	state?: WorkflowHeartbeatSchedulerState;
+	onSummaryBoundary?: (runId: string) => void;
 	send?: (details: WorkflowHeartbeatEventDetails, sent: readonly CapturedSend[]) => Promise<void> | undefined;
 }): Harness {
 	const store = opts.store ?? createStore();
@@ -197,6 +198,7 @@ function installHarness(opts: {
 	const scheduler = installWorkflowHeartbeatScheduler({
 		store,
 		state,
+		onSummaryBoundary: opts.onSummaryBoundary,
 		now: clock.now,
 		timers: clock.timerApi,
 		parentAvailabilityReported: opts.parentAvailabilityReported ?? true,
@@ -2662,4 +2664,19 @@ describe("workflow heartbeat consumed-message identity", () => {
 			undefined,
 		);
 	});
+});
+
+test("heartbeat boundaries request background summaries separately from the steer card", () => {
+	const store = createStore();
+	const runId = testRunId("summary-boundary");
+	startRun(store, runId);
+	const requested: string[] = [];
+	const harness = installHarness({ store, defaultInterval: 1, onSummaryBoundary: (id) => requested.push(id) });
+	harness.clock.advanceBy(MINUTE_MS);
+	assert.deepEqual(requested, [runId]);
+	assert.equal(harness.sent.length, 1);
+	harness.clock.advanceBy(MINUTE_MS);
+	assert.deepEqual(requested, [runId, runId], "an unread steer card must not suppress the next summary");
+	assert.equal(harness.sent.length, 1, "the unread steer card still suppresses duplicate cards");
+	harness.scheduler.dispose();
 });

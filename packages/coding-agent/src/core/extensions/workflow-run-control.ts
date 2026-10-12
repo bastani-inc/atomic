@@ -22,6 +22,8 @@ export type WorkflowRunFilterStatus = WorkflowRunStatus | WorkflowStageStatus | 
 export interface WorkflowRunListFilter {
 	/** Run statuses match directly; `awaiting_input` selects runs with an unanswered prompt. */
 	readonly status?: WorkflowRunFilterStatus;
+	/** Include project durable/completed history in addition to this session's runs. */
+	readonly includeDurable?: boolean;
 }
 
 export interface WorkflowStageListFilter {
@@ -42,8 +44,17 @@ export interface WorkflowRunAwaitingInput {
 	readonly message?: string;
 }
 
+/** Stored generated description and the run identity used by resume clients. */
+export interface WorkflowRunSummaryMetadata {
+	readonly label?: string;
+	readonly identity?: string;
+	readonly summary?: string;
+	/** Unix milliseconds through which the summary describes the run. */
+	readonly summarizedThrough?: number;
+}
+
 /** The concise per-run data that the `workflow` tool's `status` action lists. */
-export interface WorkflowRunSummary {
+export interface WorkflowRunSummary extends WorkflowRunSummaryMetadata {
 	readonly runId: string;
 	readonly name: string;
 	readonly status: WorkflowRunStatus;
@@ -68,7 +79,7 @@ export interface WorkflowRunStageSummary {
 }
 
 /** The per-run detail that the `workflow` tool's `status` action returns for one run id. */
-export interface WorkflowRunDetail {
+export interface WorkflowRunDetail extends WorkflowRunSummaryMetadata {
 	readonly runId: string;
 	readonly rootRunId?: string;
 	readonly name: string;

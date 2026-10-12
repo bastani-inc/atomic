@@ -29,6 +29,7 @@ import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
+import { workflowIdentity } from "../../shared/workflow-identity.js";
 import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
 /**
@@ -39,6 +40,10 @@ import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
  */
 export interface RunDetail extends RunExecutionObservation {
 	readonly runId: string;
+	readonly label?: string;
+	readonly identity?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly rootRunId?: string;
 	readonly name: string;
 	readonly status: RunStatus | "crashed";
@@ -119,6 +124,10 @@ export function inspectRun(
 		runId: copy.id,
 		...(copy.rootRunId === undefined ? {} : { rootRunId: copy.rootRunId }),
 		name: copy.name,
+		label: copy.label,
+		identity: workflowIdentity(copy.id, copy.label, copy.inputs),
+		summary: copy.summary,
+		summarizedThrough: copy.summarizedThrough,
 		status: effectiveRunStatus(copy),
 		mode: expandedStages.length > 1 ? "chain" : "single",
 		startedAt: copy.startedAt,

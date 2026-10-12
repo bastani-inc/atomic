@@ -239,6 +239,14 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** Whether background session and workflow summaries are enabled. */
+	isSessionSummaryEnabled?(): boolean;
+	/** Generate a read-only workflow summary with this session's model and credentials. */
+	generateWorkflowSummary?(
+		text: string,
+		signal: AbortSignal,
+		options?: { terminal?: boolean },
+	): Promise<string | undefined>;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
 	/** Get current context usage for the active model. */

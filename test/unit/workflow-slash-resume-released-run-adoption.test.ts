@@ -4,7 +4,11 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { getAtomicExecutorId } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import type { PiCommandContext, PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
+import type {
+	ExtensionAPI,
+	PiCommandContext,
+	PiExecuteContext,
+} from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { WorkflowInstanceOwnershipError } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
@@ -70,7 +74,12 @@ function registerRun(
 	});
 }
 
-async function slashResume(runtime: ReturnType<typeof setup>["runtime"], target: string, ctx: SlashContext) {
+async function slashResume(
+	runtime: ReturnType<typeof setup>["runtime"],
+	target: string,
+	ctx: SlashContext,
+	pi: ExtensionAPI = {},
+) {
 	const info: string[] = [];
 	const errors: string[] = [];
 	await handleRunControlCommand(
@@ -79,7 +88,7 @@ async function slashResume(runtime: ReturnType<typeof setup>["runtime"], target:
 		ctx,
 		{ info: (message) => info.push(message), error: (message) => errors.push(message) },
 		{
-			pi: {},
+			pi,
 			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
 			runtimeForContext: () => runtime,
 			ensureWorkflowResourcesLoaded: () => undefined,
@@ -227,7 +236,12 @@ for (const accept of [false, true]) {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		const runId = testRunId(`slash-cross-project-${accept}`);
-		registerRun(backend, runId, { invocationCwd: "/other-project" });
+		registerRun(backend, runId, {
+			invocationCwd: "/other-project",
+			label: "Saved objective",
+			summary: "Review finished; implementation pending.",
+			summarizedThrough: 1234,
+		});
 		backend.recordCheckpoint({
 			kind: "ui",
 			workflowId: runId,
@@ -251,7 +265,14 @@ for (const accept of [false, true]) {
 			);
 			return accept;
 		};
-		const result = await slashResume(runtime, runId, ctx);
+		const messages: string[] = [];
+		const result = await slashResume(runtime, runId, ctx, {
+			sendMessage: (message, options) => {
+				assert.equal(options?.triggerTurn, false);
+				assert.equal(store.runs().length, 0, "summary reaches context before the fork starts");
+				messages.push(typeof message.content === "string" ? message.content : "");
+			},
+		});
 		assert.equal(prompts, 1);
 		assert.deepEqual(backend.getWorkflow(runId), original);
 		if (accept) {
@@ -265,9 +286,17 @@ for (const accept of [false, true]) {
 				backend.getWorkflow(store.runs().find((run) => run.id !== runId)!.id)?.modelOwner,
 				SUCCESSOR_SESSION,
 			);
+			const fork = backend.getWorkflow(store.runs().find((run) => run.id !== runId)!.id)!;
+			assert.equal(fork.label, "Saved objective");
+			assert.equal(fork.summary, "Review finished; implementation pending.");
+			assert.equal(fork.summarizedThrough, 1234);
+			assert.equal(messages.length, 1);
+			assert.ok(messages[0].includes(`Workflow resume context: ${fork.workflowId} (forked from ${runId})`));
+			assert.ok(messages[0].includes("Review finished; implementation pending."));
 		} else {
 			assert.match(result.errors.join("\n"), /cancelled/);
 			assert.equal(store.runs().length, 0);
+			assert.deepEqual(messages, []);
 		}
 	});
 }

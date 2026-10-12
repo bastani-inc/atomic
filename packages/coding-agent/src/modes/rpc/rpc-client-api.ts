@@ -5,9 +5,14 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+import type {
+	WorkflowRunDetail,
+	WorkflowRunFilterStatus,
+	WorkflowRunSummary,
+} from "../../core/extensions/workflow-run-control.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { SessionEntry, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
@@ -17,6 +22,7 @@ import type {
 	RpcModelCatalog,
 	RpcModelRefreshResult,
 	RpcResponse,
+	RpcSessionInfo,
 	RpcSessionState,
 	RpcSlashCommand,
 } from "./rpc-types.ts";
@@ -68,6 +74,21 @@ export abstract class RpcClientApi {
 	}
 	async getState(): Promise<RpcSessionState> {
 		return this.data(await this.request({ type: "get_state" }));
+	}
+	async getSessionSummary(): Promise<SessionSummaryEntry | null> {
+		return this.data<{ summary: SessionSummaryEntry | null }>(await this.request({ type: "get_session_summary" }))
+			.summary;
+	}
+	async listSessions(): Promise<RpcSessionInfo[]> {
+		return this.data<{ sessions: RpcSessionInfo[] }>(await this.request({ type: "list_sessions" })).sessions;
+	}
+	async listWorkflowRuns(status?: WorkflowRunFilterStatus): Promise<readonly WorkflowRunSummary[]> {
+		return this.data<{ runs: readonly WorkflowRunSummary[] }>(
+			await this.request({ type: "list_workflow_runs", status }),
+		).runs;
+	}
+	async getWorkflowRunSummary(runId: string): Promise<WorkflowRunDetail> {
+		return this.data(await this.request({ type: "get_workflow_run_summary", runId }));
 	}
 	async setModel(
 		provider: string,

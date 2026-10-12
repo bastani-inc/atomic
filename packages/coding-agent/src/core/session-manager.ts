@@ -35,6 +35,7 @@ export type {
 	SessionMessageEntry,
 	SessionNameState,
 	SessionProjection,
+	SessionSummaryEntry,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,

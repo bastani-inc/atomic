@@ -177,6 +177,9 @@ function rootSnapshot(
 	const terminalDurationMs = priorDurationMs ?? Math.max(0, handle.updatedAt - handle.createdAt);
 	return {
 		id: handle.workflowId,
+		label: handle.label,
+		summary: handle.summary,
+		summarizedThrough: handle.summarizedThrough,
 		name: handle.name,
 		inputs: { ...handle.inputs } as WorkflowInputValues,
 		status: handle.status,

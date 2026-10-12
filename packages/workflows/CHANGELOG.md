@@ -9,10 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Resuming a workflow from another project with `/workflow resume <id>` now offers to fork its saved progress into the current directory under a new run ID, leaving the source run unchanged. SDK, tool, and headless resume requests return an actionable error instead of running in a different project.
+- Workflow resume history now shows descriptive run identities and saved generated progress summaries, and supplies saved summaries to the main chat when resuming.
+- SDK workflow lists and details expose run labels, identities, saved summaries and summarized-through timestamps. `listRuns({ includeDurable: true })` includes stored resumable and completed history; RPC clients can access the same history.
 
 ### Fixed
 
 - Fixed durable workflows failing with `atomicWorkflowHandle is not a registered DBOS workflow function` when a new SDK session uses a different working directory after the last session is disposed. Final session disposal now releases workflow registrations so the next session recreates them in its own SDK ([#3577](https://github.com/bastani-inc/atomic/issues/3577)).
+- Workflow SDK and RPC history now excludes stored runs from other projects. Resuming through either API respects disabled session summaries, and killing a blocked run requests a new final summary.
 
 ## [0.9.35-alpha.1] - 2026-10-12
 

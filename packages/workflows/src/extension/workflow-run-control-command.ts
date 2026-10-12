@@ -35,6 +35,7 @@ import {
 	resumePickerLiveUpdateOptions,
 } from "./workflow-resume-picker-rows.js";
 import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { isResolvedRunId, overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
 export type { WorkflowRunControlDeps } from "./workflow-durable-resume-command.js";
@@ -283,6 +284,7 @@ export async function handleRunControlCommand(
 						return true;
 					}
 					const run = store.runs().find((r) => r.id === resolved.runId);
+					await injectWorkflowResumeSummary(deps.pi, ctx, resolved.runId, run);
 					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 					const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
 					const isResumableContinuation =
@@ -511,6 +513,7 @@ export async function handleRunControlCommand(
 			);
 			return true;
 		}
+		await injectWorkflowResumeSummary(deps.pi, ctx, stageRunId, run);
 		if (isDurableAuthorExit) {
 			return await handleDurableResume(stageRunId, ctx, reporter, deps);
 		}

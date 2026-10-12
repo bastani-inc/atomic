@@ -110,6 +110,7 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
+	recordRunSummary?(runId: string, summary: string, summarizedThrough: number): void;
 	recordRunExecutionState(runId: string, update: RunExecutionState): void;
 	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
 	queueStageMessage(

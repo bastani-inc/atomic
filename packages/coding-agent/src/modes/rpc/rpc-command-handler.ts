@@ -4,6 +4,7 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
+import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
@@ -152,6 +153,28 @@ export function createRpcCommandHandler({
 				}
 				return createRpcSuccessResponse(id, "new_session", result);
 			}
+
+			case "get_session_summary":
+				return createRpcSuccessResponse(id, command.type, { summary: session.sessionSummary ?? null });
+			case "list_sessions": {
+				const sessions = await SessionManager.list(
+					runtimeHost.services.cwd,
+					session.sessionManager.getSessionDir(),
+				);
+				return createRpcSuccessResponse(id, command.type, {
+					sessions: sessions.map((info) => ({
+						...info,
+						created: info.created.toISOString(),
+						modified: info.modified.toISOString(),
+					})),
+				});
+			}
+			case "list_workflow_runs":
+				return createRpcSuccessResponse(id, command.type, {
+					runs: await session.workflows.listRuns({ status: command.status, includeDurable: true }),
+				});
+			case "get_workflow_run_summary":
+				return createRpcSuccessResponse(id, command.type, await session.workflows.getRun(command.runId));
 
 			case "get_state": {
 				const extensionResult = session.resourceLoader.getExtensions();

@@ -12,7 +12,7 @@ import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
-import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
+import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
@@ -22,6 +22,7 @@ import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./wo
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
+import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import {
 	isResolvedRunId,
@@ -86,6 +87,7 @@ export function makeExecuteWorkflowTool(
 	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
 	owner: WorkflowOwnerResources = captureWorkflowOwnerResources(),
+	pi: ExtensionAPI = {},
 ): (
 	args: WorkflowToolArgs,
 	ctx: PiExecuteContext,
@@ -173,11 +175,13 @@ export function makeExecuteWorkflowTool(
 			const resolved = typeof runtime === "function" ? runtime(ctx) : runtime;
 			return {
 				...resolved,
-				resumeDurableWorkflow: (id, options) =>
-					resolved.resumeDurableWorkflow(
+				resumeDurableWorkflow: async (id, options) => {
+					await injectWorkflowResumeSummary(pi, ctx, id);
+					return resolved.resumeDurableWorkflow(
 						id,
 						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
-					),
+					);
+				},
 			};
 		};
 		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
@@ -304,6 +308,13 @@ export function makeExecuteWorkflowTool(
 						onRunAccepted,
 						owner,
 						authorize,
+						beforeResume: (id) =>
+							injectWorkflowResumeSummary(
+								pi,
+								ctx,
+								id,
+								store.runs().find((run) => run.id === id),
+							),
 					}),
 				);
 			default: {

@@ -488,6 +488,9 @@ export type WorkflowActor = "user" | "agent";
 export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" | "acknowledgement";
 
 export interface RunSnapshot extends RunExecutionState {
+	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly id: string;
 	readonly name: string;
 	readonly inputs: Readonly<WorkflowInputValues>;

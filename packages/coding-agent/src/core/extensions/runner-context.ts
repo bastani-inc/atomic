@@ -48,6 +48,12 @@ export interface ExtensionContextSource {
 	getSignal(): AbortSignal | undefined;
 	abort(): void;
 	hasPendingMessages(): boolean;
+	isSessionSummaryEnabled?(): boolean;
+	generateWorkflowSummary?(
+		text: string,
+		signal: AbortSignal,
+		options?: { terminal?: boolean },
+	): Promise<string | undefined>;
 	shutdown(): void;
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
@@ -303,6 +309,14 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		hasPendingMessages: () => {
 			source.assertActive();
 			return source.hasPendingMessages();
+		},
+		isSessionSummaryEnabled: () => {
+			source.assertActive();
+			return source.isSessionSummaryEnabled?.() ?? false;
+		},
+		generateWorkflowSummary: (text, signal, options) => {
+			source.assertActive();
+			return source.generateWorkflowSummary?.(text, signal, options) ?? Promise.resolve(undefined);
 		},
 		shutdown: () => {
 			source.assertActive();

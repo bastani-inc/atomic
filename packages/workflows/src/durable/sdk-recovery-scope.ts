@@ -15,13 +15,15 @@ export function canonicalDirectory(path: string): string {
 	}
 }
 
-export function isSdkDurableRunInScope(handle: DurableWorkflowHandle, cwd: string | undefined): boolean {
+export function isSdkDurableRunInScope<
+	Handle extends Pick<DurableWorkflowHandle, "workflowId" | "invocationCwd" | "modelOwner" | "rootWorkflowId">,
+>(handle: Handle, cwd: string | undefined, canonicalize: (path: string) => string = canonicalDirectory): boolean {
 	return (
 		cwd !== undefined &&
 		handle.invocationCwd !== undefined &&
-		canonicalDirectory(cwd) === canonicalDirectory(handle.invocationCwd) &&
 		handle.modelOwner !== undefined &&
-		(handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId)
+		(handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId) &&
+		canonicalize(cwd) === canonicalize(handle.invocationCwd)
 	);
 }
 

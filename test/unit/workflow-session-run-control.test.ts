@@ -27,6 +27,7 @@ import { toolControlRegistry } from "../../packages/workflows/src/engine/run-too
 import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
+import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import { createSessionRunControl } from "../../packages/workflows/src/extension/workflow-session-run-control.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import {
@@ -654,7 +655,18 @@ describe("session workflow run control", () => {
 		const status = await execute({ action: "status" }, { sessionId: SESSION_ID });
 		assert.equal(status.action, "status");
 		if (status.action !== "status") throw new Error("expected status listing");
-		assert.deepEqual(withoutClock(listed), withoutClock(status.runs));
+		assert.deepEqual(
+			withoutClock(listed),
+			withoutClock(
+				status.runs.map((item) => ({
+					...item,
+					identity: item.runId,
+					label: undefined,
+					summary: undefined,
+					summarizedThrough: undefined,
+				})),
+			),
+		);
 		assert.equal(listed.length, 1);
 		assert.equal(listed[0]?.runId, runId);
 		assert.equal(listed[0]?.name, "reviewer");
@@ -1637,4 +1649,135 @@ describe("session workflow run control", () => {
 			assert.equal(error.code, "WORKFLOW_RUN_CONTROL_UNAVAILABLE");
 		}
 	});
+});
+
+test("SDK workflow history reads stored summaries for durable, completed and live runs without changing default scope", async () => {
+	const liveId = testRunId("summary-live");
+	const durableId = testRunId("summary-durable");
+	const completedId = testRunId("summary-completed");
+	store.recordRunStart(
+		run(liveId, {
+			label: "Live label",
+			inputs: { objective: "Build parser" },
+			summary: "Review underway",
+			summarizedThrough: 20,
+		}),
+	);
+	const { execute } = setup();
+	let catalogReads = 0;
+	const entry = {
+		name: "reviewer",
+		inputs: { objective: "Build parser" },
+		completedCheckpoints: 0,
+		pendingPrompts: 0,
+		createdAt: 1,
+		updatedAt: 10,
+		summary: "Implementation done",
+		summarizedThrough: 10,
+		invocationCwd: process.cwd(),
+		modelOwner: SESSION_ID,
+	};
+	const control = createSessionRunControl({
+		execute,
+		context: () => sessionContext(SESSION_ID),
+		store,
+		catalog: async () => {
+			catalogReads++;
+			return {
+				resumable: [
+					{ ...entry, workflowId: durableId, status: "paused", label: "Saved label" },
+					{
+						...entry,
+						workflowId: testRunId("foreign-paused"),
+						status: "paused",
+						invocationCwd: `${process.cwd()}/foreign`,
+					},
+					{ ...entry, workflowId: testRunId("ownerless"), status: "paused", modelOwner: undefined },
+					{ ...entry, workflowId: testRunId("nested"), status: "paused", rootWorkflowId: durableId },
+				],
+				completed: [
+					{ ...entry, workflowId: completedId, status: "completed" },
+					{
+						...entry,
+						workflowId: testRunId("foreign-completed"),
+						status: "completed",
+						invocationCwd: `${process.cwd()}/foreign`,
+					},
+				],
+			};
+		},
+	});
+	assert.deepEqual(
+		(await control.listRuns()).map((item) => item.runId),
+		[liveId],
+	);
+	assert.equal(catalogReads, 0);
+	const history = await control.listRuns({ includeDurable: true });
+	assert.deepEqual(
+		history.map((item) => [item.runId, item.identity, item.summary, item.summarizedThrough, item.status]),
+		[
+			[liveId, "Live label", "Review underway", 20, "running"],
+			[durableId, "Saved label", "Implementation done", 10, "paused"],
+			[completedId, "Build parser", "Implementation done", 10, "completed"],
+		],
+	);
+	const detail = await control.getRun(liveId);
+	assert.equal(detail.summary, "Review underway");
+	assert.equal(detail.summarizedThrough, 20);
+	assert.equal(detail.identity, "Live label");
+});
+
+test("SDK details retain stored generated summary metadata for durable and completed runs", async () => {
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const { control } = setup();
+	for (const status of ["paused", "completed"] as const) {
+		const runId = testRunId(`stored-summary-${status}`);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: { objective: "Build parser" },
+			createdAt: 1,
+			status,
+			completedCheckpoints: 1,
+			label: "Saved label",
+			summary: "Review remains",
+			summarizedThrough: 10,
+			invocationCwd: process.cwd(),
+		});
+		const detail = await control.getRun(runId);
+		assert.equal(detail.summary, "Review remains");
+		assert.equal(detail.summarizedThrough, 10);
+		assert.equal(detail.identity, "Saved label");
+		assert.equal(detail.status, status);
+	}
+});
+
+test("SDK resume respects disabled summary context while stored summaries remain readable", async () => {
+	const runId = testRunId("disabled-summary-resume");
+	const snapshot = run(runId, { status: "paused", summary: "Stored review context", summarizedThrough: 10 });
+	store.recordRunStart(snapshot);
+	const messages: string[] = [];
+	const { execute } = setup();
+	const control = createSessionRunControl({
+		store,
+		context: () => ({ ...sessionContext(SESSION_ID), isSessionSummaryEnabled: () => false }),
+		execute: async (args, ctx) => {
+			if (args.action !== "resume") return execute(args, ctx);
+			await injectWorkflowResumeSummary(
+				{
+					sendMessage: (message) => {
+						messages.push(String(message.content));
+					},
+				},
+				ctx,
+				runId,
+				snapshot,
+			);
+			return { action: "resume", runId, status: "running", message: "Resumed" };
+		},
+	});
+	assert.equal((await control.getRun(runId)).summary, "Stored review context");
+	await control.resume(runId);
+	assert.deepEqual(messages, []);
 });

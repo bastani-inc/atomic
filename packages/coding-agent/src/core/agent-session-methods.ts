@@ -65,7 +65,7 @@ import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, SessionEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, SessionEntry, SessionManager, SessionSummaryEntry } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { ToolStatusReport } from "./tool-status.js";
@@ -147,6 +147,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	readonly sessionName: string | undefined;
+	readonly sessionSummary: SessionSummaryEntry | undefined;
 	readonly scopedModels: ReadonlyArray<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	readonly promptTemplates: ReadonlyArray<PromptTemplate>;
 	readonly pendingMessageCount: number;
@@ -431,6 +432,7 @@ export interface AgentSessionPublicSurface
 		| "sessionFile"
 		| "sessionId"
 		| "sessionName"
+		| "sessionSummary"
 		| "scopedModels"
 		| "promptTemplates"
 		| "pendingMessageCount"

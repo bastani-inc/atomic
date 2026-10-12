@@ -24,11 +24,16 @@ import type {
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type {
+	WorkflowRunDetail,
+	WorkflowRunFilterStatus,
+	WorkflowRunSummary,
+} from "../../core/extensions/workflow-run-control.js";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { SessionEntry, SessionInfo, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -65,6 +70,11 @@ export type RpcOAuthLoginProviderResult =
 	| (RpcModelCatalog & { provider: string; cancelled: false })
 	| { provider: string; cancelled: true };
 
+export type RpcSessionInfo = Omit<SessionInfo, "created" | "modified"> & {
+	created: string;
+	modified: string;
+};
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
@@ -75,6 +85,10 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_session_summary" }
+	| { id?: string; type: "list_sessions" }
+	| { id?: string; type: "list_workflow_runs"; status?: WorkflowRunFilterStatus }
+	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 
 	// Model
@@ -238,6 +252,22 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_session_summary";
+			success: true;
+			data: { summary: SessionSummaryEntry | null };
+	  }
+	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionInfo[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "list_workflow_runs";
+			success: true;
+			data: { runs: readonly WorkflowRunSummary[] };
+	  }
+	| { id?: string; type: "response"; command: "get_workflow_run_summary"; success: true; data: WorkflowRunDetail }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
 
 	// Model

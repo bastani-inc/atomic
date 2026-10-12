@@ -20,6 +20,7 @@ import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowCaller } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 
 export interface WorkflowRunControlDeps {
@@ -146,6 +147,7 @@ export async function handleDurableResume(
 			policy,
 			actor: "user",
 			...crossProjectConfirmation(ctx),
+			onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
 			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx),
 		});
 		if (result.ok) {
@@ -281,6 +283,7 @@ async function resumeDurableTarget(
 		policy: workflowPolicyFromContext(ctx),
 		actor: "user",
 		...crossProjectConfirmation(ctx),
+		onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
 		...releasedRunAdoption(workflowId, ctx),
 	});
 	if (!result.ok) reporter.error(result.message);

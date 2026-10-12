@@ -16,6 +16,7 @@ This page starts RPC mode and walks one client end to end. The rest is split by 
 - [RPC protocol](/rpc/protocol) — every command, event, type, and error contract.
 - [RPC extension UI protocol](/rpc/extension-ui) — drive extension-rendered UI over RPC.
 - [RPC client examples](/rpc/examples) — additional client implementations.
+- [Stored summaries and workflow history](/rpc/protocol#stored-summaries-and-workflow-history) — read session and workflow summaries without starting a model turn.
 
 Not sure RPC is the right integration mode? Compare it with the SDK and JSON mode on [Programmatic use](/programmatic).
 

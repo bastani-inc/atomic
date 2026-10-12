@@ -5,6 +5,7 @@ import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
+import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner } from "./extensions/index.js";
 import {
@@ -29,6 +30,7 @@ import {
 	renewSessionWork,
 	retireSessionReloadGeneration,
 	sessionGenerationClosing,
+	sessionLifetime,
 	trackSessionReload,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
@@ -39,6 +41,7 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.js";
+import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -593,6 +596,42 @@ export function _bindExtensionCore(
 				else this.abort();
 			},
 			hasPendingMessages: () => this.pendingMessageCount > 0,
+			isSessionSummaryEnabled: () => this.settingsManager.getSessionSummarySettings().enabled,
+			generateWorkflowSummary: async (text, requestSignal, options) => {
+				if (this._disposed || sessionGenerationClosing.has(this)) return undefined;
+				if (!this.settingsManager.getSessionSummarySettings().enabled) return undefined;
+				const model = this.model;
+				if (!model) return undefined;
+				const generate = async (signal: AbortSignal) => {
+					try {
+						if (signal.aborted) return undefined;
+						const auth = await this._getRequiredRequestAuth(model);
+						if (signal.aborted) return undefined;
+						const result = await generateWorkflowSummary(text, {
+							model,
+							...auth,
+							signal,
+							streamFn: this.agent.streamFunction,
+							retry: this.settingsManager.getRetrySettings(),
+						});
+						return signal.aborted || result.error || result.aborted ? undefined : result.summary;
+					} catch {
+						return undefined;
+					}
+				};
+				return options?.terminal
+					? trackTerminalWorkflowSummary(this, requestSignal, generate)
+					: trackSessionWork(this, () => {
+							const signal = AbortSignal.any([requestSignal, sessionLifetime(this)]);
+							let abort!: () => void;
+							return new Promise<string | undefined>((resolve) => {
+								abort = () => resolve(undefined);
+								signal.addEventListener("abort", abort, { once: true });
+								if (signal.aborted) abort();
+								else void generate(signal).then(resolve);
+							}).finally(() => signal.removeEventListener("abort", abort));
+						});
+			},
 			shutdown: () => {
 				if (publication) publication.defer(() => this._extensionShutdownHandler?.());
 				else this._extensionShutdownHandler?.();

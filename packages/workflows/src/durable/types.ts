@@ -38,6 +38,8 @@ export interface DurableWorkflowHandle {
 	readonly createdAt: number;
 	/** Last update timestamp (ms since epoch). */
 	readonly updatedAt: number;
+	/** Stable identity of the latest status transition, preserved by summary writes. */
+	readonly transitionClaimId?: string;
 	/** Current durable status. */
 	readonly status: DurableWorkflowStatus;
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
@@ -65,6 +67,8 @@ export interface DurableWorkflowHandle {
 	readonly pendingPrompts: number;
 	/** Optional human-readable label. */
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	/** Root workflow id. Omitted or equal to workflowId means top-level. */
 	readonly rootWorkflowId?: string;
 	/** Explicit resumability flag for failed/blocked runs. */
@@ -304,6 +308,8 @@ export interface DurableWorkflowMetadata {
 	readonly legacyRecoveryPending?: true;
 	readonly sessionFile?: string;
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly error?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -340,6 +346,8 @@ export interface ResumableWorkflowEntry {
 	readonly pendingPrompts: number;
 	readonly sessionFile?: string;
 	readonly label?: string;
+	readonly summary?: string;
+	readonly summarizedThrough?: number;
 	readonly error?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
