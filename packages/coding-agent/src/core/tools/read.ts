@@ -896,7 +896,11 @@ export function createReadToolDefinition(
 						}
 					})();
 				},
-			).then((result) => ({ ...result, structuredContent: toReadOutput(result.content) }));
+			).then((result) =>
+				result.details?.oversizedRead?.blocked
+					? { ...result, isError: true }
+					: { ...result, structuredContent: toReadOutput(result.content) },
+			);
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
