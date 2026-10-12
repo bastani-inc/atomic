@@ -8,6 +8,23 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { DbosCheckpointEnvelope } from "../../packages/workflows/src/durable/dbos-envelope.js";
+import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
+
+const ROOT_WORKFLOW_COMPLETION_TIMEOUT_MS = 30_000;
+const ROOT_WORKFLOW_POLL_INTERVAL_MS = 50;
+const objectIdentities = new WeakMap<object, number>();
+const backendIdentities: { name: string; state: string; backend: number | null; registry: number | null }[] = [];
+let nextObjectIdentity = 1;
+
+function objectIdentity(value: object | undefined): number | null {
+	if (value === undefined) return null;
+	let identity = objectIdentities.get(value);
+	if (identity === undefined) {
+		identity = nextObjectIdentity++;
+		objectIdentities.set(value, identity);
+	}
+	return identity;
+}
 
 const home = process.env.ATOMIC_FAULT_TEST_HOME;
 assert.ok(home);
@@ -82,23 +99,43 @@ export default workflow({ name: "noop", description: "One durable tool", inputs:
 			await session.prompt("/workflow noop --no-picker");
 			const result = await ended.promise;
 			assert.equal(result.status, "completed", JSON.stringify({ name, ...result }));
+			const owner = getDbosProcessOwner();
+			backendIdentities.push({
+				name,
+				state: owner.state,
+				backend: objectIdentity(owner.active?.backend),
+				registry: objectIdentity(owner.wrappers),
+			});
 			const sql = new Pool({ connectionString: databaseUrl });
 			try {
-				const rows = await sql.query<{
-					workflow_uuid: string;
-					name: string;
-					status: string;
-					envelope: DbosCheckpointEnvelope | null;
-				}>(
-					`SELECT workflow_uuid, name, status,
-					 CASE WHEN output::jsonb->>'__dbos_serializer' = 'superjson'
-					 THEN output::jsonb->'json' ELSE output::jsonb END AS envelope
-					 FROM dbos.workflow_status WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)`,
-					[result.runId, `${result.runId}:checkpoint:`],
-				);
+				const queryRows = () =>
+					sql.query<{
+						workflow_uuid: string;
+						name: string;
+						status: string;
+						envelope: DbosCheckpointEnvelope | null;
+					}>(
+						`SELECT workflow_uuid, name, status,
+						 CASE WHEN output::jsonb->>'__dbos_serializer' = 'superjson'
+						 THEN output::jsonb->'json' ELSE output::jsonb END AS envelope
+						 FROM dbos.workflow_status WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)`,
+						[result.runId, `${result.runId}:checkpoint:`],
+					);
+				const deadline = Date.now() + ROOT_WORKFLOW_COMPLETION_TIMEOUT_MS;
+				let rows = await queryRows();
+				while (
+					!rows.rows.some(
+						(row) => row.workflow_uuid === result.runId && ["SUCCESS", "ERROR", "CANCELLED"].includes(row.status),
+					) &&
+					Date.now() < deadline
+				) {
+					await new Promise((resolve) => setTimeout(resolve, ROOT_WORKFLOW_POLL_INTERVAL_MS));
+					rows = await queryRows();
+				}
+				const diagnostics = JSON.stringify({ name, runId: result.runId, backendIdentities, rows: rows.rows });
 				assert.ok(
 					rows.rows.some((row) => row.name === "atomicWorkflowHandle" && row.status === "SUCCESS"),
-					"run must use the durable DBOS backend",
+					`run must complete using the durable DBOS backend: ${diagnostics}`,
 				);
 				const tools = rows.rows.filter(
 					(row) =>
@@ -107,7 +144,7 @@ export default workflow({ name: "noop", description: "One durable tool", inputs:
 						row.workflow_uuid.startsWith(`${result.runId}:checkpoint:tool:`) &&
 						row.envelope?.kind === "tool",
 				);
-				assert.equal(tools.length, 1, `run ${result.runId} must persist exactly one completed tool checkpoint`);
+				assert.equal(tools.length, 1, `run must persist exactly one completed tool checkpoint: ${diagnostics}`);
 				const tool = tools[0];
 				const envelope = tool.envelope;
 				assert.ok(envelope);
@@ -148,6 +185,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 			process.exit(0);
 		}
 		assert.equal(command, "run");
+		backendIdentities.length = 0;
 		process.env.DBOS_SYSTEM_DATABASE_URL = databaseUrl;
 		const first = await launch("first", databaseUrl);
 		const second = await launch("second", databaseUrl);

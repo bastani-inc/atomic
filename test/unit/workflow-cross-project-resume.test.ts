@@ -6,10 +6,13 @@ import { SessionManager } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -203,7 +206,13 @@ test("forked stage conversations copy history without sharing the source session
 			replayKey: "stage",
 			sessionFile: sourcePath,
 			sessionId: "source-session",
-			output: "saved",
+			output: {
+				name: "saved-stage",
+				stageName: "saved-stage",
+				text: "saved",
+				sessionId: "source-session",
+				sessionFile: sourcePath,
+			},
 			completedAt: 1,
 		});
 		const originalCheckpoint = backend.listCheckpoints(id)[0];
@@ -224,6 +233,17 @@ test("forked stage conversations copy history without sharing the source session
 		assert.ok(checkpoint.sessionFile);
 		assert.notEqual(checkpoint.sessionFile, sourcePath);
 		assert.notEqual(checkpoint.sessionId, "source-session");
+		const task = createDurableTaskPrimitive({
+			workflowId: forkId,
+			backend,
+			nextReplayKey: () => "stage",
+			task: async () => {
+				throw new Error("fork must replay the saved task");
+			},
+		});
+		const replayed = await task("saved-stage", { prompt: "ignored" });
+		assert.equal(replayed.sessionId, checkpoint.sessionId);
+		assert.equal(replayed.sessionFile, checkpoint.sessionFile);
 		const fork = SessionManager.open(checkpoint.sessionFile);
 		assert.equal(fork.getCwd(), cwd);
 		assert.ok(fork.getEntries().some((entry) => entry.type === "custom" && entry.customType === "saved-history"));
@@ -319,4 +339,59 @@ test("interrupted cross-project checkpoint copies never become resumable (#3577)
 	const completedId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
 	assert.equal(backend.listCheckpoints(completedId).length, 2);
 	assert.ok(backend.listResumableWorkflows().some((entry) => entry.workflowId === completedId));
+});
+
+test("forked sticky messages reach stages under the fork root (#3577)", async () => {
+	const backend = new InMemoryDurableBackend();
+	const sourceId = testRunId("sticky-fork-source");
+	const sourceStore = createStore();
+	sourceStore.recordRunStart({
+		id: sourceId,
+		name: "sticky",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: 1,
+	});
+	backend.registerWorkflow({ workflowId: sourceId, name: "sticky", inputs: {}, status: "paused", createdAt: 1 });
+	const target = `workflow:${sourceId}/review-*`;
+	await sourceStore.queueStickyStageMessage(
+		{
+			runId: sourceId,
+			stageKey: target,
+			targetPath: target,
+			from: { id: "sender", group: `workflow:${sourceId}` },
+			message: { id: "instruction", timestamp: 1, content: { text: "review carefully" } },
+			queuedAt: new Date(1).toISOString(),
+		},
+		`workflow:${sourceId}`,
+		`workflow:${sourceId}`,
+		backend,
+	);
+	const original = structuredClone(backend.getWorkflow(sourceId));
+	const forkId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	const pending = backend.getWorkflow(forkId)!.pendingStageMessages;
+	assert.equal(pending?.[0].stageKey, `workflow:${forkId}/review-*`);
+	assert.equal(pending?.[0].targetPath, `workflow:${forkId}/review-*`);
+	const store = createStore();
+	store.recordRunStart({
+		id: forkId,
+		name: "sticky",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		stages: [{ id: "review-stage", name: "review-one", status: "pending", parentIds: [], toolEvents: [] }],
+		pendingStageMessages: pending === undefined ? undefined : [...pending],
+	});
+	setDurableBackend(backend);
+	try {
+		let delivered = 0;
+		await createWorkflowPendingStageDelivery(store, forkId, "review-stage", "review-one").deliverPending(() => {
+			delivered++;
+		});
+		assert.equal(delivered, 1);
+		assert.deepEqual(backend.getWorkflow(sourceId), original);
+	} finally {
+		setDurableBackend(undefined);
+	}
 });
