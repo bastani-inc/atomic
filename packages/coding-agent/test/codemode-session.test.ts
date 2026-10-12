@@ -13,6 +13,26 @@ import {
 } from "../src/extensions/codemode/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
+test("codemode formats output at the item limit without quadratic joining (#10678)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const startedAt = performance.now();
+		const result = await runScript(harness, 'for (let i = 0; i < 100000; i++) text("");');
+		const elapsed = performance.now() - startedAt;
+		const outputPath = (result.details as CodemodeToolDetails).fullOutputPath;
+		if (outputPath) rmSync(outputPath, { force: true });
+		assert.equal(result.isError, false);
+		assert.match(getMessageText(result), /==> text 100000\/100000 <==/);
+		const MAX_OUTPUT_FORMAT_MS = 5000;
+		assert(elapsed < MAX_OUTPUT_FORMAT_MS, `Formatting took ${elapsed} ms`);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode separates text items and groups console calls after other output", async () => {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],
