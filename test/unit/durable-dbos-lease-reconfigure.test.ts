@@ -51,11 +51,12 @@ vi.mock("../../packages/workflows/src/durable/dbos-launch-lock.js", () => ({
 
 const MANAGED_URL = "postgresql://atomic:secret@127.0.0.1:1/atomic_workflows_dbos_sys?connect_timeout=1";
 const ownerKey = Symbol.for("atomic-workflows/local-postgres-owner@1");
-const processBag = globalThis as typeof globalThis & Record<symbol, { health?: unknown } | undefined>;
+type ManagedHealthHook = (url?: string) => PostgresHealth | undefined;
+const processBag = globalThis as typeof globalThis & Record<symbol, { health?: ManagedHealthHook } | undefined>;
 
 let live: PostgresHealth | undefined;
 let started = 0;
-let previousHealth: unknown;
+let previousHealth: ManagedHealthHook | undefined;
 
 async function startManagedPostgres(): Promise<string> {
 	started++;
