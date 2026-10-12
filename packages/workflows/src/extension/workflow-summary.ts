@@ -4,7 +4,11 @@ import type { Store } from "../shared/store-public-types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 
 export interface WorkflowSummaryContext {
-	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
+	generateWorkflowSummary?(
+		text: string,
+		signal: AbortSignal,
+		options?: { terminal?: boolean },
+	): Promise<string | undefined>;
 	isSessionSummaryEnabled?(): boolean;
 }
 
@@ -67,13 +71,12 @@ export function createWorkflowSummaryService(options: {
 		pending.set(runId, controller);
 		const through = Date.now();
 		const text = workflowSummaryInput(run);
-		void Promise.resolve()
-			.then(async () => {
-				const summary = await context.generateWorkflowSummary!(text, controller.signal);
-				if (summary && !controller.signal.aborted && !disposed && context.isSessionSummaryEnabled?.() !== false) {
-					await options.persist(runId, summary, through);
-				}
-			})
+		void (async () => {
+			const summary = await context.generateWorkflowSummary!(text, controller.signal, { terminal: terminal(run) });
+			if (summary && !controller.signal.aborted && !disposed && context.isSessionSummaryEnabled?.() !== false) {
+				await options.persist(runId, summary, through);
+			}
+		})()
 			.catch(() => {})
 			.finally(() => {
 				pending.delete(runId);

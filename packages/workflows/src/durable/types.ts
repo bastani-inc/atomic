@@ -38,6 +38,8 @@ export interface DurableWorkflowHandle {
 	readonly createdAt: number;
 	/** Last update timestamp (ms since epoch). */
 	readonly updatedAt: number;
+	/** Stable identity of the latest status transition, preserved by summary writes. */
+	readonly transitionClaimId?: string;
 	/** Current durable status. */
 	readonly status: DurableWorkflowStatus;
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */

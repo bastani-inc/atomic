@@ -873,8 +873,8 @@ export class ExtensionRunner {
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			isSessionSummaryEnabled: () => this.isSessionSummaryEnabledFn?.() ?? false,
-			generateWorkflowSummary: (text, signal) =>
-				this.generateWorkflowSummaryFn?.(text, signal) ?? Promise.resolve(undefined),
+			generateWorkflowSummary: (text, signal, options) =>
+				this.generateWorkflowSummaryFn?.(text, signal, options) ?? Promise.resolve(undefined),
 			shutdown: () => this.shutdownHandler(),
 			getContextUsage: () => this.getContextUsageFn(),
 			compact: (options) => this.compactFn(options),

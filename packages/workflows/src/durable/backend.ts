@@ -305,6 +305,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			inputs: handle.inputs,
 			createdAt: handle.createdAt,
 			status: handle.status,
+			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
 			...(handle.invocationCwd !== undefined
 				? { invocationCwd: handle.invocationCwd }
 				: existing?.handle.invocationCwd !== undefined
@@ -637,6 +638,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			failureDisposition: undefined,
 			failedToolNodeId: undefined,
 			status,
+			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
@@ -746,6 +748,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			name: h.name,
 			inputs: h.inputs,
 			status: h.status,
+			...(h.transitionClaimId !== undefined ? { transitionClaimId: h.transitionClaimId } : {}),
 			createdAt: h.createdAt,
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,

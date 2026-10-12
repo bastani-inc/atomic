@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ExtensionAPI, PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -65,4 +66,46 @@ test("a later pause can supply fresh resume context without duplicating the live
 	assert.equal(calls, 1);
 	await injectWorkflowResumeSummary(pi, ctx, "summary-run", { ...run(), pausedAt: 200 });
 	assert.equal(calls, 2);
+});
+
+test("durable resumes without snapshots deliver again after pause or detach, not during a live attachment", async () => {
+	const backend = createInMemoryTestBackend();
+	backend.registerWorkflow({
+		workflowId: "durable-summary",
+		name: "Ship feature",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
+	await backend.persistSummary("durable-summary", "Ready for review", 1000);
+	setDurableBackend(backend);
+	try {
+		const messages: string[] = [];
+		const pi: ExtensionAPI = {
+			sendMessage: (message) => {
+				messages.push(String(message.content));
+			},
+		};
+		const ctx: PiCommandContext = { ui: { notify() {} } };
+		for (const boundary of ["initial", "pause", "detach"]) {
+			if (boundary !== "initial") backend.setWorkflowStatus("durable-summary", "paused");
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+			backend.setWorkflowStatus("durable-summary", "running");
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+			assert.equal(messages.length, ["initial", "pause", "detach"].indexOf(boundary) + 1);
+		}
+		backend.setWorkflowStatus("durable-summary", "paused");
+		await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+		await backend.persistSummary("durable-summary", "Updated review context", 2000);
+		await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+		assert.equal(messages.length, 4, "summary writes do not create a resume boundary");
+		assert.match(messages[0]!, /Ready for review/);
+		assert.equal(
+			backend.toMetadata("durable-summary")?.transitionClaimId,
+			backend.getWorkflow("durable-summary")?.transitionClaimId,
+		);
+	} finally {
+		setDurableBackend(undefined);
+	}
 });

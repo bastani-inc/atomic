@@ -41,6 +41,7 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { getDefaultToolNames } from "./tools/index.js";
+import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -596,13 +597,12 @@ export function _bindExtensionCore(
 			},
 			hasPendingMessages: () => this.pendingMessageCount > 0,
 			isSessionSummaryEnabled: () => this.settingsManager.getSessionSummarySettings().enabled,
-			generateWorkflowSummary: async (text, requestSignal) => {
+			generateWorkflowSummary: async (text, requestSignal, options) => {
 				if (this._disposed || sessionGenerationClosing.has(this)) return undefined;
 				if (!this.settingsManager.getSessionSummarySettings().enabled) return undefined;
 				const model = this.model;
 				if (!model) return undefined;
-				const signal = AbortSignal.any([requestSignal, sessionLifetime(this)]);
-				return trackSessionWork(this, async () => {
+				const generate = async (signal: AbortSignal) => {
 					try {
 						if (signal.aborted) return undefined;
 						const auth = await this._getRequiredRequestAuth(model);
@@ -618,7 +618,10 @@ export function _bindExtensionCore(
 					} catch {
 						return undefined;
 					}
-				});
+				};
+				return options?.terminal
+					? trackTerminalWorkflowSummary(this, requestSignal, generate)
+					: trackSessionWork(this, () => generate(AbortSignal.any([requestSignal, sessionLifetime(this)])));
 			},
 			shutdown: () => {
 				if (publication) publication.defer(() => this._extensionShutdownHandler?.());
