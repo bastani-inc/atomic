@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.35-alpha.3] - 2026-10-12
+
 ### Fixed
 
 - Fixed Anthropic requests rejected by strict-tool capacity limits by retrying once with ordinary schemas for tools marked `strict: "prefer"`. Required strict tools remain unchanged.
