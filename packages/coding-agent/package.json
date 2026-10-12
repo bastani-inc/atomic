@@ -29,10 +29,6 @@
       "import": "./dist/rpc-entry.js",
       "default": "./dist/rpc-entry.js"
     },
-    "./client": {
-      "types": "./dist/client/index.d.ts",
-      "import": "./dist/client/index.js"
-    },
     "./hooks": {
       "types": "./dist/core/hooks/index.d.ts",
       "import": "./dist/core/hooks/index.js"
@@ -86,9 +82,7 @@
     "@bastani/pi-ai": "0.0.0",
     "@dbos-inc/dbos-sdk": "4.25.14",
     "@earendil-works/pi-agent-core": "1.1.0",
-    "@earendil-works/pi-client": "1.1.0",
     "@earendil-works/pi-codemode": "1.1.0",
-    "@earendil-works/pi-protocol": "1.1.0",
     "@earendil-works/pi-tui": "1.1.0",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "1.32.1",

@@ -155,10 +155,7 @@ describe("archive architecture guard", () => {
 		// Every archive removes host leaves and stages a verified target runtime.
 		assert.match(stagingLoop, /rm -rf "binaries\/\$platform\/node_modules\/@embedded-postgres"/u);
 		assert.match(stagingLoop, /stage-postgres-runtime\.mjs "\$platform"/u);
-		// Chord's esbuild dependency must receive the archive target's native package, not the host's.
-		assert.match(stagingLoop, /esbuild_leaf="\$\(esbuild_package_name "\$platform"\)"/u);
-		assert.match(stagingLoop, /rm -rf "binaries\/\$platform\/node_modules\/@esbuild"/u);
-		assert.match(stagingLoop, /cp -r "\$esbuild_source_root\/@esbuild\/\$esbuild_leaf"/u);
+		assert.equal(stagingLoop.includes("esbuild"), false);
 
 		const syntax = spawnSync("bash", ["-n", buildScriptPath], { encoding: "utf8" });
 		assert.equal(syntax.status, 0, syntax.stderr);

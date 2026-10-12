@@ -40,14 +40,6 @@ const distAppPath = join(root, "packages/coding-agent/dist/app.js");
 const piVersion = expectedPiVersion;
 const expectedArtifacts = new Map([
 	[
-		"@earendil-works/chord",
-		{
-			version: "1.1.0",
-			integrity: "sha512-gsHzKfyQ3t0ZIQ3cLBjJ5Vqy1TYnFyruHIV3g3BwmulCDYe5BW4yT9vaJk9QzN6YANILIO75uzuq+Gdxtzz1og==",
-			resolved: "https://registry.npmjs.org/@earendil-works/chord/-/chord-1.1.0.tgz",
-		},
-	],
-	[
 		"@earendil-works/pi-agent-core",
 		{
 			version: "1.1.0",
@@ -61,22 +53,6 @@ const expectedArtifacts = new Map([
 			version: "1.1.0",
 			integrity: "sha512-1T7LAkc/5Bvc0v6w4vAGVdCrli0o/E0pEmYKTnixu95vSFArBjvbhS/G4ZwI0RUePgf0Imcu0VyqlM4EcXxqfw==",
 			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.1.0.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-client",
-		{
-			version: "1.1.0",
-			integrity: "sha512-FARsu7NP59wA4tpzNaW6FqHG7N98OzPvwbdTbPE4dgkPzaIMjd0yMiW82Kfx8jqYLX5hujZfoj4SI80D6cOnrw==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-1.1.0.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-protocol",
-		{
-			version: "1.1.0",
-			integrity: "sha512-XMZIOJeqodY9QRfcnyBwDEKA1upgVgl2Rq0hm0Jnd/VmvGhgwHUvxu7PA/5aWLL+umJI2mwG10uW2SMzgEGvEA==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-1.1.0.tgz",
 		},
 	],
 	[
@@ -108,14 +84,7 @@ const expectedArtifacts = new Map([
 const declarations = new Map([
 	[
 		"packages/coding-agent",
-		[
-			"@earendil-works/pi-agent-core",
-			"@bastani/pi-ai",
-			"@earendil-works/pi-client",
-			"@earendil-works/pi-codemode",
-			"@earendil-works/pi-protocol",
-			"@earendil-works/pi-tui",
-		],
+		["@earendil-works/pi-agent-core", "@bastani/pi-ai", "@earendil-works/pi-codemode", "@earendil-works/pi-tui"],
 	],
 	["packages/intercom", ["@earendil-works/pi-tui"]],
 	["packages/mcp", []],
@@ -162,8 +131,8 @@ test("Pi v1.1.0 source declarations and lockfiles stay synchronized", async () =
 	const piAiManifest = await readJson<Manifest>(join(root, "packages/ai/package.json"));
 	assert.equal(piAiManifest.dependencies?.["@earendil-works/pi-telemetry"], piVersion);
 	externalDeclarationCount++;
-	assert.equal(declarationCount, 12);
-	assert.equal(externalDeclarationCount, 11);
+	assert.equal(declarationCount, 10);
+	assert.equal(externalDeclarationCount, 9);
 	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
 	for (const workspace of [...workspacePaths, "packages/ai"]) {
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
