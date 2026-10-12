@@ -5,6 +5,7 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { workflowIdentity } from "../shared/workflow-identity.js";
 
 export type WorkflowResumeSelectorResult =
 	| { kind: "live"; runId: string }
@@ -83,15 +84,6 @@ function workflowStatusPresentation(
 	return { label: status };
 }
 
-function workflowIdentity(id: string, label: string | undefined, inputs: RunSnapshot["inputs"] | undefined): string {
-	const text =
-		label?.trim() ||
-		[inputs?.objective, inputs?.prompt, inputs?.task, inputs?.request, ...Object.values(inputs ?? {})].find(
-			(value): value is string => typeof value === "string" && value.trim().length > 0,
-		);
-	return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : id;
-}
-
 function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
 	const completed = completedStageCount(run);
 	const total = run.stages.length;
@@ -121,7 +113,6 @@ function durableWorkflowSession(
 	entry: ResumableWorkflowEntry,
 	kind: "durable" | "completed",
 ): WorkflowResumeSelectorItem {
-	const checkpointText = `${entry.completedCheckpoints} checkpoints`;
 	const presentation = workflowStatusPresentation(entry.status, kind);
 	const identity = workflowIdentity(entry.workflowId, entry.label, entry.inputs);
 	return {
@@ -133,11 +124,9 @@ function durableWorkflowSession(
 			created: new Date(entry.createdAt),
 			modified: new Date(entry.updatedAt),
 			messageCount: entry.completedCheckpoints,
-			firstMessage: entry.summary
-				? `${presentation.label} ${entry.completedCheckpoints} cp ${entry.name}  ${identity}`
-				: identity,
-			summary: entry.summary || `${presentation.label}  ${checkpointText}  ${entry.name}`,
-			allMessagesText: `${entry.workflowId} ${identity} ${entry.summary ?? ""} ${entry.name} ${presentation.label} ${checkpointText}`,
+			firstMessage: entry.summary ? `${presentation.label} ${entry.name}  ${identity}` : identity,
+			summary: entry.summary || `${presentation.label}  ${entry.name}`,
+			allMessagesText: `${entry.workflowId} ${identity} ${entry.summary ?? ""} ${entry.name} ${presentation.label}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
 	};

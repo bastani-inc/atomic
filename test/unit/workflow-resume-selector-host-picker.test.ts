@@ -146,7 +146,7 @@ describe("workflow resume selector host-picker path", () => {
 		const durableRow = picker.updates[0]!.find((row) => row.id === "durable-a");
 		assert.ok(durableRow);
 		assert.equal(durableRow.firstMessage, "durable-a");
-		assert.equal(durableRow.summary, "paused  2 checkpoints  paused-workflow");
+		assert.equal(durableRow.summary, "paused  paused-workflow");
 		assert.ok(durableRow.allMessagesText);
 		assert.match(durableRow.allMessagesText, /durable-a/);
 		assert.match(durableRow.allMessagesText, /paused-workflow/);
@@ -517,7 +517,7 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 			.render(80)
 			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
 		assert.ok(rows.some((row) => /paused 0\/0 pr-lifecycle/.test(row) && row.includes("Compiler repaired")));
-		assert.ok(rows.some((row) => /blocked 4 cp pr-lifecycle/.test(row) && row.includes("Tests verified")));
+		assert.ok(rows.some((row) => /blocked pr-lifecycle/.test(row) && row.includes("Tests verified")));
 		assert.ok(rows.some((row) => row.includes("Fix compiler")));
 		assert.ok(rows.some((row) => row.includes("Run checks")));
 		bridge.component().handleInput("\x1b");
@@ -553,8 +553,8 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 			);
 			if (width >= 100) {
 				assert.match(visible[0]!, /paused {2}0\/0 stages/);
-				assert.match(visible[1]!, /paused {2}2 checkpoints/);
-				assert.match(visible[2]!, /✓ completed {2}2 checkpoints/);
+				assert.match(visible[1]!, /paused {2}paused-workflow/);
+				assert.match(visible[2]!, /✓ completed {2}completed-workflow/);
 			}
 			if (width === 120) {
 				for (const [index, id] of ids.entries()) assert.ok(visible[index]!.includes(id));

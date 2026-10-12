@@ -263,9 +263,9 @@ describe("workflow resume selector row presentation", () => {
 			],
 		);
 		const byId = new Map(rows.map(({ session }) => [session.id, session]));
-		assert.equal(byId.get("label-id")?.firstMessage, "paused 2 cp paused-workflow  Ship feature");
+		assert.equal(byId.get("label-id")?.firstMessage, "paused paused-workflow  Ship feature");
 		assert.match(byId.get("label-id")!.summary!, /Implementation verified/);
-		assert.match(byId.get("label-id")!.firstMessage, /paused.*2 cp.*paused-workflow/);
+		assert.match(byId.get("label-id")!.firstMessage, /paused.*paused-workflow/);
 		assert.match(byId.get("label-id")!.allMessagesText, /label-id.*Ship feature.*Implementation verified/);
 		assert.equal(byId.get("objective-id")?.firstMessage, "Fix resume");
 		assert.equal(byId.get("fallback-id")?.firstMessage, "First string");
@@ -284,11 +284,11 @@ describe("workflow resume selector row presentation", () => {
 		const items = workflowResumeSelectorItems([], [entry(durableId, "paused")], [entry(completedId, "completed")]);
 		const byId = new Map(items.map((item) => [item.session.id, item]));
 		assert.equal(byId.get(durableId)?.session.firstMessage, durableId);
-		assert.equal(byId.get(durableId)?.session.summary, "paused  2 checkpoints  paused-workflow");
+		assert.equal(byId.get(durableId)?.session.summary, "paused  paused-workflow");
 		assert.match(byId.get(durableId)!.session.allMessagesText, new RegExp(durableId));
 		assert.deepEqual(byId.get(durableId)?.result, { kind: "durable", workflowId: durableId });
 		assert.equal(byId.get(completedId)?.session.firstMessage, completedId);
-		assert.equal(byId.get(completedId)?.session.summary, "✓ completed  2 checkpoints  completed-workflow");
+		assert.equal(byId.get(completedId)?.session.summary, "✓ completed  completed-workflow");
 		assert.match(byId.get(completedId)!.session.allMessagesText, new RegExp(completedId));
 		assert.deepEqual(byId.get(completedId)?.result, { kind: "completed", workflowId: completedId });
 	});
@@ -307,20 +307,22 @@ describe("workflow resume selector row presentation", () => {
 		assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
 	});
 
-	test("omits pending prompt counts from durable and completed rows", () => {
+	test("omits checkpoint and pending prompt counts from durable and completed rows", () => {
 		const durable = { ...entry("prompted", "paused"), pendingPrompts: 7 };
 		const completed = { ...entry("completed-prompted", "completed"), pendingPrompts: 3 };
 		const items = workflowResumeSelectorItems([], [durable], [completed]);
 		for (const item of items) {
 			assert.doesNotMatch(item.session.firstMessage, /\b\d+ prompts?\b/);
 			assert.doesNotMatch(item.session.allMessagesText, /\b\d+ prompts?\b/);
-			assert.match(item.session.summary!, /2 checkpoints/);
+			assert.doesNotMatch(item.session.summary!, /checkpoints|\d+ cp/);
+			assert.doesNotMatch(item.session.firstMessage, /checkpoints|\d+ cp/);
+			assert.equal(item.session.messageCount, 2);
 		}
 	});
 	test("presents a stale-heartbeat running durable row as crashed, never running", () => {
 		const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
 		assert.equal(item!.session.firstMessage, "d-crashed");
-		assert.equal(item!.session.summary, "crashed  2 checkpoints  repro-flow");
+		assert.equal(item!.session.summary, "crashed  repro-flow");
 		assert.doesNotMatch(item!.session.summary!, /running/);
 		assert.equal(item!.session.messageColor, "error");
 		assert.match(item!.session.allMessagesText, /crashed/);
