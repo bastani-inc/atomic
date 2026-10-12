@@ -432,6 +432,9 @@ async function markDurableQuit(runId: string, run: RunSnapshot, resumable = true
 	const backend = discoverDurableQuitBackend(runId);
 	if (backend === undefined) return "not_needed";
 	await backend.settleWorkflowAdmission?.(runId);
+	// A run an earlier session switch already quit and released stays released: re-quitting it would clear the release.
+	const durable = backend.getWorkflow(runId);
+	if (durable?.status === "paused" && durable.releasedModelOwner !== undefined) return "not_needed";
 	// The workflow is durably tracked, so a failure to persist the paused
 	// transition or flush it must surface: swallowing it here would let quitRun
 	// advertise a newly resumable pause no future process could resume from.

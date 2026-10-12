@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { foreignInstanceMessage } from "../durable/sdk-owner-release.js";
 import type { Store } from "../shared/store.js";
 import type { PiExecuteContext } from "./public-types.js";
 
@@ -37,7 +38,7 @@ export function assertWorkflowInstanceOwner(id: string, ctx: PiExecuteContext, s
 		const modelOwner = durable?.modelOwner ?? local?.modelOwner;
 		if (modelOwner !== undefined) {
 			if (modelOwner !== workflowCaller(ctx))
-				throw new WorkflowInstanceOwnershipError("Workflow instance belongs to another caller/session.");
+				throw new WorkflowInstanceOwnershipError(foreignInstanceMessage(backend, runId));
 		} else if ((durable?.origin ?? local?.origin) === "agent") {
 			throw new WorkflowInstanceOwnershipError(
 				"Workflow instance ownership is unavailable; another caller cannot assume authority.",
