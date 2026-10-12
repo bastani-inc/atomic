@@ -36,7 +36,7 @@ export async function navigateTree(
 	assertSessionOpen(this);
 	// Navigating away mid-response would strand the in-flight turn's tool calls on
 	// the abandoned branch. Callers abort first, then navigate.
-	if (this.isStreaming) {
+	if (this.isStreaming || this._isPreparingRun === "user") {
 		throw new Error("Wait for the current response to finish before navigating the session tree.");
 	}
 	if (this.isCompacting) {

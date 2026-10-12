@@ -123,6 +123,55 @@ it.each(["user", "custom"] as const)("queues messages during %s run setup (#1073
 	}
 });
 
+it("rejects tree navigation during user run preparation without moving the prompt", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let treeEvents = 0;
+	const harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("before_agent_start", async () => {
+					entered.resolve();
+					await release.promise;
+				});
+				pi.on("session_before_tree", () => {
+					treeEvents++;
+				});
+			},
+		],
+	});
+	let run: Promise<void> | undefined;
+	try {
+		const targetId = harness.sessionManager.appendMessage(fauxAssistantMessage("earlier branch"));
+		const originalLeafId = harness.sessionManager.appendMessage(fauxAssistantMessage("original branch"));
+		harness.session.refreshContext();
+		harness.setResponses([fauxAssistantMessage("done")]);
+		run = harness.session.prompt("pending prompt");
+		await entered.promise;
+		const entriesBefore = harness.sessionManager.getEntries();
+		assert.equal(harness.session.isStreaming, false);
+		await assert.rejects(harness.session.navigateTree(targetId, { summarize: false }), {
+			message: "Wait for the current response to finish before navigating the session tree.",
+		});
+		assert.equal(harness.session.isStreaming, false);
+		assert.equal(treeEvents, 0);
+		assert.equal(harness.sessionManager.getLeafId(), originalLeafId);
+		assert.deepEqual(harness.sessionManager.getEntries(), entriesBefore);
+		release.resolve();
+		await run;
+		const promptEntry = harness.sessionManager
+			.getEntries()
+			.find((entry) => entry.type === "message" && entry.message.role === "user");
+		assert.ok(promptEntry);
+		assert.ok(harness.sessionManager.getBranch(promptEntry.id).some((entry) => entry.id === originalLeafId));
+		assert.match(JSON.stringify(promptEntry), /pending prompt/);
+	} finally {
+		release.resolve();
+		await run;
+		await harness.cleanup();
+	}
+});
+
 it.each(["user", "custom"] as const)("honors abort during %s run setup (#10739)", async (messageType) => {
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
