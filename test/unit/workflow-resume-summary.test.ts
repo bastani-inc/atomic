@@ -109,3 +109,25 @@ test("durable resumes without snapshots deliver again after pause or detach, not
 		setDurableBackend(undefined);
 	}
 });
+
+test("missing durable summary lookups cannot prevent workflow recovery", async () => {
+	const backend = createInMemoryTestBackend();
+	backend.getLoadableWorkflow = () => {
+		throw new Error("WorkflowRunNotFoundError");
+	};
+	setDurableBackend(backend);
+	try {
+		const messages: string[] = [];
+		const pi: ExtensionAPI = {
+			sendMessage: (message) => {
+				messages.push(String(message.content));
+			},
+		};
+		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "missing-run");
+		assert.deepEqual(messages, []);
+		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "summary-run", run());
+		assert.equal(messages.length, 1);
+	} finally {
+		setDurableBackend(undefined);
+	}
+});

@@ -69,6 +69,7 @@ export interface ResumeDurableDeps {
 	readonly jobs?: JobTracker;
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
+	readonly onBeforeResume?: (runId: string, forkedFrom?: string) => Promise<void>;
 	readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
 	readonly forkModelOwner?: string;
 }
@@ -307,7 +308,15 @@ async function resumeDurableWorkflowClaimed(
 		const fork = backend.getWorkflow(forkId)!;
 		const result = await resumeDurableWorkflow(
 			forkId,
-			{ ...deps, confirmCrossProjectFork: undefined, resolveDefinition: async () => def },
+			{
+				...deps,
+				confirmCrossProjectFork: undefined,
+				resolveDefinition: async () => def,
+				onBeforeResume:
+					deps.onBeforeResume === undefined
+						? undefined
+						: (runId) => deps.onBeforeResume!(runId, handle.workflowId),
+			},
 			[resumableEntryFromHandle(fork)],
 		);
 		return result.ok
@@ -374,6 +383,8 @@ async function resumeDurableWorkflowClaimed(
 		onRestored?.();
 		return true;
 	};
+
+	await deps.onBeforeResume?.(resolved.workflowId);
 
 	// Claim resume against concurrent deletion through the required transition seam.
 	let claimed: boolean;

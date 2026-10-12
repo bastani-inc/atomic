@@ -343,7 +343,9 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			completedCheckpoints,
 			pendingPrompts,
 			updatedAt,
-			...(handle.label !== undefined ? { label: handle.label } : {}),
+			...((handle.label ?? existing?.handle.label) !== undefined
+				? { label: handle.label ?? existing?.handle.label }
+				: {}),
 			...((handle.summary ?? existing?.handle.summary) !== undefined
 				? {
 						summary: handle.summary ?? existing?.handle.summary,

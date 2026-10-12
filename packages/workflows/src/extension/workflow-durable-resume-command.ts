@@ -143,11 +143,11 @@ export async function handleDurableResume(
 			fail(completedAttempt.message);
 			return true;
 		}
-		await injectWorkflowResumeSummary(deps.pi, ctx, target);
 		const result = await runtime.resumeDurableWorkflow(target, {
 			policy,
 			actor: "user",
 			...crossProjectConfirmation(ctx),
+			onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
 			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx),
 		});
 		if (result.ok) {
@@ -279,11 +279,11 @@ async function resumeDurableTarget(
 	deps: WorkflowRunControlDeps,
 	runtime: ExtensionRuntime,
 ): Promise<boolean> {
-	await injectWorkflowResumeSummary(deps.pi, ctx, workflowId);
 	const result = await runtime.resumeDurableWorkflow(workflowId, {
 		policy: workflowPolicyFromContext(ctx),
 		actor: "user",
 		...crossProjectConfirmation(ctx),
+		onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
 		...releasedRunAdoption(workflowId, ctx),
 	});
 	if (!result.ok) reporter.error(result.message);
