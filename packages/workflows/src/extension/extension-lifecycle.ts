@@ -4,7 +4,7 @@ import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getAvailableDurableBackend, getDurableBackend } from "../durable/factory.js";
 import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
 import { releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
-import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
+import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
 import { quitAllRuns } from "../runs/background/quit.js";
@@ -29,6 +29,8 @@ interface WorkflowLifetime {
 	release?: () => Promise<void>;
 	closing?: Promise<void>;
 	startupStarted?: boolean;
+	/** Runs the departing session released on a session switch, until the successor announces them. */
+	releasedRunIds?: readonly string[];
 }
 
 const startupRecoveries = new Set<Promise<void>>();
@@ -94,10 +96,18 @@ export function sessionSwitchQuitConfirmation(
 	};
 }
 
-/** The disposed session's checkpointed runs become adoptable; a crash never gets here. */
-async function releasePausedRunsOfDisposedSession(sessionCaller: string | undefined): Promise<void> {
+/** The departing session's checkpointed runs become adoptable; a crash never gets here. */
+async function releasePausedRunsOfSession(sessionCaller: string | undefined): Promise<readonly string[]> {
 	const backend = getAvailableDurableBackend();
-	if (sessionCaller !== undefined && backend !== undefined) await releasePausedRunsOwnedBy(backend, sessionCaller);
+	return sessionCaller !== undefined && backend !== undefined ? releasePausedRunsOwnedBy(backend, sessionCaller) : [];
+}
+
+function releasedRunsNotice(runs: readonly { readonly id: string; readonly name: string }[]): string {
+	const count = runs.length === 1 ? "1 workflow run" : `${runs.length} workflow runs`;
+	return [
+		`Released ${count} from the previous session. Resume ${runs.length === 1 ? "it" : "any"} here:`,
+		...runs.map((run) => `  /workflow resume ${run.id}  (${run.name})`),
+	].join("\n");
 }
 
 function eventReason(event: unknown): string | undefined {
@@ -328,6 +338,19 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			deps.storeWidgetRef.current?.();
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
+		const releasedRunIds = lifetime.releasedRunIds;
+		lifetime.releasedRunIds = undefined;
+		if (isSessionSwitch(reason) && ctx?.ui?.notify !== undefined && releasedRunIds !== undefined) {
+			const backend = getAvailableDurableBackend();
+			const cwd = ctx.cwd ?? ctx.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
+			const adoptable = releasedRunIds.flatMap((runId) => {
+				const handle = backend?.getWorkflow(runId);
+				return handle !== undefined && isSdkReleasedRunAdoptable(handle, cwd)
+					? [{ id: runId, name: handle.name }]
+					: [];
+			});
+			if (adoptable.length > 0) ctx.ui.notify(releasedRunsNotice(adoptable), "info");
+		}
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
 		const generation = ++recoveryGeneration;
 		if (stopsWorkflows) trackStartupRecovery(resumeInFlight(ctx, generation));
@@ -353,7 +376,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			lifetime.closing ??= attemptAll([
 				closeGeneration,
 				...lifetime.generations,
-				() => releasePausedRunsOfDisposedSession(sessionCaller),
+				() => releasePausedRunsOfSession(sessionCaller),
 				() => {
 					lifetime.generations.clear();
 				},
@@ -364,6 +387,9 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			await attemptAll([
 				closeGeneration,
 				...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
+				async () => {
+					lifetime.releasedRunIds = await releasePausedRunsOfSession(sessionCaller);
+				},
 				flushDbos,
 			]);
 		} else {

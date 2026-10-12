@@ -35,6 +35,7 @@ import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
 import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
+import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
@@ -242,7 +243,7 @@ async function resumeDurableWorkflowClaimed(
 		requestedOwner !== handle.modelOwner &&
 		(handle.modelOwner !== undefined || handle.origin === "agent");
 	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd)) {
-		return { ok: false, reason: "owned_elsewhere", message: "Workflow instance belongs to another caller/session." };
+		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
 	const def =

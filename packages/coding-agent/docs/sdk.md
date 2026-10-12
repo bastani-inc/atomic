@@ -261,7 +261,7 @@ await owner.dispose(); // quits in-flight runs at their last checkpoint and rele
 await successor.workflows.resume(runId); // adopts the run, even from another process
 ```
 
-Only disposal releases a run. A paused run whose owner crashed or was killed before disposing, and any run whose owning session is still open, stays refused with `Workflow instance belongs to another caller/session.`. Switching the host to another session (`/new`, `/resume`, `/fork`) or reloading does not release runs. Finished runs are never resumable, whoever owns them.
+Switching the host to another session (`/new`, `/fork`, `/resume`) releases the previous session's paused runs the same way, so the new session can adopt them with `resume(runId)` or through its model's `workflow` tool (`action: "resume"`). The first session to adopt a released run becomes its owner; a later attempt is refused with `Workflow <id> is now owned by another session; it was already adopted after its previous session was switched away.`. A paused run whose owner crashed or was killed before leaving, and any run whose owning session is still open, stays refused with `Workflow instance belongs to another caller/session.`. Reloading does not release runs. Finished runs are never resumable, whoever owns them.
 
 Live-cloned SDK hosts must share one authoritative PostgreSQL server and database. Configure a shared database endpoint for those hosts. Copying the managed PostgreSQL directory into another VM creates an independent database, even if both use the same `localhost` URL; separate databases cannot enforce cross-VM ownership exclusion.
 

@@ -1,17 +1,21 @@
 /** Drive the real session handlers: /reload preserves in-flight runs (#2247 / #2462); switching sessions quits them at a resumable checkpoint (#3203). */
 
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	type ConfiguredDbosDurability,
 	DbosDurableBackend,
 	type DbosSdkHandle,
 } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { dbosLifecycleState, resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
-import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	getDurableBackend,
+	initializeDurableBackend,
+	setDurableBackend,
+} from "../../packages/workflows/src/durable/factory.js";
 import { adoptWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
 import {
 	registerWorkflowLifecycleHandlers,
@@ -553,19 +557,221 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 		assert.equal(backend.getWorkflow("release-awaiting-input")?.releasedModelOwner, "session-a");
 	});
 
-	for (const reason of ["reload", "new", "resume", "fork"] as const) {
-		test(`session_shutdown(${reason}) keeps its runs owned because the workflow lifetime continues (#3566)`, async () => {
+	test("session_shutdown(reload) keeps its runs executing, owned, and unreleased (#3566)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const handlers = await startSession("session-a");
+		const own = await ownedCheckpointedWaitingRun("release-kept-reload", "session-a").launch();
+		await handlers.get("session_shutdown")!({ reason: "reload" });
+		assert.equal(backend.getWorkflow(own)?.status, "running");
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+	});
+});
+
+type SwitchContext = Record<string, unknown>;
+
+function registerPausedOwnedRun(
+	backend: DurableWorkflowBackend,
+	runId: string,
+	modelOwner: string,
+	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
+): void {
+	backend.registerWorkflow({
+		workflowId: runId,
+		name: "reviewer",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+		updatedAt: 1,
+		completedCheckpoints: 1,
+		modelOwner,
+		origin: "agent",
+		invocationCwd: process.cwd(),
+		...overrides,
+	});
+}
+
+async function startSwitchedSession(
+	lifecycleScope: object,
+	sessionId: string,
+	reason: string,
+	context: SwitchContext = {},
+): Promise<Map<string, SessionEventHandler>> {
+	const handlers = captureHandlers(lifecycleScope);
+	await handlers.get("session_start")!(
+		{ reason },
+		{ sessionManager: { getSessionId: () => sessionId }, cwd: process.cwd(), ...context },
+	);
+	return handlers;
+}
+
+function notifyingUi(notices: string[]): SwitchContext {
+	return { ui: { notify: (message: string) => notices.push(message), setWidget() {}, requestRender() {} } };
+}
+
+const RELEASE_RUN_A = "11111111-1111-4111-8111-111111111111";
+const RELEASE_RUN_B = "22222222-2222-4222-8222-222222222222";
+const RELEASE_RUN_C = "33333333-3333-4333-8333-333333333333";
+
+describe("switching sessions releases the previous session's paused runs for the successor (#3569)", () => {
+	for (const reason of ["new", "resume", "fork"] as const) {
+		test(`session_shutdown(${reason}) quits, then durably releases only the previous session's own runs (#3569)`, async () => {
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
 			adoptWorkflowSessionRunState({});
 			const handlers = await startSession("session-a");
-			const own = await ownedCheckpointedWaitingRun(`release-kept-${reason}`, "session-a").launch();
-			await handlers.get("session_shutdown")!({ reason });
-			assert.equal(backend.getWorkflow(own)?.status, reason === "reload" ? "running" : "paused");
-			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
+			const own = await ownedCheckpointedWaitingRun(`switch-release-own-${reason}`, "session-a").launch();
+			const foreign = await ownedCheckpointedWaitingRun(`switch-release-foreign-${reason}`, "session-b").launch();
+			assert.equal(backend.getWorkflow(own)?.status, "running");
+			await handlers.get("session_shutdown")!({ reason }, { sessionManager: { getSessionId: () => "session-b" } });
+			assert.equal(backend.getWorkflow(own)?.status, "paused");
+			assert.equal(backend.getWorkflow(own)?.modelOwner, "session-a");
+			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+			assert.equal(backend.getWorkflow(foreign)?.status, "paused");
+			assert.equal(backend.getWorkflow(foreign)?.releasedModelOwner, undefined);
 			await handlers.get("session_shutdown")!({ reason: "quit" });
 		});
+
+		test(`session_shutdown(${reason}) releases in a headless host without any UI (#3569)`, async () => {
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+			const handlers = await startSwitchedSession({}, "session-a", "startup", { hasUI: false });
+			const before = reason === "fork" ? handlers.get("session_before_fork") : handlers.get("session_before_switch");
+			assert.equal(await before!({ reason }, { hasUI: false }), undefined);
+			await handlers.get("session_shutdown")!({ reason });
+			assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
+		});
+
+		test(`session_shutdown(${reason}) releases after the checkpoint and before the DBOS flush (#3569)`, async () => {
+			const harness = await readyDurability();
+			const backend = getDurableBackend() as DbosDurableBackend;
+			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+			const order: string[] = [];
+			vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
+				order.push(args[7] === undefined ? "transition" : "release");
+				return true;
+			});
+			vi.spyOn(backend, "flush").mockImplementation(async (runId?: string) => {
+				order.push(runId === undefined ? "flush-all" : "flush-run");
+			});
+			const handlers = await startSwitchedSession({}, "session-a", "startup");
+			await handlers.get("session_shutdown")!({ reason });
+			assert.deepEqual(order, ["release", "flush-all"]);
+			assert.equal(harness.isLaunched(), true);
+		});
 	}
+
+	test("session_shutdown(reload) does not release, so the run keeps executing and owned (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const handlers = await startSession("session-a");
+		const own = await ownedCheckpointedWaitingRun("switch-reload-no-release", "session-a").launch();
+		registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
+		await handlers.get("session_shutdown")!({ reason: "reload" });
+		assert.equal(backend.getWorkflow(own)?.status, "running");
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
+		assert.equal(backend.getWorkflow(RELEASE_RUN_B)?.releasedModelOwner, undefined);
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+	});
+
+	for (const reason of ["new", "resume", "fork"] as const) {
+		test(`the successor's session_start(${reason}) lists the released in-scope runs with full resume commands (#3569)`, async () => {
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
+			registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a", {
+				name: "elsewhere",
+				invocationCwd: "/another-project",
+			});
+			registerPausedOwnedRun(backend, RELEASE_RUN_C, "session-z", { name: "someone-elses" });
+			const scope = {};
+			const first = await startSwitchedSession(scope, "session-a", "startup");
+			await first.get("session_shutdown")!({ reason });
+			const notices: string[] = [];
+			await startSwitchedSession(scope, "session-b", reason, notifyingUi(notices));
+			assert.equal(notices.length, 1, notices.join("\n---\n"));
+			assert.match(notices[0]!, new RegExp(`/workflow resume ${RELEASE_RUN_A}\\b`));
+			assert.match(notices[0]!, /alpha/);
+			assert.doesNotMatch(notices[0]!, new RegExp(RELEASE_RUN_B));
+			assert.doesNotMatch(notices[0]!, new RegExp(RELEASE_RUN_C));
+		});
+	}
+
+	test("the notice is not repeated after the successor reloads, and is absent on reload and startup (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup");
+		await first.get("session_shutdown")!({ reason: "reload" });
+		const reloaded: string[] = [];
+		const second = await startSwitchedSession(scope, "session-a", "reload", notifyingUi(reloaded));
+		assert.deepEqual(reloaded, []);
+		await second.get("session_shutdown")!({ reason: "new" });
+		const switched: string[] = [];
+		const third = await startSwitchedSession(scope, "session-b", "new", notifyingUi(switched));
+		assert.equal(switched.length, 1);
+		await third.get("session_shutdown")!({ reason: "reload" });
+		const afterReload: string[] = [];
+		await startSwitchedSession(scope, "session-b", "reload", notifyingUi(afterReload));
+		assert.deepEqual(afterReload, []);
+		const started: string[] = [];
+		await startSwitchedSession({}, "session-c", "startup", notifyingUi(started));
+		assert.deepEqual(started, []);
+	});
+
+	test("the notice omits a released run another session adopted first (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup");
+		await first.get("session_shutdown")!({ reason: "new" });
+		assert.equal(
+			await backend.transitionWorkflowStatus(
+				RELEASE_RUN_A,
+				["paused"],
+				"running",
+				undefined,
+				undefined,
+				undefined,
+				"session-c",
+			),
+			true,
+		);
+		const notices: string[] = [];
+		await startSwitchedSession(scope, "session-b", "new", notifyingUi(notices));
+		assert.equal(notices.length, 1);
+		assert.doesNotMatch(notices[0]!, new RegExp(RELEASE_RUN_A));
+		assert.match(notices[0]!, new RegExp(RELEASE_RUN_B));
+	});
+
+	test("a headless successor starts without a notice or an error and can still adopt the run (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup", { hasUI: false });
+		await first.get("session_shutdown")!({ reason: "fork" });
+		await startSwitchedSession(scope, "session-b", "fork", { hasUI: false });
+		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
+	});
+
+	test("nothing is released or announced when the previous session owned no paused runs (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup");
+		await first.get("session_shutdown")!({ reason: "new" });
+		const notices: string[] = [];
+		await startSwitchedSession(scope, "session-b", "new", notifyingUi(notices));
+		assert.deepEqual(notices, []);
+	});
 });
 
 describe("startup and unrecognised session starts still clear", () => {

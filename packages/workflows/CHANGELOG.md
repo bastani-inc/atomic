@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `session.workflows.resume(runId)` now adopts a paused run that was launched through the model-facing `workflow` tool once its owning session has been disposed, in the same process or after the owning process exits. Disposing a session quits its in-flight runs at their last checkpoint and durably records that it released its checkpointed paused runs; the adopting session becomes the owner and the run continues under the same UUID. Runs whose owner is still open, runs whose owner crashed without disposing, and finished runs are still refused ([#3566](https://github.com/bastani-inc/atomic/issues/3566)).
+- Switching sessions with `/new`, `/fork`, or `/resume` now releases the previous session's paused workflow runs, the same way disposing a session does. The model in the new session can resume them through the `workflow` tool, and `session.workflows.resume(runId)` can adopt them; adoption transfers ownership. The new session lists the released runs with their `/workflow resume <id>` commands, and a run another session already adopted now reports that it is owned by another session. `/reload` still keeps runs executing and releases nothing ([#3569](https://github.com/bastani-inc/atomic/issues/3569)).
 
 ### Fixed
 

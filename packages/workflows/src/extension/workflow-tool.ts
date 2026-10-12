@@ -1,6 +1,10 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { getDurableBackend } from "../durable/factory.js";
-import { isSdkDurableRunInScope, isSdkRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import {
+	isSdkCrashedRunAdoptable,
+	isSdkDurableRunInScope,
+	isSdkReleasedRunAdoptable,
+} from "../durable/sdk-recovery-scope.js";
 import { inspectRun } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
@@ -115,14 +119,19 @@ export function makeExecuteWorkflowTool(
 			};
 		}
 		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
+		const adoptsReleasedRun = (id: string): boolean => {
+			const handle = getDurableBackend().getLoadableWorkflow(id);
+			return handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd);
+		};
 		const authorize = (id: string): void => {
 			const handle = getDurableBackend().getLoadableWorkflow(id);
+			if (action === "resume" && handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd)) return;
 			if (
 				access === "sdk" &&
 				isFullRunId(args.runId?.trim() ?? "") &&
 				(action === "status" ||
 					action === "stages" ||
-					(action === "resume" && handle !== undefined && isSdkRunAdoptable(handle, recoveryCwd))) &&
+					(action === "resume" && handle !== undefined && isSdkCrashedRunAdoptable(handle, recoveryCwd))) &&
 				!store.runs().some((run) => run.id === id) &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)
@@ -147,11 +156,13 @@ export function makeExecuteWorkflowTool(
 		const awaitRequest = <T>(operation: Promise<T>): Promise<T> => raceWorkflowRequestAbort(operation, signal);
 		const getRuntime = (): ExtensionRuntime => {
 			const resolved = typeof runtime === "function" ? runtime(ctx) : runtime;
-			if (access !== "sdk") return resolved;
 			return {
 				...resolved,
 				resumeDurableWorkflow: (id, options) =>
-					resolved.resumeDurableWorkflow(id, { ...options, modelOwner: workflowCaller(ctx) }),
+					resolved.resumeDurableWorkflow(
+						id,
+						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
+					),
 			};
 		};
 		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
