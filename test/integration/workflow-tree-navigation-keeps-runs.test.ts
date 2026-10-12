@@ -8,6 +8,7 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { fileExists, makeTempDirectory, removePath, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 /** One real SDK host session loading the builtin workflows extension. */
@@ -52,7 +53,7 @@ async function createHost(cwd: string): Promise<AgentSession> {
 	return session;
 }
 
-async function callWorkflowTool(session: AgentSession, args: Record<string, unknown>) {
+async function callWorkflowTool(session: AgentSession, args: WorkflowToolArgs) {
 	const tool = session.agent.state.tools.find((entry) => entry.name === "workflow");
 	assert.ok(tool, "the builtin workflow tool must be registered");
 	return tool.execute("call", args, new AbortController().signal);
