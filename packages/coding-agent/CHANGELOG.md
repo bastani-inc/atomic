@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.35-alpha.2] - 2026-10-12
+
 ### Fixed
 
 - Fixed `read` reporting success when it refuses a selected range as too large. The refusal is now an error result, so models see a failed read with guidance to read a smaller range, and code mode's `tools.read(...)` throws instead of resolving with the refusal text as if it were the file's contents ([#3574](https://github.com/bastani-inc/atomic/issues/3574)).
