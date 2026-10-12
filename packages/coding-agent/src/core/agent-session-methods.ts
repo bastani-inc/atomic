@@ -237,6 +237,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		messages: AgentMessage | AgentMessage[],
 		promptStarted?: () => void,
 		reportDispatch?: (disposition: PromptDisposition) => void,
+		prepared?: boolean,
+		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
@@ -533,6 +535,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;
+	_isPreparingRun: false | "user" | "custom";
 	_agentRunAbortRequested: boolean;
 	_cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;

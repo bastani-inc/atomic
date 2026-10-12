@@ -8,6 +8,7 @@ export {
 	type ContentBlock,
 	type EmbeddedResourceContent,
 	type ImageContent,
+	type JsonValue,
 	type LlmContent,
 	type ResourceLinkContent,
 	type TextContent,
@@ -68,4 +69,5 @@ export type {
 	McpTransportCloseListener,
 	McpTransportErrorListener,
 	McpTransportMessageListener,
+	McpTransportSendOptions,
 } from "./transports/transport.js";

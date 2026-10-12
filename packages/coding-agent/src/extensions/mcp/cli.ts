@@ -101,8 +101,7 @@ interface ServerReport {
 	tools: string[];
 	/** Tools whose exposure differs from the server's, from `toolExposure`. */
 	toolExposure?: Record<string, string>;
-	resources?: number;
-	resourceTemplates?: number;
+	resources?: true;
 	error?: string;
 }
 
@@ -466,10 +465,7 @@ async function list(
 				return exposure === report.exposure ? [] : [[tool.name, exposure] as const];
 			});
 			if (overrides.length > 0) report.toolExposure = Object.fromEntries(overrides);
-			if (connection.hasResources) {
-				report.resources = connection.resources.length;
-				report.resourceTemplates = connection.resourceTemplates.length;
-			}
+			if (connection.hasResources) report.resources = true;
 			if (connection.state !== "connected" && connection.error) report.error = connection.error;
 			await connection.close();
 			return report;
@@ -510,9 +506,7 @@ async function list(
 			});
 			log(`  tools: ${tools.join(", ")}`);
 		}
-		if (report.resources !== undefined) {
-			log(`  resources: ${report.resources}, URI templates: ${report.resourceTemplates ?? 0}`);
-		}
+		if (report.resources) log("  offers resources");
 		if (report.error) log(`  ${report.error.split("\n").join("\n  ")}`);
 	}
 	for (const configError of loaded.errors) log(`config error: ${configError}`);

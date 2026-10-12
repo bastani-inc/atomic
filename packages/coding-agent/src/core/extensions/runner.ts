@@ -1046,6 +1046,7 @@ export class ExtensionRunner {
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPromptOptions: BuildSystemPromptOptions,
+		customMessage?: import("../messages.ts").CustomMessage,
 	): Promise<BeforeAgentStartCombinedResult> {
 		return runResourceRegistrationBatch(this.runtime, () =>
 			runBeforeAgentStartHandlers(
@@ -1056,6 +1057,7 @@ export class ExtensionRunner {
 				images,
 				systemPromptOptions,
 				(error) => this.emitError(error),
+				customMessage,
 			),
 		);
 	}

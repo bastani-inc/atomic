@@ -140,13 +140,27 @@ function formatOutput(output: readonly CodemodeOutputItem[]): (TextContent | Ima
 /** Providers may concatenate adjacent text blocks without a separator. */
 function joinAdjacentText(items: (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
 	const joined: (TextContent | ImageContent)[] = [];
+	let parts: string[] = [];
+	let lastPart = "";
+	const flush = () => {
+		if (parts.length > 0) joined.push({ type: "text", text: parts.join("") });
+		parts = [];
+		lastPart = "";
+	};
 	for (const item of items) {
-		const last = joined.at(-1);
-		if (item.type === "text" && last?.type === "text") {
-			const separator = last.text === "" || last.text.endsWith("\n") ? "" : "\n";
-			joined[joined.length - 1] = { type: "text", text: `${last.text}${separator}${item.text}` };
-		} else joined.push(item);
+		if (item.type !== "text") {
+			flush();
+			joined.push(item);
+			continue;
+		}
+		if (lastPart !== "" && !lastPart.endsWith("\n")) {
+			parts.push("\n");
+			lastPart = "\n";
+		}
+		parts.push(item.text);
+		if (item.text !== "") lastPart = item.text;
 	}
+	flush();
 	return joined;
 }
 

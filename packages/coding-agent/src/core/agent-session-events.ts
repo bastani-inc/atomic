@@ -453,6 +453,7 @@ export function _replaceMessageInPlace(this: AgentSession, target: AgentMessage,
 
 export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent): Promise<void> {
 	if (event.type === "agent_start") {
+		if (this._agentRunAbortRequested && !this._admittedRecoveryTurn) this.agent.abort();
 		this._turnIndex = 0;
 		await this._extensionRunner.emit({ type: "agent_start" }, undefined, true);
 	} else if (event.type === "agent_end") {

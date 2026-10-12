@@ -110,6 +110,8 @@ atomic mcp logout <server>
 
 `list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login gives up after 300 seconds by default; `--timeout` limits the whole sign-in, including requests to the authorization server, but not the MCP server request timeout. A running session uses new credentials on its next turn.
 
+Resource-capable servers show "offers resources" rather than resource counts. In `--json` output, `resources: true` indicates resource support; resource and template counts are not included. Use the resource tools below to list them on demand.
+
 ## Find and call tools
 
 Tools are named `mcp__<server>__<tool>`, with punctuation replaced by `_`. Names that collide after normalization receive deterministic hash suffixes. Use names returned by discovery rather than constructing them yourself.

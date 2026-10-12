@@ -62,9 +62,11 @@ export interface EmbeddedResourceContent {
 
 export type ContentBlock = TextContent | ImageContent | AudioContent | ResourceLinkContent | EmbeddedResourceContent;
 
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
 export interface CallToolResult {
 	content: ContentBlock[];
-	structuredContent?: Record<string, unknown>;
+	structuredContent?: JsonValue;
 	isError?: boolean;
 	_meta?: Record<string, unknown>;
 }

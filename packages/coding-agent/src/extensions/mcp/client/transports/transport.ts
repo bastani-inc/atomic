@@ -6,9 +6,13 @@ export type McpTransportMessageListener = (message: JsonRpcMessage) => void;
 export type McpTransportErrorListener = (error: Error) => void;
 export type McpTransportCloseListener = () => void;
 
+export interface McpTransportSendOptions {
+	signal?: AbortSignal;
+}
+
 export interface McpTransport {
 	start(): Promise<void>;
-	send(message: JsonRpcMessage): Promise<void>;
+	send(message: JsonRpcMessage, options?: McpTransportSendOptions): Promise<void>;
 	close(): Promise<void>;
 	onMessage(listener: McpTransportMessageListener): () => void;
 	onError(listener: McpTransportErrorListener): () => void;

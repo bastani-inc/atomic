@@ -13,6 +13,39 @@ import {
 } from "../src/extensions/codemode/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
+test("codemode joins adjacent output with linear separator checks (#10678)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	let separatorInputLength = 0;
+	const endsWith = String.prototype.endsWith;
+	const separatorSpy = vi.spyOn(String.prototype, "endsWith").mockImplementation(function (
+		this: string,
+		searchString: string,
+		endPosition?: number,
+	) {
+		if (searchString === "\n") separatorInputLength += this.length;
+		return endsWith.call(this, searchString, endPosition);
+	});
+	try {
+		const result = await runScript(harness, 'for (let i = 0; i < 1000; i++) text("");');
+		separatorSpy.mockRestore();
+		const outputPath = (result.details as CodemodeToolDetails).fullOutputPath;
+		const outputBytes = outputPath ? statSync(outputPath).size : Buffer.byteLength(getMessageText(result));
+		if (outputPath) rmSync(outputPath, { force: true });
+		assert.equal(result.isError, false);
+		assert.match(getMessageText(result), /==> text 1000\/1000 <==/);
+		assert(
+			separatorInputLength <= outputBytes * 2,
+			`Separator checks inspected ${separatorInputLength} characters for ${outputBytes} output bytes`,
+		);
+	} finally {
+		separatorSpy.mockRestore();
+		await harness.cleanup();
+	}
+});
+
 test("codemode separates text items and groups console calls after other output", async () => {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],

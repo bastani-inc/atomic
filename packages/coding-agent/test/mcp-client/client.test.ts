@@ -292,6 +292,15 @@ describe("McpClient", () => {
 		await client.close();
 	});
 
+	it("accepts any JSON structured content (#10416)", async () => {
+		const { client, server } = await connect();
+		for (const structuredContent of [[{ id: 1 }], null, "text", 3, false]) {
+			server.setHandler("tools/call", () => ({ content: [], structuredContent }));
+			assert.deepEqual(await client.callTool("structured"), { content: [], structuredContent });
+		}
+		await client.close();
+	});
+
 	it("does not send notifications/cancelled for a timed-out initialize", async () => {
 		const { clientTransport, server } = await createServer();
 		server.setHandler("initialize", () => new Promise(() => {}));

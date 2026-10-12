@@ -108,7 +108,7 @@ export function createMcpResultSchema(structuredContentSchema: Record<string, un
 		type: "object",
 		properties: {
 			content: { type: "array", items: { type: "object" } },
-			...(structuredContentSchema ? { structuredContent: structuredContentSchema } : {}),
+			structuredContent: structuredContentSchema ?? {},
 			isError: { type: "boolean" },
 			_meta: { type: "object" },
 		},

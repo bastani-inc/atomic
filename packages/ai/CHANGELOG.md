@@ -4,6 +4,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic requests rejected by strict-tool capacity limits by retrying once with ordinary schemas for tools marked `strict: "prefer"`. Required strict tools remain unchanged.
+- Fixed "The upstream provider returned an error" not being retried as a transient provider error ([#10842](https://github.com/earendil-works/pi/issues/10842)).
+
 ## [0.9.35-alpha.1] - 2026-10-12
 
 ### Changed

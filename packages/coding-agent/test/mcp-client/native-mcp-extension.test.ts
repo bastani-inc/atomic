@@ -417,7 +417,9 @@ describe("MCP connections", () => {
 	const servers: InMemoryTransport[] = [];
 
 	/** In-memory server that answers initialize, tools/list, and tools/call with "ok". */
-	function createTransport(options: { expireFirstCall?: boolean; methods?: string[]; noTools?: boolean } = {}) {
+	function createTransport(
+		options: { expireFirstCall?: boolean; methods?: string[]; noTools?: boolean; resources?: boolean } = {},
+	) {
 		const pair = createInMemoryTransportPair();
 		servers.push(pair.server);
 		pair.server.onMessage((message) => {
@@ -430,7 +432,10 @@ describe("MCP connections", () => {
 							id: message.id,
 							result: {
 								protocolVersion: LATEST_PROTOCOL_VERSION,
-								capabilities: options.noTools ? { prompts: {} } : { tools: {} },
+								capabilities: {
+									...(options.noTools ? { prompts: {} } : { tools: {} }),
+									...(options.resources ? { resources: {} } : {}),
+								},
 								serverInfo: { name: "fake", version: "1.0.0" },
 							},
 						}
@@ -471,6 +476,21 @@ describe("MCP connections", () => {
 		});
 		return { connection, opened: () => opened };
 	}
+
+	it("connects without listing resources (#10526)", async () => {
+		const methods: string[] = [];
+		const { connection } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [
+			() => createTransport({ resources: true, methods }),
+		]);
+		try {
+			await connection.getClient();
+			assert.equal(connection.state, "connected");
+			assert.equal(connection.hasResources, true);
+			assert.deepEqual(methods, ["initialize", "tools/list"]);
+		} finally {
+			await connection.close();
+		}
+	});
 
 	it("starts a new session and retries once when the session expired", async () => {
 		const { connection, opened } = connect({ name: "fake", config: { command: "unused" }, source: "test" }, [

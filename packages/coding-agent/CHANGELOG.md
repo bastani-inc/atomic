@@ -9,6 +9,16 @@
 ### Fixed
 
 - Fixed `/resume` and `atomic -r` hiding session summaries after newer messages. The latest summary now stays visible until a branch summary retires it, and opening or resuming an interactive session refreshes missing or stale summaries in the background.
+- Fixed tree navigation moving the active branch while a user prompt is waiting for `before_agent_start` handlers to finish.
+- Fixed print mode returning success for responses truncated by the model output limit. Partial text remains on stdout, with a warning on stderr and exit code 1.
+- Fixed home-directory (`~`) expansion in resource include and exclude patterns, including Windows environments where `HOME` differs from `USERPROFILE`.
+- Fixed MCP tool calls rejecting array, null, or primitive structured content.
+- Fixed cancelled MCP requests being retried after a shared authorization refresh.
+- Fixed slow MCP resource listings delaying tools on connection. Resources and templates are now listed only on demand.
+- Fixed code mode taking excessive time to join large numbers of text output items.
+- Fixed transient Windows permission errors when acquiring the authentication lock, while keeping persistent permission failures bounded.
+- Fixed runs started by `pi.sendMessage(..., { triggerTurn: true })`, including protected workflow task completions, skipping `before_agent_start` and losing handler-added system prompt sections after tool calls. The event now distinguishes user and custom messages with `messageType`; handlers reading `prompt` or `images` must first narrow to `"user"`.
+- Fixed interrupt messages dropping an earlier custom message while its `before_agent_start` handler was still running.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 

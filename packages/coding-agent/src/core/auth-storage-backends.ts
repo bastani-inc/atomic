@@ -126,31 +126,27 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	private getRetryableLockErrorCode(error: unknown): "ELOCKED" | "EPERM" | undefined {
+		const code = error instanceof Error && "code" in error ? error.code : undefined;
+		if (code === "ELOCKED") return code;
+		if (code === "EPERM" && process.platform === "win32") return code;
+		return undefined;
+	}
+
 	private acquireLockSyncWithRetry(path: string): () => void {
 		const maxAttempts = 10;
 		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		for (let attempt = 1; ; attempt++) {
 			try {
 				return lockfile.lockSync(path, { realpath: false });
 			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
+				if (!this.getRetryableLockErrorCode(error) || attempt === maxAttempts) throw error;
 				const start = Date.now();
 				while (Date.now() - start < delayMs) {
 					// Sleep synchronously to avoid changing callers to async.
 				}
 			}
 		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire auth storage lock");
 	}
 
 	private readMergedAuth(): string | undefined {
@@ -286,20 +282,30 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			if (!existsSync(this.authPath)) {
 				this.ensureFileExists();
 			}
-			release = await lockfile.lock(this.authPath, {
-				retries: {
-					retries: 10,
-					factor: 2,
-					minTimeout: 100,
-					maxTimeout: 10000,
-					randomize: true,
-				},
-				stale: 30000,
-				onCompromised: (err) => {
-					lockCompromised = true;
-					lockCompromisedError = err;
-				},
-			});
+			const deadline = Date.now() + 30_000;
+			let retry = 0;
+			let epermRetries = 0;
+			for (;;) {
+				try {
+					release = await lockfile.lock(this.authPath, {
+						retries: 0,
+						stale: 30_000,
+						onCompromised: (err) => {
+							lockCompromised = true;
+							lockCompromisedError = err;
+						},
+					});
+					break;
+				} catch (error) {
+					const code = this.getRetryableLockErrorCode(error);
+					const remainingMs = deadline - Date.now();
+					if (!code || remainingMs <= 0) throw error;
+					if (code === "EPERM" && ++epermRetries > 5) throw error;
+					const baseDelayMs = Math.min(10 * 2 ** retry++, 1_000);
+					const delayMs = Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs);
+					await new Promise((resolve) => setTimeout(resolve, delayMs));
+				}
+			}
 
 			throwIfCompromised();
 			const current = this.readMergedAuth();

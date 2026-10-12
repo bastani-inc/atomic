@@ -64,6 +64,7 @@ interface PendingRequest {
 	timer: ReturnType<typeof setTimeout> | undefined;
 	signal: AbortSignal | undefined;
 	onAbort: () => void;
+	sendController: AbortController;
 	cancellable: boolean;
 	onProgress: ((progress: ProgressNotification) => void) | undefined;
 	progressToken: JsonRpcId | undefined;
@@ -143,9 +144,6 @@ function validateReadResourceResult(value: unknown): ReadResourceResult {
 function validateCallToolResult(value: unknown): CallToolResult {
 	if (!isObject(value) || (value.content !== undefined && !Array.isArray(value.content))) {
 		throw new McpError(JSON_RPC_ERROR_CODES.invalidRequest, "Invalid MCP tools/call result");
-	}
-	if (value.structuredContent !== undefined && !isObject(value.structuredContent)) {
-		throw new McpError(JSON_RPC_ERROR_CODES.invalidRequest, "Invalid MCP tools/call structured content");
 	}
 	return (value.content === undefined ? { ...value, content: [] } : value) as unknown as CallToolResult;
 }
@@ -426,6 +424,7 @@ export class McpClient {
 						method !== "initialize",
 						String(options.signal?.reason ?? "Aborted"),
 					),
+				sendController: new AbortController(),
 				cancellable: method !== "initialize",
 				onProgress: options.onProgress,
 				progressToken,
@@ -434,7 +433,9 @@ export class McpClient {
 			if (progressToken !== undefined) this.progressRequests.set(progressToken, id);
 			options.signal?.addEventListener("abort", entry.onAbort, { once: true });
 			this.armTimeout(id, entry);
-			transport.send(message).catch((error) => this.cancelPending(id, error, false));
+			transport
+				.send(message, { signal: entry.sendController.signal })
+				.catch((error) => this.cancelPending(id, error, false));
 		});
 	}
 
@@ -574,6 +575,7 @@ export class McpClient {
 		if (entry.timer) clearTimeout(entry.timer);
 		if (entry.progressToken !== undefined) this.progressRequests.delete(entry.progressToken);
 		entry.signal?.removeEventListener("abort", entry.onAbort);
+		entry.sendController.abort();
 	}
 
 	private rejectPending(error: unknown): void {

@@ -271,12 +271,18 @@ pi.on("session_shutdown", async (event, ctx) => {
 
 #### before_agent_start
 
-Fired after user submits prompt, before agent loop. Can inject a message and/or modify the system prompt.
+Fired before a run starts from a user prompt or from `pi.sendMessage(..., { triggerTurn: true })` while idle. Can inject a message and/or modify the system prompt for the whole run, including requests after tool calls. Messages sent while this hook runs join the starting run rather than starting a second run.
+
+Check `event.messageType` before reading the starting input. A `"user"` event has `prompt` and optional `images`; a `"custom"` event has `message`, the custom message that started the run. Existing handlers that read `event.prompt` or `event.images` should first narrow to `event.messageType === "user"`.
 
 ```typescript
 pi.on("before_agent_start", async (event, ctx) => {
-  // event.prompt - user's prompt text
-  // event.images - attached images (if any)
+  if (event.messageType === "user") {
+    // event.prompt - user's prompt text
+    // event.images - attached images (if any)
+  } else {
+    // event.message - starting custom message
+  }
   // event.systemPrompt - current chained system prompt for this handler
   //   (includes changes from earlier before_agent_start handlers)
   // event.systemPromptOptions - structured options used to build the system prompt

@@ -231,6 +231,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		const state = session.state;
 		const lastMessage = state.messages[state.messages.length - 1];
+		const lastAssistantMessage = [...state.messages].reverse().find((message) => message.role === "assistant");
+		if (lastAssistantMessage?.stopReason === "length" && mode === "text" && !suppressFinalOutput) {
+			console.error("Response was truncated: the model reached its output token limit.");
+			exitCode = 1;
+		}
 
 		if (lastMessage?.role === "assistant") {
 			const assistantMsg = lastMessage as AssistantMessage;

@@ -1,5 +1,7 @@
 import { basename, dirname, relative, sep } from "node:path";
 import { minimatch } from "minimatch";
+import { normalizePath } from "../utils/paths.ts";
+import { getHomeDir } from "./package-manager-paths.ts";
 
 export function toPosixPath(p: string): string {
 	return p.split(sep).join("/");
@@ -41,7 +43,7 @@ export function matchesAnyPattern(filePath: string, patterns: string[], baseDir:
 	const parentDirPosix = isSkillFile ? toPosixPath(parentDir!) : undefined;
 
 	return patterns.some((pattern) => {
-		const normalizedPattern = toPosixPath(pattern);
+		const normalizedPattern = toPosixPath(normalizePath(pattern, { homeDir: getHomeDir() }));
 		if (
 			minimatch(rel, normalizedPattern) ||
 			minimatch(name, normalizedPattern) ||
@@ -60,7 +62,7 @@ export function matchesAnyPattern(filePath: string, patterns: string[], baseDir:
 
 function normalizeExactPattern(pattern: string): string {
 	const normalized = pattern.startsWith("./") || pattern.startsWith(".\\") ? pattern.slice(2) : pattern;
-	return toPosixPath(normalized);
+	return toPosixPath(normalizePath(normalized, { homeDir: getHomeDir() }));
 }
 
 function matchesAnyExactPattern(filePath: string, patterns: string[], baseDir: string): boolean {
