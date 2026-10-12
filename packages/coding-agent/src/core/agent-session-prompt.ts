@@ -124,6 +124,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const preflightResult = options?.preflightResult;
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
+	let preparingRun = false;
 
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
@@ -243,6 +244,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
 
+		this._isPreparingRun = true;
+		preparingRun = true;
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
 		if (lastAssistant) {
@@ -305,6 +308,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		this._runSystemPromptOptions = result.systemPromptOptions;
 		if (updateMessage) messages.unshift(updateMessage);
 	} catch (error) {
+		if (preparingRun) this._isPreparingRun = false;
 		preflightResult?.(false);
 		throw error;
 	}
@@ -316,7 +320,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		dispatched = true;
 		preflightResult?.(true, disposition);
 	};
-	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted, reportDispatch);
+	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted, reportDispatch, true);
 	workflowDelivery?.delivered?.("prompt");
 	try {
 		await turn;
@@ -334,6 +338,7 @@ export async function _runAgentPrompt(
 	messages: AgentMessage | AgentMessage[],
 	promptStarted?: () => void,
 	reportDispatch?: (disposition: PromptDisposition) => void,
+	prepared = false,
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -344,15 +349,19 @@ export async function _runAgentPrompt(
 			reportDispatch?.("queued");
 			return;
 		}
-		return owner._runAgentPrompt(messages, promptStarted, reportDispatch);
+		return owner._runAgentPrompt(messages, promptStarted, reportDispatch, prepared);
 	}
 	if (this._isEmittingAgentSettled) {
 		this._deferredSettledActions.push(
-			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch),
+			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared),
 		);
 		return;
 	}
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
+	const startingMessages = Array.isArray(messages) ? messages : [messages];
+	const customMessage = !prepared ? startingMessages.find((message) => message.role === "custom") : undefined;
+	const ownsPreparation = prepared || customMessage !== undefined;
+	if (customMessage) this._isPreparingRun = true;
 	this._activePromptCount += 1;
 	try {
 		if (this._subagentMessageAdmission) {
@@ -365,11 +374,11 @@ export async function _runAgentPrompt(
 		const pendingPriority = preparePriorityContinuation(this);
 		if (pendingPriority) await pendingPriority;
 		if (this._agentRunAbortRequested) {
-			if (this.isStreaming || this._queuedMessagesPaused) {
+			if (this.agent.state.isStreaming || this._queuedMessagesPaused) {
 				reportDispatch?.("handled");
 				return;
 			}
-			this._agentRunAbortRequested = false;
+			if (!this._isPreparingRun) this._agentRunAbortRequested = false;
 		}
 		// An explicit stop may win during input preflight or priority preparation.
 		// Preserve the prepared input without opening a native turn past that gate.
@@ -378,6 +387,47 @@ export async function _runAgentPrompt(
 			for (const message of items) this._queueAgentMessage(message, "steer");
 			reportDispatch?.("queued");
 			return;
+		}
+		if (customMessage?.role === "custom") {
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) await this._checkCompaction(lastAssistant, false);
+			const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools ?? [];
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				"",
+				undefined,
+				this._baseSystemPromptOptions,
+				customMessage,
+			);
+			const nextTools = result.systemPromptOptions.selectedTools;
+			const handlerEditedTools =
+				nextTools.length !== selectedToolsBefore.length ||
+				nextTools.some((name, index) => name !== selectedToolsBefore[index]);
+			if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+			messages = [
+				...startingMessages,
+				...this._pendingNextTurnMessages,
+				...result.messages.map((message) => ({
+					...message,
+					role: "custom" as const,
+					content: message.content ?? [],
+					timestamp: Date.now(),
+				})),
+			];
+			this._pendingNextTurnMessages = [];
+			const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
+			this._runSystemPromptOptions = result.systemPromptOptions;
+			if (updateMessage) messages.unshift(updateMessage);
+		}
+		if (this._queuedMessagesPaused) {
+			const items = Array.isArray(messages) ? messages : [messages];
+			for (const message of items) this._queueAgentMessage(message, "steer");
+			reportDispatch?.("queued");
+			return;
+		}
+		if (ownsPreparation) {
+			this._flushPendingBashMessages();
+			this._flushPendingCustomMessages();
+			this._isPreparingRun = false;
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
@@ -403,6 +453,7 @@ export async function _runAgentPrompt(
 		await this._awaitPendingPostCompactionContinuation();
 		await runBeforeSettleContinuations(this);
 	} finally {
+		if (ownsPreparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
 		this._cacheWarmer?.onAgentSettled();
 		await this._agentEventQueue;
@@ -574,11 +625,11 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 	// Publish this turn before it starts. It begins after the pause abort boundary
 	// resolves, so a submission that only waited for that boundary would race it
 	// and be rejected by the streaming guard while the queue is still paused.
-	const recovery = (async () => {
+	const recovery = Promise.resolve().then(async () => {
 		await session.agent.continue();
 		await session.waitForRetry();
 		await session._agentEventQueue;
-	})();
+	});
 	const settled = recovery.catch(() => undefined);
 	session._admittedRecoveryTurn = settled;
 	try {

@@ -530,6 +530,7 @@ export async function runBeforeAgentStartHandlers(
 	images: ImageContent[] | undefined,
 	baseOptions: BuildSystemPromptOptions,
 	emitError: EmitExtensionError,
+	customMessage?: import("../messages.ts").CustomMessage,
 ): Promise<BeforeAgentStartCombinedResult> {
 	const systemPromptOptions = normalizeBuildSystemPromptOptions(baseOptions);
 	const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(baseCtx)) as ExtensionContext;
@@ -544,8 +545,9 @@ export async function runBeforeAgentStartHandlers(
 			try {
 				const event: BeforeAgentStartEvent = {
 					type: "before_agent_start",
-					prompt,
-					images,
+					...(customMessage
+						? { messageType: "custom" as const, message: customMessage }
+						: { messageType: "user" as const, prompt, images }),
 					get systemPrompt() {
 						return buildSystemPrompt(systemPromptOptions);
 					},

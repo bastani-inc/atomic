@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, type Model } from "@bastani/pi-ai/compat";
+import { getCurrentSystemPrompt } from "@bastani/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, type Model, type TranscriptContext } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +12,205 @@ import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
+
+it("keeps custom-message run prompt sections across tool calls (#10267)", async () => {
+	const events: string[] = [];
+	const harness = await createHarness({
+		tools: [
+			{
+				name: "noop",
+				label: "Noop",
+				description: "Noop",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+			},
+		],
+		extensionFactories: [
+			(pi) => {
+				pi.on("before_agent_start", (event) => {
+					events.push(event.messageType);
+					event.systemPromptOptions.sections.extension_rules = "Answer in one word.";
+				});
+			},
+		],
+	});
+	try {
+		const prompts: string[] = [];
+		const record = (response: ReturnType<typeof fauxAssistantMessage>) => (context: TranscriptContext) => {
+			prompts.push(getCurrentSystemPrompt(context.messages));
+			return response;
+		};
+		harness.setResponses([
+			record(fauxAssistantMessage("hi")),
+			record(fauxAssistantMessage([fauxToolCall("noop", {})], { stopReason: "toolUse" })),
+			record(fauxAssistantMessage("done")),
+		]);
+		await harness.session.prompt("hello");
+		const settled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "agent_settled") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+		await harness.session.sendCustomMessage(
+			{ customType: "task-done", content: "background task finished", display: true },
+			{ triggerTurn: true },
+		);
+		await settled;
+		assert.equal(prompts.length, 3);
+		assert.match(prompts[0], /Answer in one word\./);
+		assert.equal(new Set(prompts).size, 1);
+		assert.deepEqual(events, ["user", "custom"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+it.each(["user", "custom"] as const)("queues messages during %s run setup (#10739)", async (messageType) => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const requests: TranscriptContext[] = [];
+	const harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("before_agent_start", async () => {
+					entered.resolve();
+					await release.promise;
+				});
+			},
+		],
+	});
+	try {
+		harness.setResponses([
+			(context) => {
+				requests.push(context);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		const settled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "agent_settled") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+		const run =
+			messageType === "user"
+				? harness.session.prompt("first")
+				: harness.session.sendCustomMessage(
+						{ customType: "first", content: "first", display: true },
+						{ triggerTurn: true },
+					);
+		await entered.promise;
+		assert.equal(harness.session.isStreaming, true);
+		await assert.rejects(harness.session.prompt("concurrent prompt"), /Agent is already processing/);
+		assert.equal(harness.session.isStreaming, true);
+		await harness.session.sendCustomMessage(
+			{ customType: "second", content: "second", display: true },
+			{ triggerTurn: true },
+		);
+		release.resolve();
+		await Promise.all([run, settled]);
+		assert.equal(requests.length, 1);
+		assert.match(JSON.stringify(requests[0].messages), /first/);
+		assert.match(JSON.stringify(requests[0].messages), /second/);
+	} finally {
+		release.resolve();
+		await harness.cleanup();
+	}
+});
+
+it.each(["user", "custom"] as const)("honors abort during %s run setup (#10739)", async (messageType) => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("before_agent_start", async () => {
+					entered.resolve();
+					await release.promise;
+				});
+			},
+		],
+	});
+	try {
+		harness.setResponses([fauxAssistantMessage("should not complete")]);
+		const settled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "agent_settled") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+		const run =
+			messageType === "user"
+				? harness.session.prompt("first")
+				: harness.session.sendCustomMessage(
+						{ customType: "first", content: "first", display: true },
+						{ triggerTurn: true },
+					);
+		await entered.promise;
+		const aborted = harness.session.abort();
+		release.resolve();
+		await Promise.all([run, aborted, settled]);
+		const last = harness.session.messages.at(-1);
+		assert.equal(last?.role, "assistant");
+		assert.equal(last?.role === "assistant" && last.stopReason, "aborted");
+		assert.equal(harness.session.isStreaming, false);
+	} finally {
+		release.resolve();
+		await harness.cleanup();
+	}
+});
+
+it("does not start a custom run paused during setup (#10739)", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let requests = 0;
+	const harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("before_agent_start", async () => {
+					entered.resolve();
+					await release.promise;
+				});
+			},
+		],
+	});
+	try {
+		harness.setResponses([
+			() => {
+				requests++;
+				return fauxAssistantMessage("should stay queued");
+			},
+		]);
+		const settled = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "agent_settled") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+		const run = harness.session.sendCustomMessage(
+			{ customType: "first", content: "first", display: true },
+			{ triggerTurn: true },
+		);
+		await entered.promise;
+		harness.session.pauseQueuedMessages();
+		release.resolve();
+		await Promise.all([run, settled]);
+		assert.equal(requests, 0);
+		assert.equal(harness.session.queuedMessagesPaused, true);
+	} finally {
+		release.resolve();
+		await harness.cleanup();
+	}
+});
 
 const processImage = vi.hoisted(() =>
 	vi.fn(async (_bytes: Uint8Array, mimeType: string) => ({

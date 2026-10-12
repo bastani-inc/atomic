@@ -127,6 +127,7 @@ class AgentSessionBase {
 	/** Priority input cancels the native operation, not the host-owned task. */
 	protected _priorityInterruptPending = false;
 	protected _activePromptCount = 0;
+	protected _isPreparingRun = false;
 	protected _agentRunAbortRequested = false;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed after the current turn's tool results. */

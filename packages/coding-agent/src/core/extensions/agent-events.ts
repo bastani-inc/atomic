@@ -69,18 +69,28 @@ export interface ProviderStreamEvent {
 	data: unknown;
 }
 
-/** Fired after user submits prompt but before agent loop. */
-export interface BeforeAgentStartEvent {
+interface BeforeAgentStartEventBase {
 	type: "before_agent_start";
-	/** The raw user prompt text (after expansion). */
-	prompt: string;
-	/** Images attached to the user prompt, if any. */
-	images?: ImageContent[];
 	/** The fully assembled system prompt string. */
-	systemPrompt: string;
+	readonly systemPrompt: string;
 	/** Mutable prompt options for this run. Later handlers see earlier edits. */
 	systemPromptOptions: NormalizedBuildSystemPromptOptions;
 }
+
+export interface BeforeAgentStartUserEvent extends BeforeAgentStartEventBase {
+	messageType: "user";
+	/** The raw user prompt text after expansion. */
+	prompt: string;
+	images?: ImageContent[];
+}
+
+export interface BeforeAgentStartCustomEvent extends BeforeAgentStartEventBase {
+	messageType: "custom";
+	message: import("../messages.ts").CustomMessage;
+}
+
+/** Fired before a run started by a user prompt or an idle custom message. */
+export type BeforeAgentStartEvent = BeforeAgentStartUserEvent | BeforeAgentStartCustomEvent;
 
 /** Fired when an agent loop starts */
 export interface AgentStartEvent {

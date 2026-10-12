@@ -37,7 +37,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		isStreaming: {
 			get() {
-				return this.agent.state.isStreaming;
+				return this._isPreparingRun || this.agent.state.isStreaming;
 			},
 		},
 		systemPrompt: {
