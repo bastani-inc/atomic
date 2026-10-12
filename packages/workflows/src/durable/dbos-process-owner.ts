@@ -48,6 +48,7 @@ export interface DbosProcessOwner {
 	shutdownPromise: Promise<void> | undefined;
 	failure: DbosDurabilityError | undefined;
 	wrappers: DbosRegisteredWrappers | undefined;
+	wrappersBySdk?: WeakMap<object, DbosRegisteredWrappers>;
 	systemDatabaseUrl?: string;
 	databaseDiagnostics?: () => DbosDatabaseDiagnostics;
 	executorFence?: DbosOwnerFence;
@@ -95,6 +96,7 @@ export function resetDbosProcessOwner(): void {
 	owner.shutdownPromise = undefined;
 	owner.failure = undefined;
 	owner.wrappers = undefined;
+	owner.wrappersBySdk = undefined;
 	owner.leases.clear();
 	owner.systemDatabaseUrl = undefined;
 	owner.databaseDiagnostics = undefined;

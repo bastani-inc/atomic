@@ -149,7 +149,9 @@ export async function configureDbosDurableBackend(config?: {
 }): Promise<ConfiguredDbosDurability> {
 	const sdk = await importDbosSdk();
 	const owner = getDbosProcessOwner();
-	const existing = owner.wrappers;
+	owner.wrappersBySdk ??= new WeakMap();
+	const wrappersBySdk = owner.wrappersBySdk;
+	const existing = wrappersBySdk.get(sdk);
 	if (existing !== undefined && owner.executorFence === undefined)
 		throw new Error(
 			"Existing workflow executor has no database ownership fence; restart the host before recovering workflows",
@@ -184,8 +186,9 @@ export async function configureDbosDurableBackend(config?: {
 			{ name: "atomicWorkflowCheckpoint" },
 		);
 	if (existing === undefined) {
-		owner.wrappers = { mainWorkflow, checkpointWorkflow };
+		wrappersBySdk.set(sdk, { mainWorkflow, checkpointWorkflow });
 	}
+	owner.wrappers = wrappersBySdk.get(sdk);
 	let backendFence = owner.executorFence;
 	let backend = new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence), {
 		checkReady,
