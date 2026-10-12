@@ -16,7 +16,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { getDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
-import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
+import type { ExtensionAPI, WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { fileExists } from "../helpers/runtime.js";
 import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 
@@ -163,7 +163,7 @@ async function switchHost(extraFactories: readonly ExtensionFactory[] = []) {
 
 type HostSession = Awaited<ReturnType<typeof switchHost>>["runtime"]["session"];
 
-async function callWorkflowTool(session: HostSession, args: Record<string, unknown>) {
+async function callWorkflowTool(session: HostSession, args: WorkflowToolArgs) {
 	const tool = session.agent.state.tools.find((entry) => entry.name === "workflow");
 	assert.ok(tool, "the workflow tool must be registered on the real host");
 	return tool.execute("call", args, new AbortController().signal);
@@ -282,3 +282,94 @@ for (const reason of ["new", "fork"] as const) {
 		HOST_SWITCH_TIMEOUT_MS,
 	);
 }
+
+test(
+	"switching twice before anyone adopts keeps the run released so the final successor can adopt it (#3569)",
+	async () => {
+		const host = await switchHost();
+		const { runtime } = host;
+		const first = runtime.session;
+		const firstId = first.sessionManager.getSessionId();
+		const launch = await callWorkflowTool(first, { action: "run", workflow: "switch-adoption", inputs: {} });
+		const runId = (launch.details as { runId?: string }).runId;
+		assert.ok(runId, JSON.stringify(launch));
+		await waitFor(host.reached, "the gate tool node to start");
+
+		await runtime.newSession();
+		assert.equal(getDurableBackend().getWorkflow(runId)?.releasedModelOwner, firstId);
+		await runtime.newSession();
+		const afterSecondSwitch = getDurableBackend().getWorkflow(runId);
+		assert.equal(afterSecondSwitch?.status, "paused");
+		assert.equal(afterSecondSwitch?.modelOwner, firstId);
+		assert.equal(afterSecondSwitch?.releasedModelOwner, firstId, "the second switch keeps the first release");
+		const lastNotice = host.notices.filter((message) => message.includes(`/workflow resume ${runId}`)).length;
+		assert.equal(lastNotice, 2, `each successor announces the released run: ${JSON.stringify(host.notices)}`);
+
+		const successorId = runtime.session.sessionManager.getSessionId();
+		const status = await callWorkflowTool(runtime.session, { action: "status", runId });
+		assert.equal((status.details as { action?: string }).action, "statusDetail");
+		const resumed = await callWorkflowTool(runtime.session, { action: "resume", runId });
+		assert.notEqual((resumed.details as { status?: string }).status, "noop", JSON.stringify(resumed));
+		assert.equal(getDurableBackend().getWorkflow(runId)?.modelOwner, successorId);
+		await host.release();
+		await waitFor(() => getDurableBackend().getWorkflow(runId)?.status === "completed", "the adopted run to finish");
+	},
+	HOST_SWITCH_TIMEOUT_MS,
+);
+
+test(
+	"a command that awaits ctx.newSession() inside ctx.newSession() leaves the run released for the final successor (#3569)",
+	async () => {
+		let hostRef: Awaited<ReturnType<typeof switchHost>> | undefined;
+		let currentRunId = "";
+		const inner: { resume?: { status?: string } | { refused: string } } = {};
+		const nestedCommand: ExtensionFactory = (pi) => {
+			pi.registerCommand("nested-replace", {
+				description: "replaces the session, then replaces it again from withSession",
+				handler: async (_args, ctx) => {
+					await ctx.newSession({
+						withSession: async (replaced) => {
+							await replaced.newSession({
+								withSession: async () => {
+									const host = hostRef;
+									assert.ok(host);
+									try {
+										const resumed = await callWorkflowTool(host.runtime.session, {
+											action: "resume",
+											runId: currentRunId,
+										});
+										inner.resume = resumed.details as { status?: string };
+									} catch (error) {
+										inner.resume = { refused: error instanceof Error ? error.message : String(error) };
+									}
+								},
+							});
+						},
+					});
+				},
+			});
+		};
+		const host = await switchHost([nestedCommand]);
+		hostRef = host;
+		const first = host.runtime.session;
+		const launch = await callWorkflowTool(first, { action: "run", workflow: "switch-adoption", inputs: {} });
+		const runId = (launch.details as { runId?: string }).runId;
+		assert.ok(runId, JSON.stringify(launch));
+		currentRunId = runId;
+		await waitFor(host.reached, "the gate tool node to start");
+
+		await first.prompt("/nested-replace");
+
+		assert.ok(
+			inner.resume !== undefined && !("refused" in inner.resume),
+			`the final successor resumes inside the nested withSession: ${JSON.stringify(inner.resume)}`,
+		);
+		assert.equal(
+			getDurableBackend().getWorkflow(runId)?.modelOwner,
+			host.runtime.session.sessionManager.getSessionId(),
+		);
+		await host.release();
+		await waitFor(() => getDurableBackend().getWorkflow(runId)?.status === "completed", "the adopted run to finish");
+	},
+	HOST_SWITCH_TIMEOUT_MS,
+);

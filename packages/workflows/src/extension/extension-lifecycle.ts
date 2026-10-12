@@ -314,7 +314,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		switchHandoff ??= attemptAll([
 			...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
 			async () => {
-				lifetime.releasedRunIds = await releasePausedRunsOfSession(sessionCaller);
+				const released = await releasePausedRunsOfSession(sessionCaller);
+				lifetime.releasedRunIds = [...new Set([...(lifetime.releasedRunIds ?? []), ...released])];
 			},
 			flushDbos,
 		]);
@@ -362,16 +363,18 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		}
 		const releasedRunIds = lifetime.releasedRunIds;
 		lifetime.releasedRunIds = undefined;
-		if (isSessionSwitch(reason) && ctx?.ui?.notify !== undefined && releasedRunIds !== undefined) {
+		if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
 			const backend = getAvailableDurableBackend();
-			const cwd = ctx.cwd ?? ctx.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
+			const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
 			const adoptable = releasedRunIds.flatMap((runId) => {
 				const handle = backend?.getWorkflow(runId);
 				return handle !== undefined && isSdkReleasedRunAdoptable(handle, cwd)
 					? [{ id: runId, name: handle.name }]
 					: [];
 			});
-			if (adoptable.length > 0) ctx.ui.notify(releasedRunsNotice(adoptable), "info");
+			// Runs nobody adopted stay announced to the next successor.
+			lifetime.releasedRunIds = adoptable.map((run) => run.id);
+			if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
 		}
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
 		const generation = ++recoveryGeneration;

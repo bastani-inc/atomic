@@ -692,6 +692,32 @@ describe("the successor may start before the departing session's shutdown handle
 		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
 	});
 
+	test("a second switch before anyone adopts keeps the first release and still announces the run (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup");
+		const own = await ownedCheckpointedWaitingRun("chained-switch-own", "session-a").launch();
+		await first.get("session_shutdown")!({ reason: "new" });
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+
+		const second = await startSwitchedSession(scope, "session-b", "new", notifyingUi([]));
+		await second.get("session_shutdown")!({ reason: "new" });
+		assert.equal(backend.getWorkflow(own)?.status, "paused");
+		assert.equal(backend.getWorkflow(own)?.modelOwner, "session-a");
+		assert.equal(
+			backend.getWorkflow(own)?.releasedModelOwner,
+			"session-a",
+			"the second switch must not revoke the release",
+		);
+
+		const notices: string[] = [];
+		await startSwitchedSession(scope, "session-c", "new", notifyingUi(notices));
+		assert.equal(notices.length, 1, notices.join("\n---\n"));
+		assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
+	});
+
 	test("session_start(startup) and session_start(reload) never run the departing handoff (#3569)", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
