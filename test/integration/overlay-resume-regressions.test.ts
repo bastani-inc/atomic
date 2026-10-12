@@ -204,7 +204,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.match(rendered, /Resume Session \(Current Folder\)/);
-		assert.match(rendered, /durable-tree-ui\s+paused\s+1 checkpoints/);
+		assert.match(rendered, /durable-tree-ui\s+paused\s+durable-tree-wf/);
 		assert.doesNotMatch(rendered, /Resumable workflows/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
@@ -248,7 +248,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.doesNotMatch(rendered, /old-failed-run/);
 		assert.doesNotMatch(rendered, /old-running-run/);
-		assert.match(rendered, /visible-paused-run\s+paused\s+1 checkpoints/);
+		assert.match(rendered, /visible-paused-run\s+paused\s+visible-paused-definition/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
 		await handlerPromise;
