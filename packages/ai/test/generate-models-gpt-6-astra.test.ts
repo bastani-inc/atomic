@@ -197,7 +197,10 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 	const sol61Tiers = [sol61Priority, { id: "ultrafast", cost: withLongContext(12, 60, 0.6, 15) }];
 	assert.deepEqual(catalogs.openai["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
 	assert.deepEqual(catalogs["openai-codex"]["gpt-5.6-sol"]?.serviceTiers, [sol56Priority]);
-	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, [
+		{ id: "priority", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } },
+		{ id: "ultrafast", cost: { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 } },
+	]);
 
 	const codexTierIds = Object.fromEntries(
 		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
@@ -215,6 +218,58 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-luna": ["priority"],
 		"gpt-6-sol": ["priority"],
 		"gpt-6.1-sol": ["priority", "ultrafast"],
+	});
+});
+
+test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and leaves every other entry alone", () => {
+	const catalogs = generate();
+	const standardSol61 = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 };
+
+	// Codex raised the default context for GPT-6.1 Sol and does not charge long-context fees on the subscription.
+	const codexSol = catalogs["openai-codex"]["gpt-6.1-sol"];
+	assert.ok(codexSol);
+	assert.equal(codexSol.contextWindow, 500_000);
+	assert.equal(codexSol.maxTokens, 128_000);
+	assert.deepEqual(codexSol.cost, standardSol61);
+	assert.equal("tiers" in codexSol.cost, false);
+	assert.deepEqual(
+		codexSol.serviceTiers?.map((tier) => ({ id: tier.id, tiered: tier.cost.tiers !== undefined })),
+		[
+			{ id: "priority", tiered: false },
+			{ id: "ultrafast", tiered: false },
+		],
+		"Fast and Ultrafast subscription usage carries no long-context fee either",
+	);
+	assert.equal(
+		catalogs["openai-codex"]["gpt-6-sol"]?.serviceTiers?.every((tier) => tier.cost.tiers !== undefined),
+		true,
+		"other Codex models keep long-context pricing on their service tiers",
+	);
+
+	// The API model stays capped at 272K and keeps the whole-request long-context tier.
+	const apiSol = catalogs.openai["gpt-6.1-sol"];
+	assert.ok(apiSol);
+	assert.equal(apiSol.contextWindow, 272_000);
+	assert.deepEqual(apiSol.cost, {
+		...standardSol61,
+		tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }],
+	});
+
+	// Other Codex models keep their context windows and long-context pricing.
+	const otherCodex = Object.fromEntries(
+		Object.entries(catalogs["openai-codex"])
+			.filter(([id]) => id !== "gpt-6.1-sol")
+			.map(([id, model]) => [id, { contextWindow: model.contextWindow, tiered: model.cost.tiers !== undefined }]),
+	);
+	assert.deepEqual(otherCodex, {
+		"gpt-5.3-codex-spark": { contextWindow: 128_000, tiered: false },
+		"gpt-5.5": { contextWindow: 272_000, tiered: true },
+		"gpt-5.6-luna": { contextWindow: 272_000, tiered: true },
+		"gpt-5.6-sol": { contextWindow: 272_000, tiered: true },
+		"gpt-5.6-terra": { contextWindow: 272_000, tiered: true },
+		"gpt-6-astra": { contextWindow: 272_000, tiered: true },
+		"gpt-6-luna": { contextWindow: 272_000, tiered: true },
+		"gpt-6-sol": { contextWindow: 272_000, tiered: true },
 	});
 });
 

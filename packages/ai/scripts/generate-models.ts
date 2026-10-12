@@ -584,10 +584,15 @@ const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-6-luna": ["priority"],
 };
 
+// The Codex subscription charges no long-context fee for these models, on any service tier (OpenAI announcement).
+const CODEX_NO_LONG_CONTEXT_FEE_MODEL_IDS = new Set(["gpt-6.1-sol"]);
+
 function codexServiceTiers(modelId: string): ModelServiceTier[] {
 	const advertised = CODEX_SERVICE_TIER_IDS[modelId];
 	if (!advertised) throw new Error(`Codex model ${modelId} has no advertised service tiers`);
-	const priced = openAiServiceTiers(modelId);
+	const priced = CODEX_NO_LONG_CONTEXT_FEE_MODEL_IDS.has(modelId)
+		? openAiServiceTiers(modelId).map(({ cost: { tiers: _longContext, ...flat }, ...tier }) => ({ ...tier, cost: flat }))
+		: openAiServiceTiers(modelId);
 	return advertised.map((id) => {
 		const tier = priced.find((candidate) => candidate.id === id);
 		if (!tier) throw new Error(`Codex model ${modelId} advertises ${id} without published OpenAI rates`);
@@ -3430,6 +3435,10 @@ async function generateModels() {
 	const CODEX_CONTEXT = 272000;
 	const CODEX_GPT_56_CONTEXT = 272000;
 	const CODEX_SPARK_CONTEXT = 128000;
+	// Codex and Work raised GPT-6.1 Sol's default context to 500k (up from 272k) for ChatGPT subscriptions only, and
+	// OpenAI does not charge long-context fees for it when usage draws from the subscription. The API model
+	// (`openai` and `openai-api`) keeps the 272k cap and the whole-request long-context tier.
+	const CODEX_GPT_61_SOL_CONTEXT = 500000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
@@ -3512,8 +3521,8 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: CODEX_CONTEXT,
+			cost: OPENAI_STANDARD_COSTS["gpt-6.1-sol"],
+			contextWindow: CODEX_GPT_61_SOL_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{

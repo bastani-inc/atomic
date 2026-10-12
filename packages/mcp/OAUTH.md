@@ -71,7 +71,7 @@ Atomic normally finds the authorization server through protected resource metada
 
 The document may use RFC 8414 or OpenID Connect discovery. Atomic trusts it as configured, including its issuer, so only point it at a document you trust. The URL must use HTTPS except for HTTP on `localhost`, `127.0.0.1`, or `[::1]`.
 
-An authorization response's `iss` must name the flow's authorization server. If the metadata promises `authorization_response_iss_parameter_supported`, the response must include `iss`. Mismatched or required-but-missing issuers are rejected before code exchange under RFC 9207. Pasted redirect URLs have the same checks as browser callbacks.
+An authorization response's `iss` must name the flow's authorization server. If the metadata promises `authorization_response_iss_parameter_supported`, the response must include `iss`. Mismatched or required-but-missing issuers are rejected before code exchange under RFC 9207, and when no authorization server metadata was discovered any `iss` is rejected because there is no issuer to compare it with. Pasted redirect URLs have the same checks as browser callbacks.
 
 ## Tokens and refresh
 

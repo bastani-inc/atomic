@@ -50,7 +50,7 @@ What a call resolves to depends on the tool:
 - `read` resolves to the returned text (including path headers and line numbers unless `:raw` is used), or for an image to an image block `{ type: "image", data, mimeType, note }` that `image()` shows. `data` is the base64 image the model would see and `note` the accompanying text, such as resize hints.
 - Other tools, such as `edit` and `write`, resolve to their text output.
 
-A call that fails, is blocked, or gets invalid arguments rejects with an `Error` that carries the tool's error text. Use `Promise.allSettled()` to keep the results of the calls that succeed. Reading a tool that does not exist throws an error that names the close matches, so `tools.Bash` suggests `tools.bash`; check for a tool with `"name" in tools`.
+A call that fails, is blocked, or gets invalid arguments rejects with an `Error` that carries the tool's error text, except that a tool with an output schema also resolves on failure when it returned its structured value (for example `bash` with a non-zero exit code), so check its fields. Use `Promise.allSettled()` to keep the results of the calls that succeed. Reading a tool that does not exist throws an error that names the close matches, so `tools.Bash` suggests `tools.bash`; check for a tool with `"name" in tools`.
 
 The `codemode` description lists tools with their TypeScript declarations, grouped by namespace (for example one MCP server). Tools with `deferred` exposure are not listed, so the description stays the same while they register. Listed declarations share a budget of 3000 estimated tokens (`codemode.inlineBudget` in [settings](/settings#tools)). Scripts find the other tools with `searchTools()`, `describeTool()`, `describeNamespace()`, or by filtering `ALL_TOOLS`.
 
