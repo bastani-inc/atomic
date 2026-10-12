@@ -1,7 +1,7 @@
 import { basename, dirname, relative, sep } from "node:path";
 import { minimatch } from "minimatch";
 import { normalizePath } from "../utils/paths.ts";
-import { getHomeDir } from "./package-manager-paths.js";
+import { getHomeDir } from "./package-manager-paths.ts";
 
 export function toPosixPath(p: string): string {
 	return p.split(sep).join("/");
