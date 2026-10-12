@@ -119,7 +119,7 @@ import { explicitDbosSystemDatabaseUrl } from "./dbos-system-database-url.js";
 export interface ConfiguredDbosDurability {
 	readonly backend: DbosDurableBackend;
 	readonly launch: () => Promise<void>;
-	readonly shutdown: () => Promise<void>;
+	readonly shutdown: (options?: { readonly deregister: boolean }) => Promise<void>;
 }
 
 const SILENT_DBOS_LOGGER: DbosLogger = {
@@ -149,9 +149,7 @@ export async function configureDbosDurableBackend(config?: {
 }): Promise<ConfiguredDbosDurability> {
 	const sdk = await importDbosSdk();
 	const owner = getDbosProcessOwner();
-	owner.wrappersBySdk ??= new WeakMap();
-	const wrappersBySdk = owner.wrappersBySdk;
-	const existing = wrappersBySdk.get(sdk);
+	const existing = owner.wrappers;
 	if (existing !== undefined && owner.executorFence === undefined)
 		throw new Error(
 			"Existing workflow executor has no database ownership fence; restart the host before recovering workflows",
@@ -186,9 +184,8 @@ export async function configureDbosDurableBackend(config?: {
 			{ name: "atomicWorkflowCheckpoint" },
 		);
 	if (existing === undefined) {
-		wrappersBySdk.set(sdk, { mainWorkflow, checkpointWorkflow });
+		owner.wrappers = { mainWorkflow, checkpointWorkflow };
 	}
-	owner.wrappers = wrappersBySdk.get(sdk);
 	let backendFence = owner.executorFence;
 	let backend = new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence), {
 		checkReady,
@@ -207,9 +204,9 @@ export async function configureDbosDurableBackend(config?: {
 				);
 			}
 		},
-		shutdown: async () => {
+		shutdown: async (options) => {
 			const results = await Promise.allSettled([
-				sdk.shutdown(),
+				sdk.shutdown(options),
 				...[...(owner.executorFences ?? [])].map((fence) => fence.close()),
 			]);
 			const errors = results

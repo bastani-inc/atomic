@@ -42,6 +42,7 @@ export function resumeFailureCode(reason: ResumeFailureReason): WorkflowControlF
 		case "run_not_found":
 			return "run_not_found";
 		case "workflow_not_found":
+		case "different_project":
 		case "invalid_inputs":
 		case "startup_failed":
 		case "insufficient_state":

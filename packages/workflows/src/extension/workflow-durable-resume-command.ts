@@ -145,6 +145,7 @@ export async function handleDurableResume(
 		const result = await runtime.resumeDurableWorkflow(target, {
 			policy,
 			actor: "user",
+			...crossProjectConfirmation(ctx),
 			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx),
 		});
 		if (result.ok) {
@@ -252,6 +253,23 @@ function releasedRunAdoption(workflowId: string, ctx: PiEventContext): { readonl
 	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
 }
 
+function crossProjectConfirmation(ctx: PiEventContext): {
+	confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
+	forkModelOwner?: string;
+} {
+	const confirm = ctx.ui.confirm;
+	return workflowPolicyFromContext(ctx).allowInputPicker && confirm !== undefined
+		? {
+				forkModelOwner: workflowCaller(ctx),
+				confirmCrossProjectFork: (cwd) =>
+					confirm(
+						"Resume workflow",
+						`Workflow run found in different project: ${cwd}. Fork it into the current directory?`,
+					),
+			}
+		: {};
+}
+
 async function resumeDurableTarget(
 	workflowId: string,
 	ctx: PiCommandContext,
@@ -262,6 +280,7 @@ async function resumeDurableTarget(
 	const result = await runtime.resumeDurableWorkflow(workflowId, {
 		policy: workflowPolicyFromContext(ctx),
 		actor: "user",
+		...crossProjectConfirmation(ctx),
 		...releasedRunAdoption(workflowId, ctx),
 	});
 	if (!result.ok) reporter.error(result.message);

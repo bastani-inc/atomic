@@ -103,7 +103,7 @@ describe("durable resume with reusable git worktrees", () => {
 				store,
 				cancellation,
 				jobs,
-				cwd: other.repo,
+				cwd: sourceCwd,
 				adapters: { complete: { complete: async (text: string) => text } },
 			};
 
@@ -157,7 +157,7 @@ describe("durable resume with reusable git worktrees", () => {
 				store,
 				cancellation,
 				jobs,
-				cwd: other.repo,
+				cwd: sourceCwd,
 				adapters: { complete: { complete: async (text: string) => text } },
 			};
 

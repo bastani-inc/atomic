@@ -221,3 +221,70 @@ describe("/workflow resume transfers ownership of a run released by the previous
 		assert.equal(backend.getWorkflow(runId)?.releasedModelOwner, undefined);
 	});
 });
+
+for (const accept of [false, true]) {
+	test.sequential(`cross-project slash resume ${accept ? "forks on yes" : "aborts on no"} (#3577)`, async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const runId = testRunId(`slash-cross-project-${accept}`);
+		registerRun(backend, runId, { invocationCwd: "/other-project" });
+		backend.recordCheckpoint({
+			kind: "ui",
+			workflowId: runId,
+			checkpointId: "answer",
+			promptKind: "confirm",
+			message: "Continue?",
+			promptHash: "answer",
+			response: true,
+			completedAt: 1,
+		});
+		const original = structuredClone(backend.getWorkflow(runId));
+		const { runtime } = setup();
+		const ctx = slashContext(SUCCESSOR_SESSION);
+		ctx.hasUI = true;
+		let prompts = 0;
+		ctx.ui.confirm = async (_title, message) => {
+			prompts++;
+			assert.equal(
+				message,
+				"Workflow run found in different project: /other-project. Fork it into the current directory?",
+			);
+			return accept;
+		};
+		const result = await slashResume(runtime, runId, ctx);
+		assert.equal(prompts, 1);
+		assert.deepEqual(backend.getWorkflow(runId), original);
+		if (accept) {
+			assert.deepEqual(result.errors, []);
+			await vi.waitFor(() => assert.equal(store.runs().find((run) => run.id !== runId)?.status, "completed"));
+			assert.equal(
+				backend.getWorkflow(store.runs().find((run) => run.id !== runId)!.id)?.invocationCwd,
+				process.cwd(),
+			);
+			assert.equal(
+				backend.getWorkflow(store.runs().find((run) => run.id !== runId)!.id)?.modelOwner,
+				SUCCESSOR_SESSION,
+			);
+		} else {
+			assert.match(result.errors.join("\n"), /cancelled/);
+			assert.equal(store.runs().length, 0);
+		}
+	});
+}
+
+test.sequential("cross-project tool and headless resume give an actionable error (#3577)", async () => {
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const runId = testRunId("cross-project-headless");
+	registerRun(backend, runId, { invocationCwd: "/other-project" });
+	const original = structuredClone(backend.getWorkflow(runId));
+	const { runtime, execute } = setup();
+	const result = await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));
+	assert.match(result.errors.join("\n"), /\/workflow resume.*interactive/);
+	await assert.rejects(
+		execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION)),
+		/\/workflow resume.*interactive/,
+	);
+	assert.deepEqual(backend.getWorkflow(runId), original);
+	assert.equal(store.runs().length, 0);
+});

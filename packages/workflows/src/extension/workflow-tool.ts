@@ -1,6 +1,8 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { getDurableBackend } from "../durable/factory.js";
+import { crossProjectResumeMessage } from "../durable/resume-runtime.js";
 import {
+	canonicalDirectory,
 	isSdkCrashedRunAdoptable,
 	isSdkDurableRunInScope,
 	isSdkReleasedRunAdoptable,
@@ -125,6 +127,14 @@ export function makeExecuteWorkflowTool(
 		};
 		const authorize = (id: string): void => {
 			const handle = getDurableBackend().getLoadableWorkflow(id);
+			if (
+				action === "resume" &&
+				recoveryCwd !== undefined &&
+				handle?.invocationCwd !== undefined &&
+				canonicalDirectory(recoveryCwd) !== canonicalDirectory(handle.invocationCwd)
+			) {
+				throw new Error(crossProjectResumeMessage(id, handle.invocationCwd));
+			}
 			if (
 				(action === "resume" || action === "status" || action === "stages") &&
 				handle !== undefined &&

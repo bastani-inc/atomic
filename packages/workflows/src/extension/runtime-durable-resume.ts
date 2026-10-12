@@ -39,6 +39,8 @@ export interface DurableResumeRuntime {
 			readonly budget?: WorkflowBudget;
 			readonly signal?: AbortSignal;
 			readonly onRunAccepted?: (runId: string) => void;
+			readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
+			readonly forkModelOwner?: string;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -120,6 +122,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						registry: deps.registry,
 						signal: options?.signal,
 						onRunAccepted: options?.onRunAccepted,
+						confirmCrossProjectFork: options?.confirmCrossProjectFork,
+						forkModelOwner: options?.forkModelOwner,
 						baseRunOpts: {
 							...deps.baseRunOpts(options?.policy),
 							...(options?.budget === undefined ? {} : { budget: options.budget }),

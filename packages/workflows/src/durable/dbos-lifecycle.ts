@@ -197,7 +197,7 @@ export async function shutdownDbos(): Promise<void> {
 		// A rejected SDK launch may already own pools and timers.
 		const actions = [
 			...(wasReady ? [() => durability.backend.flush()] : []),
-			...(slot.launchPromise !== undefined ? [() => durability.shutdown()] : []),
+			...(slot.launchPromise !== undefined ? [() => durability.shutdown({ deregister: true })] : []),
 			shutdownLocalDbos,
 		];
 		for (const shutdown of actions) {
@@ -212,6 +212,7 @@ export async function shutdownDbos(): Promise<void> {
 			slot.state = "shut_down";
 			slot.configured = undefined;
 			slot.active = undefined;
+			slot.wrappers = undefined;
 		}
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);

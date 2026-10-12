@@ -81,9 +81,10 @@ function createSharedFakeDbos(options: { readonly launch?: () => Promise<void> }
 			launched = true;
 			await options.launch?.();
 		},
-		async shutdown() {
+		async shutdown(options) {
 			shutdowns += 1;
 			launched = false;
+			if (options?.deregister) wrappers.clear();
 		},
 		registerWorkflow(fn, config) {
 			const name = config?.name ?? fn.name;
@@ -243,7 +244,14 @@ describe("process-global DBOS ownership", () => {
 					await release();
 				}
 				assert.equal(graph.dbosLifecycleState(), "shut_down");
-				assert.deepEqual(sdk.registeredNames(), ["atomicWorkflowHandle", "atomicWorkflowCheckpoint"]);
+				assert.equal(processOwner()?.wrappers, undefined);
+				assert.deepEqual(
+					sdk.registeredNames(),
+					Array.from({ length: sdk.shutdownCount() }, () => [
+						"atomicWorkflowHandle",
+						"atomicWorkflowCheckpoint",
+					]).flat(),
+				);
 			}
 		},
 		DURABILITY_MODULE_GRAPH_RELOAD_TIMEOUT_MS,
