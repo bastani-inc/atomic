@@ -640,7 +640,15 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 				updatedAt,
 			};
 			await this.sdk.recordStepOutput(workflowId, metadataStepName(updatedAt), encodeMetadata(metadata));
-			this.mem.registerWorkflow({ ...handle, summary, summarizedThrough, updatedAt });
+			const current = this.mem.getWorkflow(workflowId);
+			if (current) {
+				this.mem.registerWorkflow({
+					...current,
+					summary,
+					summarizedThrough,
+					updatedAt: Math.max(updatedAt, current.updatedAt),
+				});
+			}
 			persisted = true;
 		});
 		return persisted;

@@ -176,3 +176,55 @@ test("generated workflow summaries survive durable metadata hydration and catalo
 	assert.equal(entry?.summary, "Repairing compiler output");
 	assert.equal(entry?.summarizedThrough, 123);
 });
+
+test("DBOS summary persistence preserves status and metadata changed during the SDK write", async () => {
+	const sdk = createMockSdk();
+	let gateWrite = false;
+	let releaseWrite!: () => void;
+	let startedWrite!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		releaseWrite = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		startedWrite = resolve;
+	});
+	const backend = new DbosDurableBackend({
+		...sdk,
+		recordStepOutput: async (workflowId, stepName, output) => {
+			if (gateWrite) {
+				startedWrite();
+				await gate;
+			}
+			await sdk.recordStepOutput(workflowId, stepName, output);
+		},
+	});
+	backend.registerWorkflow({
+		workflowId: "summary-race",
+		name: "repair",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
+	await backend.flush();
+	gateWrite = true;
+	const persistence = backend.persistSummary("summary-race", "Repairing compiler output", 123);
+	await started;
+	backend.setWorkflowStatus("summary-race", "running", 2, true);
+	const concurrent = backend.getWorkflow("summary-race")!;
+	assert.equal(concurrent.status, "running");
+	releaseWrite();
+	assert.equal(await persistence, true);
+	await backend.flush();
+	const current = backend.getWorkflow("summary-race")!;
+	assert.equal(current.status, concurrent.status);
+	assert.equal(current.transitionClaimId, concurrent.transitionClaimId);
+	assert.equal(current.pendingPrompts, concurrent.pendingPrompts);
+	assert.equal(current.resumable, concurrent.resumable);
+	assert.ok(current.updatedAt >= concurrent.updatedAt);
+	assert.equal(current.summary, "Repairing compiler output");
+	assert.equal(current.summarizedThrough, 123);
+	const restored = new DbosDurableBackend(sdk);
+	await restored.hydrateResumableWorkflows();
+	assert.equal(restored.getWorkflow("summary-race")?.status, "running");
+	assert.equal(restored.getWorkflow("summary-race")?.summary, "Repairing compiler output");
+});

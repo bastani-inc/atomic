@@ -102,7 +102,7 @@ test("resumed workflow summary enters model context without starting a turn", as
 });
 
 for (const responds of [true, false]) {
-	test(`headless disposal ${responds ? "persists an admitted terminal summary" : "bounds a stalled terminal summary and rejects its late result"}`, async () => {
+	test(`headless disposal after a stalled heartbeat ${responds ? "persists an admitted terminal summary" : "bounds a stalled terminal summary and rejects its late result"}`, async () => {
 		harness = await createHarness();
 		const session = harness.session;
 		vi.spyOn(session.modelRuntime, "getAuth").mockResolvedValue({ auth: { apiKey: "workflow-key" } });
@@ -112,7 +112,19 @@ for (const responds of [true, false]) {
 		});
 		let finish!: () => void;
 		let signal: AbortSignal | undefined;
+		let heartbeatAdmitted!: () => void;
+		const heartbeatStarted = new Promise<void>((resolve) => {
+			heartbeatAdmitted = resolve;
+		});
+		let heartbeatSignal: AbortSignal | undefined;
+		let calls = 0;
 		session.agent.streamFunction = async (model, _context, options) => {
+			calls++;
+			if (calls === 1) {
+				heartbeatSignal = options?.signal;
+				heartbeatAdmitted();
+				return createAssistantMessageEventStream();
+			}
 			signal = options?.signal;
 			const stream = createAssistantMessageEventStream();
 			finish = () =>
@@ -147,14 +159,19 @@ for (const responds of [true, false]) {
 				await backend.persistSummary!(id, summary, through);
 			},
 		});
+		service.request("terminal");
+		await heartbeatStarted;
 		store.recordRunEnd("terminal", "completed");
-		await started;
 		const startedAt = Date.now();
 		const disposal = session.dispose();
+		await started;
+		assert.equal(heartbeatSignal?.aborted, true);
+		assert.equal(calls, 2);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(signal?.aborted, false);
 		if (responds) finish();
 		await disposal;
+		assert.ok(Date.now() - startedAt < WORKFLOW_SUMMARY_SHUTDOWN_GRACE_MS + 1500);
 		if (responds) assert.equal(backend.getWorkflow("terminal")?.summary, "Terminal work complete");
 		else {
 			assert.ok(Date.now() - startedAt >= WORKFLOW_SUMMARY_SHUTDOWN_GRACE_MS);

@@ -28,14 +28,14 @@ test("workflow summaries deduplicate concurrent requests and finish with termina
 	const store = fixture();
 	const prompts: string[] = [];
 	const saved: string[] = [];
-	let finish: ((summary: string) => void) | undefined;
+	const requests: { signal: AbortSignal; finish: (summary: string) => void }[] = [];
 	const service = createWorkflowSummaryService({
 		store,
 		resolveContext: () => ({
-			generateWorkflowSummary: async (text) => {
+			generateWorkflowSummary: async (text, signal) => {
 				prompts.push(text);
 				return new Promise<string>((resolve) => {
-					finish = resolve;
+					requests.push({ signal, finish: resolve });
 				});
 			},
 		}),
@@ -49,13 +49,17 @@ test("workflow summaries deduplicate concurrent requests and finish with termina
 	assert.equal(prompts.length, 1);
 	assert.match(prompts[0], /Fix the compiler/);
 	store.recordRunEnd("summary-run", "completed");
-	finish!("Compiler fixed");
+	assert.equal(prompts.length, 2, "terminal generation must be admitted synchronously");
+	assert.equal(requests[0].signal.aborted, true);
+	assert.equal(requests[1].signal.aborted, false);
+	requests[0].finish("Stale heartbeat");
 	await settle();
-	assert.equal(prompts.length, 2);
+	service.request("summary-run");
+	assert.equal(prompts.length, 2, "superseded completion must not clear the active terminal request");
 	assert.match(prompts[1], /Status: completed/);
-	finish!("Completed compiler repair");
+	requests[1].finish("Completed compiler repair");
 	await settle();
-	assert.deepEqual(saved, ["Compiler fixed", "Completed compiler repair"]);
+	assert.deepEqual(saved, ["Completed compiler repair"]);
 	service.dispose();
 });
 

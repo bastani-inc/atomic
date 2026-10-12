@@ -621,7 +621,16 @@ export function _bindExtensionCore(
 				};
 				return options?.terminal
 					? trackTerminalWorkflowSummary(this, requestSignal, generate)
-					: trackSessionWork(this, () => generate(AbortSignal.any([requestSignal, sessionLifetime(this)])));
+					: trackSessionWork(this, () => {
+							const signal = AbortSignal.any([requestSignal, sessionLifetime(this)]);
+							let abort!: () => void;
+							return new Promise<string | undefined>((resolve) => {
+								abort = () => resolve(undefined);
+								signal.addEventListener("abort", abort, { once: true });
+								if (signal.aborted) abort();
+								else void generate(signal).then(resolve);
+							}).finally(() => signal.removeEventListener("abort", abort));
+						});
 			},
 			shutdown: () => {
 				if (publication) publication.defer(() => this._extensionShutdownHandler?.());

@@ -79,12 +79,7 @@ export function createWorkflowSummaryService(options: {
 		})()
 			.catch(() => {})
 			.finally(() => {
-				pending.delete(runId);
-				const current = options.store.runs().find((entry) => entry.id === runId);
-				if (current && terminal(current) && !finalized.has(runId)) {
-					finalized.add(runId);
-					request(runId);
-				}
+				if (pending.get(runId) === controller) pending.delete(runId);
 			});
 	};
 	const refresh = (): void => {
@@ -95,8 +90,10 @@ export function createWorkflowSummaryService(options: {
 				if (context) contexts.set(run.id, context);
 			}
 			if (!terminal(run)) finalized.delete(run.id);
-			else if (!finalized.has(run.id) && !pending.has(run.id)) {
+			else if (!finalized.has(run.id)) {
 				finalized.add(run.id);
+				pending.get(run.id)?.abort();
+				pending.delete(run.id);
 				request(run.id);
 			}
 		}
