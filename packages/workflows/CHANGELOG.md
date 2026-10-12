@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an SDK session started after another session in the same process was disposed falling back to non-durable workflows with `Managed Postgres health observer is stopped.`. Releasing the last session now discards the stopped workflow database configuration, so the next session starts a fresh managed Postgres and launches durably ([#3565](https://github.com/bastani-inc/atomic/issues/3565)).
+
 ## [0.9.33] - 2026-10-10
 
 ### Fixed
