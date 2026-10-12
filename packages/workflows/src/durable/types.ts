@@ -45,6 +45,12 @@ export interface DurableWorkflowHandle {
 	/** Who launched this workflow, when the launcher was attributable. */
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
+	/**
+	 * Set to the `modelOwner` that released this paused run when its session was disposed,
+	 * so another SDK session may adopt it. Absent when the owner crashed, and cleared by
+	 * every later transition.
+	 */
+	readonly releasedModelOwner?: string;
 	/** Resolved workflow cwd when an input-bound reusable worktree was set up. */
 	readonly workflowCwd?: string;
 	/** Invoking repository root used for reusable worktree validation. */
@@ -313,6 +319,7 @@ export interface DurableWorkflowMetadata {
 	readonly invocationCwd?: string;
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
+	readonly releasedModelOwner?: string;
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;

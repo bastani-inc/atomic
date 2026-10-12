@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `session.workflows.resume(runId)` now adopts a paused run that was launched through the model-facing `workflow` tool once its owning session has been disposed, in the same process or after the owning process exits. Disposing a session quits its in-flight runs at their last checkpoint and durably records that it released its checkpointed paused runs; the adopting session becomes the owner and the run continues under the same UUID. Runs whose owner is still open, runs whose owner crashed without disposing, and finished runs are still refused ([#3566](https://github.com/bastani-inc/atomic/issues/3566)).
+
 ### Fixed
 
 - Fixed an SDK session started after another session in the same process was disposed falling back to non-durable workflows with `Managed Postgres health observer is stopped.`. Releasing the last session now discards the stopped workflow database configuration, so the next session starts a fresh managed Postgres and launches durably ([#3565](https://github.com/bastani-inc/atomic/issues/3565)).

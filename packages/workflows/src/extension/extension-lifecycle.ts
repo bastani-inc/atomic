@@ -1,8 +1,9 @@
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
-import { getDurableBackend } from "../durable/factory.js";
+import { getAvailableDurableBackend, getDurableBackend } from "../durable/factory.js";
 import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
+import { releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
 import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
@@ -91,6 +92,12 @@ export function sessionSwitchQuitConfirmation(
 		title: `Quit ${runs} and ${SESSION_SWITCH_COPY[reason].action}?`,
 		message: `Continuing quits ${runs} now. ${pronoun} stops at its last checkpoint and can be resumed later with /workflow resume.`,
 	};
+}
+
+/** The disposed session's checkpointed runs become adoptable; a crash never gets here. */
+async function releasePausedRunsOfDisposedSession(sessionCaller: string | undefined): Promise<void> {
+	const backend = getAvailableDurableBackend();
+	if (sessionCaller !== undefined && backend !== undefined) await releasePausedRunsOwnedBy(backend, sessionCaller);
 }
 
 function eventReason(event: unknown): string | undefined {
@@ -284,8 +291,13 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		}
 		if (errors.length) throw new AggregateError(errors, "Workflow observation retirement failed");
 	};
+	// Captured while the context is live: a retiring generation's shutdown handler must not read it.
+	let sessionCaller: string | undefined;
 	pi.on("session_start", async (event, ctx) => {
-		if (ctx) registerExtensionContextRetirementEffect(ctx, closeObservation);
+		if (ctx) {
+			registerExtensionContextRetirementEffect(ctx, closeObservation);
+			sessionCaller = workflowCaller(ctx);
+		}
 		// Injected backends remain borrowed; each started lifetime owns one lease.
 		lifetime.release ??=
 			getDurableBackendProcessOwner().injectedBackend === undefined ? acquireDbosLease() : async () => {};
@@ -341,6 +353,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			lifetime.closing ??= attemptAll([
 				closeGeneration,
 				...lifetime.generations,
+				() => releasePausedRunsOfDisposedSession(sessionCaller),
 				() => {
 					lifetime.generations.clear();
 				},

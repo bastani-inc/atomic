@@ -527,6 +527,112 @@ describe("session workflow run control", () => {
 		}
 	});
 
+	for (const [label, progress] of [
+		["checkpointed", { completedCheckpoints: 1 }],
+		["human-input-pending", { completedCheckpoints: 0, pendingPrompts: 1 }],
+	] as const) {
+		test.sequential(`fresh SDK sessions adopt a ${label} run released by its disposed owner through resume (#3566)`, async () => {
+			const runId = testRunId(`sdk-released-adoption-${label}`);
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			backend.registerWorkflow({
+				workflowId: runId,
+				name: "session-run-control",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+				updatedAt: 1,
+				modelOwner: "previous-session",
+				releasedModelOwner: "previous-session",
+				ownerExecutorId: getAtomicExecutorId(),
+				ownerLiveness: "alive",
+				origin: "agent",
+				invocationCwd: process.cwd(),
+				...progress,
+			});
+			const { control } = setup();
+			const result = await control.resume(runId);
+			assert.equal(result.runId, runId);
+			assert.equal(result.status, "running");
+			await vi.waitFor(() =>
+				assert.equal(backend.getWorkflow(runId)?.status, "completed", JSON.stringify(backend.getWorkflow(runId))),
+			);
+			assert.equal(backend.getWorkflow(runId)?.modelOwner, SESSION_ID);
+			assert.equal(backend.getWorkflow(runId)?.releasedModelOwner, undefined);
+			assert.equal((await control.listRuns())[0]?.runId, runId);
+		});
+	}
+
+	test.sequential("SDK refuses a paused agent-launched run whose owning session has not released it (#3566)", async () => {
+		const runId = testRunId("sdk-unreleased-paused");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "session-run-control",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			updatedAt: 1,
+			modelOwner: "previous-session",
+			ownerExecutorId: DEAD_EXECUTOR_ID,
+			ownerLiveness: "dead",
+			origin: "agent",
+			invocationCwd: process.cwd(),
+		});
+		const before = structuredClone(backend.getWorkflow(runId));
+		const error = await rejection(setup().control.resume(runId));
+		assert.ok(error instanceof WorkflowRunOwnershipError, error.message);
+		assert.equal(error.message, "Workflow instance belongs to another caller/session.");
+		assert.deepEqual(backend.getWorkflow(runId), before);
+		assert.deepEqual(store.runs(), []);
+	});
+
+	test.sequential("SDK refuses released-owner adoption outside its scope, for another owner's release and for terminal runs (#3566)", async () => {
+		const cases = [
+			{ invocationCwd: "/another-project" },
+			{ modelOwner: undefined },
+			{ releasedModelOwner: "another-session" },
+			{ rootWorkflowId: testRunId("sdk-released-foreign-root") },
+			{ status: "running" as const, ownerLiveness: "alive" as const },
+			{ status: "completed" as const },
+			{ status: "cancelled" as const },
+			{ status: "failed" as const, resumable: false },
+		];
+		for (const [index, overrides] of cases.entries()) {
+			store.clear();
+			const runId = testRunId(`sdk-released-refusal-${index}`);
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			backend.registerWorkflow({
+				workflowId: runId,
+				name: "session-run-control",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+				completedCheckpoints: 1,
+				updatedAt: 1,
+				modelOwner: "previous-session",
+				releasedModelOwner: "previous-session",
+				ownerExecutorId: DEAD_EXECUTOR_ID,
+				ownerLiveness: "dead",
+				origin: "agent",
+				invocationCwd: process.cwd(),
+				...overrides,
+			});
+			const before = structuredClone(backend.getWorkflow(runId));
+			const { control } = setup();
+			const error = await rejection(control.resume(runId));
+			assert.ok(
+				error instanceof WorkflowRunOwnershipError || error instanceof WorkflowRunNotResumableError,
+				`${JSON.stringify(overrides)}: ${error.message}`,
+			);
+			assert.deepEqual(backend.getWorkflow(runId), before, JSON.stringify(overrides));
+			assert.deepEqual(store.runs(), []);
+		}
+	});
+
 	test.sequential("lists runs with the status action's data and filters by status (#3377)", async () => {
 		const runId = testRunId("session-run-control-list");
 		store.recordRunStart(

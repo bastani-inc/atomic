@@ -469,6 +469,105 @@ describe("switching sessions quits in-flight runs at a resumable checkpoint (#32
 	});
 });
 
+function ownedCheckpointedWaitingRun(name: string, modelOwner: string) {
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const runtime = createExtensionRuntime({
+		definitions: [
+			workflow({
+				name,
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.tool("checkpointed", {}, async () => "done");
+					await ctx.tool("wait", {}, async ({ signal }) => {
+						entered();
+						await new Promise<void>((resolve) =>
+							signal.addEventListener("abort", () => resolve(), { once: true }),
+						);
+						return "stopped";
+					});
+					return {};
+				},
+			}),
+		],
+	});
+	return {
+		async launch(): Promise<string> {
+			const accepted = await runtime.dispatch(
+				{ workflow: name, action: "run", inputs: {} },
+				{ origin: "agent", modelOwner },
+			);
+			await started;
+			assert.ok("status" in accepted);
+			assert.equal(accepted.status, "running");
+			return accepted.runId;
+		},
+	};
+}
+
+async function startSession(sessionId: string): Promise<Map<string, SessionEventHandler>> {
+	const handlers = captureHandlers();
+	await handlers.get("session_start")!({ reason: "startup" }, { sessionManager: { getSessionId: () => sessionId } });
+	return handlers;
+}
+
+describe("a disposed session releases its paused agent-launched runs for adoption (#3566)", () => {
+	test("session_shutdown(quit) records a durable release only for the runs its own session owns (#3566)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const handlers = await startSession("session-a");
+		const own = await ownedCheckpointedWaitingRun("release-own", "session-a").launch();
+		const foreign = await ownedCheckpointedWaitingRun("release-foreign", "session-b").launch();
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+		assert.equal(backend.getWorkflow(own)?.status, "paused");
+		assert.equal(backend.getWorkflow(own)?.modelOwner, "session-a");
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+		assert.equal(backend.getWorkflow(foreign)?.status, "paused");
+		assert.equal(backend.getWorkflow(foreign)?.releasedModelOwner, undefined);
+	});
+
+	test("session_shutdown(quit) releases a run that was awaiting human input (#3566)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: "release-awaiting-input",
+			name: "release-awaiting-input",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+			modelOwner: "session-a",
+			origin: "agent",
+			pendingPrompts: 1,
+		});
+		const handlers = await startSession("session-a");
+		const { answer } = seedRun("release-awaiting-input", "ask", "p1");
+		answer.catch(() => undefined);
+		await handlers.get("session_shutdown")!({ reason: "quit" });
+		assert.equal(backend.getWorkflow("release-awaiting-input")?.status, "paused");
+		assert.equal(backend.getWorkflow("release-awaiting-input")?.pendingPrompts, 1);
+		assert.equal(backend.getWorkflow("release-awaiting-input")?.releasedModelOwner, "session-a");
+	});
+
+	for (const reason of ["reload", "new", "resume", "fork"] as const) {
+		test(`session_shutdown(${reason}) keeps its runs owned because the workflow lifetime continues (#3566)`, async () => {
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			adoptWorkflowSessionRunState({});
+			const handlers = await startSession("session-a");
+			const own = await ownedCheckpointedWaitingRun(`release-kept-${reason}`, "session-a").launch();
+			await handlers.get("session_shutdown")!({ reason });
+			assert.equal(backend.getWorkflow(own)?.status, reason === "reload" ? "running" : "paused");
+			assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
+			await handlers.get("session_shutdown")!({ reason: "quit" });
+		});
+	}
+});
+
 describe("startup and unrecognised session starts still clear", () => {
 	for (const reason of CLEAR_ON_START) {
 		test(`session_start(${reason}) still kills the in-flight run and clears handles`, async () => {
