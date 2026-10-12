@@ -353,6 +353,8 @@ Exact modes:
 - `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }` requests an OpenAI custom grammar tool; Lark wins when both non-empty variants are present.
 - `false` explicitly opts out. Its runtime effect matches omission, but public tool inspection preserves `false` as a present property.
 
+If Anthropic rejects a request because strict tools exceed its grammar-size, tool-count, or union-parameter limits, Atomic retries once with `prefer` tools using their ordinary schemas. Tools marked `require` remain strict. A response that has already started streaming is not retried this way.
+
 Built-in `read`, `edit`, `write`, `bash`, and its Windows PowerShell variant request strict JSON-schema sampling with `prefer` by default. This is a provider hint, not a schema rewrite or a sandbox. Unsupported providers retain ordinary tool calling. Other experimental tool hints still follow the experimental environment flag.
 
 Atomic preserves the optional property's exact own-key state across wrappers, active-session inspection, staged extension inspection, bundled tools, and isolated transport: omission stays absent; explicitly present `undefined` stays present; `false` and config objects remain unchanged. This distinction matters to SDK/extension code that uses `Object.hasOwn()` rather than an ordinary property read.

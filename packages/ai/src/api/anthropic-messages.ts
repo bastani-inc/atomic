@@ -873,25 +873,54 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, normalizedContext, isOAuth, options);
-			const nextParams = await options?.onPayload?.(params, model);
-			if (nextParams !== undefined) {
-				params = nextParams as MessageCreateParamsStreaming;
-			}
-			assertPayloadPreservesFastRoute(model, params);
 			const requestOptions = {
 				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
-			const response = await retryProviderRequest(
-				() => client.beta.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
-				{
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: streamDeadline.signal,
-				},
-			);
+			let disablePreferredStrictTools = false;
+			let response: Response;
+			for (;;) {
+				streamDeadline.signal?.throwIfAborted();
+				const built = buildParams(model, normalizedContext, isOAuth, options, disablePreferredStrictTools);
+				let params = built.params;
+				const nextParams = await options?.onPayload?.(params, model);
+				if (nextParams !== undefined) params = nextParams as MessageCreateParamsStreaming;
+				assertPayloadPreservesFastRoute(model, params);
+				try {
+					response = await retryProviderRequest(
+						() => client.beta.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+						{
+							maxRetries: options?.maxRetries,
+							maxRetryDelayMs: options?.maxRetryDelayMs,
+							signal: streamDeadline.signal,
+						},
+					);
+					break;
+				} catch (error) {
+					if (
+						streamDeadline.signal?.aborted ||
+						disablePreferredStrictTools ||
+						!built.hasPreferredStrictTools ||
+						!(error instanceof Anthropic.APIError) ||
+						error.status !== 400 ||
+						error.type !== "invalid_request_error" ||
+						![
+							"The compiled grammar is too large",
+							"Too many strict tools (",
+							"Schemas contains too many parameters with union types (",
+						].some((message) => error.message.includes(message))
+					)
+						throw error;
+					disablePreferredStrictTools = true;
+					appendAssistantMessageDiagnostic(output, {
+						type: "anthropic_strict_tools_fallback",
+						timestamp: Date.now(),
+						error: { message: error.message },
+						details: { reason: "strict_tool_limits_exceeded" },
+					});
+				}
+			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -1426,13 +1455,34 @@ function buildParams(
 	context: TranscriptContext,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
-): MessageCreateParamsStreaming {
+	disablePreferredStrictTools = false,
+): { params: MessageCreateParamsStreaming; hasPreferredStrictTools: boolean } {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const initialSystemMessage = getInitialSystemMessage(context.messages);
 	const initialSystemText = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : "";
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const conversationMessages = initialSystemMessage ? transformedMessages.slice(1) : transformedMessages;
+	let hasPreferredStrictTools = false;
+	const convertToolDefinitions = (tools: Tool[], toolCacheControl?: CacheControlEphemeral): BetaTool[] => {
+		if (isOAuthToken) tools = [...new Map(tools.map((tool) => [toClaudeCodeName(tool.name), tool])).values()];
+		const definitions = convertTools(
+			tools,
+			isOAuthToken,
+			compat.supportsEagerToolInputStreaming,
+			compat.supportsStrictTools,
+			toolCacheControl,
+			disablePreferredStrictTools,
+		);
+		if (
+			definitions.some((definition, index) => {
+				const config = tools[index].constrainedSampling;
+				return definition.strict === true && config && config.type === "json_schema" && config.strict === "prefer";
+			})
+		)
+			hasPreferredStrictTools = true;
+		return definitions;
+	};
 	const initialTools = initialSystemMessage?.toolsAdded ?? [];
 	const nativeToolChanges =
 		compat.supportsMidConvoSystemMessages && compat.supportsMidConvoToolChanges && initialTools.length > 0;
@@ -1442,10 +1492,7 @@ function buildParams(
 		cacheControl,
 		compat.allowEmptySignature,
 		supportsMidConvoEffort(model) ? model.provider : undefined,
-		nativeToolChanges
-			? (tools) =>
-					convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools)
-			: undefined,
+		nativeToolChanges ? convertToolDefinitions : undefined,
 	);
 	const activeEffort = options?.effort ?? "high";
 	const params: MessageCreateParamsStreaming = {
@@ -1499,26 +1546,11 @@ function buildParams(
 
 	const toolCacheControl = compat.supportsCacheControlOnTools ? cacheControl : undefined;
 	if (nativeToolChanges) {
-		params.tools = [
-			...convertTools(
-				initialTools,
-				isOAuthToken,
-				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
-				toolCacheControl,
-			),
-			DEFERRED_TOOL_PLACEHOLDER,
-		];
+		params.tools = [...convertToolDefinitions(initialTools, toolCacheControl), DEFERRED_TOOL_PLACEHOLDER];
 	} else {
 		const tools = getCurrentTools(context.messages);
 		if (tools.length > 0) {
-			params.tools = convertTools(
-				tools,
-				isOAuthToken,
-				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
-				toolCacheControl,
-			);
+			params.tools = convertToolDefinitions(tools, toolCacheControl);
 		}
 	}
 
@@ -1628,7 +1660,7 @@ function buildParams(
 		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
-	return params;
+	return { params, hasPreferredStrictTools };
 }
 
 // Normalize tool call IDs to match Anthropic's required pattern and length
@@ -1978,14 +2010,16 @@ function convertTools(
 	supportsEagerToolInputStreaming: boolean,
 	supportsStrictTools: boolean,
 	cacheControl?: CacheControlEphemeral,
+	disablePreferredStrictTools = false,
 ): BetaTool[] {
 	if (!tools) return [];
 
-	// OAuth canonicalization can make distinct transcript names collide. Keep the latest
-	// declaration, as the pre-transcript tool serializer did, without sending duplicate names.
-	if (isOAuthToken) tools = [...new Map(tools.map((tool) => [toClaudeCodeName(tool.name), tool])).values()];
 	return tools.map((tool, index) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
+		const config = tool.constrainedSampling;
+		const strict =
+			disablePreferredStrictTools && config && config.type === "json_schema" && config.strict === "prefer"
+				? undefined
+				: resolveJsonSchemaStrictSampling(tool, supportsStrictTools, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
 		const parameters = getJsonSchemaToolParameters(tool, strict, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
 		const schema = parameters as ToolSchemaObject;
 		// Anthropic rejects top-level combinators, so project object-union fields for advertising only.
