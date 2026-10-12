@@ -64,7 +64,7 @@ export type ContentBlock = TextContent | ImageContent | AudioContent | ResourceL
 
 export interface CallToolResult {
 	content: ContentBlock[];
-	structuredContent?: Record<string, unknown>;
+	structuredContent?: unknown;
 	isError?: boolean;
 	_meta?: Record<string, unknown>;
 }

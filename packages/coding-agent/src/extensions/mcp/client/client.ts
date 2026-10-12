@@ -144,9 +144,6 @@ function validateCallToolResult(value: unknown): CallToolResult {
 	if (!isObject(value) || (value.content !== undefined && !Array.isArray(value.content))) {
 		throw new McpError(JSON_RPC_ERROR_CODES.invalidRequest, "Invalid MCP tools/call result");
 	}
-	if (value.structuredContent !== undefined && !isObject(value.structuredContent)) {
-		throw new McpError(JSON_RPC_ERROR_CODES.invalidRequest, "Invalid MCP tools/call structured content");
-	}
 	return (value.content === undefined ? { ...value, content: [] } : value) as unknown as CallToolResult;
 }
 
