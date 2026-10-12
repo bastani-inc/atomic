@@ -135,8 +135,8 @@ describe("workflow resume selector rows", () => {
 			);
 			assert.equal(rows.length, 1);
 			assert.deepEqual(rows[0]!.result, { kind: "live", runId: run.id });
-			assert.equal(rows[0]!.session.firstMessage, saved.label);
-			assert.ok(rows[0]!.session.summary!.startsWith("paused  0/0 stages  live-workflow"));
+			assert.equal(rows[0]!.session.firstMessage, `paused 0/0 live-workflow  ${saved.label}`);
+			assert.equal(rows[0]!.session.summary, saved.summary);
 			assert.ok(rows[0]!.session.summary!.includes(saved.summary));
 			assert.ok(rows[0]!.session.allMessagesText.includes(saved.summary));
 			assert.ok(rows[0]!.session.allMessagesText.includes(saved.label));
@@ -147,7 +147,7 @@ describe("workflow resume selector rows", () => {
 				[{ ...run, label: "Current objective", summary: "Current progress" }],
 				[saved],
 			);
-			assert.equal(current!.session.firstMessage, "Current objective");
+			assert.equal(current!.session.firstMessage, "paused 0/0 live-workflow  Current objective");
 			assert.ok(current!.session.summary!.endsWith("Current progress"));
 		},
 	);
@@ -263,9 +263,9 @@ describe("workflow resume selector row presentation", () => {
 			],
 		);
 		const byId = new Map(rows.map(({ session }) => [session.id, session]));
-		assert.equal(byId.get("label-id")?.firstMessage, "Ship feature");
+		assert.equal(byId.get("label-id")?.firstMessage, "paused 2 cp paused-workflow  Ship feature");
 		assert.match(byId.get("label-id")!.summary!, /Implementation verified/);
-		assert.match(byId.get("label-id")!.summary!, /paused.*2 checkpoints.*paused-workflow/);
+		assert.match(byId.get("label-id")!.firstMessage, /paused.*2 cp.*paused-workflow/);
 		assert.match(byId.get("label-id")!.allMessagesText, /label-id.*Ship feature.*Implementation verified/);
 		assert.equal(byId.get("objective-id")?.firstMessage, "Fix resume");
 		assert.equal(byId.get("fallback-id")?.firstMessage, "First string");

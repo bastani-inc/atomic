@@ -83,7 +83,7 @@ function workflowStatusPresentation(
 	return { label: status };
 }
 
-function workflowIdentity(id: string, label: string | undefined, inputs: Record<string, unknown> | undefined): string {
+function workflowIdentity(id: string, label: string | undefined, inputs: RunSnapshot["inputs"] | undefined): string {
 	const text =
 		label?.trim() ||
 		[inputs?.objective, inputs?.prompt, inputs?.task, inputs?.request, ...Object.values(inputs ?? {})].find(
@@ -105,12 +105,12 @@ function liveRunSession(run: RunSnapshot, saved?: ResumableWorkflowEntry): Workf
 		session: {
 			path: `workflow-live:${run.id}`,
 			id: run.id,
-			cwd: "Live workflow runs",
+			cwd: "Live",
 			created: new Date(run.startedAt),
 			modified,
 			messageCount: total,
-			firstMessage: identity,
-			summary: `${presentation.label}  ${stageText}  ${run.name}${summary ? `  ${summary}` : ""}`,
+			firstMessage: summary ? `${presentation.label} ${completed}/${total} ${run.name}  ${identity}` : identity,
+			summary: summary || `${presentation.label}  ${stageText}  ${run.name}`,
 			allMessagesText: `${run.id} ${identity} ${summary ?? ""} ${run.name} ${presentation.label} ${stageText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},
@@ -129,12 +129,14 @@ function durableWorkflowSession(
 		session: {
 			path: `workflow-${kind}:${entry.workflowId}`,
 			id: entry.workflowId,
-			cwd: kind === "completed" ? "Completed workflow runs" : "Durable workflow runs",
+			cwd: kind === "completed" ? "Completed" : "Durable",
 			created: new Date(entry.createdAt),
 			modified: new Date(entry.updatedAt),
 			messageCount: entry.completedCheckpoints,
-			firstMessage: identity,
-			summary: `${presentation.label}  ${checkpointText}  ${entry.name}${entry.summary ? `  ${entry.summary}` : ""}`,
+			firstMessage: entry.summary
+				? `${presentation.label} ${entry.completedCheckpoints} cp ${entry.name}  ${identity}`
+				: identity,
+			summary: entry.summary || `${presentation.label}  ${checkpointText}  ${entry.name}`,
 			allMessagesText: `${entry.workflowId} ${identity} ${entry.summary ?? ""} ${entry.name} ${presentation.label} ${checkpointText}`,
 			...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
 		},

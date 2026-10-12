@@ -139,3 +139,37 @@ test("workflow summary input is bounded and includes latest stage outputs", () =
 	assert.match(text, /compile: completed/);
 	assert.ok(text.endsWith("x".repeat(1500)));
 });
+
+test("recoverable active-blocked runs generate and persist blocked summary context", async () => {
+	const store = fixture();
+	const prompts: string[] = [];
+	const saved: string[] = [];
+	const service = createWorkflowSummaryService({
+		store,
+		resolveContext: () => ({
+			generateWorkflowSummary: async (text, _signal, options) => {
+				assert.equal(options?.terminal, true);
+				prompts.push(text);
+				return "Blocked awaiting credentials";
+			},
+		}),
+		persist: async (_id, summary) => {
+			saved.push(summary);
+		},
+	});
+	store.recordRunBlocked("summary-run", "Configure credentials", {
+		failureKind: "auth",
+		failureCode: "missing_api_key",
+		failureRecoverability: "recoverable",
+		failureDisposition: "active_blocked",
+		failureMessage: "Configure credentials",
+		resumable: true,
+		blockedAt: 2,
+	});
+	assert.equal(store.runs()[0].status, "running");
+	await settle();
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0], /Status: blocked/);
+	assert.deepEqual(saved, ["Blocked awaiting credentials"]);
+	service.dispose();
+});

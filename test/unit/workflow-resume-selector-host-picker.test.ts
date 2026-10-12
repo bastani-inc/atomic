@@ -486,6 +486,45 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 		};
 	}
 
+	test("reserves visible generated summaries alongside workflow metadata at 80 columns", async () => {
+		const bridge = makeBridge();
+		const promise = openWorkflowResumeSelector(
+			{ hostSessionPicker: (request) => bridge.child.open(request) },
+			[
+				{
+					...pausedLiveRun("live-summary"),
+					name: "pr-lifecycle",
+					label: "Fix compiler",
+					summary: "Compiler repaired",
+				},
+			],
+			async () => ({
+				durable: [
+					{
+						...entry("durable-summary", "blocked"),
+						completedCheckpoints: 4,
+						name: "pr-lifecycle",
+						label: "Run checks",
+						summary: "Tests verified",
+					},
+				],
+				completed: [],
+			}),
+		);
+		await flush();
+		const rows = bridge
+			.component()
+			.render(80)
+			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+		assert.ok(rows.some((row) => /paused 0\/0 pr-lifecycle/.test(row) && row.includes("Compiler repaired")));
+		assert.ok(rows.some((row) => /blocked 4 cp pr-lifecycle/.test(row) && row.includes("Tests verified")));
+		assert.ok(rows.some((row) => row.includes("Fix compiler")));
+		assert.ok(rows.some((row) => row.includes("Run checks")));
+		bridge.component().handleInput("\x1b");
+		await promise;
+		bridge.controller.dispose();
+	});
+
 	test("renders live, durable and completed workflow IDs with row details at common widths", async () => {
 		const ids = [
 			"11111111-1111-4111-8111-111111111111",

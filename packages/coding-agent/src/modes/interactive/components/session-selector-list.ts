@@ -227,8 +227,9 @@ export class SessionList implements Component, Focusable {
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
 			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
 			const summaryGutter = 2;
+			const defaultMsgColWidth = Math.max(10, Math.floor(availableForMsg * 0.45));
 			const msgColWidth = showSummaryColumn
-				? Math.max(10, Math.floor(availableForMsg * 0.45))
+				? Math.max(defaultMsgColWidth, availableForMsg - summaryGutter - Math.max(10, visibleWidth(summaryText)))
 				: Math.max(10, availableForMsg);
 			const summaryColWidth = showSummaryColumn ? availableForMsg - msgColWidth - summaryGutter : 0;
 

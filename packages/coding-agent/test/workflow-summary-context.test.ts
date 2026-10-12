@@ -6,8 +6,8 @@ import { injectWorkflowResumeSummary } from "../../workflows/src/extension/workf
 import { createWorkflowSummaryService } from "../../workflows/src/extension/workflow-summary.js";
 import { createStore } from "../../workflows/src/shared/store.js";
 import { convertToLlm } from "../src/core/messages.js";
-import { WORKFLOW_SUMMARY_SHUTDOWN_GRACE_MS } from "../src/core/workflow-summary-lifecycle.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { WORKFLOW_SUMMARY_SHUTDOWN_GRACE_MS } from "../src/core/workflow-summary-lifecycle.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 let harness: Harness | undefined;
 afterEach(async () => {

@@ -1,4 +1,5 @@
 import { getAvailableDurableBackend } from "../durable/factory.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { Store } from "../shared/store-public-types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -113,7 +114,7 @@ export function createWorkflowSummaryService(options: {
 }
 
 function terminal(run: RunSnapshot): boolean {
-	return ["completed", "failed", "cancelled", "blocked"].includes(run.status);
+	return ["completed", "failed", "cancelled", "blocked"].includes(effectiveRunStatus(run));
 }
 
 export function workflowSummaryInput(run: RunSnapshot): string {
@@ -142,7 +143,7 @@ export function workflowSummaryInput(run: RunSnapshot): string {
 		)
 		.join("\n")
 		.slice(-11000);
-	return `Workflow: ${run.name.slice(0, 200)}\nRun: ${run.id}\nStatus: ${run.status}\nObjective/inputs:\n${objective}\nLatest stages and outputs:\n${stages}`.slice(
+	return `Workflow: ${run.name.slice(0, 200)}\nRun: ${run.id}\nStatus: ${effectiveRunStatus(run)}\nObjective/inputs:\n${objective}\nLatest stages and outputs:\n${stages}`.slice(
 		0,
 		16000,
 	);
