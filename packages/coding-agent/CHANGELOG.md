@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.35-alpha.3] - 2026-10-12
+
 ### Added
 
 - SDK and RPC clients can read stored session summaries with their summarized-through message IDs, and list or inspect workflow history with saved summaries and run identities. SDK sessions expose `sessionSummary`; RPC adds `get_session_summary`, `list_sessions`, `list_workflow_runs`, and `get_workflow_run_summary`.

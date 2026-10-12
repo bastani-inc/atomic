@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.35-alpha.3] - 2026-10-12
+
 ### Added
 
 - Resuming a workflow from another project with `/workflow resume <id>` now offers to fork its saved progress into the current directory under a new run ID, leaving the source run unchanged. SDK, tool, and headless resume requests return an actionable error instead of running in a different project.
