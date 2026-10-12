@@ -6,7 +6,12 @@ import { APP_TITLE } from "../config.js";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import { createBackupSnapshot, createBranchedSessionState, forkSessionFromFile } from "./session-manager-archive.ts";
+import {
+	createBackupSnapshot,
+	createBranchedSessionState,
+	forkSessionFromFile,
+	forkSessionFromFileAsync,
+} from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
@@ -90,7 +95,7 @@ export class SessionManager {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
-		if (persist && this.sessionDir) {
+		if (persist && this.sessionDir && !preloadedFileEntries) {
 			ensureDirectory(this.sessionDir);
 		}
 
@@ -125,7 +130,7 @@ export class SessionManager {
 
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
-		if (existsSync(this.sessionFile)) {
+		if (preloadedFileEntries || existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a session, fail without modifying it.
@@ -616,7 +621,17 @@ export class SessionManager {
 		options?: NewSessionOptions,
 	): SessionManager {
 		const forked = forkSessionFromFile(sourcePath, targetCwd, sessionDir, options);
-		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true);
+		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true, undefined, forked.fileEntries);
+	}
+
+	static async forkFromAsync(
+		sourcePath: string,
+		targetCwd: string,
+		sessionDir?: string,
+		options?: NewSessionOptions,
+	): Promise<SessionManager> {
+		const forked = await forkSessionFromFileAsync(sourcePath, targetCwd, sessionDir, options);
+		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true, undefined, forked.fileEntries);
 	}
 
 	/** Find an exact, non-internal session ID by reading headers, not transcripts. */

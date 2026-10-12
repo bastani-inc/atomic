@@ -7,6 +7,7 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import type { DbosCheckpointEnvelope } from "../../packages/workflows/src/durable/dbos-envelope.js";
 
 const home = process.env.ATOMIC_FAULT_TEST_HOME;
 assert.ok(home);
@@ -83,22 +84,54 @@ export default workflow({ name: "noop", description: "One durable tool", inputs:
 			assert.equal(result.status, "completed", JSON.stringify({ name, ...result }));
 			const sql = new Pool({ connectionString: databaseUrl });
 			try {
-				const rows = await sql.query<{ name: string; status: string }>(
-					"SELECT name, status FROM dbos.workflow_status WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)",
+				const rows = await sql.query<{
+					workflow_uuid: string;
+					name: string;
+					status: string;
+					envelope: DbosCheckpointEnvelope | null;
+				}>(
+					`SELECT workflow_uuid, name, status,
+					 CASE WHEN output::jsonb->>'__dbos_serializer' = 'superjson'
+					 THEN output::jsonb->'json' ELSE output::jsonb END AS envelope
+					 FROM dbos.workflow_status WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)`,
 					[result.runId, `${result.runId}:checkpoint:`],
 				);
 				assert.ok(
 					rows.rows.some((row) => row.name === "atomicWorkflowHandle" && row.status === "SUCCESS"),
 					"run must use the durable DBOS backend",
 				);
-				assert.ok(
-					rows.rows.some((row) => row.name === "atomicWorkflowCheckpoint" && row.status === "SUCCESS"),
-					"tool checkpoint must persist in PostgreSQL",
+				const tools = rows.rows.filter(
+					(row) =>
+						row.name === "atomicWorkflowCheckpoint" &&
+						row.status === "SUCCESS" &&
+						row.workflow_uuid.startsWith(`${result.runId}:checkpoint:tool:`) &&
+						row.envelope?.kind === "tool",
 				);
+				assert.equal(tools.length, 1, `run ${result.runId} must persist exactly one completed tool checkpoint`);
+				const tool = tools[0];
+				const envelope = tool.envelope;
+				assert.ok(envelope);
+				assert.equal(envelope.__dbos_checkpoint__, "__dbos_checkpoint__");
+				assert.equal(envelope.name, "step");
+				assert.equal(envelope.hasOutput, true);
+				assert.equal(envelope.output, "ok");
+				assert.ok(envelope.completedAt > 0);
+				assert.equal(typeof envelope.argsHash, "string");
+				assert.ok(envelope.argsHash);
+				assert.equal(envelope.checkpointId, `tool:${envelope.argsHash}`);
+				assert.equal(tool.workflow_uuid, `${result.runId}:checkpoint:${envelope.checkpointId}`);
+				return {
+					...result,
+					toolCheckpoint: {
+						workflowId: tool.workflow_uuid,
+						checkpointId: envelope.checkpointId,
+						name: envelope.name,
+						output: envelope.output,
+					},
+				};
 			} finally {
 				await sql.end();
 			}
-			return result;
 		} finally {
 			unsubscribe();
 		}

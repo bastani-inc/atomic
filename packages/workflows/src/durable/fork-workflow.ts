@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { SessionManager } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableCheckpoint, DurableStageRunTopology, DurableWorkflowHandle } from "./types.js";
@@ -29,12 +28,16 @@ export async function forkDurableWorkflow(
 		...(run.rootRunId === undefined ? {} : { rootRunId: workflowId }),
 	});
 	const sessions = new Map<string, SessionManager>();
-	const checkpoints: DurableCheckpoint[] = backend.listCheckpoints(source.workflowId).map((checkpoint) => {
+	const checkpoints: DurableCheckpoint[] = [];
+	for (const checkpoint of backend.listCheckpoints(source.workflowId)) {
 		const copy = structuredClone(checkpoint);
-		if (copy.kind === "ui") return { ...copy, workflowId };
+		if (copy.kind === "ui") {
+			checkpoints.push({ ...copy, workflowId });
+			continue;
+		}
 		const topology = copy.topology;
-		if (copy.kind === "tool")
-			return {
+		if (copy.kind === "tool") {
+			checkpoints.push({
 				...copy,
 				workflowId,
 				...(topology === undefined
@@ -45,19 +48,21 @@ export async function forkDurableWorkflow(
 								...(copy.topology?.run === undefined ? {} : { run: mapRun(copy.topology.run) }),
 							},
 						}),
-			};
+			});
+			continue;
+		}
 		const stageTopology = copy.topology;
 		const boundary = stageTopology?.boundary;
 		let session = copy.sessionFile === undefined ? undefined : sessions.get(copy.sessionFile);
-		if (session === undefined && copy.sessionFile !== undefined && existsSync(copy.sessionFile)) {
-			session = SessionManager.forkFrom(copy.sessionFile, cwd, undefined, {
+		if (session === undefined && copy.sessionFile !== undefined) {
+			session = await SessionManager.forkFromAsync(copy.sessionFile, cwd, undefined, {
 				internal: true,
 				workflow: { runId: workflowId, stageId: stageTopology?.stageId ?? copy.checkpointId, stageName: copy.name },
 			});
 			sessions.set(copy.sessionFile, session);
 		}
 		const childOutput = boundary === undefined ? undefined : parseWorkflowChildResult(copy.output);
-		return {
+		checkpoints.push({
 			...copy,
 			workflowId,
 			...(childOutput === undefined ? {} : { output: { ...childOutput, runId: mapId(childOutput.runId) } }),
@@ -85,8 +90,8 @@ export async function forkDurableWorkflow(
 									}),
 						},
 					}),
-		};
-	});
+		});
+	}
 	backend.registerWorkflow({
 		...source,
 		workflowId,

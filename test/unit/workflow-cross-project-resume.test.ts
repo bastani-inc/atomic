@@ -206,7 +206,18 @@ test("forked stage conversations copy history without sharing the source session
 			output: "saved",
 			completedAt: 1,
 		});
-		const forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined);
+		const originalCheckpoint = backend.listCheckpoints(id)[0];
+		backend.recordCheckpoint({ ...originalCheckpoint, checkpointId: "second-stage" });
+		const forkSession = vi.spyOn(SessionManager, "forkFromAsync");
+		let forkId: string;
+		try {
+			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined);
+			assert.equal(forkSession.mock.calls.length, 1);
+		} finally {
+			forkSession.mockRestore();
+		}
+		const forkedStages = backend.listCheckpoints(forkId).filter((entry) => entry.kind === "stage");
+		assert.equal(forkedStages[1].sessionFile, forkedStages[0].sessionFile);
 		const checkpoint = backend.listCheckpoints(forkId)[0];
 		assert.equal(checkpoint.kind, "stage");
 		if (checkpoint.kind !== "stage") assert.fail("stage checkpoint required");

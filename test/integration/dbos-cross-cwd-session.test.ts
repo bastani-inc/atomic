@@ -13,13 +13,26 @@ test(
 		try {
 			const { url } = await home.client(listener.port).request<ManagedResult>("ensure");
 			const sessionHost = home.client(listener.port, {}, "dbos-cross-cwd-session.ts");
-			const result = await sessionHost.request<{ first: { status: string }; second: { status: string } }>(
+			interface PersistedRun {
+				status: string;
+				runId: string;
+				toolCheckpoint: { workflowId: string; checkpointId: string; name: string; output: string };
+			}
+			const result = await sessionHost.request<{ first: PersistedRun; second: PersistedRun }>(
 				"run",
 				url,
 				REAL_CROSS_CWD_HOST_TIMEOUT_MS,
 			);
 			assert.equal(result.first.status, "completed");
 			assert.equal(result.second.status, "completed");
+			assert.notEqual(result.first.runId, result.second.runId);
+			for (const run of [result.first, result.second]) {
+				assert.ok(run.toolCheckpoint, `run ${run.runId} must persist its tool checkpoint`);
+				assert.match(run.toolCheckpoint.checkpointId, /^tool:/);
+				assert.equal(run.toolCheckpoint.workflowId, `${run.runId}:checkpoint:${run.toolCheckpoint.checkpointId}`);
+				assert.equal(run.toolCheckpoint.name, "step");
+				assert.equal(run.toolCheckpoint.output, "ok");
+			}
 		} finally {
 			try {
 				await home.cleanup();
