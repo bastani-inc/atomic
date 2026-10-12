@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe("mandatory DBOS lifecycle", () => {
 	// #3105: independently owned hosts share DBOS without sharing disposal.
-	test.sequential("leases preserve siblings and a fresh owner can relaunch registered durability", async () => {
+	test.sequential("leases preserve siblings and a fresh owner reconfigures and relaunches durability (#3565)", async () => {
 		const events: string[] = [];
 		let configurations = 0;
 		resetDbosLifecycleForTests(async () => {
@@ -73,7 +73,7 @@ describe("mandatory DBOS lifecycle", () => {
 		await sibling();
 		const next = acquireDbosLease();
 		await getReadyDbosBackend();
-		assert.equal(configurations, 1);
+		assert.equal(configurations, 2);
 		assert.deepEqual(events, ["launch", "shutdown", "launch"]);
 		await next();
 		assert.deepEqual(events, ["launch", "shutdown", "launch", "shutdown"]);

@@ -156,8 +156,8 @@ export async function configureDbosDurableBackend(config?: {
 		);
 	let launch = owner.active?.launch ?? (() => sdk.launch());
 	let checkReady: (() => Promise<void>) | undefined;
-	// The SDK forbids setConfig after launch. Recover original wrappers first.
-	if (existing === undefined) {
+	if (existing === undefined || owner.active === undefined) {
+		if (owner.executorFence?.closed) owner.executorId = undefined;
 		const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
 		const { configureAdmissionDatabase } = await import("./dbos-admission-config.js");
 		const database = configureAdmissionDatabase(sdk, {

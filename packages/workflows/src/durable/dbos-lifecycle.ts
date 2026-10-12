@@ -208,7 +208,11 @@ export async function shutdownDbos(): Promise<void> {
 			}
 		}
 		if (errors.length > 0) throw combinedShutdownFailure(errors);
-		if (wasReady) slot.state = "shut_down";
+		if (wasReady) {
+			slot.state = "shut_down";
+			slot.configured = undefined;
+			slot.active = undefined;
+		}
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);
 		slot.state = "failed";
