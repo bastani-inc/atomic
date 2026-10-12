@@ -23,6 +23,18 @@ import {
 } from "./session-lifecycle-work.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
 
+const customPreparations = new WeakMap<AgentSession, { promise: Promise<void>; cancel: () => void }>();
+
+export async function waitForCustomMessagePreparation(session: AgentSession): Promise<void> {
+	await customPreparations.get(session)?.promise;
+}
+
+export function cancelCustomMessagePreparation(session: AgentSession): Promise<void> | undefined {
+	const preparation = customPreparations.get(session);
+	preparation?.cancel();
+	return preparation?.promise;
+}
+
 type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
 function assistantHasRecoverableOutput(message: AgentMessage): boolean {
@@ -365,7 +377,26 @@ export async function _runAgentPrompt(
 		? (customStarter ?? startingMessages.find((message) => message.role === "custom"))
 		: undefined;
 	const ownsPreparation = prepared || customMessage !== undefined;
-	if (customMessage) this._isPreparingRun = "custom";
+	const preparation = customMessage ? Promise.withResolvers<void>() : undefined;
+	const cancelled = Promise.withResolvers<undefined>();
+	let preparationCancelled = false;
+	if (preparation) {
+		customPreparations.set(this, {
+			promise: preparation.promise,
+			cancel: () => {
+				preparationCancelled = true;
+				cancelled.resolve(undefined);
+			},
+		});
+		this._isPreparingRun = "custom";
+	}
+	const releasePreparation = () => {
+		if (preparation && customPreparations.get(this)?.promise === preparation.promise) {
+			customPreparations.delete(this);
+			this._isPreparingRun = false;
+			preparation.resolve();
+		}
+	};
 	this._activePromptCount += 1;
 	try {
 		if (this._subagentMessageAdmission) {
@@ -395,13 +426,13 @@ export async function _runAgentPrompt(
 		if (customMessage?.role === "custom") {
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) await this._checkCompaction(lastAssistant, false);
+			if (preparationCancelled) return;
 			const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools ?? [];
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				"",
-				undefined,
-				this._baseSystemPromptOptions,
-				customMessage,
-			);
+			const result = await Promise.race([
+				this._extensionRunner.emitBeforeAgentStart("", undefined, this._baseSystemPromptOptions, customMessage),
+				cancelled.promise,
+			]);
+			if (!result || preparationCancelled) return;
 			const nextTools = result.systemPromptOptions.selectedTools;
 			const handlerEditedTools =
 				nextTools.length !== selectedToolsBefore.length ||
@@ -438,6 +469,7 @@ export async function _runAgentPrompt(
 		this._pendingToolNames.clear();
 		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);
+		releasePreparation();
 		if (this.isStreaming) promptStarted?.();
 		await turn;
 		await this.waitForRetry();
@@ -457,7 +489,8 @@ export async function _runAgentPrompt(
 		await this._awaitPendingPostCompactionContinuation();
 		await runBeforeSettleContinuations(this);
 	} finally {
-		if (ownsPreparation) this._isPreparingRun = false;
+		releasePreparation();
+		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
 		this._cacheWarmer?.onAgentSettled();
 		await this._agentEventQueue;

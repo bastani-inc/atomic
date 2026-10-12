@@ -7,6 +7,7 @@ import {
 	isProtectedStreamingCustomMessage,
 	restoreProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
 import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
 import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
@@ -293,6 +294,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	const lifetime = sessionLifetime(session);
 	session.abortRetry();
 	session._ensureActiveInterruptQueueHold();
+	await waitForCustomMessagePreparation(session);
 	if (session.isStreaming || session._isPreparingRun) {
 		const previousAbortMessage = session._activeInterruptAbortMessage;
 		session._activeInterruptAbortMessage = normalizeInterruptAbortMessage(options?.interruptAbortMessage);

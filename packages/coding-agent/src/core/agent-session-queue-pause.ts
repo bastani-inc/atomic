@@ -1,5 +1,6 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { cancelCustomMessagePreparation } from "./agent-session-prompt.ts";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
@@ -85,6 +86,7 @@ export function abort(this: AgentSession): Promise<void> {
 export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 	this._extensionRunner.cancelHostInput();
 	this._agentRunAbortRequested = true;
+	const customPreparation = cancelCustomMessagePreparation(this);
 	this._cacheWarmer?.cancel();
 	this._postCompactionContinuationToken += 1;
 	if (this._subagentMessageAdmission) {
@@ -109,6 +111,7 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 	const branchSummary = this._branchSummaryCompletion;
 	const boundary = (async () => {
 		await this.agent.waitForIdle();
+		await customPreparation;
 		await Promise.allSettled(
 			[manualCompaction, automaticCompaction, branchSummary].filter((value) => value !== undefined),
 		);
