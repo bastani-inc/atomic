@@ -16,6 +16,7 @@ import {
 	initializeDurableBackend,
 	setDurableBackend,
 } from "../../packages/workflows/src/durable/factory.js";
+import { reclaimReleasedRunsOwnedBy } from "../../packages/workflows/src/durable/sdk-owner-release.js";
 import { adoptWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
 import {
 	registerWorkflowLifecycleHandlers,
@@ -752,6 +753,26 @@ describe("the successor may start before the departing session's shutdown handle
 		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
 	});
 
+	test("reclaim never clears a newer release written by another process (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-b", { releasedModelOwner: "session-b", updatedAt: 5 });
+		const current = backend.getWorkflow(RELEASE_RUN_A)!;
+		const staleLocalCopy = { ...current, modelOwner: "session-a", releasedModelOwner: "session-a", updatedAt: 1 };
+		const staleView = Object.create(backend, {
+			getWorkflow: { value: () => staleLocalCopy },
+			listResumableWorkflows: { value: () => [staleLocalCopy] },
+		}) as DurableWorkflowBackend;
+
+		await reclaimReleasedRunsOwnedBy(staleView, "session-a");
+
+		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.modelOwner, "session-b");
+		assert.equal(
+			backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner,
+			"session-b",
+			"the newer owner's release must survive a stale reclaim",
+		);
+	});
+
 	test("session_start(startup) and session_start(reload) never run the departing handoff (#3569)", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
@@ -872,6 +893,27 @@ describe("switching sessions releases the previous session's paused runs for the
 		const started: string[] = [];
 		await startSwitchedSession({}, "session-c", "startup", notifyingUi(started));
 		assert.deepEqual(started, []);
+	});
+
+	test("a reload in the successor keeps unadopted released runs for the next successor's notice (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		const scope = {};
+		const first = await startSwitchedSession(scope, "session-a", "startup");
+		await first.get("session_shutdown")!({ reason: "new" });
+		const announced: string[] = [];
+		const second = await startSwitchedSession(scope, "session-b", "new", notifyingUi(announced));
+		assert.equal(announced.length, 1);
+		await second.get("session_shutdown")!({ reason: "reload" });
+		const reloaded: string[] = [];
+		const third = await startSwitchedSession(scope, "session-b", "reload", notifyingUi(reloaded));
+		assert.deepEqual(reloaded, [], "a reload does not repeat the notice");
+		await third.get("session_shutdown")!({ reason: "new" });
+		const next: string[] = [];
+		await startSwitchedSession(scope, "session-c", "new", notifyingUi(next));
+		assert.equal(next.length, 1, "the next successor is still told about the unadopted run");
+		assert.match(next[0]!, new RegExp(RELEASE_RUN_A));
 	});
 
 	test("the notice omits a released run another session adopted first (#3569)", async () => {

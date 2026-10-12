@@ -52,10 +52,20 @@ export async function reclaimReleasedRunsOwnedBy(backend: DurableWorkflowBackend
 		backend
 			.listResumableWorkflows()
 			.filter((entry) => entry.status === "paused" && entry.modelOwner === modelOwner)
-			.filter((entry) => backend.getWorkflow(entry.workflowId)?.releasedModelOwner === modelOwner)
-			.map(async (entry) => {
-				const reclaimed = await backend.transitionWorkflowStatus(entry.workflowId, ["paused"], "paused");
-				if (reclaimed) releasedRuns.get(backend)?.delete(entry.workflowId);
+			.flatMap((entry) => {
+				const handle = backend.getWorkflow(entry.workflowId);
+				return handle?.releasedModelOwner === modelOwner ? [handle] : [];
+			})
+			.map(async (handle) => {
+				const reclaimed = await backend.transitionWorkflowStatus(
+					handle.workflowId,
+					["paused"],
+					"paused",
+					undefined,
+					undefined,
+					handle.updatedAt,
+				);
+				if (reclaimed) releasedRuns.get(backend)?.delete(handle.workflowId);
 			}),
 	);
 	const failures = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));

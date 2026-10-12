@@ -365,20 +365,22 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			const backend = getAvailableDurableBackend();
 			if (backend !== undefined) await reclaimReleasedRunsOwnedBy(backend, sessionCaller).catch(() => undefined);
 		}
-		const releasedRunIds = lifetime.releasedRunIds;
-		lifetime.releasedRunIds = undefined;
-		if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
-			const backend = getAvailableDurableBackend();
-			const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
-			const adoptable = releasedRunIds.flatMap((runId) => {
-				const handle = backend?.getWorkflow(runId);
-				return handle !== undefined && isSdkReleasedRunAdoptable(handle, cwd)
-					? [{ id: runId, name: handle.name }]
-					: [];
-			});
-			// Runs nobody adopted stay announced to the next successor.
-			lifetime.releasedRunIds = adoptable.map((run) => run.id);
-			if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
+		if (reason !== "reload") {
+			const releasedRunIds = lifetime.releasedRunIds;
+			lifetime.releasedRunIds = undefined;
+			if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
+				const backend = getAvailableDurableBackend();
+				const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
+				const adoptable = releasedRunIds.flatMap((runId) => {
+					const handle = backend?.getWorkflow(runId);
+					return handle !== undefined && isSdkReleasedRunAdoptable(handle, cwd)
+						? [{ id: runId, name: handle.name }]
+						: [];
+				});
+				// Runs nobody adopted stay announced to the next successor; a reload keeps them unannounced.
+				lifetime.releasedRunIds = adoptable.map((run) => run.id);
+				if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
+			}
 		}
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
 		const generation = ++recoveryGeneration;
