@@ -584,10 +584,15 @@ const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-6-luna": ["priority"],
 };
 
+// The Codex subscription charges no long-context fee for these models, on any service tier (OpenAI announcement).
+const CODEX_NO_LONG_CONTEXT_FEE_MODEL_IDS = new Set(["gpt-6.1-sol"]);
+
 function codexServiceTiers(modelId: string): ModelServiceTier[] {
 	const advertised = CODEX_SERVICE_TIER_IDS[modelId];
 	if (!advertised) throw new Error(`Codex model ${modelId} has no advertised service tiers`);
-	const priced = openAiServiceTiers(modelId);
+	const priced = CODEX_NO_LONG_CONTEXT_FEE_MODEL_IDS.has(modelId)
+		? openAiServiceTiers(modelId).map(({ cost: { tiers: _longContext, ...flat }, ...tier }) => ({ ...tier, cost: flat }))
+		: openAiServiceTiers(modelId);
 	return advertised.map((id) => {
 		const tier = priced.find((candidate) => candidate.id === id);
 		if (!tier) throw new Error(`Codex model ${modelId} advertises ${id} without published OpenAI rates`);

@@ -152,7 +152,7 @@ On OpenAI Responses, Astra uses the newer prompt-cache payload. `cacheRetention:
 
 Select `openai/gpt-6.1-sol` with API-key authentication or `openai-codex/gpt-6.1-sol` with a ChatGPT subscription. Both accept text and images and support `low`, `medium`, `high`, `xhigh`, and `max`. Reasoning cannot be turned off. Codex also offers a `minimal` UI alias that sends `low`, not a separate API effort.
 
-`openai-codex/gpt-6.1-sol` uses a 500,000-token context and a 128,000-token output limit. ChatGPT subscriptions raised the Codex default from 272,000 tokens, and OpenAI does not charge long-context fees for GPT-6.1 Sol when usage draws from the subscription, so the catalog has no long-context price tier for it.
+`openai-codex/gpt-6.1-sol` uses a 500,000-token context and a 128,000-token output limit. ChatGPT subscriptions raised the Codex default from 272,000 tokens, and OpenAI does not charge long-context fees for GPT-6.1 Sol when usage draws from the subscription, so the catalog has no long-context price tier for it on Standard, Fast, or Ultrafast.
 
 `openai/gpt-6.1-sol` uses a 272,000-token default context and a 128,000-token output limit. Increase `contextWindow` through a model override only when you intend to use the larger API window and its whole-request long-context prices:
 

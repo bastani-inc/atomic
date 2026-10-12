@@ -197,7 +197,10 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 	const sol61Tiers = [sol61Priority, { id: "ultrafast", cost: withLongContext(12, 60, 0.6, 15) }];
 	assert.deepEqual(catalogs.openai["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
 	assert.deepEqual(catalogs["openai-codex"]["gpt-5.6-sol"]?.serviceTiers, [sol56Priority]);
-	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, sol61Tiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.1-sol"]?.serviceTiers, [
+		{ id: "priority", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } },
+		{ id: "ultrafast", cost: { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 } },
+	]);
 
 	const codexTierIds = Object.fromEntries(
 		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
@@ -229,6 +232,19 @@ test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and le
 	assert.equal(codexSol.maxTokens, 128_000);
 	assert.deepEqual(codexSol.cost, standardSol61);
 	assert.equal("tiers" in codexSol.cost, false);
+	assert.deepEqual(
+		codexSol.serviceTiers?.map((tier) => ({ id: tier.id, tiered: tier.cost.tiers !== undefined })),
+		[
+			{ id: "priority", tiered: false },
+			{ id: "ultrafast", tiered: false },
+		],
+		"Fast and Ultrafast subscription usage carries no long-context fee either",
+	);
+	assert.equal(
+		catalogs["openai-codex"]["gpt-6-sol"]?.serviceTiers?.every((tier) => tier.cost.tiers !== undefined),
+		true,
+		"other Codex models keep long-context pricing on their service tiers",
+	);
 
 	// The API model stays capped at 272K and keeps the whole-request long-context tier.
 	const apiSol = catalogs.openai["gpt-6.1-sol"];
