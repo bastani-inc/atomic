@@ -1,12 +1,7 @@
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
-import {
-	mcpStructuredContentSchema,
-	renderToolOutputType,
-	renderToolSample,
-	toCodemodeIdentifier,
-} from "@earendil-works/pi-codemode/declarations";
+import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
 import { type Static, Type } from "typebox";
 import { getDocsPath } from "../../config.js";
@@ -164,22 +159,31 @@ export function createCodemodeDescription(
 	}
 	return sections.join("\n\n");
 }
+/**
+ * The field names of an object schema, `{ output, exit_code, full_output_path? }`, with the fields of
+ * object-typed fields `depth` levels deep: `{ content, structuredContent?: { results } }`. Undefined
+ * for other schemas.
+ */
+function describeFields(schema: unknown, depth: number): string | undefined {
+	if (typeof schema !== "object" || schema === null) return undefined;
+	const { type, properties, required } = schema as Record<string, unknown>;
+	if (type !== "object" || typeof properties !== "object" || properties === null) return undefined;
+	const requiredNames = new Set(Array.isArray(required) ? required : []);
+	const fields = Object.entries(properties).map(([name, field]) => {
+		const nested = depth > 0 ? describeFields(field, depth - 1) : undefined;
+		return `${name}${requiredNames.has(name) ? "" : "?"}${nested ? `: ${nested}` : ""}`;
+	});
+	return `{ ${fields.join(", ")} }`;
+}
+/**
+ * What a script call resolves to, in one line: `a string`, the field names of an object (see
+ * {@link describeFields}), or the rendered type for anything else.
+ */
 function describeOutput(schema: CodemodeJsonSchema | undefined): string {
 	const type = renderToolOutputType(schema);
 	if (type === "string") return "a string";
-	const object = typeof schema === "object" ? schema : undefined;
-	const properties = object?.properties;
-	if (
-		object?.type === "object" &&
-		typeof properties === "object" &&
-		properties !== null &&
-		mcpStructuredContentSchema(schema) === undefined
-	) {
-		const required = new Set(Array.isArray(object.required) ? object.required : []);
-		const fields = Object.keys(properties).map((name) => (required.has(name) ? name : `${name}?`));
-		return `\`{ ${fields.join(", ")} }\``;
-	}
-	return `\`${type.replace(/\s+/g, " ")}\``;
+	const fields = describeFields(schema, 1);
+	return `\`${fields ?? type.replace(/\s+/g, " ")}\``;
 }
 function describeScriptCall(tool: AgentTool): string {
 	return `${tool.description.trim()}\n\nCodemode: \`tools.${toCodemodeIdentifier(tool.name)}(args)\` resolves to ${describeOutput(toCodemodeDeclaration(tool).outputSchema)}.`;
