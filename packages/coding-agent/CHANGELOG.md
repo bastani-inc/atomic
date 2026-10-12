@@ -15,6 +15,7 @@
 - Fixed cancelled MCP requests being retried after a shared authorization refresh.
 - Fixed slow MCP resource listings delaying tools on connection. Resources and templates are now listed only on demand.
 - Fixed code mode taking excessive time to join large numbers of text output items.
+- Fixed transient Windows permission errors when acquiring the authentication lock, while keeping persistent permission failures bounded.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 
