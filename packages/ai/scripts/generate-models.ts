@@ -3430,6 +3430,10 @@ async function generateModels() {
 	const CODEX_CONTEXT = 272000;
 	const CODEX_GPT_56_CONTEXT = 272000;
 	const CODEX_SPARK_CONTEXT = 128000;
+	// Codex and Work raised GPT-6.1 Sol's default context to 500k (up from 272k) for ChatGPT subscriptions only, and
+	// OpenAI does not charge long-context fees for it when usage draws from the subscription. The API model
+	// (`openai` and `openai-api`) keeps the 272k cap and the whole-request long-context tier.
+	const CODEX_GPT_61_SOL_CONTEXT = 500000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
@@ -3512,8 +3516,8 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: CODEX_CONTEXT,
+			cost: OPENAI_STANDARD_COSTS["gpt-6.1-sol"],
+			contextWindow: CODEX_GPT_61_SOL_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{

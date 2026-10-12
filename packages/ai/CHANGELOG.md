@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the `openai-codex/gpt-6.1-sol` catalog entry to a 500,000-token context window (up from 272,000) priced without a long-context tier, following OpenAI's Codex & Work change for ChatGPT subscriptions. The `openai` GPT-6.1 Sol entry keeps its 272,000-token cap and long-context tier, and the other Codex models are unchanged.
+
 ## [0.9.30] - 2026-10-09
 
 ### Added

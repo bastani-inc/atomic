@@ -10,6 +10,7 @@
 ### Changed
 
 - Changed `serializeConversation()` (branch summaries, resume-picker session summaries, and the policy-refusal summary fallback) to omit thinking blocks; replayed thinking is often not in the live context, so including it could make a summarization request larger than the context it summarizes and fail. Verbatim line compaction still serializes thinking lines.
+- Changed `openai-codex/gpt-6.1-sol` to a 500,000-token context window (up from 272,000) with no long-context price tier. OpenAI raised GPT-6.1 Sol's default context to 500k in Codex & Work for ChatGPT subscriptions and does not charge long-context fees when usage draws from the subscription. `openai/gpt-6.1-sol` and the other Codex models are unchanged.
 
 ### Fixed
 
