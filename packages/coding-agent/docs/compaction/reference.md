@@ -198,13 +198,14 @@ Branch-summary input uses role-labelled text:
 
 ```text
 [User]: What they said
-[Assistant thinking]: Internal reasoning
 [Assistant]: Response text
 [Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
 [Tool result]: Output from tool
 ```
 
 This prevents the model from treating it as a conversation to continue.
+
+Thinking blocks are omitted. Providers return summaries of the real reasoning, and replayed thinking is often not part of the model's live context, so including it could make the summarization request larger than the context it summarizes.
 
 Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated.
 
