@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +67,29 @@ describe("DefaultPackageManager", () => {
 	});
 
 	describe("pattern filtering in top-level arrays", () => {
+		it("expands ~ in exclusion and exact patterns (#10765)", async () => {
+			vi.stubEnv("HOME", tempDir);
+			vi.stubEnv("USERPROFILE", tempDir);
+			try {
+				const skillsDir = join(tempDir, "extra", "skills");
+				for (const name of ["keep", "glob-excluded", "exact-excluded"]) {
+					mkdirSync(join(skillsDir, name), { recursive: true });
+					writeFileSync(join(skillsDir, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+				}
+				settingsManager.setSkillPaths([
+					"~/extra/skills",
+					"!~/extra/skills/glob-*",
+					"-~/extra/skills/exact-excluded",
+				]);
+				const result = await packageManager.resolve();
+				assert.ok(result.skills.some((r) => isEnabled(r, "keep/SKILL.md")));
+				assert.ok(result.skills.some((r) => isDisabled(r, "glob-excluded/SKILL.md")));
+				assert.ok(result.skills.some((r) => isDisabled(r, "exact-excluded/SKILL.md")));
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
 		it("should exclude extensions with ! pattern", async () => {
 			const extDir = join(agentDir, "extensions");
 			mkdirSync(extDir, { recursive: true });

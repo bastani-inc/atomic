@@ -10,6 +10,7 @@
 
 - Fixed `/resume` and `atomic -r` hiding session summaries after newer messages. The latest summary now stays visible until a branch summary retires it, and opening or resuming an interactive session refreshes missing or stale summaries in the background.
 - Fixed print mode returning success for responses truncated by the model output limit. Partial text remains on stdout, with a warning on stderr and exit code 1.
+- Fixed home-directory (`~`) expansion in resource include and exclude patterns.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 

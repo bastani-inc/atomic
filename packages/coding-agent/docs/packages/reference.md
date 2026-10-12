@@ -35,6 +35,8 @@ Filter what a package loads using the object form in settings:
 - `-path` force-excludes an exact path.
 - Filters layer on top of the manifest. They narrow down what is already allowed.
 
+In the top-level `extensions`, `skills`, `prompts`, and `themes` arrays, path patterns expand `~` to your home directory. For example, `!~/skills/legacy-*` excludes matching skills and `-~/skills/legacy` disables that exact skill directory.
+
 ## Scope and Deduplication
 
 Packages can appear in both global and project settings. The project entry normally wins.
