@@ -105,9 +105,9 @@ it.each(["user", "custom"] as const)("queues messages during %s run setup (#1073
 						{ triggerTurn: true },
 					);
 		await entered.promise;
-		assert.equal(harness.session.isStreaming, true);
+		assert.equal(harness.session.isStreaming, messageType === "custom");
 		await assert.rejects(harness.session.prompt("concurrent prompt"), /Agent is already processing/);
-		assert.equal(harness.session.isStreaming, true);
+		assert.equal(harness.session.isStreaming, messageType === "custom");
 		await harness.session.sendCustomMessage(
 			{ customType: "second", content: "second", display: true },
 			{ triggerTurn: true },

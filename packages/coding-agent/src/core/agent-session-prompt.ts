@@ -187,7 +187,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
-		if (this.isStreaming || this._isBeforeSettle) {
+		if (this.isStreaming || this._isPreparingRun || this._isBeforeSettle) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -244,7 +244,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
 
-		this._isPreparingRun = true;
+		this._isPreparingRun = "user";
 		preparingRun = true;
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
@@ -361,7 +361,7 @@ export async function _runAgentPrompt(
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared ? startingMessages.find((message) => message.role === "custom") : undefined;
 	const ownsPreparation = prepared || customMessage !== undefined;
-	if (customMessage) this._isPreparingRun = true;
+	if (customMessage) this._isPreparingRun = "custom";
 	this._activePromptCount += 1;
 	try {
 		if (this._subagentMessageAdmission) {

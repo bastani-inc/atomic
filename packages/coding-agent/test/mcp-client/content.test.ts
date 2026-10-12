@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { type ContentBlock, toLlmContent } from "../../src/extensions/mcp/client/index.js";
+import { type ContentBlock, type JsonValue, toLlmContent } from "../../src/extensions/mcp/client/index.js";
 
 describe("toLlmContent", () => {
 	it("passes text and images through and replaces other blocks with text", () => {
@@ -31,5 +31,14 @@ describe("toLlmContent", () => {
 		assert.deepEqual(toLlmContent({ content: [{ type: "text", text: "n=1" }], structuredContent: { n: 1 } }), [
 			{ type: "text", text: "n=1" },
 		]);
+	});
+
+	it("renders nested JSON values as structured content", () => {
+		const values: JsonValue[] = [null, false, 3, "text", [{ nested: [true, null, { value: 1 }] }]];
+		for (const structuredContent of values) {
+			assert.deepEqual(toLlmContent({ content: [], structuredContent }), [
+				{ type: "text", text: JSON.stringify(structuredContent, null, 2) },
+			]);
+		}
 	});
 });

@@ -13,22 +13,35 @@ import {
 } from "../src/extensions/codemode/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
-test("codemode formats output at the item limit without quadratic joining (#10678)", async () => {
+test("codemode joins adjacent output with linear separator checks (#10678)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],
 		initialActiveToolNames: ["codemode"],
 	});
+	let separatorInputLength = 0;
+	const endsWith = String.prototype.endsWith;
+	const separatorSpy = vi.spyOn(String.prototype, "endsWith").mockImplementation(function (
+		this: string,
+		searchString: string,
+		endPosition?: number,
+	) {
+		if (searchString === "\n") separatorInputLength += this.length;
+		return endsWith.call(this, searchString, endPosition);
+	});
 	try {
-		const startedAt = performance.now();
-		const result = await runScript(harness, 'for (let i = 0; i < 100000; i++) text("");');
-		const elapsed = performance.now() - startedAt;
+		const result = await runScript(harness, 'for (let i = 0; i < 1000; i++) text("");');
+		separatorSpy.mockRestore();
 		const outputPath = (result.details as CodemodeToolDetails).fullOutputPath;
+		const outputBytes = outputPath ? statSync(outputPath).size : Buffer.byteLength(getMessageText(result));
 		if (outputPath) rmSync(outputPath, { force: true });
 		assert.equal(result.isError, false);
-		assert.match(getMessageText(result), /==> text 100000\/100000 <==/);
-		const MAX_OUTPUT_FORMAT_MS = 5000;
-		assert(elapsed < MAX_OUTPUT_FORMAT_MS, `Formatting took ${elapsed} ms`);
+		assert.match(getMessageText(result), /==> text 1000\/1000 <==/);
+		assert(
+			separatorInputLength <= outputBytes * 2,
+			`Separator checks inspected ${separatorInputLength} characters for ${outputBytes} output bytes`,
+		);
 	} finally {
+		separatorSpy.mockRestore();
 		await harness.cleanup();
 	}
 });

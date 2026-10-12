@@ -534,7 +534,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;
-	_isPreparingRun: boolean;
+	_isPreparingRun: false | "user" | "custom";
 	_agentRunAbortRequested: boolean;
 	_cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;

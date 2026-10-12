@@ -221,7 +221,7 @@ export async function triggerProtectedStreamingCustomMessages(
 		admission.owner._queueAgentMessage(reconciliation, delivery);
 	}
 	const owner = emitProtectedAdmission(admission);
-	if (owner.isStreaming || owner._queuedMessagesPaused) return;
+	if (owner.isStreaming || owner._isPreparingRun || owner._queuedMessagesPaused) return;
 	for (const reconciliation of admission.reconciliations) {
 		removeQueuedProtectedReference(owner, reconciliation);
 	}

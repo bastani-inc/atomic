@@ -293,7 +293,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	const lifetime = sessionLifetime(session);
 	session.abortRetry();
 	session._ensureActiveInterruptQueueHold();
-	if (session.isStreaming) {
+	if (session.isStreaming || session._isPreparingRun) {
 		const previousAbortMessage = session._activeInterruptAbortMessage;
 		session._activeInterruptAbortMessage = normalizeInterruptAbortMessage(options?.interruptAbortMessage);
 		try {

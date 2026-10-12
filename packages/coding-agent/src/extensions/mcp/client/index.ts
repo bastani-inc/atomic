@@ -8,6 +8,7 @@ export {
 	type ContentBlock,
 	type EmbeddedResourceContent,
 	type ImageContent,
+	type JsonValue,
 	type LlmContent,
 	type ResourceLinkContent,
 	type TextContent,

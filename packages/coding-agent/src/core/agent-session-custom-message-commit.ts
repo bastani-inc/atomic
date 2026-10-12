@@ -74,7 +74,7 @@ export async function commitAdmittedCustomMessage<T>(
 			} else {
 				self._queueAgentMessage(appMessage, delivery);
 			}
-		} else if (self.isStreaming) {
+		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(appMessage);
 		} else {
 			appendDurableStageAdmission(self, appMessage);
@@ -84,23 +84,23 @@ export async function commitAdmittedCustomMessage<T>(
 		self._workflowStageAdmission?.trackAdmittedWork(interrupt);
 		void interrupt.catch(() => {});
 	} else if (
-		self.isStreaming &&
+		(self.isStreaming || self._isPreparingRun) &&
 		options?.excludeFromContext === true &&
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
 		appendDurableStageAdmission(self, appMessage);
-	} else if (self.isStreaming && options?.triggerTurn === false) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(appMessage);
-	} else if (self.isStreaming && useProtectedReconciliation) {
+	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessage(
 			self,
 			appMessage,
 			options?.deliverAs === "followUp" ? "followUp" : "steer",
 		);
-	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		appendDurableStageAdmission(self, appMessage);
-	} else if (self.isStreaming && options?.triggerTurn !== false) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 	} else if (useProtectedReconciliation && options?.triggerTurn === true && self._workflowStageAdmission) {
 		await queueProtectedStreamingCustomMessage(
@@ -120,7 +120,7 @@ export async function commitAdmittedCustomMessage<T>(
 				)
 			: appMessage;
 		// Durable admission may yield while another turn takes ownership.
-		if (useProtectedReconciliation && self.isStreaming) {
+		if (useProtectedReconciliation && (self.isStreaming || self._isPreparingRun)) {
 			self._queueAgentMessage(promptMessage, options.deliverAs === "followUp" ? "followUp" : "steer");
 			return;
 		}
@@ -175,25 +175,25 @@ export async function commitAdmittedCustomMessages<T>(
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
 			}
-		} else if (self.isStreaming) {
+		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
 			for (const item of appMessages) self._appendCustomMessage(item);
 		}
 	} else if (
-		self.isStreaming &&
+		(self.isStreaming || self._isPreparingRun) &&
 		options?.excludeFromContext === true &&
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
 		for (const item of appMessages) self._appendCustomMessage(item);
-	} else if (self.isStreaming && options?.triggerTurn === false) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(...appMessages);
-	} else if (self.isStreaming && useProtectedReconciliation) {
+	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-	} else if (self.isStreaming && options?.persistWhenStreaming === true) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		for (const item of appMessages) self._appendCustomMessage(item);
-	} else if (self.isStreaming && options?.triggerTurn !== false) {
+	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		for (const item of appMessages) self._queueAgentMessage(item, delivery);
 	} else if (options?.triggerTurn) {
 		if (useProtectedReconciliation) {

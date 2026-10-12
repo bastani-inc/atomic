@@ -253,6 +253,21 @@ describe("runPrintMode", () => {
 		assert.deepEqual(errorSpy.mock.calls, [["Response was truncated: the model reached its output token limit."]]);
 	});
 
+	it("reports truncation despite a trailing hidden custom notification", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "partial", stopReason: "length" }));
+		runtimeHost.session.prompt.mockImplementation(async () => {
+			runtimeHost.session.state.messages.push(createCustomMessage({ content: "notification", display: false }));
+		});
+		const stdoutChunks = captureStdout();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hello" });
+
+		assert.equal(exitCode, 1);
+		assert.equal(stdoutChunks.join(""), "");
+		assert.deepEqual(errorSpy.mock.calls, [["Response was truncated: the model reached its output token limit."]]);
+	});
+
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;
