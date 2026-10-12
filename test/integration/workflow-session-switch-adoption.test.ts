@@ -69,7 +69,10 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, label: strin
 	});
 }
 
-async function switchHost(extraFactories: readonly ExtensionFactory[] = []) {
+async function switchHost(
+	extraFactories: readonly ExtensionFactory[] = [],
+	options: { persistedSessions?: boolean } = {},
+) {
 	const originalCwd = process.cwd();
 	const root = await mkdtemp(join(tmpdir(), "atomic-switch-adoption-"));
 	const project = join(root, "project");
@@ -131,7 +134,9 @@ async function switchHost(extraFactories: readonly ExtensionFactory[] = []) {
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: project,
 		agentDir,
-		sessionManager: SessionManager.inMemory(project),
+		sessionManager: options.persistedSessions
+			? SessionManager.create(project, join(root, "sessions"))
+			: SessionManager.inMemory(project),
 	});
 	const uiContext = {
 		...noOpUIContext,
@@ -153,9 +158,23 @@ async function switchHost(extraFactories: readonly ExtensionFactory[] = []) {
 	cleanups.push(async () => {
 		await Promise.allSettled([runtime.dispose()]);
 	});
+	const sibling = async () => {
+		const created = await createRuntime({
+			cwd: project,
+			agentDir,
+			sessionManager: SessionManager.inMemory(project),
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		await created.session.bindExtensions({ uiContext, commandContextActions });
+		cleanups.push(async () => {
+			await Promise.allSettled([created.session.dispose()]);
+		});
+		return created.session;
+	};
 	return {
 		runtime,
 		notices,
+		sibling,
 		release: () => writeFile(releasePath, "release"),
 		reached: () => fileExists(reachedPath),
 	};
@@ -370,6 +389,65 @@ test(
 		);
 		await host.release();
 		await waitFor(() => getDurableBackend().getWorkflow(runId)?.status === "completed", "the adopted run to finish");
+	},
+	HOST_SWITCH_TIMEOUT_MS,
+);
+
+test(
+	"returning to the owner with /resume reclaims its released run so a sibling session cannot adopt it (#3569)",
+	async () => {
+		const host = await switchHost([], { persistedSessions: true });
+		const { runtime } = host;
+		const first = runtime.session;
+		first.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+		first.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			api: "openai-responses",
+			provider: "decision-test",
+			model: "chat",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		const firstId = first.sessionManager.getSessionId();
+		const firstFile = first.sessionFile;
+		assert.ok(firstFile);
+		const launch = await callWorkflowTool(first, { action: "run", workflow: "switch-adoption", inputs: {} });
+		const runId = (launch.details as { runId?: string }).runId;
+		assert.ok(runId, JSON.stringify(launch));
+		await waitFor(host.reached, "the gate tool node to start");
+
+		await runtime.newSession();
+		await runtime.switchSession(firstFile);
+		assert.equal(runtime.session.sessionManager.getSessionId(), firstId);
+		const noticesBefore = host.notices.length;
+
+		const afterReturn = getDurableBackend().getWorkflow(runId);
+		assert.equal(afterReturn?.modelOwner, firstId);
+		assert.equal(afterReturn?.releasedModelOwner, undefined, "the owner reclaims its own released run");
+		assert.equal(
+			host.notices.slice(noticesBefore).some((message) => message.includes(`/workflow resume ${runId}`)),
+			false,
+		);
+
+		const sibling = await host.sibling();
+		await assert.rejects(
+			callWorkflowTool(sibling, { action: "resume", runId }),
+			/^WorkflowInstanceOwnershipError: Workflow instance belongs to another caller\/session\.$/,
+		);
+		assert.equal(getDurableBackend().getWorkflow(runId)?.modelOwner, firstId);
+		const resumed = await callWorkflowTool(runtime.session, { action: "resume", runId });
+		assert.notEqual((resumed.details as { status?: string }).status, "noop", JSON.stringify(resumed));
+		await host.release();
+		await waitFor(() => getDurableBackend().getWorkflow(runId)?.status === "completed", "the run to finish");
 	},
 	HOST_SWITCH_TIMEOUT_MS,
 );

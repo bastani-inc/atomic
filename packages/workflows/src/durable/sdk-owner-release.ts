@@ -43,6 +43,25 @@ export async function releasePausedRunsOwnedBy(
 	return releasedIds;
 }
 
+/**
+ * A session that becomes current again takes back the runs it released earlier, so no other session can adopt
+ * a run its live owner is back on. Only the owner's own release records are cleared; the owner stays unchanged.
+ */
+export async function reclaimReleasedRunsOwnedBy(backend: DurableWorkflowBackend, modelOwner: string): Promise<void> {
+	const settled = await Promise.allSettled(
+		backend
+			.listResumableWorkflows()
+			.filter((entry) => entry.status === "paused" && entry.modelOwner === modelOwner)
+			.filter((entry) => backend.getWorkflow(entry.workflowId)?.releasedModelOwner === modelOwner)
+			.map(async (entry) => {
+				const reclaimed = await backend.transitionWorkflowStatus(entry.workflowId, ["paused"], "paused");
+				if (reclaimed) releasedRuns.get(backend)?.delete(entry.workflowId);
+			}),
+	);
+	const failures = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+	if (failures.length > 0) throw new AggregateError(failures, failures.map(String).join("; "));
+}
+
 const FOREIGN_INSTANCE_MESSAGE = "Workflow instance belongs to another caller/session.";
 
 /**

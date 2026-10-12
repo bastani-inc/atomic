@@ -3,7 +3,7 @@ import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.
 import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getAvailableDurableBackend, getDurableBackend } from "../durable/factory.js";
 import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
-import { releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
+import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
 import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleAdmissionControls } from "../engine/run-durable-admission.js";
@@ -360,6 +360,10 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
 			deps.storeWidgetRef.current?.();
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
+		}
+		if (isSessionSwitch(reason) && sessionCaller !== undefined) {
+			const backend = getAvailableDurableBackend();
+			if (backend !== undefined) await reclaimReleasedRunsOwnedBy(backend, sessionCaller).catch(() => undefined);
 		}
 		const releasedRunIds = lifetime.releasedRunIds;
 		lifetime.releasedRunIds = undefined;

@@ -718,6 +718,40 @@ describe("the successor may start before the departing session's shutdown handle
 		assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
 	});
 
+	test("returning to the owner session reclaims its released run instead of announcing it or leaving it adoptable (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		adoptWorkflowSessionRunState({});
+		const scope = {};
+		const owner = await startSwitchedSession(scope, "session-a", "startup");
+		const own = await ownedCheckpointedWaitingRun("reclaim-own", "session-a").launch();
+		await owner.get("session_shutdown")!({ reason: "new" });
+		const away = await startSwitchedSession(scope, "session-b", "new", notifyingUi([]));
+		await away.get("session_shutdown")!({ reason: "resume" });
+		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, "session-a");
+
+		const notices: string[] = [];
+		await startSwitchedSession(scope, "session-a", "resume", notifyingUi(notices));
+
+		assert.deepEqual(notices, [], "the owner is not told about its own run");
+		assert.equal(backend.getWorkflow(own)?.status, "paused");
+		assert.equal(backend.getWorkflow(own)?.modelOwner, "session-a");
+		assert.equal(
+			backend.getWorkflow(own)?.releasedModelOwner,
+			undefined,
+			"no other session may adopt a live owner's run",
+		);
+	});
+
+	test("a successor never reclaims a run another session released (#3569)", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { releasedModelOwner: "session-a" });
+		const notices: string[] = [];
+		await startSwitchedSession({}, "session-b", "new", notifyingUi(notices));
+		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
+	});
+
 	test("session_start(startup) and session_start(reload) never run the departing handoff (#3569)", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
