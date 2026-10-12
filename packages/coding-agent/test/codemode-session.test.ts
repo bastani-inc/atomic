@@ -1066,6 +1066,55 @@ test("codemode tells scripts the fields of an MCP tool's structured content", as
 	}
 });
 
+test("codemode declarations show input constraints the type cannot express (#10707)", () => {
+	const description = createCodemodeDescription([
+		{
+			name: "wait",
+			label: "Wait",
+			description: "Wait",
+			parameters: Type.Object({
+				timeoutMs: Type.Optional(
+					Type.Integer({ minimum: 0, maximum: 30000, default: 0, description: "Wait in milliseconds." }),
+				),
+			}),
+			execute: async () => ({ content: [], details: undefined }),
+		},
+	]);
+
+	assert.match(description, /\/\/ Wait in milliseconds\.\n\s*\/\/ @integer @minimum 0 @maximum 30000 @default 0\n/);
+});
+
+test("codemode rejects a // @options: line that is not the first line before the script runs (#10631)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("codemode", { code: '// count\n// @options: {"timeout_ms": 200}\nstore("ran", true);' })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run script");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult");
+		assert.equal(result.isError, true);
+		assert.equal(
+			getMessageText(result),
+			"The // @options: line must be the first line of the input; found one on line 2",
+		);
+		assert(
+			!harness.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode discovery names model-only tools instead of returning nothing (#3510)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
