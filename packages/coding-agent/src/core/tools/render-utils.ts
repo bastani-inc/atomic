@@ -6,6 +6,7 @@ import type { ThemeColor } from "../../modes/interactive/theme/theme.js";
 import { stripAnsi } from "../../utils/ansi.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { sanitizeBinaryOutput } from "../../utils/shell.ts";
+import type { ToolRenderContext } from "../extensions/tool-types.ts";
 
 export function shortenPath(path: unknown): string {
 	if (typeof path !== "string") return "";
@@ -101,6 +102,62 @@ export function formatToolCallWithArgs(
 	const pairs = clean(entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`).join(" "));
 	const preview = pairs.length > 100 ? `${pairs.slice(0, 97)}...` : pairs;
 	return `${header} ${theme.fg("muted", preview)}`;
+}
+
+/** Duration as `4.2s` below a minute, then `1m 30s` and `2h 3m 4s`. */
+function formatToolDuration(ms: number): string {
+	const seconds = Math.max(0, ms) / 1000;
+	if (seconds < 60) return `${seconds.toFixed(1)}s`;
+	const totalSeconds = Math.floor(seconds);
+	const minutes = Math.floor(totalSeconds / 60);
+	const remainder = totalSeconds % 60;
+	if (minutes < 60) return `${minutes}m ${remainder}s`;
+	return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${remainder}s`;
+}
+
+/** Renderer state of {@link startToolTimer} and {@link toolTimerText}, kept in `ToolRenderContext.state`. */
+export interface ToolTimerState {
+	startedAt?: number;
+	endedAt?: number;
+	interval?: ReturnType<typeof setInterval>;
+}
+
+/** Start the row's clock once execution starts. Call from `renderCall`. */
+export function startToolTimer(context: ToolRenderContext<ToolTimerState>): void {
+	const state = context.state;
+	if (context.executionStarted && state.startedAt === undefined) {
+		state.startedAt = Date.now();
+		state.endedAt = undefined;
+	}
+}
+
+/**
+ * The row's timing line, from `renderResult`: `Elapsed 4.2s` while the result is partial, redrawn
+ * every second, and `<finalLabel> 4.2s` once it is final. Undefined when the row has no start time
+ * and no recorded duration.
+ */
+export function toolTimerText(
+	context: ToolRenderContext<ToolTimerState>,
+	isPartial: boolean,
+	finalLabel = "Took",
+): string | undefined {
+	const state = context.state;
+	if (state.startedAt !== undefined && isPartial && !state.interval) {
+		state.interval = setInterval(() => context.invalidate(), 1000);
+	}
+	if (!isPartial || context.isError) {
+		state.endedAt ??= Date.now();
+		if (state.interval) {
+			clearInterval(state.interval);
+			state.interval = undefined;
+		}
+	}
+	// A final result's recorded duration wins: it is monotonic and survives reloads. The renderer's own clock is the
+	// fallback for live progress and for results stored without one.
+	if (!isPartial && context.durationMs !== undefined) return `${finalLabel} ${formatToolDuration(context.durationMs)}`;
+	if (state.startedAt === undefined) return undefined;
+	const endTime = state.endedAt ?? Date.now();
+	return `${isPartial ? "Elapsed" : finalLabel} ${formatToolDuration(endTime - state.startedAt)}`;
 }
 
 export function invalidArgText(theme: { fg: (name: ThemeColor, text: string) => string }): string {

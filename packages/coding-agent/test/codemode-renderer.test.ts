@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Component } from "@earendil-works/pi-tui";
-import { beforeAll, test } from "vitest";
+import type { Component, TUI } from "@earendil-works/pi-tui";
+import { afterEach, beforeAll, test, vi } from "vitest";
 import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
 import type { CodemodeToolDetails } from "../src/extensions/codemode/tool.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
+afterEach(() => vi.useRealTimers());
 function context(expanded: boolean): ToolRenderContext {
 	return {
 		args: { code: "" },
@@ -107,4 +109,21 @@ test("codemode collapsed script call is limited by wrapped lines", () => {
 	const lines = component.render(50).map(stripVTControlCharacters);
 	assert.equal(lines.length, 12);
 	assert.match(lines[11], /10 more lines/);
+});
+
+test("codemode row shows the elapsed time while the script runs and the total once it finished (pi#10708)", () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(0);
+	const tui = { requestRender: () => {} } as unknown as TUI;
+	const component = new ToolExecutionComponent("codemode", "call", { code: "" }, {}, codemodeRenderers, tui, "/");
+	const text = () => stripVTControlCharacters(component.render(120).join("\n"));
+	component.markExecutionStarted();
+	component.updateResult({ content: [], details: { calls: [] }, isError: false }, true);
+	vi.advanceTimersByTime(3_000);
+	assert.match(text(), /Elapsed 3\.0s/);
+
+	component.updateResult({ content: [], details: { calls: [] }, isError: false, durationMs: 5_100 }, false);
+	assert.match(text(), /Took 5\.1s/);
+	assert.doesNotMatch(text(), /Elapsed/);
+	component.dispose();
 });

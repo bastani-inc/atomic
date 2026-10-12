@@ -285,6 +285,35 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
+	test("bash renderer labels a command yielded to the background with how long it was observed", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const yielded = {
+			content: [],
+			details: { observation: { kind: "yielded", taskId: "task-1", waitId: "wait-1", reason: "elapsed" } },
+			isError: false,
+		};
+		for (const durationMs of [4_200, undefined]) {
+			const component = new ToolExecutionComponent(
+				"bash",
+				"yielded-duration",
+				{ command: "sleep 60" },
+				{},
+				createBashToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.updateResult({ content: [], isError: false }, true);
+			vi.advanceTimersByTime(4_200);
+			component.updateResult({ ...yielded, durationMs }, false);
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			assert.ok(rendered.includes("Observed for 4.2s"), rendered);
+			assert.ok(!rendered.includes("Took"), rendered);
+			component.dispose();
+		}
+	});
+
 	test("does not duplicate built-in headers when passed the active built-in definition", () => {
 		const component = new ToolExecutionComponent(
 			"read",

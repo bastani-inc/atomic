@@ -1064,3 +1064,21 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 		await harness.cleanup();
 	}
 });
+
+test("codemode reports a running update before the script's first nested call, so the row timer starts (pi#10708)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const result = await runScript(harness, "return 1;");
+		assert.equal(result.isError, false);
+		const updates = harness.eventsOfType("tool_execution_update").filter((event) => event.toolName === "codemode");
+		assert.deepEqual(
+			updates.map((event) => (event.partialResult as { details: CodemodeToolDetails }).details),
+			[{ calls: [] }],
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
