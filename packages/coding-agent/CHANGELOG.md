@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `/resume` and `atomic -r` hiding session summaries after newer messages. The latest summary now stays visible until a branch summary retires it, and opening or resuming an interactive session refreshes missing or stale summaries in the background.
+
 ## [0.9.35-alpha.2] - 2026-10-12
 
 ### Fixed

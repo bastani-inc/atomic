@@ -1,14 +1,9 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type SessionHeader, SessionManager } from "../../src/core/session-manager.ts";
-
-/**
- * A `session_summary` entry is only shown by the resume picker while it still describes the
- * session. `summarizedThroughId` anchors it to the last user/assistant message it covered, and a
- * later `branch_summary` retires it because the branch it described was abandoned.
- */
 
 function header(id: string, cwd: string): SessionHeader {
 	return { type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd };
@@ -96,7 +91,7 @@ describe("resume listing surfaces session summaries", () => {
 		expect(sessions[0]?.summary).toBe("Added resume summaries to the session picker");
 	});
 
-	it("drops the summary once a newer message lands", async () => {
+	it("keeps the latest summary visible once a newer message lands", async () => {
 		writeSessionFile(dir, "stale", cwd, [
 			userMessage("m1", null, "add a resume summary"),
 			assistantMessage("m2", "m1", "done"),
@@ -105,7 +100,7 @@ describe("resume listing surfaces session summaries", () => {
 		]);
 
 		const sessions = await SessionManager.list(cwd, dir);
-		expect(sessions[0]?.summary).toBeUndefined();
+		assert.equal(sessions[0]?.summary, "Added resume summaries to the session picker");
 	});
 
 	it("drops the summary once a branch summary retires it", async () => {

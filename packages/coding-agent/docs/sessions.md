@@ -71,9 +71,9 @@ When available, Atomic uses the `trash` CLI for deletion instead of permanently 
 
 Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and stores it in the session file as a `session_summary` entry.
 
-A summary describes the conversation up to a specific message. Once a newer message arrives it is considered stale and the summary column shows "No summary available." instead — the same placeholder you get when a summary has not been generated yet, could not be generated, or is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
+A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
 
-Generation is best-effort and never blocks a turn. Atomic skips very short sessions, workflow stage sessions, and `--print` and JSON modes. It cancels generation when you send the next message or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
+Generation is best-effort and never blocks a turn or quitting. Opening or resuming a session in interactive or RPC mode also schedules generation if its summary is missing or stale. Atomic skips very short sessions, workflow stage sessions, and `--print` and JSON modes. It cancels generation when you send the next message, switch sessions, or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
 
 You can search, navigate, or cancel while the picker loads sessions. Closing it cancels the scan.
 

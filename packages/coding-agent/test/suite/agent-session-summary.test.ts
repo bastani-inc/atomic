@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,11 +19,11 @@ function summaryEntries(harness: Harness): SessionSummaryEntry[] {
 	return harness.sessionManager.getEntries().filter((e): e is SessionSummaryEntry => e.type === "session_summary");
 }
 
-async function waitForSummary(harness: Harness): Promise<SessionSummaryEntry> {
+async function waitForSummary(harness: Harness, count = 1): Promise<SessionSummaryEntry> {
 	const deadline = Date.now() + SUMMARY_DEADLINE_MS;
 	while (Date.now() < deadline) {
 		const found = summaryEntries(harness);
-		if (found.length > 0) return found[found.length - 1]!;
+		if (found.length >= count) return found[found.length - 1]!;
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("timed out waiting for a session_summary entry");
@@ -45,6 +46,115 @@ describe("session summary generation", () => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
+	});
+
+	it.each(["tui", "rpc"] as const)("backfills an opened %s session without waiting for another turn", async (mode) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "restore this work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("previous work"));
+		}
+		harness.setResponses([fauxAssistantMessage("Backfilled summary")]);
+
+		await harness.session.bindExtensions({ mode });
+
+		assert.equal((await waitForSummary(harness)).summary, "Backfilled summary");
+	});
+
+	it("refreshes a stale summary when a session is resumed", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier work", timestamp: 1 });
+		harness.sessionManager.appendSessionSummary("Old summary", anchor);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "new work", timestamp: turn + 2 });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		harness.setResponses([fauxAssistantMessage("Refreshed summary")]);
+
+		await harness.session.bindExtensions({ mode: "tui" });
+		await waitForSummary(harness, 2);
+
+		assert.deepEqual(
+			summaryEntries(harness).map((entry) => entry.summary),
+			["Old summary", "Refreshed summary"],
+		);
+	});
+
+	it("does not regenerate a current summary on open or repeated binding", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		const anchor = harness.sessionManager.getLeafId()!;
+		harness.sessionManager.appendSessionSummary("Current summary", anchor);
+		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
+
+		await harness.session.bindExtensions({ mode: "tui" });
+		await harness.session.bindExtensions({ mode: "tui" });
+		await settle();
+
+		assert.equal(harness.getPendingResponseCount(), 1);
+		assert.equal(summaryEntries(harness).length, 1);
+	});
+
+	it.each(["print", "json"] as const)("does not backfill when opened in %s mode", async (mode) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
+
+		await harness.session.bindExtensions({ mode });
+		await settle();
+
+		assert.equal(harness.getPendingResponseCount(), 1);
+		assert.equal(summaryEntries(harness).length, 0);
+	});
+
+	it("does not wait for an uncooperative backfill provider on quit or persist its late result", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		for (let turn = 0; turn < 2; turn++) {
+			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+		}
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		harness.setResponses([
+			async () => {
+				started.resolve();
+				await release.promise;
+				return fauxAssistantMessage("Late summary");
+			},
+		]);
+		await harness.session.bindExtensions({ mode: "tui" });
+		await started.promise;
+		const disposal = harness.session.dispose();
+		const DISPOSAL_DEADLINE_MS = 1_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			assert.equal(
+				await Promise.race([
+					disposal.then(() => true),
+					new Promise<boolean>((resolve) => {
+						timer = setTimeout(() => resolve(false), DISPOSAL_DEADLINE_MS);
+					}),
+				]),
+				true,
+			);
+		} finally {
+			clearTimeout(timer);
+			release.resolve();
+			await disposal;
+		}
+		await settle();
+		assert.equal(summaryEntries(harness).length, 0);
 	});
 
 	it("appends a summary anchored to the last conversation message", async () => {

@@ -23,8 +23,20 @@ export type SessionSummaryRun = {
 
 export function _maybeGenerateSessionSummary(this: AgentSession): Promise<void> {
 	if (this._disposed || sessionGenerationClosing.has(this)) return Promise.resolve();
-	// Keep every launch, including superseded providers, owned until actual settlement.
-	return trackSessionWork(this, () => generateOwnedSessionSummary.call(this));
+	return trackSessionWork(this, async () => {
+		const signal = sessionLifetime(this);
+		let onAbort!: () => void;
+		const aborted = new Promise<void>((resolve) => {
+			onAbort = resolve;
+			if (signal.aborted) resolve();
+			else signal.addEventListener("abort", onAbort, { once: true });
+		});
+		try {
+			await Promise.race([generateOwnedSessionSummary.call(this), aborted]);
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+	});
 }
 
 async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
