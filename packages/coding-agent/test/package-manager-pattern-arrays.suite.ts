@@ -67,9 +67,11 @@ describe("DefaultPackageManager", () => {
 	});
 
 	describe("pattern filtering in top-level arrays", () => {
-		it("expands ~ in exclusion and exact patterns (#10765)", async () => {
+		it.each(["linux", "win32"])("expands ~ using HOME when USERPROFILE differs on %s (#3579)", async (platform) => {
+			const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+			Object.defineProperty(process, "platform", { value: platform, configurable: true });
 			vi.stubEnv("HOME", tempDir);
-			vi.stubEnv("USERPROFILE", tempDir);
+			vi.stubEnv("USERPROFILE", join(tempDir, "other-home"));
 			try {
 				const skillsDir = join(tempDir, "extra", "skills");
 				for (const name of ["keep", "glob-excluded", "exact-excluded"]) {
@@ -87,6 +89,7 @@ describe("DefaultPackageManager", () => {
 				assert.ok(result.skills.some((r) => isDisabled(r, "exact-excluded/SKILL.md")));
 			} finally {
 				vi.unstubAllEnvs();
+				Object.defineProperty(process, "platform", originalPlatform);
 			}
 		});
 
