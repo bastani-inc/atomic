@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import type { Message } from "@bastani/pi-ai/compat";
-import { describe, expect, it } from "vitest";
-import { serializeConversation } from "../src/core/compaction/utils.ts";
+import { describe, it } from "vitest";
+import { serializeConversation } from "../src/core/compaction/utils.js";
 
 describe("serializeConversation", () => {
 	it("should truncate long tool results", () => {
@@ -18,11 +19,11 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).toContain("[Tool result]:");
-		expect(result).toContain("[... 3000 more characters truncated]");
-		expect(result).not.toContain("x".repeat(3000));
+		assert.ok(result.includes("[Tool result]:"));
+		assert.ok(result.includes("[... 3000 more characters truncated]"));
+		assert.ok(!result.includes("x".repeat(3000)));
 		// First 2000 chars should be present
-		expect(result).toContain("x".repeat(2000));
+		assert.ok(result.includes("x".repeat(2000)));
 	});
 
 	it("should not truncate short tool results", () => {
@@ -40,8 +41,8 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).toBe(`[Tool result]: ${shortContent}`);
-		expect(result).not.toContain("truncated");
+		assert.equal(result, `[Tool result]: ${shortContent}`);
+		assert.ok(!result.includes("truncated"));
 	});
 
 	it("should not truncate assistant or user messages", () => {
@@ -73,8 +74,8 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).not.toContain("truncated");
-		expect(result).toContain(longText);
+		assert.ok(!result.includes("truncated"));
+		assert.ok(result.includes(longText));
 	});
 
 	it("should omit thinking", () => {
@@ -104,6 +105,6 @@ describe("serializeConversation", () => {
 
 		const result = serializeConversation(messages);
 
-		expect(result).toBe('[Assistant]: visible reply\n\n[Assistant tool calls]: read(path="a.ts")');
+		assert.equal(result, '[Assistant]: visible reply\n\n[Assistant tool calls]: read(path="a.ts")');
 	});
 });

@@ -28,11 +28,16 @@
  * Credentials: RADIUS_API_KEY or a `radius` entry in ~/.pi/agent/auth.json; ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN or
  * an `anthropic` entry for the control. Each test makes three paid requests.
  */
-import { describe, expect, it } from "vitest";
-import { completeSimple, getModel } from "../src/compat.ts";
-import { getEnvApiKey } from "../src/env-api-keys.ts";
-import type { Api, AssistantMessage, Context, Message, Model, Tool, ToolResultMessage } from "../src/types.ts";
-import { resolveApiKey } from "./oauth.ts";
+import assert from "node:assert/strict";
+import { Type } from "typebox";
+import { describe, it } from "vitest";
+import { completeSimple, getModel } from "../src/compat.js";
+import { getEnvApiKey } from "../src/env-api-keys.js";
+import type { Api, AssistantMessage, Context, Message, Model, Tool, ToolResultMessage } from "../src/types.js";
+import { resolveApiKey } from "./oauth.js";
+
+/** Each live test makes three paid requests with high-effort thinking; one alone can take a minute. */
+const THREE_LIVE_THINKING_REQUESTS_TIMEOUT_MS = 180_000;
 
 const radiusKey = process.env.RADIUS_API_KEY ?? (await resolveApiKey("radius"));
 const anthropicKey = getEnvApiKey("anthropic") ?? (await resolveApiKey("anthropic"));
@@ -40,11 +45,7 @@ const anthropicKey = getEnvApiKey("anthropic") ?? (await resolveApiKey("anthropi
 const tool: Tool = {
 	name: "lookup",
 	description: "Look up a value by key.",
-	parameters: {
-		type: "object",
-		properties: { key: { type: "string" } },
-		required: ["key"],
-	} as unknown as Tool["parameters"],
+	parameters: Type.Object({ key: Type.String() }),
 };
 
 const user: Message = {
@@ -71,9 +72,10 @@ async function thinkingTurn<TApi extends Api>(
 	apiKey: string,
 ): Promise<{ reply: AssistantMessage; result: ToolResultMessage }> {
 	const reply = await request(model, apiKey, [user]);
-	expect(reply.stopReason, reply.errorMessage).toBe("toolUse");
-	expect(reply.content.some((block) => block.type === "thinking" && (block.thinkingSignature ?? "").length > 0)).toBe(
-		true,
+	assert.equal(reply.stopReason, "toolUse", reply.errorMessage);
+	assert.ok(
+		reply.content.some((block) => block.type === "thinking" && (block.thinkingSignature ?? "").length > 0),
+		"reply has signed thinking",
 	);
 	const call = reply.content.find((block) => block.type === "toolCall");
 	if (call?.type !== "toolCall") throw new Error("reply has no tool call");
@@ -103,31 +105,37 @@ async function replayedThinkingTokens<TApi extends Api>(
 		request(model, apiKey, [user, reply, result]),
 		request(model, apiKey, [user, withoutThinking, result]),
 	]);
-	expect(kept.stopReason, kept.errorMessage).not.toBe("error");
-	expect(stripped.stopReason, stripped.errorMessage).not.toBe("error");
+	assert.notEqual(kept.stopReason, "error", kept.errorMessage);
+	assert.notEqual(stripped.stopReason, "error", stripped.errorMessage);
 	return inputTokens(kept) - inputTokens(stripped);
 }
 
 describe("replayed Claude thinking stays in context", () => {
-	it.skipIf(!anthropicKey)("anthropic keeps it (control)", { timeout: 180000 }, async () => {
+	it.skipIf(!anthropicKey)("anthropic keeps it (control)", { timeout: THREE_LIVE_THINKING_REQUESTS_TIMEOUT_MS }, async () => {
 		const model = getModel("anthropic", "claude-opus-5-5");
 		const { reply, result } = await thinkingTurn(model, anthropicKey!);
-		expect(reply.providerThinkingLevel).toBe("high");
+		assert.equal(reply.providerThinkingLevel, "high");
 		const added = await replayedThinkingTokens(model, anthropicKey!, reply, result);
-		expect(added).toBeGreaterThan(0.5 * reply.usage.output);
+		assert.ok(added > 0.5 * reply.usage.output, `added ${added} of ${reply.usage.output} output tokens`);
 	});
 
-	it.skipIf(!radiusKey)("radius keeps it", { timeout: 180000 }, async () => {
+	it.skipIf(!radiusKey)("radius keeps it", { timeout: THREE_LIVE_THINKING_REQUESTS_TIMEOUT_MS }, async () => {
 		const model = getModel("radius", "claude-opus-5-5");
 		const { reply, result } = await thinkingTurn(model, radiusKey!);
-		// Cause: without this level, the replayed block has no effort marker and Anthropic drops it.
-		expect.soft(reply.providerThinkingLevel, "radius done event omits providerThinkingLevel").toBe("high");
-		// Effect: the follow-up request reports no input tokens for the thinking.
+		// Measure the effect before asserting the cause, so a failure reports both.
 		const added = await replayedThinkingTokens(model, radiusKey!, reply, result);
-		expect(added, "radius dropped the replayed thinking").toBeGreaterThan(0.5 * reply.usage.output);
+		const failures = [
+			// Cause: without this level, the replayed block has no effort marker and Anthropic drops it.
+			reply.providerThinkingLevel === "high" ? undefined : "radius done event omits providerThinkingLevel",
+			// Effect: the follow-up request reports no input tokens for the thinking.
+			added > 0.5 * reply.usage.output
+				? undefined
+				: `radius dropped the replayed thinking (added ${added} of ${reply.usage.output} output tokens)`,
+		].filter((failure) => failure !== undefined);
+		assert.deepEqual(failures, []);
 	});
 
-	it.skipIf(!radiusKey)("radius keeps it when the client supplies the level", { timeout: 180000 }, async () => {
+	it.skipIf(!radiusKey)("radius keeps it when the client supplies the level", { timeout: THREE_LIVE_THINKING_REQUESTS_TIMEOUT_MS }, async () => {
 		const model = getModel("radius", "claude-opus-5-5");
 		const { reply, result } = await thinkingTurn(model, radiusKey!);
 		const added = await replayedThinkingTokens(
@@ -136,6 +144,6 @@ describe("replayed Claude thinking stays in context", () => {
 			{ ...reply, providerThinkingLevel: "high" },
 			result,
 		);
-		expect(added).toBeGreaterThan(0.5 * reply.usage.output);
+		assert.ok(added > 0.5 * reply.usage.output, `added ${added} of ${reply.usage.output} output tokens`);
 	});
 });
