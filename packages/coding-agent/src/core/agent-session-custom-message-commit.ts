@@ -31,7 +31,7 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 	) {
 		// Idle stage chat has no original prompt awaiter. Start one owned drain,
 		// without replaying the stage task or a completed tool call.
-		const turn = session._runAgentPrompt([]);
+		const turn = session._runAgentPrompt([], undefined, undefined, false, message);
 		session._workflowStageAdmission?.trackAdmittedWork(turn);
 		void turn.catch(() => {});
 	}
@@ -108,7 +108,7 @@ export async function commitAdmittedCustomMessage<T>(
 			appMessage,
 			options?.deliverAs === "followUp" ? "followUp" : "steer",
 		);
-		const turn = self._runAgentPrompt([]);
+		const turn = self._runAgentPrompt([], undefined, undefined, false, appMessage);
 		self._workflowStageAdmission.trackAdmittedWork(turn);
 		void turn.catch(() => {});
 	} else if (options?.triggerTurn) {

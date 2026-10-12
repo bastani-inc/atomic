@@ -12,6 +12,7 @@ import {
 	formatUnresolvedModelMessage,
 } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
+import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
 	assertSessionOpen,
@@ -339,6 +340,7 @@ export async function _runAgentPrompt(
 	promptStarted?: () => void,
 	reportDispatch?: (disposition: PromptDisposition) => void,
 	prepared = false,
+	customStarter?: CustomMessage,
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -349,17 +351,19 @@ export async function _runAgentPrompt(
 			reportDispatch?.("queued");
 			return;
 		}
-		return owner._runAgentPrompt(messages, promptStarted, reportDispatch, prepared);
+		return owner._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter);
 	}
 	if (this._isEmittingAgentSettled) {
 		this._deferredSettledActions.push(
-			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared),
+			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter),
 		);
 		return;
 	}
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
-	const customMessage = !prepared ? startingMessages.find((message) => message.role === "custom") : undefined;
+	const customMessage = !prepared
+		? (customStarter ?? startingMessages.find((message) => message.role === "custom"))
+		: undefined;
 	const ownsPreparation = prepared || customMessage !== undefined;
 	if (customMessage) this._isPreparingRun = "custom";
 	this._activePromptCount += 1;

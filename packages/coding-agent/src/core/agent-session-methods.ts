@@ -238,6 +238,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		promptStarted?: () => void,
 		reportDispatch?: (disposition: PromptDisposition) => void,
 		prepared?: boolean,
+		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;

@@ -17,7 +17,7 @@
 - Fixed slow MCP resource listings delaying tools on connection. Resources and templates are now listed only on demand.
 - Fixed code mode taking excessive time to join large numbers of text output items.
 - Fixed transient Windows permission errors when acquiring the authentication lock, while keeping persistent permission failures bounded.
-- Fixed runs started by `pi.sendMessage(..., { triggerTurn: true })` skipping `before_agent_start` and losing handler-added system prompt sections after tool calls. The event now distinguishes user and custom messages with `messageType`; handlers reading `prompt` or `images` must first narrow to `"user"`.
+- Fixed runs started by `pi.sendMessage(..., { triggerTurn: true })`, including protected workflow task completions, skipping `before_agent_start` and losing handler-added system prompt sections after tool calls. The event now distinguishes user and custom messages with `messageType`; handlers reading `prompt` or `images` must first narrow to `"user"`.
 
 ## [0.9.35-alpha.2] - 2026-10-12
 
