@@ -139,6 +139,38 @@ test(
 );
 
 test(
+	"disposing the owner while its agent-launched run is still executing releases it for a sibling SDK session (#3566)",
+	async () => {
+		const project = await createProject(true);
+		const owner = await createHost(project);
+		const successor = await createHost(project);
+		try {
+			const runId = await launchAsAgent(owner);
+			await vi.waitFor(async () => assert.equal(await fileExists(project.reachedFile), true), {
+				timeout: RUN_SETTLE_TIMEOUT_MS,
+			});
+			assert.equal(getDurableBackend().getWorkflow(runId)?.status, "running");
+
+			await owner.dispose();
+			const released = getDurableBackend().getWorkflow(runId);
+			assert.equal(released?.status, "paused", "disposal must stop the running workflow at its checkpoint");
+			assert.equal(released?.releasedModelOwner, released?.modelOwner, "disposal must durably release the run");
+
+			const outcome = await successor.workflows.resume(runId);
+			assert.equal(outcome.runId, runId, "adoption must reuse the durable identity");
+			await vi.waitFor(async () => assert.equal((await successor.workflows.getRun(runId)).status, "completed"), {
+				timeout: RUN_SETTLE_TIMEOUT_MS,
+			});
+			assert.equal(await readText(project.effectFile), "effect\n", "completed effects must not run again");
+			assert.equal(getDurableBackend().getWorkflow(runId)?.releasedModelOwner, undefined);
+		} finally {
+			await Promise.allSettled([owner.dispose(), successor.dispose()]);
+		}
+	},
+	IN_PROCESS_SDK_SESSIONS_TIMEOUT_MS,
+);
+
+test(
 	"a disposed session's completed run stays non-resumable for sibling SDK sessions (#3566)",
 	async () => {
 		const project = await createProject(false);
