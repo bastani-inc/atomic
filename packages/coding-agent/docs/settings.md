@@ -218,7 +218,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `outputPad` | number | `1` | Horizontal transcript padding for messages, tool output, `!` command output, and summary blocks. `0` or `1` |
 | `externalEditor` | string | - | Command for the Ctrl+G external editor; takes precedence over `$VISUAL`/`$EDITOR`. Defaults to Notepad on Windows and `nano` elsewhere |
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
-| `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
+| `showHardwareCursor` | boolean | `false` | Use the terminal cursor instead of Atomic's drawn cursor. Atomic still positions it for IME support |
 
 Interactive sessions use fullscreen, with the transcript above the docked editor and status area. Wheel and trackpad input scrolls the focused workflow graph or stage chat first, then the transcript when the overlay does not consume it. Transcript scrolling, scrollbar dragging, and text selection remain available outside overlays. Overlay selections clear when returning to main chat and are not copied during that transition.
 

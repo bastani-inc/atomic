@@ -65,7 +65,7 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	insertAfter(items, "skill-commands", {
 		id: "show-hardware-cursor",
 		label: "Show hardware cursor",
-		description: "Show the terminal cursor while still positioning it for IME support",
+		description: "Use the terminal cursor instead of Atomic's drawn cursor",
 		currentValue: config.showHardwareCursor ? "true" : "false",
 		values: ["true", "false"],
 	});

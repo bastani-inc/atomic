@@ -1,4 +1,11 @@
-import { getKeybindings, setKeybindings, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import {
+	getKeybindings,
+	isKittyProtocolActive,
+	setKeybindings,
+	setKittyProtocolActive,
+	type Terminal,
+	TuiMainScreen,
+} from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -61,6 +68,31 @@ describe("CustomEditor prompt history bindings", () => {
 			expect(modelCycles).toBe(0);
 			expect(namedFilterToggles).toBe(0);
 		} finally {
+			setKeybindings(previousKeybindings);
+		}
+	});
+});
+
+describe("CustomEditor shifted-symbol bindings", () => {
+	test("a binding named by the produced symbol fires on Kitty's Shift+= report", () => {
+		const keybindings = new KeybindingsManager({ "app.model.cycleForward": "+" });
+		const previousKeybindings = getKeybindings();
+		const wasKittyActive = isKittyProtocolActive();
+		setKeybindings(keybindings);
+		setKittyProtocolActive(true);
+		try {
+			const editor = createEditor(keybindings);
+			let modelCycles = 0;
+			editor.onAction("app.model.cycleForward", () => {
+				modelCycles += 1;
+			});
+
+			// Kitty reports "+" as the physical "=" key with Shift, carrying "+" as the shifted key.
+			editor.handleInput("\x1b[61:43;2u");
+			expect(modelCycles).toBe(1);
+			expect(editor.getText()).toBe("");
+		} finally {
+			setKittyProtocolActive(wasKittyActive);
 			setKeybindings(previousKeybindings);
 		}
 	});

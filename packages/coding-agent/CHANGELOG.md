@@ -15,10 +15,13 @@
 ### Changed
 
 - MCP tools now describe their content blocks and nested structured-content fields directly in codemode declarations, including schemas with local references.
+- `showHardwareCursor` now uses only the terminal cursor at the focused input position instead of also drawing a reverse-video cursor cell. Custom TUI components can use `renderFakeCursor()` with `CURSOR_MARKER` to follow this setting.
 
 ### Fixed
 
 - Fixed misplaced `// @options:` lines silently being ignored. They now fail the codemode call before the script runs; options must be on the first line.
+- Fixed Kitty image detection inside Herdr terminals and delayed terminal-reply bytes leaking into keyboard input.
+- Fixed shifted-symbol keybindings such as `+` using the physical key name instead of the produced symbol.
 
 ## [0.9.35-alpha.3] - 2026-10-12
 

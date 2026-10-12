@@ -5,6 +5,7 @@ import {
 	type EditorTheme,
 	isKeyRepeat,
 	matchesKey,
+	renderFakeCursor,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
@@ -110,7 +111,7 @@ export class CustomEditor extends Editor {
 	}
 
 	private renderPlaceholder(placeholder: string, editorWidth: number): string {
-		const cursor = `${this.focused ? CURSOR_MARKER : ""}\x1b[7m \x1b[0m`;
+		const cursor = `${this.focused ? CURSOR_MARKER : ""}${renderFakeCursor(" ")}`;
 		const placeholderWidth = Math.max(0, editorWidth - 1);
 		const text = truncateToWidth(placeholder, placeholderWidth, "...");
 		return `${cursor}${theme.fg("muted", text)}`;

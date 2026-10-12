@@ -77,11 +77,12 @@ describe("pi-tui 0.85.0 settings", () => {
 	});
 });
 
-test("Herdr enables hyperlinks without inheriting the outer terminal's image protocol (#10573)", () => {
+test("Herdr enables hyperlinks and its own Kitty image support (#10573, #10774)", () => {
 	for (const key of capabilityEnvironment) delete process.env[key];
 	process.env.TERM = "xterm-256color";
 	process.env.TERM_PROGRAM = "herdr";
 	process.env.COLORTERM = "truecolor";
+	// An outer Kitty's variables leak into Herdr panes; Herdr is detected first.
 	process.env.KITTY_WINDOW_ID = "outer-kitty-window";
-	assert.deepEqual(detectCapabilities(), { images: null, trueColor: true, hyperlinks: true });
+	assert.deepEqual(detectCapabilities(), { images: "kitty", trueColor: true, hyperlinks: true });
 });
