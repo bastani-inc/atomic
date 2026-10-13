@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { ensurePGDatabase } from "@dbos-inc/dbos-sdk/datasource";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { boundedAdmission, DbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 import { configureAdmissionDatabase } from "../../packages/workflows/src/durable/dbos-admission-config.js";
-import { resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
+import { requestDbosPoolSize } from "../../packages/workflows/src/durable/dbos-pool-size.js";
+import { getDbosProcessOwner, resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import type { DbosConfiguration } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 
 vi.mock("@dbos-inc/dbos-sdk/datasource", async (importOriginal) => ({
@@ -229,5 +230,29 @@ test("configured admission timeouts show the provider and redact credentials fro
 		assert.equal(error.cause, undefined);
 	} finally {
 		vi.useRealTimers();
+	}
+});
+
+test("configured maximum applies to SQL pools and initial and recovery fence pools", async () => {
+	requestDbosPoolSize(2);
+	const database = configureAdmissionDatabase(sdk, config, runWithoutLaunchLock);
+	assert.equal(configured().systemDatabasePool.options.max, 2);
+	const maxima: (number | undefined)[] = [];
+	vi.spyOn(Pool.prototype, "connect").mockImplementation(async function (this: Pool) {
+		maxima.push(this.options.max);
+		throw new Error("fixture connection unavailable");
+	});
+	const owner = getDbosProcessOwner();
+	try {
+		assert.ok(owner.executorFence);
+		await assert.rejects(owner.executorFence.liveness("atomic-db-11111111-1111-4111-8111-111111111111"));
+		const replacement = owner.createExecutorFence!();
+		await assert.rejects(replacement.liveness(replacement.executorId));
+		assert.deepEqual(maxima, [2, 2]);
+		await configured().systemDatabasePool.end();
+		await database.launch();
+		assert.equal(configured().systemDatabasePool.options.max, 2);
+	} finally {
+		await Promise.all([...(owner.executorFences ?? [])].map((fence) => fence.close()));
 	}
 });

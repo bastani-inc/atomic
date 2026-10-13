@@ -1,6 +1,7 @@
 import { InMemoryDurableBackend } from "../../durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
 import { acquireDbosLease } from "../../durable/dbos-lifecycle.js";
+import { requestDbosPoolSize } from "../../durable/dbos-pool-size.js";
 import { readDbosFailureDetail } from "../../durable/dbos-registration-diagnostics.js";
 import { requestDbosSystemDatabaseUrl } from "../../durable/dbos-system-database-url.js";
 import { initializeDurableBackend, initializeRequiredDurableBackend } from "../../durable/factory.js";
@@ -32,6 +33,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		return await engineRun(def, inputs, { ...opts, durableBackend: new InMemoryDurableBackend() });
 	}
 	const durableRequested = durability?.mode === "durable";
+	if (durability?.poolSize !== undefined) requestDbosPoolSize(durability.poolSize);
 	const presetBackend = opts.durableBackend ?? getDurableBackendProcessOwner().injectedBackend;
 	if (presetBackend !== undefined) {
 		if (durableRequested && !presetBackend.persistent) {

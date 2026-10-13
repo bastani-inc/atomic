@@ -294,6 +294,8 @@ export type WorkflowDurability =
 			readonly mode: "durable";
 			/** Postgres URL for the DBOS system database, used when `DBOS_SYSTEM_DATABASE_URL` is unset; otherwise the managed database. */
 			readonly systemDatabaseUrl?: string;
+			/** Maximum connections per workflow database pool; integer of at least 2, defaults to 10. */
+			readonly poolSize?: number;
 	  };
 
 export interface RunOpts {

@@ -481,3 +481,31 @@ test.each([
 	await health.stop();
 	await pool.end();
 });
+
+test("configured maximum connections survives invalidation and endpoint replacement", async () => {
+	const maxima: (number | undefined)[] = [];
+	const connect = vi.spyOn(Pool.prototype, "connect").mockImplementation(async function (this: Pool) {
+		maxima.push(this.options.max);
+		return client();
+	});
+	let url = initialUrl;
+	const { pool, invalidate } = createRecoverablePostgresPool(initialUrl, {
+		poolSize: 2,
+		beforeConnect: async () => url,
+	});
+	try {
+		assert.equal(pool.options.max, 2);
+		assert.equal(pool.options.connectionTimeoutMillis, 3000);
+		(await pool.connect()).release();
+		invalidate();
+		(await pool.connect()).release();
+		url = initialUrl.replace("isolated", "replacement");
+		(await pool.connect()).release();
+		assert.deepEqual(maxima, [2, 2, 2]);
+		assert.equal(pool.options.max, 2);
+		assert.equal(pool.options.connectionTimeoutMillis, 3000);
+	} finally {
+		connect.mockRestore();
+		await pool.end();
+	}
+});

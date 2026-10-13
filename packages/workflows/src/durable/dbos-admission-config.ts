@@ -4,6 +4,7 @@ import { defaultPostgresUrl } from "./dbos-default-postgres-url.js";
 import { withDbosLaunchLock } from "./dbos-launch-lock.js";
 import { resolvedPostgresHealth } from "./dbos-managed-health.js";
 import { DbosOwnerFence } from "./dbos-owner-fence.js";
+import { resolvedDbosPoolSize } from "./dbos-pool-size.js";
 import { getDbosProcessOwner } from "./dbos-process-owner.js";
 import { createRecoverablePostgresPool } from "./dbos-recoverable-pool.js";
 import type { DbosConfiguration, DbosStatic } from "./dbos-sdk-handle.js";
@@ -30,6 +31,7 @@ export function configureAdmissionDatabase(
 	const createPool = (fenced = true) => {
 		let unsubscribe: (() => void) | undefined;
 		const managed = createRecoverablePostgresPool(systemDatabaseUrl, {
+			poolSize: resolvedDbosPoolSize(),
 			beforeConnect: health === undefined ? undefined : () => health.check(),
 			afterConnect: health === undefined ? undefined : (client) => health.validate(client),
 			onConnectionError: () => health?.invalidate(),
@@ -46,6 +48,7 @@ export function configureAdmissionDatabase(
 			() => fencePool,
 			executorId,
 			() => fencePool.end(),
+			() => pool,
 		);
 		const owner = getDbosProcessOwner();
 		owner.executorFences ??= new Set();

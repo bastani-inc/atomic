@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from "pg";
 import { DbosDependencyError } from "./dbos-admission.js";
 
 interface RecoverablePostgresPoolOptions {
+	readonly poolSize?: number;
 	readonly beforeConnect?: () => Promise<string>;
 	readonly afterConnect?: (client: PoolClient) => Promise<void>;
 	readonly onConnectionError?: (error: Error) => void;
@@ -15,9 +16,10 @@ export function createRecoverablePostgresPool(
 	initialUrl: string,
 	options: RecoverablePostgresPoolOptions = {},
 ): { pool: Pool; invalidate: () => void } {
-	const pool = new Pool(getPGClientConfig(initialUrl));
+	const poolSize = options.poolSize ?? 10;
+	const pool = new Pool({ ...getPGClientConfig(initialUrl), max: poolSize });
 	const endFacade = pool.end.bind(pool);
-	const createPool = options.createPool ?? ((url: string) => new Pool(getPGClientConfig(url)));
+	const createPool = options.createPool ?? ((url: string) => new Pool({ ...getPGClientConfig(url), max: poolSize }));
 	const draining = new Set<Promise<void>>();
 	const checkouts = new Map<Pool, Set<{ client: PoolClient; release: PoolClient["release"] }>>();
 	let current: Pool | undefined;
