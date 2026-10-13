@@ -259,14 +259,17 @@ export function withPersonalizedCatalog(
 			}
 			if (!context.allowNetwork || context.signal.aborted) return;
 
-			const response = await requestCatalog(provider.id, catalogBaseUrl, context.signal);
-			if (context.signal.aborted) return;
 			let remote: readonly AnyModel[] = [];
-			if (response.status !== 404 && response.status !== 501) {
-				if (!response.ok) throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
-				const catalog = await readCatalog(provider.id, response);
-				if (isNewer(catalog.lastModified, localGeneratedAt)) remote = catalog.models;
+			try {
+				const response = await requestCatalog(provider.id, catalogBaseUrl, context.signal);
+				if (response.ok) {
+					const catalog = await readCatalog(provider.id, response);
+					if (isNewer(catalog.lastModified, localGeneratedAt)) remote = catalog.models;
+				}
+			} catch {
+				remote = [];
 			}
+			if (context.signal.aborted) return;
 			const personalized = await personalize(mergeModels(builtinModels(), remote), context);
 			if (context.signal.aborted) return;
 			await context.publish({

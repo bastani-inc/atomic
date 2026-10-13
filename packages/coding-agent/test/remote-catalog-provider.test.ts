@@ -325,6 +325,69 @@ describe("personalized catalog provider", () => {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	};
 
+	it.each(["HTTP 500", "transport", "invalid JSON"])(
+		"personalizes and replaces stale limits and prices after a pi.dev %s failure",
+		async (failure) => {
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+				if (failure === "transport") throw new TypeError("connection refused");
+				return new Response("unavailable", { status: failure === "HTTP 500" ? 500 : 200 });
+			});
+			const store = new InMemoryModelsStore();
+			await store.write("test-provider", {
+				models: [
+					{ ...model("static"), contextWindow: 500, cost: { input: 99, output: 99, cacheRead: 0, cacheWrite: 0 } },
+				],
+				checkedAt: 1,
+			});
+			const personalized = [
+				{ ...model("static"), contextWindow: 64000, cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } },
+			];
+			const personalize = vi.fn<PersonalizeCatalog>(async (catalog) => {
+				assert.deepEqual(catalog, [model("static")]);
+				return personalized;
+			});
+			const provider = withPersonalizedCatalog(builtinProvider(), personalize);
+			await provider.refreshModels?.(await makeRefreshContext(store, provider.id));
+			assert.equal(fetchSpy.mock.calls.length, failure === "invalid JSON" ? 1 : 3);
+			assert.equal(personalize.mock.calls.length, 1);
+			assert.deepEqual(provider.getModels(), personalized);
+			assert.deepEqual((await store.read(provider.id))?.models, personalized);
+		},
+	);
+
+	it("does not personalize or persist after the overlay request is cancelled", async () => {
+		const controller = new AbortController();
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			controller.abort();
+			throw new DOMException("cancelled", "AbortError");
+		});
+		const store = new InMemoryModelsStore();
+		const saved = { models: [model("allowed")], checkedAt: 1 };
+		await store.write("test-provider", saved);
+		const personalize = vi.fn<PersonalizeCatalog>(async () => [model("static")]);
+		const provider = withPersonalizedCatalog(builtinProvider(), personalize);
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { signal: controller.signal }));
+		assert.equal(personalize.mock.calls.length, 0);
+		assert.deepEqual(await store.read(provider.id), saved);
+		assert.deepEqual(provider.getModels(), saved.models);
+	});
+
+	it("surfaces persistence failure after overlay fallback without publishing the new list", async () => {
+		vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("connection refused"));
+		const saved = { models: [model("allowed")], checkedAt: 1 };
+		const store: ModelsStore = {
+			read: async () => saved,
+			write: async () => {
+				throw new Error("disk full");
+			},
+			delete: async () => {},
+		};
+		const provider = withPersonalizedCatalog(builtinProvider(), async () => [model("static")]);
+		await assert.rejects(provider.refreshModels!(await makeRefreshContext(store, provider.id)), /disk full/);
+		assert.deepEqual(provider.getModels(), saved.models);
+		assert.deepEqual(await store.read(provider.id), saved);
+	});
+
 	it("personalizes the built-in models plus a newer pi.dev catalog and saves the result", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			Response.json([model("remote")], { headers: { "last-modified": new Date(2_000).toUTCString() } }),

@@ -23,6 +23,7 @@
 - Fixed misplaced `// @options:` lines silently being ignored. They now fail the codemode call before the script runs; options must be on the first line.
 - Fixed Kitty image detection inside Herdr terminals and delayed terminal-reply bytes leaking into keyboard input.
 - Fixed shifted-symbol keybindings such as `+` using the physical key name instead of the produced symbol.
+- Fixed OpenRouter account model refresh being blocked by an unavailable or invalid optional pi.dev catalog.
 
 ## [0.9.35-alpha.3] - 2026-10-12
 
