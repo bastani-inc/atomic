@@ -148,11 +148,10 @@ describe("package metadata", () => {
 		assert.equal(atomicPackageJson.atomicConfig.configDir, ".atomic");
 	});
 
-	test("@bastani/atomic package manifest exports the experimental client entrypoint", () => {
-		assert.deepEqual(atomicPackageJson.exports["./client"], {
-			types: "./dist/client/index.d.ts",
-			import: "./dist/client/index.js",
-		});
+	test("@bastani/atomic package manifest removes the experimental client entrypoint", () => {
+		assert.equal(Object.hasOwn(atomicPackageJson.exports, "./client"), false);
+		assert.equal(Object.hasOwn(atomicPackageJson.dependencies, "@earendil-works/pi-client"), false);
+		assert.equal(Object.hasOwn(atomicPackageJson.dependencies, "@earendil-works/pi-protocol"), false);
 	});
 
 	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {

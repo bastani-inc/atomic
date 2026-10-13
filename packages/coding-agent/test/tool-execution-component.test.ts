@@ -8,6 +8,7 @@ import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -103,6 +104,36 @@ describe("ToolExecutionComponent parity", () => {
 		vi.advanceTimersByTime(1000);
 		component.invalidate();
 		expect(stripAnsi(component.render(120).join("\n"))).toBe(completed);
+		component.dispose();
+	});
+
+	test.each([
+		["codemode", () => codemodeRenderers, { code: "" }, { content: [], details: { calls: [] }, isError: false }],
+		["bash", () => createBashToolDefinition(process.cwd()), { command: "work" }, { content: [], isError: false }],
+	])("disposing a running %s row stops its elapsed-time timer", (name, definition, args, partial) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const requestRender = vi.fn();
+		const component = new ToolExecutionComponent(
+			name,
+			"dispose-timer",
+			args,
+			{},
+			definition() as ToolDefinition,
+			{ requestRender } as unknown as TUI,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult(partial, true);
+		vi.advanceTimersByTime(1000);
+		assert.ok(requestRender.mock.calls.length > 0);
+		assert.ok(vi.getTimerCount() > 0);
+
+		component.dispose();
+		const rendersAtDispose = requestRender.mock.calls.length;
+		vi.advanceTimersByTime(5000);
+		assert.equal(vi.getTimerCount(), 0);
+		assert.equal(requestRender.mock.calls.length, rendersAtDispose);
 		component.dispose();
 	});
 
@@ -282,6 +313,35 @@ describe("ToolExecutionComponent parity", () => {
 			}
 			component.updateResult({ content: [], isError: false, durationMs: 4_200 });
 			assert.ok(stripAnsi(component.render(120).join("\n")).includes("Took 4.2s"));
+		}
+	});
+
+	test("bash renderer labels a command yielded to the background with how long it was observed", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const yielded = {
+			content: [],
+			details: { observation: { kind: "yielded", taskId: "task-1", waitId: "wait-1", reason: "elapsed" } },
+			isError: false,
+		};
+		for (const durationMs of [4_200, undefined]) {
+			const component = new ToolExecutionComponent(
+				"bash",
+				"yielded-duration",
+				{ command: "sleep 60" },
+				{},
+				createBashToolDefinition(process.cwd()),
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.markExecutionStarted();
+			component.updateResult({ content: [], isError: false }, true);
+			vi.advanceTimersByTime(4_200);
+			component.updateResult({ ...yielded, durationMs }, false);
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			assert.ok(rendered.includes("Observed for 4.2s"), rendered);
+			assert.ok(!rendered.includes("Took"), rendered);
+			component.dispose();
 		}
 	});
 

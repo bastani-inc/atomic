@@ -1,8 +1,33 @@
-import { CURSOR_MARKER, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { beforeEach, describe, expect, it } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
-import { getEditorTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { CURSOR_MARKER, renderFakeCursor, type TUI, VStack, visibleWidth } from "@earendil-works/pi-tui";
+import { beforeEach, describe, it } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.js";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
+import { getEditorTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+
+/** Paint a focused, empty editor with a placeholder and return the screen bytes. */
+function paintFocusedPlaceholder(placeholder: string, showHardwareCursor: boolean): string {
+	const terminal = new RecordingTerminal();
+	terminal.columns = 80;
+	terminal.rows = 12;
+	const tui = createFullscreenTui({ showHardwareCursor, logDirectory: tmpdir(), terminal });
+	const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager(), {
+		promptPrefix: "› ",
+		placeholder,
+	});
+	tui.setLayoutRoot(new VStack([{ component: editor, basis: 3, grow: 1, shrink: 1, minSize: 1 }]));
+	tui.setFocus(editor);
+	tui.start();
+	try {
+		tui.renderNow();
+		return terminal.writes.join("");
+	} finally {
+		tui.stop();
+	}
+}
 
 function createTui(): TUI {
 	return {
@@ -35,13 +60,13 @@ describe("CustomEditor placeholder", () => {
 		const placeholder = "Paste a ticket, issue, path to a spec, or task prompt…";
 		const editor = createEditor(placeholder);
 		const line = findPlaceholderLine(editor.render(90), placeholder);
-		const cursor = "\x1b[7m \x1b[0m";
+		const cursor = renderFakeCursor(" ");
 		const styledPlaceholder = theme.fg("muted", placeholder);
 
-		expect(line).toContain(cursor);
-		expect(line).toContain(styledPlaceholder);
-		expect(line.indexOf(cursor)).toBeLessThan(line.indexOf(styledPlaceholder));
-		expect(visibleWidth(line)).toBe(90);
+		assert.ok(line.includes(cursor));
+		assert.ok(line.includes(styledPlaceholder));
+		assert.ok(line.indexOf(cursor) < line.indexOf(styledPlaceholder));
+		assert.equal(visibleWidth(line), 90);
 	});
 
 	it("keeps the hardware cursor marker when focused", () => {
@@ -50,6 +75,22 @@ describe("CustomEditor placeholder", () => {
 		editor.focused = true;
 		const line = findPlaceholderLine(editor.render(80), placeholder);
 
-		expect(line).toContain(`${CURSOR_MARKER}\x1b[7m \x1b[0m`);
+		assert.ok(line.includes(`${CURSOR_MARKER}${renderFakeCursor(" ")}`));
+	});
+
+	it("draws the placeholder cursor in reverse video when the hardware cursor is hidden", () => {
+		const placeholder = "Paste a task prompt…";
+		const screen = paintFocusedPlaceholder(placeholder, false);
+
+		assert.ok(screen.includes(placeholder));
+		assert.ok(screen.includes("\x1b[7m "));
+	});
+
+	it("leaves the placeholder cursor to the terminal when showHardwareCursor is enabled", () => {
+		const placeholder = "Paste a task prompt…";
+		const screen = paintFocusedPlaceholder(placeholder, true);
+
+		assert.ok(screen.includes(placeholder));
+		assert.ok(!screen.includes("\x1b[7m"));
 	});
 });

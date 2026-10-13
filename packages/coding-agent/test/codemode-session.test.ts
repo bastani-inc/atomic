@@ -11,6 +11,7 @@ import {
 	type CodemodeToolDetails,
 	createCodemodeDescription,
 } from "../src/extensions/codemode/tool.js";
+import { createMcpResultSchema } from "../src/extensions/mcp/tools.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
 test("codemode joins adjacent output with linear separator checks (#10678)", async () => {
@@ -1019,6 +1020,101 @@ test("codemode tells declared tools how scripts call them instead of repeating t
 	}
 });
 
+test("codemode tells scripts the fields of an MCP tool's structured content", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "mcp__docs__search",
+					label: "Search",
+					description: "Search docs",
+					parameters: Type.Object({}),
+					outputSchema: createMcpResultSchema({
+						type: "object",
+						properties: { hits: { type: "array", items: { type: "string" } } },
+						required: ["hits"],
+					}),
+					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
+				});
+				pi.registerTool({
+					name: "mcp__docs__fail",
+					label: "Fail",
+					description: "Fail",
+					parameters: Type.Object({}),
+					outputSchema: createMcpResultSchema(undefined),
+					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["mcp__docs__search", "mcp__docs__fail", "codemode"],
+	});
+	try {
+		const description = (name: string) =>
+			harness.session.agent.state.tools.find((tool) => tool.name === name)?.description;
+
+		assert.equal(
+			description("mcp__docs__search"),
+			"Search docs\n\nCodemode: `tools.mcp__docs__search(args)` resolves to `{ content, structuredContent?: { hits }, isError? }`.",
+		);
+		assert.equal(
+			description("mcp__docs__fail"),
+			"Fail\n\nCodemode: `tools.mcp__docs__fail(args)` resolves to `{ content, structuredContent?, isError? }`.",
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode declarations show input constraints the type cannot express (#10707)", () => {
+	const description = createCodemodeDescription([
+		{
+			name: "wait",
+			label: "Wait",
+			description: "Wait",
+			parameters: Type.Object({
+				timeoutMs: Type.Optional(
+					Type.Integer({ minimum: 0, maximum: 30000, default: 0, description: "Wait in milliseconds." }),
+				),
+			}),
+			execute: async () => ({ content: [], details: undefined }),
+		},
+	]);
+
+	assert.match(description, /\/\/ Wait in milliseconds\.\n\s*\/\/ @integer @minimum 0 @maximum 30000 @default 0\n/);
+});
+
+test("codemode rejects a // @options: line that is not the first line before the script runs (#10631)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("codemode", { code: '// count\n// @options: {"timeout_ms": 200}\nstore("ran", true);' })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run script");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult");
+		assert.equal(result.isError, true);
+		assert.equal(
+			getMessageText(result),
+			"The // @options: line must be the first line of the input; found one on line 2",
+		);
+		assert(
+			!harness.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode discovery names model-only tools instead of returning nothing (#3510)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
@@ -1060,6 +1156,24 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 		assert.equal(output.listed, false);
 		assert.equal(output.callable, false);
 		assert(!output.other.some((hit: { name: string }) => hit.name === "delegate-work"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode reports a running update before the script's first nested call, so the row timer starts (pi#10708)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const result = await runScript(harness, "return 1;");
+		assert.equal(result.isError, false);
+		const updates = harness.eventsOfType("tool_execution_update").filter((event) => event.toolName === "codemode");
+		assert.deepEqual(
+			updates.map((event) => (event.partialResult as { details: CodemodeToolDetails }).details),
+			[{ calls: [] }],
+		);
 	} finally {
 		await harness.cleanup();
 	}

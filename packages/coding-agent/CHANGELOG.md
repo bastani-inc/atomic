@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the experimental `@bastani/atomic/client` entrypoint and the `@earendil-works/pi-client` and `@earendil-works/pi-protocol` dependencies, which upstream Pi no longer publishes. SDK code that imported `@bastani/atomic/client` should use `createAgentSession()` from `@bastani/atomic` in-process or RPC mode (`--mode rpc` / `@bastani/atomic/rpc-entry`), or pin the previous release. The CLI, RPC mode, extensions and workflows are unaffected.
+
+### Added
+
+- Added `ATOMIC_CLIPBOARD_OSC52=1`, with legacy alias `PI_CLIPBOARD_OSC52=1`, to send copied text through OSC 52 after the local clipboard write. Use it when a multiplexer or remote IDE session leaves no SSH markers for Atomic to detect.
+- Added elapsed time while a codemode script runs and total time when it finishes. Bash commands continued in the background keep their "Observed for" timing label.
+- Codemode declarations now include input constraints such as integer bounds and defaults that TypeScript types alone cannot express.
+- Added per-key OpenRouter model lists with the key's context limits, output limits and prices. Configured regional endpoints are respected, and the personalized list is saved for offline use.
+
+### Changed
+
+- MCP tools now describe their content blocks and nested structured-content fields directly in codemode declarations, including schemas with local references.
+- `showHardwareCursor` now uses only the terminal cursor at the focused input position instead of also drawing a reverse-video cursor cell. Custom TUI components can use `renderFakeCursor()` with `CURSOR_MARKER` to follow this setting.
+
+### Fixed
+
+- Fixed misplaced `// @options:` lines silently being ignored. They now fail the codemode call before the script runs; options must be on the first line.
+- Fixed Kitty image detection inside Herdr terminals and delayed terminal-reply bytes leaking into keyboard input.
+- Fixed shifted-symbol keybindings such as `+` using the physical key name instead of the produced symbol.
+- Fixed OpenRouter account model refresh being blocked by an unavailable or invalid optional pi.dev catalog.
+- Fixed running codemode and bash rows continuing to update elapsed-time displays after removal.
+
 ## [0.9.35-alpha.3] - 2026-10-12
 
 ### Added

@@ -1565,7 +1565,8 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			const cleanFrame = (): string[] =>
 				session.component
 					.render(terminal.columns)
-					.map((line) => line.replace(ANSI, "").replace("\x1b_pi:c\x07", ""));
+					// Drop zero-width APC markers (cursor marker and pi-tui fake-cursor wrappers) before comparing text.
+					.map((line) => line.replace(ANSI, "").replace(/\x1b_[^\x07]*\x07/g, ""));
 			const expectDraft = (draft: string): void => {
 				expect(cleanFrame().join("\n")).toContain(draft);
 			};

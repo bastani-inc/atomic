@@ -206,6 +206,26 @@ Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens i
 
 Once a fetched or cached Radius catalog is available, it replaces the bundled defaults. Models disabled by your organization no longer appear; an empty gateway catalog leaves no Radius models to select. Ask your organization owner to enable models if the list is empty.
 
+### OpenRouter
+
+Authenticate with `/login openrouter` or `OPENROUTER_API_KEY`.
+
+With a key, Atomic lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and classifier models are not filtered.
+
+Atomic refreshes the list in the background at interactive startup, when `/model` opens, after `/login`, and on `atomic update --models`. The last list is saved and used offline, in `atomic -p`, and in RPC mode. If you switch keys outside `/login`, the previous key's list stays until the next refresh. A session saved with a model that the current key does not list still restores.
+
+Regional endpoints filter models to their region. To use one, set the base URL in [`models.json`](/models/reference#overriding-built-in-providers):
+
+```json
+{
+  "providers": {
+    "openrouter": { "baseUrl": "https://us.openrouter.ai/api/v1" }
+  }
+}
+```
+
+If the base URL rejects the key at `/models/user` or does not have that endpoint, for example a proxy configured as the OpenRouter base URL, Atomic lists every OpenRouter model.
+
 ## API Keys
 
 ### Environment Variables or Auth File

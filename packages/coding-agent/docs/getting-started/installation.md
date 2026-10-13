@@ -105,7 +105,7 @@ The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or
 
 Two features work differently on musl:
 
-- **Clipboard:** install `wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or the Termux:API app and `termux-api` package on Termux. OSC 52 is available only over SSH or Mosh, not as a substitute for a failed local clipboard backend.
+- **Clipboard:** install `wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or the Termux:API app and `termux-api` package on Termux. OSC 52 forwards copies over SSH or Mosh and is a fallback on headless Linux. Set `ATOMIC_CLIPBOARD_OSC52=1`, or the legacy `PI_CLIPBOARD_OSC52=1`, to force terminal forwarding. Your terminal must support it; forwarding does not confirm a successful local clipboard write.
 - **Durable workflows:** PostgreSQL is included and provisions offline without Docker or external Postgres. If no durable backend can be provisioned, Atomic warns and uses non-durable in-memory storage.
 
 Then start Atomic in the project directory you want it to work on:

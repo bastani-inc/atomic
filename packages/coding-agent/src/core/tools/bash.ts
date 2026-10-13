@@ -37,7 +37,14 @@ import {
 } from "./bash-pty-native.js";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./bash-session-environment.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
-import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+import {
+	getTextOutput,
+	invalidArgText,
+	startToolTimer,
+	str,
+	type ToolTimerState,
+	toolTimerText,
+} from "./render-utils.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -337,20 +344,6 @@ function bashResultToToolResult(result: BashResult): {
 	const text = `${result.output || "(no output)"}${status ? `\n\n${status}` : ""}`;
 	return { content: [{ type: "text", text }], details };
 }
-type BashRenderState = {
-	startedAt: number | undefined;
-	endedAt: number | undefined;
-	interval: NodeJS.Timeout | undefined;
-};
-function formatDuration(ms: number): string {
-	const seconds = Math.max(0, ms) / 1000;
-	if (seconds < 60) return `${seconds.toFixed(1)}s`;
-	const totalSeconds = Math.floor(seconds);
-	const minutes = Math.floor(totalSeconds / 60);
-	const remainder = totalSeconds % 60;
-	if (minutes < 60) return `${minutes}m ${remainder}s`;
-	return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${remainder}s`;
-}
 function formatBashCall(
 	args: { command?: string; timeout?: number; action?: string; id?: string } | undefined,
 	prompt: string,
@@ -370,9 +363,7 @@ function rebuildBashResultRenderComponent(
 	},
 	options: ToolRenderResultOptions,
 	showImages: boolean,
-	startedAt: number | undefined,
-	endedAt: number | undefined,
-	durationMs: number | undefined,
+	timerText: string | undefined,
 ): void {
 	component.clear();
 	let output = getTextOutput(result, showImages).trim();
@@ -434,20 +425,13 @@ function rebuildBashResultRenderComponent(
 		}
 		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
 	}
-	if (!options.isPartial && durationMs !== undefined) {
-		const label = observation?.kind === "yielded" ? "Observed for" : "Took";
-		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(durationMs)}`)}`, 0, 0));
-	} else if (startedAt !== undefined) {
-		const label = options.isPartial ? "Elapsed" : observation?.kind === "yielded" ? "Observed for" : "Took";
-		const endTime = endedAt ?? Date.now();
-		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`, 0, 0));
-	}
+	if (timerText) component.addChild(new Text(`\n${theme.fg("muted", timerText)}`, 0, 0));
 }
 export function createBashToolDefinition(
 	cwd: string,
 	options?: BashToolOptions,
 	presentation: ShellToolPresentation = BASH_SHELL_PRESENTATION,
-): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
+): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, ToolTimerState> {
 	const defaultOps =
 		options?.operations ??
 		createLocalBashOperations({ shellPath: options?.shellPath, taskOwner: options?.taskOwner });
@@ -736,37 +720,17 @@ export function createBashToolDefinition(
 			}
 		},
 		renderCall(args, _theme, context) {
-			const state = context.state;
-			if (context.executionStarted && state.startedAt === undefined) {
-				state.startedAt = Date.now();
-				state.endedAt = undefined;
-			}
+			startToolTimer(context);
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(formatBashCall(args, presentation.prompt));
 			return text;
 		},
 		renderResult(result, options, _theme, context) {
-			const state = context.state;
-			if (state.startedAt !== undefined && options.isPartial && !state.interval) {
-				state.interval = setInterval(() => context.invalidate(), 1000);
-			}
-			if (!options.isPartial || context.isError) {
-				state.endedAt ??= Date.now();
-				if (state.interval) {
-					clearInterval(state.interval);
-					state.interval = undefined;
-				}
-			}
+			// A command yielded to the background is still running, so its row reports how long it was observed.
+			const finalLabel = result.details?.observation?.kind === "yielded" ? "Observed for" : "Took";
+			const timerText = toolTimerText(context, options.isPartial, finalLabel);
 			const component = (context.lastComponent as Container | undefined) ?? new Container();
-			rebuildBashResultRenderComponent(
-				component,
-				result,
-				options,
-				context.showImages,
-				state.startedAt,
-				state.endedAt,
-				context.durationMs,
-			);
+			rebuildBashResultRenderComponent(component, result, options, context.showImages, timerText);
 			component.invalidate();
 			return component;
 		},

@@ -9,6 +9,11 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 beforeAll(() => initTheme("dark"));
 
+function renderText(lines: string[]): string {
+	// stripVTControlCharacters keeps APC payloads, so drop the TUI's zero-width cursor markers (e.g. \x1b_pi:fc\x07) first
+	return stripVTControlCharacters(lines.join("\n").replace(/\x1b_[^\x07]*\x07/g, ""));
+}
+
 function createHarness() {
 	const stored = new Map<string, "api_key" | "oauth">([
 		["kimi-coding", "api_key"],
@@ -112,7 +117,7 @@ test("submitting a completed logout opens the filtered selector and waits for no
 	assert.equal(host.runtimeHost.logoutProvider.mock.calls.length, 0);
 	assert.equal(stored.size, 2);
 	assert.ok(selector());
-	const rendered = stripVTControlCharacters(selector()!.render(100).join("\n"));
+	const rendered = renderText(selector()!.render(100));
 	assert.match(rendered, /kimi-coding/);
 	assert.match(rendered, /Kimi For Coding/);
 	assert.doesNotMatch(rendered, /Anthropic/);
@@ -149,7 +154,7 @@ for (const search of ["", "   ", "kimi", "Kimi  For Coding", "anthropic", "nonex
 		const before = [...stored];
 		await submit(`/logout\t${search}`);
 		assert.ok(selector());
-		const rendered = stripVTControlCharacters(selector()!.render(100).join("\n"));
+		const rendered = renderText(selector()!.render(100));
 		assert.ok(rendered.includes(search.trim()));
 		if (search === "nonexistent-provider") {
 			assert.match(rendered, /No matching providers/);

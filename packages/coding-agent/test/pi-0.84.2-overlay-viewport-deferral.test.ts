@@ -10,6 +10,8 @@ import {
 	TUI_KEYBINDINGS,
 	TuiAltScreen,
 	KeybindingsManager as TuiKeybindingsManager,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	VStack,
 	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
@@ -465,6 +467,55 @@ describe("a focused overlay with no input handler", () => {
 		expect(shouldHandleFullscreenViewportInput(handlerless, editor, WHEEL_UP, true, false, keybindings)).toBe(true);
 		expect(shouldHandleFullscreenViewportInput(editor, editor, PAGE_UP, false, false, keybindings)).toBe(true);
 		expect(shouldHandleFullscreenViewportInput(null, editor, PAGE_UP, false, false, keybindings)).toBe(true);
+	});
+});
+
+/** A focused overlay that scrolls itself with the wheel through `handleMouse`, as pi 1.2.0 asks of overlays. */
+class WheelOverlay implements Component {
+	readonly wheelDeltas: number[] = [];
+
+	render(): string[] {
+		return ["wheel dialog"];
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "wheel") return undefined;
+		this.wheelDeltas.push(event.wheelDelta ?? 0);
+		return { handled: true };
+	}
+
+	invalidate(): void {}
+}
+
+describe("pi 1.2.0 wheel input under a focused overlay", () => {
+	test("an overlay that scrolls with handleMouse keeps a wheel report over it", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new WheelOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(`\x1b[<64;10;${fixture.terminal.rows}M`);
+			fixture.tui.renderNow();
+			expect(overlay.wheelDeltas).toHaveLength(1);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a wheel report over the transcript scrolls it while a handleMouse overlay holds focus", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new WheelOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			expect(overlay.wheelDeltas).toEqual([]);
+			expect(fixture.transcript.scrollTop).toBe(top - 1);
+		} finally {
+			fixture.stop();
+		}
 	});
 });
 

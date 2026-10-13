@@ -4,6 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `personalizeOpenRouterCatalog()` to restrict OpenRouter chat catalogs to the models a key may use, with its context limits, output limits and prices from `/models/user`. Image and classifier models are preserved.
+- Added `RefreshModelsContext.baseUrl` so catalog refreshes can use the registered provider's configured endpoint.
+
+### Fixed
+
+- Personalized OpenRouter catalogs now treat negative placeholder prices, such as those returned for `openrouter/auto`, as zero instead of negative token costs.
+
 ## [0.9.35-alpha.3] - 2026-10-12
 
 ### Fixed

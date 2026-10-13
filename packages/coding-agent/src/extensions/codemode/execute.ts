@@ -497,6 +497,8 @@ export async function executeCodemode(
 	let generatedImages = 0;
 	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
 	const publish = () => update?.({ content: [], details: snapshot() });
+	// Show the script as running before its first nested call, so the row's timer starts.
+	publish();
 	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
 	const guidelines = options.getToolGuidelines?.();
 	const samples = new Map(

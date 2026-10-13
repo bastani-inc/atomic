@@ -122,13 +122,9 @@ MCP servers and web providers still require their normal configuration and crede
 
 If creation reports `BuiltinUnavailable`, reinstall the complete package and its dependencies rather than copying only `dist/index.js` into your application.
 
-## Pi client
+## Migrating from the experimental client
 
-`@bastani/atomic/client` re-exports `@earendil-works/pi-client`. Pi 0.85 replaced the experimental `RemoteSession` lease API with its service-addressed Chord client; use the upstream client and agent service APIs for remote sessions.
-
-## Experimental remote sessions
-
-Use [Pi client](#pi-client) for the current remote-session API.
+The `@bastani/atomic/client` entrypoint is no longer available because upstream Pi stopped publishing its client and protocol packages. Use `createAgentSession()` from `@bastani/atomic` in-process, or [RPC mode](/rpc) with `--mode rpc` or `@bastani/atomic/rpc-entry`. Pin the previous release if you still need the experimental client. The CLI, RPC mode, extensions and workflows are unaffected.
 
 ## Experimental Harness factory
 
