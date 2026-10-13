@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Impeccable skill to 4.5.2 with engine 0.1.14. App screens and docs use code-first builds with clickable HTML sketches; comp-led builds reuse the chosen image as a fixed reference. Includes detector, Windows hook and capture, and Live Mode fixes, including support for Astro 7.3.6 and newer.
+
 ## [0.9.35] - 2026-10-13
 
 ### Added
