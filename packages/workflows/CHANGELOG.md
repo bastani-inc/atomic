@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.35-alpha.5] - 2026-10-12
+
 ### Added
 
 - Added `durability.poolSize` to SDK workflow runs (default 10, minimum 2), applying the connection maximum to DBOS SQL pools, ownership-fence pools, and their replacement connections for managed or remote PostgreSQL. Later requests for a different size reject once the process is configured.
