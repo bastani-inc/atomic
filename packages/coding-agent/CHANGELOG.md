@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.35-alpha.5] - 2026-10-12
+
 ### Added
 
 - Added `workflows.durability.poolSize` to configure maximum connections per workflow database pool for managed and remote PostgreSQL (default 10, minimum 2).
