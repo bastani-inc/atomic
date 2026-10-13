@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type Component, Container } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { type Component, Container, resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -156,6 +156,13 @@ function createPromptTurnContext(
 }
 
 describe("InteractiveMode startup latency hooks", () => {
+	beforeEach(() => {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+	});
+	afterEach(() => {
+		resetCapabilitiesCache();
+	});
+
 	it("records input handler readiness when the input callback is installed", async () => {
 		timingMock.labels.length = 0;
 		const context: InputContext = {

@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container, getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
+import {
+	Container,
+	getKeybindings,
+	resetCapabilitiesCache,
+	setCapabilities,
+	setKeybindings,
+	stripTerminalSequences,
+} from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -43,6 +50,7 @@ let projectDir: string;
 
 beforeAll(() => initTheme("dark"));
 beforeEach(() => {
+	setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 	startup.trustSettled.mockReset().mockResolvedValue(undefined);
 	startup.select.mockReset();
 	startup.input.mockReset();
@@ -51,6 +59,7 @@ beforeEach(() => {
 	writeFileSync(join(projectDir, ".atomic", "settings.json"), JSON.stringify({ defaultTools: ["+codemode"] }));
 });
 afterEach(() => {
+	resetCapabilitiesCache();
 	rmSync(projectDir, { recursive: true, force: true });
 });
 
