@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GPT-6.1 Sol using API context limits with ChatGPT subscription sign-in through `openai`. Subscription model availability now uses a 500,000-token context with no long-context price tier on Standard, Fast, and Ultrafast, including `openai-codex` catalog refreshes. API-key authentication keeps its API limits and pricing.
+
 ## [0.9.35] - 2026-10-13
 
 ### Added

@@ -44,6 +44,10 @@ export class RuntimeCredentials implements CredentialStore {
 		await getReloadableStore(this.store)?.reload();
 	}
 
+	hasCredentialSnapshot(): boolean {
+		return getSnapshotStore(this.store) !== undefined;
+	}
+
 	peek(providerId: string): Credential | undefined {
 		const override = this.overrides.get(providerId);
 		return override ? { type: "api_key", key: override } : getSnapshotStore(this.store)?.peek(providerId);

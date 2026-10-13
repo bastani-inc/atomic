@@ -59,7 +59,22 @@ function hasOperationShape(model: unknown): boolean {
 
 function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynamic: readonly TModel[]): TModel[] {
 	const merged = new Map<string, TModel>();
-	for (const model of [...baseline, ...dynamic]) merged.set(`${getModelType(model)}\0${model.id}`, model);
+	for (const model of baseline) merged.set(`${getModelType(model)}\0${model.id}`, model);
+	for (const model of dynamic) {
+		const key = `${getModelType(model)}\0${model.id}`;
+		const bundled = merged.get(key);
+		if (
+			bundled &&
+			isModelType(bundled, "chat") &&
+			isModelType(model, "chat") &&
+			model.serviceTiers === undefined &&
+			bundled.serviceTiers !== undefined
+		) {
+			merged.set(key, { ...model, serviceTiers: bundled.serviceTiers });
+		} else {
+			merged.set(key, model);
+		}
+	}
 	return [...merged.values()];
 }
 

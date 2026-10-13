@@ -150,11 +150,11 @@ On OpenAI Responses, Astra uses the newer prompt-cache payload. `cacheRetention:
 
 ### GPT-6.1 Sol
 
-Select `openai/gpt-6.1-sol` with API-key authentication or `openai-codex/gpt-6.1-sol` with a ChatGPT subscription. Both accept text and images and support `low`, `medium`, `high`, `xhigh`, and `max`. Reasoning cannot be turned off. Codex also offers a `minimal` UI alias that sends `low`, not a separate API effort.
+Select `openai/gpt-6.1-sol` with either API-key authentication or ChatGPT subscription sign-in, or `openai-codex/gpt-6.1-sol` with a ChatGPT subscription. Both accept text and images and support `low`, `medium`, `high`, `xhigh`, and `max`. Reasoning cannot be turned off. Codex also offers a `minimal` UI alias that sends `low`, not a separate API effort.
 
-`openai-codex/gpt-6.1-sol` uses a 500,000-token context and a 128,000-token output limit. ChatGPT subscriptions raised the Codex default from 272,000 tokens, and OpenAI does not charge long-context fees for GPT-6.1 Sol when usage draws from the subscription, so the catalog has no long-context price tier for it on Standard, Fast, or Ultrafast.
+With ChatGPT subscription sign-in, `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol` use a 500,000-token context and a 128,000-token output limit. Account aliases inherit the limits for their own login method. Subscription usage has no long-context price tier on Standard, Fast, or Ultrafast.
 
-`openai/gpt-6.1-sol` uses a 272,000-token default context and a 128,000-token output limit. Increase `contextWindow` through a model override only when you intend to use the larger API window and its whole-request long-context prices:
+With API-key authentication, `openai/gpt-6.1-sol` and `openai-api/gpt-6.1-sol` use a 272,000-token default context and a 128,000-token output limit. Increase `contextWindow` through a model override only when you intend to use the larger API window and its whole-request long-context prices:
 
 | Aggregate input | Input | Cached input | Cache write | Output |
 | --- | ---: | ---: | ---: | ---: |
@@ -163,7 +163,7 @@ Select `openai/gpt-6.1-sol` with API-key authentication or `openai-codex/gpt-6.1
 
 Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
 
-`openai/gpt-6.1-sol-ultrafast` (also `openai-api/` and `openai-codex/`) sends `service_tier: "ultrafast"`. It uses OpenAI's published Ultrafast rates of $12 input and $60 output per million tokens up to 272,000 input tokens. OpenAI has not listed Sol Ultrafast cache rates, so Atomic derives them at the same six-times-Standard ratio: $0.60 cached input and $15 cache write. Above 272,000 input tokens, the usual long-context multipliers apply. See [provider tier caveats](/providers#fast-models).
+`openai/gpt-6.1-sol-ultrafast` (also `openai-api/` and `openai-codex/`) sends `service_tier: "ultrafast"`. It uses OpenAI's published Ultrafast rates of $12 input and $60 output per million tokens. OpenAI has not listed Sol Ultrafast cache rates, so Atomic derives them at the same six-times-Standard ratio: $0.60 cached input and $15 cache write. With an API key, the usual long-context multipliers apply above 272,000 input tokens. Subscription sign-in keeps flat rates across the 500,000-token window. See [provider tier caveats](/providers#fast-models).
 
 ### Image Input Limits
 

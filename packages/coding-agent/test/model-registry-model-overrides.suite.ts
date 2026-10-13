@@ -6,6 +6,25 @@ import { createModelRegistry } from "./model-runtime-test-utils.ts";
 describeModelRegistry((context) => {
 	const { getModelsForProvider, writeRawModelsJson } = context;
 	describe("modelOverrides (per-model customization)", () => {
+		test("explicit Sol subscription context overrides win for normal, Fast and Ultrafast models", async () => {
+			writeRawModelsJson({ openai: { modelOverrides: { "gpt-6.1-sol": { contextWindow: 400_000 } } } });
+			await context.authStorage.modify("openai", async () => ({
+				type: "oauth",
+				access: "fake",
+				refresh: "fake",
+				expires: Date.now() + 3_600_000,
+			}));
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			for (const suffix of ["", "-fast", "-ultrafast"]) {
+				const id = `gpt-6.1-sol${suffix}`;
+				expect(registry.find("openai", id)?.contextWindow).toBe(400_000);
+				expect(
+					(await registry.getAvailable()).find((model) => model.provider === "openai" && model.id === id)
+						?.contextWindow,
+				).toBe(400_000);
+			}
+		});
+
 		test("model override applies to a single built-in model", async () => {
 			writeRawModelsJson({
 				openrouter: {

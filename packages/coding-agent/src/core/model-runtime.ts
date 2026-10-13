@@ -24,6 +24,7 @@ import {
 	type ImageApi,
 	type ImageModel,
 	type ImagesContext,
+	isModelType,
 	type LoginOptions,
 	type Model,
 	type Models,
@@ -383,7 +384,7 @@ export class ModelRuntime implements Models {
 		this.snapshotGeneration += 1;
 		this.snapshot = updateSnapshotModels(this.snapshot, [...this.models.getModels()]);
 	}
-	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<void> {
+	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<boolean> {
 		const inputsGeneration = this.catalogInputsGeneration;
 		const providers = this.models.getProviders();
 		const [available, checks, credentials] = await Promise.all([
@@ -398,11 +399,12 @@ export class ModelRuntime implements Models {
 			),
 			this.credentials.list({ signal }),
 		]);
-		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return;
+		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
 		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
+		return true;
 	}
-	private queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+	private queueAvailabilityRefresh(signal?: AbortSignal): Promise<boolean> {
 		const seq = ++this.availabilityRefreshSeq;
 		for (const [providerId, providerSeq] of this.providerAvailabilitySeq)
 			this.providerAvailabilitySeq.set(providerId, providerSeq + 1);
@@ -516,24 +518,41 @@ export class ModelRuntime implements Models {
 			this.nativeExtensionProviders.get(providerId),
 		);
 	}
+	private resolveModelMetadata(model: Model<Api>): Model<Api> {
+		const credential = this.credentials.peek(model.provider);
+		if (credential !== undefined || this.credentials.hasCredentialSnapshot()) {
+			const provider = this.models.getProvider(model.provider);
+			return provider?.filterModels?.([model], credential).find((candidate) => candidate.id === model.id) ?? model;
+		}
+		return (
+			this.snapshot.available.find(
+				(candidate) => candidate.provider === model.provider && candidate.id === model.id,
+			) ?? model
+		);
+	}
 	getModels(providerId?: string): readonly Model<Api>[] {
-		return this.models.getModels(providerId);
+		return this.models.getModels(providerId).map((model) => this.resolveModelMetadata(model));
 	}
 	getModel(providerId: string, modelId: string): Model<Api> | undefined {
-		return this.models.getModel(normalizeProviderId(providerId), modelId);
+		const model = this.models.getModel(normalizeProviderId(providerId), modelId);
+		return model ? this.resolveModelMetadata(model) : undefined;
+	}
+	private resolveCatalogMetadata<TModel extends AnyModel>(model: TModel): TModel {
+		return isModelType(model, "chat") ? { ...model, ...this.resolveModelMetadata(model) } : model;
 	}
 	getModelsOfType<TType extends ModelType>(type: TType, providerId?: string): readonly ModelTypeMap[TType][] {
-		return this.models.getModelsOfType(type, providerId);
+		return this.models.getModelsOfType(type, providerId).map((model) => this.resolveCatalogMetadata(model));
 	}
 	getModelOfType<TType extends ModelType>(
 		type: TType,
 		providerId: string,
 		modelId: string,
 	): ModelTypeMap[TType] | undefined {
-		return this.models.getModelOfType(type, providerId, modelId);
+		const model = this.models.getModelOfType(type, normalizeProviderId(providerId), modelId);
+		return model ? this.resolveCatalogMetadata(model) : undefined;
 	}
 	getAllModels(providerId?: string): readonly AnyModel[] {
-		return this.models.getAllModels(providerId);
+		return this.models.getAllModels(providerId).map((model) => this.resolveCatalogMetadata(model));
 	}
 	getAvailableOfType<TType extends ModelType>(
 		type: TType,
@@ -562,7 +581,7 @@ export class ModelRuntime implements Models {
 				throw error;
 			}
 		}
-		await this.queueAvailabilityRefresh(options?.signal);
+		for (let attempt = 0; attempt < 3 && !(await this.queueAvailabilityRefresh(options?.signal)); attempt++);
 		return this.snapshot.available;
 	}
 	getAvailableSnapshot(): readonly Model<Api>[] {
