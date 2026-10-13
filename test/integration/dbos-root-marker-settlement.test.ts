@@ -6,6 +6,7 @@ import { boundedAdmission, DbosDependencyError } from "../../packages/workflows/
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { DbosOwnerFence } from "../../packages/workflows/src/durable/dbos-owner-fence.js";
 import { createRealDbosHandle, type DbosStatic } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
+import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { type ManagedResult, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 
@@ -131,9 +132,24 @@ test("production root markers settle before enrollment without retaining admissi
 		);
 		await handle.startWorkflow(orphan, "orphan", {});
 		const restored = new DbosDurableBackend(handle);
-		assert.equal((await restored.hydrateWorkflowForInspection(orphan)).kind, "malformed");
+		assert.equal((await restored.hydrateWorkflowForInspection(orphan)).kind, "absent");
 		assert.equal(restored.getWorkflow(orphan), undefined);
 		assert.equal(restored.isWorkflowLoadable(orphan), false);
+		const inspected = await inspectTargetedDurableWorkflow(restored, orphan);
+		assert.equal(inspected.kind, "absent");
+		assert.ok("message" in inspected);
+		assert.match(inspected.message, /Run not found:/);
+		const catalog = await restored.prepareWorkflowCatalog();
+		assert.ok(!catalog.inspectableIds?.includes(orphan));
+		assert.ok(!catalog.resumable.some((entry) => entry.workflowId === orphan));
+		assert.ok(!catalog.completed.some((entry) => entry.workflowId === orphan));
+
+		// Checkpoints without metadata are damaged retained state, not an
+		// unadmitted marker. They must still fail closed as malformed.
+		const incomplete = crypto.randomUUID();
+		await handle.startWorkflow(incomplete, "incomplete", {});
+		await handle.recordStepOutput(incomplete, "tool:retained", "retained");
+		assert.equal((await restored.hydrateWorkflowForInspection(incomplete)).kind, "malformed");
 	} finally {
 		finish.resolve();
 		finishNever.resolve();

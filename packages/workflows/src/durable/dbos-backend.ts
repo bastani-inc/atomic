@@ -1230,6 +1230,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			return { kind: deletion === "current" ? "deleted" : "malformed" };
 		}
 		const metadata = classifyLatestMetadata(records, info.workflowId);
+		if (metadata.kind === "unavailable" && records.length === 0) {
+			// A crash can leave the identity marker before initial admission metadata.
+			// It is not a run; omit it rather than report corrupt retained state.
+			await this.suppressWorkflow(info.workflowId);
+			return { kind: "absent" };
+		}
 		if (
 			metadata.kind !== "current" ||
 			(expected !== undefined &&
