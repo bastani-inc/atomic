@@ -7,6 +7,7 @@ import type {
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
 	ChatTranscriptComponent,
@@ -67,7 +68,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
-	compactionQueuedMessages: readonly string[] = [];
+	compactionQueuedMessages: readonly { text: string; mode: ChatSessionSubmitMode }[] = [];
 	compacting = false;
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;

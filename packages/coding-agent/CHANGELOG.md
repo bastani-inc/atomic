@@ -6,6 +6,7 @@
 
 - Fixed Ultrafast choices disappearing when a newer remote model catalog omitted the bundled service-tier metadata.
 - Fixed GPT-6.1 Sol subscription sign-in through `openai` and account aliases retaining the API's 272,000-token context. Subscription selections now use 500,000 tokens with no long-context price tier on Standard, Fast, and Ultrafast; API-key selections keep their API limits and pricing. Codex subscription limits also survive remote catalog refreshes.
+- Fixed messages queued during compaction being overtaken by later messages of the same type. Held messages now join their steering or follow-up queue as soon as compaction ends, including mid-turn compaction.
 
 ## [0.9.35] - 2026-10-13
 

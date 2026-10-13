@@ -51,7 +51,7 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 		lines.push(...pendingMessageLine(state, width, "Follow-up", message));
 	}
 	for (const message of state.compactionQueuedMessages) {
-		lines.push(...pendingMessageLine(state, width, "Queued", message));
+		lines.push(...pendingMessageLine(state, width, "Queued", message.text));
 	}
 	const hint = state.getActionKeyDisplay?.("app.message.dequeue") ?? "alt+up";
 	lines.push(...new Text(state.style.dim(`↳ ${hint} to edit all queued messages`), 1, 0).render(width));

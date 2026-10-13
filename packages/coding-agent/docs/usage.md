@@ -100,6 +100,8 @@ You can submit messages while the agent is still working:
 - **Ctrl+C** aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, a later idle Ctrl+C clears the editor without releasing the hold, and a second quick idle press exits.
 - **ALT+Up** explicitly retrieves queued messages back to the editor without aborting active work or resuming a paused session. Even when retrieval empties the queue, the pause remains active until the next ordinary submission.
 
+Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working.
+
 Both interrupts hold a queued message only while it is still waiting in the queue. A message the agent has already picked up is written into the transcript, and an interrupt that cancels its reply before any output appears no longer strands it: Atomic answers it instead of returning it to the editor. A reply that had already started printing is left as-is and is not restarted. Sending a message while that recovered reply is still streaming is safe — it is delivered as soon as the reply finishes.
 
 Both abort routes ask the agent to stop cooperatively. Escape waits as long as the agent needs, and neither route terminates the engine during normal cancellation.
