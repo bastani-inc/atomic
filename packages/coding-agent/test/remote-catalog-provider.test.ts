@@ -85,6 +85,20 @@ describe("remote catalog provider", () => {
 		);
 	});
 
+	it("preserves bundled service tiers omitted by remote catalogs and honors explicit replacements", async () => {
+		const baseline = { ...model("static"), serviceTiers: [{ id: "ultrafast" as const, cost: model("static").cost }] };
+		const builtin = builtinProvider();
+		const provider = withRemoteCatalog({ ...builtin, getModels: () => [baseline] });
+		const store = new InMemoryModelsStore();
+		await store.write(provider.id, { models: [{ ...model("static"), name: "Cached static" }] });
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { allowNetwork: false }));
+		assert.equal(provider.getModels()[0]?.name, "Cached static");
+		assert.deepEqual(provider.getModels()[0]?.serviceTiers, baseline.serviceTiers);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([{ ...model("static"), serviceTiers: [] }]));
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { force: true }));
+		assert.deepEqual(provider.getModels()[0]?.serviceTiers, []);
+	});
+
 	it("parses keyed catalogs, sends version headers, observes the refresh TTL, and supports forced refreshes", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 			async () =>

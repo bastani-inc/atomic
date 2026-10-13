@@ -159,7 +159,18 @@ export function composeModelProvider(
 					}
 				: undefined,
 		filterModels: base?.filterModels
-			? (models, credential: Credential | undefined) => base.filterModels!(models, credential)
+			? (models, credential: Credential | undefined) =>
+					base.filterModels!(models, credential).map((model) => {
+						const original = models.find((entry) => entry.id === model.id);
+						if (config?.models?.some((entry) => entry.id === model.id)) return original ?? model;
+						const inheritedContext = model.fastRoute
+							? config?.modelOverrides?.[model.fastRoute.baseModelId]?.contextWindow
+							: undefined;
+						const personalized =
+							inheritedContext === undefined ? model : { ...model, contextWindow: inheritedContext };
+						const override = config?.modelOverrides?.[model.id];
+						return override ? applyModelOverride(personalized, override) : personalized;
+					})
 			: undefined,
 		filterAllModels: base?.filterAllModels
 			? (models, credential: Credential | undefined) => base.filterAllModels!(models, credential)

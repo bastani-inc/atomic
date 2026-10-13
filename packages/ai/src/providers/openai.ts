@@ -4,6 +4,8 @@ import { loadOpenAIChatGPTOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { OPENAI_MODELS } from "./openai.models.ts";
 
+import { openaiSubscriptionModels } from "./openai-subscription-models.js";
+
 export function openaiProvider(): Provider<"openai-responses"> {
 	return createProvider<"openai-responses">({
 		id: "openai",
@@ -20,6 +22,7 @@ export function openaiProvider(): Provider<"openai-responses"> {
 			}),
 		},
 		models: Object.values(OPENAI_MODELS),
+		filterModels: (models, credential) => (credential?.type === "oauth" ? openaiSubscriptionModels(models) : models),
 		api: openAIResponsesApi(),
 	});
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { type Api, InMemoryCredentialStore, type Model } from "@bastani/pi-ai";
+import { type Api, InMemoryCredentialStore, InMemoryModelsStore, type Model } from "@bastani/pi-ai";
 import { test } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.js";
 
@@ -59,6 +60,110 @@ test("OpenAI account aliases isolate credentials and inherit ChatGPT request han
 	await credentials.delete("openai-1");
 	assert.equal(await runtime.getAuth("openai-1"), undefined);
 	assert.equal((await runtime.getAuth("openai-2"))?.auth.apiKey, "fake-token-openai-2");
+});
+
+test("OpenAI subscription account models keep 500k limits across base, Fast and Ultrafast lookups", async () => {
+	const { runtime, credentials } = await runtimeWithAccounts();
+	await credentials.modify("openai-2", async () => ({ type: "api_key", key: "sk-test" }));
+	await runtime.getAvailable();
+	for (const suffix of ["", "-fast", "-ultrafast"]) {
+		const id = `gpt-6.1-sol${suffix}`;
+		const subscription = runtime.getModel("openai-1", id);
+		const apiKey = runtime.getModel("openai-2", id);
+		assert.equal(subscription?.contextWindow, 500_000);
+		assert.equal(subscription?.cost.tiers, undefined);
+		assert.equal(apiKey?.contextWindow, 272_000);
+		assert.ok(apiKey?.cost.tiers);
+		assert.equal(runtime.getModels("openai-1").find((model) => model.id === id)?.contextWindow, 500_000);
+		if (suffix === "") {
+			assert.equal(runtime.getModelOfType("chat", "openai-1", id)?.contextWindow, 500_000);
+			assert.equal(
+				runtime.getModelsOfType("chat", "openai-1").find((model) => model.id === id)?.contextWindow,
+				500_000,
+			);
+			assert.deepEqual(
+				runtime.getAllModels("openai-1").find((model) => model.id === id),
+				subscription,
+			);
+		}
+	}
+});
+
+test("stored subscription limits survive registration and follow an account's new login immediately", async () => {
+	const credentials = AuthStorage.inMemory({
+		"openai-1": { type: "oauth", access: "fake", refresh: "fake", expires: Date.now() + 3_600_000 },
+	});
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+	runtime.registerProvider("openai-1", { aliasOf: "openai" });
+	await runtime.getAvailable();
+	runtime.registerProvider("openai-2", { aliasOf: "openai" });
+	assert.equal(runtime.getModel("openai-1", "gpt-6.1-sol")?.contextWindow, 500_000);
+	await credentials.modify("openai-1", async () => ({ type: "api_key", key: "sk-test" }));
+	assert.equal(runtime.getModel("openai-1", "gpt-6.1-sol")?.contextWindow, 272_000);
+	assert.ok(runtime.getModel("openai-1", "gpt-6.1-sol")?.cost.tiers);
+	await credentials.delete("openai-1");
+	assert.equal(runtime.getModel("openai-1", "gpt-6.1-sol")?.contextWindow, 272_000);
+});
+
+test("Codex and OpenAI subscription aliases retain Fast and Ultrafast after a tierless cached refresh", async () => {
+	const { runtime } = await runtimeWithAccounts();
+	for (const source of ["openai", "openai-codex"]) {
+		const base = runtime
+			.getProvider(source)
+			?.getModels()
+			.find((model) => model.id === "gpt-6.1-sol");
+		assert.ok(base);
+		const { serviceTiers: _tiers, ...remote } = base;
+		const store = new InMemoryModelsStore();
+		await store.write(source, { models: [{ ...remote, contextWindow: 272_000 }], lastModified: Date.now() + 60_000 });
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("account", async () => ({
+			type: "oauth",
+			access: `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.signature`,
+			refresh: "fake",
+			expires: Date.now() + 3_600_000,
+		}));
+		const cached = await ModelRuntime.create({
+			credentials,
+			modelsStore: store,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		cached.registerProvider("account", { aliasOf: source });
+		await cached.getAvailable();
+		for (const [suffix, tier] of [
+			["", undefined],
+			["-fast", "priority"],
+			["-ultrafast", "ultrafast"],
+		] as const) {
+			const model = cached.getModel("account", `gpt-6.1-sol${suffix}`);
+			assert.ok(model);
+			assert.equal(model.contextWindow, 500_000);
+			assert.equal(model.cost.tiers, undefined);
+			assert.equal(model.fastRoute?.serviceTier, tier);
+			assert.deepEqual(
+				model.serviceTiers?.map((entry) => entry.id),
+				["priority", "ultrafast"],
+			);
+			for (const entry of model.serviceTiers ?? []) assert.equal(entry.cost.tiers, undefined);
+			let sentTier: string | undefined;
+			await cached
+				.streamSimple(
+					model,
+					{ messages: [] },
+					{
+						onPayload: (payload) => {
+							const request = payload as { model: string; service_tier?: string };
+							assert.equal(request.model, "gpt-6.1-sol");
+							sentTier = request.service_tier;
+							throw new Error("offline capture");
+						},
+					},
+				)
+				.result();
+			assert.equal(sentTier, tier);
+		}
+	}
 });
 
 test("account aliases preserve browser callback metadata and live source models", async () => {

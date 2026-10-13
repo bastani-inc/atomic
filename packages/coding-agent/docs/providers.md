@@ -94,6 +94,8 @@ GPT-6.1 Sol is selectable as `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol`
 
 GPT-6.1 Sol also has an `-ultrafast` choice on `openai/*`, `openai-api/*` and `openai-codex/*`, for example `openai/gpt-6.1-sol-ultrafast`.
 
+ChatGPT sign-in through either `openai` or `openai-codex` gives GPT-6.1 Sol a 500,000-token context on Standard, Fast, and Ultrafast, without long-context fees. API-key sign-in through `openai` or `openai-api` keeps the 272,000-token default and API long-context pricing. Account aliases follow their own authentication method. Fast and Ultrafast choices work with either authentication method when the account supports the requested tier.
+
 #### Fast and Ultrafast tiers
 
 Atomic offers a tier only for the models that advertise it, following Codex's per-model catalog and OpenAI's published API pricing:
