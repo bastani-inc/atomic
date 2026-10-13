@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.35-alpha.4] - 2026-10-13
+
 ### Breaking Changes
 
 - Removed the experimental `@bastani/atomic/client` entrypoint and the `@earendil-works/pi-client` and `@earendil-works/pi-protocol` dependencies, which upstream Pi no longer publishes. SDK code that imported `@bastani/atomic/client` should use `createAgentSession()` from `@bastani/atomic` in-process or RPC mode (`--mode rpc` / `@bastani/atomic/rpc-entry`), or pin the previous release. The CLI, RPC mode, extensions and workflows are unaffected.

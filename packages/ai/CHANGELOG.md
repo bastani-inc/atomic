@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.35-alpha.4] - 2026-10-13
+
 ### Added
 
 - Added `personalizeOpenRouterCatalog()` to restrict OpenRouter chat catalogs to the models a key may use, with its context limits, output limits and prices from `/models/user`. Image and classifier models are preserved.
