@@ -24,6 +24,7 @@
 - Fixed Kitty image detection inside Herdr terminals and delayed terminal-reply bytes leaking into keyboard input.
 - Fixed shifted-symbol keybindings such as `+` using the physical key name instead of the produced symbol.
 - Fixed OpenRouter account model refresh being blocked by an unavailable or invalid optional pi.dev catalog.
+- Fixed running codemode and bash rows continuing to update elapsed-time displays after removal.
 
 ## [0.9.35-alpha.3] - 2026-10-12
 

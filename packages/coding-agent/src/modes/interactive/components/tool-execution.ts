@@ -242,6 +242,7 @@ export class ToolExecutionComponent extends Container {
 		this.callRendererComponent = undefined;
 		this.resultRendererComponent = undefined;
 		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
+		this.clearRendererStateTimer("interval");
 	}
 
 	override render(width: number): string[] {

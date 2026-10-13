@@ -8,6 +8,7 @@ import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -103,6 +104,36 @@ describe("ToolExecutionComponent parity", () => {
 		vi.advanceTimersByTime(1000);
 		component.invalidate();
 		expect(stripAnsi(component.render(120).join("\n"))).toBe(completed);
+		component.dispose();
+	});
+
+	test.each([
+		["codemode", () => codemodeRenderers, { code: "" }, { content: [], details: { calls: [] }, isError: false }],
+		["bash", () => createBashToolDefinition(process.cwd()), { command: "work" }, { content: [], isError: false }],
+	])("disposing a running %s row stops its elapsed-time timer", (name, definition, args, partial) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const requestRender = vi.fn();
+		const component = new ToolExecutionComponent(
+			name,
+			"dispose-timer",
+			args,
+			{},
+			definition() as ToolDefinition,
+			{ requestRender } as unknown as TUI,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult(partial, true);
+		vi.advanceTimersByTime(1000);
+		assert.ok(requestRender.mock.calls.length > 0);
+		assert.ok(vi.getTimerCount() > 0);
+
+		component.dispose();
+		const rendersAtDispose = requestRender.mock.calls.length;
+		vi.advanceTimersByTime(5000);
+		assert.equal(vi.getTimerCount(), 0);
+		assert.equal(requestRender.mock.calls.length, rendersAtDispose);
 		component.dispose();
 	});
 
