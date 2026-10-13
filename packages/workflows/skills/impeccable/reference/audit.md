@@ -69,8 +69,8 @@ Run the bundled detector and verify each finding in context. Look for repeated i
 |---|-----------|-------|-------------|
 | 1 | Accessibility | ? | [most critical a11y issue or "--"] |
 | 2 | Performance | ? | |
-| 3 | Responsive Design | ? | |
-| 4 | Theming | ? | |
+| 3 | Theming | ? | |
+| 4 | Responsive Design | ? | |
 | 5 | Implementation Integrity | ? | |
 | **Total** | | **??/20** | **[Rating band]** |
 
