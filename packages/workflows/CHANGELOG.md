@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Concurrent workflow metadata writes and legacy recovery now queue instead of exhausting a small ownership-fence connection pool.
+- Fixed completed durable workflows leaving their root DBOS record `PENDING` when run metadata was written before DBOS recorded the root's result. Admission now waits for the root's own result to be saved, without holding its lock or database connection, before writing metadata, so the root completes as `SUCCESS` and DBOS cleanup can remove it.
 
 ## [0.9.35-alpha.3] - 2026-10-12
 

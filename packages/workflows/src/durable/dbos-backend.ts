@@ -190,9 +190,12 @@ export async function configureDbosDurableBackend(config?: {
 		owner.wrappers = { mainWorkflow, checkpointWorkflow };
 	}
 	let backendFence = owner.executorFence;
-	let backend = new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence), {
-		checkReady,
-	});
+	let backend = new DbosDurableBackend(
+		createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence, [], { settleRootMarker: true }),
+		{
+			checkReady,
+		},
+	);
 	return {
 		get backend() {
 			return backend;
@@ -202,7 +205,9 @@ export async function configureDbosDurableBackend(config?: {
 			if (backendFence !== owner.executorFence && backendFence?.closed) {
 				backendFence = owner.executorFence;
 				backend = new DbosDurableBackend(
-					createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence),
+					createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence, [], {
+						settleRootMarker: true,
+					}),
 					{ checkReady },
 				);
 			}
