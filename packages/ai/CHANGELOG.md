@@ -11,7 +11,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
-- Fixed OpenRouter router models such as `openrouter/auto` displaying negative token costs. Negative placeholder prices are now treated as zero.
+- Personalized OpenRouter catalogs now treat negative placeholder prices, such as those returned for `openrouter/auto`, as zero instead of negative token costs.
 
 ## [0.9.35-alpha.3] - 2026-10-12
 
