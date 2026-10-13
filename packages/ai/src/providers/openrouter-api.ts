@@ -1,4 +1,4 @@
-import type { ModelCost, ModelCostTier } from "../types.ts";
+import type { ModelCost, ModelCostTier } from "../types.js";
 
 /** OpenRouter's per-token prices, as decimal strings. */
 export interface OpenRouterPricing {

@@ -214,19 +214,21 @@ describe("copyToClipboard", () => {
 		["ATOMIC_CLIPBOARD_OSC52", "win32", undefined],
 		["ATOMIC_CLIPBOARD_OSC52", "linux", ":99"],
 		["PI_CLIPBOARD_OSC52", "darwin", undefined],
-	] as const)("%s=1 emits OSC 52 after a successful %s copy", async (name, currentPlatform, display) => {
-		// Upstream earendil-works/pi#10826, #10835, #10114: remote clients that leave no SSH markers.
-		mockedPlatform.mockReturnValue(currentPlatform);
-		if (display) vi.stubEnv("DISPLAY", display);
-		vi.stubEnv(name, "1");
-		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+	] as const)(
+		"%s=1 emits OSC 52 after a successful %s copy (earendil-works/pi#10826, #10835, #10114)",
+		async (name, currentPlatform, display) => {
+			mockedPlatform.mockReturnValue(currentPlatform);
+			if (display) vi.stubEnv("DISPLAY", display);
+			vi.stubEnv(name, "1");
+			mockedExecSync.mockReturnValue(Buffer.alloc(0));
 
-		await copyToClipboard("hello");
+			await copyToClipboard("hello");
 
-		if (currentPlatform === "linux") assert.deepEqual(execSyncCommands(), ["xclip -selection clipboard"]);
-		else assert.deepEqual(mocks.clipboard.setText.mock.calls, [["hello"]]);
-		assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
-	});
+			if (currentPlatform === "linux") assert.deepEqual(execSyncCommands(), ["xclip -selection clipboard"]);
+			else assert.deepEqual(mocks.clipboard.setText.mock.calls, [["hello"]]);
+			assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
+		},
+	);
 
 	test("ATOMIC_CLIPBOARD_OSC52 takes precedence over PI_CLIPBOARD_OSC52", async () => {
 		vi.stubEnv("ATOMIC_CLIPBOARD_OSC52", "0");
