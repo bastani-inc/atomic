@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { unlinkSync, writeFileSync } from "fs";
 import { platform, tmpdir } from "os";
 import { join } from "path";
-import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.ts";
+import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
