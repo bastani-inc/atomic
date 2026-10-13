@@ -457,15 +457,15 @@ test("ChatSessionHost tolerates malformed queue updates", () => {
 });
 test("ChatSessionHost queues prompts during compaction and flushes after success", async () => {
 	const prompts: string[] = [];
-	const followUps: string[] = [];
+	const steers: string[] = [];
 	const host = makeHost({
 		getActionKeyDisplay: (action) => (action === "app.message.dequeue" ? "⌥↑" : action),
 		commands: {
 			prompt: async (text) => {
 				prompts.push(text);
 			},
-			followUp: async (text) => {
-				followUps.push(text);
+			steer: async (text) => {
+				steers.push(text);
 			},
 		},
 	});
@@ -492,7 +492,7 @@ test("ChatSessionHost queues prompts during compaction and flushes after success
 	await Promise.resolve();
 
 	assert.deepEqual(prompts, ["first"]);
-	assert.deepEqual(followUps, ["second"]);
+	assert.deepEqual(steers, ["second"]);
 	host.dispose();
 });
 
@@ -531,15 +531,15 @@ test("ChatSessionHost flushes queued prompts after a cancelled manual compaction
 
 test("ChatSessionHost preserves queued prompt order through manual compaction cancellation", async () => {
 	const prompts: string[] = [];
-	const followUps: string[] = [];
+	const steers: string[] = [];
 	let aborts = 0;
 	const host = makeHost({
 		commands: {
 			prompt: async (text) => {
 				prompts.push(text);
 			},
-			followUp: async (text) => {
-				followUps.push(text);
+			steer: async (text) => {
+				steers.push(text);
 			},
 			abortCompaction: () => {
 				aborts += 1;
@@ -563,7 +563,7 @@ test("ChatSessionHost preserves queued prompt order through manual compaction ca
 
 		assert.equal(aborts, 1);
 		assert.deepEqual(prompts, []);
-		assert.deepEqual(followUps, []);
+		assert.deepEqual(steers, []);
 
 		host.applyAgentEvent({
 			type: "compaction_end",
@@ -576,7 +576,7 @@ test("ChatSessionHost preserves queued prompt order through manual compaction ca
 		await Promise.resolve();
 
 		assert.deepEqual(prompts, ["first"]);
-		assert.deepEqual(followUps, ["second"]);
+		assert.deepEqual(steers, ["second"]);
 	} finally {
 		host.dispose();
 	}
@@ -584,14 +584,14 @@ test("ChatSessionHost preserves queued prompt order through manual compaction ca
 
 test("ChatSessionHost preserves queued prompt order through automatic compaction cancellation", async () => {
 	const prompts: string[] = [];
-	const followUps: string[] = [];
+	const steers: string[] = [];
 	const host = makeHost({
 		commands: {
 			prompt: async (text) => {
 				prompts.push(text);
 			},
-			followUp: async (text) => {
-				followUps.push(text);
+			steer: async (text) => {
+				steers.push(text);
 			},
 			abortCompaction: () => {},
 		},
@@ -622,7 +622,7 @@ test("ChatSessionHost preserves queued prompt order through automatic compaction
 		await Promise.resolve();
 
 		assert.deepEqual(prompts, ["first"]);
-		assert.deepEqual(followUps, ["second"]);
+		assert.deepEqual(steers, ["second"]);
 	} finally {
 		host.dispose();
 	}

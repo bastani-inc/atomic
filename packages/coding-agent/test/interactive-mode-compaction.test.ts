@@ -1,10 +1,12 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { Usage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall, type Usage } from "@bastani/pi-ai/compat";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -21,6 +23,7 @@ import {
 } from "../src/modes/interactive/components/compaction-boundary-message.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { createHarness, getUserTexts } from "./suite/harness.js";
 import { assistantMsg, userMsg } from "./utilities.js";
 
 const previousKeybindings = getKeybindings();
@@ -214,6 +217,144 @@ function renderedText(container: Container): string {
 	return stripVTControlCharacters(container.render(200).join("\n"));
 }
 
+for (const queueMode of ["steer", "followUp"] as const) {
+	for (const aborted of [false, true]) {
+		for (const midTurn of [true, false]) {
+			it(`InteractiveMode admits held ${queueMode} messages at ${aborted ? "aborted" : "successful"} ${midTurn ? "mid-turn" : "idle manual"} compaction end before later messages`, async () => {
+				let releaseTool = () => {};
+				const toolRelease = new Promise<void>((resolve) => {
+					releaseTool = resolve;
+				});
+				let toolStarted = () => {};
+				const toolStart = new Promise<void>((resolve) => {
+					toolStarted = resolve;
+				});
+				const waitTool: AgentTool = {
+					name: "wait",
+					label: "Wait",
+					description: "Wait for release",
+					parameters: Type.Object({}),
+					execute: async () => {
+						toolStarted();
+						await toolRelease;
+						return { content: [{ type: "text", text: "released" }], details: {} };
+					},
+				};
+				let commandRan = false;
+				const harness = await createHarness({
+					tools: [waitTool],
+					settings: { compaction: { enabled: false } },
+					extensionFactories: [
+						(api) => {
+							api.registerCommand("ping", {
+								handler: async () => {
+									commandRan = true;
+								},
+							});
+						},
+					],
+				});
+				const { mode: base } = makeMode([]);
+				let compacting = false;
+				let draft = "";
+				const editor: {
+					onEscape: () => void;
+					onSubmit?: (text: string) => Promise<void>;
+					getText: () => string;
+					setText: (text: string) => void;
+					addToHistory: (text: string) => void;
+				} = {
+					onEscape: () => {},
+					getText: () => draft,
+					setText: (text) => {
+						draft = text;
+					},
+					addToHistory: () => {},
+				};
+				const mode = {
+					...base,
+					session: harness.session,
+					sessionManager: harness.sessionManager,
+					defaultEditor: editor,
+					editor,
+					get compactionActive() {
+						return compacting;
+					},
+					queueCompactionMessage: Reflect.get(InteractiveMode.prototype, "queueCompactionMessage"),
+					flushCompactionQueue: Reflect.get(InteractiveMode.prototype, "flushCompactionQueue"),
+					clearAllQueues: Reflect.get(InteractiveMode.prototype, "clearAllQueues"),
+					isExtensionCommand: Reflect.get(InteractiveMode.prototype, "isExtensionCommand"),
+					updatePendingMessagesDisplay: () => {},
+				};
+				Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler").call(mode);
+				const submit = async (text: string): Promise<void> => {
+					editor.setText(text);
+					if (queueMode === "followUp") {
+						await Reflect.get(InteractiveMode.prototype, "handleFollowUp").call(mode);
+					} else {
+						await editor.onSubmit!(text);
+					}
+				};
+				const pending = () =>
+					queueMode === "followUp" ? harness.session.getFollowUpMessages() : harness.session.getSteeringMessages();
+				const unsubscribe = harness.session.subscribe((event) => {
+					if (event.type === "agent_end") void emit(mode, event);
+				});
+				let running: Promise<void> | undefined;
+				const reason = midTurn ? "threshold" : "manual";
+				try {
+					harness.setResponses([
+						fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" }),
+						fauxAssistantMessage("done"),
+						fauxAssistantMessage("done"),
+						fauxAssistantMessage("done"),
+						fauxAssistantMessage("done"),
+						fauxAssistantMessage("done"),
+					]);
+					if (midTurn) {
+						running = harness.session.prompt("start");
+						await toolStart;
+					}
+					compacting = true;
+					await emit(mode, { type: "compaction_start", reason, midTurn });
+					await submit("A");
+					await submit("A2");
+					await submit("A3");
+					assert.deepEqual(pending(), []);
+					assert.deepEqual(
+						mode.compactionQueuedMessages,
+						["A", "A2", "A3"].map((text) => ({ text, mode: queueMode })),
+					);
+					compacting = false;
+					await emit(mode, {
+						type: "compaction_end",
+						reason,
+						aborted,
+						willRetry: false,
+						midTurn,
+					});
+					if (!midTurn) await toolStart;
+					await submit("/ping");
+					assert.equal(commandRan, true, "extension commands execute without waiting for the active turn");
+					await submit("B");
+					const expected = [...(midTurn ? ["start"] : []), "A", "A2", "A3", "B"];
+					assert.deepEqual([...getUserTexts(harness), ...pending()], expected);
+					releaseTool();
+					await running;
+					await vi.waitFor(() => assert.deepEqual(getUserTexts(harness), expected));
+					await harness.session.agent.waitForIdle();
+					assert.deepEqual(mode.compactionQueuedMessages, []);
+					assert.deepEqual(mode.showError.mock.calls, !midTurn && aborted ? [["Compaction cancelled"]] : []);
+				} finally {
+					releaseTool();
+					unsubscribe();
+					await harness.cleanup();
+				}
+			});
+		}
+	}
+}
+
 describe("InteractiveMode compaction events", () => {
 	for (const reason of ["manual", "threshold", "overflow"] as const) {
 		it(`renders exactly one live boundary after successful ${reason} compaction`, async () => {
@@ -405,7 +546,7 @@ describe("InteractiveMode compaction events", () => {
 		}
 	});
 
-	it("does not flush queued input as a separate prompt during mid-turn compaction", async () => {
+	it("releases queued input when mid-turn compaction ends", async () => {
 		const { mode } = makeMode();
 
 		await emit(mode, {
@@ -417,7 +558,7 @@ describe("InteractiveMode compaction events", () => {
 			midTurn: true,
 		});
 
-		expect(mode.flushCompactionQueue).not.toHaveBeenCalled();
+		expect(mode.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 
 	it("waits for a pending manual takeover before flushing queued input", async () => {

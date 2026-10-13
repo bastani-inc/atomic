@@ -142,7 +142,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	}
 	if (state.compacting) {
 		setChatSessionEditorText(state, "");
-		state.compactionQueuedMessages = [...state.compactionQueuedMessages, text];
+		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
 		notifyChatSessionStatus(state, "Queued message until compaction completes");
 		return;
 	}
@@ -272,22 +272,26 @@ export async function flushChatSessionCompactionQueue<TExtraEntry extends ChatTr
 	const queued = [...state.compactionQueuedMessages];
 	state.compactionQueuedMessages = [];
 	if (queued.length === 0) return;
-	let nextIndex = 0;
-	try {
-		const first = queued[0];
-		if (first !== undefined) {
-			// A message parked during compaction resumes the ordinary Enter path.
-			await requiredChatSessionPromptCommand(state)(first, "auto");
-			nextIndex = 1;
-		}
-		for (; nextIndex < queued.length; nextIndex++) {
-			await queueChatSessionFollowUp(state, queued[nextIndex]!);
-		}
-	} catch (err) {
-		state.compactionQueuedMessages = [...queued.slice(nextIndex), ...state.compactionQueuedMessages];
-		notifyChatSessionWarning(state, errorMessage(err));
-		state.requestRender?.();
-	}
+	const agentSession = state.getAgentSession?.();
+	const queueOnly = isChatSessionStreaming(state) || state.isPaused?.() === true || agentSession?.queuedMessagesPaused;
+	const deliveries = queued.map((message, index) => {
+		const delivery =
+			!queueOnly && index === 0
+				? requiredChatSessionPromptCommand(state)(message.text, message.mode)
+				: message.mode === "followUp"
+					? queueChatSessionFollowUp(state, message.text)
+					: queueChatSessionSteer(state, message.text);
+		return delivery.catch((err) => {
+			const pending = [...state.compactionQueuedMessages, message];
+			state.compactionQueuedMessages = [
+				...queued.filter((item) => pending.includes(item)),
+				...pending.filter((item) => !queued.includes(item)),
+			];
+			notifyChatSessionWarning(state, errorMessage(err));
+			state.requestRender?.();
+		});
+	});
+	await Promise.all(deliveries);
 }
 
 export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -297,7 +301,7 @@ export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscript
 	const queuedMessages = [
 		...state.pendingSteeringMessages,
 		...state.pendingFollowUpMessages,
-		...state.compactionQueuedMessages,
+		...state.compactionQueuedMessages.map((message) => message.text),
 	];
 	if (queuedMessages.length === 0) {
 		if (!options?.suppressEmptyNotice) notifyChatSessionStatus(state, "No queued messages to restore");
@@ -384,7 +388,7 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 		return;
 	}
 	const agentSession = state.getAgentSession?.();
-	if (agentSession?.isStreaming) {
+	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
 		await agentSession.prompt(text, { streamingBehavior: "steer" });
 		return;
 	}
@@ -400,7 +404,7 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 		return;
 	}
 	const agentSession = state.getAgentSession?.();
-	if (agentSession?.isStreaming) {
+	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
 		await agentSession.prompt(text, { streamingBehavior: "followUp" });
 		return;
 	}

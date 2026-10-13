@@ -132,6 +132,13 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function (
 	};
 
 	try {
+		if (!options?.willRetry && (this.session.isStreaming || this.session.queuedMessagesPaused)) {
+			await Promise.all(
+				queuedMessages.map((message) => this.session.prompt(message.text, { streamingBehavior: message.mode })),
+			);
+			this.updatePendingMessagesDisplay();
+			return;
+		}
 		if (options?.willRetry) {
 			// When retry is pending, queue messages for the retry turn
 			for (const message of queuedMessages) {

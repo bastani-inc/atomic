@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import type { Component, EditorTheme } from "@earendil-works/pi-tui";
-import { beforeAll, test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import {
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	type VerbatimCompactionResult,
@@ -194,12 +194,11 @@ test("ChatSessionHost preserves compaction queued messages when flush fails", as
 		aborted: false,
 		willRetry: false,
 	} as never);
-	await Promise.resolve();
-	await Promise.resolve();
-
-	const pending = host.renderPendingMessages(80).join("\n");
-	assert.match(pending, /first/);
-	assert.match(pending, /second/);
+	await vi.waitFor(() => {
+		const pending = host.renderPendingMessages(80).join("\n");
+		assert.match(pending, /first/);
+		assert.match(pending, /second/);
+	});
 	assert.equal(host.restoreQueuedMessagesToEditor(), true);
 	assert.equal(host.inputText(), "first\n\nsecond");
 	assert.doesNotMatch(host.statusText(), /Restored .*queued message/);
@@ -209,6 +208,71 @@ test("ChatSessionHost preserves compaction queued messages when flush fails", as
 	);
 	host.dispose();
 });
+test("ChatSessionHost restores only failed held messages without waiting for the active prompt", async () => {
+	const prompt = Promise.withResolvers<void>();
+	const firstFailure = Promise.withResolvers<void>();
+	const host = makeHost({
+		commands: {
+			prompt: () => prompt.promise,
+			followUp: async (text) => {
+				if (text === "first failure") await firstFailure.promise;
+				throw new Error(`failed: ${text}`);
+			},
+			steer: async () => {},
+		},
+	});
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		await host.submit("auto", "accepted prompt");
+		await host.submit("followUp", "first failure");
+		await host.submit("followUp", "second failure");
+		await host.submit("auto", "accepted steer");
+		host.applyAgentEvent({ type: "compaction_end", reason: "manual", aborted: false, willRetry: false } as never);
+		firstFailure.reject(new Error("first failure"));
+		await vi.waitFor(() => {
+			assert.match(host.renderPendingMessages(80).join("\n"), /first failure/);
+			assert.match(host.renderPendingMessages(80).join("\n"), /second failure/);
+		});
+		assert.equal(host.restoreQueuedMessagesToEditor(), true);
+		assert.equal(host.inputText(), "first failure\n\nsecond failure");
+	} finally {
+		prompt.resolve();
+		firstFailure.resolve();
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost releases compaction messages into paused queues without resuming", async () => {
+	const calls: string[] = [];
+	const host = makeHost({
+		isPaused: () => true,
+		commands: {
+			prompt: async () => {
+				calls.push("prompt");
+			},
+			resume: async () => {
+				calls.push("resume");
+			},
+			steer: async (text) => {
+				calls.push(`steer:${text}`);
+			},
+			followUp: async (text) => {
+				calls.push(`followUp:${text}`);
+			},
+		},
+	});
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		await host.submit("auto", "A");
+		await host.submit("followUp", "follow-up");
+		await host.submit("auto", "B");
+		host.applyAgentEvent({ type: "compaction_end", reason: "manual", aborted: true, willRetry: false } as never);
+		await vi.waitFor(() => assert.deepEqual(calls, ["steer:A", "followUp:follow-up", "steer:B"]));
+	} finally {
+		host.dispose();
+	}
+});
+
 test("ChatSessionHost refreshes successful compacted transcripts exactly once for every reason", () => {
 	const details = {
 		strategy: "verbatim-lines",

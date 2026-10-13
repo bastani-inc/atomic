@@ -482,7 +482,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (event.midTurn && !event.aborted && !event.errorMessage && !manualTakeoverPending) {
 				this.showWorkingLoaderNow();
 			}
-			if (!event.midTurn && !manualTakeoverPending) void this.flushCompactionQueue({ willRetry: event.willRetry });
+			if (!manualTakeoverPending) void this.flushCompactionQueue({ willRetry: event.willRetry });
 			this.ui.requestRender();
 			break;
 		}
