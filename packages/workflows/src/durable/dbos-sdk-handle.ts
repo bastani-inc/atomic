@@ -130,20 +130,29 @@ export function createRealDbosHandle(
 		}
 		return records;
 	}
+	async function retrieveMatchingRootMarker(
+		workflowId: string,
+		name: string,
+		inputs: Record<string, WorkflowSerializableValue>,
+	): Promise<DbosWorkflowHandle | undefined> {
+		const existing = await raw.retrieveWorkflow(workflowId);
+		if (existing === undefined) return undefined;
+		if (existing.name !== name || !isDeepStrictEqual(existing.inputs, inputs))
+			throw new Error("Workflow root identity changed during admission");
+		return dbos.retrieveWorkflow(workflowId);
+	}
 	async function startRoot(workflowId: string, name: string, inputs: Record<string, WorkflowSerializableValue>) {
 		if (fence !== undefined) {
-			const existing = await raw.retrieveWorkflow(workflowId);
-			if (existing !== undefined) {
-				if (existing.name !== name || !isDeepStrictEqual(existing.inputs, inputs))
-					throw new Error("Workflow root identity changed during admission");
-				return undefined;
-			}
+			const existing = await retrieveMatchingRootMarker(workflowId, name, inputs);
+			if (existing !== undefined) return existing;
 		}
 		try {
 			return await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
 		} catch (err) {
 			if (!isDbosDuplicateWorkflowError(err)) throw err;
-			return undefined;
+			const raced = await retrieveMatchingRootMarker(workflowId, name, inputs);
+			if (raced === undefined) throw err;
+			return raced;
 		}
 	}
 	async function settleMarker(marker: DbosWorkflowHandle | undefined): Promise<void> {
