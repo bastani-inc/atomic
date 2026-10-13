@@ -1388,7 +1388,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 ```typescript
 type WorkflowDurability =
   | { readonly mode: "memory" }
-  | { readonly mode: "durable"; readonly systemDatabaseUrl?: string };
+  | { readonly mode: "durable"; readonly systemDatabaseUrl?: string; readonly poolSize?: number };
 ```
 
 `run()` sets up workflow durability itself and shuts it down when the run ends, unless another Atomic session in the same process is still using it. `durability` chooses the backend for one call:
@@ -1397,8 +1397,11 @@ type WorkflowDurability =
 - **`{ mode: "memory" }`:** runs with an in-memory backend that lasts only for this call. Postgres is never started, and nothing can be resumed after the process exits.
 - **`{ mode: "durable" }`:** requires durable state and fails fast. If the backend can't start, or only an in-memory fallback is available, `run()` rejects with `WorkflowDurabilityRequiredError` before the workflow runs.
 - **`{ mode: "durable", systemDatabaseUrl }`:** also chooses the Postgres database, for example a hosted one, and Atomic doesn't start or manage a local Postgres. `DBOS_SYSTEM_DATABASE_URL` overrides this value when set, so an operator can point a deployment at another database without changing code.
+- **`{ mode: "durable", poolSize }`:** sets the maximum connections per workflow database pool, with or without a URL, including when the URL comes from `DBOS_SYSTEM_DATABASE_URL`. Defaults to 10; must be an integer of at least 2 because an ownership pool holds one long-lived advisory-lock connection and needs another for transactions. Each process opens a DBOS SQL pool and an ownership-fence pool, plus another fence pool after recovery. Lower it for tight hosted connection limits or many processes; raise it for a high-throughput process on a large database.
 
 One process uses one workflow database: DBOS runs a single executor per process, so a later run in the same process that asks for a different URL rejects. Separate processes are independent. The Atomic CLI and any number of SDK applications can each use their own database, or share one, including Atomic's managed Postgres. Each process only recovers its own interrupted runs, and an SDK process that exits doesn't stop the managed Postgres other processes are using.
+
+Once DBOS is configured, a later request for a different `poolSize` rejects until the process restarts. Repeating the same size or omitting it keeps the current configuration.
 
 ```ts
 import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";

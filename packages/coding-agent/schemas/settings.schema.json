@@ -501,6 +501,12 @@
             "durability": {
               "type": "object",
               "properties": {
+                "poolSize": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "default": 10,
+                  "description": "Maximum connections per workflow database pool (at least 2)."
+                },
                 "systemDatabaseUrl": {
                   "type": "string",
                   "description": "PostgreSQL URL for the workflow database."

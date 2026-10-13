@@ -3,11 +3,12 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { getAgentDir, getAgentDirs, getProjectConfigDirs, type Settings, SettingsManager } from "@bastani/atomic";
+import { requestDbosPoolSize, validateDbosPoolSize } from "../durable/dbos-pool-size.js";
 import { requestDbosSystemDatabaseUrl } from "../durable/dbos-system-database-url.js";
 
 type DatabaseSettings = NonNullable<Exclude<Settings["workflows"], string[]>>["durability"];
 
-const DATABASE_SETTING_KEYS: ReadonlySet<string> = new Set(["systemDatabaseUrl", "systemDatabaseUrlFile"]);
+const DATABASE_SETTING_KEYS: ReadonlySet<string> = new Set(["systemDatabaseUrl", "systemDatabaseUrlFile", "poolSize"]);
 
 export interface WorkflowDatabaseSettingsDirectories {
 	readonly global: string;
@@ -44,7 +45,7 @@ export async function resolveWorkflowDatabaseSettings(
 	global: Settings,
 	project: Settings,
 	directories: WorkflowDatabaseSettingsDirectories,
-): Promise<string | undefined> {
+): Promise<{ url?: string; poolSize?: number } | undefined> {
 	const projectDatabase = databaseSettings(project);
 	const database = projectDatabase !== undefined ? projectDatabase : databaseSettings(global);
 	if (database === undefined) return undefined;
@@ -52,9 +53,11 @@ export async function resolveWorkflowDatabaseSettings(
 		throw new TypeError("workflows.durability must be an object");
 	}
 	if (Object.keys(database).some((key) => !DATABASE_SETTING_KEYS.has(key))) {
-		throw new TypeError("workflows.durability supports only systemDatabaseUrl or systemDatabaseUrlFile");
+		throw new TypeError("workflows.durability supports only systemDatabaseUrl, systemDatabaseUrlFile, or poolSize");
 	}
-	const { systemDatabaseUrl: url, systemDatabaseUrlFile: file } = database;
+	const { systemDatabaseUrl: url, systemDatabaseUrlFile: file, poolSize } = database;
+	if (poolSize !== undefined) validateDbosPoolSize(poolSize, "workflows.durability.poolSize");
+	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return { poolSize };
 	if (url !== undefined && file !== undefined) {
 		throw new TypeError("Set only one of workflows.durability.systemDatabaseUrl and systemDatabaseUrlFile");
 	}
@@ -73,7 +76,7 @@ export async function resolveWorkflowDatabaseSettings(
 			throw new Error("Cannot read workflows.durability.systemDatabaseUrlFile; check its path and permissions");
 		}
 	}
-	if (value === undefined) return undefined;
+	if (value === undefined) return { poolSize };
 	if (typeof value !== "string" || value.trim() === "") {
 		throw new TypeError("Workflow database selection must contain a non-empty Postgres URL");
 	}
@@ -83,18 +86,18 @@ export async function resolveWorkflowDatabaseSettings(
 	} catch {
 		throw new TypeError("Workflow database selection must contain a valid Postgres URL");
 	}
-	return value.trim();
+	return { url: value.trim(), poolSize };
 }
 
 export async function prepareWorkflowDatabaseSettings(cwd: string, projectTrusted: boolean): Promise<void> {
-	if (process.env.DBOS_SYSTEM_DATABASE_URL?.trim()) return;
 	const manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted });
-	if (manager.drainErrors().length > 0)
+	if (manager.drainErrors().length > 0 && !process.env.DBOS_SYSTEM_DATABASE_URL?.trim())
 		throw new Error("Cannot read workflow database settings; repair settings.json");
 	const projectDirectories = getProjectConfigDirs(cwd);
-	const url = await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), {
+	const database = await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), {
 		global: settingsDirectoryDeclaringDatabase(getAgentDirs()),
 		project: projectTrusted ? settingsDirectoryDeclaringDatabase(projectDirectories) : projectDirectories[0]!,
 	});
-	if (url !== undefined) requestDbosSystemDatabaseUrl(url);
+	if (database?.url !== undefined) requestDbosSystemDatabaseUrl(database.url);
+	if (database?.poolSize !== undefined) requestDbosPoolSize(database.poolSize);
 }

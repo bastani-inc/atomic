@@ -49,6 +49,7 @@ export interface DbosProcessOwner {
 	failure: DbosDurabilityError | undefined;
 	wrappers: DbosRegisteredWrappers | undefined;
 	systemDatabaseUrl?: string;
+	poolSize?: number;
 	databaseDiagnostics?: () => DbosDatabaseDiagnostics;
 	executorFence?: DbosOwnerFence;
 	executorId?: string;
@@ -97,6 +98,7 @@ export function resetDbosProcessOwner(): void {
 	owner.wrappers = undefined;
 	owner.leases.clear();
 	owner.systemDatabaseUrl = undefined;
+	owner.poolSize = undefined;
 	owner.databaseDiagnostics = undefined;
 	owner.executorFence = undefined;
 	owner.createExecutorFence = undefined;

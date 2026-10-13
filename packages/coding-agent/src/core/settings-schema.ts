@@ -340,6 +340,13 @@ const WorkflowsSettingsSchema = Type.Union(
 			durability: Type.Optional(
 				Type.Object(
 					{
+						poolSize: Type.Optional(
+							Type.Integer({
+								minimum: 2,
+								default: 10,
+								description: "Maximum connections per workflow database pool (at least 2).",
+							}),
+						),
 						systemDatabaseUrl: Type.Optional(
 							Type.String({ description: "PostgreSQL URL for the workflow database." }),
 						),

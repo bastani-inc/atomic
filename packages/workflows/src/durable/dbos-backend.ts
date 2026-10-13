@@ -32,6 +32,7 @@ import {
 	parseCurrentMetadataRecord,
 	parsePendingStageMessages,
 } from "./dbos-metadata.js";
+import { requestDbosPoolSize } from "./dbos-pool-size.js";
 import { DbosPromptReservationTracker, isDbosPromptStateStep } from "./dbos-prompt-reservations.js";
 import { transitionDbosWorkflowStatus } from "./dbos-status-transition.js";
 import { classifyDbosDeletionTombstone, DBOS_DELETION_STEP, encodeDbosDeletionTombstone } from "./dbos-tombstone.js";
@@ -146,7 +147,9 @@ export function effectiveSystemDatabaseUrl(
 /** Configure and register DBOS workflows without launching the executor. */
 export async function configureDbosDurableBackend(config?: {
 	readonly systemDatabaseUrl?: string;
+	readonly poolSize?: number;
 }): Promise<ConfiguredDbosDurability> {
+	if (config?.poolSize !== undefined) requestDbosPoolSize(config.poolSize);
 	const sdk = await importDbosSdk();
 	const owner = getDbosProcessOwner();
 	const existing = owner.wrappers;

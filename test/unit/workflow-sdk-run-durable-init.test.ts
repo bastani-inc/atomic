@@ -15,6 +15,7 @@ import {
 	resetDbosLifecycleForTests,
 } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { shouldProvisionLocalDbos } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
+import { resolvedDbosPoolSize } from "../../packages/workflows/src/durable/dbos-pool-size.js";
 import { explicitDbosSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-system-database-url.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run, WorkflowDurabilityRequiredError, workflow } from "../../packages/workflows/src/sdk-surface.js";
@@ -213,6 +214,39 @@ describe("SDK run() durability option", () => {
 		} finally {
 			await releaseHost();
 		}
+	});
+	test.sequential("pool size configures DBOS and rejects a later mismatch but accepts same or omitted sizes", async () => {
+		withoutInjectedBackend();
+		resetDbosLifecycleForTests(launchingConfigurator([]));
+		const releaseHost = acquireDbosLease();
+		try {
+			assert.equal((await run(greet, {}, { durability: { mode: "durable", poolSize: 2 } })).status, "completed");
+			assert.equal(resolvedDbosPoolSize(), 2);
+			await assert.rejects(
+				run(greet, {}, { durability: { mode: "durable", poolSize: 3 } }),
+				/already configured.*poolSize 2.*poolSize 3/,
+			);
+			assert.equal((await run(greet, {}, { durability: { mode: "durable", poolSize: 2 } })).status, "completed");
+			assert.equal((await run(greet, {}, { durability: { mode: "durable" } })).status, "completed");
+		} finally {
+			await releaseHost();
+		}
+	});
+
+	test.sequential("SDK rejects invalid pool sizes before configuring DBOS", async () => {
+		withoutInjectedBackend();
+		let configurations = 0;
+		resetDbosLifecycleForTests(async () => {
+			configurations++;
+			return await launchingConfigurator([])();
+		});
+		for (const poolSize of [1, 0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, "2" as never, null as never]) {
+			await assert.rejects(run(greet, {}, { durability: { mode: "durable", poolSize } }), {
+				name: "TypeError",
+				message: /durability\.poolSize.*integer of at least 2/,
+			});
+		}
+		assert.equal(configurations, 0);
 	});
 });
 

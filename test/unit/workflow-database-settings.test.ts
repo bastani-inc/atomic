@@ -10,6 +10,7 @@ import {
 	resolveDbosSystemDatabaseUrl,
 	shouldProvisionLocalDbos,
 } from "../../packages/workflows/src/durable/dbos-local-postgres.js";
+import { resolvedDbosPoolSize } from "../../packages/workflows/src/durable/dbos-pool-size.js";
 import { resetDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import {
 	DbosSystemDatabaseConflictError,
@@ -101,35 +102,41 @@ test("URL files trim whitespace and resolve relative to the selected settings sc
 	await writeFile(join(root, ".atomic/direct.url"), ` ${projectUrl}\n`);
 	const global = { workflows: { durability: { systemDatabaseUrlFile: "direct.url" } } };
 	const project = { workflows: { durability: { systemDatabaseUrlFile: "direct.url" } } };
-	assert.equal(await resolveWorkflowDatabaseSettings(global, {}, directories()), globalUrl);
-	assert.equal(await resolveWorkflowDatabaseSettings(global, project, directories()), projectUrl);
-	assert.equal(
+	assert.deepEqual(await resolveWorkflowDatabaseSettings(global, {}, directories()), {
+		url: globalUrl,
+		poolSize: undefined,
+	});
+	assert.deepEqual(await resolveWorkflowDatabaseSettings(global, project, directories()), {
+		url: projectUrl,
+		poolSize: undefined,
+	});
+	assert.deepEqual(
 		await resolveWorkflowDatabaseSettings(
 			global,
 			{ workflows: { durability: { systemDatabaseUrl: projectUrl } } },
 			directories(),
 		),
-		projectUrl,
+		{ url: projectUrl, poolSize: undefined },
 	);
-	assert.equal(
+	assert.deepEqual(
 		await resolveWorkflowDatabaseSettings(
 			{},
 			{ workflows: { durability: { systemDatabaseUrlFile: join(agentDir, "direct.url") } } },
 			directories(),
 		),
-		globalUrl,
+		{ url: globalUrl, poolSize: undefined },
 	);
 	const originalHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 	process.env.HOME = root;
 	process.env.USERPROFILE = root;
 	try {
-		assert.equal(
+		assert.deepEqual(
 			await resolveWorkflowDatabaseSettings(
 				{ workflows: { durability: { systemDatabaseUrlFile: "~/agent/direct.url" } } },
 				{},
 				directories(),
 			),
-			globalUrl,
+			{ url: globalUrl, poolSize: undefined },
 		);
 	} finally {
 		for (const [name, value] of Object.entries(originalHome)) {
@@ -208,9 +215,9 @@ test("workflow paths retain array compatibility and preserve database settings w
 	manager.setProjectWorkflowPaths(["project.ts"]);
 	await manager.flush();
 	assert.deepEqual(manager.getWorkflowPaths(), ["project.ts"]);
-	assert.equal(
+	assert.deepEqual(
 		await resolveWorkflowDatabaseSettings(manager.getGlobalSettings(), manager.getProjectSettings(), directories()),
-		projectUrl,
+		{ url: projectUrl, poolSize: undefined },
 	);
 	assert.deepEqual(SettingsManager.inMemory({ workflows: ["legacy.ts"] }).getWorkflowPaths(), ["legacy.ts"]);
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify({ workflows: ["legacy.ts"] }));
@@ -249,4 +256,45 @@ test("extension retries repaired credential files and rechecks a changed trust d
 	trusted = true;
 	await state.runtimeProxy.dispatch({ action: "list" });
 	assert.equal(explicitDbosSystemDatabaseUrl(), projectUrl);
+});
+
+test("pool size settings select managed defaults and trusted project precedence", async () => {
+	assert.equal(resolvedDbosPoolSize(), 10);
+	await writeFile(join(agentDir, "settings.json"), JSON.stringify({ workflows: { durability: { poolSize: 3 } } }));
+	await writeFile(join(root, ".atomic/settings.json"), JSON.stringify({ workflows: { durability: { poolSize: 2 } } }));
+	await prepareWorkflowDatabaseSettings(root, true);
+	assert.equal(resolvedDbosPoolSize(), 2);
+	assert.equal(explicitDbosSystemDatabaseUrl(), undefined);
+	resetDbosProcessOwner();
+	await prepareWorkflowDatabaseSettings(root, false);
+	assert.equal(resolvedDbosPoolSize(), 3);
+});
+
+test("environment URL overrides only URL selection while settings pool size still applies", async () => {
+	process.env.DBOS_SYSTEM_DATABASE_URL = globalUrl;
+	await writeFile(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ workflows: { durability: { systemDatabaseUrlFile: "missing.url", poolSize: 2 } } }),
+	);
+	await prepareWorkflowDatabaseSettings(root, true);
+	assert.equal(explicitDbosSystemDatabaseUrl(), globalUrl);
+	assert.equal(resolvedDbosPoolSize(), 2);
+});
+
+test("pool size settings reject non-integers, values below two and non-numbers", async () => {
+	for (const poolSize of [1, 0, -1, 2.5, "2", null, true]) {
+		await writeFile(join(agentDir, "settings.json"), JSON.stringify({ workflows: { durability: { poolSize } } }));
+		await assert.rejects(prepareWorkflowDatabaseSettings(root, true), {
+			name: "TypeError",
+			message: /workflows\.durability\.poolSize.*integer of at least 2/,
+		});
+	}
+});
+
+test("unknown database keys report all supported settings", async () => {
+	await writeFile(join(agentDir, "settings.json"), JSON.stringify({ workflows: { durability: { max: 2 } } }));
+	await assert.rejects(
+		prepareWorkflowDatabaseSettings(root, true),
+		/supports only systemDatabaseUrl, systemDatabaseUrlFile, or poolSize/,
+	);
 });
