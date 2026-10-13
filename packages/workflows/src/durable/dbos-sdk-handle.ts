@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
 import type { DbosSdkHandle, DbosStepRecord, DbosWorkflowInfo } from "./dbos-backend.js";
 import {
 	claimMetadataStepName,
@@ -97,6 +98,7 @@ export function createRealDbosHandle(
 	) => Promise<WorkflowSerializableValue>,
 	fence?: DbosOwnerFence,
 	previousExecutorIds: readonly string[] = [],
+	options: { readonly settleRootMarker?: boolean } = {},
 ): DbosSdkHandle {
 	const checkpointId = (workflowId: string, stepName: string): string => `${workflowId}:checkpoint:${stepName}`;
 	async function stepRecord(status: DbosStatus, prefix: string): Promise<DbosStepRecord | undefined> {
@@ -128,23 +130,47 @@ export function createRealDbosHandle(
 		}
 		return records;
 	}
+	async function retrieveMatchingRootMarker(
+		workflowId: string,
+		name: string,
+		inputs: Record<string, WorkflowSerializableValue>,
+	): Promise<DbosWorkflowHandle | undefined> {
+		const existing = await raw.retrieveWorkflow(workflowId);
+		if (existing === undefined) return undefined;
+		if (existing.name !== name || !isDeepStrictEqual(existing.inputs, inputs))
+			throw new Error("Workflow root identity changed during admission");
+		return dbos.retrieveWorkflow(workflowId);
+	}
+	async function startRoot(workflowId: string, name: string, inputs: Record<string, WorkflowSerializableValue>) {
+		if (fence !== undefined) {
+			const existing = await retrieveMatchingRootMarker(workflowId, name, inputs);
+			if (existing !== undefined) return existing;
+		}
+		try {
+			return await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
+		} catch (err) {
+			if (!isDbosDuplicateWorkflowError(err)) throw err;
+			const raced = await retrieveMatchingRootMarker(workflowId, name, inputs);
+			if (raced === undefined) throw err;
+			return raced;
+		}
+	}
+	async function settleMarker(marker: DbosWorkflowHandle | undefined): Promise<void> {
+		if (!options.settleRootMarker || marker === undefined) return;
+		await boundedAdmission(
+			async () => {
+				await marker.getResult();
+			},
+			dbosAdmissionContext.getStore(),
+			undefined,
+			"Workflow database root marker settlement timed out.",
+		);
+	}
 	const raw: DbosSdkHandle = {
 		launch: () => dbos.launch(),
 		shutdown: () => dbos.shutdown(),
 		async startWorkflow(workflowId, name, inputs) {
-			if (fence !== undefined) {
-				const existing = await raw.retrieveWorkflow(workflowId);
-				if (existing !== undefined) {
-					if (existing.name !== name || !isDeepStrictEqual(existing.inputs, inputs))
-						throw new Error("Workflow root identity changed during admission");
-					return;
-				}
-			}
-			try {
-				await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
-			} catch (err) {
-				if (!isDbosDuplicateWorkflowError(err)) throw err;
-			}
+			await settleMarker(await startRoot(workflowId, name, inputs));
 		},
 		async retrieveWorkflow(workflowId) {
 			const statuses = await dbos.listWorkflows({ workflowIDs: [workflowId], loadInput: true, limit: 1 });
@@ -332,10 +358,14 @@ export function createRealDbosHandle(
 			const next = getDbosProcessOwner().createExecutorFence?.();
 			if (next === undefined) throw new Error("Workflow ownership fence cannot create a recovery generation");
 			void fence.close().catch(() => {});
-			return createRealDbosHandle(dbos, mainWorkflow, checkpointWorkflow, next, [
-				...previousExecutorIds,
-				fence.executorId,
-			]);
+			return createRealDbosHandle(
+				dbos,
+				mainWorkflow,
+				checkpointWorkflow,
+				next,
+				[...previousExecutorIds, fence.executorId],
+				options,
+			);
 		},
 		adoptPreviousGeneration: async (workflowId) => {
 			if (previousExecutorIds.length === 0) return undefined;
@@ -450,7 +480,13 @@ export function createRealDbosHandle(
 				},
 				true,
 			),
-		startWorkflow: (id, name, inputs) => mutate(id, () => raw.startWorkflow(id, name, inputs)),
+		startWorkflow: async (id, name, inputs) => {
+			let marker: DbosWorkflowHandle | undefined;
+			await mutate(id, async () => {
+				marker = await startRoot(id, name, inputs);
+			});
+			await settleMarker(marker);
+		},
 		cancelWorkflow: (id) => mutate(id, () => raw.cancelWorkflow(id)),
 		resumeWorkflow: (id) => mutate(id, () => raw.resumeWorkflow(id)),
 		recordStepOutput: (id, step, output) =>

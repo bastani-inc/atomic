@@ -34,7 +34,7 @@ export async function reconcileDbosAdmission(
 					return info !== undefined && current.kind === "current" && matches(current.metadata);
 				}
 				if (!repairMissing || metadata.completedCheckpoints > 0 || metadata.pendingPrompts > 0) return false;
-				if (info === undefined) await sdk.startWorkflow(id, metadata.name, metadata.inputs);
+				await sdk.startWorkflow(id, metadata.name, metadata.inputs);
 				signal.throwIfAborted();
 				const accepted = await sdk.retrieveWorkflow(id);
 				signal.throwIfAborted();

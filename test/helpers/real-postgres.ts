@@ -14,7 +14,6 @@ import {
 	decodeStream,
 	makeTempDirectory,
 	moduleDir,
-	readStreamText,
 	removePath,
 	type SpawnedProcess,
 	spawnProcess,
@@ -24,6 +23,7 @@ const RPC_TIMEOUT_MS = 45_000;
 const CLEANUP_TIMEOUT_MS = 20_000;
 const TEMP_REMOVAL_MAX_RETRIES = 20;
 const TEMP_REMOVAL_RETRY_DELAY_MS = 50;
+const STDERR_TIMEOUT_TAIL_CHARS = 48_000;
 async function bounded<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -75,6 +75,8 @@ export class RealPostgresClient {
 	private readonly pending = new Map<number, { resolve: (value: never) => void; reject: (error: Error) => void }>();
 	private readonly output: Promise<void>;
 	private readonly errors: Promise<string>;
+	/** Live stderr so a request timeout can report what the fixture was doing. */
+	private stderrText = "";
 	private transportError: Error | undefined;
 	private exitObserved = false;
 	constructor(
@@ -102,12 +104,21 @@ export class RealPostgresClient {
 			stderr: "pipe",
 		});
 		this.child.stdin!.on("error", (error: Error) => this.failTransport(error));
-		this.errors = readStreamText(this.child.stderr);
+		this.errors = this.drainErrors();
 		this.output = this.drain();
 	}
 	private failTransport(error: Error): void {
 		this.transportError ??= error;
 		for (const request of this.pending.values()) request.reject(this.transportError);
+	}
+	private async drainErrors(): Promise<string> {
+		if (!this.child.stderr) return "";
+		const reader = decodeStream(this.child.stderr).getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) return this.stderrText;
+			this.stderrText += value;
+		}
 	}
 	private async drain() {
 		const reader = decodeStream(this.child.stdout!).getReader();
@@ -143,10 +154,15 @@ export class RealPostgresClient {
 		try {
 			return await new Promise<T>((resolve, reject) => {
 				this.pending.set(id, { resolve, reject });
-				timer = setTimeout(
-					() => reject(new Error(`Postgres fixture ${command} exceeded ${timeoutMs}ms`)),
-					timeoutMs,
-				);
+				timer = setTimeout(() => {
+					// Never surface connection credentials from fixture diagnostics.
+					const stderr = this.stderrText.slice(-STDERR_TIMEOUT_TAIL_CHARS).replace(/\/\/[^\s/@]+@/g, "//***@");
+					reject(
+						new Error(
+							`Postgres fixture ${command} exceeded ${timeoutMs}ms${stderr ? `\nfixture stderr (tail):\n${stderr}` : ""}`,
+						),
+					);
+				}, timeoutMs);
 				try {
 					this.child.stdin!.write(`${JSON.stringify({ id, command, sql })}\n`, (error) => {
 						if (error) this.failTransport(error);

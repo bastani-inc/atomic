@@ -280,7 +280,8 @@ test("timed-out DB root never executes late and the same identity admits once on
 		["same-root"],
 	);
 	const fresh = new DbosDurableBackend(sdk);
-	assert.deepEqual(await fresh.hydrateWorkflowForInspection("same-root"), { kind: "malformed" });
+	// A marker without admission metadata is not a run: inspection omits it.
+	assert.deepEqual(await fresh.hydrateWorkflowForInspection("same-root"), { kind: "absent" });
 	assert.equal(fresh.isWorkflowLoadable("same-root"), false, "fresh-session resume must fail closed");
 	assert.deepEqual(sdk.state.deletions, [], "hydration must not delete incomplete admission data");
 	// A new invocation gets a fresh execution view, retaining the durable identity and backend.

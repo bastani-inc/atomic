@@ -190,9 +190,12 @@ export async function configureDbosDurableBackend(config?: {
 		owner.wrappers = { mainWorkflow, checkpointWorkflow };
 	}
 	let backendFence = owner.executorFence;
-	let backend = new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence), {
-		checkReady,
-	});
+	let backend = new DbosDurableBackend(
+		createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence, [], { settleRootMarker: true }),
+		{
+			checkReady,
+		},
+	);
 	return {
 		get backend() {
 			return backend;
@@ -202,7 +205,9 @@ export async function configureDbosDurableBackend(config?: {
 			if (backendFence !== owner.executorFence && backendFence?.closed) {
 				backendFence = owner.executorFence;
 				backend = new DbosDurableBackend(
-					createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence),
+					createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow, backendFence, [], {
+						settleRootMarker: true,
+					}),
 					{ checkReady },
 				);
 			}
@@ -1225,6 +1230,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			return { kind: deletion === "current" ? "deleted" : "malformed" };
 		}
 		const metadata = classifyLatestMetadata(records, info.workflowId);
+		if (metadata.kind === "unavailable" && records.length === 0) {
+			// A crash can leave the identity marker before initial admission metadata.
+			// It is not a run; omit it rather than report corrupt retained state.
+			await this.suppressWorkflow(info.workflowId);
+			return { kind: "absent" };
+		}
 		if (
 			metadata.kind !== "current" ||
 			(expected !== undefined &&
