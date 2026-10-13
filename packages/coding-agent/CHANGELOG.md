@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-13
+
+### Breaking Changes
+
+- Removed the experimental `@bastani/atomic/client` entrypoint and the `@earendil-works/pi-client` and `@earendil-works/pi-protocol` dependencies, which upstream Pi no longer publishes. SDK code that imported `@bastani/atomic/client` should use `createAgentSession()` from `@bastani/atomic` in-process or RPC mode (`--mode rpc` / `@bastani/atomic/rpc-entry`), or pin the previous release. The CLI, RPC mode, extensions and workflows are unaffected.
+
+### Added
+
+- `session.workflows.resume(runId)` now adopts a paused run that was launched through the model-facing `workflow` tool once its owning session has been disposed, in the same process or after the owning process exits. Disposing a session quits its in-flight runs at their last checkpoint and durably records that it released its checkpointed paused runs; the adopting session becomes the owner and the run continues under the same UUID. Runs whose owner is still open, runs whose owner crashed without disposing, and finished runs are still refused ([#3566](https://github.com/bastani-inc/atomic/issues/3566)).
+- Switching sessions with `/new`, `/fork`, or `/resume` now releases the previous session's paused workflow runs, the same way disposing a session does. The model in the new session can inspect them with the `workflow` tool's `status` and `stages` actions and resume them, and `session.workflows.resume(runId)` can adopt them; adoption, including the `/workflow resume <id>` slash command, transfers ownership to the resuming session. The new session lists the released runs with their `/workflow resume <id>` commands, and, in the process that released it, a run another session already adopted now reports that it is owned by another session. `/reload` still keeps runs executing and releases nothing ([#3569](https://github.com/bastani-inc/atomic/issues/3569)).
+- SDK and RPC clients can read stored session summaries with their summarized-through message IDs, and list or inspect workflow history with saved summaries and run identities. SDK sessions expose `sessionSummary`; RPC adds `get_session_summary`, `list_sessions`, `list_workflow_runs`, and `get_workflow_run_summary`.
+- Added `ATOMIC_CLIPBOARD_OSC52=1`, with legacy alias `PI_CLIPBOARD_OSC52=1`, to send copied text through OSC 52 after the local clipboard write. Use it when a multiplexer or remote IDE session leaves no SSH markers for Atomic to detect.
+- Added elapsed time while a codemode script runs and total time when it finishes. Bash commands continued in the background keep their "Observed for" timing label.
+- Codemode declarations now include input constraints such as integer bounds and defaults that TypeScript types alone cannot express.
+- Added per-key OpenRouter model lists with the key's context limits, output limits and prices. Configured regional endpoints are respected, and the personalized list is saved for offline use.
+- Added `workflows.durability.poolSize` to configure maximum connections per workflow database pool for managed and remote PostgreSQL (default 10, minimum 2).
+
+### Changed
+
+- Changed `serializeConversation()` (branch summaries, resume-picker session summaries, and the policy-refusal summary fallback) to omit thinking blocks; replayed thinking is often not in the live context, so including it could make a summarization request larger than the context it summarizes and fail. Verbatim line compaction still serializes thinking lines.
+- Changed `openai-codex/gpt-6.1-sol` to a 500,000-token context window (up from 272,000) with no long-context price tier on Standard, Fast, or Ultrafast. OpenAI raised GPT-6.1 Sol's default context to 500k in Codex & Work for ChatGPT subscriptions and does not charge long-context fees when usage draws from the subscription. `openai/gpt-6.1-sol` and the other Codex models are unchanged.
+- MCP tools now describe their content blocks and nested structured-content fields directly in codemode declarations, including schemas with local references.
+- `showHardwareCursor` now uses only the terminal cursor at the focused input position instead of also drawing a reverse-video cursor cell. Custom TUI components can use `renderFakeCursor()` with `CURSOR_MARKER` to follow this setting.
+
+### Fixed
+
+- Fixed the code mode tool description claiming every failed tool call throws; a tool that declares an output schema resolves with its value on failure too (for example `bash` with a non-zero exit), so scripts should check its fields.
+- Fixed `read` reporting success when it refuses a selected range as too large. The refusal is now an error result, so models see a failed read with guidance to read a smaller range, and code mode's `tools.read(...)` throws instead of resolving with the refusal text as if it were the file's contents ([#3574](https://github.com/bastani-inc/atomic/issues/3574)).
+- Fixed `/resume` and `atomic -r` hiding session summaries after newer messages. The latest summary now stays visible until a branch summary retires it, and opening or resuming an interactive session refreshes missing or stale summaries in the background.
+- Fixed tree navigation moving the active branch while a user prompt is waiting for `before_agent_start` handlers to finish.
+- Fixed print mode returning success for responses truncated by the model output limit. Partial text remains on stdout, with a warning on stderr and exit code 1.
+- Fixed home-directory (`~`) expansion in resource include and exclude patterns, including Windows environments where `HOME` differs from `USERPROFILE`.
+- Fixed MCP tool calls rejecting array, null, or primitive structured content.
+- Fixed cancelled MCP requests being retried after a shared authorization refresh.
+- Fixed slow MCP resource listings delaying tools on connection. Resources and templates are now listed only on demand.
+- Fixed code mode taking excessive time to join large numbers of text output items.
+- Fixed transient Windows permission errors when acquiring the authentication lock, while keeping persistent permission failures bounded.
+- Fixed runs started by `pi.sendMessage(..., { triggerTurn: true })`, including protected workflow task completions, skipping `before_agent_start` and losing handler-added system prompt sections after tool calls. The event now distinguishes user and custom messages with `messageType`; handlers reading `prompt` or `images` must first narrow to `"user"`.
+- Fixed interrupt messages dropping an earlier custom message while its `before_agent_start` handler was still running.
+- Fixed misplaced `// @options:` lines silently being ignored. They now fail the codemode call before the script runs; options must be on the first line.
+- Fixed Kitty image detection inside Herdr terminals and delayed terminal-reply bytes leaking into keyboard input.
+- Fixed shifted-symbol keybindings such as `+` using the physical key name instead of the produced symbol.
+- Fixed OpenRouter account model refresh being blocked by an unavailable or invalid optional pi.dev catalog.
+- Fixed running codemode and bash rows continuing to update elapsed-time displays after removal.
+
 ## [0.9.35-alpha.5] - 2026-10-12
 
 ### Added

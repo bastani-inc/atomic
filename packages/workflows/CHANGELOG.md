@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-13
+
+### Added
+
+- `session.workflows.resume(runId)` now adopts a paused run that was launched through the model-facing `workflow` tool once its owning session has been disposed, in the same process or after the owning process exits. Disposing a session quits its in-flight runs at their last checkpoint and durably records that it released its checkpointed paused runs; the adopting session becomes the owner and the run continues under the same UUID. Runs whose owner is still open, runs whose owner crashed without disposing, and finished runs are still refused ([#3566](https://github.com/bastani-inc/atomic/issues/3566)).
+- Switching sessions with `/new`, `/fork`, or `/resume` now releases the previous session's paused workflow runs, the same way disposing a session does. The model in the new session can inspect them with the `workflow` tool's `status` and `stages` actions and resume them, and `session.workflows.resume(runId)` can adopt them; adoption, including the `/workflow resume <id>` slash command, transfers ownership to the resuming session. The new session lists the released runs with their `/workflow resume <id>` commands, and, in the process that released it, a run another session already adopted now reports that it is owned by another session. `/reload` still keeps runs executing and releases nothing ([#3569](https://github.com/bastani-inc/atomic/issues/3569)).
+- Resuming a workflow from another project with `/workflow resume <id>` now offers to fork its saved progress into the current directory under a new run ID, leaving the source run unchanged. SDK, tool, and headless resume requests return an actionable error instead of running in a different project.
+- Workflow resume history now shows descriptive run identities and saved generated progress summaries, and supplies saved summaries to the main chat when resuming.
+- SDK workflow lists and details expose run labels, identities, saved summaries and summarized-through timestamps. `listRuns({ includeDurable: true })` includes stored resumable and completed history; RPC clients can access the same history.
+- Added `durability.poolSize` to SDK workflow runs (default 10, minimum 2), applying the connection maximum to DBOS SQL pools, ownership-fence pools, and their replacement connections for managed or remote PostgreSQL. Later requests for a different size reject once the process is configured.
+
+### Fixed
+
+- Fixed an SDK session started after another session in the same process was disposed falling back to non-durable workflows with `Managed Postgres health observer is stopped.`. Releasing the last session now discards the stopped workflow database configuration, so the next session starts a fresh managed Postgres and launches durably ([#3565](https://github.com/bastani-inc/atomic/issues/3565)).
+- Fixed durable workflows failing with `atomicWorkflowHandle is not a registered DBOS workflow function` when a new SDK session uses a different working directory after the last session is disposed. Final session disposal now releases workflow registrations so the next session recreates them in its own SDK ([#3577](https://github.com/bastani-inc/atomic/issues/3577)).
+- Workflow SDK and RPC history now excludes stored runs from other projects. Resuming through either API respects disabled session summaries, and killing a blocked run requests a new final summary.
+- Concurrent workflow metadata writes and legacy recovery now queue instead of exhausting a small ownership-fence connection pool.
+- Fixed completed durable workflows leaving their root DBOS record `PENDING` when run metadata was written before DBOS recorded the root's result. Admission, including same-ID retries and admission recovery, now waits for the root's own result to be saved, without holding its lock or database connection, before writing metadata, so the root completes as `SUCCESS` and DBOS cleanup can remove it.
+- Retrying or recovering an unfinished durable registration now fails within the admission deadline without starting workflow code or saving resume metadata if its original root cannot finish. Restoring the database does not guarantee that an abandoned registration can be resumed.
+
 ## [0.9.35-alpha.5] - 2026-10-12
 
 ### Added
