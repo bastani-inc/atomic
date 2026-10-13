@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.36-alpha.1] - 2026-10-13
+
 ### Fixed
 
 - Fixed Ultrafast choices disappearing when a newer remote model catalog omitted the bundled service-tier metadata.
