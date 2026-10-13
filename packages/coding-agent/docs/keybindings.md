@@ -101,7 +101,7 @@ The dedicated history actions always change history entries, regardless of the c
 | `tui.select.confirm` | `enter` | Confirm selection |
 | `tui.select.cancel` | `escape`, `ctrl+c` | Cancel selection |
 
-Local copy operations require a working native clipboard or platform command. On Linux, install `wl-clipboard` for Wayland, `xclip` or `xsel` for X11, or the Termux:API app and `termux-api` package for Termux. Fullscreen selection shows a backend-specific failure message for five seconds. Atomic sends OSC 52 only in SSH or Mosh sessions, where the terminal must support clipboard forwarding; it no longer treats OSC 52 as proof of a successful local copy.
+Local copy operations require a working native clipboard or platform command. On Linux, install `wl-clipboard` for Wayland, `xclip` or `xsel` for X11, or the Termux:API app and `termux-api` package for Termux. Fullscreen selection shows a backend-specific failure message for five seconds. Atomic forwards copies through OSC 52 in SSH or Mosh sessions and uses it as a fallback on headless Linux. Set `ATOMIC_CLIPBOARD_OSC52=1`, or its legacy alias `PI_CLIPBOARD_OSC52=1`, to force forwarding after the local clipboard attempt. The terminal must support clipboard forwarding; an OSC 52 write does not confirm a successful local copy.
 
 ### TUI Fullscreen Viewport
 
