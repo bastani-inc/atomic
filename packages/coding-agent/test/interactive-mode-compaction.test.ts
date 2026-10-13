@@ -23,7 +23,7 @@ import {
 } from "../src/modes/interactive/components/compaction-boundary-message.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
-import { createHarness, getUserTexts } from "./suite/harness.ts";
+import { createHarness, getUserTexts } from "./suite/harness.js";
 import { assistantMsg, userMsg } from "./utilities.js";
 
 const previousKeybindings = getKeybindings();
