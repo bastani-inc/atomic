@@ -31,7 +31,12 @@ test(
 			const { url } = await home.client(listener.port).request<ManagedResult>("ensure");
 			const endpoint = new URL(url);
 			endpoint.pathname = "/postgres";
-			const options = { connectionString: endpoint.href, connectionTimeoutMillis: 3_000, statement_timeout: 10_000 };
+			const options = {
+				connectionString: endpoint.href,
+				max: 2,
+				connectionTimeoutMillis: 3_000,
+				statement_timeout: 10_000,
+			};
 			sql = new Pool(options);
 			control = new Pool(options);
 			const ownership = new Pool(options);
@@ -40,6 +45,10 @@ test(
 				() => ownership,
 				actor,
 				() => ownership.end(),
+				() => {
+					assert.ok(sql);
+					return sql;
+				},
 			);
 			const main = DBOS.registerWorkflow(
 				async (_name: string, inputs: Record<string, WorkflowSerializableValue>) => inputs,
@@ -260,6 +269,7 @@ test(
 				() => successorPool,
 				successorActor,
 				() => successorPool.end(),
+				() => activeSql,
 			);
 			const resumed = new DbosDurableBackend(
 				createRealDbosHandle(DBOS as unknown as DbosStatic, main, checkpoint, fence),

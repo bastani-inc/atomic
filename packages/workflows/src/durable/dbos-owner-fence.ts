@@ -10,6 +10,7 @@ export type ExecutorLiveness = "alive" | "dead" | "unknown";
 interface OwnerWriteContext {
 	readonly fence: DbosOwnerFence;
 	readonly workflows: ReadonlyMap<string, boolean>;
+	readonly client: PoolClient;
 }
 
 const contextKey = Symbol.for("atomic-workflows/dbos-owner-write-context@1");
@@ -51,6 +52,7 @@ export class DbosOwnerFence {
 		private readonly pool: () => Pool,
 		readonly executorId: string,
 		private readonly endPool: () => Promise<void>,
+		private readonly compactionPool: () => Pool = pool,
 	) {}
 
 	private fail(): DbosDependencyError {
@@ -112,14 +114,15 @@ export class DbosOwnerFence {
 
 	async recover<T>(executorId: string | undefined, callback: () => Promise<T>): Promise<T | undefined> {
 		if (!isDatabaseExecutor(executorId)) return undefined;
-		const client = await this.pool().connect();
+		const context = writeContext.getStore();
+		const client = context?.fence === this ? context.client : await this.pool().connect();
 		const fail = () => {
 			this.fail();
 		};
 		client.on("error", fail);
 		client.on("end", fail);
 		try {
-			await client.query("BEGIN");
+			if (context?.fence !== this) await client.query("BEGIN");
 			const result = await client.query<{ held: boolean }>("SELECT pg_try_advisory_xact_lock($1, $2) AS held", [
 				...lockKey(executorId),
 			]);
@@ -127,11 +130,11 @@ export class DbosOwnerFence {
 			return await callback();
 		} finally {
 			try {
-				await client.query("ROLLBACK");
+				if (context?.fence !== this) await client.query("ROLLBACK");
 			} finally {
 				client.removeListener("error", fail);
 				client.removeListener("end", fail);
-				client.release();
+				if (context?.fence !== this) client.release();
 			}
 		}
 	}
@@ -174,7 +177,7 @@ export class DbosOwnerFence {
 			}
 			if (this.lost) throw this.fail();
 			return await writeContext.run(
-				{ fence: this, workflows: new Map([...(active ?? []), [workflowId, claim]]) },
+				{ fence: this, workflows: new Map([...(active ?? []), [workflowId, claim]]), client },
 				callback,
 			);
 		} finally {
@@ -197,7 +200,9 @@ export class DbosOwnerFence {
 		const metadataId = `${authority.root}:checkpoint:__atomic_metadata`;
 		if (retainedId !== metadataId && !retainedId.startsWith(`${metadataId}:`))
 			throw new Error("Metadata compaction requires a metadata checkpoint");
-		const client = await this.pool().connect();
+		// Compaction commits independently of the advisory-lock transaction. Use
+		// SQL capacity so concurrent writers cannot exhaust ownership checkouts.
+		const client = await this.compactionPool().connect();
 		try {
 			await installDbosRowGuard(client);
 			await client.query("BEGIN");

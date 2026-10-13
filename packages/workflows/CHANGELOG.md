@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Concurrent workflow metadata writes and legacy recovery now queue instead of exhausting a small ownership-fence connection pool.
+
 ## [0.9.35-alpha.3] - 2026-10-12
 
 ### Added

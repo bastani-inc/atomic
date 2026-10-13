@@ -222,3 +222,34 @@ test.each([1, 2])("close terminates protected SQL while shared lock %s is pendin
 	}
 	assert.deepEqual(sql.release.mock.calls, [[true]], "late acquisition failure must not release twice");
 });
+
+test.each(["success", "failure", "abort"])(
+	"nested recovery releases one transaction checkout on %s without committing writes",
+	async (outcome) => {
+		const { owner, guard, pool, fence } = await acquiredOwnerFence();
+		guard.release.mockClear();
+		vi.mocked(pool.connect).mockClear();
+		vi.mocked(guard.query).mockClear();
+		owner.release.mockImplementation(() => owner.emit("end"));
+		try {
+			const operation = fence.write("run", () =>
+				fence.recover("atomic-db-22222222-2222-4222-8222-222222222222", async () => {
+					if (outcome === "failure") throw new Error("recovery failed");
+					if (outcome === "abort") {
+						const controller = new AbortController();
+						controller.abort();
+						controller.signal.throwIfAborted();
+					}
+				}),
+			);
+			if (outcome === "success") await operation;
+			else await assert.rejects(operation);
+			assert.equal(vi.mocked(pool.connect).mock.calls.length, 1);
+			assert.deepEqual(guard.release.mock.calls, [[]]);
+			assert.equal(vi.mocked(guard.query).mock.calls.at(-1)?.[0], "ROLLBACK");
+		} finally {
+			await fence.close();
+			await pool.end();
+		}
+	},
+);

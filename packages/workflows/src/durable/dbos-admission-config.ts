@@ -46,6 +46,7 @@ export function configureAdmissionDatabase(
 			() => fencePool,
 			executorId,
 			() => fencePool.end(),
+			() => pool,
 		);
 		const owner = getDbosProcessOwner();
 		owner.executorFences ??= new Set();
