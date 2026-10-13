@@ -90,7 +90,13 @@ try {
 			(pi) => { other = pi; pi.on("session_shutdown", async () => { log.push("last-shutdown"); entered.resolve(); await cleanupWork.promise; }); },
 		], extensionsOverride: (result) => ({ ...result, extensions: result.extensions.slice(0, 1) }) });
 		operation = createAgentSession({ ...options, resourceLoader }).then((result) => { session = result.session; completed = true; }, (error) => { completed = true; return error; });
-		await admitted.promise; await delay(25);
+		await admitted.promise;
+		let sealedError;
+		for (let i = 0; i < 1000 && !sealedError; i++) {
+			try { omitted.events.on("seal-probe", () => {})(); } catch (error) { sealedError = error; }
+			if (!sealedError) await delay(10);
+		}
+		assert.match(sealedError?.message ?? "", /closed|stale/i, "omitted factory was not sealed");
 		assert.deepEqual(log, [], "all closing work must precede any shutdown");
 		assert.equal((await selected.exec(process.execPath, ["-e", "process.stdout.write('selected')"])).stdout, "selected");
 		held.resolve(); await entered.promise;
