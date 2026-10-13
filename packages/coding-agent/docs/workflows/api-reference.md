@@ -1401,7 +1401,7 @@ type WorkflowDurability =
 
 One process uses one workflow database: DBOS runs a single executor per process, so a later run in the same process that asks for a different URL rejects. Separate processes are independent. The Atomic CLI and any number of SDK applications can each use their own database, or share one, including Atomic's managed Postgres. Each process only recovers its own interrupted runs, and an SDK process that exits doesn't stop the managed Postgres other processes are using.
 
-Once DBOS is configured, a later request for a different `poolSize` rejects until the process restarts. Repeating the same size or omitting it keeps the current configuration.
+While DBOS remains configured, a request for a different `poolSize` rejects. Repeating the same size or omitting it keeps the current configuration.
 
 ```ts
 import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";
