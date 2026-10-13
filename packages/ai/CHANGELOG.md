@@ -4,6 +4,23 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-13
+
+### Added
+
+- Added `personalizeOpenRouterCatalog()` to restrict OpenRouter chat catalogs to the models a key may use, with its context limits, output limits and prices from `/models/user`. Image and classifier models are preserved.
+- Added `RefreshModelsContext.baseUrl` so catalog refreshes can use the registered provider's configured endpoint.
+
+### Changed
+
+- Changed the `openai-codex/gpt-6.1-sol` catalog entry to a 500,000-token context window (up from 272,000) priced without a long-context tier on its base cost and its Fast and Ultrafast service tiers, following OpenAI's Codex & Work change for ChatGPT subscriptions. The `openai` GPT-6.1 Sol entry keeps its 272,000-token cap and long-context tier, and the other Codex models are unchanged.
+
+### Fixed
+
+- Fixed Anthropic requests rejected by strict-tool capacity limits by retrying once with ordinary schemas for tools marked `strict: "prefer"`. Required strict tools remain unchanged.
+- Fixed "The upstream provider returned an error" not being retried as a transient provider error ([#10842](https://github.com/earendil-works/pi/issues/10842)).
+- Personalized OpenRouter catalogs now treat negative placeholder prices, such as those returned for `openrouter/auto`, as zero instead of negative token costs.
+
 ## [0.9.35-alpha.4] - 2026-10-13
 
 ### Added

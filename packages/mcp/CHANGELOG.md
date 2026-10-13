@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-13
+
+### Fixed
+
+- Fixed OAuth exchanging an authorization code whose `iss` parameter could not be checked because no authorization server metadata was discovered. It now throws `OAuthIssuerMismatchError`, whose `expected` is `undefined` in that case (RFC 9207). Reported by [@AizenvoltPrime](https://github.com/AizenvoltPrime).
+
 ## [0.9.35-alpha.1] - 2026-10-12
 
 ### Fixed
