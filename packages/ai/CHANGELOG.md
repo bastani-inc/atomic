@@ -6,7 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
-- Fixed `retryAssistantCall()` giving up on transient provider errors after `maxRetries`. With `RetryPolicy.maxRetryTimeMs` set, transient 5xx (including Cloudflare 520-524), overload and connection-reset errors retry with full-jitter backoff until the budget is spent. OpenAI-compatible providers report `Retry-After` and Cloudflare `retry_after` hints as `AssistantMessage.retryAfterMs`, which sets the minimum retry delay ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
+- Fixed `retryAssistantCall()` ignoring server retry hints. A failed response's `Retry-After-Ms`, `Retry-After` (seconds or HTTP date) or Cloudflare body `retry_after` is reported as `AssistantMessage.retryAfterMs` by the OpenAI Responses, OpenAI Completions and ChatGPT (Codex) providers, and replaces the exponential backoff for that retry, capped by the new `RetryPolicy.maxRetryDelayMs` (60 seconds by default). Cloudflare 521-523 responses and connection resets are now retryable ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
 
 ## [0.9.36] - 2026-10-13
 

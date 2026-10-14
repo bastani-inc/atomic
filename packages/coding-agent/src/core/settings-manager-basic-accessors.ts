@@ -135,7 +135,6 @@ interface SettingsManagerBasicAccessors {
 		maxRetries: number;
 		baseDelayMs: number;
 		maxAgentDelayMs: number;
-		maxRetryTimeMs?: number;
 		maxRetryDelayMs?: number;
 	};
 	getHttpProxy(): string | undefined;
@@ -543,8 +542,6 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			enabled: this.getRetryEnabled(),
 			maxRetries: settingsInternals(this).settings.retry?.maxRetries ?? SETTINGS_DEFAULTS.retry.maxRetries,
 			baseDelayMs: settingsInternals(this).settings.retry?.baseDelayMs ?? SETTINGS_DEFAULTS.retry.baseDelayMs,
-			maxRetryTimeMs:
-				settingsInternals(this).settings.retry?.maxRetryTimeMs ?? SETTINGS_DEFAULTS.retry.maxRetryTimeMs,
 			maxRetryDelayMs: this.getProviderRetrySettings().maxRetryDelayMs,
 			maxAgentDelayMs:
 				settingsInternals(this).settings.retry?.maxAgentDelayMs ?? SETTINGS_DEFAULTS.retry.maxAgentDelayMs,

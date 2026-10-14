@@ -337,15 +337,14 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `retry.enabled` | boolean | `true` | Enable automatic agent-level retry on transient errors |
-| `retry.maxRetries` | number | `3` | Maximum agent-level retry attempts for errors outside the time budget, such as rate limits |
-| `retry.maxRetryTimeMs` | number | `300000` | Time budget for transient provider errors (5xx, overloaded, connection resets). Atomic keeps retrying them past `retry.maxRetries` until this much time has passed (5 min); `0` uses `retry.maxRetries` only |
+| `retry.maxRetries` | number | `3` | Maximum agent-level retry attempts |
 | `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff (2s, 4s, 8s) |
 | `retry.maxAgentDelayMs` | number | `60000` | Maximum agent-level backoff delay (60s); `0` retries immediately |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
 | `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts. Leave unset/`0` to let Atomic's agent-level retry handle transient failures |
-| `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s); also caps agent-level retry hints |
+| `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s); also caps how long an agent-level retry waits for a server retry hint |
 
-Agent-level retries use exponential backoff capped by `retry.maxAgentDelayMs`, including the shared main-chat and workflow retry policy and summary calls. Transient provider errors use randomized (full-jitter) backoff within `retry.maxRetryTimeMs`, so a few minutes of 5xx responses do not end the turn. A server retry hint (`Retry-After` header or a Cloudflare `retry_after` body field) is the minimum wait for that retry, capped by `retry.provider.maxRetryDelayMs` and the time left in the budget. Requests that fail with a non-retryable 4xx error still stop immediately. This is independent of provider retry limits. Legacy `retry.maxDelayMs` still migrates to `retry.provider.maxRetryDelayMs`, not the agent cap.
+Agent-level retries use exponential backoff capped by `retry.maxAgentDelayMs`, including the shared main-chat and workflow retry policy and summary calls. When a failed response carries a server retry hint (`Retry-After-Ms` or `Retry-After` header, or a Cloudflare 5xx `retry_after` body field), Atomic waits as long as the server asks instead, up to `retry.provider.maxRetryDelayMs`. OpenAI, OpenAI-compatible and ChatGPT (Codex) providers report these hints. `retry.maxRetries` still limits the number of retries, so with the defaults a hinted outage can take up to about 3 × 60s before the turn fails or switches to a configured `fallbackModels` entry. Cloudflare 520-524 responses and connection resets count as transient errors; non-retryable 4xx and quota errors still stop immediately. This is independent of provider retry limits. Legacy `retry.maxDelayMs` still migrates to `retry.provider.maxRetryDelayMs`, not the agent cap.
 
 When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 
@@ -356,7 +355,6 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
   "retry": {
     "enabled": true,
     "maxRetries": 3,
-    "maxRetryTimeMs": 300000,
     "baseDelayMs": 2000,
     "maxAgentDelayMs": 60000,
     "provider": {

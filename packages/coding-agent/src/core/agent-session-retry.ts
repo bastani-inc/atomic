@@ -410,11 +410,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	// main chat and workflow stages cannot drift apart on the same settings. The
 	// counter still advances on the exhausting attempt, so `_trySwitchToFallbackModel`
 	// closes the retry lifecycle before the fallback lifecycle opens.
-	if (this._retryAttempt === 0) this._retryStartedAt = Date.now();
-	const decision = nextRetryDecision(settings, this._retryAttempt, canRetrySameModel, {
-		message,
-		elapsedMs: Date.now() - this._retryStartedAt,
-	});
+	const decision = nextRetryDecision(settings, this._retryAttempt, canRetrySameModel, message);
 	this._retryAttempt += 1;
 	if (decision === undefined) {
 		if (canAdvanceToFallback && (await this._trySwitchToFallbackModel(message))) {

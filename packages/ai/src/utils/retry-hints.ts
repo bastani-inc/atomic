@@ -1,12 +1,20 @@
+interface HeaderReader {
+	get(name: string): string | null;
+}
+
 function positiveDelay(value: number): number | undefined {
 	return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function isHeaderReader(value: object | null): value is HeaderReader {
+	return value !== null && "get" in value && typeof value.get === "function";
 }
 
 /**
  * Largest server retry hint in ms from `Retry-After-Ms`, `Retry-After` (seconds or
  * HTTP date) and a JSON body `retry_after` in seconds (Cloudflare 5xx pages).
  */
-export function getRetryAfterMs(headers?: Headers, body?: string, now = Date.now()): number | undefined {
+export function getRetryAfterMs(headers?: HeaderReader, body?: string, now = Date.now()): number | undefined {
 	const hints: number[] = [];
 	const milliseconds = headers?.get("retry-after-ms");
 	if (milliseconds?.trim()) {
@@ -35,7 +43,10 @@ export function getRetryAfterMs(headers?: Headers, body?: string, now = Date.now
 /** Server retry hint carried by a provider SDK error (`headers` plus parsed body `error`), or an explicit `retryAfterMs`. */
 export function getProviderRetryAfterMs(error: object): number | undefined {
 	if ("retryAfterMs" in error && typeof error.retryAfterMs === "number") return positiveDelay(error.retryAfterMs);
-	const headers = "headers" in error && error.headers instanceof Headers ? error.headers : undefined;
+	const headers =
+		"headers" in error && typeof error.headers === "object" && isHeaderReader(error.headers)
+			? error.headers
+			: undefined;
 	const body = "error" in error ? JSON.stringify(error.error) : undefined;
 	return getRetryAfterMs(headers, body);
 }

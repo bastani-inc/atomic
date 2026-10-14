@@ -167,7 +167,6 @@ class AgentSessionBase {
 	protected _lastSummarizedMessageId: string | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
-	protected _retryStartedAt = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();

@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, DEFAULT_MAX_RETRY_TIME_MS } from "@bastani/pi-ai/utils/retry";
+import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@bastani/pi-ai/utils/retry";
 
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {
@@ -22,7 +22,6 @@ export const SETTINGS_DEFAULTS = {
 	retry: {
 		enabled: true,
 		maxRetries: 3,
-		maxRetryTimeMs: DEFAULT_MAX_RETRY_TIME_MS,
 		baseDelayMs: 2000,
 		maxAgentDelayMs: DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
 		provider: {

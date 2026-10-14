@@ -1,5 +1,4 @@
-import OpenAI from "openai";
-import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import type OpenAI from "openai";
 import type {
 	ChatCompletionAssistantMessageParam,
 	ChatCompletionChunk,
@@ -44,6 +43,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -68,6 +68,7 @@ import {
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import {
 	buildBaseOptions,
 	clampThinkingBudgetToAnswerRoom,
@@ -826,7 +827,7 @@ function createClient(
 		Object.assign(headers, optionsHeaders);
 	}
 
-	return new OpenAI({
+	return new RetryHintOpenAI({
 		apiKey,
 		baseURL: model.baseUrl,
 		dangerouslyAllowBrowser: true,

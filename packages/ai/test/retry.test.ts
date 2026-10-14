@@ -140,27 +140,6 @@ describe("retryAssistantCall", () => {
 	const disabled: RetryPolicy = { enabled: false, maxRetries: 3, baseDelayMs: 0 };
 	const enabled: RetryPolicy = { enabled: true, maxRetries: 3, baseDelayMs: 0 };
 
-	it("recovers from a 520 burst beyond maxRetries within the time budget (#3623)", async () => {
-		vi.useFakeTimers();
-		vi.spyOn(Math, "random").mockReturnValue(0.25);
-		const policy = { ...enabled, baseDelayMs: 2000, maxRetryTimeMs: 90_000 };
-		let calls = 0;
-		const produce = async () => {
-			calls++;
-			return calls <= 8
-				? fauxAssistantMessage("", { stopReason: "error", errorMessage: "520 status code (no body)" })
-				: fauxAssistantMessage("recovered");
-		};
-		try {
-			const result = retryAssistantCall(produce, policy, undefined);
-			await vi.runAllTimersAsync();
-			assert.equal((await result).stopReason, "stop");
-			assert.equal(calls, 9);
-		} finally {
-			vi.useRealTimers();
-			vi.restoreAllMocks();
-		}
-	});
 	it.each(["server_busy", "Our servers are currently busy. Please try again later."])(
 		"retries transient provider busy errors (#10543): %s",
 		async (errorMessage) => {

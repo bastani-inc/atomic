@@ -792,7 +792,7 @@ describe("durable recovery omissions", () => {
 
 	it("marks the exhausted retry run as final", async () => {
 		const harness = await createHarness({
-			settings: { retry: { enabled: true, maxRetries: 1, maxRetryTimeMs: 0, baseDelayMs: 1 } },
+			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
 		});
 		harnesses.push(harness);
 		harness.setResponses([

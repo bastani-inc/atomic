@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed turns failing after about 14 seconds of transient provider errors such as Cloudflare 520-524 responses. Transient 5xx, overload and connection-reset errors now retry with randomized backoff for up to `retry.maxRetryTimeMs` (default 5 minutes), and `Retry-After` or `retry_after` hints set the minimum wait ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
+- Fixed turns failing after about 14 seconds of Cloudflare 520-524 responses or connection resets. Agent-level retries now wait as long as the server asks through `Retry-After` headers or a Cloudflare `retry_after` body field, capped by `retry.provider.maxRetryDelayMs` (60s), and still stop after `retry.maxRetries`. Without a hint the 2s/4s/8s backoff is unchanged. Switching to a configured fallback model can therefore take up to about `retry.maxRetries` × 60s ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
 
 ## [0.9.36] - 2026-10-13
 
