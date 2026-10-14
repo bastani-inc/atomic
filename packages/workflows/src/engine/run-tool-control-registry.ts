@@ -52,6 +52,8 @@ export interface WorkflowRunControlHandle {
 	pause(): Promise<void>;
 	resume(): Promise<void>;
 	quit(): Promise<void>;
+	/** Rebind a root run's durable writes to a fresh owner generation after its ownership connection was lost. */
+	recoverExecutionGeneration?(): Promise<void>;
 }
 
 export interface ToolControlRegistry {

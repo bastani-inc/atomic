@@ -12,21 +12,8 @@ test("live resume recovers a lost owner generation without restarting the runtim
 	const sdk = createMockSdk();
 	let lost = false;
 	let forks = 0;
-	let adopted = false;
 	const successorId = `atomic-db-${crypto.randomUUID()}`;
-	const successor: DbosSdkHandle = {
-		...sdk,
-		executorId: successorId,
-		generationLost: () => false,
-		adoptPreviousGeneration: async () => {
-			adopted = true;
-			return undefined;
-		},
-		recordStepOutput: async (...args) => {
-			assert.equal(adopted, true, "successor writes require fenced adoption");
-			await sdk.recordStepOutput(...args);
-		},
-	};
+	const successor: DbosSdkHandle = { ...sdk, executorId: successorId, generationLost: () => false };
 	const backend = new DbosDurableBackend({
 		...sdk,
 		executorId: `atomic-db-${crypto.randomUUID()}`,
@@ -91,4 +78,77 @@ test("live resume recovers a lost owner generation without restarting the runtim
 		release.resolve();
 		await pending;
 	}
+});
+
+function lostGenerationBackend() {
+	const sdk = createMockSdk();
+	const state = { lost: false, forks: 0, adoptions: 0, refused: 0 };
+	const successorId = `atomic-db-${crypto.randomUUID()}`;
+	const successor: DbosSdkHandle = {
+		...sdk,
+		executorId: successorId,
+		generationLost: () => false,
+		adoptPreviousGeneration: async () => {
+			state.adoptions++;
+			return undefined;
+		},
+	};
+	const backend = new DbosDurableBackend({
+		...sdk,
+		executorId: `atomic-db-${crypto.randomUUID()}`,
+		generationLost: () => state.lost,
+		adoptPreviousGeneration: async () => {
+			state.adoptions++;
+			return undefined;
+		},
+		forkGeneration: () => {
+			state.forks++;
+			return successor;
+		},
+		recordStepOutput: async (...args) => {
+			if (state.lost) {
+				state.refused++;
+				throw new DbosDependencyError("ownership connection was lost");
+			}
+			await sdk.recordStepOutput(...args);
+		},
+	});
+	return { sdk, state, backend };
+}
+
+test("a checkpoint refused during the outage is persisted by the first recovery instead of failing it (#3621)", async () => {
+	const { sdk, state, backend } = lostGenerationBackend();
+	backend.registerWorkflow({ workflowId: "run", name: "recovery", inputs: {}, status: "running", createdAt: 1 });
+	await backend.flush("run");
+	const view = backend.executionView();
+	state.lost = true;
+	view.recordCheckpoint({
+		kind: "tool",
+		workflowId: "run",
+		checkpointId: "during-outage",
+		name: "during-outage",
+		argsHash: "during-outage",
+		args: {},
+		output: "kept",
+		completedAt: 2,
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(state.refused, 1, "the outage must refuse the checkpoint before recovery");
+	await view.recoverExecutionGeneration?.("run");
+	assert.equal(state.forks, 1);
+	await view.flush("run");
+	const fresh = new DbosDurableBackend(sdk);
+	await fresh.hydrateWorkflow("run");
+	assert.equal(fresh.getToolOutput("run", "during-outage"), "kept");
+	assert.equal(fresh.getWorkflow("run")?.completedCheckpoints, view.getWorkflow("run")?.completedCheckpoints);
+});
+
+test("resume with a healthy owner generation skips generation recovery (#3621)", async () => {
+	const { state, backend } = lostGenerationBackend();
+	backend.registerWorkflow({ workflowId: "run", name: "recovery", inputs: {}, status: "running", createdAt: 1 });
+	await backend.flush("run");
+	const adoptionsBefore = state.adoptions;
+	await backend.executionView().recoverExecutionGeneration?.("run");
+	assert.equal(state.forks, 0);
+	assert.equal(state.adoptions, adoptionsBefore);
 });

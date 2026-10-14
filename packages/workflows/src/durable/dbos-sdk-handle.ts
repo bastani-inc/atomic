@@ -9,7 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
+import { boundedAdmission, DbosDependencyError, dbosAdmissionContext } from "./dbos-admission.js";
 import type { DbosSdkHandle, DbosStepRecord, DbosWorkflowInfo } from "./dbos-backend.js";
 import {
 	claimMetadataStepName,
@@ -98,7 +98,7 @@ export function createRealDbosHandle(
 	) => Promise<WorkflowSerializableValue>,
 	fence?: DbosOwnerFence,
 	previousExecutorIds: readonly string[] = [],
-	options: { readonly settleRootMarker?: boolean } = {},
+	options: { readonly settleRootMarker?: boolean; readonly retiredGenerations?: Promise<void> } = {},
 ): DbosSdkHandle {
 	const checkpointId = (workflowId: string, stepName: string): string => `${workflowId}:checkpoint:${stepName}`;
 	async function stepRecord(status: DbosStatus, prefix: string): Promise<DbosStepRecord | undefined> {
@@ -357,18 +357,21 @@ export function createRealDbosHandle(
 		forkGeneration: () => {
 			const next = getDbosProcessOwner().createExecutorFence?.();
 			if (next === undefined) throw new Error("Workflow ownership fence cannot create a recovery generation");
-			void fence.close().catch(() => {});
+			const retiredGenerations = Promise.all([options.retiredGenerations, fence.close().catch(() => {})]).then(
+				() => {},
+			);
 			return createRealDbosHandle(
 				dbos,
 				mainWorkflow,
 				checkpointWorkflow,
 				next,
 				[...previousExecutorIds, fence.executorId],
-				options,
+				{ ...options, retiredGenerations },
 			);
 		},
 		adoptPreviousGeneration: async (workflowId) => {
 			if (previousExecutorIds.length === 0) return undefined;
+			await options.retiredGenerations;
 			return await fence.write(
 				workflowId,
 				async () => {
@@ -400,7 +403,10 @@ export function createRealDbosHandle(
 						);
 						return metadata;
 					});
-					if (adopted === undefined) throw new Error("Workflow previous execution generation is still active");
+					if (adopted === undefined)
+						throw new DbosDependencyError(
+							"Workflow previous execution generation is still active; retry after its database connections close",
+						);
 					return adopted;
 				},
 				true,

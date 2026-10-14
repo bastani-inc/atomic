@@ -16,6 +16,7 @@ import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/du
 import { Client } from "pg";
 import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
 const OWNER_BACKEND_TERMINATION_TIMEOUT_MS = 5_000;
@@ -161,6 +162,43 @@ for await (const line of createInterface({ input: process.stdin })) {
 			const backend = getDurableBackend();
 			await until(async () => backend.getWorkflow(runId)?.status === "paused", "quit run never became paused");
 			await backend.flush(runId);
+		} else if (command === "terminate-own-owner") {
+			assert.ok(runId);
+			await ready();
+			const ownerExecutorId = getDbosProcessOwner().executorFence?.executorId;
+			assert.ok(ownerExecutorId);
+			const connectionString = getDbosProcessOwner().databaseDiagnostics?.().url;
+			assert.ok(connectionString);
+			const client = new Client({ connectionString });
+			await client.connect();
+			try {
+				const terminated = await client.query<{ terminated: boolean }>("SELECT pg_terminate_backend(pid, $2::bigint) AS terminated FROM pg_stat_activity WHERE application_name = $1", [`atomic-owner:${ownerExecutorId}`, OWNER_BACKEND_TERMINATION_TIMEOUT_MS]);
+				assert.equal(terminated.rows.length, 1, "must terminate only this session's ownership connection");
+				assert.equal(terminated.rows[0].terminated, true);
+			} finally {
+				await client.end();
+			}
+			result = { ownerExecutorId };
+		} else if (command === "pause-resume") {
+			assert.ok(runId);
+			const host = await ready();
+			const control = toolControlRegistry.runControl(runId);
+			assert.ok(control, "the live run must expose its run control");
+			await control.pause();
+			assert.equal((await host.workflows.getRun(runId)).status, "paused");
+			await control.resume();
+			result = { status: (await host.workflows.getRun(runId)).status };
+		} else if (command === "start-complete") {
+			const host = await ready();
+			const tool = host.agent.state.tools.find((entry) => entry.name === "workflow");
+			assert.ok(tool);
+			const launch = await tool.execute("sdk-recovery-second-launch", { action: "run", workflow: "sdk-crashed-recovery", inputs: {} });
+			const details = launch.details as { runId?: string; error?: string };
+			assert.ok(details.runId && !details.error, JSON.stringify(launch));
+			const secondRunId = details.runId;
+			await until(async () => (await host.workflows.getRun(secondRunId)).status === "completed", "second run in the recovered session did not complete");
+			await getDurableBackend().flush(secondRunId);
+			result = { runId: secondRunId };
 		} else if (command === "dispose") {
 			await session?.dispose();
 		} else if (command === "release-source") {

@@ -252,6 +252,11 @@ export async function importDbosSdk(): Promise<DbosStatic> {
  *
  * cross-ref: issue #1498 — DBOS read-side hydration.
  */
+interface RetiredWrite {
+	readonly error: Error;
+	readonly replay: () => Promise<void>;
+}
+
 export class DbosDurableBackend implements DurableWorkflowBackend {
 	public readonly persistent = true;
 	private readonly mem = new InMemoryDurableBackend();
@@ -265,6 +270,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	private executorId: string;
 	private readonly writeQueues = new Map<string, Promise<void>>();
 	private readonly writeErrors = new Map<string, Error[]>();
+	private readonly retiredWrites = new Map<string, RetiredWrite[]>();
 	private readonly onUnavailable?: (error: DbosDependencyError) => void;
 	private readonly checkReady?: () => Promise<void>;
 	private admissionUnavailable = false;
@@ -279,7 +285,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
 	private fixedGeneration = false;
 	private generationIsCurrent?: () => boolean;
-	private rebindInitialAdmission?: () => void;
+	private rebindToCurrentGeneration?: () => void;
 	private admitted = false;
 	constructor(
 		sdk: DbosSdkHandle,
@@ -337,7 +343,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			promptReservations: reservations,
 			fixedGeneration: true,
 			generationIsCurrent: () => this.sdk === view.sdk,
-			rebindInitialAdmission: () => {
+			rebindToCurrentGeneration: () => {
 				this.ensureGeneration();
 				view.sdk = this.sdk;
 				view.executorId = this.executorId;
@@ -347,9 +353,18 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	async recoverExecutionGeneration(workflowId: string): Promise<void> {
-		if (this.sdk.generationLost?.()) this.rebindInitialAdmission?.();
+		if (!this.sdk.generationLost?.() && this.generationIsCurrent?.() !== false) return;
+		this.rebindToCurrentGeneration?.();
 		this.ensureGeneration();
+		await this.writeQueues.get(workflowId);
+		const retired = this.retiredWrites.get(workflowId) ?? [];
+		this.retiredWrites.delete(workflowId);
+		const retiredErrors = new Set(retired.map((write) => write.error));
+		const errors = this.writeErrors.get(workflowId)?.filter((error) => !retiredErrors.has(error)) ?? [];
+		if (errors.length > 0) this.writeErrors.set(workflowId, errors);
+		else this.writeErrors.delete(workflowId);
 		await this.enqueueWrite(workflowId, async () => {});
+		for (const write of retired) void this.enqueueWrite(workflowId, write.replay, write.replay);
 		await this.flush(workflowId);
 	}
 
@@ -389,7 +404,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		registration: WorkflowRegistrationInput | undefined,
 		signal: AbortSignal,
 	): Promise<void> {
-		if (!this.admitted) this.rebindInitialAdmission?.();
+		if (!this.admitted) this.rebindToCurrentGeneration?.();
 		const pending = this.performAdmission(workflowId, registration, signal);
 		this.admissionSettlements.set(workflowId, pending);
 		void pending.then(
@@ -707,7 +722,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.ensureGeneration();
 		if (!this.isWorkflowLoadable(checkpoint.workflowId)) return;
 		this.mem.recordCheckpoint(checkpoint);
-		this.enqueueWrite(checkpoint.workflowId, () => this.persistCheckpoint(checkpoint));
+		const persist = () => this.persistCheckpoint(checkpoint);
+		this.enqueueWrite(checkpoint.workflowId, persist, persist);
 	}
 
 	async recordCheckpointAsync(
@@ -1070,6 +1086,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.promptReservations.clear();
 		this.writeQueues.clear();
 		this.writeErrors.clear();
+		this.retiredWrites.clear();
 		this.admissionUnavailable = false;
 		this.unavailableAdmissions.clear();
 		this.admissionMetadataAttempted.clear();
@@ -1317,12 +1334,14 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		await this.mem.deleteWorkflow(workflowId);
 	}
 
-	private enqueueWrite(workflowId: string, fn: () => Promise<void>): Promise<void> {
+	private enqueueWrite(workflowId: string, fn: () => Promise<void>, replay?: () => Promise<void>): Promise<void> {
 		const signal = dbosAdmissionContext.getStore();
 		if (signal?.aborted) return Promise.resolve();
 		const previous = this.writeQueues.get(workflowId) ?? Promise.resolve();
+		let writer: DbosSdkHandle | undefined;
 		const next = previous.then(async () => {
 			this.ensureGeneration();
+			writer = this.sdk;
 			const adopted = await this.sdk.adoptPreviousGeneration?.(workflowId);
 			const local = this.mem.getWorkflow(workflowId);
 			if (adopted !== undefined && local !== undefined)
@@ -1343,6 +1362,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			errors.push(error);
 			this.writeErrors.set(workflowId, errors);
 			// The next readiness/flush boundary for this workflow surfaces the fatal persistence error.
+			// Idempotent checkpoint writes refused by a lost generation replay under its successor.
+			if (replay !== undefined && writer?.generationLost?.() === true) {
+				const retired = this.retiredWrites.get(workflowId) ?? [];
+				retired.push({ error, replay });
+				this.retiredWrites.set(workflowId, retired);
+			}
 		});
 		this.trackWriteQueue(workflowId, tracked);
 		return next;

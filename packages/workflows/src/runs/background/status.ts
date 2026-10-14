@@ -298,6 +298,9 @@ export async function resumeRun(
 		);
 	});
 	if (hasPausedState) {
+		await (opts?.toolControlRegistry ?? defaultToolControlRegistry)
+			.runControl(aggregateRootRunId)
+			?.recoverExecutionGeneration?.();
 		const handles = opts?.stageId
 			? [registry.get(runId, opts.stageId)]
 					.filter(

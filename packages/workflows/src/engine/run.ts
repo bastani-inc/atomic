@@ -910,6 +910,15 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 			return runtimeSettled.promise;
 		},
+		recoverExecutionGeneration: async () => {
+			const recover = durableBackend.recoverExecutionGeneration?.bind(durableBackend);
+			if (opts.parentRun !== undefined || recover === undefined) return;
+			await boundedAdmission(
+				(signal) => dbosAdmissionContext.run(signal, () => recover(runId)),
+				ownController.signal,
+				DBOS_ADMISSION_TIMEOUT_MS,
+			);
+		},
 	});
 	terminalEvents.register();
 	let durableAdmissionFailure: { error: unknown } | undefined;

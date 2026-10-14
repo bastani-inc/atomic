@@ -181,3 +181,105 @@ test(
 	},
 	REAL_SDK_CRASHED_RECOVERY_TIMEOUT_MS,
 );
+
+test(
+	"a session that loses its ownership connection resumes the paused run and starts new runs without restarting (#3621)",
+	async () => {
+		const home = new RealPostgresHome();
+		const listener = await reserveListener();
+		let producer: RealPostgresClient | undefined;
+		try {
+			producer = home.client(
+				listener.port,
+				{ ATOMIC_SDK_RECOVERY_PRODUCER: "1", ATOMIC_SDK_RECOVERY_RELEASEABLE: "1" },
+				"sdk-crashed-workflow-recovery-client.ts",
+			);
+			const { runId } = await producer.request<{ runId: string }>("start");
+			const { ownerExecutorId: lostOwner } = await producer.request<{ ownerExecutorId: string }>(
+				"terminate-own-owner",
+				runId,
+			);
+			const paused = await producer.request<{ status: string; resumable: boolean; error?: string }>(
+				"release-source",
+				runId,
+			);
+			assert.equal(paused.status, "paused");
+			assert.equal(paused.resumable, true);
+			assert.match(paused.error ?? "", /ownership connection was lost/);
+			const resumed = await producer.request<Inspection>("resume", runId);
+			assert.equal(resumed.status, "completed");
+			assert.ok(resumed.listed.includes(runId));
+			assert.equal(resumed.effect, "effect\n", "completed checkpoints must replay without re-running effects");
+			const observer = home.client(listener.port, {}, "sdk-crashed-workflow-recovery-client.ts");
+			const durable = await observer.request<{ status: string; ownerExecutorId: string; records: object[] }>(
+				"durable-state",
+				runId,
+			);
+			assert.equal(durable.status, "completed");
+			assert.notEqual(durable.ownerExecutorId, lostOwner, "recovery must write under a fresh owner generation");
+			assert.ok(JSON.stringify(durable.records).includes("late-source-result"));
+			const second = await producer.request<{ runId: string }>("start-complete");
+			assert.notEqual(second.runId, runId);
+			const secondDurable = await observer.request<{ status: string; ownerExecutorId: string }>(
+				"durable-state",
+				second.runId,
+			);
+			assert.equal(secondDurable.status, "completed");
+			assert.equal(secondDurable.ownerExecutorId, durable.ownerExecutorId);
+		} finally {
+			try {
+				try {
+					await producer?.crash();
+				} finally {
+					await home.cleanup();
+				}
+			} finally {
+				await listener.close();
+			}
+		}
+	},
+	REAL_SDK_CRASHED_RECOVERY_TIMEOUT_MS,
+);
+
+test(
+	"live pause and resume after ownership connection loss continue the run under a fresh generation (#3621)",
+	async () => {
+		const home = new RealPostgresHome();
+		const listener = await reserveListener();
+		let producer: RealPostgresClient | undefined;
+		try {
+			producer = home.client(
+				listener.port,
+				{ ATOMIC_SDK_RECOVERY_PRODUCER: "1", ATOMIC_SDK_RECOVERY_RELEASEABLE: "1" },
+				"sdk-crashed-workflow-recovery-client.ts",
+			);
+			const { runId } = await producer.request<{ runId: string }>("start");
+			const { ownerExecutorId: lostOwner } = await producer.request<{ ownerExecutorId: string }>(
+				"terminate-own-owner",
+				runId,
+			);
+			assert.equal((await producer.request<{ status: string }>("pause-resume", runId)).status, "running");
+			const settled = await producer.request<{ status: string; error?: string }>("release-source", runId);
+			assert.equal(settled.status, "completed", settled.error);
+			const observer = home.client(listener.port, {}, "sdk-crashed-workflow-recovery-client.ts");
+			const durable = await observer.request<{ status: string; ownerExecutorId: string; records: object[] }>(
+				"durable-state",
+				runId,
+			);
+			assert.equal(durable.status, "completed");
+			assert.notEqual(durable.ownerExecutorId, lostOwner, "recovery must write under a fresh owner generation");
+			assert.ok(JSON.stringify(durable.records).includes("late-source-result"));
+		} finally {
+			try {
+				try {
+					await producer?.crash();
+				} finally {
+					await home.cleanup();
+				}
+			} finally {
+				await listener.close();
+			}
+		}
+	},
+	REAL_SDK_CRASHED_RECOVERY_TIMEOUT_MS,
+);
