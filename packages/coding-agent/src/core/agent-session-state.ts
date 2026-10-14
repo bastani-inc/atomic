@@ -195,31 +195,38 @@ export function _preparePromptAndToolLoadout(
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }
 
+export function preservesInitialToolLoadout(session: AgentSession): boolean {
+	return (
+		(!session._usesDefaultTools && session._initialActiveToolNames !== undefined) ||
+		session._orchestrationContext?.kind === "workflow-stage" ||
+		(session._subagentPolicy?.depth ?? 0) >= 1
+	);
+}
+
 /**
  * Restore registered tools from the selected transcript, not another branch's live state.
  *
  * Explicit tool selections keep their built-in loadout while restoring dynamically registered tools.
  * Default selections restore the recorded loadout with any CLI modifiers applied.
  */
-export function _restoreToolsFromTranscript(
-	this: AgentSession,
-	options?: { keepLoadout?: boolean; modifiers?: readonly string[] },
-): void {
+export function _restoreToolsFromTranscript(this: AgentSession, options?: { startup?: boolean }): void {
 	this._pendingToolNames.clear();
 	const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 	if (!current) return;
+	const keepLoadout = options?.startup && preservesInitialToolLoadout(this);
+	const modifiers = options?.startup && this._usesDefaultTools ? this._defaultToolModifiers : [];
 	const declared = applyToolModifiers(
 		(current.toolsAdded ?? []).map((tool) => tool.name),
-		options?.modifiers ?? [],
+		modifiers,
 	);
-	if (!options?.keepLoadout) {
+	if (!keepLoadout) {
 		this._pendingToolNames = new Set(declared);
 		this._setActiveTools(declared);
 		return;
 	}
 	const restored = declared.filter((name) => !this._baseToolDefinitions.has(name));
 	this._pendingToolNames = new Set(restored);
-	this._setActiveTools([...this.getActiveToolNames(), ...restored]);
+	this._setActiveTools(applyToolModifiers([...this.getActiveToolNames(), ...restored], modifiers));
 }
 
 // =========================================================================

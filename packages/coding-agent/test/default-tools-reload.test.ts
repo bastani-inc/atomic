@@ -31,10 +31,18 @@ const writeSettings = (settings: object) => writeFileSync(join(agentDir, "settin
 async function createFileSession(
 	options: Pick<
 		CreateAgentSessionOptions,
-		"tools" | "noTools" | "excludedTools" | "customTools" | "sessionManager"
+		| "tools"
+		| "noTools"
+		| "excludedTools"
+		| "customTools"
+		| "sessionManager"
+		| "orchestrationContext"
+		| "subagentPolicy"
 	> = {},
 	transactional = true,
 	settingsManager = SettingsManager.create(tempDir, agentDir),
+	deferExtensions = false,
+	startupTool?: string,
 ) {
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: tempDir,
@@ -55,11 +63,20 @@ async function createFileSession(
 					defaultActive: false,
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
+				if (deferExtensions) {
+					pi.registerTool({
+						name: "active_tool",
+						label: "Active",
+						description: "Fixture",
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+					});
+				}
+				if (startupTool) pi.on("session_start", () => pi.setActiveTools([...pi.getActiveTools(), startupTool]));
 			},
 		],
 	});
-	if (!transactional) resourceLoader.supportsTransactionalReload = () => false;
-	await resourceLoader.reload();
+	await resourceLoader.reload({ deferExtensions });
 	const { session } = await createAgentSession({
 		cwd: tempDir,
 		agentDir,
@@ -71,6 +88,8 @@ async function createFileSession(
 		...options,
 	});
 	sessions.push(session);
+	if (!transactional) session.resourceLoader.supportsTransactionalReload = () => false;
+	assert.equal(session.resourceLoader.supportsTransactionalReload?.(), transactional);
 	return session;
 }
 
@@ -248,3 +267,104 @@ test("resume keeps defaults when no loadout was recorded (#10785)", async () => 
 	const session = await createFileSession({ sessionManager });
 	assert.deepEqual(session.getActiveToolNames(), getDefaultToolNames());
 });
+
+for (const childKind of ["workflow", "subagent"] as const) {
+	test(`forked ${childKind} keeps injected tools with default tool selection (#3624)`, async () => {
+		const toolName = childKind === "workflow" ? "structured_output" : "child_tool";
+		const session = await createFileSession({
+			sessionManager: recordedSession(["read", "bash", "edit", "write"]),
+			...(childKind === "workflow"
+				? {
+						orchestrationContext: {
+							kind: "workflow-stage" as const,
+							workflowRunId: "fork-loadout",
+							workflowStageId: "schema",
+							workflowStageName: "Schema",
+							constraints: { disableWorkflowTool: true as const },
+						},
+					}
+				: { subagentPolicy: { depth: 1, managementActions: "restricted" as const, fanoutAuthorized: false } }),
+			customTools: [
+				{
+					name: toolName,
+					label: toolName,
+					description: "Fixture",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+				},
+			],
+		});
+		assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
+		await session.reload({ reason: "startup" });
+		assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
+	});
+}
+
+for (const transactional of [true, false]) {
+	for (const modified of [true, false]) {
+		test(`startup restores deferred recorded tools with transactional=${transactional}, modified=${modified} (#3624)`, async () => {
+			const session = await createFileSession(
+				{
+					sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+					...(modified ? { tools: ["-ls", "+write"], excludedTools: ["inactive_tool"] } : {}),
+				},
+				transactional,
+				SettingsManager.create(tempDir, agentDir),
+				true,
+			);
+			assert.deepEqual(session.getActiveToolNames().sort(), modified ? ["read", "write"] : ["ls", "read"]);
+			await session.reload({ reason: "startup" });
+			assert.deepEqual(
+				session.getActiveToolNames().sort(),
+				modified ? ["read", "write"] : ["inactive_tool", "ls", "read"],
+			);
+			await session.reload();
+			assert.ok(session.getActiveToolNames().includes("active_tool"));
+		});
+	}
+}
+
+test("forked child restoration respects modifiers, exclusions, allowlists and parent ceilings (#3624)", async () => {
+	const parent = { cwd: tempDir, tools: ["read"] };
+	const restrictedOptions: CreateAgentSessionOptions[] = [
+		{ tools: ["read"] },
+		{ excludedTools: ["child_tool"] },
+		{ tools: ["-child_tool"] },
+		{ noTools: "all" },
+		inheritChildSessionOptions(parent, { tools: ["read", "child_tool"] }, ["read", "child_tool"]),
+	];
+	for (const options of restrictedOptions) {
+		const session = await createFileSession({
+			...options,
+			sessionManager: recordedSession(["read", "bash", "child_tool"]),
+			subagentPolicy: { depth: 1, managementActions: "restricted", fanoutAuthorized: false },
+			customTools: [
+				{
+					name: "child_tool",
+					label: "Child tool",
+					description: "Fixture",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+				},
+			],
+		});
+		assert.ok(!session.getActiveToolNames().includes("child_tool"));
+		await session.reload({ reason: "startup" });
+		assert.ok(!session.getActiveToolNames().includes("child_tool"));
+		if (options.tools?.includes("read")) assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	}
+});
+
+for (const transactional of [true, false]) {
+	test(`startup handlers see recorded tools and can activate tools with transactional=${transactional} (#3624)`, async () => {
+		const session = await createFileSession(
+			{ sessionManager: recordedSession(["read", "inactive_tool"]) },
+			transactional,
+			SettingsManager.create(tempDir, agentDir),
+			true,
+			"find",
+		);
+		await session.reload({ reason: "startup" });
+		assert.deepEqual(session.getActiveToolNames().sort(), ["find", "inactive_tool", "read"]);
+	});
+}

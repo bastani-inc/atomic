@@ -14,6 +14,7 @@
 - Fixed `read` line-range labels for numeric-string or null `offset`/`limit` arguments, such as those in sessions recorded with offset-based `read` tools, in the session tree, HTML exports, and the subagent example ([#9887](https://github.com/earendil-works/pi/issues/9887)).
 - Fixed prompt templates dropping empty quoted arguments (`""` or `''`), which shifted later positional arguments and prevented positional defaults from applying ([#10867](https://github.com/earendil-works/pi/issues/10867)).
 - Fixed `--model` choosing a provider by catalog order when several providers offer the match; Atomic now prefers the provider with credentials and otherwise reports the ambiguity. `--models` and `enabledModels` add a model for each provider that offers it and warn about the ambiguity. `--api-key` no longer lets stored credentials pick the provider, so a bare model ID offered by several providers needs `provider/model` alongside it, and a bare ID in `modelRouting.allowedModels` or `excludedModels` now covers every provider that offers it ([#10160](https://github.com/earendil-works/pi/issues/10160)).
+- Fixed forked workflow stages and subagents losing their own tools when inheriting conversation history, and deferred startup reactivating extension tools disabled in a resumed session ([#3624](https://github.com/bastani-inc/atomic/pull/3624)).
 
 ## [0.9.36] - 2026-10-13
 

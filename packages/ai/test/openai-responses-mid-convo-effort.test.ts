@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { type OpenAIResponsesOptions, stream as streamOpenAIResponses } from "../src/api/openai-responses.js";
 import { openaiApiProvider, openaiProvider } from "../src/providers/openai.js";
@@ -70,7 +71,12 @@ function responseEvents(responseId: string, withToolCall: boolean): object[] {
 async function runOpenAI(
 	messages: Message[],
 	reasoningEffort: OpenAIResponsesOptions["reasoningEffort"],
-	options: { apiKey?: string; model?: Model<"openai-responses">; withToolCall?: boolean } = {},
+	options: {
+		apiKey?: string;
+		headers?: Record<string, string>;
+		model?: Model<"openai-responses">;
+		withToolCall?: boolean;
+	} = {},
 ): Promise<{ payload: Payload; message: AssistantMessage }> {
 	let payload: Payload | undefined;
 	const fetchMock = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -81,7 +87,8 @@ async function runOpenAI(
 		return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 	};
 	const message = await streamOpenAIResponses(options.model ?? openAIModel(), normalizeContext({ messages }), {
-		apiKey: options.apiKey ?? "sk-test",
+		apiKey: "apiKey" in options ? options.apiKey : "sk-test",
+		headers: options.headers,
 		reasoningEffort,
 		fetch: fetchMock as typeof globalThis.fetch,
 	}).result();
@@ -202,6 +209,23 @@ describe("OpenAI Responses configuration_update", () => {
 		expect(payload.input.some((item) => item.type === "configuration_update")).toBe(false);
 		expect(message.providerThinkingLevel).toBeUndefined();
 	});
+});
+
+it("sends reasoning.effort for a subscription bearer token behind a custom base URL (#3624)", async () => {
+	const encode = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, "");
+	const token = [
+		encode({ alg: "none" }),
+		encode({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_1" } }),
+		"signature",
+	].join(".");
+	const model: Model<"openai-responses"> = { ...openAIModel(), baseUrl: "https://proxy.example.com/v1" };
+	const options = { apiKey: undefined, headers: { Authorization: `Bearer ${token}` }, model };
+	const first = await runOpenAI([user("one")], "high", options);
+	const { payload, message } = await runOpenAI([user("one"), first.message, user("two")], "low", options);
+
+	assert.equal(payload.reasoning?.effort, "low");
+	assert.equal(payload.input.some((item) => item.type === "configuration_update"), false);
+	assert.equal(message.providerThinkingLevel, undefined);
 });
 
 it("enables GPT-6 effort updates in bundled OpenAI and Atomic API-key catalogs", () => {
