@@ -5,14 +5,13 @@ import { createProvider, type Provider } from "../models.ts";
 import type { Model } from "../types.js";
 import { OPENAI_MODELS } from "./openai.models.ts";
 
-import { openaiSubscriptionModels } from "./openai-subscription-models.js";
-
-const MID_CONVO_EFFORT_MODEL_IDS = new Set(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
+import { OPENAI_MID_CONVO_EFFORT_MODEL_IDS } from "./openai-mid-convo-effort.ts";
+import { openaiSubscriptionModels } from "./openai-subscription-models.ts";
 
 function modelsWithMidConvoEffort(): Model<"openai-responses">[] {
 	return Object.values(OPENAI_MODELS).map((model) => ({
 		...model,
-		...(MID_CONVO_EFFORT_MODEL_IDS.has(model.id)
+		...(OPENAI_MID_CONVO_EFFORT_MODEL_IDS.has(model.id)
 			? { compat: { ...model.compat, supportsMidConvoEffort: true } }
 			: {}),
 	}));

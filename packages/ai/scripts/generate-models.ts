@@ -45,6 +45,7 @@ import {
 	getRadiusModelsFromConfig,
 	loadRadiusGatewayConfig,
 } from "../src/providers/radius-config.ts";
+import { OPENAI_MID_CONVO_EFFORT_MODEL_IDS } from "../src/providers/openai-mid-convo-effort.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -459,7 +460,6 @@ const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 ]);
 // OpenAI documents configuration_update for the GPT-6 family.
 // https://developers.openai.com/api/docs/guides/reasoning
-const OPENAI_MID_CONVO_EFFORT_MODEL_IDS = new Set(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272000;
 const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-5.4",

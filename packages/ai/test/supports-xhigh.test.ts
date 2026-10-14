@@ -255,7 +255,6 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "low", "high", "max"]);
 	});
 
-
 	it("preserves low/high/max metadata for DeepSeek V4.1 Flash on OpenRouter", () => {
 		const model = getModel("openrouter", "deepseek/deepseek-v4.1-flash");
 		expect(model).toBeDefined();

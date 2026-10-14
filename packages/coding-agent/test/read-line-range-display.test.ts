@@ -22,9 +22,17 @@ interface HtmlViewer {
 	renderEntry(entry: SessionMessageEntry): string;
 }
 
+function sliceBetween(text: string, startMarker: string, endMarker: string, fromEnd: boolean): string | undefined {
+	const start = fromEnd ? text.lastIndexOf(startMarker) : text.indexOf(startMarker);
+	if (start === -1) return undefined;
+	const contentStart = start + startMarker.length;
+	const end = text.indexOf(endMarker, contentStart);
+	return end === -1 ? undefined : text.slice(contentStart, end);
+}
+
 function loadHtmlViewer(html: string): HtmlViewer {
-	const sessionData = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/)?.[1];
-	const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)?.[1];
+	const sessionData = sliceBetween(html, '<script id="session-data" type="application/json">', "</script>", false);
+	const script = sliceBetween(html, "<script>", "</script>", true);
 	if (!sessionData || !script) throw new Error("Missing exported session data or viewer script");
 	return runInNewContext(
 		script.replace(
