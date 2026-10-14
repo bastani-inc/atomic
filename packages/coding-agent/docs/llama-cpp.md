@@ -32,6 +32,8 @@ llama-server \
 
 Single-file models can sit directly in the model directory. Put multimodal and multi-shard models in separate subdirectories with their projection or shard files. Restart the router after manually adding files. Per-model context sizes and other options can be set with [model presets](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#model-presets).
 
+For settings tuned to a specific NVIDIA GPU and model, see [Run Atomic with NVIDIA RTX and llama.cpp](/nvidia-rtx-llama-cpp).
+
 ## Configure Atomic
 
 Run:
