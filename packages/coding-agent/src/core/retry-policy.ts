@@ -9,19 +9,21 @@
  * handling, sleeping, and whether the chain may advance afterwards.
  */
 
-import { retryDelayMs } from "@bastani/pi-ai";
+import { type AssistantMessage, assistantRetryDelayMs, retryDelayMs, usesRetryTimeBudget } from "@bastani/pi-ai";
 
 export interface RetryPolicySettings {
 	readonly enabled: boolean;
 	readonly maxRetries: number;
 	readonly baseDelayMs: number;
 	readonly maxAgentDelayMs?: number;
+	readonly maxRetryTimeMs?: number;
+	readonly maxRetryDelayMs?: number;
 }
 
 export interface RetryDecision {
 	/** 1-based number of the retry this decision authorizes. */
 	readonly attempt: number;
-	/** Exponential backoff to wait before that retry. */
+	/** Backoff, or server retry hint, to wait before that retry. */
 	readonly delayMs: number;
 }
 
@@ -31,15 +33,23 @@ export interface RetryDecision {
  * @param settings retry settings, or `undefined` when the caller has none
  * @param retriesSpent retries already made for this failure
  * @param eligible whether this failure can be repaired by requesting again
+ * @param failure the failed message and time spent retrying it; transient provider
+ *   errors then retry within `maxRetryTimeMs` and honour the server retry hint
  */
 export function nextRetryDecision(
 	settings: RetryPolicySettings | undefined,
 	retriesSpent: number,
 	eligible: boolean,
+	failure?: { message: Pick<AssistantMessage, "stopReason" | "errorMessage" | "retryAfterMs">; elapsedMs: number },
 ): RetryDecision | undefined {
-	if (settings === undefined || !settings.enabled || !eligible || retriesSpent >= settings.maxRetries) {
+	if (settings === undefined || !settings.enabled || !eligible) {
 		return undefined;
 	}
 	const attempt = retriesSpent + 1;
-	return { attempt, delayMs: retryDelayMs(settings, attempt) };
+	if (failure) {
+		const delayMs = assistantRetryDelayMs(settings, attempt, failure.message, failure.elapsedMs);
+		if (delayMs !== undefined) return { attempt, delayMs };
+		if (usesRetryTimeBudget(settings, failure.message)) return undefined;
+	}
+	return retriesSpent < settings.maxRetries ? { attempt, delayMs: retryDelayMs(settings, attempt) } : undefined;
 }

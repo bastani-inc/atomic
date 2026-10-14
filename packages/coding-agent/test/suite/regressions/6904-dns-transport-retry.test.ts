@@ -49,7 +49,9 @@ describe("issue #6904 DNS transport failure retry", () => {
 	);
 
 	it("stops after the configured DNS retry bound", async () => {
-		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 } } });
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 2, maxRetryTimeMs: 0, baseDelayMs: 0 } },
+		});
 		try {
 			const errorMessage = dnsErrors[0];
 			harness.setResponses(

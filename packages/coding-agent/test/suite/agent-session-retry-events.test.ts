@@ -73,7 +73,9 @@ describe("AgentSession retry and event characterization", () => {
 	});
 
 	it("exhausts max retries and emits a failure event", async () => {
-		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } } });
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 2, maxRetryTimeMs: 0, baseDelayMs: 1 } },
+		});
 		harnesses.push(harness);
 		const retryEvents: string[] = [];
 		harness.session.subscribe((event) => {
@@ -92,6 +94,33 @@ describe("AgentSession retry and event characterization", () => {
 		expect(retryEvents).toEqual(["start:1", "start:2", "end:false"]);
 		expect(harness.faux.state.callCount).toBe(3);
 		expect(harness.session.isRetrying).toBe(false);
+	});
+
+	it("keeps retrying a Cloudflare 520 burst past maxRetries within the time budget (#3623)", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 2, maxRetryTimeMs: 60_000, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const retryEvents: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+		});
+
+		const cloudflare520 = () =>
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "520 status code (no body)" });
+		harness.setResponses([
+			cloudflare520(),
+			cloudflare520(),
+			cloudflare520(),
+			cloudflare520(),
+			fauxAssistantMessage("ok"),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(retryEvents).toEqual(["start:1", "start:2", "start:3", "start:4", "end:true"]);
+		expect(harness.faux.state.callCount).toBe(5);
 	});
 
 	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {

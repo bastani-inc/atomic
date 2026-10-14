@@ -95,6 +95,13 @@ const ProviderRetrySettingsSchema = Type.Object({
 const RetrySettingsSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.retry.enabled })),
 	maxRetries: Type.Optional(Type.Number({ default: SETTINGS_DEFAULTS.retry.maxRetries })),
+	maxRetryTimeMs: Type.Optional(
+		nonNegativeSafeInteger({
+			default: SETTINGS_DEFAULTS.retry.maxRetryTimeMs,
+			description:
+				"Time budget in milliseconds for retrying transient provider errors (5xx, overloaded, connection resets) past maxRetries. 0 uses maxRetries only.",
+		}),
+	),
 	baseDelayMs: Type.Optional(
 		Type.Number({
 			description: "Exponential backoff base delay in milliseconds: 2s, 4s, 8s.",

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import type {
@@ -270,6 +271,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				delete (block as { customInput?: unknown }).customInput;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			const errorMessage = formatProviderError(
 				normalizeProviderError(error),
 				`${model.provider === "openai" || model.provider === "openai-api" ? "OpenAI" : model.provider} API error`,

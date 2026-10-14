@@ -97,7 +97,13 @@ describe("AgentSession retry", () => {
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		settingsManager.applyOverrides({
-			retry: { enabled: true, maxRetries, baseDelayMs: 1, maxAgentDelayMs: options?.maxAgentDelayMs },
+			retry: {
+				enabled: true,
+				maxRetries,
+				maxRetryTimeMs: 0,
+				baseDelayMs: 1,
+				maxAgentDelayMs: options?.maxAgentDelayMs,
+			},
 		});
 
 		session = new AgentSession({

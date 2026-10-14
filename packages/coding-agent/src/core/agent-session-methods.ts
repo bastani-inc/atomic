@@ -564,6 +564,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_branchSummaryCompletion: Promise<void> | undefined;
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;
+	_retryStartedAt: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;

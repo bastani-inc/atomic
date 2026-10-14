@@ -2,6 +2,7 @@ import type * as NodeZlib from "node:zlib";
 import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
 import { clampThinkingLevel } from "../models.ts";
+import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -457,7 +458,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							statusText: response.statusText,
 						});
 						const info = await parseErrorResponse(fakeResponse);
-						throw new Error(info.friendlyMessage || info.message);
+						throw Object.assign(new Error(info.friendlyMessage || info.message), {
+							retryAfterMs: getRetryAfterMs(response.headers, errorText),
+						});
 					} catch (error) {
 						if (error instanceof Error) {
 							if (error.name === "AbortError" || error.message === "Request was aborted") {
@@ -553,6 +556,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

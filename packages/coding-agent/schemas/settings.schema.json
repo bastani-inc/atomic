@@ -245,6 +245,13 @@
           "type": "number",
           "default": 3
         },
+        "maxRetryTimeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "default": 300000,
+          "description": "Time budget in milliseconds for retrying transient provider errors (5xx, overloaded, connection resets) past maxRetries. 0 uses maxRetries only."
+        },
         "baseDelayMs": {
           "type": "number",
           "description": "Exponential backoff base delay in milliseconds: 2s, 4s, 8s.",

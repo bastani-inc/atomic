@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import type {
 	ChatCompletionAssistantMessageParam,
 	ChatCompletionChunk,
@@ -743,6 +744,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			// Some providers via OpenRouter give additional information in this field.
 			// normalizeProviderError already stringifies the parsed body (error.error)
 			// into errorMessage, so only append the raw metadata when it is not already

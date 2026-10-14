@@ -39,6 +39,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"503",
 	"504",
 	"520",
+	"521",
+	"522",
+	"523",
 	"524",
 	"service.?unavailable",
 	"server.?error",
@@ -56,6 +59,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
+	"ECONNRESET",
+	"connection.?reset",
 	"other side closed",
 	"fetch failed",
 	"getaddrinfo",
@@ -129,14 +134,68 @@ export interface RetryPolicy {
 	baseDelayMs: number;
 	/** Cap for agent-level retry delays in ms. Defaults to 60 seconds. */
 	maxAgentDelayMs?: number;
+	/**
+	 * Elapsed-time budget for transient provider failures (5xx, overload, connection
+	 * resets). While it lasts, those failures retry past `maxRetries` with full-jitter
+	 * backoff. 0 or undefined keeps the fixed `maxRetries` limit.
+	 */
+	maxRetryTimeMs?: number;
+	/** Cap for a server retry hint (`Retry-After`, `retry_after`). 0 disables the cap. */
+	maxRetryDelayMs?: number;
 }
 
 export const DEFAULT_MAX_AGENT_RETRY_DELAY_MS = 60_000;
+export const DEFAULT_MAX_RETRY_TIME_MS = 300_000;
 
 export function retryDelayMs(policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgentDelayMs">, attempt: number): number {
 	const delay = policy.baseDelayMs * 2 ** Math.max(0, attempt - 1);
 	const safeDelay = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
 	return Math.min(safeDelay, policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+}
+
+type RetryFailure = Pick<AssistantMessage, "stopReason" | "errorMessage" | "retryAfterMs">;
+
+const RATE_LIMIT_ERROR_PATTERN = /429|rate.?limit|too many requests/i;
+
+/** Whether `message` is a transient failure that retries under `policy.maxRetryTimeMs` instead of `maxRetries`. */
+export function usesRetryTimeBudget(policy: Pick<RetryPolicy, "maxRetryTimeMs">, message: RetryFailure): boolean {
+	return (
+		(policy.maxRetryTimeMs ?? 0) > 0 &&
+		isRetryableAssistantError(message) &&
+		!RATE_LIMIT_ERROR_PATTERN.test(message.errorMessage ?? "")
+	);
+}
+
+function serverHintDelayMs(policy: Pick<RetryPolicy, "maxRetryDelayMs">, message: RetryFailure): number {
+	const hintMs = message.retryAfterMs;
+	if (hintMs === undefined || !Number.isFinite(hintMs) || hintMs <= 0) return 0;
+	const capMs = policy.maxRetryDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS;
+	return capMs > 0 ? Math.min(hintMs, capMs) : hintMs;
+}
+
+/**
+ * Delay before retry `attempt` (1-indexed) of a failed assistant call, or `undefined`
+ * when it must not be retried. Transient failures retry until `maxRetryTimeMs` has
+ * elapsed, using full-jitter exponential backoff; other retryable failures keep the
+ * `maxRetries` limit and deterministic backoff. A server retry hint is the minimum
+ * delay, capped by `maxRetryDelayMs`; budgeted delays never exceed the remaining budget.
+ */
+export function assistantRetryDelayMs(
+	policy: RetryPolicy,
+	attempt: number,
+	message: RetryFailure,
+	elapsedMs: number,
+	random: () => number = Math.random,
+): number | undefined {
+	if (!policy.enabled || policy.maxRetries <= 0 || !isRetryableAssistantError(message)) return undefined;
+	const hintMs = serverHintDelayMs(policy, message);
+	if (!usesRetryTimeBudget(policy, message)) {
+		return attempt > policy.maxRetries ? undefined : Math.max(retryDelayMs(policy, attempt), hintMs);
+	}
+	const remainingMs = (policy.maxRetryTimeMs ?? 0) - elapsedMs;
+	if (remainingMs <= 0) return undefined;
+	const jitteredMs = Math.floor(random() * retryDelayMs(policy, attempt));
+	return Math.min(Math.max(jitteredMs, hintMs), remainingMs);
 }
 
 /** Optional callbacks emitted by {@link retryAssistantCall} around each retry. */
@@ -188,7 +247,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  *   too, so callers do not need to care when cancellation happened.
  * - A non-retryable error (per {@link isRetryableAssistantError}, including quota/
  *   billing exhaustion) is returned immediately so deterministic errors fail fast.
- * - Otherwise retries up to `maxRetries` times with exponential backoff, emitting
+ * - Otherwise retries per {@link assistantRetryDelayMs} (time budget for transient
+ *   failures, `maxRetries` for the rest), emitting
  *   `onRetryScheduled` before each sleep, `onRetryAttemptStart` after each sleep before
  *   the retried call starts, and `onRetryFinished` once at the end (whether the loop
  *   ends in success, exhausted retries, or an aborted backoff).
@@ -205,6 +265,7 @@ export async function retryAssistantCall(
 	const maxAttempts = policy?.enabled ? policy.maxRetries : 0;
 
 	let attempt = 0;
+	const startedAt = Date.now();
 	let lastRetry: { attempt: number; errorMessage: string } | undefined;
 	for (;;) {
 		const response = await produce();
@@ -222,14 +283,14 @@ export async function retryAssistantCall(
 		}
 
 		// Non-retryable, or budget exhausted: return the final error message.
-		if (attempt >= maxAttempts || !isRetryableAssistantError(response)) {
+		const delayMs = policy ? assistantRetryDelayMs(policy, attempt + 1, response, Date.now() - startedAt) : undefined;
+		if (delayMs === undefined) {
 			if (lastRetry) await callbacks?.onRetryFinished?.(false, lastRetry.attempt, response.errorMessage);
 			return response;
 		}
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = retryDelayMs(policy!, attempt);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
@@ -256,7 +317,7 @@ export async function retryAssistantCall(
  * overflow separately, then apply their own retry budget, backoff, and reporting
  * before restarting the assistant turn.
  */
-export function isRetryableAssistantError(message: AssistantMessage): boolean {
+export function isRetryableAssistantError(message: RetryFailure): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
