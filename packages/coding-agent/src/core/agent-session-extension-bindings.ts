@@ -4,7 +4,7 @@ import { resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
-import { preservesInitialToolLoadout } from "./agent-session-state.js";
+import { preservesInitialToolLoadout } from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
