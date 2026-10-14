@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Pausing and resuming a workflow run after a transient workflow-database connection failure now resumes it under a fresh ownership generation instead of leaving it blocked with "ownership connection was lost" until Atomic restarts. Workflow database pools now enable TCP keepalive ([#3621](https://github.com/bastani-inc/atomic/issues/3621)).
+
 ## [0.9.37] - 2026-10-13
 
 ### Changed

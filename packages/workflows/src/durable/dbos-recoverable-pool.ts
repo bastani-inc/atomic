@@ -17,9 +17,10 @@ export function createRecoverablePostgresPool(
 	options: RecoverablePostgresPoolOptions = {},
 ): { pool: Pool; invalidate: () => void } {
 	const poolSize = options.poolSize ?? 10;
-	const pool = new Pool({ ...getPGClientConfig(initialUrl), max: poolSize });
+	const pool = new Pool({ ...getPGClientConfig(initialUrl), max: poolSize, keepAlive: true });
 	const endFacade = pool.end.bind(pool);
-	const createPool = options.createPool ?? ((url: string) => new Pool({ ...getPGClientConfig(url), max: poolSize }));
+	const createPool =
+		options.createPool ?? ((url: string) => new Pool({ ...getPGClientConfig(url), max: poolSize, keepAlive: true }));
 	const draining = new Set<Promise<void>>();
 	const checkouts = new Map<Pool, Set<{ client: PoolClient; release: PoolClient["release"] }>>();
 	let current: Pool | undefined;

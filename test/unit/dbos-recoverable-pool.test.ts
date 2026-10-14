@@ -509,3 +509,22 @@ test("configured maximum connections survives invalidation and endpoint replacem
 		await pool.end();
 	}
 });
+
+test("facade and replacement pools enable TCP keepalive (#3621)", async () => {
+	const keepAlive: (boolean | undefined)[] = [];
+	const connect = vi.spyOn(Pool.prototype, "connect").mockImplementation(async function (this: Pool) {
+		keepAlive.push(this.options.keepAlive);
+		return client();
+	});
+	const { pool, invalidate } = createRecoverablePostgresPool(initialUrl, { beforeConnect: async () => initialUrl });
+	try {
+		assert.equal(pool.options.keepAlive, true);
+		(await pool.connect()).release();
+		invalidate();
+		(await pool.connect()).release();
+		assert.deepEqual(keepAlive, [true, true]);
+	} finally {
+		connect.mockRestore();
+		await pool.end();
+	}
+});

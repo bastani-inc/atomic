@@ -346,6 +346,13 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		return view;
 	}
 
+	async recoverExecutionGeneration(workflowId: string): Promise<void> {
+		if (this.sdk.generationLost?.()) this.rebindInitialAdmission?.();
+		this.ensureGeneration();
+		await this.enqueueWrite(workflowId, async () => {});
+		await this.flush(workflowId);
+	}
+
 	private ensureGeneration(): void {
 		if (this.fixedGeneration) {
 			if (this.generationIsCurrent?.() === false)

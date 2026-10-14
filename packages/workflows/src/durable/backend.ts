@@ -84,6 +84,7 @@ export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
 	executionView?(): DurableWorkflowBackend;
+	recoverExecutionGeneration?(workflowId: string): Promise<void>;
 	enrollLegacyWorkflow?(
 		workflowId: string,
 		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },

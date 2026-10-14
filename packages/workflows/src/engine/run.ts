@@ -787,6 +787,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 					async (signal) => {
 						await raceAbort(previous, signal);
 						await dbosAdmissionContext.run(signal, async () => {
+							if (status === "running") await durableBackend.recoverExecutionGeneration?.(runId);
 							if (
 								!(await transitionDurableWorkflowStatus(
 									durableBackend,
