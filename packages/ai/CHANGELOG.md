@@ -14,6 +14,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed OpenCode Go MiniMax M2.7 failing with "Model does not support this protocol" by using the Anthropic Messages API.
 - Fixed tool-call argument parsing dropping fields when a string contains an invalid `\u` escape such as `\usepackage` ([#10868](https://github.com/earendil-works/pi/issues/10868)).
 - Fixed Anthropic requests failing with a 400 when an error tool result contains images; images are now replaced with a text note ([#10794](https://github.com/earendil-works/pi/issues/10794)).
+- Fixed automatic retry not triggering for gateway `Unable to forward upstream stream` errors ([#10920](https://github.com/earendil-works/pi/issues/10920)).
 
 ## [0.9.36] - 2026-10-13
 

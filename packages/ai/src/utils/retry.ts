@@ -48,6 +48,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// "Provider returned error" responses (#2264).
 	"provider.?returned.?(?:an.?)?error",
 	"exceeded request buffer limit while retrying upstream",
+	"unable to forward upstream",
 
 	// Network, proxy, and fetch transport failures. This includes OpenAI Codex
 	// raw-fetch failures such as "upstream connect", "connection refused", and
