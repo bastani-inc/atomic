@@ -16,6 +16,8 @@ Bundled integrations also provide [public repository search](#code_search), [web
 
 Run `/tools` to see which tools are active, why the others are off and how to turn them on, and which selected names nothing registered, such as a misspelled `defaultTools` entry. SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools).
 
+If a model finishes a tool call with malformed JSON arguments, Atomic rejects the call rather than executing a partially parsed request. The model receives an error containing its original arguments and can retry with valid JSON. This also applies to calls whose arguments were cut off before completion.
+
 ## `codemode`
 
 Codemode lets the model compose permitted tool calls in JavaScript and return only the useful output. It is shipped but inactive by default. Enable it alongside Atomic's defaults in `~/.atomic/agent/settings.json` or project `.atomic/settings.json`:
