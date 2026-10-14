@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
+	ResponseConfigurationUpdateItemParam,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
 	ResponseInputContent,
@@ -32,9 +33,9 @@ import type {
 	TranscriptContext,
 	Usage,
 } from "../types.ts";
-import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
+import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -392,6 +393,16 @@ export interface ConvertResponsesMessagesOptions {
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
 	toolOptions?: ConvertResponsesToolsOptions;
+	/**
+	 * Effort for the reply being generated. When set, the thinking level is sent as
+	 * configuration_update items instead of a changing reasoning.effort, which would invalidate the
+	 * prompt cache. Each item sets the effort from that point on: one goes before every earlier
+	 * reply with the level recorded on it (`providerThinkingLevel`), and one with this effort goes
+	 * at the end. Earlier input therefore never changes. OpenAI documents the item before user
+	 * messages only. After tool results it was verified on gpt-6-luna (October 2026) to be accepted
+	 * and to apply to the next reply.
+	 */
+	configurationUpdateEffort?: string;
 }
 
 export interface ConvertResponsesToolsOptions {
@@ -475,6 +486,12 @@ export function convertResponsesMessages<TApi extends Api>(
 		} satisfies ResponseToolSearchOutputItemParam);
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
+	const pushConfigurationUpdate = (effort: string): void => {
+		messages.push({
+			type: "configuration_update",
+			reasoning: { effort: effort as NonNullable<ResponseConfigurationUpdateItemParam.Reasoning["effort"]> },
+		} satisfies ResponseConfigurationUpdateItemParam);
+	};
 	const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
 	const instructionRole = model.reasoning && compat?.supportsDeveloperRole !== false ? "developer" : "system";
 
@@ -594,6 +611,13 @@ export function convertResponsesMessages<TApi extends Api>(
 				}
 			}
 			if (output.length === 0) continue;
+			if (
+				options?.configurationUpdateEffort !== undefined &&
+				isSameModel &&
+				msg.providerThinkingLevel !== undefined
+			) {
+				pushConfigurationUpdate(msg.providerThinkingLevel);
+			}
 			messages.push(...output);
 		} else if (msg.role === "toolResult") {
 			const [callId] = msg.toolCallId.split("|");
@@ -615,6 +639,7 @@ export function convertResponsesMessages<TApi extends Api>(
 		}
 		if (!isLeadingSystemMessage) msgIndex++;
 	}
+	if (options?.configurationUpdateEffort !== undefined) pushConfigurationUpdate(options.configurationUpdateEffort);
 
 	return messages;
 }

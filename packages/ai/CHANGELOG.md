@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added cache-preserving thinking-level changes for GPT-6 models on `openai` and `openai-api` with API-key authentication, controlled by `compat.supportsMidConvoEffort` ([#10853](https://github.com/earendil-works/pi/issues/10853)).
+
 ### Fixed
 
 - Fixed OpenCode Go Gemini models failing with a 404, and fresh builds failing to type-check them, by moving OpenCode Zen and OpenCode Go to the `opencode.ai/inference` endpoints and adding Google Generative AI support to the OpenCode Go provider.

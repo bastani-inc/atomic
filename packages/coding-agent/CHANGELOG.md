@@ -5,6 +5,7 @@
 ### Added
 
 - Added a guide to running local models on NVIDIA RTX GPUs with llama.cpp, including recipe prerequisites, router preset conversion, and connecting Atomic.
+- Changing the thinking level mid-session on OpenAI GPT-6 models with an API key now preserves the prompt cache ([#10853](https://github.com/earendil-works/pi/issues/10853)).
 
 ### Fixed
 
