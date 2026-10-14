@@ -4,6 +4,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed OpenCode Go Gemini models failing with a 404, and fresh builds failing to type-check them, by moving OpenCode Zen and OpenCode Go to the `opencode.ai/inference` endpoints and adding Google Generative AI support to the OpenCode Go provider.
+- Fixed OpenCode Go MiniMax M2.7 failing with "Model does not support this protocol" by using the Anthropic Messages API.
+
 ## [0.9.36] - 2026-10-13
 
 ### Fixed
