@@ -296,6 +296,8 @@ Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-c
 
 Xiaomi MiMo reasoning models on `xiaomi` and all three `xiaomi-token-plan-*` providers support only `off` (thinking disabled) and `high` (thinking enabled). Use these levels when selecting thinking; Xiaomi does not distinguish intermediate effort levels.
 
+Kimi For Coding (`kimi-coding`) uses OpenAI Chat Completions at `https://api.kimi.com/coding/v1`. If a `models.json` override sets its `baseUrl`, include the `/v1` suffix. Kimi Code models always think, so `off` is not a selectable thinking level.
+
 Use the table above for environment-variable and `auth.json` names.
 
 #### Auth File

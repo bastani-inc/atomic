@@ -12,6 +12,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Added cache-preserving thinking-level changes for GPT-6 models on `openai` and `openai-api` with API-key authentication, controlled by `compat.supportsMidConvoEffort` ([#10853](https://github.com/earendil-works/pi/issues/10853)).
 
+### Changed
+
+- Changed `kimi-coding` to OpenAI Chat Completions at `https://api.kimi.com/coding/v1`, matching the official Kimi Code client. K3, K3-256K, and Kimi For Coding support tools added mid-conversation without invalidating the prompt cache. Custom `models.json` base URLs for this provider must include `/v1` ([#10720](https://github.com/earendil-works/pi/issues/10720)).
+
 ### Fixed
 
 - Fixed OpenCode Go Gemini models failing with a 404, and fresh builds failing to type-check them, by moving OpenCode Zen and OpenCode Go to the `opencode.ai/inference` endpoints and adding Google Generative AI support to the OpenCode Go provider.
