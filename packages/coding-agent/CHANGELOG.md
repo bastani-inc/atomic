@@ -6,6 +6,10 @@
 
 - Added a guide to running local models on NVIDIA RTX GPUs with llama.cpp, including recipe prerequisites, router preset conversion, and connecting Atomic.
 
+### Fixed
+
+- Fixed resumed sessions dropping built-in tools activated during the session or reactivating tools that had been disabled. Default tool selections now restore the recorded loadout, with `--tools +name`/`-name` modifiers applied. Explicit tool selections and exclusions remain authoritative ([#10785](https://github.com/earendil-works/pi/issues/10785)).
+
 ## [0.9.36] - 2026-10-13
 
 ### Fixed

@@ -229,7 +229,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		options: NormalizedBuildSystemPromptOptions,
 		messages?: AgentMessage[],
 	): import("@bastani/pi-ai").SystemMessage | undefined;
-	_restoreToolsFromTranscript(options?: { keepLoadout?: boolean }): void;
+	_restoreToolsFromTranscript(options?: { keepLoadout?: boolean; modifiers?: readonly string[] }): void;
 	_refreshBaseSystemPromptFromActiveTools(): void;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;

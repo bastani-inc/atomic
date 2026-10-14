@@ -371,7 +371,10 @@ class AgentSessionBase {
 				activeToolNames: this._initialActiveToolNames,
 				includeAllExtensionTools: true,
 			});
-			internals._restoreToolsFromTranscript({ keepLoadout: this._initialActiveToolNames !== undefined });
+			internals._restoreToolsFromTranscript({
+				keepLoadout: !this._usesDefaultTools && this._initialActiveToolNames !== undefined,
+				modifiers: this._usesDefaultTools ? this._defaultToolModifiers : [],
+			});
 			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))
 				internals.getAgentTaskHost();
 		} catch (error) {

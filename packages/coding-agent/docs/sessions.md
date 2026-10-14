@@ -56,6 +56,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 Resuming restores saved verbatim compaction without another planning request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
 
+When you resume at startup with the default tool selection, Atomic restores the tools recorded in the session, including tools activated during the conversation. `--tools +name,-name` modifies that restored selection. Explicit `--tools name,...`, `--no-tools`, and `--no-builtin-tools` keep their requested tool restrictions, and excluded tools stay excluded. Sessions with no recorded tool selection use the current defaults.
+
 In the picker you can:
 
 - search by typing

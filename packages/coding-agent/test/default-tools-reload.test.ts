@@ -29,7 +29,10 @@ afterEach(() => {
 });
 const writeSettings = (settings: object) => writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
 async function createFileSession(
-	options: Pick<CreateAgentSessionOptions, "tools" | "noTools" | "excludedTools" | "customTools"> = {},
+	options: Pick<
+		CreateAgentSessionOptions,
+		"tools" | "noTools" | "excludedTools" | "customTools" | "sessionManager"
+	> = {},
 	transactional = true,
 	settingsManager = SettingsManager.create(tempDir, agentDir),
 ) {
@@ -190,4 +193,58 @@ test("child SDK modifiers preserve permitted custom tools and respect removals",
 test("SDK rejects mixed tool lists and modifier patterns", async () => {
 	await assert.rejects(createFileSession({ tools: ["read", "+ls"] }), /tool names cannot be mixed/);
 	await assert.rejects(createFileSession({ tools: ["-mcp__docs__*"] }), /take exact tool names, not patterns/);
+});
+
+function recordedSession(toolNames: string[]) {
+	const sessionManager = SessionManager.inMemory(tempDir);
+	sessionManager.appendMessage({
+		role: "system",
+		content: "",
+		toolsAdded: toolNames.map((name) => ({ name, description: name, parameters: Type.Object({}) })),
+		timestamp: Date.now(),
+	});
+	return sessionManager;
+}
+
+test("resume restores the recorded built-in and extension loadout (#10785)", async () => {
+	const session = await createFileSession({ sessionManager: recordedSession(["read", "ls", "inactive_tool"]) });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
+});
+
+test("resume applies tool modifiers to the recorded loadout (#10785)", async () => {
+	const session = await createFileSession({
+		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		tools: ["-ls", "+write"],
+	});
+	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "read", "write"]);
+});
+
+test("resume respects exclusions and explicit selections (#10785)", async () => {
+	const excluded = await createFileSession({
+		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		excludedTools: ["inactive_tool"],
+	});
+	assert.deepEqual(excluded.getActiveToolNames().sort(), ["ls", "read"]);
+	const allowlisted = await createFileSession({
+		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		tools: ["read", "write"],
+	});
+	assert.deepEqual(allowlisted.getActiveToolNames(), ["read", "write"]);
+	const builtinless = await createFileSession({
+		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		noTools: "builtin",
+	});
+	assert.deepEqual(builtinless.getActiveToolNames(), ["inactive_tool"]);
+	const toolless = await createFileSession({
+		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		noTools: "all",
+	});
+	assert.deepEqual(toolless.getActiveToolNames(), []);
+});
+
+test("resume keeps defaults when no loadout was recorded (#10785)", async () => {
+	const sessionManager = SessionManager.inMemory(tempDir);
+	sessionManager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+	const session = await createFileSession({ sessionManager });
+	assert.deepEqual(session.getActiveToolNames(), getDefaultToolNames());
 });
