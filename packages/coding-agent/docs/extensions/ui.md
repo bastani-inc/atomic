@@ -464,6 +464,16 @@ const lang = getLanguageFromPath("/path/to/file.rs");  // "rust"
 const highlighted = highlightCode(code, lang, theme);
 ```
 
+To label a `read` call's line range from `offset`/`limit` arguments, use `formatReadLineRange`. It accepts numbers, numeric strings, and `null`, and returns an empty string for missing or malformed ranges:
+
+```typescript
+import { formatReadLineRange } from "@bastani/atomic";
+
+formatReadLineRange(25, 13);      // ":25-37"
+formatReadLineRange("25", null);  // ":25"
+formatReadLineRange("abc", 13);   // ""
+```
+
 ## Next steps
 
 Try the runnable [extension examples](/extensions/examples), and use the [Extension API reference](/extensions/api-reference) for context and method contracts.

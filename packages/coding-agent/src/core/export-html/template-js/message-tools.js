@@ -117,6 +117,23 @@
         return null;
       }
 
+      // Mirrors src/core/tools/render-utils.ts.
+      function parseLineNumber(value) {
+        if (typeof value === 'string' && value.trim() !== '') value = Number(value);
+        return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+      }
+
+      function formatReadLineRange(offset, limit) {
+        if (offset == null && limit == null) return '';
+        const start = offset == null ? 1 : parseLineNumber(offset);
+        if (start === undefined) return '';
+        if (limit == null) return `:${start}`;
+        const count = parseLineNumber(limit);
+        if (count === undefined) return '';
+        const end = start + count - 1;
+        return `:${start}${end ? `-${end}` : ''}`;
+      }
+
       function getLanguageFromPath(filePath) {
         const ext = filePath.split('.').pop()?.toLowerCase();
         const extToLang = {
@@ -241,14 +258,10 @@
           }
           case 'read': {
             const filePath = str(args.file_path ?? args.path);
-            const offset = args.offset;
-            const limit = args.limit;
-
+            const readLineRange = formatReadLineRange(args.offset, args.limit);
             let pathHtml = filePath === null ? invalidArg : escapeHtml(shortenPath(filePath || ''));
-            if (filePath !== null && (offset !== undefined || limit !== undefined)) {
-              const startLine = offset ?? 1;
-              const endLine = limit !== undefined ? startLine + limit - 1 : '';
-              pathHtml += `<span class="line-numbers">:${startLine}${endLine ? '-' + endLine : ''}</span>`;
+            if (filePath !== null && readLineRange) {
+              pathHtml += `<span class="line-numbers">${escapeHtml(readLineRange)}</span>`;
             }
 
             html += `<div class="tool-header"><span class="tool-name">read</span> <span class="tool-path">${pathHtml}</span></div>`;
