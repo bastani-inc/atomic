@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed second and later durable SDK `run()` calls in the same process failing with `atomicWorkflowHandle is not a registered DBOS workflow function`. Each standalone run now recreates its durable backend after the previous run shuts it down ([#3614](https://github.com/bastani-inc/atomic/issues/3614)).
+
 ## [0.9.37] - 2026-10-13
 
 ### Changed

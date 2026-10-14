@@ -1,3 +1,4 @@
+import { getDurableBackendProcessOwner } from "./backend-process-owner.js";
 import { type ConfiguredDbosDurability, configureDbosDurableBackend, type DbosDurableBackend } from "./dbos-backend.js";
 import {
 	provisionResolvedLocalDbos,
@@ -213,6 +214,9 @@ export async function shutdownDbos(): Promise<void> {
 			slot.configured = undefined;
 			slot.active = undefined;
 			slot.wrappers = undefined;
+			const backendOwner = getDurableBackendProcessOwner();
+			backendOwner.initializedBackend = undefined;
+			backendOwner.initializing = undefined;
 		}
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);
