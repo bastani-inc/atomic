@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed `AssistantMessageFrame`, `AssistantMessageFrameEncoder`, and `reduceAssistantMessageFrames()`. Use `AssistantMessageEventStream` events for streaming progress and `result()` for the final message instead.
+
 ### Added
 
 - Added cache-preserving thinking-level changes for GPT-6 models on `openai` and `openai-api` with API-key authentication, controlled by `compat.supportsMidConvoEffort` ([#10853](https://github.com/earendil-works/pi/issues/10853)).
