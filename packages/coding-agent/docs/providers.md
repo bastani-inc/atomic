@@ -294,6 +294,8 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 
 Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`), and both direct providers also expose the multimodal `glm-5.3-flash`. Baseten defaults to its directly selectable `zai-org/GLM-5.3` and also exposes `zai-org/GLM-5.3-Fast` and the multimodal `zai-org/GLM-5.3-Flash`; OpenRouter exposes `z-ai/glm-5.3` and `z-ai/glm-5.3-flash`. The full and Flash entries support `low`, `high`, and `max` reasoning; Baseten's Fast entry also supports `off`. Use Baseten's `zai-org/GLM-5.2` or `zai-org/GLM-5.3-Fast` when fully disabled reasoning is required. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider. These catalogs follow their upstream providers, so use `--list-models` for the current entries.
 
+Xiaomi MiMo reasoning models on `xiaomi` and all three `xiaomi-token-plan-*` providers support only `off` (thinking disabled) and `high` (thinking enabled). Use these levels when selecting thinking; Xiaomi does not distinguish intermediate effort levels.
+
 Use the table above for environment-variable and `auth.json` names.
 
 #### Auth File

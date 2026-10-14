@@ -2733,9 +2733,19 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// keys from platform.xiaomimimo.com). The three `xiaomi-token-plan-*`
 		// providers cover prepaid Token Plan endpoints in cn / ams / sgp.
 		const xiaomiCompat: OpenAICompletionsCompat = {
+			supportsReasoningEffort: false,
 			requiresReasoningContentOnAssistantMessages: true,
 			thinkingFormat: "deepseek",
 		};
+		const xiaomiThinkingLevelMap = {
+			off: "off",
+			minimal: null,
+			low: null,
+			medium: null,
+			high: "high",
+			xhigh: null,
+			max: null,
+		} as const;
 		const xiaomiVariants = [
 			{ source: "xiaomi", provider: "xiaomi", baseUrl: "https://api.xiaomimimo.com/v1" },
 			{
@@ -2772,12 +2782,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl,
 					compat: xiaomiCompat,
 					reasoning: m.reasoning === true,
+					...(m.reasoning === true ? { thinkingLevelMap: xiaomiThinkingLevelMap } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: getModelsDevCost(m.cost),
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 				});
-				recordModelsDevReasoningOptions(provider, modelId, m);
 			}
 		}
 
