@@ -349,7 +349,7 @@ export class JsonlSessionStore implements SessionStore {
 		const file = await open(path, "r");
 		try {
 			const decoder = new StringDecoder("utf8");
-			const buffer = Buffer.alloc(64 * 1024);
+			const buffer = Buffer.alloc(1);
 			let line = "";
 			while (true) {
 				const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
@@ -357,12 +357,11 @@ export class JsonlSessionStore implements SessionStore {
 					line += decoder.end();
 					break;
 				}
-				line += decoder.write(buffer.subarray(0, bytesRead));
-				const end = line.indexOf("\n");
-				if (end !== -1) {
-					line = line.slice(0, end);
+				if (buffer[0] === 10) {
+					line += decoder.end();
 					break;
 				}
+				line += decoder.write(buffer);
 			}
 			const value = JSON.parse(line) as JsonValue;
 			return value !== null && typeof value === "object" && !Array.isArray(value)

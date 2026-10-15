@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import {
 	appendFile,
 	chmod,
+	type FileHandle,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -175,6 +176,20 @@ it("reads an unterminated complete record unchanged and appends a separate line"
 		assert.equal(await readFile(path, "utf8"), content);
 		await store.append(header.id, [entry], { expectSeq: 1 });
 		assert.deepEqual((await store.load(header.id)).entries, [entry, entry]);
+	});
+});
+
+it("reads a complete Unicode header at EOF without requiring a newline", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "header.jsonl");
+		const unicodeHeader = { ...header, cwd: "/文😀" };
+		const content = JSON.stringify({ type: "session", ...unicodeHeader });
+		await writeFile(path, content);
+		assert.deepEqual(await store.readHeader(header.id), unicodeHeader);
+		assert.deepEqual(await store.load(header.id), { header: unicodeHeader, entries: [], lastSeq: 0 });
+		assert.equal(await readFile(path, "utf8"), content);
+		await store.append(header.id, [entry], { expectSeq: 0 });
+		assert.deepEqual((await store.load(header.id)).entries, [entry]);
 	});
 });
 
@@ -395,6 +410,14 @@ it("appends small batches without rereading or parsing the committed 4 MiB trans
 		await store.create(header, [{ ...entry, name: "x".repeat(4 * 1024 * 1024) }]);
 		vi.mocked(readFile).mockClear();
 		const parse = vi.spyOn(JSON, "parse");
+		const handles: FileHandle[] = [];
+		const originalOpen = fs.open;
+		const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+			const handle = await originalOpen(...args);
+			vi.spyOn(handle, "read");
+			handles.push(handle);
+			return handle;
+		});
 		try {
 			for (let index = 1; index <= 3; index++) {
 				assert.deepEqual(await store.append(header.id, [entry], { expectSeq: index }), { lastSeq: index + 1 });
@@ -402,8 +425,23 @@ it("appends small batches without rereading or parsing the committed 4 MiB trans
 			const transcriptReads = vi.mocked(readFile).mock.calls.filter(([path]) => String(path).endsWith(".jsonl"));
 			assert.equal(transcriptReads.length, 0);
 			assert.equal(parse.mock.calls.filter(([text]) => text.length >= 4 * 1024 * 1024).length, 0);
+			const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
+			assert.equal(handles.length, 3);
+			for (const handle of handles) {
+				let position = 0;
+				const reads = vi.mocked(handle.read);
+				for (const [index, result] of reads.mock.results.entries()) {
+					assert.equal(reads.mock.calls[index]?.at(-1), null);
+					assert.equal(result.type, "return");
+					if (result.type === "return") position += (await result.value).bytesRead;
+					assert.ok(position <= headerBytes);
+				}
+				assert.equal(position, headerBytes);
+			}
 		} finally {
 			parse.mockRestore();
+			opened.mockRestore();
+			for (const handle of handles) vi.mocked(handle.read).mockRestore();
 		}
 		assert.equal((await store.load(header.id)).lastSeq, 4);
 	});
