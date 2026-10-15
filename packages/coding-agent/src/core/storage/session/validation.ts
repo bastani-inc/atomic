@@ -14,6 +14,14 @@ function validateSessionTimestamp(field: SessionTimestampField, value: string | 
 		throw new SessionInvalidTimestampError(field, value, "unparseable");
 	}
 	const time = typeof value === "number" ? value : Date.parse(value);
+	if (typeof value === "string" && !Number.isFinite(time)) {
+		const yearLength = value.startsWith("+") || value.startsWith("-") ? 7 : 4;
+		const reason =
+			value.startsWith("-000000-") || !Number.isFinite(Date.parse(`2000${value.slice(yearLength)}`))
+				? "unparseable"
+				: "out-of-range";
+		throw new SessionInvalidTimestampError(field, value, reason);
+	}
 	if (!Number.isFinite(time) || Math.abs(time) > 8.64e15) {
 		throw new SessionInvalidTimestampError(field, value, "out-of-range");
 	}

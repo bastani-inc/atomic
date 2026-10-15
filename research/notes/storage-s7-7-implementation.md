@@ -28,7 +28,13 @@ Latest timestamp-policy amendment (supersedes the earlier raw-timestamp allowanc
 
 The exact timestamp field union is `header.createdAt`, `entry.timestamp`, `entry.message.timestamp` (every message role, not only activity roles) and `entry.systemMessage.timestamp` (the optional typed compaction system message, confirmed by supervisor). Arbitrary custom details/data/workflow JSON payloads are not timestamp schemas and remain lossless. Optional system messages remain optional.
 
-Binding supervisor grammar clarification: use exactly `^(\d{4}|[+-]\d{6})-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$` plus finite `Date.parse`. Do not add separate calendar or year checks. Seconds are optional; fractions of 1–9 digits require seconds; timezone is mandatory. Preserve accepted strings verbatim. Grammar mismatch (including date-only, local time and RFC prose) is `unparseable`; grammar-valid strings not representable by Date are `out-of-range`. Numeric nonfinite or outside inclusive ±8.64e15 (including NaN and ±Infinity) is `out-of-range`.
+Binding supervisor grammar clarification: use exactly `^(\d{4}|[+-]\d{6})-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$` plus finite `Date.parse`. Do not add separate calendar or year checks. Seconds are optional; fractions of 1–9 digits require seconds; timezone is mandatory. Preserve accepted strings verbatim. Grammar mismatch (including date-only, local time and RFC prose) is `unparseable`. Numeric nonfinite or outside inclusive ±8.64e15 (including NaN and ±Infinity) is `out-of-range`. The earlier sentence claiming all grammar-valid strings not representable by Date are `out-of-range` was incorrect, not an authoritative amendment; the exact classification amendment below supersedes it.
+
+### Authoritative timestamp-reason amendment (latest repair)
+
+For a string matching the mandated regex where the original `Date.parse` returns NaN: (1) year token `-000000` means `unparseable`; (2) otherwise replace ONLY the year token with `2000`, preserving every other component and offset byte-for-byte, and parse again; (3) finite means `out-of-range`, NaN means `unparseable`. Grammar mismatches remain `unparseable`. Numbers are unchanged. This is classification-only: no additional calendar/year validation, input acceptance, normalization or timestamp-schema changes.
+
+The three latest P2 findings share this classification defect in the common write validator. The preceding timestamp repair fixed acceptance and atomic validation but did not correctly distinguish regex-matching invalid components from range overflow. Its historical passing gates below did not cover that distinction and are not current-tree proof.
 
 ## Acceptance matrix
 
@@ -58,8 +64,8 @@ All conformance cases run normally and with close/reopen boundaries. The current
 | NUL takes precedence over ill-formed Unicode; invalid writes leave no partial data | Invalid-text case with NUL-only, lone-surrogate-only and combined strings |
 | Non-time user text including names, summaries, workflow metadata and nested payloads remains raw and lossless | User-text, JSON-body and message-summary cases; timestamp strings instead obey the latest amendment |
 | Stored entry bodies use JSON text escaping; detached reads parse JSON | Memory records are JSON strings; nested NUL/lone-surrogate round-trip |
-| Every schema timestamp is validated before create/append/replace mutates storage; SessionInvalidTimestampError carries exact field/value/reason | Boundary/ISO-string/nonfinite/compaction conformance cases; no partial writes or sequence changes |
-| Inclusive numeric Date bounds and valid ISO instants round-trip verbatim; list/findMostRecent preserve ordering, count, firstMessage and creation fallback | Boundary ordering and ISO-form conformance cases, normally and after reopen |
+| Every schema timestamp is validated before create/append/replace mutates storage; SessionInvalidTimestampError carries exact field/value/reason | Boundary/ISO-string/nonfinite/compaction conformance cases; expanded invalid-component/range matrix checks typed error, no partial writes or sequence changes, usable list/findMostRecent |
+| Inclusive numeric Date bounds and valid ISO instants round-trip verbatim; list/findMostRecent preserve ordering, count, firstMessage and creation fallback | Boundary ordering and ISO-form conformance cases, normally and after reopen; acceptance predicate unchanged by the reason-only repair |
 | Code only under storage/session; no shared storage index/errors, public package exports, guide/changelog edits | Final diff inspection |
 | Portable runtime modules have no node imports; .js relative runtime imports; exact existing entry types | Runtime-boundary test; type-only package self-reference; clean build |
 | No SessionManager/caller, facade, dependency, version, generated schema or other-slice changes | Final diff inspection |
@@ -103,13 +109,13 @@ Historical evidence, not a substitute for the amended-tree gate:
 - Pre-amendment expanded tests: /tmp/s7-7-gates.log; 29 focused and 26 compiled Node cases passed. The unexcluded unit gate failed in the two later-excluded files and the then-new mixed-extension import. Formatting/export ordering and imports were corrected or removed.
 - Repeated-close mutation check: /tmp/s7-7-prevalidation.log; two cases failed with 'Missing expected rejection', then passed with strict close restored. Clean build passed. The already-admitted command completed its old baseline steps before the no-diagnosis amendment; no further Postgres diagnosis was run. Qlty 0.654.0 installed on Boat only.
 
-## Latest review repair: timestamp validation
+## Earlier review repair: timestamp validation
 
 The completion, evidence and risk reviewers' three blocking findings are the same root cause: `Number.isFinite` in `summarizeSession` admitted numeric activity beyond Date's representable range, and `toISOString()` then threw an untyped RangeError during both listing and recent selection. The latest contract amendment resolves all three together at the write boundary, not by skipping activity or rewriting records. Existing create/append/replace validation now checks every declared timestamp before mutation and throws `SessionInvalidTimestampError` with readonly field/value/reason. The summary algorithm and manager/callers are unchanged.
 
 The focused conformance suite now has 26 cases, each run normally and across close/reopen (52 total). New cases cover both rejected numeric signs, typed errors and atomicity for all writes, string grammar/range rejection, nonfinite numbers even in non-activity messages, optional compaction system timestamps, accepted inclusive Date bounds, raw timestamp preservation, chronological ordering rather than append/creation ordering, firstMessage/count/searchText, and creation fallback. Non-time NUL/lone-surrogate text and arbitrary custom JSON remain lossless. Invalid raw timestamp fixtures were replaced only because the binding amendment changed their validity.
 
-| Current repair command/scenario (assigned Boat) | Observed result | Evidence |
+| Earlier repair command/scenario (assigned Boat) | Observed result | Evidence |
 | --- | --- | --- |
 | `npx vitest --run --project unit test/unit/memory-session-store.test.ts -t "rejects out-of-range message timestamp"` before numeric validation | RED: 4 failures, `Missing expected rejection`; the name filter deselected 36 other tests | /tmp/s7-7-timestamp-red.log |
 | `npx vitest --run --project unit test/unit/memory-session-store.test.ts` after numeric validation | GREEN: 40 passed | /tmp/s7-7-timestamp-green-numeric.log |
@@ -125,6 +131,38 @@ The focused conformance suite now has 26 cases, each run normally and across clo
 | `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` | 930 files passed; 10431 tests passed, 26 existing skipped; exit 0. Ran after build/check settled, with exactly the two authorized exclusions | /tmp/s7-7-timestamp-unit-final.log |
 
 The format preview changed two test files on Boat; those exact formatting changes were mirrored locally before the final gate. `issues.md` tracked each RED and was removed when focused/compiled validation passed. Goal 7dcdcc78 remains active; final completion belongs to the reviewers/reducer.
+
+## Current review repair: timestamp reason classification
+
+The only implementation delta is a string-NaN classification branch. It never returns successfully: original grammar mismatches still reject before parsing, original finite parsed instants still pass, original NaN still rejects, and numbers use the unchanged finite/inclusive-range check. Thus the accepted/rejected input set is unchanged, including Date.parse normalization of `2026-02-30T00:00:00Z`. The exact regex and all four timestamp schema paths are unchanged.
+
+The existing header/entry invalid-string conformance cases now include the following literal matrix. Each case runs normally and with close/reopen, asserts `SessionInvalidTimestampError` and exact `field`/`value`/`reason`, exercises create/replace and entry append, and checks unchanged snapshot/sequence, absent rejected session, usable list and findMostRecent after each rejection.
+
+| String examples | Expected reason |
+| --- | --- |
+| `2026-13-01T00:00Z`, `2026-13-15T00:00Z`, `2026-13-15T00:00:00Z`, `2026-99-15T12:00Z` | `unparseable` |
+| `2026-10-15T25:00Z`, `2026-10-15T25:00:00Z` | `unparseable` |
+| `2026-10-15T00:00+24:00`, `2026-10-15T00:00+99:00` | `unparseable` |
+| `-000000-01-01T00:00Z`, `-000000-10-15T00:00:00Z` | `unparseable` |
+| `+275761-13-01T00:00Z`, `+275761-01-01T00:00+24:00` | `unparseable` (invalid suffix preserved despite overflowing year) |
+| `+275761-01-01T00:00Z`, `-271822-01-01T00:00Z` | `out-of-range` |
+| `+275760-09-13T00:00:00.001Z`, `-271821-04-19T23:59:59.999Z` | `out-of-range` |
+
+Inclusive bounds remain accepted in the boundary case, including `+275760-09-13T00:00:00.000Z` and `-271821-04-20T00:00:00.000Z`, plus numeric ±8640000000000000. Numeric just-beyond and nonfinite cases are unchanged.
+
+| Current repair command/scenario (assigned Boat) | Observed result | Evidence |
+| --- | --- | --- |
+| `npx vitest --run --project unit test/unit/memory-session-store.test.ts` before classifier repair | RED: 4 failed, 50 passed; actual `out-of-range` versus expected `unparseable`, stack at conformance.ts:365 | /tmp/s7-7-reason-red.log |
+| Same memory command after classifier repair | GREEN: 54 passed, no skips; entire literal invalid-component/range matrix and prior acceptance cases pass | /tmp/s7-7-reason-green-format.log |
+| `npm run format` preview after classifier repair | 3438 files, no fixes; no Boat formatting delta to mirror | /tmp/s7-7-reason-green-format.log |
+| `npm --workspace=@bastani/atomic run clean && npm --workspace=@bastani/atomic run build` | Passed with dist removed | /tmp/s7-7-reason-final-gates.log |
+| `npm run check` | Passed Biome, root/coding-agent typechecks, type tests and shrinkwrap; 5 unrelated informational diagnostics | /tmp/s7-7-reason-final-gates.log |
+| `npx vitest --run --project unit test/unit/memory-session-store.test.ts test/unit/session-store-runtime-boundary.test.ts test/unit/module-import-specifier-consistency.test.ts` | 3 files, 56 tests passed, no skips | /tmp/s7-7-reason-final-gates.log |
+| `node --test test/fixtures/session-store-conformance.mjs` | 52 normal/reopen cases passed, no skips | /tmp/s7-7-reason-final-gates.log |
+| `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` | 930 files, 10431 passed, 26 existing skips; only the two authorized exclusions | /tmp/s7-7-reason-final-gates.log |
+| `npm run format && git diff --exit-code && git diff --check` | 3438 files, no fixes, no diff; passed both before and after the sequential gates | /tmp/s7-7-reason-final-gates.log |
+
+Boundary headers spell the same accepted ISO extrema literally instead of deriving them with `toISOString()`. All gates above ran sequentially, with build/check complete before unit execution. No formatting delta needed mirroring. `issues.md` recorded RED, repair and GREEN, and was removed after resolution. The final notes tree is rechecked with the same full sequential gate suite; its log is `/tmp/s7-7-reason-current-tree.log` and the external receipt `/tmp/s7-7-timestamp-reason-receipt.md` records the terminal outcome and commit. Goal 7dcdcc78 remains active pending reviewers/reducer.
 
 ## Deferred
 

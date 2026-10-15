@@ -341,6 +341,20 @@ export function registerSessionStoreConformance(
 						["Thu, 15 Oct 2026 00:00:00 GMT", "unparseable"],
 						["2026-10-15T00:00:00.1234567890Z", "unparseable"],
 						["+02026-10-15T00:00:00Z", "unparseable"],
+						["2026-13-01T00:00Z", "unparseable"],
+						["2026-10-15T25:00Z", "unparseable"],
+						["2026-10-15T00:00+24:00", "unparseable"],
+						["-000000-01-01T00:00Z", "unparseable"],
+						["2026-13-15T00:00Z", "unparseable"],
+						["2026-13-15T00:00:00Z", "unparseable"],
+						["2026-10-15T25:00:00Z", "unparseable"],
+						["2026-99-15T12:00Z", "unparseable"],
+						["2026-10-15T00:00+99:00", "unparseable"],
+						["-000000-10-15T00:00:00Z", "unparseable"],
+						["+275761-01-01T00:00Z", "out-of-range"],
+						["-271822-01-01T00:00Z", "out-of-range"],
+						["+275761-13-01T00:00Z", "unparseable"],
+						["+275761-01-01T00:00+24:00", "unparseable"],
 						["+275760-09-13T00:00:00.001Z", "out-of-range"],
 						["-271821-04-19T23:59:59.999Z", "out-of-range"],
 					] as const) {
@@ -432,8 +446,8 @@ export function registerSessionStoreConformance(
 				async (store, reload) => {
 					const minimum = -8640000000000000;
 					const maximum = 8640000000000000;
-					const earliestHeader = { ...header("earliest"), createdAt: new Date(maximum).toISOString() };
-					const latestHeader = { ...header("latest"), createdAt: new Date(minimum).toISOString() };
+					const earliestHeader = { ...header("earliest"), createdAt: "+275760-09-13T00:00:00.000Z" };
+					const latestHeader = { ...header("latest"), createdAt: "-271821-04-20T00:00:00.000Z" };
 					const earliestEntries = [message("first", "first", minimum)];
 					const latestEntries = [
 						message("zero", "question", 0),
