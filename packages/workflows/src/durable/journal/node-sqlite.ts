@@ -109,6 +109,10 @@ export class JournalDatabase {
 		});
 	}
 	close(): void {
-		storageBoundary(this.path, () => this.database.close());
+		storageBoundary(this.path, () => {
+			this.database.close();
+			// Bun retains the closed file until unreachable prepared statements are collected.
+			(globalThis as { Bun?: { gc(force: boolean): void } }).Bun?.gc(true);
+		});
 	}
 }

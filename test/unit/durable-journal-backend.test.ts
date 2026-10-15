@@ -119,6 +119,18 @@ test(
 	FRESH_PROCESS_TIMEOUT_MS,
 );
 
+test(
+	"closing a journal releases its files while the backend remains reachable",
+	() => {
+		const child = spawnSyncCollect(
+			[bunExecutable(), resolve("test/fixtures/journal-backend-close-child.ts"), database()],
+			{ timeout: FRESH_PROCESS_TIMEOUT_MS },
+		);
+		assert.equal(child.exitCode, 0, child.stderr.toString());
+	},
+	FRESH_PROCESS_TIMEOUT_MS,
+);
+
 test("checkpoint identity is first-writer-wins without adding a duplicate event", async () => {
 	const backend = await open();
 	register(backend);
