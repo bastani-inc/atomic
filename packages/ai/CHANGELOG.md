@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed builds failing when the OpenCode Go catalog lists Gemini models: the `opencode-go` provider now registers the Google Generative AI API, matching OpenCode Zen.
+
 ## [0.9.36] - 2026-10-13
 
 ### Fixed
