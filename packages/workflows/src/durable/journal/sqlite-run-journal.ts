@@ -25,6 +25,8 @@ import {
 	JOURNAL_TABLES as t,
 } from "./types.js";
 
+export const JOURNAL_READ_PAGE_SIZE = 256;
+
 export function workflowJournalPath(): string {
 	const override = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 	return override !== undefined && override.length > 0
@@ -283,17 +285,24 @@ export class SqliteRunJournal implements RunJournal {
 
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
 		validateText("runId", runId);
-		const entries = storageBoundary(this.path, () =>
-			this.db
-				.allCounters<JournalEventRow>(
-					runId,
-					`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq}`,
-					runId,
-					fromSeq,
-				)
-				.map(entryFromRow),
-		);
-		yield* entries;
+		let nextSeq = fromSeq;
+		for (;;) {
+			const page = storageBoundary(this.path, () =>
+				this.db
+					.allCounters<JournalEventRow>(
+						runId,
+						`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+						runId,
+						nextSeq,
+						JOURNAL_READ_PAGE_SIZE,
+					)
+					.map(entryFromRow),
+			);
+			yield* page;
+			const last = page.at(-1);
+			if (last === undefined || page.length < JOURNAL_READ_PAGE_SIZE) return;
+			nextSeq = last.seq + 1;
+		}
 	}
 
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {

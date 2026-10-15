@@ -5,6 +5,7 @@ import { getAgentDir } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
 import {
+	JOURNAL_READ_PAGE_SIZE,
 	SqliteRunJournal,
 	workflowJournalPath,
 } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -1347,4 +1348,39 @@ test("journal path defaults to the user workflow root and preserves an explicit 
 		if (previousPi === undefined) delete process.env.PI_WORKFLOW_JOURNAL_PATH;
 		else process.env.PI_WORKFLOW_JOURNAL_PATH = previousPi;
 	}
+});
+
+test("read pages through the journal instead of loading the whole history first", async () => {
+	await withJournal(async (journal) => {
+		assert.equal(await journal.createRun(header), "created");
+		const lease = await acquire(journal);
+		const total = JOURNAL_READ_PAGE_SIZE * 2 + 3;
+		for (let index = 0; index < total; index++) {
+			await journal.append(lease, { type: e.summaryRecorded, payload: { index } });
+		}
+		const pageQueries = vi.spyOn(JournalDatabase.prototype, "allCounters");
+		try {
+			const all = await read(journal);
+			assert.deepEqual(
+				all.map((entry) => entry.seq),
+				Array.from({ length: total }, (_, index) => index + 1),
+			);
+			assert.equal(pageQueries.mock.calls.length, 3);
+			pageQueries.mockClear();
+			for await (const entry of journal.read(header.runId)) {
+				assert.equal(entry.seq, 1);
+				break;
+			}
+			assert.equal(pageQueries.mock.calls.length, 1);
+			pageQueries.mockClear();
+			const tail = await read(journal, header.runId, JOURNAL_READ_PAGE_SIZE);
+			assert.deepEqual(
+				tail.map((entry) => entry.seq),
+				Array.from({ length: total - JOURNAL_READ_PAGE_SIZE + 1 }, (_, index) => JOURNAL_READ_PAGE_SIZE + index),
+			);
+			assert.equal(pageQueries.mock.calls.length, 2);
+		} finally {
+			pageQueries.mockRestore();
+		}
+	});
 });
