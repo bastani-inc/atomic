@@ -12,7 +12,7 @@ import {
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire, syncBuiltinESMExports } from "node:module";
+import { createRequire, findPackageJSON, syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import { endianness, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -716,16 +716,24 @@ export default workflow({ name: "children", description: "children", inputs: {},
 		await assert.rejects(session.dispose(), (error) => error.code === "ShutdownFailed");
 		assert.ok(released.includes("first") && released.includes("second"));
 	} else if (mode === "malformed-arguments") {
-		const agentCore = join(installedRoot, "@earendil-works", "pi-agent-core");
-		const validatorPackage = [join(agentCore, "node_modules"), installedRoot]
-			.map((directory) => join(directory, "@earendil-works", "pi-ai", "package.json"))
-			.find((path) => existsSync(path));
+		const atomicPackage = findPackageJSON("@bastani/atomic", import.meta.url);
+		assert.ok(atomicPackage);
+		const agentCorePackage = findPackageJSON("@earendil-works/pi-agent-core", atomicPackage);
+		assert.ok(agentCorePackage, "Atomic must resolve an installed pi-agent-core");
+		const validatorPackage = findPackageJSON("@earendil-works/pi-ai", agentCorePackage);
 		assert.ok(validatorPackage, "pi-agent-core must resolve an installed @earendil-works/pi-ai");
-		assert.ok(realpathSync(validatorPackage).startsWith(installedRoot), "validator must come from the npm install");
+		assert.ok(
+			realpathSync(validatorPackage).startsWith(`${installedRoot}${sep}`),
+			"validator must come from the npm install",
+		);
 		const validator = JSON.parse(readFileSync(validatorPackage, "utf8"));
-		const agentCoreManifest = JSON.parse(readFileSync(join(agentCore, "package.json"), "utf8"));
+		const shrinkwrap = JSON.parse(readFileSync(join(dirname(atomicPackage), "npm-shrinkwrap.json"), "utf8"));
 		assert.equal(validator.name, "@earendil-works/pi-ai");
-		assert.equal(agentCoreManifest.dependencies["@earendil-works/pi-ai"], `^${validator.version}`);
+		assert.equal(
+			validator.version,
+			shrinkwrap.packages["node_modules/@earendil-works/pi-ai"].version,
+			"pi-agent-core must use the published shrinkwrap validator",
+		);
 		const { Type } = await import("@bastani/pi-ai");
 		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-malformed" };
