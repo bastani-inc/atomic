@@ -35,7 +35,7 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		const persisted = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === source.id);
 		if (persisted === undefined) return fail("invalid persisted tool frontier topology");
 		const localIds = new Set(tools.map((node) => node.id));
-		tools.push(...(persisted.toolNodes ?? []).filter((node) => !localIds.has(node.id)));
+		tools.push(...persisted.toolNodes.filter((node) => !localIds.has(node.id)));
 	}
 	const nodes = [...source.stages, ...tools];
 	const byId = new Map(nodes.map((node) => [node.id, node]));

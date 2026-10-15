@@ -43,7 +43,7 @@ function truncateStatusText(text: string): string {
 }
 
 function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
-	const tools = run.tools ?? [];
+	const tools = run.tools;
 	const toolHint =
 		tools.length > 0 ? `tools: ${tools.map((tool) => `${tool.name} (${tool.status})`).join(", ")}` : undefined;
 	const budgetHint =

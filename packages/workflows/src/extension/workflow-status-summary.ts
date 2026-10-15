@@ -106,7 +106,7 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly pendingStages: readonly PendingWorkflowStageStatus[];
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
 	/** Durable, non-attachable ctx.tool graph nodes in authored order. */
-	readonly tools?: readonly WorkflowStatusToolNode[];
+	readonly tools: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
 	readonly budget?: RunBudgetSnapshot;
@@ -200,7 +200,7 @@ function statusControlRunIds(run: RunSnapshot): readonly string[] {
 	for (const stage of run.stages) {
 		if (isExpandedWorkflowStage(stage)) ids.add(stage.workflowGraphTarget.runId);
 	}
-	for (const tool of run.toolNodes ?? []) {
+	for (const tool of run.toolNodes) {
 		const owner = tool as typeof tool & { readonly runId?: string };
 		if (owner.runId !== undefined) ids.add(owner.runId);
 	}
@@ -274,7 +274,7 @@ export function summarizeRunSnapshot(
 		})),
 		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus, options?.resolveBoundarySegments),
 		deliveryStates: stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id),
-		tools: (run.toolNodes ?? []).map((tool) => {
+		tools: run.toolNodes.map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;
 				readonly runName?: string;

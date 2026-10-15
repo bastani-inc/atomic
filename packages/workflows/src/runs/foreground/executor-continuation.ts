@@ -83,7 +83,7 @@ export function createContinuationReplayIndex(
 	const resumeNode =
 		continuation.resumeFromToolNodeId === undefined
 			? continuation.source.stages.find((stage) => stage.id === continuation.resumeFromStageId)
-			: continuation.source.toolNodes?.find((node) => node.id === continuation.resumeFromToolNodeId);
+			: continuation.source.toolNodes.find((node) => node.id === continuation.resumeFromToolNodeId);
 	if (resumeNode === undefined) {
 		throw new Error(
 			`atomic-workflows: insufficient_state: resume frontier ${continuation.resumeFromStageId ?? continuation.resumeFromToolNodeId} was not found in source run ${continuation.source.id}`,
@@ -94,23 +94,15 @@ export function createContinuationReplayIndex(
 	// would translate a parent that never materializes on the new graph.
 
 	const stagesByReplayIdentity = new Map<string, StageSnapshot[]>();
-	const stagesByDisplayName = new Map<string, StageSnapshot[]>();
 	const promptDuplicateCounts = new Map<string, number>();
 	for (const stage of continuation.source.stages) {
-		const identity = stage.replayKey ?? stage.name;
+		const identity = stage.replayKey;
+		if (identity === undefined) continue;
 		const stages = stagesByReplayIdentity.get(identity);
 		if (stages === undefined) stagesByReplayIdentity.set(identity, [stage]);
 		else stages.push(stage);
-		const namedStages = stagesByDisplayName.get(stage.name);
-		if (namedStages === undefined) stagesByDisplayName.set(stage.name, [stage]);
-		else namedStages.push(stage);
-		const duplicateKeys = [
-			`${identity}\u0001${sortedIdentity(stage.parentIds)}`,
-			...(identity === stage.name ? [] : [`${stage.name}\u0001${sortedIdentity(stage.parentIds)}`]),
-		];
-		for (const duplicateKey of duplicateKeys) {
-			promptDuplicateCounts.set(duplicateKey, (promptDuplicateCounts.get(duplicateKey) ?? 0) + 1);
-		}
+		const duplicateKey = `${identity}\u0001${sortedIdentity(stage.parentIds)}`;
+		promptDuplicateCounts.set(duplicateKey, (promptDuplicateCounts.get(duplicateKey) ?? 0) + 1);
 	}
 
 	const consumedSourceStageIds = new Set<string>();
@@ -166,16 +158,8 @@ export function createContinuationReplayIndex(
 
 		decide(input: ContinuationReplayInput): ContinuationReplayDecision {
 			const { displayName, replayKey, parentIds, stageId, kind } = input;
-			let identity = replayKey;
-			let candidates =
+			const candidates =
 				stagesByReplayIdentity.get(replayKey)?.filter((stage) => !consumedSourceStageIds.has(stage.id)) ?? [];
-			if (candidates.length === 0) {
-				identity = displayName;
-				const namedCandidates =
-					stagesByDisplayName.get(displayName)?.filter((stage) => !consumedSourceStageIds.has(stage.id)) ?? [];
-				candidates =
-					kind === "prompt" ? namedCandidates.filter((stage) => stage.replayKey === undefined) : namedCandidates;
-			}
 			if (candidates.length === 0) return { kind: "execute", parentIds, answerReplay: "unavailable" };
 
 			const mappedCandidates = candidates
@@ -203,7 +187,7 @@ export function createContinuationReplayIndex(
 			}
 
 			const selected = matches[0]!;
-			const duplicateKey = `${identity}\u0001${sortedIdentity(selected.source.parentIds)}`;
+			const duplicateKey = `${replayKey}\u0001${sortedIdentity(selected.source.parentIds)}`;
 			const ambiguousPromptAnswer = kind === "prompt" && (promptDuplicateCounts.get(duplicateKey) ?? 0) > 1;
 			const answerReplay: PromptAnswerReplaySafety = ambiguousPromptAnswer
 				? "ambiguous"

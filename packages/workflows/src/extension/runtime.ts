@@ -278,7 +278,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-		if ((source.toolNodes?.length ?? 0) > 0) return resolveToolResumeFrontier(source, getDurableBackend());
+		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, getDurableBackend());
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 

@@ -445,7 +445,7 @@ function makeTerminalNotice(
 ): WorkflowLifecycleNoticeDetails {
 	const failedStage = run.failedStageId ? run.stages.find((stage) => stage.id === run.failedStageId) : undefined;
 	const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
-	const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
+	const failedTool = run.toolNodes.find((node) => node.id === failedToolNodeId);
 	const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
 	const outputs = kind === "failed" && run.exited === true && run.result !== undefined ? run.result : undefined;
 	const budgetExceeded =

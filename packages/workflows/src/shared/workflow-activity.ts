@@ -91,7 +91,7 @@ function projectRoot(
 	let childContinuation = false;
 	for (const run of runs) {
 		const runStopping = isStoppingRun(run, rootRunId, runById, ownership.stoppingRunIds);
-		let runExecutionCount = (run.toolNodes ?? []).filter((tool) =>
+		let runExecutionCount = run.toolNodes.filter((tool) =>
 			ownership.executingToolNodeIds.has(workflowActivityNodeKey(run.id, tool.id)),
 		).length;
 		const acceptsAttention =
@@ -118,13 +118,13 @@ function projectRoot(
 		// A node that ended, successfully or not, no longer holds its successors back: a replayed (cached)
 		// tool settles like a completed one, and author code may catch a failure and carry on.
 		const statuses = new Map(
-			[...run.stages, ...(run.toolNodes ?? [])].map((node) => [
+			[...run.stages, ...run.toolNodes].map((node) => [
 				node.id,
 				endedStatuses.has(node.status) ? "ended" : node.status,
 			]),
 		);
 		const live = ownership.liveRunIds?.has(run.id) === true;
-		for (const tool of run.toolNodes ?? []) {
+		for (const tool of run.toolNodes) {
 			// A tool node is admitted pending, before its executor is recorded; the live run is still working.
 			if (
 				live &&
@@ -188,7 +188,7 @@ function projectRoot(
 						stage.status === "skipped" ||
 						childBoundary(stage)),
 			) &&
-			(run.toolNodes ?? []).every((tool) => endedStatuses.has(tool.status))
+			run.toolNodes.every((tool) => endedStatuses.has(tool.status))
 		) {
 			if (run.stages.some(childBoundary)) childContinuation = true;
 			else {

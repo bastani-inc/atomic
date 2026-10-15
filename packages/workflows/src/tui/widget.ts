@@ -222,7 +222,7 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
 }
 
 function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]> {
-	return (run.toolNodes ?? []).filter((node) => node.status === "pending" || node.status === "running");
+	return run.toolNodes.filter((node) => node.status === "pending" || node.status === "running");
 }
 
 function activeToolLabel(run: RunSnapshot): string | undefined {

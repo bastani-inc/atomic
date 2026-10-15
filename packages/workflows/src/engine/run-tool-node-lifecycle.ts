@@ -112,7 +112,7 @@ export function unconsumedToolFrontier(
 	if (frontierId === undefined) return undefined;
 	if (!errorMessage.includes(`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${frontierId}`))
 		return undefined;
-	return continuation?.source.toolNodes?.find((node) => node.id === frontierId);
+	return continuation?.source.toolNodes.find((node) => node.id === frontierId);
 }
 
 function sameToolIdentity(node: ToolNodeSnapshot, expected: ToolNodeSnapshot): boolean {

@@ -41,15 +41,14 @@ export interface WorkflowBoundaryStage {
 }
 
 function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult {
-	const exited = snapshot.exited ?? (snapshot.status === "completed" ? false : undefined);
-	const candidate = {
+	const candidate: WorkflowSerializableValue = {
 		workflow: snapshot.workflow,
 		runId: snapshot.runId,
 		status: snapshot.status,
-		exited,
+		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		outputs: cloneWorkflowChildValue(snapshot.outputs),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
-	} as WorkflowSerializableValue;
+	};
 	const parsed = parseWorkflowChildResult(candidate);
 	if (parsed === undefined) {
 		throw new DurableNestedTopologyError(

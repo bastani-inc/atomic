@@ -90,6 +90,7 @@ describe("tool run-control actions", () => {
 		store.recordStageStart(sourceRunId, {
 			id: "old-first",
 			name: "first",
+			replayKey: "stage:first:1",
 			status: "completed",
 			parentIds: [],
 			toolEvents: [],
@@ -98,6 +99,7 @@ describe("tool run-control actions", () => {
 		store.recordStageEnd(sourceRunId, {
 			id: "old-first",
 			name: "first",
+			replayKey: "stage:first:1",
 			status: "completed",
 			parentIds: [],
 			toolEvents: [],
@@ -106,6 +108,7 @@ describe("tool run-control actions", () => {
 		store.recordStageStart(sourceRunId, {
 			id: "old-second",
 			name: "second",
+			replayKey: "stage:second:1",
 			status: "failed",
 			parentIds: ["old-first"],
 			toolEvents: [],
@@ -114,6 +117,7 @@ describe("tool run-control actions", () => {
 		store.recordStageEnd(sourceRunId, {
 			id: "old-second",
 			name: "second",
+			replayKey: "stage:second:1",
 			status: "failed",
 			parentIds: ["old-first"],
 			toolEvents: [],

@@ -16,7 +16,7 @@ export function hasCompletedFrontierWithoutLiveWork(
 	if (run.status !== "running" || run.endedAt !== undefined) return false;
 	if (run.stages.length === 0) return false;
 	if (!run.stages.every((stage) => TERMINAL_STAGE_STATUSES.has(stage.status))) return false;
-	return !(run.toolNodes ?? []).some((tool) => LIVE_TOOL_STATUSES.has(tool.status));
+	return !run.toolNodes.some((tool) => LIVE_TOOL_STATUSES.has(tool.status));
 }
 
 /** True when a live tool-control handle is a post-task result-checkpoint tail. */

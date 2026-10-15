@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import type { WorkflowRunStatusSummary } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import type { RunDetail } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import type {
@@ -15,10 +16,17 @@ test("current execution and inspection collections and UI methods are required",
 	const runtimeToolNodesOptional: object extends Pick<RunResult, "toolNodes"> ? true : false = false;
 	const authoredToolNodesOptional: object extends Pick<AuthoredRunResult, "toolNodes"> ? true : false = false;
 	const inspectionToolsOptional: object extends Pick<RunDetail, "tools"> ? true : false = false;
+	const summaryToolsOptional: object extends Pick<WorkflowRunStatusSummary, "tools"> ? true : false = false;
 	const customOptional: object extends Pick<WorkflowUIAdapter, "custom"> ? true : false = false;
 	assert.deepEqual(
-		[runtimeToolNodesOptional, authoredToolNodesOptional, inspectionToolsOptional, customOptional],
-		[false, false, false, false],
+		[
+			runtimeToolNodesOptional,
+			authoredToolNodesOptional,
+			inspectionToolsOptional,
+			summaryToolsOptional,
+			customOptional,
+		],
+		[false, false, false, false, false],
 	);
 });
 

@@ -8,29 +8,31 @@ User directive: "remove anything that is legacy".
 
 S5a removes EVERY storage-independent legacy, back-compat, deprecated, migration, upgrade or fallback-reader path anywhere in packages/workflows/src, including UI/TUI, config loading, schema introspection, discovery/module loading, legacy frontier, deprecated aliases, old input/key shapes. Delete tests solely for removed paths. Retain only storage-coupled paths or words not denoting compatibility; EACH retained hit/reason goes directly in commit body. Explicit storage/recovery/journal exclusions remain.
 
-Correction: the original named-target-only deferrals and no-amendment statement are superseded. The fingerprint type conflict is unresolved, not an approved exception.
+Correction: the original named-target-only deferrals and no-amendment statement are superseded. The fingerprint type conflict is unresolved, not an approved exception. The prior receipt's claim that only this conflict remained was too broad: the next review reproduced positional delivery, omitted child exit tags, display-name continuation and missing tool-collection readers. Those findings are tracked separately below.
 
 ## Acceptance matrix
 
 | Requirement | Implementation and current oracle |
 | --- | --- |
 | Current child replay keys only | Removed ordinal legacy key counters, probes and mixed-key selection. `durable-current-replay.test.ts` and repeated-child replay cover current identity. |
-| Current child result parser only | Removed `parseLegacyWorkflowChildResult` and all callers. Current parser and topology tests retain exact values and identity. |
+| Current child result parser only | Removed `parseLegacyWorkflowChildResult` and all callers. Continuation no longer synthesizes exited:false for a completed child. Current parser and boundary tests preserve explicit discriminants and outputs. |
 | Explicit prompt occurrence identity only | Removed missing-occurrence coalescing and old topology validation. Current occurrence tests remain. |
 | Strict active and completed reconstruction | Removed `LEGACY_ACTIVE_RECONSTRUCTION`, synthetic nested graphs, boundary lifecycle/fingerprint acceptance and stage topology upgrades. |
-| Persisted delivery admission order | Removed `legacyPosition`; `admissionOrder` is required. Delivery ordering, raw message preservation and duplicates remain covered. |
+| Persisted delivery admission order | Removed `legacyPosition` and both shared/foreground index+1 readers. Missing order raises `PendingStageMessageOrderError` before admission; explicit zero, ties, duplicate identities and raw messages are preserved. |
+| Current continuation keys only | Removed source display-name indexes and matching for snapshots without replayKey. Only exact current keys can replay; keyless or different-key sources execute without consuming another source. |
+| Required tool-collection readers | Removed optional-array readers throughout graph, engine, store, status, activity and detail UI. Graph expand/refresh/topology checks reject absent collections with `MissingWorkflowToolNodesError`; explicit empty arrays remain valid. |
 | Current tool replay only | Missing tool topology raises `DurableToolTopologyError` with workflowId/argsHash. Removed topologyless graph reconstruction and sequence-derived tool order. Current interrupted root replay skips the completed callback; rejection tests verify no added record or callback. |
 | Explicit failed tool frontier | Removed abort-message matching and old frontier checkpoint inference. Current frontier test requires `failedToolNodeId`. |
 | Current configuration and discovery | Default roots use only `.atomic`, honoring explicit current agent-directory overrides. Removed old workflow and TypeBox virtual aliases and obsolete builtin scan roots. Current config/discovery/module tests exercise files rather than source shape. |
 | Current API and reasoning options | Removed `runWorkflow` migration stub/declaration, `assertWorkflowCreatedStage`, separate authored `thinkingLevel`/`fallbackThinkingLevels` and scoped-model reasoning fields, old target parser/hints, and ignored `statusRuns.all`. Suffix-based current model failover remains. |
 | Current UI/input behavior | Removed X10 mouse parsing, graph run-level prompt fallback and its obsolete adapter/tests, old quit timestamp inference, old empty reload formatting and zero-argument pause-release adaptation. Current stage-local UI and SGR input remain covered. |
-| Required current DTO fields | Runtime and authoring RunResult.toolNodes and RunDetail.tools are required; tool summary runId is required. Custom UI adapters implement every method. Structural and standalone typing fixtures updated. |
+| Required current DTO fields | Runtime and authoring RunResult.toolNodes, RunDetail.tools and WorkflowRunStatusSummary.tools are required; tool summary runId is required. Custom UI adapters implement every method. Structural and standalone typing fixtures updated. |
 | Required boundary invocation fingerprint | UNRESOLVED. Current writer supplies it and runtime requires exact equality, but the prohibited decoder constructs it conditionally. See exact compiler evidence below. |
 | Format-version conditional deletion | Retained because excluded current record writers use it; it is not solely an old-format gate. |
-| Typed changed failures | `DurableNestedTopologyError.reason`, `DurableToolTopologyError.workflowId/argsHash` and `WorkflowUIAdapterError.method` use named classes and typed fields. New tests branch on classes/fields. |
+| Typed changed failures | `DurableNestedTopologyError.reason`, `DurableToolTopologyError.workflowId/argsHash`, `WorkflowUIAdapterError.method`, `PendingStageMessageOrderError.runId/messageId` and `MissingWorkflowToolNodesError.runId` use named classes and typed fields. New rejection tests assert classes and fields. |
 | Obsolete tests removed; current coverage retained | Removed only migration/old-alias/topologyless/graph-prompt tests. Preserved current nested/root/continuation replay, model failover, stage UI, ordering and backend-failure coverage. No new skips. |
 | Complete residual classification | Inventory below covers every `legacy|compat|deprecat|migrat|upgrade|back-?compat|fallback` hit, grouped by file with every line named. The same inventory is included directly in the repair commit body. |
-| Boat checks and full unit gate | Passed current source: npm run check, 929 unit files/10,314 assertions and 54 focused integration assertions. Formatting and current terminal scenario also pass. No project execution on the Mac. |
+| Boat checks and full unit gate | Latest remaining-reader source gates passed: npm run check; 930 unit files/10,315 tests; four integration files/54 tests; final seven focused/docs files/70 tests. Formatting and diff checks passed. No project execution on the Mac. |
 | Scope, branch and commit | Only S5a on `feat/workflow-journal-s5a-legacy-replay`. Explicit storage/recovery/journal exclusions are unchanged. No dependency changes, push, PR or lease lifecycle operations. |
 
 ## Required boundary type conflict
@@ -43,7 +45,15 @@ Current source-only Boat probe in `/tmp/s5a-repair-gates5-run.log` changed only 
 
 Current failed-model retry/failover, schema-to-input-form projection, compact graph display, error rendering, terminal key collision detection, third-party error classification and genuine optional capabilities are not old-record readers. Word matches alone do not justify deleting them. Current tool continuation reattributes already-present topology to a fresh run without fabricating absent topology. Current queue entries can precede stage materialization, so destination identity and receipt/session metadata can legitimately be absent. Origin attribution remains optional for unattributable launchers. Default successful tools do not write a return-mode tag. Non-graph internal checkpoints are not execution nodes.
 
-## Validation record
+### Reader states and exact interfaces
+
+- Delivery remains queued -> delivered or undeliverable. Missing admission order is rejected before sorting/admission, including a sticky entry that bypasses the ordinary stage queue. Explicit orders, including zero and ties, retain input tie order and duplicate entries. Payload text and entry identity are not rewritten.
+- A continuation source becomes consumed only on an exact replay-key match. A source with no key or a different key does not replay merely because its display name matches. Existing parent translation and prompt ambiguity decisions remain.
+- A completed child replay must carry the current exited boolean. Missing discriminants use the existing typed nested-topology rejection rather than being converted to false. Current explicit false and explicit true child results retain their original output values.
+- Graph expansion, refresh and topology comparison accept explicit empty tool arrays. Omission is not an empty graph. Required collection readers elsewhere now access the current field instead of constructing an array or silently skipping tools.
+- Session entry shapes are unchanged. Optional queue target identity remains legitimate before stage materialization, and live checkpoint writers may allocate a new replay key while capturing current work; neither is an old-record replay reader.
+
+## Earlier repair validation
 
 All executable commands ran from this checkout through the assigned implementer Boat wrapper. The Mac only inspected/edited files and ran Git. Existing Boat setup had pinned toolchains, npm ci --ignore-scripts and a successful build.
 
@@ -57,6 +67,18 @@ The first repair unit gate exposed obsolete aliases, fixtures and old-path tests
 - Real terminal scenario on Boat: confirmed `/usr/bin/tmux`, launched `bun test/fixtures/workflow-fallback-terminal.ts` in a dedicated 100x36 terminal, observed `model-a · high` and sibling `unchanged · low`, sent `f`, observed `model-b-fast · medium` while the sibling remained unchanged, sent `q`, and observed process exit 0. Both captures and exact commands are in `/tmp/s5a-repair-tui-docs-final-run.log`. This exercises real rendering and SDK selection/events with controlled transport; no live provider or browser claim is made.
 - Qlty existing configuration was preserved. Cached `/tmp/s5a-qlty-bin/qlty metrics --functions` and `qlty smells` ran on tool-primitive, config-loader and model-fallback-candidates, both exit 0. Smells reported current large-function/complexity findings; no clean-smell or plugin security coverage is claimed. These are diagnostic scope-external refactor suggestions, not grounds to widen S5a.
 - Every remaining hit is inventoried below: 442 matching lines in 121 files. The explicit excluded-source diff is empty. Source inventory generation and temporary fixture scripts ran only on Boat and were removed; none is shipped.
+
+## Remaining-reader validation
+
+- Five persisted regressions in `test/unit/workflow-current-readers.test.ts` cover shared ordering, foreground sticky ordering, absent continuation keys, child exit tags and all graph collection readers. In `run_324ad0d5dd2240c42d7a8ffa0d5ceded`, `/tmp/s5a-readers-red-green-all.log`, restoring those five reader modules from `origin/main` produced five intended failures: missing exception/rejection or replay instead of execution. Restoring the current modules passed all five tests. The comparison restored files before exit and changed no excluded source.
+- Incremental first RED runs are also retained in `/tmp/s5a-readers-red1.log`, `/tmp/s5a-readers-red2.log`, `/tmp/s5a-readers-red3.log` and `/tmp/s5a-readers-red4.log`. The final combined comparison above is the exact closure evidence after test refinement.
+- Initial current check passed, but the first full unit run failed 11 assertions in six files and emitted one unexpected worker exit. The fixtures lacked current replay keys or detail.tools, and two tests depended solely on task-to-stage display-name matching. Updated current fixtures and removed those obsolete-only tests. Retained exact-key parent mismatch, current parallel replay and blocked-resume scenarios. The next full run passed without any worker error or concurrency/timeout suppression.
+- Final source gates in `run_2811a54f08835fc8234fb18c32f64450`, `/tmp/s5a-readers-gate3.log`: `npm run check` exit 0; prescribed `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` exit 0, 930 files/10,315 passed tests/26 pre-existing skips, 142.45 seconds; four integration files/54 tests passed in 19.72 seconds. `npm run format`, qlty metrics and `git diff --check` all exited 0. Aggregate gate exit 0. Formatter changes were recovered locally before final validation.
+- Final current docs/types/readers/replay command in `run_8e13fd74492fa685e4d3325e6d1e7001`, `/tmp/s5a-readers-inventory-final.log`: `npx vitest --run --project unit test/unit/docs-information-architecture.test.ts test/unit/changelog.test.ts test/unit/workflow-current-readers.test.ts test/unit/workflow-current-types.test.ts test/unit/workflow-tool-root-replay.test.ts test/unit/executor-continuation-tool-parents.test.ts test/unit/expanded-workflow-topology.test.ts` passed seven files/70 tests. Ordinary `npm run format` made no edits; `git diff --check` and aggregate gate exited 0.
+- Current replay scenarios execute real workflow runs, interrupted root-tool replay and blocked continuations; completed work is not rerun with current keys. Internal collection-reader changes do not need another terminal/browser scenario. The earlier terminal record is historical, not a claim of a fresh UI run.
+- Scoped cached qlty metrics ran on executor-continuation and expanded-workflow-graph, exit 0. These are current diagnostic metrics, not a clean-smell/security or comparative performance claim. Existing configuration was preserved.
+- Fresh source inventory found 442 lines in 121 files, all classified. Only two row line-number updates were needed after these reader edits; the full refreshed inventory is repeated directly in this commit body. Scope-excluded sources remain unchanged. The fingerprint probe is not rerun because no change affects that established contract conflict.
+- User guides already describe current required result collections and replay usage; this repair adds no new configuration or troubleshooting procedure. Unreleased breaking-change entries now explicitly name current replay keys, child exit tags, status tool collections and admission order.
 
 ## Residual source-hit inventory
 
@@ -124,7 +146,7 @@ Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?c
 | runs/foreground/executor-stage-types.ts | 65, 75 | Current model-attempt metadata interface. |
 | runs/foreground/executor-task-prompts.ts | 139 | Current task text defaults for parallel steps. |
 | runs/foreground/executor-types.ts | 110, 163 | Current execution model catalog and session-event interface. |
-| runs/foreground/pending-stage-delivery.ts | 33, 62, 64 | Current model failover eligibility for delivery errors, not old delivery records. |
+| runs/foreground/pending-stage-delivery.ts | 34, 63, 65 | Current model failover eligibility for delivery errors, not old delivery records. |
 | runs/foreground/stage-runner-candidate.ts | 2 | Current resolved model-candidate type import. |
 | runs/foreground/stage-runner-context.ts | 154, 187, 206, 250, 256, 395, 396 | Current model failover execution and last assistant text selection. |
 | runs/foreground/stage-runner-controller.ts | 33, 70, 82, 265, 277, 315, 316, 387, 392, 393, 394, 397, 398, 402, 404, 405, 407, 415, 416, 473, 484, 639, 655, 750, 779, 1137, 1138, 1139, 1225, 1226, 1227, 1267, 1313, 1315, 1334, 1577, 1583, 1605, 1688, 1698, 1699, 1700, 1702, 1703, 1705, 1707, 1746, 1822, 1835, 1838, 1851, 1854, 1867, 1868, 1869, 1872, 1878, 1879, 1880, 1883, 1885, 1886, 1904, 1926, 1927, 1928, 1932, 1933, 1958, 1960, 1968, 1971, 1972, 1984, 1986 | Current retry, candidate failover, session replacement and attempt accounting; deprecated authored reasoning fields removed. |
@@ -145,7 +167,7 @@ Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?c
 | runs/shared/validate-inputs.ts | 17 | Historical comment describes a removed descriptor; current validation only accepts schema inputs. |
 | shared/authoring-contract-stage.ts | 68, 70, 170, 174, 202 | Current model failover authoring interface. |
 | shared/authoring-contract-ui.ts | 344, 404 | Current model-attempt metadata and session replacement event contract. |
-| shared/expanded-workflow-graph.ts | 30 | Stage-compatible means render projection type, not old-record acceptance. |
+| shared/expanded-workflow-graph.ts | 45 | Stage-compatible means render projection type, not old-record acceptance. |
 | shared/graph-store-snapshot.ts | 67 | Bounded current display field projection when serialized exited outputs exceed the size bound; original run outputs remain exact. |
 | shared/possible-stages.ts | 1056, 1081, 1086, 1088, 1362 | Current static name inference for builtin exports and source-analysis vocabulary; obsolete module roots removed. |
 | shared/schema-introspection.ts | 3, 28, 49, 85, 92 | Current schema-to-form field-kind/requiredness projection consumed by input UI; no old descriptor input is accepted. |

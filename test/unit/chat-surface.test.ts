@@ -412,7 +412,7 @@ describe("registerChatSurfaceRenderer", () => {
 					status: "running",
 					startedAt: 1_000,
 					inputs: {},
-					toolNodes: [],
+					tools: [],
 					stages: [],
 				},
 			},

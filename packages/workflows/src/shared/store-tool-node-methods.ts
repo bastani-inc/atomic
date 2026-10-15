@@ -1,6 +1,6 @@
 import { type StoreContext, TERMINAL_STATUSES } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
-import type { RunSnapshot, ToolNodeSnapshot } from "./store-types.js";
+import type { RunSnapshot } from "./store-types.js";
 import { boundedToolPayload } from "./tool-payload-bounds.js";
 import { workflowActivityNodeKey } from "./workflow-activity.js";
 
@@ -8,7 +8,7 @@ type ToolNodeStoreMethods = Pick<Store, "recordToolNodeStart" | "recordToolNodeR
 
 export function nextExecutionOrder(run: RunSnapshot): number {
 	const stageOrders = run.stages.map((stage) => stage.executionOrder ?? 0);
-	const toolOrders = (run.toolNodes ?? []).map((node) => node.executionOrder ?? 0);
+	const toolOrders = run.toolNodes.map((node) => node.executionOrder ?? 0);
 	return Math.max(0, ...stageOrders, ...toolOrders) + 1;
 }
 
@@ -17,9 +17,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 		recordToolNodeStart(runId, node): boolean {
 			const run = context.findRun(runId);
 			if (run === undefined || TERMINAL_STATUSES.has(run.status)) return false;
-			const mutableRun = run as RunSnapshot & { toolNodes: ToolNodeSnapshot[] };
-			if (mutableRun.toolNodes === undefined) mutableRun.toolNodes = [];
-			const nodes = mutableRun.toolNodes;
+			const nodes = run.toolNodes;
 			if (nodes.some((candidate) => candidate.id === node.id)) return false;
 			if (node.executionOrder === undefined) node.executionOrder = nextExecutionOrder(run);
 			nodes.push(node);
@@ -27,7 +25,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 			return true;
 		},
 		recordToolNodeRunning(runId, nodeId, startedAt): boolean {
-			const node = context.findRun(runId)?.toolNodes?.find((candidate) => candidate.id === nodeId);
+			const node = context.findRun(runId)?.toolNodes.find((candidate) => candidate.id === nodeId);
 			if (node === undefined || node.status !== "pending") return false;
 			node.status = "running";
 			node.startedAt = startedAt;
@@ -37,7 +35,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 			return true;
 		},
 		recordToolNodeEnd(runId, nodeId, update): boolean {
-			const node = context.findRun(runId)?.toolNodes?.find((candidate) => candidate.id === nodeId);
+			const node = context.findRun(runId)?.toolNodes.find((candidate) => candidate.id === nodeId);
 			if (
 				node === undefined ||
 				node.status === "completed" ||
