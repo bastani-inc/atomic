@@ -48,6 +48,7 @@ export interface AuthStorageBackend {
 	 * `AuthStorage.reload()` falls back to a `withLock`-based read.
 	 */
 	read?(): string | undefined;
+	version?(): string;
 	deleteProvider?(provider: string): string | undefined;
 	deleteProviderAsync?(provider: string): Promise<string | undefined>;
 	modifyProviderAsync?(
@@ -191,6 +192,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	read(): string | undefined {
 		return this.readMergedAuth();
+	}
+
+	version(): string {
+		return this.readPaths
+			.map((path) => {
+				const stats = statSync(path, { bigint: true, throwIfNoEntry: false });
+				return stats ? `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}` : "absent";
+			})
+			.join("|");
 	}
 
 	deleteProvider(provider: string): string | undefined {

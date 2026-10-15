@@ -2,6 +2,7 @@ import {
 	type Api,
 	type ApiStreamOptions,
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type AuthResult,
 	assertChatModel,
@@ -69,16 +70,19 @@ export class ModelRuntimeStreaming {
 	private readonly resolveAuth: ResolveAuth;
 	private readonly ownsExtensionTransport: OwnsExtensionTransport;
 	private readonly transportModel: (model: Model<Api>) => Model<Api>;
+	private readonly reloadCredentials: () => Promise<void>;
 	constructor(
 		models: MutableModels,
 		resolveAuth: ResolveAuth,
 		ownsExtensionTransport: OwnsExtensionTransport,
 		transportModel: (model: Model<Api>) => Model<Api> = (model) => model,
+		reloadCredentials: () => Promise<void> = async () => {},
 	) {
 		this.models = models;
 		this.resolveAuth = resolveAuth;
 		this.ownsExtensionTransport = ownsExtensionTransport;
 		this.transportModel = transportModel;
+		this.reloadCredentials = reloadCredentials;
 	}
 
 	/**
@@ -103,7 +107,7 @@ export class ModelRuntimeStreaming {
 	private async prepareRequest(
 		model: Model<Api>,
 		options: ModelRuntimePreparedStreamOptions | undefined,
-	): Promise<{ provider: Provider; model: Model<Api>; options: StreamOptions }> {
+	): Promise<{ provider: Provider; model: Model<Api>; options: StreamOptions; authIdentity: string }> {
 		assertChatModel(model);
 		model = normalizeModelProvider(model);
 		const provider = this.models.getProvider(model.provider);
@@ -128,6 +132,7 @@ export class ModelRuntimeStreaming {
 				: undefined;
 		return {
 			provider,
+			authIdentity: JSON.stringify({ auth: resolution.auth, env: resolution.env }),
 			model: resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model,
 			options: {
 				...providerOptions,
@@ -144,17 +149,13 @@ export class ModelRuntimeStreaming {
 		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
 		const transcript = normalizeContext(context);
-		return lazyStream(model, async () => {
-			const prepared = await this.prepareRequest(
-				model,
-				options as (StreamOptions & ModelsRequestTransforms) | undefined,
-			);
-			return prepared.provider.stream(
+		return this.streamWithCredentialRetry(model, options, (prepared) =>
+			prepared.provider.stream(
 				prepared.model as Model<TApi>,
 				transcript,
 				this.withCodexRouting(prepared.model, prepared.options) as ApiStreamOptions<TApi>,
-			);
-		});
+			),
+		);
 	}
 
 	complete<TApi extends Api>(
@@ -171,14 +172,13 @@ export class ModelRuntimeStreaming {
 		options?: ModelRuntimeSimpleStreamOptions,
 	): AssistantMessageEventStream {
 		const transcript = normalizeContext(context);
-		return lazyStream(model, async () => {
-			const prepared = await this.prepareRequest(model, options);
-			return prepared.provider.streamSimple(
+		return this.streamWithCredentialRetry(model, options, (prepared) =>
+			prepared.provider.streamSimple(
 				prepared.model,
 				transcript,
 				this.withCodexRouting(prepared.model, prepared.options) as SimpleStreamOptions,
-			);
-		});
+			),
+		);
 	}
 
 	completeSimple(
@@ -189,6 +189,93 @@ export class ModelRuntimeStreaming {
 		return this.streamSimple(model, context, options).result();
 	}
 
+	private streamWithCredentialRetry(
+		model: Model<Api>,
+		options: ModelRuntimePreparedStreamOptions | undefined,
+		invoke: (prepared: Awaited<ReturnType<ModelRuntimeStreaming["prepareRequest"]>>) => AssistantMessageEventStream,
+	): AssistantMessageEventStream {
+		const prepare = () => this.prepareRequest(model, options);
+		const retry = async (previous: Awaited<ReturnType<typeof prepare>>) => {
+			options?.signal?.throwIfAborted();
+			await this.reloadCredentials();
+			const { preparedRequestAuth: _previousAuth, ...retryOptions } = options ?? {};
+			const next = await this.prepareRequest(model, retryOptions);
+			return next.authIdentity !== previous.authIdentity ? next : undefined;
+		};
+		const iterate = async function* (): AsyncGenerator<AssistantMessageEvent> {
+			let prepared = await prepare();
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const pending: AssistantMessageEvent[] = [];
+				let deliveredContent = false;
+				let rejection: AssistantMessageEvent | undefined;
+				try {
+					const source = invoke(prepared);
+					let terminal = false;
+					for await (const event of source) {
+						if (event.type === "start") {
+							pending.push(event);
+							continue;
+						}
+						if (
+							event.type === "error" &&
+							!deliveredContent &&
+							attempt === 0 &&
+							isCredentialRejection(event.error.errorMessage)
+						) {
+							rejection = event;
+							break;
+						}
+						yield* pending.splice(0);
+						yield event;
+						terminal = event.type === "done" || event.type === "error";
+						deliveredContent = true;
+					}
+					if (!rejection && !terminal) {
+						const result = await source.result();
+						const event: AssistantMessageEvent =
+							result.stopReason === "error" || result.stopReason === "aborted"
+								? { type: "error", reason: result.stopReason, error: result }
+								: {
+										type: "done",
+										reason: result.stopReason === "pending" ? "stop" : result.stopReason,
+										message: result,
+									};
+						if (
+							!deliveredContent &&
+							attempt === 0 &&
+							result.stopReason === "error" &&
+							isCredentialRejection(result.errorMessage)
+						)
+							rejection = event;
+						else {
+							yield* pending;
+							yield event;
+						}
+					}
+				} catch (error) {
+					if (
+						deliveredContent ||
+						attempt !== 0 ||
+						!isCredentialRejection(error instanceof Error ? error : String(error))
+					)
+						throw error;
+					const next = await retry(prepared);
+					if (!next) throw error;
+					prepared = next;
+					continue;
+				}
+				if (!rejection) return;
+				const next = await retry(prepared);
+				if (!next) {
+					yield* pending;
+					yield rejection;
+					return;
+				}
+				prepared = next;
+			}
+		};
+		return lazyStream(model, async () => iterate());
+	}
 	async fetchDeferred(
 		model: Model<Api>,
 		handle: DeferredHandle,
@@ -214,4 +301,18 @@ export class ModelRuntimeStreaming {
 		}
 		await prepared.provider.cancelDeferred(prepared.model, handle, prepared.options as DeferredCancelOptions);
 	}
+}
+
+function isCredentialRejection(error: object | string | undefined): boolean {
+	if (error instanceof Error) {
+		if (("status" in error && error.status === 401) || ("statusCode" in error && error.statusCode === 401))
+			return true;
+		error = error.message;
+	}
+	return (
+		typeof error === "string" &&
+		/\b401\b|unauthori[sz]ed|invalid(?:ated)?[_\s-]*(?:api[_\s-]*key|(?:access[_\s-]*|auth[_\s-]*|oauth[_\s-]*)?token)|(?:token|api[_\s-]*key)[_\s-]*(?:(?:is|has[_\s-]*been)[_\s-]*)?(?:invalid|revoked|expired|invalidated)/i.test(
+			error,
+		)
+	);
 }

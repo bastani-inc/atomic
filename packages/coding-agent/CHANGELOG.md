@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed running sessions retaining stale `auth.json` credentials and login status after another window signs in, logs out, or refreshes a token, including extension OAuth providers. Chat requests rejected for invalid credentials reread the store and retry once when newer credentials are available ([#3620](https://github.com/bastani-inc/atomic/issues/3620)).
+
 ## [0.9.38-alpha.1] - 2026-10-15
 
 ### Added

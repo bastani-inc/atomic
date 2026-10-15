@@ -201,6 +201,7 @@ export class ModelRuntime implements Models {
 				const source = this.extensionProviders.get(model.provider)?.aliasOf;
 				return source ? { ...model, provider: source } : model;
 			},
+			() => this.credentials.reload(),
 		);
 		this.rebuildProviders();
 	}
@@ -647,11 +648,42 @@ export class ModelRuntime implements Models {
 	}
 
 	isUsingOAuth(providerId: string): boolean {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.auth.get(normalizeProviderId(providerId))?.type === "oauth";
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.configuredProviders.has(normalizeProviderId(providerId));
+	}
+
+	private syncStoredCredentialChanges(): void {
+		if (!this.credentials.hasCredentialSnapshot()) return;
+		this.credentials.reloadIfChanged();
+		const providerIds = new Set([
+			...this.models.getProviders().map((provider) => provider.id),
+			...this.snapshot.storedProviders,
+		]);
+		let snapshot = this.snapshot;
+		const removedProviderIds: string[] = [];
+		for (const providerId of providerIds) {
+			if (this.credentials.hasRuntimeApiKey(providerId)) continue;
+			const type = this.credentials.peek(providerId)?.type;
+			if (type === snapshot.storedCredentialTypes.get(providerId)) continue;
+			this.externalProviderAuthStatuses.delete(providerId);
+			if (type) {
+				snapshot = addStoredCredentialProvider(snapshot, providerId, type);
+			} else {
+				snapshot = removeStoredCredentialProvider(snapshot, providerId);
+				removedProviderIds.push(providerId);
+			}
+		}
+		if (snapshot === this.snapshot) return;
+		this.snapshotGeneration += 1;
+		this.snapshot = snapshot;
+		for (const providerId of removedProviderIds) {
+			void this.refreshRemainingAuthAfterLogout(providerId, this.snapshotGeneration);
+		}
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
@@ -923,10 +955,12 @@ export class ModelRuntime implements Models {
 	}
 
 	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.storedCredentialTypes.get(normalizeProviderId(providerId));
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		this.syncStoredCredentialChanges();
 		providerId = normalizeProviderId(providerId);
 		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,

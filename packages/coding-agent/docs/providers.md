@@ -53,6 +53,10 @@ Atomic refreshes a stored OAuth token when fewer than **five minutes** of validi
 
 Concurrent sessions sharing `auth.json`, including workflow stages and subagents, coordinate token refresh rather than rotating the same credential independently.
 
+Running sessions pick up changes to `auth.json` made by another Atomic window, `atomic auth`, or another process's token refresh without restarting. This applies to extension-provided OAuth too. Refresh runs automatically through the shared credential store; a failed refresh is reported as an OAuth error rather than starting a new login flow. Sign in again with `/login <provider>` if the provider has revoked access.
+
+If a chat request is rejected with HTTP 401 or an invalid/revoked-token error before any response content arrives, Atomic rereads credentials and retries once only if the effective credential changed. It does not repeatedly retry the same rejected token or replay a partially delivered response. Explicit request credentials and runtime API-key overrides still take precedence over the auth file.
+
 ### Verify Readiness Before a Session
 
 Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider when one is found, credential type, and reason for a non-ready result.
@@ -82,7 +86,7 @@ OpenAI's image models (`openai-images`, such as `openai-images/gpt-image-2.5-fla
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
-If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
+If the Codex backend reports that an OAuth/auth token was invalidated or revoked, Atomic first checks for credentials saved elsewhere as described above. If the rejection persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential.
 
 For Codex requests, `models.json` headers or per-request SDK headers can override `originator` and `User-Agent`. The transport still supplies the authenticated bearer token and ChatGPT account ID.
 
