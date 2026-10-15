@@ -80,7 +80,9 @@ test("settled failure needs attention without claiming a user decision wait", ()
 		});
 		assert.deepEqual(project([stopped]), [activity({ needsAttention: true })]);
 		assert.deepEqual(project([stopped], { acknowledgedFailureRunIds: new Set(["root"]) }), [activity()]);
-		assert.deepEqual(project([{ ...stopped, pendingPrompt: prompt }]), [activity(waiting)]);
+		assert.deepEqual(project([{ ...stopped, pendingPrompt: prompt }]), [
+			activity({ ...waiting, blockedPromptKind: "confirm" }),
+		]);
 		assert.equal(stopped.status, status, "pane activity must not rewrite the failed outcome");
 	}
 });
@@ -124,7 +126,7 @@ test("live author continuation stays working after its tool settles, but not whi
 			],
 			live,
 		),
-		[activity(waiting)],
+		[activity({ ...waiting, blockedPromptKind: "confirm" })],
 	);
 	assert.deepEqual(project([run({ status: "paused", toolNodes: [completedTool] })], live), [
 		activity({ reason: "paused" }),
@@ -234,7 +236,9 @@ test("a live run stays working while its nested workflow boundary has no executo
 	assert.deepEqual(project([parent, child({ status: "completed" })], live), [continuing]);
 	assert.deepEqual(project([parent]), [activity()]);
 	// A wait inside the child, or a pause, is not hidden behind the boundary.
-	assert.deepEqual(project([parent, child({ pendingPrompt: prompt })], live), [activity(waiting)]);
+	assert.deepEqual(project([parent, child({ pendingPrompt: prompt })], live), [
+		activity({ ...waiting, blockedPromptKind: "confirm" }),
+	]);
 	assert.deepEqual(project([parent, child({ stages: [stage("ask", "awaiting_input")] })], live), [activity(waiting)]);
 	assert.deepEqual(project([{ ...parent, status: "paused" }, child({ status: "paused" })], live), [
 		activity({ reason: "paused" }),
@@ -303,16 +307,20 @@ test("workflow activity state table", () => {
 			name: "parked own prompt",
 			run: run({ stages: [{ ...stage("agent", "awaiting_input"), pendingPrompt: prompt }] }),
 			ownership: { executingStageIds: new Set([workflowActivityNodeKey("root", "agent")]) },
-			expected: waiting,
+			expected: { ...waiting, blockedPromptKind: "confirm" },
 		},
 		{
 			name: "prompt alone without status change",
 			run: run({ stages: [{ ...stage("agent"), pendingPrompt: prompt }] }),
 			ownership: { executingStageIds: new Set([workflowActivityNodeKey("root", "agent")]) },
-			expected: waiting,
+			expected: { ...waiting, blockedPromptKind: "confirm" },
 		},
 		{ name: "stage awaiting input", run: run({ stages: [stage("agent", "awaiting_input")] }), expected: waiting },
-		{ name: "run prompt", run: run({ pendingPrompt: prompt }), expected: waiting },
+		{
+			name: "run prompt",
+			run: run({ pendingPrompt: prompt }),
+			expected: { ...waiting, blockedPromptKind: "confirm" },
+		},
 		{
 			name: "independent parallel branch",
 			run: run({ stages: [stage("wait", "awaiting_input"), stage("agent")] }),
@@ -328,7 +336,7 @@ test("workflow activity state table", () => {
 			name: "run prompt and independent tool",
 			run: run({ pendingPrompt: prompt, toolNodes: [tool()] }),
 			ownership: { executingToolNodeIds: new Set([workflowActivityNodeKey("root", "tool")]) },
-			expected: { ...executing, actionableBlockCount: 1, needsAttention: true },
+			expected: { ...executing, actionableBlockCount: 1, needsAttention: true, blockedPromptKind: "confirm" },
 		},
 		{
 			name: "failed",
@@ -396,7 +404,7 @@ test("workflow activity follows prompt answer, pause, stop drain and acknowledge
 	const agent: StageSnapshot = { ...stage("agent", "awaiting_input"), pendingPrompt: prompt };
 	const current = run({ stages: [agent] });
 	const owned = { executingStageIds: new Set([workflowActivityNodeKey("root", "agent")]) };
-	assert.deepEqual(project([current], owned), [activity(waiting)]);
+	assert.deepEqual(project([current], owned), [activity({ ...waiting, blockedPromptKind: "confirm" })]);
 	agent.pendingPrompt = undefined;
 	agent.status = "running";
 	assert.deepEqual(project([current], owned), [activity(executing)]);
@@ -619,7 +627,7 @@ test("workflow activity suspends a retained prompt across pause and sibling comp
 	};
 	assertActivity({ ...executing, activeExecutionCount: 2 });
 	assert.equal(store.recordStagePendingPrompt("root", "agent", prompt), true);
-	assertActivity({ ...executing, actionableBlockCount: 1, needsAttention: true });
+	assertActivity({ ...executing, actionableBlockCount: 1, needsAttention: true, blockedPromptKind: "confirm" });
 
 	assert.equal(store.recordStagePaused("root", "agent", 1), true);
 	assertActivity(executing);
@@ -639,7 +647,7 @@ test("workflow activity suspends a retained prompt across pause and sibling comp
 	// An independent active wait still needs attention while the first stage is paused.
 	store.recordStageStart("root", stage("waiter"));
 	assert.equal(store.recordStagePendingPrompt("root", "waiter", { ...prompt, id: "other-prompt" }), true);
-	assertActivity(waiting);
+	assertActivity({ ...waiting, blockedPromptKind: "confirm" });
 	assert.equal(store.resolveStagePendingPrompt("root", "waiter", "other-prompt", true), true);
 	store.recordStageEnd("root", { ...stage("waiter", "completed"), endedAt: 3 });
 	assertActivity({ reason: "paused" });
@@ -647,7 +655,7 @@ test("workflow activity suspends a retained prompt across pause and sibling comp
 	assert.equal(store.recordStageResumed("root", "agent", 4), true);
 	assert.equal(store.graphSnapshot().runs[0].stages[0].status, "running");
 	assert.deepEqual(store.graphSnapshot().runs[0].stages[0].pendingPrompt, prompt);
-	assertActivity(waiting);
+	assertActivity({ ...waiting, blockedPromptKind: "confirm" });
 	assert.equal(store.resolveStagePendingPrompt("root", "agent", prompt.id, true), true);
 	assertActivity(executing);
 });

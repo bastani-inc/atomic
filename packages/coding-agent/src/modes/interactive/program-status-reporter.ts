@@ -179,10 +179,15 @@ export class ProgramStatusReporter {
 		if (waiting.length === 0) return undefined;
 		// A root that is still working cannot say whether its wait is a prompt or a manual decision.
 		const needsDecision = waiting.every((root) => root.reason === "manual_intervention");
+		const needsApproval = !needsDecision && waiting.some((root) => root.blockedPromptKind === "confirm");
 		return {
 			state: "blocked",
-			kind: "question",
-			message: needsDecision ? "Workflow needs attention" : "Workflow waiting for input",
+			kind: needsApproval ? "permission" : "question",
+			message: needsDecision
+				? "Workflow needs attention"
+				: needsApproval
+					? "Workflow needs approval"
+					: "Workflow waiting for input",
 		};
 	}
 }

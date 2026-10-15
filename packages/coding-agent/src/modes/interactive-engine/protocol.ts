@@ -230,6 +230,8 @@ const WORKFLOW_ACTIVITY_REASONS: readonly string[] = [
 	"quiescent",
 ];
 
+const WORKFLOW_PROMPT_KINDS: readonly string[] = ["input", "confirm", "select", "editor", "custom"];
+
 function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 	if (
 		!isJsonObject(value) ||
@@ -241,7 +243,9 @@ function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 		!WORKFLOW_ACTIVITY_REASONS.includes(value.reason) ||
 		typeof value.activeExecutionCount !== "number" ||
 		typeof value.actionableBlockCount !== "number" ||
-		typeof value.needsAttention !== "boolean"
+		typeof value.needsAttention !== "boolean" ||
+		(value.blockedPromptKind !== undefined &&
+			(typeof value.blockedPromptKind !== "string" || !WORKFLOW_PROMPT_KINDS.includes(value.blockedPromptKind)))
 	)
 		return undefined;
 	return {
@@ -252,6 +256,9 @@ function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 		activeExecutionCount: value.activeExecutionCount,
 		actionableBlockCount: value.actionableBlockCount,
 		needsAttention: value.needsAttention,
+		...(value.blockedPromptKind !== undefined
+			? { blockedPromptKind: value.blockedPromptKind as WorkflowRootActivity["blockedPromptKind"] }
+			: {}),
 	};
 }
 

@@ -80,6 +80,8 @@ function projectRoot(
 	let activeExecutionCount = 0;
 	let humanWaits = 0;
 	let manualWaits = 0;
+	let runPromptKind: PendingPrompt["kind"] | undefined;
+	let stagePromptKind: PendingPrompt["kind"] | undefined;
 	let settledFailure = false;
 	let retrying = false;
 	let runnable = false;
@@ -94,7 +96,11 @@ function projectRoot(
 		).length;
 		const acceptsAttention =
 			run.status === "running" || run.status === "pending" || run.status === "failed" || run.status === "blocked";
-		if (acceptsAttention && run.pendingPrompt) humanWaits++;
+		if (acceptsAttention && run.pendingPrompt) {
+			humanWaits++;
+			if (runPromptKind === undefined || run.pendingPrompt.kind === "confirm")
+				runPromptKind = run.pendingPrompt.kind;
+		}
 		if (run.status === "paused") paused = true;
 		if (
 			acceptsAttention &&
@@ -134,7 +140,11 @@ function projectRoot(
 		for (const stage of run.stages) {
 			if (run.status === "running" && stage.status === "paused") paused = true;
 			if (stage.status === "awaiting_input" || stage.pendingPrompt) {
-				if (acceptsAttention && stage.status !== "paused") humanWaits++;
+				if (acceptsAttention && stage.status !== "paused") {
+					humanWaits++;
+					if (stagePromptKind === undefined || stage.pendingPrompt?.kind === "confirm")
+						stagePromptKind = stage.pendingPrompt?.kind;
+				}
 				continue;
 			}
 			const key = workflowActivityNodeKey(run.id, stage.id);
@@ -210,6 +220,7 @@ function projectRoot(
 		state = "blocked";
 		reason = humanWaits > 0 ? "awaiting_input" : "manual_intervention";
 	}
+	const blockedPromptKind = runPromptKind ?? stagePromptKind;
 	return {
 		rootRunId,
 		ownerSessionId: ownership.ownerSessionId,
@@ -217,6 +228,7 @@ function projectRoot(
 		reason,
 		activeExecutionCount,
 		actionableBlockCount,
+		...(blockedPromptKind === undefined ? {} : { blockedPromptKind }),
 		needsAttention: actionableBlockCount > 0 || settledFailure,
 	};
 }

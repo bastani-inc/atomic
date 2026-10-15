@@ -6,6 +6,10 @@ import { APP_NAME } from "../src/config.js";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../src/core/extensions/workflow-events.js";
 import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.js";
+import {
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
+} from "../src/modes/interactive-engine/protocol.js";
 
 function setup() {
 	const reports: ProgramStatus[] = [];
@@ -171,6 +175,70 @@ test("reports blocked while a workflow run or stage waits for input without expo
 	reporter.handleWorkflowActivity(changed(working()));
 	assert.equal(last()?.state, "working");
 	assert.ok(!JSON.stringify(reports).includes("approve"));
+});
+
+test("distinguishes workflow approvals from questions and manual intervention (#3618)", () => {
+	const { reporter, last } = setup();
+	for (const blockedPromptKind of ["confirm", "input", "select", "editor", "custom", undefined] as const) {
+		reporter.handleWorkflowActivity(snapshot({ ...awaitingInput(), blockedPromptKind }));
+		assert.deepEqual(last(), {
+			state: "blocked",
+			kind: blockedPromptKind === "confirm" ? "permission" : "question",
+			message: blockedPromptKind === "confirm" ? "Workflow needs approval" : "Workflow waiting for input",
+			app: APP_NAME,
+		});
+	}
+	reporter.handleWorkflowActivity(
+		changed(root("run", { state: "blocked", reason: "manual_intervention", actionableBlockCount: 1 })),
+	);
+	assert.deepEqual(last(), {
+		state: "blocked",
+		kind: "question",
+		message: "Workflow needs attention",
+		app: APP_NAME,
+	});
+});
+
+test("preserves workflow prompt kinds through engine snapshot and changed frames (#3618)", () => {
+	for (const frameKind of ["snapshot", "changed"] as const) {
+		for (const blockedPromptKind of ["confirm", "input", "select", "editor", "custom", undefined] as const) {
+			const { reporter, last } = setup();
+			reporter.handleWorkflowActivity(snapshot());
+			const value = {
+				...awaitingInput(),
+				...(blockedPromptKind ? { blockedPromptKind } : {}),
+			};
+			const frame = frameKind === "snapshot" ? snapshot(value) : changed(value);
+			const message = parseInteractiveEngineMessage(
+				serializeInteractiveEngineFrame({ type: "engine_workflow_activity", frame }),
+			);
+			assert.equal(message?.type, "engine_workflow_activity");
+			if (message?.type !== "engine_workflow_activity") assert.fail("Expected workflow activity");
+			assert.deepEqual(message.frame, frame);
+			reporter.handleWorkflowActivity(message.frame);
+			assert.deepEqual(last(), {
+				state: "blocked",
+				kind: blockedPromptKind === "confirm" ? "permission" : "question",
+				message: blockedPromptKind === "confirm" ? "Workflow needs approval" : "Workflow waiting for input",
+				app: APP_NAME,
+			});
+		}
+	}
+});
+
+test("rejects invalid workflow prompt kinds in engine activity frames (#3618)", () => {
+	for (const blockedPromptKind of ["unknown", "", null, 1, true, {}, []]) {
+		const value = { ...awaitingInput(), blockedPromptKind };
+		for (const frame of [
+			{ kind: "snapshot", cursor, availability: "ready", roots: [value] },
+			{ kind: "changed", cursor, root: value },
+		]) {
+			assert.equal(
+				parseInteractiveEngineMessage(JSON.stringify({ type: "engine_workflow_activity", frame })),
+				undefined,
+			);
+		}
+	}
 });
 
 // The projection reports a root `working` whenever anything executes, even while it also waits for the user.
