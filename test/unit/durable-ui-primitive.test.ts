@@ -10,7 +10,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { wrapUiWithDurable } from "../../packages/workflows/src/durable/ui-primitive.js";
@@ -18,6 +17,7 @@ import type {
 	WorkflowCustomUiFactory,
 	WorkflowUIContext,
 } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 const WORKFLOW_ID = "wf-ui-test-001";
 

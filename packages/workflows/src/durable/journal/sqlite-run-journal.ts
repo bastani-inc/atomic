@@ -22,6 +22,7 @@ import {
 	RunNotFoundError,
 	type RunSummary,
 	StaleLeaseError,
+	type SynchronousRunJournal,
 	JOURNAL_TABLES as t,
 } from "./types.js";
 
@@ -64,7 +65,7 @@ function entryFromRow(row: JournalEventRow): JournalEntry {
 	};
 }
 
-export class SqliteRunJournal implements RunJournal {
+export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 	private readonly db: JournalDatabase;
 	private closed = false;
 
@@ -110,6 +111,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
+		return this.createRunSync(header);
+	}
+
+	createRunSync(header: RunHeader): "created" | "exists" {
 		validateText("runId", header.runId);
 		validateText("name", header.name);
 		validateText("cwd", header.cwd);
@@ -130,6 +135,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+		return this.listRunsSync(filter);
+	}
+
+	listRunsSync(filter?: { cwd?: string }): readonly RunSummary[] {
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return storageBoundary(this.path, () =>
 			this.db
@@ -166,6 +175,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async acquire(runId: string, holderId: string): Promise<LeaseOutcome> {
+		return this.acquireSync(runId, holderId);
+	}
+
+	acquireSync(runId: string, holderId: string): LeaseOutcome {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.db.transaction(() => {
@@ -206,6 +219,46 @@ export class SqliteRunJournal implements RunJournal {
 		});
 	}
 
+	leaseState(runId: string): (Lease & { readonly renewedAt: number }) | undefined {
+		validateText("runId", runId);
+		const row = this.db.getCounters<JournalLeaseRow & { [c.renewedAt]: number }>(
+			runId,
+			`SELECT ${c.holderId}, ${c.epoch}, ${c.renewedAt} FROM ${t.leases} WHERE ${c.runId} = ?`,
+			runId,
+		);
+		return row && row[c.holderId] !== null
+			? { runId, holderId: row[c.holderId]!, epoch: row[c.epoch], renewedAt: row[c.renewedAt] }
+			: undefined;
+	}
+
+	takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number): LeaseOutcome {
+		validateText("runId", runId);
+		validateText("holderId", holderId);
+		return this.db.transaction(() => {
+			this.requireRun(runId);
+			const current = this.leaseState(runId);
+			if (current?.holderId === holderId)
+				return { status: "acquired", lease: { runId, holderId, epoch: current.epoch } };
+			if (current === undefined) {
+				const previous = this.leaseRow(runId);
+				return this.grant(
+					runId,
+					holderId,
+					previous
+						? journalCounter(runId, "epoch", previous[c.epoch] + JOURNAL_LEASE.epochIncrement, "overflow")
+						: JOURNAL_LEASE.initialEpoch,
+				);
+			}
+			if (current.renewedAt > expiredBefore)
+				return { status: "held", holderId: current.holderId, epoch: current.epoch };
+			return this.grant(
+				runId,
+				holderId,
+				journalCounter(runId, "epoch", current.epoch + JOURNAL_LEASE.epochIncrement, "overflow"),
+			);
+		});
+	}
+
 	private checkLease(lease: Lease): void {
 		const current = this.leaseRow(lease.runId);
 		if (current?.[c.holderId] !== lease.holderId || current[c.epoch] !== lease.epoch) {
@@ -214,6 +267,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async renew(lease: Lease): Promise<void> {
+		this.renewSync(lease);
+	}
+
+	renewSync(lease: Lease): void {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.db.transaction(() => {
@@ -223,6 +280,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async release(lease: Lease): Promise<void> {
+		this.releaseSync(lease);
+	}
+
+	releaseSync(lease: Lease): void {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.db.transaction(() => {
@@ -236,6 +297,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome> {
+		return this.appendSync(lease, event, options);
+	}
+
+	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		if (options?.key !== undefined) validateText("key", options.key);
@@ -305,6 +370,20 @@ export class SqliteRunJournal implements RunJournal {
 		}
 	}
 
+	readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
+		validateText("runId", runId);
+		return storageBoundary(this.path, () =>
+			this.db
+				.allCounters<JournalEventRow>(
+					runId,
+					`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq}`,
+					runId,
+					fromSeq,
+				)
+				.map(entryFromRow),
+		);
+	}
+
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {
 		validateText("runId", runId);
 		validateText("key", key);
@@ -320,12 +399,36 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async deleteRun(runId: string): Promise<void> {
+		this.deleteRunSync(runId);
+	}
+
+	deleteRunSync(runId: string): void {
 		validateText("runId", runId);
+		this.db.transaction(() => this.deleteRunData(runId));
+	}
+
+	deleteOwnedRunSync(lease: Lease, expectSeq?: number): void {
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
 		this.db.transaction(() => {
-			this.leaseRow(runId);
-			this.db.run(`UPDATE ${t.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`, JOURNAL_LEASE.unheld, runId);
-			this.db.run(`DELETE FROM ${t.runs} WHERE ${c.runId} = ?`, runId);
+			this.checkLease(lease);
+			if (expectSeq !== undefined) {
+				const actualSeq =
+					this.db.getCounters<{ [c.seq]: number }>(
+						lease.runId,
+						`SELECT COALESCE(MAX(${c.seq}), 0) AS ${c.seq} FROM ${t.events} WHERE ${c.runId} = ?`,
+						lease.runId,
+					)?.[c.seq] ?? 0;
+				if (actualSeq !== expectSeq) throw new JournalCasConflictError(lease.runId, expectSeq, actualSeq);
+			}
+			this.deleteRunData(lease.runId);
 		});
+	}
+
+	private deleteRunData(runId: string): void {
+		this.leaseRow(runId);
+		this.db.run(`UPDATE ${t.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`, JOURNAL_LEASE.unheld, runId);
+		this.db.run(`DELETE FROM ${t.runs} WHERE ${c.runId} = ?`, runId);
 	}
 
 	async close(): Promise<void> {

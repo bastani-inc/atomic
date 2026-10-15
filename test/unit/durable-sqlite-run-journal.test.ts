@@ -29,7 +29,13 @@ import {
 	StorageUnavailableError,
 	JOURNAL_TABLES as t,
 } from "../../packages/workflows/src/durable/journal/types.js";
-import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	removeTempDirectory,
+	spawnSyncCollect,
+	writeTextSync,
+} from "../helpers/runtime.js";
 
 const header = { runId: "run", name: "workflow", cwd: " /raw/../cwd ", createdAt: 0, status: "running" };
 const illFormedExamples = ["\ud800", "\udfff", "a\ud800b"] as const;
@@ -1383,4 +1389,56 @@ test("read pages through the journal instead of loading the whole history first"
 			pageQueries.mockRestore();
 		}
 	});
+});
+
+test.each(["node", "bun"])("empty journal override persists across reopen and a fresh %s process", (runtime) => {
+	const directory = makeTempDirectory("journal-empty-override-");
+	const source = `
+		import assert from "node:assert/strict";
+		import { resolve, dirname, join } from "node:path";
+		import { createJiti } from "jiti";
+		const jiti = createJiti(resolve("journal-empty-override.mjs"), { fsCache: false });
+		const { SqliteRunJournal } = await jiti.import(resolve("packages/workflows/src/durable/journal/sqlite-run-journal.ts"));
+		const header = { runId: "empty-override", name: "workflow", cwd: "", createdAt: 0, status: "running" };
+		const event = { type: "RunStarted", payload: { marker: "durable" } };
+		if (process.env.JOURNAL_PROBE_MODE === "write") {
+			const writer = new SqliteRunJournal();
+			try {
+				assert.equal(await writer.createRun(header), "created");
+				const acquired = await writer.acquire(header.runId, "holder");
+				assert.equal(acquired.status, "acquired");
+				assert.equal((await writer.append(acquired.lease, event)).status, "appended");
+			} finally { await writer.close(); }
+		}
+		const reader = new SqliteRunJournal();
+		try {
+			assert.deepEqual(await reader.listRuns(), [header]);
+			const entries = [];
+			for await (const entry of reader.read(header.runId)) entries.push(entry);
+			assert.equal(entries.length, 1);
+			assert.deepEqual(entries[0].event, event);
+			assert.equal(reader.path, join(dirname(process.env.ATOMIC_CODING_AGENT_DIR), "workflows", "journal.sqlite"));
+			console.log(JSON.stringify({ runs: await reader.listRuns(), entries }));
+		} finally { await reader.close(); }
+	`;
+	try {
+		const executable = runtime === "bun" ? bunExecutable() : process.execPath;
+		const outputs: string[] = [];
+		for (const mode of ["write", "read"]) {
+			const result = spawnSyncCollect([executable, "--input-type=module", "--eval", source], {
+				env: {
+					...process.env,
+					ATOMIC_CODING_AGENT_DIR: join(directory, "agent"),
+					ATOMIC_WORKFLOW_JOURNAL_PATH: "",
+					JOURNAL_PROBE_MODE: mode,
+				},
+				timeout: 30_000,
+			});
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			outputs.push(result.stdout.toString());
+		}
+		assert.equal(outputs[1], outputs[0]);
+	} finally {
+		removeTempDirectory(directory);
+	}
 });

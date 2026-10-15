@@ -3,8 +3,9 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { deleteDurableWorkflowIfSafe } from "../../packages/workflows/src/durable/retention-policy.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 function register(
 	backend: DurableWorkflowBackend,

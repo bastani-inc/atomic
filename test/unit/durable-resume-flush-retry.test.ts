@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
@@ -14,6 +13,7 @@ import {
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, type Store, store } from "../../packages/workflows/src/shared/store.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
 class FlushTrackingBackend extends InMemoryDurableBackend {

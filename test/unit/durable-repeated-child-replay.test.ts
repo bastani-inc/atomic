@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	listCompletedFromBackend,
@@ -7,6 +6,7 @@ import {
 import { aggregateWorkflowRootRunId } from "../../packages/workflows/src/runs/background/workflow-lifecycle-aggregate.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { createStore, test as executorTest, run, Type, workflow } from "./executor-shared.js";
 
 function withoutParentStageId(run: RunSnapshot): Omit<RunSnapshot, "parentStageId"> {

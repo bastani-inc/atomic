@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { createStore, run, Type, workflow } from "./executor-shared.js";
 
 test("ctx.task replay prefers task-shaped checkpoint and hydrates lifecycle metadata", async () => {

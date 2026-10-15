@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import {
 	createCheckpointIdGenerator,
@@ -17,6 +17,7 @@ import type { DurableCheckpoint } from "../../packages/workflows/src/durable/typ
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 const ROOT = "root-wf-001";
 const CHILD = "child-wf-002";

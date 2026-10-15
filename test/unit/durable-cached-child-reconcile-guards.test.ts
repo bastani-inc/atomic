@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { DurableCompletedStageCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { DURABLE_STAGE_TOPOLOGY_VERSION } from "../../packages/workflows/src/durable/types.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
@@ -15,6 +14,7 @@ import type {
 	StageSnapshot,
 	StoreSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 const ROOT_ID = "guard-root";
 const CHILD_ID = "guard-child";
