@@ -16,8 +16,8 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type ContextCompactionEntry,
+	type FileEntry,
 	type ModelChangeEntry,
-	parseSessionEntries,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
@@ -33,7 +33,11 @@ function loadLargeSessionEntries(): SessionEntry[] {
 	if (content.startsWith("version https://git-lfs.github.com/spec/")) {
 		throw new Error(`${sessionPath} is a Git LFS pointer. Install git-lfs and run \`git lfs pull\`.`);
 	}
-	return parseSessionEntries(content)
+	// This fixture supplies message data for compaction, not a loadable session file.
+	return content
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line) as FileEntry)
 		.filter((entry): entry is SessionEntry => entry.type !== "session")
 		.map((entry, index) => ({
 			...entry,

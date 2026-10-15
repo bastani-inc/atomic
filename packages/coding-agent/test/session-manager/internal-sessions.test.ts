@@ -22,7 +22,7 @@ function writeSessionFile(dir: string, header: SessionHeader, lines: string[] = 
 function userHeader(id: string, cwd: string, mtimeAgo = 0): SessionHeader {
 	return {
 		type: "session",
-		version: 3,
+		version: 4,
 		id,
 		timestamp: new Date(Date.now() - mtimeAgo).toISOString(),
 		cwd,
@@ -183,7 +183,7 @@ describe("readSessionHeader robustness for long headers", () => {
 		const longStageName = "x".repeat(2000);
 		const header: SessionHeader = {
 			type: "session",
-			version: 3,
+			version: 4,
 			id: "long-1",
 			timestamp: new Date().toISOString(),
 			cwd: dir,
@@ -309,7 +309,7 @@ describe("readSessionHeader reads multi-chunk headers with the small dedicated b
 		const longStageName = "z".repeat(80 * 1024);
 		const header: SessionHeader = {
 			type: "session",
-			version: 3,
+			version: 4,
 			id: "smallbuf-multichunk-1",
 			timestamp: new Date().toISOString(),
 			cwd: dir,
@@ -341,7 +341,7 @@ describe("readSessionHeader decoder flush after newline", () => {
 		const longStageName = "y".repeat(1024 * 1024);
 		const header: SessionHeader = {
 			type: "session",
-			version: 3,
+			version: 4,
 			id: "big-header-1",
 			timestamp: new Date().toISOString(),
 			cwd: dir,
@@ -360,7 +360,7 @@ describe("readSessionHeader decoder flush after newline", () => {
 	it("reads a header when there is no trailing newline (single-line file)", () => {
 		const header: SessionHeader = {
 			type: "session",
-			version: 3,
+			version: 4,
 			id: "no-newline-1",
 			timestamp: new Date().toISOString(),
 			cwd: dir,
@@ -399,15 +399,10 @@ describe("header prefiltering skips internal sessions before transcript parse", 
 		expect(sessions).toHaveLength(0);
 	});
 
-	it("includes the malformed internal session via includeInternal", async () => {
+	it("omits the malformed internal session even via includeInternal", async () => {
 		const header = workflowHeader("wf-malformed-2", cwd);
 		writeSessionFile(dir, header, ["{this is not valid json}"]);
 		const sessions = await SessionManager.list(cwd, dir, undefined, { includeInternal: true });
-		// The unparseable body line is skipped by parseSessionEntries, so the
-		// session is still surfaced with includeInternal (0 messages). The key
-		// guarantee is that it does not throw.
-		expect(sessions).toHaveLength(1);
-		expect(sessions[0]?.id).toBe("wf-malformed-2");
-		expect(sessions[0]?.internal).toBe(true);
+		expect(sessions).toHaveLength(0);
 	});
 });

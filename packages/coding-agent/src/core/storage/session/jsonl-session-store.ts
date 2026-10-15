@@ -19,11 +19,14 @@ import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { validateSessionEntryStructure } from "./entry-structure.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
+	SessionFormatVersionError,
 	SessionInvalidTextError,
 	SessionInvalidTimestampError,
+	type SessionJsonValue,
 	SessionNotFoundError,
 	StorageUnavailableError,
 	StoreClosedError,
@@ -48,20 +51,9 @@ interface SessionFileState {
 	readonly terminated: boolean;
 }
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = SessionJsonValue;
 
-export class SessionFormatVersionError extends Error {
-	readonly path: string;
-	readonly found: JsonValue | undefined;
-	readonly supported = SESSION_FORMAT_VERSION;
-
-	constructor(path: string, found: JsonValue | undefined) {
-		super(`Unsupported session format at ${path}`);
-		this.name = "SessionFormatVersionError";
-		this.path = path;
-		this.found = found;
-	}
-}
+export { SessionFormatVersionError } from "./errors.js";
 
 export class JsonlStoragePoisonedError extends Error {
 	readonly location: string;
@@ -236,16 +228,21 @@ export class JsonlSessionStore implements SessionStore {
 		for (const path of paths) {
 			const summary = await this.run(async () => {
 				this.checkAbort(query);
-				let header: SessionRecordHeader;
 				try {
-					header = await this.readHeaderAt(path);
+					const header = await this.readHeaderAt(path);
+					if (query.cwd !== undefined && query.cwd !== header.cwd) return undefined;
+					if (!query.includeInternal && header.internal) return undefined;
+					return { ...summarizeSession(await this.readSnapshot(path)), location: path };
 				} catch (cause) {
-					if (cause instanceof SessionFormatVersionError) return undefined;
+					if (
+						cause instanceof SessionFormatVersionError ||
+						cause instanceof SessionInvalidTextError ||
+						cause instanceof SessionInvalidTimestampError ||
+						cause instanceof SyntaxError
+					)
+						return undefined;
 					throw cause;
 				}
-				if (query.cwd !== undefined && query.cwd !== header.cwd) return undefined;
-				if (!query.includeInternal && header.internal) return undefined;
-				return { ...summarizeSession(await this.readSnapshot(path)), location: path };
 			});
 			this.checkAbort(query);
 			if (summary) yield summary;
@@ -385,6 +382,15 @@ export class JsonlSessionStore implements SessionStore {
 		const stored = await this.readFirstLine(path);
 		if (stored.version !== SESSION_FORMAT_VERSION) throw new SessionFormatVersionError(path, stored.version);
 		const { type: _type, ...header } = stored as SessionRecordHeader & { type: "session" };
+		if (
+			_type !== "session" ||
+			typeof header.id !== "string" ||
+			typeof header.cwd !== "string" ||
+			typeof header.createdAt !== "string"
+		) {
+			throw new SessionFormatVersionError(path, stored.version);
+		}
+		validateSessionHeader(header);
 		return header;
 	}
 
@@ -394,6 +400,8 @@ export class JsonlSessionStore implements SessionStore {
 		const lines = content.split("\n");
 		if (lines.at(-1) === "") lines.pop();
 		const entries = lines.slice(1).map((line) => JSON.parse(line) as SessionEntry);
+		validateSessionEntryStructure(entries, path);
+		validateSessionEntries(entries);
 		await this.remember(path, entries.length, content.endsWith("\n"));
 		return { header, entries, lastSeq: entries.length };
 	}

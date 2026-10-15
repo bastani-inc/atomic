@@ -17,7 +17,7 @@ function writeSessionFile(path: string, cwd: string): void {
 		path,
 		`${JSON.stringify({
 			type: "session",
-			version: 3,
+			version: 4,
 			id: "session-id",
 			timestamp: new Date().toISOString(),
 			cwd,

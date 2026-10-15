@@ -31,7 +31,7 @@ function writeSessionTranscript(path: string, id: string): void {
 	writeFileSync(
 		path,
 		`${[
-			JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: tempDir }),
+			JSON.stringify({ type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd: tempDir }),
 			JSON.stringify({
 				type: "message",
 				id: `${id}-message`,

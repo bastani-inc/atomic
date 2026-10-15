@@ -130,7 +130,7 @@ describe("SessionManager.newSession with custom id", () => {
 			`${[
 				JSON.stringify({
 					type: "session",
-					version: 3,
+					version: 4,
 					id: "legacy-session-id",
 					timestamp: new Date().toISOString(),
 					cwd: tempDir,
@@ -176,7 +176,7 @@ describe("SessionManager.newSession with custom id", () => {
 			sourcePath,
 			`${JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: "source-session-id",
 				timestamp: new Date().toISOString(),
 				cwd: tempDir,
@@ -200,7 +200,7 @@ describe("SessionManager.newSession with custom id", () => {
 			sourcePath,
 			`${JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: "source-session-id",
 				timestamp: new Date().toISOString(),
 				cwd: tempDir,
@@ -221,7 +221,7 @@ describe("SessionManager.newSession with custom id", () => {
 			sourcePath,
 			`${JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: "source-session-id",
 				timestamp: new Date().toISOString(),
 				cwd: tempDir,

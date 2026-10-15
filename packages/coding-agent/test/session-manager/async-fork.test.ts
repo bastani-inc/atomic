@@ -7,6 +7,7 @@ import { join } from "node:path";
 import * as fs from "fs";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../src/core/session-manager.js";
+import { StorageUnavailableError } from "../../src/core/storage/session/errors.js";
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -21,7 +22,7 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 	const dir = await mkdtemp(join(tmpdir(), "session-stream-fork-"));
 	try {
 		const source = join(dir, "source.jsonl");
-		const header = { type: "session", version: 3, id: "source", timestamp: new Date().toISOString(), cwd: dir };
+		const header = { type: "session", version: 4, id: "source", timestamp: new Date().toISOString(), cwd: dir };
 		const entry = {
 			type: "custom",
 			id: "history",
@@ -30,7 +31,7 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 			customType: "saved",
 			data: "日本語".repeat(100_000),
 		};
-		const content = `${JSON.stringify(header)}\nmalformed\n${JSON.stringify(entry)}`;
+		const content = `${JSON.stringify(header)}\n${JSON.stringify(entry)}`;
 		await writeFile(source, content);
 		const workflow = { runId: "run", stageId: "stage", stageName: "build" };
 		const syncCalls = [
@@ -81,7 +82,7 @@ test("streamed forks reject missing and invalid sources without creating a sessi
 		const destination = join(dir, "forks");
 		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), { code: "ENOENT" });
 		await writeFile(source, "not a session\n");
-		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), /empty or invalid/);
+		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), StorageUnavailableError);
 		await assert.rejects(fsPromises.access(destination), { code: "ENOENT" });
 	} finally {
 		await rm(dir, { recursive: true, force: true });

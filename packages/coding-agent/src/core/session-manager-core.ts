@@ -2,7 +2,6 @@ import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, resolve } from "path";
-import { APP_TITLE } from "../config.js";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -67,7 +66,13 @@ import type {
 	SessionWorkflowMetadata,
 	UsageEntry,
 } from "./session-manager-types.ts";
-import { assertValidSessionId, createSessionId, generateId } from "./session-manager-validation.ts";
+import {
+	assertValidSessionId,
+	createSessionId,
+	generateId,
+	validateSessionFileEntries,
+} from "./session-manager-validation.ts";
+import { SessionFormatVersionError } from "./storage/session/errors.js";
 
 /** Manages conversation sessions as append-only trees stored in JSONL files.  Each session entry has an id and parentId forming a tree structure. The "leaf" pointer tracks the current position. Appending creates a child of the current leaf. Branching moves the leaf to an earlier entry, allowing new branches without modifying history.  Use buildSessionContext() to get the resolved message list for the LLM, which applies context-deletion filtering and follows the path from root to current leaf. */
 export class SessionManager {
@@ -108,7 +113,7 @@ export class SessionManager {
 	}
 
 	private _loadEntries(entries: FileEntry[], options?: NewSessionOptions): void {
-		const header = entries.find((entry) => entry.type === "session") as SessionHeader | undefined;
+		const header = entries[0]?.type === "session" ? entries[0] : undefined;
 		if (header) {
 			this.fileEntries = entries;
 			this.sessionId = header.id;
@@ -125,15 +130,14 @@ export class SessionManager {
 	}
 
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
-		this.sessionFile = resolvePath(sessionFile);
-		if (preloadedFileEntries?.length || existsSync(this.sessionFile)) {
-			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+		const explicitPath = resolvePath(sessionFile);
+		if (preloadedFileEntries?.length || existsSync(explicitPath)) {
+			const entries = preloadedFileEntries ?? loadEntriesFromFile(explicitPath);
 
-			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a session, fail without modifying it.
-			if (this.fileEntries.length === 0) {
-				const explicitPath = this.sessionFile;
+			// Initialize only genuinely empty files, never an invalid non-empty session.
+			if (entries.length === 0) {
 				if (statSync(explicitPath).size > 0) {
-					throw new Error(`Session file is not a valid ${APP_TITLE} session: ${explicitPath}`);
+					throw new SessionFormatVersionError(explicitPath, undefined);
 				}
 				this.newSession();
 				this.sessionFile = explicitPath;
@@ -142,13 +146,14 @@ export class SessionManager {
 				return;
 			}
 
-			const header = this.fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
-			this.sessionId = header?.id ?? createSessionId();
+			const header = validateSessionFileEntries(entries, explicitPath);
+			this.sessionFile = explicitPath;
+			this.fileEntries = entries;
+			this.sessionId = header.id;
 
 			this._buildIndex();
 			this.flushed = true;
 		} else {
-			const explicitPath = this.sessionFile;
 			this.newSession();
 			this.sessionFile = explicitPath; // preserve explicit path from --session flag
 		}
@@ -193,6 +198,7 @@ export class SessionManager {
 	}
 
 	private _buildIndex(): void {
+		validateSessionFileEntries(this.fileEntries, this.sessionFile ?? "in-memory session");
 		const index = buildSessionIndex(this.fileEntries);
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;

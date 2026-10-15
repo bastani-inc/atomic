@@ -1,4 +1,25 @@
-import type { StorageDescriptor } from "./types.js";
+import { SESSION_FORMAT_VERSION, type StorageDescriptor } from "./types.js";
+
+export type SessionJsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| SessionJsonValue[]
+	| { [key: string]: SessionJsonValue };
+
+export class SessionFormatVersionError extends Error {
+	readonly path: string;
+	readonly found: SessionJsonValue | undefined;
+	readonly supported = SESSION_FORMAT_VERSION;
+
+	constructor(path: string, found: SessionJsonValue | undefined) {
+		super(`Unsupported session format at ${path}`);
+		this.name = "SessionFormatVersionError";
+		this.path = path;
+		this.found = found;
+	}
+}
 
 export class StorageUnavailableError extends Error {
 	readonly adapter: string;

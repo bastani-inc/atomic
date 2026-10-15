@@ -41,7 +41,7 @@ function retainedSession(name: string): string {
 		`${[
 			JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: `${name}-session`,
 				timestamp: new Date().toISOString(),
 				cwd: tempDir,
@@ -51,7 +51,7 @@ function retainedSession(name: string): string {
 				id: `${name}-message`,
 				parentId: null,
 				timestamp: new Date().toISOString(),
-				message: { role: "user", content: "Original stage request" },
+				message: { role: "user", content: "Original stage request", timestamp: Date.now() },
 			}),
 		].join("\n")}\n`,
 	);

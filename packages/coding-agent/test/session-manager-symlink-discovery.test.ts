@@ -30,7 +30,7 @@ describe("session discovery through linked project directories", () => {
 			join(dir, `${id}.jsonl`),
 			`${JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id,
 				timestamp: "2026-08-03T00:00:00.000Z",
 				cwd: join(tempDir, "project"),

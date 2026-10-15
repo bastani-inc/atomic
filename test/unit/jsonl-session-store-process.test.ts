@@ -5,16 +5,15 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { it } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 
-const storeModule = fileURLToPath(
-	new URL("../../packages/coding-agent/src/core/storage/session/jsonl-session-store.ts", import.meta.url),
-);
-const errorsModule = fileURLToPath(
-	new URL("../../packages/coding-agent/src/core/storage/session/errors.ts", import.meta.url),
-);
+// Native ESM gives the store and its errors one canonical module identity on every platform.
+const storeModule = new URL(
+	"../../packages/coding-agent/dist/core/storage/session/jsonl-session-store.js",
+	import.meta.url,
+).href;
+const errorsModule = new URL("./errors.js", storeModule).href;
 
 async function raceWriters(directory: string, operation: "create" | "append"): Promise<string[]> {
 	const children = ["/a", "/b"].map((cwd) => {
@@ -22,10 +21,9 @@ async function raceWriters(directory: string, operation: "create" | "append"): P
 			"--input-type=module",
 			"--eval",
 			`
-import { createJiti } from "jiti";
-const jiti = createJiti(import.meta.url);
-const { JsonlSessionStore } = await jiti.import(${JSON.stringify(storeModule)});
-const { SessionConflictError, SessionExistsError } = await jiti.import(${JSON.stringify(errorsModule)});
+import assert from "node:assert/strict";
+const { JsonlSessionStore } = await import(${JSON.stringify(storeModule)});
+const { SessionConflictError, SessionExistsError } = await import(${JSON.stringify(errorsModule)});
 const store = await JsonlSessionStore.open(${JSON.stringify(directory)});
 console.log("READY");
 await new Promise(resolve => process.stdin.once("data", resolve));
@@ -35,15 +33,30 @@ try {
   else await store.append("shared", [{ type: "session_info", id: "entry", parentId: null, timestamp: header.createdAt, name: "text" }], { expectSeq: 0 });
   console.log("committed");
 } catch (error) {
-  if (error instanceof SessionExistsError) console.log("exists");
-  else if (error instanceof SessionConflictError && error.expectedSeq === 0 && error.actualSeq === 1) console.log("conflict");
-  else throw error;
+  if (${JSON.stringify(operation)} === "create") {
+    assert.equal(error.constructor, SessionExistsError);
+    assert.ok(error instanceof SessionExistsError);
+    assert.equal(error.sessionId, "shared");
+    console.log("exists");
+  } else {
+    assert.equal(error.constructor, SessionConflictError);
+    assert.ok(error instanceof SessionConflictError);
+    assert.equal(error.sessionId, "shared");
+    assert.equal(error.expectedSeq, 0);
+    assert.equal(error.actualSeq, 1);
+    console.log("conflict");
+  }
 } finally { await store.close(); }
 `,
 		]);
+		let stderr = "";
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
 		return {
 			child,
-			exited: once(child, "exit"),
+			exited: once(child, "close"),
+			stderr: () => stderr,
 			lines: createInterface({ input: child.stdout })[Symbol.asyncIterator](),
 		};
 	});
@@ -51,7 +64,7 @@ try {
 		await Promise.all(children.map(async ({ lines }) => assert.equal((await lines.next()).value, "READY")));
 		for (const { child } of children) child.stdin.end("go\n");
 		const outputs = await Promise.all(children.map(async ({ lines }) => String((await lines.next()).value)));
-		for (const { exited } of children) assert.equal((await exited)[0], 0);
+		for (const { exited, stderr } of children) assert.equal((await exited)[0], 0, stderr());
 		return outputs.sort();
 	} finally {
 		for (const { child } of children) if (child.exitCode === null) child.kill();

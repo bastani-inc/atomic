@@ -106,7 +106,7 @@ Extended messages from [`packages/coding-agent/src/core/messages.ts`](https://gi
 Each line is a JSON object. The first line is the session header:
 
 ```json
-{"type":"session","version":3,"id":"uuid","timestamp":"...","cwd":"/path"}
+{"type":"session","version":4,"id":"uuid","timestamp":"...","cwd":"/path"}
 ```
 
 Followed by events as they occur:

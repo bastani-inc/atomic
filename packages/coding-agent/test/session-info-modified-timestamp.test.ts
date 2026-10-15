@@ -11,7 +11,7 @@ function createSessionFile(path: string): void {
 	const header: SessionHeader = {
 		type: "session",
 		id: "test-session",
-		version: 3,
+		version: 4,
 		timestamp: new Date(0).toISOString(),
 		cwd: "/tmp",
 	};

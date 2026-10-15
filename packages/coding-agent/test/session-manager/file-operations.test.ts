@@ -15,8 +15,8 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { APP_TITLE } from "../../src/config.ts";
 import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.ts";
+import { SessionFormatVersionError, StorageUnavailableError } from "../../src/core/storage/session/errors.js";
 import { assistantMsg, readSessionFileRoles, userMsg } from "../utilities.js";
 
 describe("loadEntriesFromFile", () => {
@@ -42,23 +42,23 @@ describe("loadEntriesFromFile", () => {
 		expect(loadEntriesFromFile(file)).toEqual([]);
 	});
 
-	it("returns empty array for file without valid session header", () => {
+	it("rejects a file without a valid session header", () => {
 		const file = join(tempDir, "no-header.jsonl");
 		writeFileSync(file, '{"type":"message","id":"1"}\n');
-		expect(loadEntriesFromFile(file)).toEqual([]);
+		expect(() => loadEntriesFromFile(file)).toThrow(SessionFormatVersionError);
 	});
 
-	it("returns empty array for malformed JSON", () => {
+	it("rejects malformed JSON with a typed storage error", () => {
 		const file = join(tempDir, "malformed.jsonl");
 		writeFileSync(file, "not json\n");
-		expect(loadEntriesFromFile(file)).toEqual([]);
+		expect(() => loadEntriesFromFile(file)).toThrow(StorageUnavailableError);
 	});
 
 	it("loads valid session file", () => {
 		const file = join(tempDir, "valid.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = loadEntriesFromFile(file);
@@ -67,22 +67,21 @@ describe("loadEntriesFromFile", () => {
 		expect(entries[1].type).toBe("message");
 	});
 
-	it("skips malformed lines but keeps valid ones", () => {
+	it("rejects malformed lines rather than silently losing history", () => {
 		const file = join(tempDir, "mixed.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 				"not valid json\n" +
 				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
-		const entries = loadEntriesFromFile(file);
-		expect(entries).toHaveLength(2);
+		expect(() => loadEntriesFromFile(file)).toThrow(StorageUnavailableError);
 	});
 
 	it("reads an unterminated valid record without modifying the file", () => {
 		const file = join(tempDir, "unterminated.jsonl");
 		const content =
-			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}';
 		writeFileSync(file, content);
 
@@ -93,7 +92,7 @@ describe("loadEntriesFromFile", () => {
 	it("preserves record boundaries when appending after a read-only unterminated reopen", () => {
 		const file = join(tempDir, "append-after-reopen.jsonl");
 		const content =
-			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"first","timestamp":1}}';
 		writeFileSync(file, content);
 		const session = SessionManager.open(file, tempDir);
@@ -108,10 +107,11 @@ describe("loadEntriesFromFile", () => {
 	it("leaves an unterminated malformed final fragment unchanged", () => {
 		const file = join(tempDir, "malformed-tail.jsonl");
 		const content =
-			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' + '{"type":"message"';
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"message"';
 		writeFileSync(file, content);
 
-		expect(loadEntriesFromFile(file)).toHaveLength(1);
+		expect(() => loadEntriesFromFile(file)).toThrow(StorageUnavailableError);
 		assert.equal(readFileSync(file, "utf8"), content);
 	});
 
@@ -120,7 +120,7 @@ describe("loadEntriesFromFile", () => {
 		const content = '{"type":"message","id":"1"}';
 		writeFileSync(file, content);
 
-		expect(loadEntriesFromFile(file)).toEqual([]);
+		expect(() => loadEntriesFromFile(file)).toThrow(SessionFormatVersionError);
 		expect(readFileSync(file, "utf8")).toBe(content);
 	});
 
@@ -128,15 +128,14 @@ describe("loadEntriesFromFile", () => {
 		const file = join(tempDir, "large.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 
-		const fd = openSync(file, "r+");
+		const fd = openSync(file, "a");
 		try {
-			const newline = Buffer.from("\n");
-			const stride = 16 * 1024 * 1024;
-			for (let offset = stride; offset <= bufferConstants.MAX_STRING_LENGTH + stride; offset += stride) {
-				writeSync(fd, newline, 0, newline.length, offset);
+			const padding = Buffer.from(`${" ".repeat(1024 * 1024 - 1)}\n`);
+			for (let written = 0; written <= bufferConstants.MAX_STRING_LENGTH; written += padding.length) {
+				writeSync(fd, padding);
 			}
 		} finally {
 			closeSync(fd);
@@ -293,7 +292,10 @@ describe("findMostRecentSession", () => {
 
 	it("returns single valid session file", () => {
 		const file = join(tempDir, "session.jsonl");
-		writeFileSync(file, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		writeFileSync(
+			file,
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+		);
 		expect(findMostRecentSession(tempDir)).toBe(file);
 	});
 
@@ -301,10 +303,16 @@ describe("findMostRecentSession", () => {
 		const file1 = join(tempDir, "older.jsonl");
 		const file2 = join(tempDir, "newer.jsonl");
 
-		writeFileSync(file1, '{"type":"session","id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		writeFileSync(
+			file1,
+			'{"type":"session","version":4,"id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+		);
 		// Small delay to ensure different mtime
 		await new Promise((r) => setTimeout(r, 10));
-		writeFileSync(file2, '{"type":"session","id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		writeFileSync(
+			file2,
+			'{"type":"session","version":4,"id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+		);
 
 		expect(findMostRecentSession(tempDir)).toBe(file2);
 	});
@@ -315,7 +323,10 @@ describe("findMostRecentSession", () => {
 
 		writeFileSync(invalid, '{"type":"not-session"}\n');
 		await new Promise((r) => setTimeout(r, 10));
-		writeFileSync(valid, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		writeFileSync(
+			valid,
+			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+		);
 
 		expect(findMostRecentSession(tempDir)).toBe(valid);
 	});
@@ -328,12 +339,12 @@ describe("findMostRecentSession", () => {
 
 		writeFileSync(
 			fileA,
-			`${JSON.stringify({ type: "session", id: "a", timestamp: "2025-01-01T00:00:00Z", cwd: projectA })}\n`,
+			`${JSON.stringify({ type: "session", version: 4, id: "a", timestamp: "2025-01-01T00:00:00Z", cwd: projectA })}\n`,
 		);
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(
 			fileB,
-			`${JSON.stringify({ type: "session", id: "b", timestamp: "2025-01-01T00:00:00Z", cwd: projectB })}\n`,
+			`${JSON.stringify({ type: "session", version: 4, id: "b", timestamp: "2025-01-01T00:00:00Z", cwd: projectB })}\n`,
 		);
 
 		expect(findMostRecentSession(tempDir, projectA)).toBe(fileA);
@@ -453,9 +464,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 			'{"type":"message","id":"abc","parentId":"orphaned","timestamp":"2025-01-01T00:00:00Z","message":{"role":"assistant","content":"test"}}\n';
 		writeFileSync(noHeaderFile, originalContent);
 
-		expect(() => SessionManager.open(noHeaderFile, tempDir)).toThrow(
-			`Session file is not a valid ${APP_TITLE} session: ${noHeaderFile}`,
-		);
+		expect(() => SessionManager.open(noHeaderFile, tempDir)).toThrow(SessionFormatVersionError);
 
 		// The corrupted file must be left untouched.
 		expect(readFileSync(noHeaderFile, "utf-8")).toBe(originalContent);

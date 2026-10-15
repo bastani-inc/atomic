@@ -157,6 +157,38 @@ for (const version of [undefined, null, false, 0, 1, 2, 3, 5, "4", {}, []]) {
 	});
 }
 
+for (const invalid of [
+	{ ...entry, id: undefined },
+	{ ...entry, parentId: undefined },
+	{ ...entry, parentId: 1 },
+	{ ...entry, type: "invalid" },
+	{ ...entry, type: "message", message: null },
+	null,
+]) {
+	it(`rejects malformed format-4 entries without caching or listing them: ${JSON.stringify(invalid)}`, async () => {
+		await withStore(async (store, directory) => {
+			await store.create({ ...header, id: "valid" }, []);
+			const path = join(directory, "invalid.jsonl");
+			const content = `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(invalid)}\n`;
+			await writeFile(path, content);
+			const reopened = await JsonlSessionStore.open(directory);
+			try {
+				for (const reader of [store, reopened]) {
+					await assert.rejects(reader.load(header.id), SessionFormatVersionError);
+					await assert.rejects(reader.append(header.id, [entry], { expectSeq: 1 }), SessionFormatVersionError);
+					assert.deepEqual(
+						(await collect(reader.list({}))).map((summary) => summary.id),
+						["valid"],
+					);
+				}
+				assert.equal(await readFile(path, "utf8"), content);
+			} finally {
+				await reopened.close();
+			}
+		});
+	});
+}
+
 it("never repairs a torn final line and wraps the parse failure", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "torn.jsonl");
