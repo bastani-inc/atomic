@@ -9,6 +9,7 @@ import {
 	type EmbeddedPostgresBinaryPaths,
 	prepareBinariesForOwner,
 } from "../../packages/workflows/src/durable/dbos-embedded-postgres-root.js";
+import { deserializeFixtureError, type FixtureError } from "./fixture-error.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -69,6 +70,7 @@ export interface ManagedResult {
 		server: { pid: number; port: number; systemIdentifier: string };
 	};
 }
+
 export class RealPostgresClient {
 	private readonly child: SpawnedProcess;
 	private sequence = 0;
@@ -134,9 +136,9 @@ export class RealPostgresClient {
 					const line = buffer.slice(0, newline);
 					buffer = buffer.slice(newline + 1);
 					if (!line.startsWith('{"id":')) continue;
-					const message = JSON.parse(line) as { id: number; result: never; error?: string };
+					const message = JSON.parse(line) as { id: number; result: never; error?: string | FixtureError };
 					const request = this.pending.get(message.id);
-					if (message.error) request?.reject(new Error(message.error));
+					if (message.error) request?.reject(deserializeFixtureError(message.error));
 					else request?.resolve(message.result);
 				}
 			}

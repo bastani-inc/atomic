@@ -9,6 +9,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { DbosCheckpointEnvelope } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
+import { serializeFixtureError } from "../helpers/fixture-error.js";
 
 const ROOT_WORKFLOW_COMPLETION_TIMEOUT_MS = 30_000;
 const ROOT_WORKFLOW_POLL_INTERVAL_MS = 50;
@@ -281,6 +282,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 			stopWatchdog();
 		}
 	} catch (error) {
-		console.log(JSON.stringify({ id, error: String(error) }));
+		console.log(JSON.stringify({ id, error: serializeFixtureError(error) }));
 	}
 }

@@ -17,6 +17,7 @@ import { Client } from "pg";
 import { getDbosProcessOwner } from "../../packages/workflows/src/durable/dbos-process-owner.js";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
+import { serializeFixtureError } from "../helpers/fixture-error.js";
 
 const OWNER_BACKEND_TERMINATION_TIMEOUT_MS = 5_000;
 
@@ -214,6 +215,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 		} else throw new Error(`Unknown command ${command}`);
 		console.log(JSON.stringify({ id, result }));
 	} catch (error) {
-		console.log(JSON.stringify({ id, error: error instanceof Error ? error.stack : String(error) }));
+		console.log(JSON.stringify({ id, error: serializeFixtureError(error) }));
 	}
 }
