@@ -514,11 +514,13 @@ function findStageModel(
 	return { provider, modelId, model };
 }
 
+type StageScopedModelReference = NonNullable<CreateAgentSessionOptions["scopedModels"]>[number]["model"] | string;
+
 /** Scoped models still named by `provider/model` resolve exactly like the stage's primary model. */
 function resolveStageScopedModels(options: CreateAgentSessionOptions, runtime: StageModelRuntime): void {
 	if (options.scopedModels === undefined) return;
 	options.scopedModels = options.scopedModels.map((entry) => {
-		const reference: unknown = entry.model;
+		const reference: StageScopedModelReference = entry.model;
 		if (typeof reference !== "string") return entry;
 		const { model } = findStageModel(runtime, reference);
 		if (!model) throw new Error(`Workflow stage model unavailable: ${reference}`);
