@@ -548,40 +548,16 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `skills` | string[] | `[]` | Local skill file paths or directories |
 | `prompts` | string[] | `[]` | Local prompt template paths or directories |
 | `themes` | string[] | `[]` | Local theme file paths or directories |
-| `workflows` | string[] or object | `[]` | Local workflow paths, or `{ "paths": [...], "durability": {...} }`; see [Workflow database](#workflow-database) |
+| `workflows` | string[] or object | `[]` | Local workflow paths, or `{ "paths": [...] }`; see [Workflow storage](#workflow-storage) |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.
 
-#### Workflow database
+#### Workflow storage
 
-Choose an existing PostgreSQL database in global or trusted project settings:
+Workflow runs use a local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to choose another file. Keep the journal on durable local storage and preserve it when upgrading or restarting. Changing the path selects a different run history; use the original journal to inspect or resume existing runs.
 
-```json
-{
-  "workflows": {
-    "paths": ["./workflows"],
-    "durability": {
-      "systemDatabaseUrlFile": "~/.atomic/neon/direct.url"
-    }
-  }
-}
-```
-
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `workflows.paths` | string[] | `[]` | Workflow resource paths in object-form settings; existing `workflows: [...]` settings remain supported |
-| `workflows.durability.systemDatabaseUrl` | string | - | PostgreSQL URL for the workflow database |
-| `workflows.durability.poolSize` | integer, at least 2 | `10` | Maximum connections per workflow database pool, for managed or remote PostgreSQL |
-| `workflows.durability.systemDatabaseUrlFile` | string | - | Read the PostgreSQL URL from a UTF-8 file instead of storing credentials in settings |
-
-Set only one URL source per scope. A project `durability` object replaces the global database selection; project settings are ignored unless trusted. Relative URL-file paths resolve beside the settings file that declares them: `~/.atomic/agent` for global settings and `.atomic` for project settings, or the matching `.pi` directory for inherited pi settings. Absolute paths and `~/` are supported. Protect credential files with permissions appropriate for your account, and do not commit them.
-
-Precedence is nonempty `DBOS_SYSTEM_DATABASE_URL`, then settings, then managed embedded PostgreSQL with Docker as its provisioning fallback. URLs and file contents are trimmed. Invalid settings, including unrecognized `durability` keys, or missing, empty, or invalid URL files stop workflow initialization instead of silently choosing a local database. An explicit URL never starts managed PostgreSQL or Docker, even if the endpoint is unavailable. Existing non-durable fallback warnings still apply when DBOS cannot connect.
-
-`poolSize` can be set without a URL, and still applies when `DBOS_SYSTEM_DATABASE_URL` supplies the URL. It is **per pool**, not a process-wide connection limit: each process opens at least two pools (DBOS SQL and the ownership fence), plus another fence pool after a recovery. The minimum is 2 because the ownership fence holds one long-lived advisory-lock connection and needs another for transactions. Lower it for hosted plans or poolers such as Neon, Supabase, or PgBouncer with low connection limits, or when many processes share one database. Raise it for one high-throughput process on a large database. Budget for all pools across all processes, and restart Atomic after changing the size.
-
-Restart Atomic after changing the database selection. Selection takes effect on the first workflow action. Interactive and RPC sessions then report the selected provider and host without credentials; headless sessions report only a Docker fallback, on stderr. Changing databases does not migrate existing runs; use the original database to inspect or resume them. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
+Configure workflow resource paths with `workflows: ["./workflows"]` or `workflows: { "paths": ["./workflows"] }`. Storage does not require a separate server or connection settings. If the journal cannot be opened or written, the workflow action fails rather than switching to non-durable execution. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 
 #### packages
 

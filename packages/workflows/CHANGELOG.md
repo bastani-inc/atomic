@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Public run snapshots require `toolNodes`. Inline forms require injected keybindings and no longer include unused submit-choice state. Removed the ignored `preserveAnsi` truncation argument; text truncation remains ANSI-aware.
 - Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
 
+### Fixed
+
+- Fixed workflow startup failing when ownership and journal modules load in a different order.
+- Resume retries journal persistence after a failed pause without leaving the live executor permanently paused.
+- Standalone SDK runs release their journal lease when execution settles, allowing another holder to claim stopped runs without closing unrelated active runs.
+
 ### Removed
 
 - Removed DBOS, embedded Postgres, their bundled runtimes and native process ownership, and the non-durable storage fallback. Server-specific admission, recovery, outage handling, and deferred persistence queues are gone; workflow pause, resume, quit, answer, and checkpoint replay remain supported.

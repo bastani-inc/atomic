@@ -8,6 +8,8 @@ import {
 } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -77,3 +79,78 @@ test("explicit memory SDK runs do not initialize a persistent journal", async ()
 	);
 	assert.equal(getAvailableDurableBackend(), undefined);
 });
+
+for (const outcome of ["success", "failure", "stop", "quit"] as const) {
+	test(`standalone SDK releases only its settled ${outcome} run lease (#3647)`, async () => {
+		const controls = createToolControlRegistry();
+		const controller = new AbortController();
+		const store = createStore();
+		const started = Promise.withResolvers<void>();
+		const settledDefinition = workflow({
+			name: "sdk-lease-release",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.tool("effect", {}, async ({ signal }) => {
+					started.resolve();
+					if (outcome === "failure") throw new Error("expected failure");
+					if (outcome === "stop" || outcome === "quit") {
+						await new Promise<void>((_resolve, reject) => {
+							signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
+						});
+					}
+					return "saved";
+				});
+				return {};
+			},
+		});
+		const running = run(
+			settledDefinition,
+			{},
+			{
+				runId: "settled",
+				store,
+				signal: controller.signal,
+				toolControlRegistry: controls,
+			},
+		);
+		await started.promise;
+		const backend = getDurableBackend();
+		assert.ok(backend instanceof JournalDurableBackend);
+		backend.registerWorkflow({
+			workflowId: "unrelated",
+			name: "active",
+			inputs: {},
+			createdAt: 1,
+			updatedAt: 1,
+			status: "running",
+		});
+		if (outcome === "stop") controller.abort(new Error("stop requested"));
+		if (outcome === "quit") {
+			assert.equal((await quitRun("settled", { store, toolControlRegistry: controls })).ok, true);
+		}
+		const result = await running;
+		assert.equal(
+			result.status,
+			outcome === "success" ? "completed" : outcome === "quit" ? "paused" : outcome === "stop" ? "killed" : "failed",
+		);
+		const contender = await JournalDurableBackend.open(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH);
+		try {
+			assert.equal(contender.workflowOwnership("settled"), "available");
+			assert.equal(
+				await contender.transitionWorkflowStatus(
+					"settled",
+					[result.status === "killed" ? "cancelled" : result.status],
+					"paused",
+				),
+				true,
+			);
+			assert.equal(contender.workflowOwnership("settled"), "local");
+			assert.equal(backend.workflowOwnership("unrelated"), "local");
+			assert.equal(getDurableBackend(), backend);
+		} finally {
+			await contender.close();
+		}
+	});
+}

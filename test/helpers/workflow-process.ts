@@ -1,15 +1,21 @@
 import { isAbsolute, join } from "node:path";
+import { getBrokerPidPath } from "../../packages/intercom/broker/paths.js";
+import { deserializeFixtureError, type FixtureError } from "./fixture-error.js";
 import {
 	bunExecutable,
 	decodeStream,
+	fileExists,
 	makeTempDirectory,
 	moduleDir,
+	readText,
 	removeTempDirectory,
 	type SpawnedProcess,
+	sleep,
 	spawnProcess,
 } from "./runtime.js";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const BROKER_EXIT_TIMEOUT_MS = 10_000;
 
 export class WorkflowProcess {
 	private readonly child: SpawnedProcess;
@@ -28,6 +34,7 @@ export class WorkflowProcess {
 				HOME: home,
 				USERPROFILE: home,
 				ATOMIC_FAULT_TEST_HOME: home,
+				ATOMIC_CODING_AGENT_DIR: join(home, ".atomic", "agent"),
 				ATOMIC_WORKFLOW_JOURNAL_PATH: join(home, "journal.sqlite"),
 				...extra,
 			},
@@ -59,9 +66,9 @@ export class WorkflowProcess {
 					const line = buffer.slice(0, newline);
 					buffer = buffer.slice(newline + 1);
 					if (!line.startsWith('{"id":')) continue;
-					const message = JSON.parse(line) as { id: number; result: never; error?: string };
+					const message = JSON.parse(line) as { id: number; result: never; error?: FixtureError | string };
 					const request = this.pending.get(message.id);
-					if (message.error) request?.reject(new Error(message.error));
+					if (message.error) request?.reject(deserializeFixtureError(message.error));
 					else request?.resolve(message.result);
 				}
 			}
@@ -123,10 +130,28 @@ export class WorkflowProcessHome {
 	}
 
 	async cleanup(): Promise<void> {
-		try {
-			await Promise.all(this.clients.map((client) => client.exit()));
-		} finally {
-			removeTempDirectory(this.path);
+		const exits = await Promise.allSettled(this.clients.map((client) => client.exit()));
+		// The broker is detached and owns broker.log after every SDK host exits.
+		// Stop this disposable home's broker and await exit before deleting its files.
+		const pidPath = getBrokerPidPath(join(this.path, ".atomic", "agent"));
+		if (await fileExists(pidPath)) {
+			const pid = Number(await readText(pidPath));
+			if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid fixture broker PID");
+			try {
+				process.kill(pid, "SIGTERM");
+				const deadline = Date.now() + BROKER_EXIT_TIMEOUT_MS;
+				for (;;) {
+					process.kill(pid, 0);
+					if (Date.now() >= deadline) throw new Error("Fixture broker did not exit before cleanup");
+					await sleep(20);
+				}
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+			}
+		}
+		removeTempDirectory(this.path);
+		for (const exit of exits) {
+			if (exit.status === "rejected") throw exit.reason;
 		}
 	}
 }

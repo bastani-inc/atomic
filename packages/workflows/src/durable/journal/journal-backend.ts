@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { WorkflowInstanceOwnershipError } from "../../extension/workflow-instance-owner.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../shared/types.js";
+import { WorkflowInstanceOwnershipError } from "../../shared/workflow-instance-ownership-error.js";
 import {
 	type DurableWorkflowBackend,
 	InMemoryDurableBackend,
@@ -596,6 +596,19 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			});
 		};
 		process.once("exit", this.processExitCleanup);
+	}
+
+	/** Release this execution's lease without closing the shared journal. */
+	releaseWorkflow(runId: string): void {
+		const lease = this.leases.get(runId);
+		if (lease === undefined) return;
+		try {
+			this.journal.releaseSync(lease);
+		} catch (error) {
+			if (!(error instanceof StaleLeaseError)) throw error;
+		} finally {
+			this.leases.delete(runId);
+		}
 	}
 
 	async close(): Promise<void> {

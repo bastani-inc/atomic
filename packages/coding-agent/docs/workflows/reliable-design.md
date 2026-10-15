@@ -1096,7 +1096,7 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not pass strings or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/atomic/workflows/builtin` or another TypeScript module first.
 - Do not create a self-edge or a dependency edge from the current frontier to an existing ancestor. Cyclic workflow graphs are unsupported; redesign or stop before launch when a cycle cannot be removed.
 - Do not model a bounded loop by reopening an earlier node beneath its downstream work. Create distinct tracked work per iteration and keep retained-session follow-up as non-topological activity when it adds no dependency work.
-- Do not claim TypeScript or workflow discovery proves a dynamic workflow acyclic. Discovery diagnoses imports and definition shape; execution, replay, and DBOS hydration are the runtime topology boundary.
+- Do not claim TypeScript or workflow discovery proves a dynamic workflow acyclic. Discovery diagnoses imports and definition shape; execution, replay, and journal hydration are the runtime topology boundary.
 - Do not rely on undeclared child outputs; returning a key that is not declared in `outputs` fails the run. Declare every child-workflow field you expose in `outputs` — including `result` — and return values matching those schemas from `run` (see [Outputs](/workflows/authoring#outputs)).
 - Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.

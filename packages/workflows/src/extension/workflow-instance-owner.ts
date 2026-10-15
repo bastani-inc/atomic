@@ -1,16 +1,12 @@
 import { getDurableBackend } from "../durable/factory.js";
 import { foreignInstanceMessage } from "../durable/sdk-owner-release.js";
 import type { Store } from "../shared/store.js";
+import { WorkflowInstanceOwnershipError } from "../shared/workflow-instance-ownership-error.js";
 import type { PiExecuteContext } from "./public-types.js";
 
 const anonymousCallers = new WeakMap<object, string>();
 
-export class WorkflowInstanceOwnershipError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "WorkflowInstanceOwnershipError";
-	}
-}
+export { WorkflowInstanceOwnershipError } from "../shared/workflow-instance-ownership-error.js";
 
 /** Session IDs survive host replacement; unattributed callers retain object-local authority only. */
 export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessionManager">): string {

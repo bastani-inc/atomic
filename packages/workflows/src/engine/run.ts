@@ -804,7 +804,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			if (resumePersistence !== undefined) return resumePersistence;
 			const generation = pauseGeneration;
 			resumePersistence = (async () => {
-				await pausePersistence;
+				// A failed pause leaves the local barrier closed. Retry persistence below
+				// before releasing it, rather than replaying the old storage failure.
+				await pausePersistence?.catch(() => {});
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await persistRunControl("running");
 				ownController.signal.throwIfAborted();

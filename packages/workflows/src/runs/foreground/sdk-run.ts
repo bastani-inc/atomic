@@ -1,6 +1,7 @@
 import { InMemoryDurableBackend } from "../../durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
+import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
@@ -30,14 +31,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	}
 	const durableRequested = durability?.mode === "durable";
 	const presetBackend = opts.durableBackend ?? getDurableBackendProcessOwner().injectedBackend;
-	if (presetBackend !== undefined) {
-		if (durableRequested && !presetBackend.persistent) {
-			throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
-		}
-		return await engineRun(def, inputs, opts);
+	if (durableRequested && presetBackend !== undefined && !presetBackend.persistent) {
+		throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
 	}
-	await initializeDurableBackend();
-	return await engineRun(def, inputs, opts);
+	const backend = presetBackend ?? (await initializeDurableBackend());
+	const runId = opts.runId ?? crypto.randomUUID();
+	try {
+		return await engineRun(def, inputs, { ...opts, runId, durableBackend: backend });
+	} finally {
+		if (opts.parentRun === undefined && backend instanceof JournalDurableBackend) backend.releaseWorkflow(runId);
+	}
 }
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
