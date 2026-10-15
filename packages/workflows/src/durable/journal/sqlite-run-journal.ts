@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
-import { getAgentDir, getEnvValue } from "@bastani/atomic";
-import { JournalDatabase, storageBoundary } from "./node-sqlite.js";
+import { getAgentDir } from "@bastani/atomic";
+import { JournalDatabase, journalCounter, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -24,7 +24,7 @@ import {
 } from "./types.js";
 
 export function workflowJournalPath(): string {
-	return getEnvValue("ATOMIC_WORKFLOW_JOURNAL_PATH") ?? join(dirname(getAgentDir()), "workflows", "journal.sqlite");
+	return process.env.ATOMIC_WORKFLOW_JOURNAL_PATH ?? join(dirname(getAgentDir()), "workflows", "journal.sqlite");
 }
 
 function entryFromRow(row: JournalEventRow): JournalEntry {
@@ -67,7 +67,7 @@ export class SqliteRunJournal implements RunJournal {
 						PRIMARY KEY(${c.runId}, ${c.seq}), UNIQUE(${c.runId}, ${c.key})
 					);
 					CREATE TABLE IF NOT EXISTS ${t.leases}(
-						${c.runId} TEXT PRIMARY KEY REFERENCES ${t.runs}(${c.runId}) ON DELETE CASCADE,
+						${c.runId} TEXT PRIMARY KEY,
 						${c.holderId} TEXT, ${c.epoch} INTEGER NOT NULL, ${c.renewedAt} INTEGER NOT NULL
 					);
 				`);
@@ -111,7 +111,8 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	private leaseRow(runId: string): JournalLeaseRow | undefined {
-		return this.db.get<JournalLeaseRow>(
+		return this.db.getCounters<JournalLeaseRow>(
+			runId,
 			`SELECT ${c.holderId}, ${c.epoch} FROM ${t.leases} WHERE ${c.runId} = ?`,
 			runId,
 		);
@@ -139,7 +140,9 @@ export class SqliteRunJournal implements RunJournal {
 			return this.grant(
 				runId,
 				holderId,
-				current ? current[c.epoch] + JOURNAL_LEASE.epochIncrement : JOURNAL_LEASE.initialEpoch,
+				current
+					? journalCounter(runId, "epoch", current[c.epoch] + JOURNAL_LEASE.epochIncrement, "overflow")
+					: JOURNAL_LEASE.initialEpoch,
 			);
 		});
 	}
@@ -154,7 +157,11 @@ export class SqliteRunJournal implements RunJournal {
 					holderId: current?.[c.holderId] ?? JOURNAL_LEASE.unheld,
 					epoch: current?.[c.epoch] ?? JOURNAL_LEASE.absentEpoch,
 				};
-			return this.grant(runId, holderId, current[c.epoch] + JOURNAL_LEASE.epochIncrement);
+			return this.grant(
+				runId,
+				holderId,
+				journalCounter(runId, "epoch", current[c.epoch] + JOURNAL_LEASE.epochIncrement, "overflow"),
+			);
 		});
 	}
 
@@ -187,25 +194,28 @@ export class SqliteRunJournal implements RunJournal {
 		return this.db.transaction(() => {
 			this.checkLease(lease);
 			const actualSeq =
-				this.db.get<{ [c.seq]: number }>(
+				this.db.getCounters<{ [c.seq]: number }>(
+					lease.runId,
 					`SELECT COALESCE(MAX(${c.seq}), 0) AS ${c.seq} FROM ${t.events} WHERE ${c.runId} = ?`,
 					lease.runId,
 				)?.[c.seq] ?? 0;
 			if (options?.expectSeq !== undefined && options.expectSeq !== actualSeq)
 				throw new JournalCasConflictError(lease.runId, options.expectSeq, actualSeq);
 			if (options?.key !== undefined) {
-				const row = this.db.get<JournalEventRow>(
+				const row = this.db.getCounters<JournalEventRow>(
+					lease.runId,
 					`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
 					lease.runId,
 					options.key,
 				);
 				if (row) return { status: "exists", entry: entryFromRow(row) };
 			}
+			const nextSeq = journalCounter(lease.runId, "seq", actualSeq + 1, "overflow");
 			const at = Date.now();
 			this.db.run(
 				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				lease.runId,
-				actualSeq + 1,
+				nextSeq,
 				lease.epoch,
 				options?.key ?? null,
 				event.type,
@@ -214,10 +224,11 @@ export class SqliteRunJournal implements RunJournal {
 			);
 			if (event.type === RUN_EVENT_TYPES.statusChanged)
 				this.db.run(`UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, event.payload.status, lease.runId);
-			const row = this.db.get<JournalEventRow>(
+			const row = this.db.getCounters<JournalEventRow>(
+				lease.runId,
 				`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = ?`,
 				lease.runId,
-				actualSeq + 1,
+				nextSeq,
 			) as JournalEventRow;
 			return { status: "appended", entry: entryFromRow(row) };
 		});
@@ -226,7 +237,8 @@ export class SqliteRunJournal implements RunJournal {
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
 		const entries = storageBoundary(this.path, () =>
 			this.db
-				.all<JournalEventRow>(
+				.allCounters<JournalEventRow>(
+					runId,
 					`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq}`,
 					runId,
 					fromSeq,
@@ -238,7 +250,8 @@ export class SqliteRunJournal implements RunJournal {
 
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {
 		return storageBoundary(this.path, () => {
-			const row = this.db.get<JournalEventRow>(
+			const row = this.db.getCounters<JournalEventRow>(
+				runId,
 				`SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
 				runId,
 				key,
@@ -249,6 +262,8 @@ export class SqliteRunJournal implements RunJournal {
 
 	async deleteRun(runId: string): Promise<void> {
 		this.db.transaction(() => {
+			this.leaseRow(runId);
+			this.db.run(`UPDATE ${t.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`, JOURNAL_LEASE.unheld, runId);
 			this.db.run(`DELETE FROM ${t.runs} WHERE ${c.runId} = ?`, runId);
 		});
 	}

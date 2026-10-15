@@ -1,9 +1,21 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { JournalError, StorageUnavailableError } from "./types.js";
+import { JOURNAL_COLUMNS as c, JournalCounterRangeError, JournalError, StorageUnavailableError } from "./types.js";
 
 export type SqliteValue = string | number | null;
+
+export function journalCounter(
+	runId: string,
+	field: "seq" | "epoch",
+	value: number | bigint,
+	reason: "overflow" | "unsafe-integer" = "unsafe-integer",
+): number {
+	const counter = Number(value);
+	if (counter < 0) throw new JournalCounterRangeError(runId, field, counter, "negative");
+	if (!Number.isSafeInteger(counter)) throw new JournalCounterRangeError(runId, field, counter, reason);
+	return counter;
+}
 
 export function storageBoundary<T>(path: string, operation: () => T): T {
 	try {
@@ -44,6 +56,30 @@ export class JournalDatabase {
 
 	all<Row>(sql: string, ...values: SqliteValue[]): Row[] {
 		return storageBoundary(this.path, () => this.database.prepare(sql).all(...values) as unknown as Row[]);
+	}
+
+	getCounters<Row>(runId: string, sql: string, ...values: SqliteValue[]): Row | undefined {
+		return this.allCounters<Row>(runId, sql, ...values)[0];
+	}
+
+	allCounters<Row>(runId: string, sql: string, ...values: SqliteValue[]): Row[] {
+		return storageBoundary(this.path, () => {
+			const statement = this.database.prepare(sql);
+			statement.setReadBigInts(true);
+			const rows = statement.all(...values) as unknown as Record<string, string | number | bigint | null>[];
+			return rows.map((row) =>
+				Object.fromEntries(
+					Object.entries(row).map(([field, value]) => [
+						field,
+						field === c.seq || field === c.epoch
+							? journalCounter(runId, field, value as number | bigint)
+							: typeof value === "bigint"
+								? Number(value)
+								: value,
+					]),
+				),
+			) as unknown as Row[];
+		});
 	}
 
 	run(sql: string, ...values: SqliteValue[]): number {

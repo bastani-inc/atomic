@@ -136,6 +136,18 @@ export interface RunJournal {
 
 export class JournalError extends Error {}
 
+export class JournalCounterRangeError extends JournalError {
+	constructor(
+		readonly runId: string,
+		readonly field: "seq" | "epoch",
+		readonly value: number,
+		readonly reason: "overflow" | "negative" | "unsafe-integer",
+	) {
+		super(`Unsafe journal ${field} counter for run ${runId}: ${value}`);
+		this.name = "JournalCounterRangeError";
+	}
+}
+
 export class StaleLeaseError extends JournalError {
 	constructor(
 		readonly runId: string,

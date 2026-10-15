@@ -14,6 +14,7 @@ import {
 	JOURNAL_PAYLOAD_ENCODING,
 	JOURNAL_SCHEMA_VERSION,
 	JournalCasConflictError,
+	JournalCounterRangeError,
 	type JournalEntry,
 	JournalSchemaVersionError,
 	type Lease,
@@ -210,6 +211,46 @@ test("create/list/delete preserve headers and exact cwd filters and remove all r
 	});
 });
 
+test("delete/recreate cycles durably fence every old handle without affecting other runs", async () => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		await journal.createRun({ ...header, runId: "other" });
+		const other = await acquire(journal, "other");
+		const old: Lease[] = [];
+		for (let cycle = 0; cycle < 3; cycle++) {
+			old.push(await acquire(journal));
+			await journal.deleteRun(header.runId);
+			const reopened = new SqliteRunJournal(journal.path);
+			try {
+				assert.equal(await reopened.createRun(header), "created");
+				const current = await acquire(reopened);
+				assert.equal(current.epoch, cycle + 2);
+				for (const stale of old) {
+					for (const operation of [
+						() => reopened.append(stale, { type: e.runStarted, payload: null }),
+						() => reopened.renew(stale),
+						() => reopened.release(stale),
+					])
+						await assert.rejects(operation, (error: Error) => {
+							assert.ok(error instanceof StaleLeaseError);
+							assert.equal(error.runId, header.runId);
+							assert.equal(error.heldEpoch, stale.epoch);
+							assert.equal(error.currentEpoch, current.epoch);
+							return true;
+						});
+				}
+				await reopened.renew(current);
+				assert.equal((await reopened.append(current, { type: e.runStarted, payload: null })).entry.seq, 1);
+				if (cycle === 2) await reopened.release(current);
+			} finally {
+				await reopened.close();
+			}
+		}
+		assert.deepEqual(await acquire(journal, "other"), other);
+		assert.equal((await journal.append(other, { type: e.runStarted, payload: null })).entry.seq, 1);
+	});
+});
+
 test("schema v1 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
 	assert.equal(JOURNAL_SCHEMA_VERSION, 1);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
@@ -340,15 +381,269 @@ test("storage failures and access after idempotent close retain typed path and c
 	});
 });
 
+test("seq at MAX_SAFE_INTEGER rejects its successor before changing any rows", async () => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		const lease = await acquire(journal);
+		const db = new JournalDatabase(journal.path);
+		try {
+			db.run(
+				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				header.runId,
+				Number.MAX_SAFE_INTEGER,
+				1,
+				"seed",
+				e.summaryRecorded,
+				"null",
+				0,
+			);
+			const before = snapshot(db);
+			await assert.rejects(
+				() => journal.append(lease, { type: e.statusChanged, payload: { status: "failed" } }),
+				(error: Error) => {
+					assert.ok(error instanceof JournalCounterRangeError);
+					assert.equal(error.runId, header.runId);
+					assert.equal(error.field, "seq");
+					assert.equal(error.value, Number.MAX_SAFE_INTEGER + 1);
+					assert.equal(error.reason, "overflow");
+					return true;
+				},
+			);
+			assert.deepEqual(snapshot(db), before);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+test.each(["takeover", "reacquire"] as const)(
+	"epoch at MAX_SAFE_INTEGER rejects %s before changing any rows",
+	async (operation) => {
+		await withJournal(async (journal) => {
+			await journal.createRun(header);
+			await acquire(journal);
+			const db = new JournalDatabase(journal.path);
+			try {
+				db.run(
+					`UPDATE ${t.leases} SET ${c.epoch} = ?, ${c.holderId} = ?, ${c.renewedAt} = 0`,
+					Number.MAX_SAFE_INTEGER,
+					operation === "reacquire" ? null : "holder",
+				);
+				const before = snapshot(db);
+				await assert.rejects(
+					() =>
+						operation === "takeover"
+							? journal.takeover(header.runId, "next", "holder")
+							: journal.acquire(header.runId, "next"),
+					(error: Error) => {
+						assert.ok(error instanceof JournalCounterRangeError);
+						assert.equal(error.runId, header.runId);
+						assert.equal(error.field, "epoch");
+						assert.equal(error.value, Number.MAX_SAFE_INTEGER + 1);
+						assert.equal(error.reason, "overflow");
+						return true;
+					},
+				);
+				assert.deepEqual(snapshot(db), before);
+			} finally {
+				db.close();
+			}
+		});
+	},
+);
+
+test.each([-1, 1.5, 2 ** 53 + 2])(
+	"out-of-range lease epoch %s rejects every lease access without writes",
+	async (seed) => {
+		await withJournal(async (journal) => {
+			await journal.createRun(header);
+			const lease = await acquire(journal);
+			const db = new JournalDatabase(journal.path);
+			try {
+				db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?, ${c.renewedAt} = 0`, seed);
+				const before = snapshot(db);
+				for (const operation of [
+					() => journal.acquire(header.runId, "holder"),
+					() => journal.acquire(header.runId, "other"),
+					() => journal.takeover(header.runId, "next", "holder"),
+					() => journal.takeover(header.runId, "next", "wrong"),
+					() => journal.renew({ ...lease, epoch: seed }),
+					() => journal.release({ ...lease, epoch: seed }),
+					() =>
+						journal.append({ ...lease, epoch: seed }, { type: e.statusChanged, payload: { status: "failed" } }),
+					() => journal.deleteRun(header.runId),
+				]) {
+					await assert.rejects(operation, (error: Error) => {
+						assert.ok(error instanceof JournalCounterRangeError);
+						assert.equal(error.runId, header.runId);
+						assert.equal(error.field, "epoch");
+						assert.equal(error.value, seed);
+						assert.equal(error.reason, seed < 0 ? "negative" : "unsafe-integer");
+						return true;
+					});
+					assert.deepEqual(snapshot(db), before);
+				}
+			} finally {
+				db.close();
+			}
+		});
+	},
+);
+
+test.each([
+	["seq", -1],
+	["seq", 1.5],
+	["seq", 2 ** 53 + 2],
+	["epoch", -1],
+	["epoch", 1.5],
+	["epoch", 2 ** 53 + 2],
+] as const)("out-of-range event %s %s rejects reads and keyed replay without writes", async (field, seed) => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		const lease = await acquire(journal);
+		const db = new JournalDatabase(journal.path);
+		try {
+			db.run(
+				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				header.runId,
+				field === "seq" ? seed : 1,
+				field === "epoch" ? seed : 1,
+				"seed",
+				e.summaryRecorded,
+				"null",
+				0,
+			);
+			const before = snapshot(db);
+			for (const operation of [
+				() => read(journal, header.runId, field === "seq" ? Math.min(seed, 1) : 1),
+				() => journal.readKey(header.runId, "seed"),
+				() => journal.append(lease, { type: e.statusChanged, payload: { status: "failed" } }, { key: "seed" }),
+				...(field === "seq"
+					? [() => journal.append(lease, { type: e.statusChanged, payload: { status: "failed" } })]
+					: []),
+			]) {
+				await assert.rejects(operation, (error: Error) => {
+					assert.ok(error instanceof JournalCounterRangeError);
+					assert.equal(error.runId, header.runId);
+					assert.equal(error.field, field);
+					assert.equal(error.value, seed);
+					assert.equal(error.reason, seed < 0 ? "negative" : "unsafe-integer");
+					return true;
+				});
+				assert.deepEqual(snapshot(db), before);
+			}
+		} finally {
+			db.close();
+		}
+	});
+});
+
+test("safe integer boundary counters remain usable without an overflowing successor", async () => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		await acquire(journal);
+		const db = new JournalDatabase(journal.path);
+		try {
+			db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?`, Number.MAX_SAFE_INTEGER - 1);
+			db.run(
+				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				header.runId,
+				Number.MAX_SAFE_INTEGER - 1,
+				Number.MAX_SAFE_INTEGER - 1,
+				"seed",
+				e.summaryRecorded,
+				"null",
+				0,
+			);
+			const outcome = await journal.takeover(header.runId, "next", "holder");
+			assert.equal(outcome.status, "acquired");
+			if (outcome.status !== "acquired") assert.fail("lease not acquired");
+			assert.equal(outcome.lease.epoch, Number.MAX_SAFE_INTEGER);
+			assert.deepEqual(await acquire(journal, header.runId, "next"), outcome.lease);
+			const appended = await journal.append(
+				outcome.lease,
+				{ type: e.summaryRecorded, payload: null },
+				{ key: "max" },
+			);
+			assert.equal(appended.entry.seq, Number.MAX_SAFE_INTEGER);
+			assert.equal(appended.entry.epoch, Number.MAX_SAFE_INTEGER);
+			assert.deepEqual(
+				(await read(journal)).map(({ seq }) => seq),
+				[Number.MAX_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER],
+			);
+			assert.deepEqual(await journal.readKey(header.runId, "max"), appended.entry);
+			assert.deepEqual(await journal.append(outcome.lease, { type: e.runStarted, payload: null }, { key: "max" }), {
+				status: "exists",
+				entry: appended.entry,
+			});
+			await journal.renew(outcome.lease);
+			await journal.release(outcome.lease);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+test("zero database counters are valid for reads, replay and lease operations", async () => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		await acquire(journal);
+		const db = new JournalDatabase(journal.path);
+		try {
+			db.run(`UPDATE ${t.leases} SET ${c.epoch} = 0`);
+			db.run(
+				`INSERT INTO ${t.events} VALUES (?, 0, 0, ?, ?, ?, 0)`,
+				header.runId,
+				"zero",
+				e.summaryRecorded,
+				"null",
+			);
+			const lease = await acquire(journal);
+			assert.equal(lease.epoch, 0);
+			await journal.renew(lease);
+			const entries = await read(journal, header.runId, 0);
+			assert.equal(entries[0]?.seq, 0);
+			assert.equal(entries[0]?.epoch, 0);
+			assert.deepEqual(await journal.readKey(header.runId, "zero"), entries[0]);
+			assert.deepEqual(await journal.append(lease, { type: e.runStarted, payload: null }, { key: "zero" }), {
+				status: "exists",
+				entry: entries[0],
+			});
+			assert.equal((await journal.append(lease, { type: e.runStarted, payload: null })).entry.seq, 1);
+			await journal.release(lease);
+			assert.equal((await acquire(journal)).epoch, 1);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+function snapshot(db: JournalDatabase): Record<string, string>[][] {
+	return Object.values(t).map((table) => {
+		const columns = db.all<{ name: string }>(`PRAGMA table_info(${table})`);
+		return db.all<Record<string, string>>(
+			`SELECT ${columns.map(({ name }) => `quote(${name}) AS ${name}`).join(", ")} FROM ${table} ORDER BY rowid`,
+		);
+	});
+}
+
 test("journal path defaults to the user workflow root and preserves an explicit environment override", () => {
+	const previousPi = process.env.PI_WORKFLOW_JOURNAL_PATH;
 	const previous = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 	try {
 		delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
+		delete process.env.PI_WORKFLOW_JOURNAL_PATH;
 		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
-		process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = " ./verbatim/../journal.sqlite ";
-		assert.equal(workflowJournalPath(), " ./verbatim/../journal.sqlite ");
+		process.env.PI_WORKFLOW_JOURNAL_PATH = "/tmp/ignored-journal.sqlite";
+		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+		for (const value of ["", " ./verbatim/../journal.sqlite ", "relative.sqlite"]) {
+			process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = value;
+			assert.equal(workflowJournalPath(), value);
+		}
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 		else process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = previous;
+		if (previousPi === undefined) delete process.env.PI_WORKFLOW_JOURNAL_PATH;
+		else process.env.PI_WORKFLOW_JOURNAL_PATH = previousPi;
 	}
 });
