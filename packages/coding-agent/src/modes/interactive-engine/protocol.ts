@@ -1,4 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
 import type {
 	HostInputFormField,
 	HostSessionPickerRow,
@@ -78,6 +79,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_activity_finished"; activityId: string }
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
+	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
 	 * command and is about to run it. Emitted and flushed BEFORE any handler
@@ -474,6 +476,30 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
 			return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;
+		case "engine_ui_prompt": {
+			const event = value.event;
+			if (!event || !isJsonObject(event)) return undefined;
+			if (event.type !== "ui_prompt_start" && event.type !== "ui_prompt_end") return undefined;
+			if (event.reason !== "ui_prompt" && event.reason !== "project_trust") return undefined;
+			if (
+				event.kind !== "select" &&
+				event.kind !== "confirm" &&
+				event.kind !== "input" &&
+				event.kind !== "editor" &&
+				event.kind !== "custom"
+			)
+				return undefined;
+			if (event.title !== undefined && typeof event.title !== "string") return undefined;
+			return {
+				type: value.type,
+				event: {
+					type: event.type,
+					reason: event.reason,
+					kind: event.kind,
+					...(event.title === undefined ? {} : { title: event.title }),
+				},
+			};
+		}
 		case "engine_workflow_activity": {
 			const frame = parseWorkflowActivityFrame(value.frame);
 			return frame ? { type: value.type, frame } : undefined;

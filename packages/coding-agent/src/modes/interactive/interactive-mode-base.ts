@@ -718,6 +718,7 @@ export class InteractiveModeBase {
 			},
 			this.keybindings,
 			(frame) => this.programStatus.handleWorkflowActivity(frame),
+			(event) => this.programStatus.handleUIPrompt(event),
 		);
 	}
 

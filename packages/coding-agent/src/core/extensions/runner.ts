@@ -587,9 +587,20 @@ export class ExtensionRunner {
 		});
 	}
 
+	private uiPromptObserver:
+		| ((event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>) => void)
+		| undefined;
+
+	setUIPromptObserver(observer: typeof this.uiPromptObserver): void {
+		this.uiPromptObserver = observer;
+	}
+
 	private readonly pendingUIPromptNotifications = new Set<Promise<void>>();
 
 	private emitUIPromptEvent(event: Extract<RunnerEmitEvent, { type: "ui_prompt_start" | "ui_prompt_end" }>): void {
+		try {
+			this.uiPromptObserver?.(event);
+		} catch {}
 		const delivery = Promise.resolve().then(async () => {
 			await this.emit(event);
 		});

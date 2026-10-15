@@ -1,6 +1,7 @@
 import type { Api, AssistantMessage, ImageContent, Model, TextContent, Usage } from "@bastani/pi-ai/compat";
 import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "./extensions/agent-events.js";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -183,6 +184,7 @@ export interface AgentSessionConfig {
 export interface ExtensionBindings {
 	humanInput?: import("./extensions/host-input.js").HostInput | null;
 	onDiagnostic?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
+	onUIPrompt?: (event: UIPromptStartEvent | UIPromptEndEvent) => void;
 	uiContext?: ExtensionUIContext;
 	isPresentationOnly?: boolean;
 	mode?: ExtensionMode;

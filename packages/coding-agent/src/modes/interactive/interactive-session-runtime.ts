@@ -7,8 +7,14 @@ import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactiv
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
 	const uiContext = this.createExtensionUIContext();
+	const session = this.session;
 	this.runtimeHost?.setProjectTrustContextFactory?.((cwd) => this.createProjectTrustContext(cwd));
 	await this.session.bindExtensions({
+		onUIPrompt: (event) => {
+			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) && this.session === session) {
+				this.programStatus.handleUIPrompt(event);
+			}
+		},
 		uiContext,
 		mode: "tui",
 		isPresentationOnly: this.runtimeHost instanceof IsolatedInteractiveRuntime,

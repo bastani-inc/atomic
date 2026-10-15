@@ -4,7 +4,11 @@ import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { APP_NAME } from "../src/config.js";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
+import { createExtensionRuntime } from "../src/core/extensions/loader.js";
+import { ExtensionRunner } from "../src/core/extensions/runner.js";
+import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../src/core/extensions/workflow-events.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.js";
 import {
 	parseInteractiveEngineMessage,
@@ -556,4 +560,98 @@ test("rejects invalid terminal dispositions in engine activity frames (#3617)", 
 			);
 		}
 	}
+});
+
+for (const forwarded of [false, true]) {
+	test(`reports main-chat questionnaires through ${forwarded ? "engine" : "local"} delivery (#3616)`, async () => {
+		const { reporter, send, last } = setup();
+		const runner = new ExtensionRunner(
+			[],
+			createExtensionRuntime(),
+			process.cwd(),
+			SessionManager.inMemory(),
+			{} as never,
+		);
+		let answer!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		runner.setUIContext(
+			{
+				...noOpUIContext,
+				custom: async () => {
+					await pending;
+					return undefined as never;
+				},
+			},
+			"tui",
+		);
+		runner.setUIPromptObserver((event) => {
+			if (!forwarded) return reporter.handleUIPrompt(event);
+			const message = parseInteractiveEngineMessage(
+				serializeInteractiveEngineFrame({ type: "engine_ui_prompt", event }),
+			);
+			assert.equal(message?.type, "engine_ui_prompt");
+			if (message?.type !== "engine_ui_prompt") assert.fail("Expected prompt lifecycle");
+			reporter.handleUIPrompt(message.event);
+		});
+		send({ type: "agent_start" });
+		const ui = runner.getUIContext();
+		const navigation = ui.custom(
+			() => {
+				throw new Error("Unused factory");
+			},
+			{ purpose: "navigation" },
+		);
+		assert.equal(last()?.state, "working", "navigation does not block");
+		const question = ui.custom(() => {
+			throw new Error("Unused factory");
+		});
+		assert.deepEqual(reporter.currentStatus(), {
+			state: "blocked",
+			kind: "question",
+			message: "Waiting for input",
+		});
+		answer();
+		await Promise.all([navigation, question]);
+		assert.equal(last()?.state, "working");
+		send({ type: "agent_settled", aborted: true });
+		assert.equal(last()?.state, "idle");
+		runner.setUIPromptObserver(undefined);
+	});
+}
+
+test("preserves prompt fields through the engine protocol and rejects invalid values (#3616)", () => {
+	for (const type of ["ui_prompt_start", "ui_prompt_end"] as const) {
+		for (const kind of ["custom", "confirm", "select", "input", "editor"] as const) {
+			for (const reason of ["ui_prompt", "project_trust"] as const) {
+				for (const title of [undefined, "Prompt title"]) {
+					const event = { type, kind, reason, ...(title === undefined ? {} : { title }) };
+					const message = { type: "engine_ui_prompt", event } as const;
+					assert.deepEqual(parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message)), message);
+				}
+			}
+		}
+	}
+	const event = { type: "ui_prompt_start", reason: "ui_prompt", kind: "custom" };
+	for (const invalid of [{ type: "open" }, { reason: "login" }, { kind: "question" }, { title: null }, { title: 1 }]) {
+		assert.equal(
+			parseInteractiveEngineMessage(JSON.stringify({ type: "engine_ui_prompt", event: { ...event, ...invalid } })),
+			undefined,
+		);
+	}
+});
+
+test("prompt cleanup preserves other blocked sources and ignores trust prompts (#3616)", () => {
+	const { reporter, send, last } = setup();
+	send({ type: "agent_start" });
+	reporter.handleUIPrompt({ type: "ui_prompt_start", reason: "project_trust", kind: "select" });
+	assert.equal(last()?.state, "working");
+	reporter.setBlocked("login", { kind: "auth", message: "Log in" });
+	reporter.handleUIPrompt({ type: "ui_prompt_start", reason: "ui_prompt", kind: "custom" });
+	assert.equal(last()?.kind, "question");
+	reporter.handleUIPrompt(undefined);
+	assert.equal(last()?.kind, "auth");
+	reporter.setBlocked("login", undefined);
+	assert.equal(last()?.state, "working");
 });

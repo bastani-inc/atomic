@@ -2,6 +2,7 @@ import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
@@ -43,9 +44,14 @@ export function attachInteractiveEngineHost(
 	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
 	onWorkflowActivity?: (frame: WorkflowActivityFrame) => void,
+	onUIPrompt?: (event: UIPromptStartEvent | UIPromptEndEvent | undefined) => void,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
 	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
+	const disposeUIPrompts = runtime.onEngineMessage((message) => {
+		if (message.type === "engine_ui_prompt") onUIPrompt?.(message.event);
+	});
+	const disposePromptGeneration = runtime.onGenerationEnded(() => onUIPrompt?.(undefined));
 	const disposeWorkflowActivity = onWorkflowActivity
 		? observeEngineWorkflowActivity(runtime, onWorkflowActivity)
 		: () => {};
@@ -95,6 +101,9 @@ export function attachInteractiveEngineHost(
 		disposeShortcutHandler?.();
 		disposeKeybindings();
 		disposeWorkflowActivity();
+		disposeUIPrompts();
+		disposePromptGeneration();
+		onUIPrompt?.(undefined);
 		disposeOwnership();
 		remoteComponents.dispose();
 		sessionPicker.dispose();

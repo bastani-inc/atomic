@@ -248,12 +248,15 @@ function startExtensions(
 	return start;
 }
 
+const uiPromptBindings = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onUIPrompt"]>>();
+
 export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
 	if (this._disposed) {
 		// Failed creation retains its original rejection; it never admits another startup.
 		if (failedExtensionStarts.has(this._extensionRunner)) return extensionStarts.get(this._extensionRunner)!;
 		throw hostInputError("SessionClosed");
 	}
+	if (bindings.onUIPrompt !== undefined) uiPromptBindings.set(this, bindings.onUIPrompt);
 	if (bindings.humanInput !== undefined) {
 		this._extensionHumanInput = bindings.humanInput;
 		humanInputBindingRevisions.set(this, (humanInputBindingRevisions.get(this) ?? 0) + 1);
@@ -332,6 +335,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 		this._extensionDiagnosticListener,
 		humanInputBindingRevisions.get(this),
 	);
+	runner.setUIPromptObserver(uiPromptBindings.get(this));
 	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(this._childSessionOptions);
