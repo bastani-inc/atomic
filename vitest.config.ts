@@ -41,10 +41,7 @@ const project = (name: string, directory: string) => ({
 		root: import.meta.dirname,
 		environment: "node" as const,
 		globals: true,
-		include: [
-			`${directory}/**/*.test.ts`,
-			...(name === "unit" ? ["packages/coding-agent/src/core/storage/session/**/*.test.ts"] : []),
-		],
+		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
 		globalSetup: [herdrSetup, artifactSetup, nativeSetup],

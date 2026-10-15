@@ -7,10 +7,14 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { it } from "vitest";
-import { JsonlSessionStore } from "./jsonl-session-store.js";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 
-const storeModule = fileURLToPath(new URL("./jsonl-session-store.ts", import.meta.url));
-const errorsModule = fileURLToPath(new URL("./errors.ts", import.meta.url));
+const storeModule = fileURLToPath(
+	new URL("../../packages/coding-agent/src/core/storage/session/jsonl-session-store.ts", import.meta.url),
+);
+const errorsModule = fileURLToPath(
+	new URL("../../packages/coding-agent/src/core/storage/session/errors.ts", import.meta.url),
+);
 
 async function raceWriters(directory: string, operation: "create" | "append"): Promise<string[]> {
 	const children = ["/a", "/b"].map((cwd) => {

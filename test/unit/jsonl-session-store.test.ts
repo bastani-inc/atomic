@@ -16,10 +16,19 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import { registerSessionStoreConformance } from "./conformance.js";
-import { SessionConflictError, SessionExistsError, StorageUnavailableError, StoreClosedError } from "./errors.js";
-import { JsonlSessionStore, JsonlStoragePoisonedError, SessionFormatVersionError } from "./jsonl-session-store.js";
-import { SESSION_FORMAT_VERSION } from "./types.js";
+import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
+import {
+	SessionConflictError,
+	SessionExistsError,
+	StorageUnavailableError,
+	StoreClosedError,
+} from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import {
+	JsonlSessionStore,
+	JsonlStoragePoisonedError,
+	SessionFormatVersionError,
+} from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
