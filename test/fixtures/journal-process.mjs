@@ -16,7 +16,7 @@ if (mode === "crash") {
 	process.stdout.write("transaction-open\n");
 	await new Promise(() => setInterval(() => {}, 1000));
 } else {
-	const journal = new SqliteRunJournal(path);
+	let journal = new SqliteRunJournal(path);
 	try {
 		if (mode === "append") {
 			const { lease, prefix } = JSON.parse(argument);
@@ -27,6 +27,34 @@ if (mode === "crash") {
 				assert.equal(result.status, "appended");
 			}
 			process.stdout.write("appended=200\n");
+		} else if (mode === "raw-json") {
+			for (const [index, text] of ["\ud800", "\udfff", "a\ud800b", "a\udfffb"].entries()) {
+				const raw = JSON.rawJSON(`"${text}"`);
+				const payload = { rawJSON: raw, [text]: [raw, { nested: raw }, "\u0000", raw] };
+				const header = { runId: `${argument}-${index}`, name: "", cwd: "", status: "", createdAt: 0, inputs: payload };
+				const expected = JSON.parse(JSON.stringify(payload));
+				assert.equal(await journal.createRun(header), "created");
+				const outcome = await journal.acquire(header.runId, "holder");
+				assert.equal(outcome.status, "acquired");
+				const scalar = await journal.append(outcome.lease, { type: e.summaryRecorded, payload: raw }, { key: "scalar" });
+				const appended = await journal.append(outcome.lease, { type: e.summaryRecorded, payload }, { key: "nested" });
+				assert.equal(scalar.entry.event.payload, JSON.parse(JSON.stringify(raw)));
+				assert.deepEqual(appended.entry.event.payload, expected);
+				for (const close of [false, true]) {
+					const reader = new SqliteRunJournal(path);
+					try {
+						const entries = [];
+						for await (const entry of reader.read(header.runId)) entries.push(entry);
+						assert.deepEqual(entries, [scalar.entry, appended.entry]);
+						assert.deepEqual((await reader.listRuns()).find(row => row.runId === header.runId), { ...header, inputs: expected });
+						assert.deepEqual(await reader.readKey(header.runId, "nested"), appended.entry);
+						assert.deepEqual(await reader.append(outcome.lease, { type: e.runFinished, payload: null }, { key: "nested" }), { status: "exists", entry: appended.entry });
+					} finally { await reader.close(); }
+					if (!close) await journal.close();
+				}
+				journal = new SqliteRunJournal(path);
+			}
+			process.stdout.write("raw-json-lossless=ok\n");
 		} else if (mode === "nul-rejection") {
 			const { lease, nextHolder, key } = JSON.parse(argument);
 			const invalid = field => error => error.constructor === JournalInvalidTextError && error.field === field && error.reason === "nul-character";

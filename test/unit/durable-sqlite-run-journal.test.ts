@@ -486,6 +486,128 @@ test("well-formed identifiers retain controls, noncharacters and distinct Unicod
 	});
 });
 
+test.each([
+	{ text: "\ud800", escaped: "\\ud800" },
+	{ text: "\udfff", escaped: "\\udfff" },
+	{ text: "a\ud800b", escaped: "a\\ud800b" },
+	{ text: "a\udfffb", escaped: "a\\udfffb" },
+	{ text: "\ud800\udc00", escaped: "\ud800\udc00" },
+	{ text: "\udbff\udfff", escaped: "\udbff\udfff" },
+	{ text: "\ud800\ud800\udc00\udfff", escaped: "\\ud800\ud800\udc00\\udfff" },
+	{ text: "\udfff\ud800\udc00\ud800", escaped: "\\udfff\ud800\udc00\\ud800" },
+	{ text: "\ud800\udc00\udbff\udfff", escaped: "\ud800\udc00\udbff\udfff" },
+])("native rawJSON preserves $text through header/event JSON TEXT boundaries", async ({ text, escaped }) => {
+	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
+	const raw = nativeJson.rawJSON(`"${text}"`);
+	const payload = Object.freeze({ rawJSON: raw, [text]: Object.freeze([raw, { nested: raw }, "\u0000", raw]) });
+	const expected = JSON.parse(JSON.stringify(payload));
+	const storedRaw = `"${escaped}"`;
+	const storedPayload = `{"rawJSON":${storedRaw},${JSON.stringify(text)}:[${storedRaw},{"nested":${storedRaw}},"\\u0000",${storedRaw}]}`;
+	const rawHeader = { ...header, inputs: payload };
+	await withJournal(async (journal) => {
+		await journal.createRun(rawHeader);
+		const lease = await acquire(journal);
+		const scalar = await journal.append(lease, { type: e.summaryRecorded, payload: raw }, { key: "scalar" });
+		const appended = await journal.append(lease, { type: e.summaryRecorded, payload }, { key: "nested" });
+		assert.equal(scalar.entry.event.payload, JSON.parse(JSON.stringify(raw)));
+		assert.deepEqual(appended.entry.event.payload, expected);
+		const db = new JournalDatabase(journal.path);
+		try {
+			assert.deepEqual(
+				db
+					.all<{ json: string; storage: string }>(
+						`SELECT ${c.payload} AS json, typeof(${c.payload}) AS storage FROM ${t.events} ORDER BY ${c.seq}`,
+					)
+					.map(({ json, storage }) => ({ json, storage })),
+				[
+					{ json: storedRaw, storage: "text" },
+					{ json: storedPayload, storage: "text" },
+				],
+			);
+			assert.equal(
+				db.get<{ json: string }>(`SELECT ${c.headerJson} AS json FROM ${t.runs}`)?.json,
+				`${JSON.stringify(header).slice(0, -1)},"inputs":${storedPayload}}`,
+			);
+		} finally {
+			db.close();
+		}
+		for (const reopen of [false, true]) {
+			if (reopen) await journal.close();
+			const reader = new SqliteRunJournal(journal.path);
+			try {
+				assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: expected }]);
+				assert.deepEqual(await read(reader), [scalar.entry, appended.entry]);
+				assert.deepEqual(await reader.readKey(header.runId, "nested"), appended.entry);
+				assert.deepEqual(await reader.append(lease, { type: e.runFinished, payload: null }, { key: "nested" }), {
+					status: "exists",
+					entry: appended.entry,
+				});
+			} finally {
+				await reader.close();
+			}
+		}
+		assert.equal(raw.rawJSON, `"${text}"`);
+		assert.equal(rawHeader.inputs, payload);
+		assert.deepEqual(payload[text], [raw, { nested: raw }, "\u0000", raw]);
+	});
+});
+
+test("JSON TEXT preserves native raw lexemes and invokes caller toJSON once per write", async () => {
+	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
+	const values = [
+		nativeJson.rawJSON("1.2300e+02"),
+		nativeJson.rawJSON("-0"),
+		nativeJson.rawJSON('"\\u0061"'),
+		nativeJson.rawJSON('"\\uD800"'),
+		nativeJson.rawJSON('"💡"'),
+		nativeJson.rawJSON('"\udfff"'),
+	];
+	const payload = { values };
+	let calls = 0;
+	Object.defineProperty(payload, "toJSON", {
+		value: () => {
+			calls++;
+			return { values };
+		},
+	});
+	Object.freeze(values);
+	Object.freeze(payload);
+	const expected = JSON.parse(JSON.stringify(payload));
+	calls = 0;
+	await withJournal(async (journal) => {
+		await journal.createRun({ ...header, inputs: payload });
+		assert.equal(calls, 1);
+		const lease = await acquire(journal);
+		const appended = await journal.append(lease, { type: e.summaryRecorded, payload }, { key: "raw" });
+		assert.equal(calls, 2);
+		assert.deepEqual(appended.entry.event.payload, expected);
+		const db = new JournalDatabase(journal.path);
+		try {
+			const stored = '{"values":[1.2300e+02,-0,"\\u0061","\\uD800","💡","\\udfff"]}';
+			assert.equal(db.get<{ json: string }>(`SELECT ${c.payload} AS json FROM ${t.events}`)?.json, stored);
+			assert.equal(
+				db.get<{ json: string }>(`SELECT ${c.headerJson} AS json FROM ${t.runs}`)?.json,
+				`${JSON.stringify(header).slice(0, -1)},"inputs":${stored}}`,
+			);
+		} finally {
+			db.close();
+		}
+		await journal.close();
+		const reader = new SqliteRunJournal(journal.path);
+		try {
+			assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: expected }]);
+			assert.deepEqual(await read(reader), [appended.entry]);
+			assert.deepEqual(await reader.append(lease, { type: e.summaryRecorded, payload }, { key: "raw" }), {
+				status: "exists",
+				entry: appended.entry,
+			});
+			assert.equal(calls, 2);
+		} finally {
+			await reader.close();
+		}
+	});
+});
+
 test.each(["\u0000", ...illFormedExamples, "a\udfffb"])(
 	"reopened header/event JSON preserves %j as values and property names",
 	async (text) => {

@@ -34,6 +34,11 @@ function validateText(field: JournalInvalidTextError["field"], value: string): v
 	if (!value.isWellFormed()) throw new JournalInvalidTextError(field, "ill-formed-unicode");
 }
 
+function serializeJson(value: RunHeader | RunEvent["payload"]): string {
+	const text = JSON.stringify(value);
+	return text.replace(/\p{Surrogate}/gu, (unit) => "\\u" + unit.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
 function entryFromRow(row: JournalEventRow): JournalEntry {
 	const key = row[c.key];
 	return {
@@ -99,7 +104,7 @@ export class SqliteRunJournal implements RunJournal {
 				header.cwd,
 				header.createdAt,
 				header.status,
-				JSON.stringify(header),
+				serializeJson(header),
 			) === 1
 				? "created"
 				: "exists",
@@ -245,7 +250,7 @@ export class SqliteRunJournal implements RunJournal {
 				lease.epoch,
 				options?.key ?? null,
 				event.type,
-				JSON.stringify(event.payload),
+				serializeJson(event.payload),
 				at,
 			);
 			if (event.type === RUN_EVENT_TYPES.statusChanged)

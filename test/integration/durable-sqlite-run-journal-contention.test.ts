@@ -232,3 +232,42 @@ test(
 	},
 	JOURNAL_PROCESS_TEST_TIMEOUT_MS,
 );
+
+test(
+	"repeated Node and Bun processes preserve native rawJSON header inputs and payloads",
+	async () => {
+		const directory = makeTempDirectory("journal-raw-json-");
+		const path = join(directory, "journal.sqlite");
+		try {
+			for (const [index, executable] of [
+				process.execPath,
+				bunExecutable(),
+				process.execPath,
+				bunExecutable(),
+			].entries()) {
+				const result = spawnSyncCollect([executable, fixture, "raw-json", path, `process-${index}`]);
+				assert.equal(result.exitCode, 0, result.stderr.toString());
+				assert.equal(result.stdout.toString(), "raw-json-lossless=ok\n");
+			}
+			const journal = new SqliteRunJournal(path);
+			try {
+				assert.equal((await journal.listRuns()).length, 16);
+				for (let processIndex = 0; processIndex < 4; processIndex++) {
+					for (const [index, text] of ["\ud800", "\udfff", "a\ud800b", "a\udfffb"].entries()) {
+						const runId = `process-${processIndex}-${index}`;
+						assert.equal((await journal.readKey(runId, "scalar"))?.event.payload, text);
+						assert.deepEqual((await journal.readKey(runId, "nested"))?.event.payload, {
+							rawJSON: text,
+							[text]: [text, { nested: text }, "\u0000", text],
+						});
+					}
+				}
+			} finally {
+				await journal.close();
+			}
+		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	JOURNAL_PROCESS_TEST_TIMEOUT_MS,
+);
