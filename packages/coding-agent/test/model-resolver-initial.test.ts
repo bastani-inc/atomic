@@ -107,6 +107,17 @@ describe("default model selection", () => {
 		assert.ok(other);
 		assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
 	});
+	test.each(["xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-ams", "xiaomi-token-plan-sgp"])(
+		"%s automatic selection prefers MiMo V2.6 Pro over the first catalog model",
+		(provider) => {
+			const chatModels = getBuiltinModels(provider);
+			const preferred = chatModels.find((model) => model.id === "mimo-v2.6-pro");
+			const other = chatModels.find((model) => model.id !== "mimo-v2.6-pro");
+			assert.ok(preferred);
+			assert.ok(other);
+			assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
+		},
+	);
 	test("built-in chat providers have defaults in their generated catalogs", () => {
 		for (const provider of getBuiltinProviders()) {
 			const chatModels = getBuiltinModels(provider);
