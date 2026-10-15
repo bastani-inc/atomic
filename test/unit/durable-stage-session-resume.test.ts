@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	createDurableStagePrimitive,
 	createDurableTaskPrimitive,
@@ -14,6 +13,7 @@ import { createCheckpointIdGenerator } from "../../packages/workflows/src/durabl
 import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt } from "../../packages/workflows/src/shared/timing.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 afterEach(() => vi.restoreAllMocks());
 const WORKFLOW_ID = "wf-stage-session-resume";

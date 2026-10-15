@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
@@ -15,6 +14,7 @@ import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
 function createGitRepo(name: string): { readonly root: string; readonly repo: string } {

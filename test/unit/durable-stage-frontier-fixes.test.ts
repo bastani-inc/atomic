@@ -9,7 +9,6 @@
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	cachedStageId,
 	type DurableCompletedStageCheckpoint,
@@ -19,6 +18,7 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { createStore } from "./executor-shared.js";
 
 const WORKFLOW_ID = "wf-stage-frontier-001";

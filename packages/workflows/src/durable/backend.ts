@@ -378,6 +378,11 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
 		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
 	}
+	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
+		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
+		this.workflows.get(handle.workflowId)!.handle = handle;
+	}
+
 	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
 		let receipts = this.pendingReceipts.get(workflowId);
 		if (receipts === undefined) {

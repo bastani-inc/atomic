@@ -2,7 +2,6 @@
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import {
 	createDurableStagePrimitive,
@@ -12,6 +11,7 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { createStore, assert as exAssert, test as exTest, run, Type, workflow } from "./executor-shared.js";
 
 const WORKFLOW_ID = "wf-stage-test-001";

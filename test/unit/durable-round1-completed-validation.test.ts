@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	listOpenableCompletedWorkflows,
 	resolveCompletedWorkflow,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
 function seedCompletedBoundary(

@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	completedWorkflowSnapshot,
@@ -16,6 +15,7 @@ import {
 	listResumableFromBackend,
 } from "../../packages/workflows/src/durable/resume-catalog.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
 let tempDir = "";

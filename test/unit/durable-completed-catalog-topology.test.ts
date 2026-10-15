@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	listCompletedFromBackend,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 test("reconstructs multi-level boundary edges when durable completion order is reverse-topological", () => {
 	const backend = new InMemoryDurableBackend();

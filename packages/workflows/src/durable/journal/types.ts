@@ -134,6 +134,20 @@ export interface RunJournal {
 	close(): Promise<void>;
 }
 
+export interface SynchronousRunJournal {
+	createRunSync(header: RunHeader): "created" | "exists";
+	listRunsSync(filter?: { cwd?: string }): readonly RunSummary[];
+	acquireSync(runId: string, holderId: string): LeaseOutcome;
+	takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number): LeaseOutcome;
+	leaseState(runId: string): (Lease & { readonly renewedAt: number }) | undefined;
+	renewSync(lease: Lease): void;
+	releaseSync(lease: Lease): void;
+	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome;
+	readEntries(runId: string, fromSeq?: number): readonly JournalEntry[];
+	deleteRunSync(runId: string): void;
+	deleteOwnedRunSync(lease: Lease, expectSeq?: number): void;
+}
+
 export class JournalError extends Error {}
 
 export class JournalInvalidTextError extends JournalError {
