@@ -139,13 +139,16 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 		assert.equal(persisted?.type === "oauth" ? persisted.access : undefined, "expired-access");
 	});
 
-	function saveRestrictedCopilotLogin(): Promise<void> {
+	function saveRestrictedCopilotLogin(
+		entitlements: { availableModelIds?: string[]; fastModelIds?: string[]; access?: string } = {},
+	): Promise<void> {
 		return AuthStorage.create(authPath).modify("github-copilot", async () => ({
 			type: "oauth",
-			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			access: entitlements.access ?? "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 			refresh: "copilot-refresh",
 			expires: Number.MAX_SAFE_INTEGER,
-			availableModelIds: ["claude-opus-4.8"],
+			availableModelIds: entitlements.availableModelIds ?? ["claude-opus-4.8"],
+			...(entitlements.fastModelIds ? { fastModelIds: entitlements.fastModelIds } : {}),
 		}));
 	}
 
@@ -186,6 +189,44 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 
 		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
 		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
+	});
+
+	test("publishes the entitled models of a Copilot account another process switched to (#3620)", async () => {
+		await saveRestrictedCopilotLogin();
+		const runtime = await sessionRuntime();
+		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
+
+		await saveRestrictedCopilotLogin({
+			access: "tid=other-account;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			availableModelIds: ["claude-sonnet-5"],
+		});
+
+		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
+		assert.deepEqual(copilotAvailable(runtime), ["claude-sonnet-5"]);
+	});
+
+	test("publishes the entitled fast models of a first login saved by another process (#3620)", async () => {
+		const runtime = await sessionRuntime();
+		assert.deepEqual(copilotAvailable(runtime), []);
+
+		await saveRestrictedCopilotLogin({ fastModelIds: ["claude-opus-4.8-fast"] });
+
+		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
+		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8", "claude-opus-4.8-fast"]);
+	});
+
+	test("an OAuth token rotation saved by another process keeps catalog passes shareable (#3620)", async () => {
+		await saveRestrictedCopilotLogin();
+		const runtime = await sessionRuntime();
+		const generation = runtime.getCatalogInputsGeneration();
+
+		await saveRestrictedCopilotLogin({
+			access: "tid=rotated;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+		});
+
+		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
+		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
+		assert.equal(runtime.getCatalogInputsGeneration(), generation);
 	});
 
 	test("reports a login saved by another process after an authoritative engine logout (#3620)", async () => {
