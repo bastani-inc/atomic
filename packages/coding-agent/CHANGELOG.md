@@ -20,6 +20,8 @@
 - Storage providers now preserve domain-adapter prefixes, make returned stores safe to close repeatedly, and retain typed opening errors when cleanup also fails.
 - Fixed sessions written before format 4 disappearing from `/resume` and failing to open with `--continue`, `--session`, or `--fork`. Older supported sessions now upgrade automatically when opened; listing leaves their files unchanged.
 - Fixed session stores closing during conversation replacement or remaining open after CLI shutdown and failed startup. Project storage settings now take effect on first trust approval, JSONL resume commands retain their directory, and SQLite sessions keep full URL-read artifacts.
+- Fixed stopping a codemode script or reaching its deadline waiting for a non-interruptible built-in to return in the standalone binary ([#10748](https://github.com/earendil-works/pi/issues/10748)).
+- Fixed repeated codemode timeouts or aborts accumulating surviving workers. At most two codemode workers may be alive across all sessions, and a cancelled worker counts against that limit until it actually exits ([#10748](https://github.com/earendil-works/pi/issues/10748)).
 
 ## [0.9.38-alpha.6] - 2026-10-16
 
