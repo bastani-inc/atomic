@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { JournalDatabase, journalCounter, type SqliteStoredValue, storageBoundary } from "./node-sqlite.js";
 import {
@@ -9,7 +10,6 @@ import {
 	JournalCasConflictError,
 	type JournalEntry,
 	type JournalEventRow,
-	JournalInvalidTextError,
 	type JournalLeaseRow,
 	JournalMetaCorruptError,
 	JournalSchemaVersionError,
@@ -25,6 +25,7 @@ import {
 	type SynchronousRunJournal,
 	JOURNAL_TABLES as t,
 } from "./types.js";
+import { serializeJson, validateText } from "./values.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
 
@@ -33,16 +34,6 @@ export function workflowJournalPath(): string {
 	return override !== undefined && override.length > 0
 		? override
 		: join(dirname(getAgentDir()), "workflows", "journal.sqlite");
-}
-
-function validateText(field: JournalInvalidTextError["field"], value: string): void {
-	if (value.includes("\u0000")) throw new JournalInvalidTextError(field, "nul-character");
-	if (!value.isWellFormed()) throw new JournalInvalidTextError(field, "ill-formed-unicode");
-}
-
-function serializeJson(value: RunHeader | RunEvent["payload"]): string {
-	const text = JSON.stringify(value);
-	return text.replace(/\p{Surrogate}/gu, (unit) => "\\u" + unit.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 function storedVersion(stored: SqliteStoredValue): SqliteStoredValue {
@@ -68,15 +59,17 @@ function entryFromRow(row: JournalEventRow): JournalEntry {
 export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 	private readonly db: JournalDatabase;
 	private closed = false;
+	readonly path: string;
 
-	constructor(readonly path = workflowJournalPath()) {
-		this.db = new JournalDatabase(path);
+	constructor(source: string | DatabaseSync = workflowJournalPath()) {
+		this.db = new JournalDatabase(source);
+		this.path = this.db.path;
 		let initialized = false;
 		try {
 			this.db.transaction(() => {
 				this.db.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
 				const rowCount = this.db.getWide<{ count: bigint }>(`SELECT COUNT(*) AS count FROM ${t.meta}`)?.count ?? 0n;
-				if (rowCount > 1n) throw new JournalMetaCorruptError(path, Number(rowCount));
+				if (rowCount > 1n) throw new JournalMetaCorruptError(this.path, Number(rowCount));
 				if (rowCount === 1n) {
 					const stored =
 						this.db.getWide<{ [c.schemaVersion]: SqliteStoredValue }>(

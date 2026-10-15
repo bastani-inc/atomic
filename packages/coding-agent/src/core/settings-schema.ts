@@ -337,6 +337,22 @@ const WorkflowsSettingsSchema = Type.Union(
 		StringArraySchema,
 		Type.Object({
 			paths: Type.Optional(Type.Array(Type.String(), { description: "Workflow resource paths." })),
+			journal: Type.Optional(
+				Type.Object(
+					{
+						path: Type.Optional(
+							Type.String({ description: "Journal file path, relative to the Atomic home directory." }),
+						),
+						memory: Type.Optional(Type.Boolean({ description: "Keep workflow journal records in memory." })),
+					},
+					{
+						not: {
+							required: ["path", "memory"],
+							properties: { path: { minLength: 1 }, memory: { const: true } },
+						},
+					},
+				),
+			),
 			durability: Type.Optional(
 				Type.Object(
 					{

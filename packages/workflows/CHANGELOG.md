@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Heartbeat records require their original launch cadence; incomplete records no longer inherit the current workflow definition. Configuration load results always include `globalConfig` and `projectConfig`, using `null` when a source is absent or invalid.
 - Public run snapshots require `toolNodes`. Inline forms require injected keybindings and no longer include unused submit-choice state. Removed the ignored `preserveAnsi` truncation argument; text truncation remains ANSI-aware.
 
+### Added
+
+- Added `MemoryRunJournal`, public SQLite journal and error exports, and `registerRunJournalConformance` for shared journal contract checks.
+- Added `RunOpts.journal` types and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory. Runtime wiring is deferred.
+
 ## [0.9.38-alpha.1] - 2026-10-15
 
 ### Fixed

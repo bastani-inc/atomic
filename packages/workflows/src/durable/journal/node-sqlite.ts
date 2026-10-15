@@ -29,11 +29,16 @@ export function storageBoundary<T>(path: string, operation: () => T): T {
 
 export class JournalDatabase {
 	private readonly database: DatabaseSync;
+	private readonly ownsDatabase: boolean;
+	readonly path: string;
 
-	constructor(readonly path: string) {
-		this.database = storageBoundary(path, () => {
-			mkdirSync(dirname(path), { recursive: true });
-			const database = new DatabaseSync(path);
+	constructor(source: string | DatabaseSync) {
+		this.ownsDatabase = typeof source === "string";
+		this.path =
+			typeof source === "string" ? source : storageBoundary(":memory:", () => source.location() || ":memory:");
+		this.database = storageBoundary(this.path, () => {
+			if (typeof source === "string") mkdirSync(dirname(source), { recursive: true });
+			const database = typeof source === "string" ? new DatabaseSync(source) : source;
 			let initialized = false;
 			try {
 				database.exec(
@@ -42,7 +47,7 @@ export class JournalDatabase {
 				initialized = true;
 				return database;
 			} finally {
-				if (!initialized) database.close();
+				if (!initialized && this.ownsDatabase) database.close();
 			}
 		});
 	}
@@ -109,6 +114,7 @@ export class JournalDatabase {
 		});
 	}
 	close(): void {
+		if (!this.ownsDatabase) return;
 		storageBoundary(this.path, () => {
 			this.database.close();
 			// Bun retains the closed file until unreachable prepared statements are collected.
