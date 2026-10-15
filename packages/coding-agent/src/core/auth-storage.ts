@@ -78,21 +78,33 @@ export class AuthStorage implements CredentialStore {
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
-		this.loadedVersion = undefined;
-		this.reloadIfChanged();
+		this.loadFromStorage(this.readStorageVersion());
 	}
 
 	reloadIfChanged(): boolean {
+		if (!this.storage.version && !this.storage.read) return false;
+		const version = this.readStorageVersion();
+		if (version !== undefined && version === this.loadedVersion) return false;
+		return this.loadFromStorage(version);
+	}
+
+	private readStorageVersion(): string | undefined {
 		try {
-			const version = this.storage.version?.();
-			if (version !== undefined && version === this.loadedVersion) return false;
-			const content = this.readStorageContent();
+			return this.storage.version?.();
+		} catch {
+			return undefined;
+		}
+	}
+
+	private loadFromStorage(version: string | undefined): boolean {
+		try {
+			const next = this.parseStorageData(this.readStorageContent());
 			this.loadedVersion = version;
-			const next = this.parseStorageData(content);
 			if (isDeepStrictEqual(next, this.data)) return false;
 			this.data = next;
 			return true;
-		} catch {
+		} catch (error) {
+			if (error instanceof SyntaxError) this.loadedVersion = version;
 			return false;
 		}
 	}

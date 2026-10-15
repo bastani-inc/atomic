@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential } from "@bastani/pi-ai";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage, type AuthStorageBackend } from "../src/core/auth-storage.js";
-import type { LockResult } from "../src/core/auth-storage-backends.js";
+import { FileAuthStorageBackend, type LockResult } from "../src/core/auth-storage-backends.js";
 
 let directory: string;
 let authPath: string;
@@ -89,6 +89,44 @@ test("keeps the last valid credentials while auth.json is malformed, then recove
 	assert.deepEqual(await session.read("anthropic"), oauth("access-new"));
 });
 
+test("does not reparse a malformed auth.json until it changes again (#3620)", async () => {
+	writeAuth(authPath, { anthropic: oauth("access-old") });
+	const backend = new FileAuthStorageBackend(authPath);
+	const read = vi.spyOn(backend, "read");
+	const session = AuthStorage.fromStorage(backend);
+
+	writeFileSync(authPath, '{"anthropic": {"type": "oauth"');
+	await session.read("anthropic");
+	const readsAfterBreakage = read.mock.calls.length;
+	await session.read("anthropic");
+	await session.list();
+	assert.equal(read.mock.calls.length, readsAfterBreakage);
+
+	writeAuth(authPath, { anthropic: oauth("access-new") });
+	assert.deepEqual(await session.read("anthropic"), oauth("access-new"));
+});
+
+const cannotSimulateUnreadableDirectory = process.platform === "win32" || process.getuid?.() === 0;
+
+test.skipIf(cannotSimulateUnreadableDirectory)(
+	"keeps loading the primary auth.json when a legacy auth directory is unreadable (#3620)",
+	async () => {
+		const legacyDirectory = join(directory, "legacy");
+		mkdirSync(legacyDirectory);
+		writeAuth(authPath, { anthropic: { type: "api_key", key: "primary-fixture" } });
+		chmodSync(legacyDirectory, 0o000);
+		try {
+			const session = AuthStorage.create([authPath, join(legacyDirectory, "auth.json")]);
+			assert.deepEqual(await session.list(), [{ providerId: "anthropic", type: "api_key" }]);
+
+			writeAuth(authPath, { openai: { type: "api_key", key: "rotated-fixture" } });
+			assert.deepEqual(await session.list(), [{ providerId: "openai", type: "api_key" }]);
+		} finally {
+			chmodSync(legacyDirectory, 0o700);
+		}
+	},
+);
+
 test("reloads when a lower-precedence layered auth file changes (#3620)", async () => {
 	const fallbackPath = join(directory, "fallback-auth.json");
 	writeAuth(authPath, { anthropic: oauth("primary") });
@@ -124,4 +162,19 @@ test("rereads a custom backend without a version on every read (#3620)", async (
 	backend.content = JSON.stringify({ anthropic: oauth("new") });
 
 	assert.deepEqual(await session.read("anthropic"), oauth("new"));
+});
+
+test("keeps lock-only custom backends off the lock for ordinary reads (#3620)", async () => {
+	const backend: AuthStorageBackend = {
+		withLock: (fn) => fn(JSON.stringify({ anthropic: oauth("stored") })).result,
+		withLockAsync: async (fn) => (await fn(undefined)).result,
+	};
+	const withLock = vi.spyOn(backend, "withLock");
+	const session = AuthStorage.fromStorage(backend);
+	assert.equal(withLock.mock.calls.length, 1);
+
+	assert.deepEqual(await session.read("anthropic"), oauth("stored"));
+	await session.list();
+
+	assert.equal(withLock.mock.calls.length, 1);
 });

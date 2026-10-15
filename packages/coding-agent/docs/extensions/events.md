@@ -511,6 +511,8 @@ Rules: keep a system message at index 0 (providers read the prompt and initial t
 
 Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model.
 
+When Atomic retries a request with credentials saved by another process after a credential rejection, this event fires again for the retry.
+
 ```typescript
 pi.on("before_provider_headers", (event, ctx) => {
   event.headers["x-session-id"] = ctx.sessionManager.getSessionId();
@@ -521,6 +523,8 @@ pi.on("before_provider_headers", (event, ctx) => {
 #### before_provider_request
 
 Fired after the provider-specific payload is built, right before the request is sent. Handlers run in extension load order. Returning `undefined` keeps the payload unchanged. Returning any other value replaces the payload for later handlers and for the actual request.
+
+Like `before_provider_headers`, it fires again when Atomic retries a request after a credential rejection.
 
 This hook can rewrite provider-level system instructions or remove them entirely. Those payload-level changes are not reflected by `ctx.getSystemPrompt()`, which reports Atomic's system prompt string rather than the final serialized provider payload.
 

@@ -220,16 +220,24 @@ export class ModelRuntimeStreaming {
 		invoke: (prepared: Awaited<ReturnType<ModelRuntimeStreaming["prepareRequest"]>>) => AssistantMessageEventStream,
 	): AssistantMessageEventStream {
 		const prepare = () => this.prepareRequest(model, options);
-		const retry = async (previous: Awaited<ReturnType<typeof prepare>>) => {
-			options?.signal?.throwIfAborted();
+		const reprepareCredentials = async (previous: Awaited<ReturnType<typeof prepare>>) => {
+			if (options?.signal?.aborted) return undefined;
 			await this.reloadCredentials();
 			const { preparedRequestAuth: previousAuth, ...callerOptions } = options ?? {};
 			const reprepared = previousAuth?.reprepare ? await previousAuth.reprepare() : undefined;
 			const next = reprepared
-				? await this.prepareRequest(reprepared.model, reprepared.options)
+				? await this.prepareRequest(reprepared.model, {
+						...callerOptions,
+						apiKey: reprepared.options.apiKey,
+						headers: reprepared.options.headers,
+						env: reprepared.options.env,
+						preparedRequestAuth: reprepared.options.preparedRequestAuth,
+					})
 				: await this.prepareRequest(model, callerOptions);
 			return next.authIdentity !== previous.authIdentity ? next : undefined;
 		};
+		const retry = (previous: Awaited<ReturnType<typeof prepare>>) =>
+			reprepareCredentials(previous).catch(() => undefined);
 		const iterate = async function* (): AsyncGenerator<AssistantMessageEvent> {
 			let prepared = await prepare();
 			for (let attempt = 0; attempt < 2; attempt++) {
@@ -331,16 +339,15 @@ export class ModelRuntimeStreaming {
 	}
 }
 
+const HTTP_401_PATTERN = /^\W*401\b|\b(?:http|status|code|error)\W{0,3}401\b|\(401\)/i;
+const CREDENTIAL_REJECTION_PATTERN =
+	/unauthori[sz]ed|invalid(?:ated)?[_\s-]*(?:api[_\s-]*key|(?:access[_\s-]*|auth[_\s-]*|oauth[_\s-]*)?token)|(?:token|api[_\s-]*key)[_\s-]*(?:(?:is|has[_\s-]*been)[_\s-]*)?(?:invalid|revoked|expired|invalidated)/i;
+
 function isCredentialRejection(error: object | string | undefined): boolean {
 	if (error instanceof Error) {
 		if (("status" in error && error.status === 401) || ("statusCode" in error && error.statusCode === 401))
 			return true;
 		error = error.message;
 	}
-	return (
-		typeof error === "string" &&
-		/\b401\b|unauthori[sz]ed|invalid(?:ated)?[_\s-]*(?:api[_\s-]*key|(?:access[_\s-]*|auth[_\s-]*|oauth[_\s-]*)?token)|(?:token|api[_\s-]*key)[_\s-]*(?:(?:is|has[_\s-]*been)[_\s-]*)?(?:invalid|revoked|expired|invalidated)/i.test(
-			error,
-		)
-	);
+	return typeof error === "string" && (HTTP_401_PATTERN.test(error) || CREDENTIAL_REJECTION_PATTERN.test(error));
 }

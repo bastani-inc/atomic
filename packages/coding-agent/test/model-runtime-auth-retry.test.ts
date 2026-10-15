@@ -145,7 +145,14 @@ const scenarios: Scenario[] = [
 		stopReason: "error",
 	},
 	{
-		name: "does not retry an aborted request",
+		name: "does not treat incidental 401 numbers as credential rejections",
+		failure: "Tool output truncated after 401 lines",
+		rotate: true,
+		attempts: 1,
+		stopReason: "error",
+	},
+	{
+		name: "reports the original rejection for an aborted request",
 		failure: "401",
 		rotate: true,
 		cancel: true,
@@ -211,6 +218,7 @@ for (const scenario of scenarios) {
 			for await (const event of response) events.push(event);
 			const result = await response.result();
 			assert.equal(result.stopReason, scenario.stopReason, result.errorMessage);
+			if (scenario.stopReason === "error") assert.equal(result.errorMessage, scenario.failure);
 			assert.equal(keys.length, scenario.attempts);
 			assert.deepEqual(keys, scenario.attempts === 2 ? ["old-fixture", "new-fixture"] : ["old-fixture"]);
 			assert.ok(events.filter((event) => event.type === "start").length <= 1);
@@ -280,3 +288,75 @@ for (const credentialOverride of ["explicit header", "transformed header", "expl
 		}
 	});
 }
+
+async function runRepreparedRetry(
+	reprepare: () => Promise<{ model: Model<Api>; options: { apiKey: string; maxTokens: number } }>,
+) {
+	const dir = mkdtempSync(join(tmpdir(), "auth-retry-reprepare-"));
+	try {
+		const path = join(dir, "auth.json");
+		await AuthStorage.create(path).modify(model.provider, async () => ({ type: "api_key", key: "old-fixture" }));
+		const runtime = await ModelRuntime.create({ authPath: path, modelsPath: null });
+		const attempts: { apiKey: string | undefined; maxTokens: number | undefined }[] = [];
+		const stream: Provider["stream"] = (_model, _context, options) => {
+			attempts.push({ apiKey: options?.apiKey, maxTokens: options?.maxTokens });
+			const output = createAssistantMessageEventStream();
+			const result = message(attempts.length === 1 ? "401 Unauthorized" : undefined);
+			output.push(
+				attempts.length === 1
+					? { type: "error", reason: "error", error: result }
+					: { type: "done", reason: "stop", message: result },
+			);
+			return output;
+		};
+		runtime.registerNativeProvider({
+			id: model.provider,
+			name: "Auth probe",
+			auth: {
+				apiKey: {
+					name: "Auth probe key",
+					resolve: async ({ credential }) =>
+						credential?.key ? { auth: { apiKey: credential.key }, source: "stored" } : undefined,
+				},
+			},
+			models: [model],
+			stream,
+			streamSimple: stream,
+		});
+		const result = await runtime
+			.streamSimple(
+				model,
+				{ messages: [] },
+				{
+					apiKey: "old-fixture",
+					maxTokens: 1,
+					preparedRequestAuth: { resolution: await runtime.getAuth(model), reprepare },
+				},
+			)
+			.result();
+		return { result, attempts };
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+test("retries with reprepared credentials while keeping per-request overrides (#3620)", async () => {
+	const { result, attempts } = await runRepreparedRetry(async () => ({
+		model,
+		options: { apiKey: "new-fixture", maxTokens: 4096 },
+	}));
+	assert.equal(result.stopReason, "stop", result.errorMessage);
+	assert.deepEqual(attempts, [
+		{ apiKey: "old-fixture", maxTokens: 1 },
+		{ apiKey: "new-fixture", maxTokens: 1 },
+	]);
+});
+
+test("reports the original rejection when rereading credentials fails (#3620)", async () => {
+	const { result, attempts } = await runRepreparedRetry(async () => {
+		throw new Error('No API key found for "auth-probe"');
+	});
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.errorMessage, "401 Unauthorized");
+	assert.deepEqual(attempts, [{ apiKey: "old-fixture", maxTokens: 1 }]);
+});

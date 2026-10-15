@@ -533,7 +533,10 @@ async function constructAgentSession(
 				const prefix = [...agent.state.messages];
 				const warmOptions: ModelRuntimeSimpleStreamOptions = {
 					...fastRouteStreamOptions,
-					preparedRequestAuth: { resolution: authResult },
+					preparedRequestAuth: {
+						resolution: authResult,
+						reprepare: requestOptions.preparedRequestAuth?.reprepare,
+					},
 				};
 				cacheWarmer.start({ model: requestModel, context, options: warmOptions }, () => {
 					const current = agent.state.model;
