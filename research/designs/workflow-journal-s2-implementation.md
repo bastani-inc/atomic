@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table records the unchanged acceptance clauses and binding amendments. The current three-reviewer consolidated batch at review-round-latest.json:929–990 reports one direct-delete acquisition race against `5e6f17a1c99129e595a53c8ebd0fbe3db49ff4f5`. `C` denotes current format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the direct-delete repair section below. Earlier receipts are historical, not current-source validation. Their broad readiness claim missed direct deletion when a competing deletion wins acquisition.
+The table records the unchanged acceptance clauses and binding amendments. The current three-reviewer consolidated batch at review-round-latest.json:1063–1123 requires the current named S1 baseline, `308453289f24f431d63e2b082e2da7d768ae2740`, and its exact child-process fixture. `C` denotes current format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the current-baseline section below. Earlier receipts are historical, not current-source validation. Their ancestry and fixture-preservation claims covered the then-current S1 tip, not this newer baseline.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -45,7 +45,7 @@ The table records the unchanged acceptance clauses and binding amendments. The c
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
 | Payload/header JSON follows verified S1 serialization | F: round trips match `JSON.parse(JSON.stringify(original))`, including ordinary negative zero becoming zero; retain accepted native JSON lexemes, NUL and lone surrogates; D: plain stringify plus lone-surrogate escape |
-| Surviving S1 tests, process fixture and notes remain intact relative to verified baseline | D: retain every kernel assertion from `be33554f91632b16a2dab9ea290322fe91af34f6`; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical |
+| Surviving S1 tests, process fixture and notes remain intact relative to current named baseline | D: retain every kernel assertion from `308453289f24f431d63e2b082e2da7d768ae2740`; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical to that baseline |
 | Exactly one metadata row and typed corruption error | F: cardinality before any version decoding; nine multirow combinations include both int64 extrema and mixed types; exact JournalMetaCorruptError path/rowCount, no schema or row changes |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
 | Optional absent fields omitted from JSON | F: raw status payload lacks owner, release, failure, session and resumability fields when absent |
@@ -80,9 +80,9 @@ The table records the unchanged acceptance clauses and binding amendments. The c
 | No lease creation, stopping, deletion or handoff | D: only `crabbox run --keep` on the assigned static lease |
 | Ignored scratch setup occurs inline on Boat | D: probes created inline on the assigned lease; preserve existing qlty config |
 | User guides/changelog remain scoped | D: unwired S2 adds no actionable user guidance; S6 documentation remains untouched |
-| Rebase all six S2 commits onto verified S1 | D: requested `git rebase --onto feat/workflow-journal-s1-kernel 30bb916093d74fb09db3ef07852f84ba1b1a47ab`; all six commits replayed, ancestry and kernel fidelity checked |
+| Rebase S2 commits onto the current verified S1 branch | D: initial six-commit rebase retained; all eight current S2 commits replayed onto `308453289f24f431d63e2b082e2da7d768ae2740`, exact range-diff and named-branch ancestry checked |
 | New owner parity regression survives reopen | F: same release/reclaim sequence on both backends, exact complete handles before/after journal reopen |
-| No additional S1 journal edits | D: current repair changes only backend error handling, one focused regression and these notes; verified serializer, kernel types, adapter, constants and assertions unchanged |
+| No additional S1 journal edits | D: current baseline integration changes only the inherited child-process fixture and these notes; S2 production, tests, verified serializer, kernel types and adapter remain byte-identical to the reviewed S2 commit |
 
 ## Interface and state decisions
 
@@ -511,3 +511,34 @@ The same run executed the exact reviewer deletion source plus the retained `.cra
 `U`: `run_dab7ca4ded68e72ead63cf2051025f26`, remote Boat `.crabbox/s2-direct-delete-final-unit.log`, ran exactly `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` alone. The wrapper applied exactly the two authorized exclusions. **930 files / 10,613 tests passed**,26 pre-existing skips,121.99s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No environment, concurrency, timeout, assertions, skip or exclusion policy changed.
 
 `D`: the repair adds63 regression lines, removes no existing assertion and changes only the typed-error branch in the backend. The SQLite journal, adapter, types, kernel suite, fixtures, contention suite and S1 notes are unchanged from the reviewed commit. Owner merge and standard-JSON behavior remain intact. `issues.md` is removed after resolution. The final note-inclusive local/Boat hash audit and signed commit are recorded in the completion receipt. No objective-relevant implementation or gate remains unresolved; independent reviewers and the reducer retain approval authority. No new deferred work is introduced.
+
+## Current S1 baseline integration
+
+The consolidated completion, evidence and risk P2 findings share one cause: S1 advanced to `308453289f24f431d63e2b082e2da7d768ae2740` after S2's previous rebase. The old S2 head `8fcfc5ebb9aa01c9f16d9395bf9ed304c0533456` did not contain that commit. Its previous ancestry and fixture claims are therefore superseded, not evidence for the current baseline.
+
+S1's commit records a Windows child-process failure caused by jiti creating distinct error-class objects for different importer path spellings. Its fixture checks the error name and every typed field rather than constructor identity. This turn retains that exact file unchanged. No new assertion, error policy or product behavior is introduced; in-process tests keep their strict class checks.
+
+Executed `git -c core.hooksPath=/dev/null rebase --gpg-sign --onto feat/workflow-journal-s1-kernel be33554f91632b16a2dab9ea290322fe91af34f6`. All eight commits replayed without conflict, and each signature verifies as `G`:
+
+| Previous S2 commit | Rebased commit |
+| --- | --- |
+| `10854850298700068aab17ace833a54af3a8d0e2` | `c54cc529c1a1091d70ce7be8bef6d68bd8d14e1d` |
+| `bff300487f316a583d56760f720531a36ebb936c` | `5df67e3fa18ab092dd86222e3592bc503c4caef6` |
+| `79425b56ceb5ac7621f48e7fb2a8c05164dc8193` | `8f4bff58d94deb9e828c5f6cf326ac23958cba0b` |
+| `0d0b8530abf69e17877bcd5ac3fb3218e08e6174` | `347dad232448ee6644a3177636908c20b0693902` |
+| `fbed3e1f7f3bc6edc1bf951888be114a645bd805` | `2d8455e315fbba293a54d87c11b90bbcc850f542` |
+| `2bbfc0d2546b697a57af23d7ad3a851e81111b78` | `344234de9a331748a7a57f327ceeb884e878ead9` |
+| `5e6f17a1c99129e595a53c8ebd0fbe3db49ff4f5` | `27c1dff83931e6f1916f84e82c3f9717ba40f15d` |
+| `8fcfc5ebb9aa01c9f16d9395bf9ed304c0533456` | `166cd2e76429a73d3925759ff990c14fe23293b8` |
+
+`git range-diff be33554f91632b16a2dab9ea290322fe91af34f6..8fcfc5ebb9aa01c9f16d9395bf9ed304c0533456 feat/workflow-journal-s1-kernel..166cd2e76429a73d3925759ff990c14fe23293b8` reports `=` for all eight commits. `git merge-base --is-ancestor feat/workflow-journal-s1-kernel HEAD` succeeds. `git diff --exit-code feat/workflow-journal-s1-kernel -- test/fixtures/journal-process.mjs` is empty. The only file delta between the previous S2 head and the rebased head is the inherited fixture change; all S2 production and regression files remain byte-identical. Linux process checks do not establish a new Windows run; no Windows execution is claimed.
+
+### Current baseline verification
+
+`C`, `F`: Boat `run_665b338bdbe2d736e4716694c8a67025`, remote `.crabbox/s2-current-base-gates.log`, passed with `ATOMIC_JOURNAL_GATE_EXIT=0`. `npm run format` processed3438 files with no fixes; `git diff --exit-code` passed. `npm run check` passed Biome, root/package typechecks and shrinkwrap, with six existing informational diagnostics. The exact19 selected durable suites plus journal process integration passed **20 files / 368 tests**, no skips. This includes all64 backend,173 kernel and five integration cases. The separate literal kernel command passed173/173. The affected child-fixture integration exercised Node/Bun identifier and JSON checks, SIGKILL/integrity and 400 concurrent child appends. All eight acquisition child schedules passed.
+
+The same run passed `npx --no-install tsc -p .crabbox/completion5-tsconfig.json --noEmit`, the exact direct-delete reviewer probe, all five retained runtime groups, standard-JSON/owner/reopen checks and persistent-default-path checks on Node22.19.0 and Bun1.4.2. Probe hashes remained unchanged: API config `bf818820eea6cc4006e9044ea28361fd7f850951`, direct-delete `f34c1957213035e2b5bb1fc89dcfd65fae2eed39`, runtime `bd8dbf2cf06359a0064560da98dcb491f7a93cd2`, standard JSON `d4b701e1d2274430069cfa1cd16da94be7f6adcc`, path `130ed9098969691cf4fa55168a8e426a80ddbaf1`. Cached qlty0.654.0 `metrics --functions` executed on the unchanged journal/backend files using the existing configuration; no plugin, dependency or configuration changes. The prior direct-delete run is the applicable unchanged-source metrics baseline.
+
+`U`: Boat `run_32e7236e9e8f17796300dac840645120`, remote `.crabbox/s2-current-base-unit.log`, ran exactly `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` alone. The wrapper applied exactly two authorized exclusions. **930 files / 10,613 tests passed**,26 pre-existing skips,130.59s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No test, assertion, concurrency, environment or timeout setting changed.
+
+All three current findings are resolved by the same signed rebase and exact fixture retention. The fixture blob is `0d9730cbeda50f0759a3603d57e206a81784d214` in both S1 and S2. The backend (`38af6e8baab270752d7362c38991b5cb7eefdfe9`), serializer/journal (`9d75d194a649c813c93bdd0a74f9c9697c0ad9b4`) and backend tests (`516f3b6516e9af586178670b2dbed3987cbba96e`) are unchanged from the reviewed S2 head. The final notes/hash audit and signed delivery commit are recorded in the completion receipt. No implementation or required Linux gate remains pending; new Windows execution remains unverified, not claimed. No deferred work was added and no push or PR was performed.
