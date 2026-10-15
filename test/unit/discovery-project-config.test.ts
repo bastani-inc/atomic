@@ -117,7 +117,7 @@ describe("discoverWorkflows — package workflows", () => {
 		assert.equal(src!.filePath, fp);
 	});
 
-	test("loads package workflows authored with @bastani/workflows imports", async () => {
+	test("loads package workflows authored with @bastani/atomic/workflows imports", async () => {
 		const root = makeTempDir("package-workflow-sdk-import");
 		const packageDir = join(root, "package-workflows");
 		const workflowsDir = join(packageDir, "workflows");

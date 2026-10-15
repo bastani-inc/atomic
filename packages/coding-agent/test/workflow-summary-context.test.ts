@@ -151,7 +151,15 @@ for (const responds of [true, false]) {
 		const store = createStore();
 		const backend = createInMemoryTestBackend();
 		backend.registerWorkflow({ workflowId: "terminal", name: "build", inputs: {}, status: "running", createdAt: 1 });
-		store.recordRunStart({ id: "terminal", name: "build", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "terminal",
+			name: "build",
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [],
+			startedAt: 1,
+		});
 		const service = createWorkflowSummaryService({
 			store,
 			resolveContext: () => session.extensionRunner.createContext(),

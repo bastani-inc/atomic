@@ -56,7 +56,7 @@ return "held";
 });`
 			: `await writeFile(${reached}, "reached");
 while (!existsSync(${gate})) await delay(25);`;
-	return `import { workflow } from "@bastani/workflows";
+	return `import { workflow } from "@bastani/atomic/workflows";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";

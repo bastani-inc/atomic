@@ -1,4 +1,4 @@
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 export default workflow({
 	name: "slash-autosend-noop",

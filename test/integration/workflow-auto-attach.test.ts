@@ -24,7 +24,7 @@ async function createFactoryHost() {
 	capturedCallGroups.push(mock.customCalls);
 
 	mock.pi.disableAsyncDiscovery = false;
-	mock.pi.getWorkflowResources = () => [{ path: fixturePath, enabled: true }];
+	mock.pi.refreshWorkflowResources = async () => [{ path: fixturePath, enabled: true }];
 	mock.pi.on = (event, handler) => {
 		const handlers = events.get(event) ?? [];
 		handlers.push(handler);
