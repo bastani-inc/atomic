@@ -26,7 +26,10 @@ import {
 } from "./types.js";
 
 export function workflowJournalPath(): string {
-	return process.env.ATOMIC_WORKFLOW_JOURNAL_PATH ?? join(dirname(getAgentDir()), "workflows", "journal.sqlite");
+	const override = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
+	return override !== undefined && override.length > 0
+		? override
+		: join(dirname(getAgentDir()), "workflows", "journal.sqlite");
 }
 
 function validateText(field: JournalInvalidTextError["field"], value: string): void {
@@ -40,7 +43,9 @@ function serializeJson(value: RunHeader | RunEvent["payload"]): string {
 }
 
 function storedVersion(stored: SqliteStoredValue): SqliteStoredValue {
-	return typeof stored === "bigint" && stored >= BigInt(Number.MIN_SAFE_INTEGER) && stored <= BigInt(Number.MAX_SAFE_INTEGER)
+	return typeof stored === "bigint" &&
+		stored >= BigInt(Number.MIN_SAFE_INTEGER) &&
+		stored <= BigInt(Number.MAX_SAFE_INTEGER)
 		? Number(stored)
 		: stored;
 }
@@ -71,10 +76,11 @@ export class SqliteRunJournal implements RunJournal {
 				if (rowCount > 1n) throw new JournalMetaCorruptError(path, Number(rowCount));
 				if (rowCount === 1n) {
 					const stored =
-						this.db.getWide<{ [c.schemaVersion]: SqliteStoredValue }>(`SELECT ${c.schemaVersion} FROM ${t.meta}`)?.[
-							c.schemaVersion
-						] ?? null;
-					if (stored !== BigInt(JOURNAL_SCHEMA_VERSION)) throw new JournalSchemaVersionError(storedVersion(stored));
+						this.db.getWide<{ [c.schemaVersion]: SqliteStoredValue }>(
+							`SELECT ${c.schemaVersion} FROM ${t.meta}`,
+						)?.[c.schemaVersion] ?? null;
+					if (stored !== BigInt(JOURNAL_SCHEMA_VERSION))
+						throw new JournalSchemaVersionError(storedVersion(stored));
 				} else {
 					this.db.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 				}

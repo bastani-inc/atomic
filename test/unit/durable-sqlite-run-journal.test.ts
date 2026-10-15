@@ -135,32 +135,35 @@ test.each([
 	{ versions: [1, "x"] },
 	{ versions: [1, 2.5] },
 	{ versions: [2, "x"] },
-] satisfies { versions: MetaSeed[] }[])("meta %s rejects before decoding or creating other tables", async ({ versions }) => {
-	const directory = makeTempDirectory("journal-meta-corrupt-");
-	const path = join(directory, "journal.sqlite");
-	let opened: SqliteRunJournal | undefined;
-	try {
-		seedMeta(path, versions);
-		const before = rawSnapshot(path);
-		assert.throws(
-			() => {
-				opened = new SqliteRunJournal(path);
-			},
-			(error: Error) => {
-				assert.equal(error.constructor, JournalMetaCorruptError);
-				assert.ok(error instanceof JournalMetaCorruptError);
-				assert.ok(error instanceof JournalError);
-				assert.equal(error.path, path);
-				assert.equal(error.rowCount, versions.length);
-				return true;
-			},
-		);
-		assert.deepEqual(rawSnapshot(path), before);
-	} finally {
-		await opened?.close();
-		removeTempDirectory(directory);
-	}
-});
+] satisfies { versions: MetaSeed[] }[])(
+	"meta %s rejects before decoding or creating other tables",
+	async ({ versions }) => {
+		const directory = makeTempDirectory("journal-meta-corrupt-");
+		const path = join(directory, "journal.sqlite");
+		let opened: SqliteRunJournal | undefined;
+		try {
+			seedMeta(path, versions);
+			const before = rawSnapshot(path);
+			assert.throws(
+				() => {
+					opened = new SqliteRunJournal(path);
+				},
+				(error: Error) => {
+					assert.equal(error.constructor, JournalMetaCorruptError);
+					assert.ok(error instanceof JournalMetaCorruptError);
+					assert.ok(error instanceof JournalError);
+					assert.equal(error.path, path);
+					assert.equal(error.rowCount, versions.length);
+					return true;
+				},
+			);
+			assert.deepEqual(rawSnapshot(path), before);
+		} finally {
+			await opened?.close();
+			removeTempDirectory(directory);
+		}
+	},
+);
 
 test.each([
 	{ version: INT64_MAX, found: INT64_MAX },
@@ -812,7 +815,17 @@ test("lease transitions fence stale appends, renewals and releases while retaini
 		}
 		assert.deepEqual(await read(journal), []);
 		await journal.release(outcome.lease);
-		await assert.rejects(() => journal.append(outcome.lease, { type: e.runStarted, payload: null }), StaleLeaseError);
+		await assert.rejects(
+			() => journal.append(outcome.lease, { type: e.runStarted, payload: null }),
+			(error: Error) => {
+				assert.equal(error.constructor, StaleLeaseError);
+				assert.ok(error instanceof StaleLeaseError);
+				assert.equal(error.runId, header.runId);
+				assert.equal(error.heldEpoch, outcome.lease.epoch);
+				assert.equal(error.currentEpoch, outcome.lease.epoch);
+				return true;
+			},
+		);
 		assert.deepEqual(await journal.takeover(header.runId, "third", "second"), {
 			status: "held",
 			holderId: null,
@@ -873,7 +886,17 @@ test("create/list/delete preserve headers and exact cwd filters and remove all r
 		assert.deepEqual(await read(journal), []);
 		assert.equal(await journal.readKey(header.runId, "key"), undefined);
 		assert.equal((await journal.listRuns()).length, 1);
-		await assert.rejects(() => journal.append(lease, { type: e.runStarted, payload: null }), StaleLeaseError);
+		await assert.rejects(
+			() => journal.append(lease, { type: e.runStarted, payload: null }),
+			(error: Error) => {
+				assert.equal(error.constructor, StaleLeaseError);
+				assert.ok(error instanceof StaleLeaseError);
+				assert.equal(error.runId, header.runId);
+				assert.equal(error.heldEpoch, lease.epoch);
+				assert.equal(error.currentEpoch, lease.epoch);
+				return true;
+			},
+		);
 		for (const operation of [
 			() => journal.acquire(header.runId, "holder"),
 			() => journal.takeover(header.runId, "holder", "old"),
@@ -1312,10 +1335,12 @@ test("journal path defaults to the user workflow root and preserves an explicit 
 		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
 		process.env.PI_WORKFLOW_JOURNAL_PATH = "/tmp/ignored-journal.sqlite";
 		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
-		for (const value of ["", " ./verbatim/../journal.sqlite ", "relative.sqlite"]) {
+		for (const value of [" ./verbatim/../journal.sqlite ", "relative.sqlite"]) {
 			process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = value;
 			assert.equal(workflowJournalPath(), value);
 		}
+		process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = "";
+		assert.equal(workflowJournalPath(), join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 		else process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = previous;
