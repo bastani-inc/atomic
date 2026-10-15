@@ -165,6 +165,35 @@ test("SQL session schema is strict, checks JSON, and rejects unsupported version
 	});
 });
 
+for (const [kind, cwd] of [
+	["high", "\uD800"],
+	["low", "\uDC00"],
+] as const) {
+	for (const operation of ["list", "findMostRecent"] as const) {
+		test(`SQL session ${operation} does not match a lone ${kind} surrogate cwd to U+FFFD`, async () => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				await store.create({ ...header, cwd: "\uFFFD" }, []);
+				if (operation === "list") {
+					const matches: SessionSummary[] = [];
+					for await (const summary of store.list({ cwd: "\uFFFD" })) matches.push(summary);
+					assert.deepEqual(
+						matches.map((summary) => summary.id),
+						[header.id],
+					);
+					const mismatches: SessionSummary[] = [];
+					for await (const summary of store.list({ cwd })) mismatches.push(summary);
+					assert.deepEqual(mismatches, []);
+				} else {
+					assert.equal((await store.findMostRecent({ cwd: "\uFFFD" }))?.id, header.id);
+					assert.equal(await store.findMostRecent({ cwd }), undefined);
+				}
+				await store.close();
+			});
+		});
+	}
+}
+
 test("SQL session prefix validation runs before schema writes and preserves facade NUL errors", async () => {
 	await withNodeSqliteDatabase(async ({ database }) => {
 		for (const [prefix, reason] of [
@@ -180,12 +209,21 @@ test("SQL session prefix validation runs before schema writes and preserves faca
 		}
 		assert.deepEqual(await database.all("SELECT name FROM sqlite_schema WHERE type = 'table'"), []);
 		const store = await SqlSessionStore.open(database);
-		await assert.rejects(store.list({ cwd: "bad\u0000cwd" })[Symbol.asyncIterator]().next(), (error: Error) => {
-			assert.ok(error instanceof StorageInvalidTextError);
-			assert.equal(error.parameterIndex, 0);
-			assert.equal(error.reason, "nul-character");
-			return true;
-		});
+		for (const cwd of ["bad\u0000cwd", "\uD800\u0000", "\u0000\uDC00"]) {
+			for (const operation of ["list", "findMostRecent"] as const) {
+				await assert.rejects(
+					operation === "list"
+						? store.list({ cwd })[Symbol.asyncIterator]().next()
+						: store.findMostRecent({ cwd }),
+					(error: Error) => {
+						assert.ok(error instanceof StorageInvalidTextError);
+						assert.equal(error.parameterIndex, 0);
+						assert.equal(error.reason, "nul-character");
+						return true;
+					},
+				);
+			}
+		}
 		await store.close();
 	});
 });

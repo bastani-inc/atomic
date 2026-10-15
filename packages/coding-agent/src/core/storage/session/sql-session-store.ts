@@ -162,15 +162,17 @@ export class SqlSessionStore implements SessionStore {
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertListing(query);
+		const cwd = query.cwd;
 		const rows = await this.database.all<SummaryRow>(
 			`SELECT * FROM ${this.tables.sessions} WHERE (? IS NULL OR cwd = ?) AND (? = 1 OR internal = 0)`,
-			query.cwd ?? null,
-			query.cwd ?? null,
+			cwd ?? null,
+			cwd ?? null,
 			query.includeInternal ? 1 : 0,
 		);
 		for (const row of rows) {
 			this.assertListing(query);
 			const header = JSON.parse(row.header_json) as SessionRecordHeader;
+			if (cwd !== undefined && header.cwd !== cwd) continue;
 			yield {
 				id: header.id,
 				cwd: header.cwd,
