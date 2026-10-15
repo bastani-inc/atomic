@@ -11,7 +11,6 @@ import { ModelRegistry } from "../../packages/coding-agent/src/core/model-regist
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { decodeToCheckpoint, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	createDurableStagePrimitive,
@@ -19,6 +18,8 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { isRouterSelection } from "../../packages/workflows/src/shared/model-checkpoint-validation.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { chatPayload, chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
 import {
 	decisionMessage,
@@ -758,7 +759,7 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 
 test("durable session checkpoint roundtrip restores selection without another inference", async () => {
 	const f = await fixture();
-	const backend = new InMemoryDurableBackend();
+	const backend = new JournalTestBackend();
 	backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
 	const selection = { model: "decision-test/chat", effort: null };
 	await recordStageSessionCheckpoint(
@@ -775,9 +776,8 @@ test("durable session checkpoint roundtrip restores selection without another in
 			model: "different/actual",
 		},
 	);
-	const checkpoint = backend.listCheckpoints("auto")[0]!;
-	const encoded = encodeCheckpoint(checkpoint);
-	const decoded = decodeToCheckpoint("auto", checkpoint.checkpointId, encoded);
+	const restored = await backend.reopen();
+	const decoded = restored.listCheckpoints("auto")[0];
 	assert.ok(decoded?.kind === "stage");
 	assert.deepEqual(decoded.routerSelection, selection);
 	assert.equal(decoded.model, "different/actual");
@@ -786,13 +786,7 @@ test("durable session checkpoint roundtrip restores selection without another in
 		{ ...selection, extra: 1 },
 		{ ...selection, effort: "unknown" },
 	])
-		assert.equal(
-			decodeToCheckpoint("auto", checkpoint.checkpointId, { ...encoded, routerSelection: invalid }),
-			undefined,
-		);
-	const restored = new InMemoryDurableBackend();
-	restored.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
-	restored.recordCheckpoint(decoded);
+		assert.equal(isRouterSelection(invalid), false);
 	assert.deepEqual(restored.getStageSession("auto", "stage:test")?.routerSelection, selection);
 	const stage = createDurableStagePrimitive({
 		workflowId: "auto",
@@ -1130,7 +1124,7 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 			{ model: "decision-test/a", effort: null },
 			{ model: "decision-test/b", effort: null },
 		]);
-		const backend = new InMemoryDurableBackend();
+		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: "ranked", name: "ranked", inputs: {}, createdAt: 1, status: "running" });
 		await recordStageSessionCheckpoint(
 			{ backend, workflowId: "ranked", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:ranked" },
@@ -1145,8 +1139,8 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 				routerSelection: selection,
 			},
 		);
-		const checkpoint = backend.listCheckpoints("ranked")[0]!;
-		const decoded = decodeToCheckpoint("ranked", checkpoint.checkpointId, encodeCheckpoint(checkpoint));
+		const restored = await backend.reopen();
+		const decoded = restored.listCheckpoints("ranked")[0];
 		assert.ok(decoded?.kind === "stage");
 		assert.deepEqual(decoded.routerSelection, selection);
 	} finally {
@@ -1241,7 +1235,7 @@ test("builtin stages that omit a model route only to models the modelRouting gat
 });
 
 test("durable checkpoints keep routerSelection candidates and reject malformed lists (#3528)", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = new JournalTestBackend();
 	backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
 	const selection = { model: "decision-test/chat", effort: null, candidates: ["decision-test/chat", "other/model"] };
 	await recordStageSessionCheckpoint(
@@ -1257,17 +1251,10 @@ test("durable checkpoints keep routerSelection candidates and reject malformed l
 			routerSelection: selection,
 		},
 	);
-	const checkpoint = backend.listCheckpoints("auto")[0]!;
-	const encoded = encodeCheckpoint(checkpoint);
-	const decoded = decodeToCheckpoint("auto", checkpoint.checkpointId, encoded);
+	const restored = await backend.reopen();
+	const decoded = restored.listCheckpoints("auto")[0];
 	assert.ok(decoded?.kind === "stage");
 	assert.deepEqual(decoded.routerSelection, selection);
 	for (const candidates of ["decision-test/chat", [1], [null]])
-		assert.equal(
-			decodeToCheckpoint("auto", checkpoint.checkpointId, {
-				...encoded,
-				routerSelection: { ...selection, candidates },
-			}),
-			undefined,
-		);
+		assert.equal(isRouterSelection({ ...selection, candidates }), false);
 });

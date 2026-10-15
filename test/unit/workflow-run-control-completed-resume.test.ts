@@ -617,6 +617,7 @@ test("targeted exact-id resume rejects another session's live workflow without c
 		}
 	}
 	const backend = new NoCatalogBackend();
+	backend.workflowOwnership = () => "foreign";
 	const id = testRunId("foreign-live-without-catalog");
 	backend.registerWorkflow({
 		workflowId: id,

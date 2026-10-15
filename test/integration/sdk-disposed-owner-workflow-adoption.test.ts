@@ -95,7 +95,6 @@ async function launchAndQuit(session: AgentSession, project: Project): Promise<s
 	await vi.waitFor(() => assert.equal(getDurableBackend().getWorkflow(runId)?.status, "paused"), {
 		timeout: RUN_SETTLE_TIMEOUT_MS,
 	});
-	await getDurableBackend().flush(runId);
 	return runId;
 }
 
@@ -181,7 +180,6 @@ test(
 			await vi.waitFor(async () => assert.equal((await owner.workflows.getRun(runId)).status, "completed"), {
 				timeout: RUN_SETTLE_TIMEOUT_MS,
 			});
-			await getDurableBackend().flush(runId);
 			await owner.dispose();
 
 			await assert.rejects(

@@ -33,7 +33,6 @@ const setupFiles = ["./test/setup-workflow-durability.ts"];
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
-const postgresRuntimeSetup = "./test/global-setup-postgres-runtime.ts";
 
 const project = (name: string, directory: string) => ({
 	resolve: { alias: sharedAliases },
@@ -45,7 +44,7 @@ const project = (name: string, directory: string) => ({
 		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
-		globalSetup: [herdrSetup, artifactSetup, nativeSetup, ...(name === "integration" ? [postgresRuntimeSetup] : [])],
+		globalSetup: [herdrSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

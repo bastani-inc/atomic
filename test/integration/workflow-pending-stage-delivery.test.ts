@@ -12,7 +12,7 @@ import type { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent
 import { isRecoverableIntercomDisconnect } from "../../packages/intercom/recoverable-disconnect.js";
 import type { BrokerMessage } from "../../packages/intercom/types.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
@@ -37,7 +37,6 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 const { SessionManager } = await import("../../packages/coding-agent/src/core/session-manager-core.ts");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
-const { DbosDurableBackend } = await import("../../packages/workflows/src/durable/dbos-backend.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 const { WorkflowStageAdmissionBoundary: StageAdmissionBoundary } = await import(
 	"../../packages/coding-agent/src/core/workflow-stage-admission.ts"
@@ -3165,10 +3164,8 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 	const runId = "d75641e7-3df3-4d46-9107-4e61e3cbc021";
 	const group = `workflow:${runId}`;
 	const message = { id: "durable-delivered-retry", timestamp: 1_787_860_000_001, content: { text: "exactly once" } };
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "delivered-retry-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({ workflowId: runId, name: "delivered-retry", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -3222,7 +3219,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 
 		disposeFirstBridge();
 		await firstOwner.shutdown();
-		const reader = new DbosDurableBackend(sdk, { executorId: "delivered-retry-reader" });
+		const reader = await writer.reopen();
 		await reader.hydrateWorkflow(runId);
 		const reloadedStore = createStore();
 		reloadedStore.recordRunStart({
@@ -3274,10 +3271,8 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 	const group = `workflow:${runId}`;
 	const target = `workflow:${runId}/reviewer`;
 	const messageId = "drained-live-conflict";
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "live-conflict-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({ workflowId: runId, name: "live-conflict", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
 	const stage = (id: string, name: string, status: "pending" | "running", sessionId?: string) => ({
@@ -3463,7 +3458,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		await stopBroker();
 		await startBroker();
 
-		const reader = new DbosDurableBackend(sdk, { executorId: "live-conflict-reader" });
+		const reader = await writer.reopen();
 		await reader.hydrateWorkflow(runId);
 		setDurableBackend(reader);
 		const reloadedStore = createStore();
@@ -3568,14 +3563,12 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		rmSync(recipientDir, { recursive: true, force: true });
 	}
 });
-test("raw malformed messages are rejected before durable mutation and valid optional fields survive DBOS reload", async () => {
+test("raw malformed messages are rejected before durable mutation and valid optional fields survive journal reload", async () => {
 	const runId = "2f34ff35-9813-4a60-b7a3-24698cd01592";
 	const group = `workflow:${runId}`;
 	const target = `workflow:${runId}/reviewer`;
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "wire-validation-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({ workflowId: runId, name: "wire-validation", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -3623,7 +3616,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 			});
 		}
 		assert.deepEqual(store.pendingStageMessagesFor(runId, "reviewer"), []);
-		const cleanReload = new DbosDurableBackend(sdk, { executorId: "wire-validation-clean-reader" });
+		const cleanReload = new JournalTestBackend(writer.databasePath);
 		await cleanReload.hydrateWorkflow(runId);
 		assert.deepEqual(cleanReload.getWorkflow(runId)?.pendingStageMessages, []);
 
@@ -3672,7 +3665,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 			(await raw.next("delivery_failed", (frame) => frame.messageId === "capacity-51")).reason,
 			/queue is full \(limit 50\)/,
 		);
-		const validReload = new DbosDurableBackend(sdk, { executorId: "wire-validation-valid-reader" });
+		const validReload = new JournalTestBackend(writer.databasePath);
 		await validReload.hydrateWorkflow(runId);
 		assert.equal(validReload.getWorkflow(runId)?.pendingStageMessages?.length, 50);
 		assert.deepEqual(validReload.getWorkflow(runId)?.pendingStageMessages?.[0]?.message, validMessage);
@@ -3846,8 +3839,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		workflowStageId: "nested-planner-id",
 		workflowStageName: "nested-planner",
 	};
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({
 		workflowId: runId,
 		name: "sender-reconnect",
@@ -3855,7 +3847,6 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		status: "running",
 		createdAt: 1,
 	});
-	await writer.flush();
 	setDurableBackend(writer);
 	const writerStore = createStore();
 	writerStore.recordRunStart({
@@ -3913,7 +3904,6 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		assert.equal(storedBeforeRestart.from.group, group);
 		assert.equal(storedBeforeRestart.senderRegistrationName, "planner");
 		assert.equal(storedBeforeRestart.senderReturnAddress, "sender-reconnect-session-before");
-		await writer.flush();
 
 		disposeBefore();
 		await senderBefore.shutdown();
@@ -3921,7 +3911,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		await stopBroker();
 		await startBroker();
 
-		const reader = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-reader" });
+		const reader = await writer.reopen();
 		await reader.hydrateWorkflow(runId);
 		const reloadedStore = createStore();
 		reloadedStore.recordRunStart({
@@ -4005,7 +3995,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		await stopBroker();
 		await startBroker();
 
-		const receiptReader = new DbosDurableBackend(sdk, { executorId: "sender-reconnect-receipt-reader" });
+		const receiptReader = await reader.reopen();
 		await receiptReader.hydrateWorkflow(runId);
 		const restartedStore = createStore();
 		restartedStore.recordRunStart({

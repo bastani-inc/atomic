@@ -26,7 +26,6 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"TaskSupervisor",
 	"WaitLease",
 	"YieldReason",
-	"RetainedPostgres",
 	"PtySession",
 	"SubagentControl",
 	"TerminationCause",
@@ -35,10 +34,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"grep",
 	"hasMatch",
 	"invalidateFsScanCache",
-	"postgresProcessStartTime",
 	"search",
-	"signalVerifiedPostgres",
-	"spawnRetainedPostgres",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";
@@ -53,8 +49,6 @@ try {
 describe("Atomic native binding export contract", () => {
 	it.skipIf(!requireNativeBinding && !binding)("loads the host binding with exactly the supported exports", () => {
 		if (!binding) throw loadError ?? new Error("Native binding is required but unavailable");
-		const platformExports =
-			process.platform === "win32" ? ["WindowsPostgresProcessGuard", "guardWindowsPostgresProcess"] : [];
-		assert.deepEqual(Object.keys(binding).sort(), [...EXPECTED_NATIVE_EXPORTS, ...platformExports].sort());
+		assert.deepEqual(Object.keys(binding).sort(), [...EXPECTED_NATIVE_EXPORTS].sort());
 	});
 });

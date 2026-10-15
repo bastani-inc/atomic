@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { decodeToCheckpoint, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createStore, mockSession, run, tmpdir, workflow } from "./executor-shared.js";
 
 // #1859: task replay must preserve returned identity, not only the graph snapshot.
 test("public task retains thinking identity through checkpoint serialization and replay", async () => {
 	const runId = "task-thinking-replay";
-	const backend = new InMemoryDurableBackend();
+	const backend = new JournalTestBackend();
 	const returned: WorkflowTaskResult[] = [];
 	let creates = 0;
 	let prompts = 0;
@@ -50,15 +50,10 @@ test("public task retains thinking identity through checkpoint serialization and
 	assert.equal(returned[0]?.thinkingLevel, "high");
 	assert.equal(liveStore.runs()[0]?.stages[0]?.thinkingLevel, "high");
 
-	const restored = new InMemoryDurableBackend();
-	const registration = backend.getWorkflow(runId);
-	assert.ok(registration);
-	restored.registerWorkflow(registration);
-	for (const checkpoint of backend.listCheckpoints(runId)) {
-		const decoded = decodeToCheckpoint(runId, checkpoint.checkpointId, encodeCheckpoint(checkpoint));
-		assert.ok(decoded);
-		if (decoded.kind === "stage" && decoded.output !== undefined) assert.equal(decoded.thinkingLevel, "high");
-		restored.recordCheckpoint(decoded);
+	const restored = await backend.reopen();
+	for (const checkpoint of restored.listCheckpoints(runId)) {
+		if (checkpoint.kind === "stage" && checkpoint.output !== undefined)
+			assert.equal(checkpoint.thinkingLevel, "high");
 	}
 	const replayStore = createStore();
 	const replay = await run(

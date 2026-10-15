@@ -333,7 +333,7 @@ function nextRepresentableAfter(at: number): number | undefined {
  */
 export function isWorkflowHeartbeatEligibleRun(run: RunSnapshot): boolean {
 	if (!isTopLevelWorkflowRun(run)) return false;
-	if (run.phase === "starting" || run.phase === "blocked_dependency") return false;
+	if (run.phase === "starting") return false;
 	if (run.status !== "running") return false;
 	if (run.pausedAt !== undefined) return false;
 	return !isTerminalRunStatus(effectiveRunStatus(run));
@@ -661,10 +661,7 @@ export function installWorkflowHeartbeatScheduler(
 	/**
 	 * Write what the run launched with, at most once per process, best-effort.
 	 *
-	 * The write is asynchronous and its result is only trusted once the durable
-	 * backend acknowledges it. The DBOS backend updates its in-memory mirror
-	 * before the real write is queued, so a synchronous read-back would mark a
-	 * rejected storage write as persisted and never retry it.
+	 * The record is trusted only after the backend acknowledges the write.
 	 *
 	 * `recordAnchorAt` is itself a no-op until the run has durable progress of its
 	 * own, so this is called on every schedule pass until it is acknowledged and

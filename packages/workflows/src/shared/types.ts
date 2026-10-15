@@ -450,8 +450,6 @@ export interface WorkflowRunContext<
 	 * Durable cached tool execution. Runs arbitrary TypeScript code and caches
 	 * the result so completed side effects are not repeated on resume.
 	 * Only `ctx.*` blocks produce durable checkpoints.
-	 *
-	 * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
 	 */
 	tool: WorkflowToolPrimitive;
 	/**

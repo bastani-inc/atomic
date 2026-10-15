@@ -781,7 +781,6 @@ module.exports = nativeBinding
 module.exports.HostSession = nativeBinding.HostSession
 module.exports.OwnerLease = nativeBinding.OwnerLease
 module.exports.PtySession = nativeBinding.PtySession
-module.exports.RetainedPostgres = nativeBinding.RetainedPostgres
 module.exports.RunnerLease = nativeBinding.RunnerLease
 module.exports.StdinLease = nativeBinding.StdinLease
 module.exports.SubagentControl = nativeBinding.SubagentControl
@@ -805,14 +804,6 @@ module.exports.GrepOutputMode = nativeBinding.GrepOutputMode
 module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
-module.exports.postgresProcessStartTime = nativeBinding.postgresProcessStartTime
 module.exports.search = nativeBinding.search
-module.exports.signalVerifiedPostgres = nativeBinding.signalVerifiedPostgres
-module.exports.spawnRetainedPostgres = nativeBinding.spawnRetainedPostgres
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.YieldReason = nativeBinding.YieldReason
-
-if (process.platform === 'win32') {
-  module.exports.WindowsPostgresProcessGuard = nativeBinding.WindowsPostgresProcessGuard
-  module.exports.guardWindowsPostgresProcess = nativeBinding.guardWindowsPostgresProcess
-}

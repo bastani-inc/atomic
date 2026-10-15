@@ -1,6 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { DbosNotReadyError } from "../durable/dbos-lifecycle.js";
-import { getDurableBackend } from "../durable/factory.js";
+import { DurableBackendNotInitializedError, getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
@@ -336,7 +335,7 @@ export async function handleRunControlCommand(
 				try {
 					backend = getDurableBackend();
 				} catch (error) {
-					if (!(error instanceof DbosNotReadyError)) throw error;
+					if (!(error instanceof DurableBackendNotInitializedError)) throw error;
 					// Fresh CLI sessions have no backend until a durable operation prepares it.
 					await ensureWorkflowResourcesVisible();
 					await deps.runtimeForContext(ctx).prepareDurableResumable(target);

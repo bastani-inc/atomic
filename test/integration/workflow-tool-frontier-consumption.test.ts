@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
@@ -16,9 +15,9 @@ import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflo
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	const deadline = Date.now() + TEST_TIMEOUT_MS / 2;
@@ -68,8 +67,7 @@ test.each(
 )(
 	"public restored resume enforces its frontier without overriding terminal control ($ending, mixed=$mixed)",
 	async ({ ending, mixed }) => {
-		const sdk = createMockSdk();
-		let backend = new DbosDurableBackend(sdk);
+		let backend = new JournalTestBackend();
 		setDurableBackend(backend);
 		let completedCalls = 0;
 		let modelCalls = 0;
@@ -213,8 +211,7 @@ test.each(
 		await waitFor(() => source.endedAt !== undefined);
 		assert.equal(source.status, "failed");
 		assert.equal(source.failedToolNodeId, target.id);
-		await backend.flush(source.id);
-		backend = new DbosDurableBackend(sdk);
+		backend = await backend.reopen();
 		await backend.hydrateWorkflow(source.id);
 		setDurableBackend(backend);
 		store.clear();

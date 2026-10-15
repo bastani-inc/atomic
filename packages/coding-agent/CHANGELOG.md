@@ -7,6 +7,7 @@
 - Workflow discovery now uses only `.atomic` default roots, and discovered modules use `@bastani/atomic/workflows` with `typebox`. Removed deprecated workflow API stubs, separate reasoning authoring fields, old stage-target and X10 mouse input formats, and replay without current topology, replay keys, or child exit tags. Use model strings such as `provider/model:high` for reasoning effort. Workflow results, inspection details and status summaries always include their tool collections. Queued stage delivery requires persisted admission order.
 - Workflow heartbeat records require their original launch cadence instead of inheriting the current definition when cadence is missing. Configuration load results always include their global and project source fields, using `null` for absent or invalid sources.
 - Workflow run snapshots require `toolNodes`, and inline forms require injected keybindings without obsolete submit-choice state. Removed the ignored workflow text-truncation `preserveAnsi` argument; ANSI-aware rendering is unchanged.
+- Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
 
 ### Added
 
@@ -16,6 +17,10 @@
 ### Fixed
 
 - Fixed Xiaomi MiMo and all regional Token Plan providers defaulting to a deprecated model omitted from the generated catalog. They now select MiMo V2.6 Pro (`mimo-v2.6-pro`) by default.
+
+### Removed
+
+- Removed DBOS, embedded Postgres, their bundled runtimes and native process ownership, and the non-durable storage fallback. Server-specific admission, recovery, outage handling, and deferred persistence queues are gone; workflow pause, resume, quit, answer, and checkpoint replay remain supported.
 
 ## [0.9.38-alpha.3] - 2026-10-15
 

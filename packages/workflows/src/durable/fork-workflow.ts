@@ -131,14 +131,11 @@ export async function forkDurableWorkflow(
 		})),
 	};
 	backend.registerWorkflow({ ...fork, status: "running", resumable: false });
-	await backend.flush(workflowId);
 	for (const checkpoint of checkpoints) await backend.recordCheckpointAsync(checkpoint);
-	await backend.flush(workflowId);
 	backend.registerWorkflow({
 		...fork,
 		resumable: source.resumable ?? true,
 		completedCheckpoints: backend.getWorkflow(workflowId)!.completedCheckpoints,
 	});
-	await backend.flush(workflowId);
 	return workflowId;
 }

@@ -41,13 +41,7 @@ if (process.env[ENV_WORKFLOW_ARTIFACT_DIR] === undefined) {
 	});
 }
 
-/**
- * Product runtime always uses DBOS. Unit and integration tests explicitly run
- * against an isolated current-interface backend unless a test installs its own
- * DBOS adapter.
- */
+/** Tests inject an isolated backend unless they explicitly open a journal. */
 beforeEach(() => {
-	// Match the factory's injection seam without eagerly loading DBOS and the host
-	// into every isolated test file. Do not reset initialized/pending/warning state.
 	getDurableBackendProcessOwner().injectedBackend = new InMemoryDurableBackend();
 });

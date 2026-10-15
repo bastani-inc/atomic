@@ -7,8 +7,8 @@
  * elapsed instead of restarting at zero.
  *
  * Storage shape: a reserved tool-kind checkpoint (name/argsHash
- * `workflow-run-timing`). Tool checkpoints round-trip through the DBOS
- * envelope untouched and are ignored by stage-graph reconstruction, so no
+ * `workflow-run-timing`). Tool checkpoints are ignored by stage-graph
+ * reconstruction, so no
  * phantom stages appear in durable inspection. Repeated updates use distinct
  * checkpoint ids; the latest record (by `completedAt`) wins on hydration
  * because the in-memory mirror replays checkpoints in completion order.

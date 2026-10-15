@@ -102,7 +102,7 @@ test("npm registry retries declare integer timeouts and ordered backoffs", async
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
 });
 
-test("global setups isolate Herdr, then prepare artifacts and natives before integration PostgreSQL", async () => {
+test("global setups isolate Herdr, then prepare artifacts and natives", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -114,16 +114,13 @@ test("global setups isolate Herdr, then prepare artifacts and natives before int
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
-	const postgresRuntimeSetup = "./test/global-setup-postgres-runtime.ts";
 	for (const name of ["unit", "integration", "ci"]) {
 		const project = projects.find((entry) => entry.test?.name === name);
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
 			project.test?.globalSetup,
-			name === "integration"
-				? [herdrSetup, artifactSetup, nativeSetup, postgresRuntimeSetup]
-				: [herdrSetup, artifactSetup, nativeSetup],
-			`${name} must isolate inherited Herdr credentials first and prewarm integration PostgreSQL after natives`,
+			[herdrSetup, artifactSetup, nativeSetup],
+			`${name} must isolate inherited Herdr credentials before preparing artifacts and natives`,
 		);
 	}
 });
@@ -239,7 +236,6 @@ interface MuslSmokeProbe {
 	archive: string;
 	argsPath: string;
 	bodyPath: string;
-	postgresBodyPath: string;
 	root: string;
 }
 
@@ -249,7 +245,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	const atomicRoot = join(payloadRoot, "atomic");
 	for (const directory of [
 		join(atomicRoot, "builtin", "workflows"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin"),
+		join(atomicRoot, "node_modules", "@bastani", "atomic-natives"),
 		join(atomicRoot, "lib"),
 	]) {
 		makeDirectorySync(directory, { recursive: true });
@@ -260,11 +256,6 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 		join(atomicRoot, "package.json"),
 		join(atomicRoot, "builtin", "workflows", "package.json"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "package.json"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin", "initdb"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "bin", "pg_ctl"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "POSTGRESQL-LICENSE"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "ZONKY-APACHE-2.0-LICENSE"),
-		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "postgres-runtime", "runtime-provenance.json"),
 		join(atomicRoot, "lib", "libgcc_s.so.1"),
 		join(atomicRoot, "lib", "libstdc++.so.6"),
 	]) {
@@ -282,14 +273,12 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	makeDirectorySync(stubDirectory, { recursive: true });
 	const argsPath = join(probeRoot, "docker-args.txt");
 	const bodyPath = join(probeRoot, "smoke-body.sh");
-	const postgresBodyPath = join(probeRoot, "postgres-smoke-body.sh");
 	const stubPath = join(stubDirectory, "docker");
 	writeTextSync(
 		stubPath,
 		`#!/bin/sh
 : "\${ATOMIC_MUSL_DOCKER_ARGS:?}"
 : "\${ATOMIC_MUSL_DOCKER_BODY:?}"
-: "\${ATOMIC_MUSL_POSTGRES_BODY:?}"
 mount=
 last=
 for arg do
@@ -299,16 +288,12 @@ for arg do
     esac
 done
 [ -n "$mount" ]
-if [ "$last" = /smoke/smoke.sh ]; then
-    printf '%s\n' "$@" > "$ATOMIC_MUSL_DOCKER_ARGS"
-    cat "$mount/smoke.sh" > "$ATOMIC_MUSL_DOCKER_BODY"
-else
-    cat "$mount/postgres-smoke.sh" > "$ATOMIC_MUSL_POSTGRES_BODY"
-fi
+printf '%s\n' "$@" > "$ATOMIC_MUSL_DOCKER_ARGS"
+cat "$mount/smoke.sh" > "$ATOMIC_MUSL_DOCKER_BODY"
 `,
 	);
 	chmodSync(stubPath, 0o755);
-	return { archive, argsPath, bodyPath, postgresBodyPath, root: probeRoot };
+	return { archive, argsPath, bodyPath, root: probeRoot };
 }
 
 function removeMuslSmokeProbe(probe: MuslSmokeProbe): void {
@@ -332,7 +317,6 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 					PATH: `${join(probe.root, "stub")}${delimiter}${process.env.PATH ?? ""}`,
 					ATOMIC_MUSL_DOCKER_ARGS: probe.argsPath,
 					ATOMIC_MUSL_DOCKER_BODY: probe.bodyPath,
-					ATOMIC_MUSL_POSTGRES_BODY: probe.postgresBodyPath,
 				},
 			},
 		);
@@ -345,11 +329,6 @@ test("musl smoke forwards a complete staged shell script through stub docker", (
 		assert.match(smoke, /output=\$\(printf '' \| "\$atomic" --no-session 2>&1\)/u);
 		assert.match(smoke, /if echo "\$output" \| grep -q 'Failed to load extension'; then exit 1; fi/u);
 		assert.match(smoke, /No models available\|No model selected\|No API key found/u);
-		const postgresSmoke = readTextSync(probe.postgresBodyPath).toString("utf8");
-		assert.match(postgresSmoke, /bin\/initdb/u);
-		assert.match(postgresSmoke, /bin\/pg_ctl/u);
-		assert.match(postgresSmoke, /nc -w 3 127\.0\.0\.1 55439/u);
-		assert.match(postgresSmoke, /embedded PostgreSQL initdb\/start\/connect\/shutdown succeeded/u);
 	} finally {
 		removeMuslSmokeProbe(probe);
 	}
@@ -416,13 +395,4 @@ test("suite entry points remain available without a pre-push hook", async () => 
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
 		assert.ok(manifest.scripts[script], `missing script: ${script}`);
 	}
-});
-
-test("Alpine smoke exercises PostgreSQL SQL persistence", async () => {
-	const alpine = await readText(join(root, "scripts/test-musl-release-archive.sh"));
-	assert.match(alpine, /initdb.*-U postgres/u);
-	assert.match(alpine, /CREATE TABLE atomic_durability_probe/u);
-	assert.match(alpine, /INSERT INTO atomic_durability_probe/u);
-	assert.match(alpine, /SELECT value FROM atomic_durability_probe/u);
-	assert.match(alpine, /persisted-row/u);
 });

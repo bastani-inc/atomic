@@ -33,7 +33,7 @@
  */
 
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, test } from "vitest";
@@ -154,10 +154,6 @@ class InteractiveCli {
 				ATOMIC_CODING_AGENT_DIR: agentDir,
 				ATOMIC_CODING_AGENT_SESSION_DIR: sessionDir,
 				ATOMIC_MANAGED_TEST_HOME: process.env.ATOMIC_MANAGED_TEST_HOME,
-				ATOMIC_POSTGRES_PORT: process.env.ATOMIC_POSTGRES_PORT,
-				ATOMIC_POSTGRES_RUNTIME_CACHE_DIR: process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR,
-				DBOS_SYSTEM_DATABASE_URL: undefined,
-				PGPORT: "0",
 				ATOMIC_SKIP_VERSION_CHECK: "1",
 				NO_COLOR: "1",
 			},
@@ -473,10 +469,6 @@ let evidence: Evidence;
 describe("issue #2074 — stage steering and queued-message state through the real CLI", () => {
 	beforeAll(async () => {
 		evidence = await runScenario();
-		const clusterVersion = join(process.env.ATOMIC_MANAGED_TEST_HOME!, ".atomic", "postgres", "v18", "PG_VERSION");
-		console.log(
-			`issue-2074 managed PostgreSQL home: ${process.env.ATOMIC_MANAGED_TEST_HOME}; cluster present: ${existsSync(clusterVersion)}`,
-		);
 	}, REAL_CLI_STAGE_CHAT_SCENARIO_TIMEOUT_MS);
 
 	test("the stage really is mid-turn, so the typed messages are queued rather than delivered", () => {

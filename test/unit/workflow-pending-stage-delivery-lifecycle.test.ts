@@ -10,9 +10,8 @@ import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/in
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import {
 	registerPendingStageIntercomBridge,
@@ -25,8 +24,8 @@ import type {
 	RunStatus,
 	StageStatus,
 } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const tempDirs: string[] = [];
 
@@ -135,7 +134,6 @@ async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus
 
 afterEach(() => {
 	setDurableBackend(undefined);
-	resetDbosLifecycleForTests();
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -143,7 +141,6 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("registers against an empty store without touching an uninitialized durable backend", async () => {
 		const activeStore = createStore();
 		setDurableBackend(undefined);
-		resetDbosLifecycleForTests();
 		const warnings: unknown[][] = [];
 		const originalWarn = console.warn;
 		console.warn = (...args: unknown[]) => warnings.push(args);
@@ -160,7 +157,6 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("sweeps eligible durable state added after empty startup exactly once", async () => {
 		const activeStore = createStore();
 		setDurableBackend(undefined);
-		resetDbosLifecycleForTests();
 		let notifications = 0;
 		const dispose = registerPendingStageIntercomBridge(
 			{
@@ -223,7 +219,6 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("reports a durable backend error when eligible settlement work exists", async () => {
 		const { activeStore } = await lifecycleFixture("completed");
 		setDurableBackend(undefined);
-		resetDbosLifecycleForTests();
 		const warnings: unknown[][] = [];
 		const originalWarn = console.warn;
 		console.warn = (...args: unknown[]) => warnings.push(args);
@@ -262,7 +257,6 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("deduplicates repeated sweep failures without discarding pending work", async () => {
 		const { activeStore, runId } = await lifecycleFixture("completed");
 		setDurableBackend(undefined);
-		resetDbosLifecycleForTests();
 		const warnings: string[] = [];
 		const originalWarn = console.warn;
 		console.warn = (message: string) => {
@@ -659,21 +653,17 @@ describe("pending workflow stage delivery lifecycle", () => {
 test("a crash after sender-visible failure notification reloads to exactly one notification and terminal state", async () => {
 	const runId = testRunId("pending-delivery-notification-crash");
 	const group = `workflow:${runId}`;
-	const persistedSdk = createMockSdk();
 	let failNextMetadataWrite = false;
-	const sdk = {
-		...persistedSdk,
-		async recordStepOutput(...args: Parameters<typeof persistedSdk.recordStepOutput>) {
-			if (failNextMetadataWrite) {
-				failNextMetadataWrite = false;
-				throw new Error("simulated process exit after notification");
-			}
-			await persistedSdk.recordStepOutput(...args);
-		},
+	const writer = new JournalTestBackend();
+	const persist = writer.persistPendingStageMessages.bind(writer);
+	writer.persistPendingStageMessages = async (...args) => {
+		if (failNextMetadataWrite) {
+			failNextMetadataWrite = false;
+			throw new StorageUnavailableError(writer.databasePath, new Error("process exit after notification"));
+		}
+		return persist(...args);
 	};
-	const writer = new DbosDurableBackend(sdk, { executorId: "notification-writer" });
 	writer.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const activeStore = createStore();
 	activeStore.recordRunStart({
@@ -783,12 +773,12 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 			failNextMetadataWrite = true;
 			return delivered;
 		}),
-		/simulated process exit after notification/,
+		StorageUnavailableError,
 	);
 	assert.equal(senderVisibleNotifications, 1);
 	assert.equal(wireNotifications, 1);
 
-	const reader = new DbosDurableBackend(sdk, { executorId: "notification-reader" });
+	const reader = await writer.reopen();
 	await reader.hydrateWorkflow(runId);
 	const pendingNotification = reader.getWorkflow(runId)?.pendingStageMessages?.[0];
 	assert.equal(pendingNotification?.status, "undeliverable");
@@ -828,7 +818,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 	assert.equal(await settleUndeliverablePendingStageMessages(reloadedStore, notifyThroughBroker), 0);
 	assert.equal(wireNotifications, 2);
 	assert.equal(senderVisibleNotifications, 1);
-	const terminal = new DbosDurableBackend(sdk, { executorId: "notification-terminal-reader" });
+	const terminal = await reader.reopen();
 	await terminal.hydrateWorkflow(runId);
 	const terminalEntry = terminal.getWorkflow(runId)?.pendingStageMessages?.[0];
 	assert.equal(terminalEntry?.status, "undeliverable");

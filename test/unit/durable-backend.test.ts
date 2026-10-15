@@ -223,7 +223,7 @@ describe("InMemoryDurableBackend", () => {
 		assert.ok(handle.updatedAt >= before);
 	});
 
-	test("toMetadata shapes current DBOS workflow metadata", () => {
+	test("toMetadata shapes workflow metadata", () => {
 		const metadata = backend.toMetadata(WORKFLOW_ID);
 		assert.ok(metadata);
 		assert.equal(metadata.workflowId, WORKFLOW_ID);

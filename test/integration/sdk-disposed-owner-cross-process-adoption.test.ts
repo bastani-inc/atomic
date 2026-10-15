@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { type RealPostgresClient, RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
 import { sleep } from "../helpers/runtime.js";
+import { type WorkflowProcess, WorkflowProcessHome } from "../helpers/workflow-process.js";
 
 const REAL_SDK_DISPOSED_OWNER_ADOPTION_TIMEOUT_MS = 180_000;
 const FIXTURE = "sdk-crashed-workflow-recovery-client.ts";
@@ -30,33 +30,24 @@ async function waitForProcessExit(pid: number): Promise<void> {
 
 /** One owner process launches an agent-owned run and quits it durably; a second process observes it. */
 async function withQuitRun(
-	body: (owner: RealPostgresClient, other: RealPostgresClient, run: { runId: string; pid: number }) => Promise<void>,
+	body: (owner: WorkflowProcess, other: WorkflowProcess, run: { runId: string; pid: number }) => Promise<void>,
 ): Promise<void> {
-	const home = new RealPostgresHome();
-	const listener = await reserveListener();
-	let owner: RealPostgresClient | undefined;
+	const home = new WorkflowProcessHome();
+	let owner: WorkflowProcess | undefined;
 	try {
-		owner = home.client(
-			listener.port,
-			{ ATOMIC_SDK_RECOVERY_PRODUCER: "1", ATOMIC_SDK_RECOVERY_QUITTABLE: "1" },
-			FIXTURE,
-		);
+		owner = home.client({ ATOMIC_SDK_RECOVERY_PRODUCER: "1", ATOMIC_SDK_RECOVERY_QUITTABLE: "1" }, FIXTURE);
 		const run = await owner.request<{ runId: string; pid: number }>("start");
 		await owner.request("quit", run.runId);
-		const other = home.client(listener.port, {}, FIXTURE);
+		const other = home.client({}, FIXTURE);
 		const paused = await other.request<Inspection>("inspect", run.runId);
 		assert.equal(paused.status, "paused");
 		assert.deepEqual(paused.listed, [], "inspection must not adopt the foreign run into this session");
 		await body(owner, other, run);
 	} finally {
 		try {
-			try {
-				await owner?.crash();
-			} finally {
-				await home.cleanup();
-			}
+			await owner?.crash();
 		} finally {
-			await listener.close();
+			await home.cleanup();
 		}
 	}
 }

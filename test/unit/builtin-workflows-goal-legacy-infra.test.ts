@@ -11,7 +11,6 @@ import {
 import { collectRemainingWork } from "../../packages/workflows/builtin/goal-reducer.js";
 import { reviewDecisionToRecord, reviewerErrorDecision } from "../../packages/workflows/builtin/goal-review.js";
 import type { GoalLedger, ReducerDecision } from "../../packages/workflows/builtin/goal-types.js";
-import { DbosDependencyError } from "../../packages/workflows/src/durable/dbos-admission.js";
 
 function interruptionDecision(reason: string): ReducerDecision {
 	return {
@@ -74,21 +73,10 @@ test("legacy orchestrator execution interruption restores active state and prese
 	}
 });
 
-const databaseDiagnostics = [
-	"managed PostgreSQL health-check failed",
-	new DbosDependencyError(
-		"Workflow database checkpoint timed out. Restore PostgreSQL and inspect the run before resuming; external outcomes may be unknown.",
-		null,
-	).message,
-	new DbosDependencyError("Managed PostgreSQL did not answer a health check in time.", null).message,
-	new DbosDependencyError(
-		"Workflow database unavailable: ownership connection was lost; this execution generation cannot write again",
-		null,
-	).message,
-];
+const interruptionDiagnostics = ["durable checkpoint timeout"];
 
 for (const failure of [
-	...databaseDiagnostics,
+	...interruptionDiagnostics,
 	"atomic-workflows: stage configured with schema must finish by calling structured_output. The model produced assistant text but never called structured_output",
 	'Validation failed for tool "structured_output": instructions: Expected string',
 	"Invalid structured output: response does not match the decision schema. Structured output repair exhausted after 4 attempts.",
@@ -122,7 +110,7 @@ for (const failure of [
 			const originalState = await readFile(join(root, "goal-ledger-state.json"), "utf8");
 
 			const resumed = await createGoalLedger("replacement", "replacement", root);
-			if (!databaseDiagnostics.includes(failure)) {
+			if (!interruptionDiagnostics.includes(failure)) {
 				assert.equal(resumed.ledger.status, "needs_human");
 				assert.deepEqual(resumed.ledger, ledger);
 				assert.equal(await readFile(join(root, "goal-ledger-state.json"), "utf8"), originalState);

@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { Message } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import {
 	markPendingStageMessageDelivered,
@@ -17,7 +16,7 @@ import {
 } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
 import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 const RUN_ID = "run-1";
 const STAGE_KEY = " Reviewer Stage ";
@@ -47,10 +46,8 @@ function pendingMessage(id: string, overrides: Partial<PendingStageMessageInput>
 describe("workflow stage messages store", () => {
 	test("terminal sticky status survives bounded metadata and cold archive hydration (#3467)", async () => {
 		const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk);
+		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -97,8 +94,7 @@ describe("workflow stage messages store", () => {
 				stickyStageDeliveryStatuses(store.runs(), RUN_ID).filter(({ state }) => state === "delivered").length,
 				20,
 			);
-			assert.equal((await backend.hydrateWorkflowForInspection(RUN_ID)).kind, "current");
-			const resumed = new DbosDurableBackend(sdk);
+			const resumed = await backend.reopen();
 			await resumed.hydrateWorkflow(RUN_ID);
 			setDurableBackend(resumed);
 			const restored = createStore();
@@ -126,11 +122,9 @@ describe("workflow stage messages store", () => {
 		assert.deepEqual(stickyStageDeliveryStatuses([], RUN_ID), []);
 	});
 
-	test("bounds settled payloads and deduplicates old delivered IDs after DBOS reload (#3467)", async () => {
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk);
+	test("bounds settled payloads and deduplicates old delivered IDs after journal reload (#3467)", async () => {
+		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -147,7 +141,7 @@ describe("workflow stage messages store", () => {
 		}
 		assert.ok((backend.getWorkflow(RUN_ID)?.pendingStageMessages?.length ?? 0) <= 50);
 		assert.ok((store.runs()[0]?.pendingStageMessages?.length ?? 0) <= 50);
-		const resumed = new DbosDurableBackend(sdk);
+		const resumed = await backend.reopen();
 		await resumed.hydrateWorkflow(RUN_ID);
 		const restored = createStore();
 		restored.recordRunStart({
@@ -170,18 +164,24 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("preserves settled retry identity across interrupted archival and metadata writes (#3467)", async () => {
-		const sdk = createMockSdk();
-		let failedPrefix: string | undefined;
-		const backend = new DbosDurableBackend({
-			...sdk,
-			recordStepOutput: async (runId, stepName, output) => {
-				if (failedPrefix !== undefined && stepName.startsWith(failedPrefix))
-					throw new Error("interrupted persistence");
-				await sdk.recordStepOutput(runId, stepName, output);
-			},
-		});
+		let failedOperation: "archive" | "snapshot" | undefined;
+		const failure = new StorageUnavailableError("journal.sqlite", new Error("interrupted persistence"));
+		class FailingBackend extends JournalTestBackend {
+			override async archivePendingStageMessage(runId: string, entry: PendingStageMessage): Promise<void> {
+				if (failedOperation === "archive") throw failure;
+				await super.archivePendingStageMessage(runId, entry);
+			}
+			override async persistPendingStageMessages(
+				runId: string,
+				messages: readonly PendingStageMessage[],
+				logicalRunId?: string,
+			): Promise<boolean> {
+				if (failedOperation === "snapshot") throw failure;
+				return super.persistPendingStageMessages(runId, messages, logicalRunId);
+			}
+		}
+		const backend = new FailingBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -197,14 +197,14 @@ describe("workflow stage messages store", () => {
 			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, String(index), "now", backend);
 		}
 		await store.queueStageMessage(pendingMessage("50"), RUN_GROUP, RUN_GROUP, backend);
-		for (const prefix of ["__atomic_pending_receipt:", "__atomic_metadata:"]) {
-			failedPrefix = prefix;
+		for (const operation of ["archive", "snapshot"] as const) {
+			failedOperation = operation;
 			await assert.rejects(
 				store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "50", "now", backend),
-				/interrupted persistence/,
+				(error: Error) => error === failure,
 			);
 			assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 1);
-			const resumed = new DbosDurableBackend(sdk);
+			const resumed = new JournalTestBackend(backend.databasePath);
 			await resumed.hydrateWorkflow(RUN_ID);
 			const restored = createStore();
 			restored.recordRunStart({
@@ -216,7 +216,7 @@ describe("workflow stage messages store", () => {
 			assert.equal(retry.deduplicated, true);
 			assert.equal(retry.entry.status, "delivered");
 		}
-		failedPrefix = undefined;
+		failedOperation = undefined;
 		await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "50", "now", backend);
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 0);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.length, 50);
@@ -370,10 +370,8 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("deduplicates a reconstructed durable retry with a regenerated timestamp", async () => {
-		const sdk = createMockSdk();
-		const writerBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-writer" });
+		const writerBackend = new JournalTestBackend();
 		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await writerBackend.flush();
 		const writerStore = createStore();
 		writerStore.recordRunStart({
 			id: RUN_ID,
@@ -398,7 +396,7 @@ describe("workflow stage messages store", () => {
 		assert.equal(admitted?.ok, true);
 		if (admitted?.ok !== true) return;
 
-		const retryBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-reader" });
+		const retryBackend = await writerBackend.reopen();
 		await retryBackend.hydrateWorkflow(RUN_ID);
 		const durableBeforeRetry = retryBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
 		const retryStore = createStore();
@@ -451,7 +449,7 @@ describe("workflow stage messages store", () => {
 			),
 			true,
 		);
-		const deliveredBackend = new DbosDurableBackend(sdk, { executorId: "timestamp-retry-delivered-reader" });
+		const deliveredBackend = await retryBackend.reopen();
 		await deliveredBackend.hydrateWorkflow(RUN_ID);
 		const deliveredBeforeRetry = deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
 		const deliveredStore = createStore();
@@ -486,10 +484,8 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("canonicalizes omitted message defaults across durable queued and delivered retries", async () => {
-		const sdk = createMockSdk();
-		const writerBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-writer" });
+		const writerBackend = new JournalTestBackend();
 		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await writerBackend.flush();
 		const writerStore = createStore();
 		writerStore.recordRunStart({
 			id: RUN_ID,
@@ -550,7 +546,7 @@ describe("workflow stage messages store", () => {
 				queuedAt: "regenerated explicit transport attempt",
 			},
 		];
-		const queuedBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-queued-reader" });
+		const queuedBackend = await writerBackend.reopen();
 		await queuedBackend.hydrateWorkflow(RUN_ID);
 		const queuedBeforeRetry = queuedBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
 		const queuedStore = createStore();
@@ -620,7 +616,7 @@ describe("workflow stage messages store", () => {
 				true,
 			);
 		}
-		const deliveredBackend = new DbosDurableBackend(sdk, { executorId: "optional-defaults-delivered-reader" });
+		const deliveredBackend = await queuedBackend.reopen();
 		await deliveredBackend.hydrateWorkflow(RUN_ID);
 		const deliveredBeforeRetry = deliveredBackend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [];
 		const deliveredStore = createStore();
@@ -907,6 +903,12 @@ describe("durable workflow stage messages metadata", () => {
 		};
 	}
 
+	function roundTrip(input: DurableWorkflowMetadata) {
+		const writer = new JournalTestBackend();
+		writer.registerWorkflow(input);
+		return new JournalTestBackend(writer.databasePath).getWorkflow(input.workflowId);
+	}
+
 	test("encode and parse restore messages verbatim", () => {
 		const accepted = queueStageMessage(
 			[],
@@ -916,10 +918,7 @@ describe("durable workflow stage messages metadata", () => {
 		);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = parseCurrentMetadataRecord(
-			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata(accepted.messages)) },
-			RUN_ID,
-		);
+		const parsed = roundTrip(metadata(accepted.messages));
 		assert.deepEqual(parsed?.pendingStageMessages, accepted.messages);
 	});
 
@@ -935,29 +934,20 @@ describe("durable workflow stage messages metadata", () => {
 		);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = parseCurrentMetadataRecord(
-			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata(accepted.messages)) },
-			RUN_ID,
-		);
+		const parsed = roundTrip(metadata(accepted.messages));
 		assert.deepEqual(parsed?.pendingStageMessages?.[0]?.from.groups, senderGroups);
 	});
 
-	test("accepts legacy durable messages without a return address", () => {
-		const accepted = queueStageMessage([], pendingMessage("legacy"), RUN_GROUP, RUN_GROUP);
+	test("preserves an omitted sender return address", () => {
+		const accepted = queueStageMessage([], pendingMessage("omitted"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = parseCurrentMetadataRecord(
-			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata(accepted.messages)) },
-			RUN_ID,
-		);
+		const parsed = roundTrip(metadata(accepted.messages));
 		assert.equal(parsed?.pendingStageMessages?.[0]?.senderReturnAddress, undefined);
 	});
 
 	test("metadata without pending messages hydrates an empty collection", () => {
-		const parsed = parseCurrentMetadataRecord(
-			{ stepName: "__atomic_metadata:2:test", output: encodeMetadata(metadata()) },
-			RUN_ID,
-		);
+		const parsed = roundTrip(metadata());
 		assert.deepEqual(parsed?.pendingStageMessages, []);
 	});
 
@@ -979,9 +969,8 @@ describe("durable workflow stage messages metadata", () => {
 		assert.deepEqual(backend.getWorkflow("empty")?.pendingStageMessages, []);
 	});
 
-	test("store lifecycle transitions survive DBOS metadata reload", async () => {
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk, { executorId: "pending-stage-writer" });
+	test("store lifecycle transitions survive journal reload", async () => {
+		const backend = new JournalTestBackend();
 		backend.registerWorkflow({
 			workflowId: RUN_ID,
 			name: "flow",
@@ -989,7 +978,6 @@ describe("durable workflow stage messages metadata", () => {
 			status: "running",
 			createdAt: 1,
 		});
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1003,7 +991,7 @@ describe("durable workflow stage messages metadata", () => {
 
 		const queued = await store.queueStageMessage(pendingMessage("queued"), RUN_GROUP, RUN_GROUP, backend);
 		assert.equal(queued?.ok, true);
-		let reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-add" });
+		let reloaded = new JournalTestBackend(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1014,7 +1002,7 @@ describe("durable workflow stage messages metadata", () => {
 			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "queued", "2026-08-27T12:00:00.000Z", backend),
 			true,
 		);
-		reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-delivered" });
+		reloaded = new JournalTestBackend(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1027,7 +1015,7 @@ describe("durable workflow stage messages metadata", () => {
 			await store.markPendingStageMessageUndeliverable(RUN_ID, STAGE_KEY, "refused", "stage ended", backend),
 			true,
 		);
-		reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-reader-undeliverable" });
+		reloaded = new JournalTestBackend(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1039,10 +1027,8 @@ describe("durable workflow stage messages metadata", () => {
 	});
 
 	test("concurrent queue transitions retain FIFO in live and reloaded metadata", async () => {
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk, { executorId: "pending-stage-concurrent-writer" });
+		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1065,7 +1051,7 @@ describe("durable workflow stage messages metadata", () => {
 			["1", "2"],
 		);
 
-		const reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-concurrent-reader" });
+		const reloaded = await backend.reopen();
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id }) => id),
@@ -1073,21 +1059,21 @@ describe("durable workflow stage messages metadata", () => {
 		);
 	});
 
-	test("DBOS rejection leaves the transition invisible and propagates the error", async () => {
-		const sdk = createMockSdk();
+	test("journal rejection leaves the transition invisible and propagates the typed error", async () => {
 		let rejectWrites = false;
-		const backend = new DbosDurableBackend(
-			{
-				...sdk,
-				async recordStepOutput(workflowId, stepName, output) {
-					if (rejectWrites) throw new Error("pending stage DBOS write rejected");
-					await sdk.recordStepOutput(workflowId, stepName, output);
-				},
-			},
-			{ executorId: "pending-stage-rejection-writer" },
-		);
+		const failure = new StorageUnavailableError("journal.sqlite", new Error("write rejected"));
+		class FailingBackend extends JournalTestBackend {
+			override async persistPendingStageMessages(
+				runId: string,
+				messages: readonly PendingStageMessage[],
+				logicalRunId?: string,
+			): Promise<boolean> {
+				if (rejectWrites) throw failure;
+				return super.persistPendingStageMessages(runId, messages, logicalRunId);
+			}
+		}
+		const backend = new FailingBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		await backend.flush();
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1104,11 +1090,11 @@ describe("durable workflow stage messages metadata", () => {
 
 		await assert.rejects(
 			store.queueStageMessage(pendingMessage("rejected"), RUN_GROUP, RUN_GROUP, backend),
-			/pending stage DBOS write rejected/,
+			(error: Error) => error === failure,
 		);
 		assert.equal(notifications, 0);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY), []);
-		const reloaded = new DbosDurableBackend(sdk, { executorId: "pending-stage-rejection-reader" });
+		const reloaded = new JournalTestBackend(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(reloaded.getWorkflow(RUN_ID)?.pendingStageMessages, []);
 	});

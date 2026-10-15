@@ -4,12 +4,11 @@ import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 function orderedNames(snapshot: RunSnapshot): string[] {
 	return [
@@ -276,12 +275,11 @@ describe("ctx.tool durable graph replay", () => {
 		);
 	});
 
-	test("new tool topology survives DBOS flush, fresh hydration, and replay", async () => {
-		const sdk = createMockSdk();
-		const runId = "tool-dbos-restart";
+	test("new tool topology survives journal reopen and replay", async () => {
+		const runId = "tool-journal-restart";
 		let toolCalls = 0;
 		const definition = workflow({
-			name: "tool-dbos-restart",
+			name: "tool-journal-restart",
 			description: "",
 			inputs: {},
 			outputs: { value: Type.Number(), labels: Type.Array(Type.String()) },
@@ -291,16 +289,15 @@ describe("ctx.tool durable graph replay", () => {
 					return { value: 42, labels: ["a", "a", "b"] };
 				}),
 		});
-		const firstBackend = new DbosDurableBackend(sdk);
+		const firstBackend = new JournalTestBackend();
 		const firstStore = createStore();
 		const first = await run(definition, {}, { runId, store: firstStore, durableBackend: firstBackend });
-		await firstBackend.flush();
 		assert.equal(first.status, "completed");
 		assert.equal(toolCalls, 1);
 		const firstTool = firstStore.runs()[0]?.toolNodes?.[0];
 		assert.ok(firstTool);
 
-		const freshBackend = new DbosDurableBackend(sdk);
+		const freshBackend = await firstBackend.reopen();
 		await freshBackend.hydrateWorkflow(runId);
 		const hydrated = freshBackend.listCheckpoints(runId).find((checkpoint) => checkpoint.kind === "tool");
 		assert.equal(hydrated?.kind, "tool");

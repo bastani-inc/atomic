@@ -63,10 +63,6 @@ test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
 	async (outcome) => {
 		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["new", outcome, "workflow"], {
 			...process.env,
-			DBOS_SYSTEM_DATABASE_URL: undefined,
-			ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
-			// Embedded resolution supplies its own URL. Refuse Docker before it can start a container.
-			PGPORT: "0",
 		});
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,

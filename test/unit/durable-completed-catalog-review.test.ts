@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import {
+	type DurableWorkflowBackend,
+	durableHash,
+	InMemoryDurableBackend,
+} from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	completedWorkflowSnapshot,
@@ -14,7 +18,7 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 
-function registerCompleted(backend: InMemoryDurableBackend, workflowId: string): void {
+function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): void {
 	backend.registerWorkflow({
 		workflowId,
 		name: workflowId,
@@ -64,7 +68,7 @@ function tool(
 }
 
 function reconstructed(
-	backend: InMemoryDurableBackend,
+	backend: DurableWorkflowBackend,
 	workflowId: string,
 ): {
 	runs: readonly RunSnapshot[];

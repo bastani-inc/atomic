@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { DbosDurableBackend, type DbosSdkHandle } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	createInMemoryTestBackend,
+	DurableBackendNotInitializedError,
+} from "../../packages/workflows/src/durable/factory.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	InvalidWorkflowHeartbeatAnchorError,
 	readWorkflowHeartbeatAnchor,
@@ -35,8 +38,8 @@ import {
 	type WorkflowHeartbeatEventDetails,
 	type WorkflowHeartbeatIdentity,
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -1474,13 +1477,12 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const runId = testRunId("heartbeat-anchor-unavailable");
 		const store = createStore();
 		startRun(store, runId);
-		// Models `getDurableBackend()` raising DbosNotReadyError at session start.
 		const throwingStore: WorkflowHeartbeatAnchorStore = {
 			readAnchorAt() {
-				throw new Error("DbosNotReadyError: no durable backend");
+				throw new DurableBackendNotInitializedError();
 			},
 			recordAnchorAt() {
-				throw new Error("DbosNotReadyError: no durable backend");
+				throw new DurableBackendNotInitializedError();
 			},
 		};
 		const harness = installHarness({
@@ -1895,9 +1897,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 });
 
 describe("workflow heartbeat anchor durable acknowledgement", () => {
-	/** A DBOS-backed run with one ordinary checkpoint, so the no-progress guard passes. */
-	function dbosRunWithProgress(sdk: DbosSdkHandle, runId: string): DbosDurableBackend {
-		const backend = new DbosDurableBackend(sdk);
+	function registerProgress(backend: JournalTestBackend, runId: string): void {
 		backend.registerWorkflow({
 			workflowId: runId,
 			name: "heartbeat-workflow",
@@ -1915,28 +1915,26 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			output: { ok: true },
 			completedAt: STARTED_AT,
 		});
-		return backend;
+		return;
 	}
 
-	test("a rejected DBOS write is not acknowledged, and a later pass persists it", async () => {
-		const runId = testRunId("heartbeat-anchor-dbos-ack");
-		const sdk = createMockSdk();
+	test("a rejected journal write is not acknowledged, and a later pass persists it", async () => {
+		const runId = testRunId("heartbeat-anchor-journal-ack");
 		let failNextAnchorWrite = true;
-		const baseRecord = sdk.recordStepOutput;
-		const flakySdk: DbosSdkHandle = {
-			...sdk,
-			async recordStepOutput(workflowId, stepName, output) {
-				if (stepName === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME && failNextAnchorWrite) {
-					failNextAnchorWrite = false;
-					throw new Error("dbos write failed");
-				}
-				await baseRecord(workflowId, stepName, output);
-			},
+		const backend = new JournalTestBackend();
+		const record = backend.recordCheckpoint.bind(backend);
+		backend.recordCheckpoint = (checkpoint) => {
+			if (
+				checkpoint.kind === "tool" &&
+				checkpoint.name === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME &&
+				failNextAnchorWrite
+			) {
+				failNextAnchorWrite = false;
+				throw new StorageUnavailableError(backend.databasePath, new Error("write failed"));
+			}
+			record(checkpoint);
 		};
-		const backend = dbosRunWithProgress(flakySdk, runId);
-
-		// The DBOS backend writes its in-memory mirror before queueing the real
-		// write, so a synchronous read-back would call this a success. It is not.
+		registerProgress(backend, runId);
 		assert.equal(
 			await recordWorkflowHeartbeatAnchor(backend, {
 				runId,
@@ -1947,9 +1945,8 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			false,
 			"a rejected storage write is not acknowledged",
 		);
-		// A fresh process, reading DBOS alone, must not find the anchor.
 		assert.equal(
-			readWorkflowHeartbeatAnchor(new DbosDurableBackend(flakySdk), runId),
+			readWorkflowHeartbeatAnchor(new JournalTestBackend(backend.databasePath), runId),
 			undefined,
 			"nothing was durably stored",
 		);
@@ -1964,7 +1961,7 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			}),
 			true,
 		);
-		const hydrated = new DbosDurableBackend(flakySdk);
+		const hydrated = await backend.reopen();
 		await hydrated.hydrateWorkflow(runId);
 		assert.deepEqual(readWorkflowHeartbeatAnchor(hydrated, runId), {
 			anchorAt: STARTED_AT,

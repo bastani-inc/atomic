@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
@@ -17,9 +16,9 @@ import { createStore, store } from "../../packages/workflows/src/shared/store.js
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 import { mockSession } from "../unit/executor-shared.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -42,15 +41,16 @@ test.each([
 	"session-tools",
 	"session-corrupt-parent",
 	"session-missing-checkpoint",
-	"dbos",
-	"dbos-session",
-	"dbos-direct",
+	"journal",
+	"journal-session",
+	"journal-direct",
 	"changed-args",
 ] as const)(
 	"public resume replays completed work from live, lifecycle-restored, or durable state and rejects unsafe frontiers (%s)",
 	async (mode) => {
-		const sdk = createMockSdk();
-		let backend = mode.startsWith("dbos") ? new DbosDurableBackend(sdk) : new InMemoryDurableBackend();
+		let backend: DurableWorkflowBackend = mode.startsWith("journal")
+			? new JournalTestBackend()
+			: new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		let completedCalls = 0;
 		let modelCalls = 0;
@@ -119,9 +119,8 @@ test.each([
 			restoredSessionStore,
 		);
 		assert.equal(restoredSessionStore.runs()[0]?.toolNodes?.[0]?.status, "cancelled");
-		await backend.flush(runId);
-		if (mode.startsWith("dbos")) {
-			backend = new DbosDurableBackend(sdk);
+		if (backend instanceof JournalTestBackend) {
+			backend = await backend.reopen();
 			await backend.hydrateWorkflow(runId);
 			setDurableBackend(backend);
 		}
@@ -155,7 +154,7 @@ test.each([
 			assert.equal(snapshots[0]?.toolNodes?.find((node) => node.name === "wait-required-ci")?.status, "cancelled");
 			store.clear();
 			for (const snapshot of snapshots) {
-				if (mode !== "dbos-direct") store.recordRunStart(snapshot);
+				if (mode !== "journal-direct") store.recordRunStart(snapshot);
 			}
 		}
 		changedArgs = mode === "changed-args";
@@ -219,15 +218,7 @@ test.each([
 test.each(["live", "restored"] as const)(
 	"public repeated tool-frontier continuation preserves two interleaved stages and effects (%s)",
 	async (mode) => {
-		const immediateSdk = createMockSdk();
-		const sdk = {
-			...immediateSdk,
-			recordStepOutput: async (...args: Parameters<typeof immediateSdk.recordStepOutput>) => {
-				await sleep(1); // Production persistence settles asynchronously, unlike the in-memory SDK.
-				await immediateSdk.recordStepOutput(...args);
-			},
-		};
-		let backend = new DbosDurableBackend(sdk);
+		let backend = new JournalTestBackend();
 		setDurableBackend(backend);
 		let modelCalls = 0;
 		let receiptCalls = 0;
@@ -272,8 +263,7 @@ test.each(["live", "restored"] as const)(
 		const timing = source.stages.map(({ startedAt, endedAt, durationMs }) => ({ startedAt, endedAt, durationMs }));
 		for (let hop = 1; hop <= 2; hop++) {
 			if (mode === "restored" && hop === 2) {
-				await backend.flush(source.id);
-				backend = new DbosDurableBackend(sdk);
+				backend = await backend.reopen();
 				await backend.hydrateWorkflow(source.id);
 				setDurableBackend(backend);
 				const restored = durableWorkflowRunSnapshots(backend, backend.getWorkflow(source.id)!);
@@ -435,9 +425,8 @@ test("tool-only return-mode resume preserves repeated-call ordinals and never re
 	);
 });
 
-test("fresh DBOS rejects a cyclic persisted tool frontier without executing callbacks", async () => {
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk);
+test("fresh journal rejects a cyclic persisted tool frontier without executing callbacks", async () => {
+	const writer = new JournalTestBackend();
 	const workflowId = "78607844-1088-4e90-83ac-ce1b957689ed";
 	writer.registerWorkflow({
 		workflowId,
@@ -469,8 +458,7 @@ test("fresh DBOS rejects a cyclic persisted tool frontier without executing call
 			run: { runId: workflowId, runName: "cyclic-tool" },
 		},
 	});
-	await writer.flush(workflowId);
-	const fresh = new DbosDurableBackend(sdk);
+	const fresh = await writer.reopen();
 	await fresh.hydrateWorkflow(workflowId);
 	setDurableBackend(fresh);
 	assert.deepEqual(durableWorkflowRunSnapshots(fresh, fresh.getWorkflow(workflowId)!), []);
@@ -500,8 +488,7 @@ test.each(
 )(
 	"public durable resume requires the typed tool failure checkpoint for name=$name, typed=$typed",
 	async ({ name, typed }) => {
-		const sdk = createMockSdk();
-		const original = new DbosDurableBackend(sdk);
+		const original = new JournalTestBackend();
 		setDurableBackend(original);
 		let completedCalls = 0;
 		let targetCalls = 0;
@@ -534,16 +521,13 @@ test.each(
 		const target = source.toolNodes![1]!;
 		await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
 		await waitFor(() => source.endedAt !== undefined);
-		await original.flush(source.id);
-		const copiedSdk = createMockSdk();
-		const writer = new DbosDurableBackend(copiedSdk);
+		const writer = new JournalTestBackend();
 		writer.registerWorkflow(original.getWorkflow(source.id)!);
 		for (const checkpoint of original.listCheckpoints(source.id)) {
 			if (!typed && checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) continue;
 			writer.recordCheckpoint(checkpoint);
 		}
-		await writer.flush(source.id);
-		const backend = new DbosDurableBackend(copiedSdk);
+		const backend = await writer.reopen();
 		await backend.hydrateWorkflow(source.id);
 		setDurableBackend(backend);
 		store.clear();

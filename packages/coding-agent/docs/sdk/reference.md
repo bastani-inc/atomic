@@ -922,7 +922,7 @@ WorkflowRunNotResumableError
 WorkflowStageNotFoundError
 WorkflowStageAmbiguousError
 WorkflowStageResumeUnsupportedError
-WorkflowRunDatabaseError
+WorkflowRunStorageError
 WorkflowRunControlUnavailableError
 
 // Tool factories

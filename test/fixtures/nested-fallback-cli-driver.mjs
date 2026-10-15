@@ -21,7 +21,7 @@ for (const [file, directory] of [["nested-fallback-workflow.ts", "workflows"], [
 }
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("ATOMIC_") || key.startsWith("PI_") || key === "NODE_TEST_CONTEXT") delete env[key];
-Object.assign(env, { NODE_ENV: "production", ATOMIC_CODING_AGENT_DIR: agent, ATOMIC_CODING_AGENT_SESSION_DIR: join(evidence, "sessions"), ATOMIC_SKIP_VERSION_CHECK: "1", NESTED_DISCOVERY_STATE_DIR: evidence, NESTED_FALLBACK_CONTROL: process.argv[3] ?? "fallback", DBOS_SYSTEM_DATABASE_URL: "postgresql://fixture:fixture@127.0.0.1:1/unreachable" });
+Object.assign(env, { NODE_ENV: "production", ATOMIC_CODING_AGENT_DIR: agent, ATOMIC_CODING_AGENT_SESSION_DIR: join(evidence, "sessions"), ATOMIC_SKIP_VERSION_CHECK: "1", NESTED_DISCOVERY_STATE_DIR: evidence, NESTED_FALLBACK_CONTROL: process.argv[3] ?? "fallback", ATOMIC_WORKFLOW_JOURNAL_PATH: join(evidence, "journal.sqlite") });
 if (probeTop) env.NESTED_COLD_TOP_PROBE = "1";
 console.log("BUILD_SHA", execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim());
 const cli = spawn(process.execPath, [join(repo, "packages/coding-agent/dist/cli.js"), "--mode", "rpc", "--approve", "--offline", "--no-session", "--provider", "nested-discovery-fixture", "--model", "fixture"], { cwd: project, env, stdio: ["pipe", "pipe", "pipe"] });

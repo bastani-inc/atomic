@@ -257,7 +257,7 @@ describe("recordStageCheckpoint", () => {
 	});
 });
 
-describe("run durable flush", () => {
+describe("run durable checkpoints", () => {
 	exTest("completed stage checkpoint is awaited before next stage starts", async () => {
 		class AsyncStageBackend extends InMemoryDurableBackend {
 			persisted = false;
@@ -330,92 +330,6 @@ describe("run durable flush", () => {
 		exAssert.equal(stage?.name, "cached-task");
 		exAssert.equal(stage?.status, "completed");
 		exAssert.equal(stage?.replayed, true);
-	});
-
-	exTest("workflow completion waits for durable flush", async () => {
-		class FlushBackend extends InMemoryDurableBackend {
-			flushed = false;
-			flushStarted = false;
-			async flush(): Promise<void> {
-				this.flushStarted = true;
-				await Promise.resolve();
-				this.flushed = true;
-			}
-		}
-		const backend = new FlushBackend();
-		backend.registerWorkflow({
-			workflowId: "wf-flush",
-			name: "flush",
-			inputs: {},
-			createdAt: Date.now(),
-			status: "running",
-		});
-		backend.recordCheckpoint({
-			kind: "stage",
-			workflowId: "wf-flush",
-			checkpointId: "stage:stage:cached:1",
-			name: "cached",
-			replayKey: "stage:cached:1",
-			output: "cached",
-			completedAt: Date.now(),
-		});
-		const store = createStore();
-		const def = workflow({
-			name: "flush-wf",
-			description: "",
-			inputs: {},
-			outputs: { result: Type.String() },
-			run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
-		});
-
-		const result = await run(def, {}, { runId: "wf-flush", store, durableBackend: backend });
-		exAssert.equal(result.status, "completed");
-		exAssert.equal(backend.flushStarted, true);
-		exAssert.equal(backend.flushed, true);
-	});
-
-	exTest("workflow completion fails when durable flush fails", async () => {
-		class FailingFlushBackend extends InMemoryDurableBackend {
-			failFlush = false;
-			async flush(): Promise<void> {
-				if (this.failFlush) throw new Error("durable write failed");
-			}
-		}
-		const backend = new FailingFlushBackend();
-		backend.registerWorkflow({
-			workflowId: "wf-flush-fail",
-			name: "flush",
-			inputs: {},
-			createdAt: Date.now(),
-			status: "running",
-		});
-		backend.recordCheckpoint({
-			kind: "stage",
-			workflowId: "wf-flush-fail",
-			checkpointId: "stage:stage:cached:1",
-			name: "cached",
-			replayKey: "stage:cached:1",
-			output: "cached",
-			completedAt: Date.now(),
-		});
-		const def = workflow({
-			name: "flush-fail-wf",
-			description: "",
-			inputs: {},
-			outputs: { result: Type.String() },
-			run: async (ctx) => {
-				const result = await ctx.stage("cached").complete("cached");
-				// #3072: admission must succeed before testing completion persistence.
-				backend.failFlush = true;
-				return { result };
-			},
-		});
-
-		await exAssert.rejects(
-			() => run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend }),
-			/durable write failed/,
-		);
-		exAssert.equal(backend.failFlush, true, "the workflow must reach completion before flush fails");
 	});
 
 	exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {
@@ -534,16 +448,10 @@ describe("run durable flush", () => {
 		);
 	});
 
-	exTest("terminal completed status is flushed before run returns", async () => {
-		class StatusFlushBackend extends InMemoryDurableBackend {
-			flushedCompleted = false;
-			async flush(): Promise<void> {
-				if (this.getWorkflow("wf-status-flush")?.status === "completed") this.flushedCompleted = true;
-			}
-		}
-		const backend = new StatusFlushBackend();
+	exTest("terminal completed status is durable before run returns", async () => {
+		const backend = new InMemoryDurableBackend();
 		const def = workflow({
-			name: "status-flush-wf",
+			name: "status-journal-wf",
 			description: "",
 			inputs: {},
 			outputs: { result: Type.String() },
@@ -560,7 +468,7 @@ describe("run durable flush", () => {
 			},
 		);
 		exAssert.equal(result.status, "completed");
-		exAssert.equal(backend.flushedCompleted, true);
+		exAssert.equal((await backend.reopen()).getWorkflow("wf-status-flush")?.status, "completed");
 	});
 
 	exTest("repeated ctx.workflow(child) calls replay in order without re-execution", async () => {

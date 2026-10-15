@@ -12,7 +12,6 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	installWorkflowLifecycleNotifications,
@@ -25,7 +24,7 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { WORKFLOW_AUTH_TIMEOUT_FAILURE_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 // Issue #3085 / #3087
 
@@ -108,8 +107,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
 		cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk, { executorId: "3085-writer" });
+		const backend = new JournalTestBackend();
 		setDurableBackend(backend);
 		cleanup.push(() => setDurableBackend(undefined));
 
@@ -271,11 +269,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 			);
 		assert.equal(parentCards.length, 1, "parent transcript must persist exactly one blocked lifecycle card");
 
-		await backend.flush(source.id);
-		const fresh = new DbosDurableBackend(sdk, { executorId: "3085-reader" });
+		const fresh = await backend.reopen();
 		await fresh.hydrateWorkflow(source.id);
 		const hydrated = fresh.getWorkflow(source.id);
-		assert.ok(hydrated, "blocked workflow must remain discoverable after same-process DBOS rehydrate");
+		assert.ok(hydrated, "blocked workflow must remain discoverable after journal reopen");
 		assert.equal(hydrated.status, "blocked");
 		assert.equal(hydrated.resumable, true);
 

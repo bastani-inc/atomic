@@ -11,6 +11,7 @@ function fixture(
 	backend = new InMemoryDurableBackend(),
 	overrides: Partial<Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]> = {},
 ) {
+	backend.workflowOwnership = () => "available";
 	const definition = workflow({
 		name: "adoption-startup",
 		description: "",
@@ -86,25 +87,6 @@ for (const status of ["running", "paused", "cancelled", "completed"] as const) {
 		assert.equal(f.store.runs()[0], controlled);
 	});
 }
-
-test("adoption failed startup admission preserves newer control metadata (#3419)", async () => {
-	class ControlledAdmissionBackend extends InMemoryDurableBackend {
-		async admitWorkflow(): Promise<void> {
-			throw new Error("admission failed");
-		}
-		override setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): void {
-			super.setWorkflowStatus(...args);
-			if (args[1] === "failed") super.setWorkflowStatus(args[0], "paused", 3, false);
-		}
-	}
-	const f = fixture(new ControlledAdmissionBackend());
-	const result = await resumeDurableWorkflow(f.id, f.deps);
-	assert.equal(result.ok, false);
-	assert.equal(f.backend.getWorkflow(f.id)?.status, "paused");
-	assert.equal(f.backend.getWorkflow(f.id)?.pendingPrompts, 3);
-	assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "new-session");
-	assert.equal(f.backend.getWorkflow(f.id)?.completedCheckpoints, 1);
-});
 
 test("uncontended synchronous adoption rollback retains the adopted owner and checkpoints (#3419)", async () => {
 	const f = fixture();

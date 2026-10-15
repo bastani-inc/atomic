@@ -11,8 +11,6 @@
  * (including bare `await someFunction()`) is never saved, matching the issue's
  * requirement: "checkpoints are effectively only `ctx.*` blocks."
  *
- * cross-ref: issue #1498 — "Introduce ctx.tool which allows you to run any
- * typescript code and cache the result for DBOS."
  */
 
 import { type AdmittedAgentTask, collectAgentTasks, runCallback, type TaskResult } from "@bastani/atomic";

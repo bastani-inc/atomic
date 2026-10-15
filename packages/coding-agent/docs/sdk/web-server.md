@@ -20,7 +20,7 @@ npm install @bastani/atomic
 
 Atomic needs Node.js 22.19 or newer and does not require dependency install scripts.
 
-Bun blocks the install scripts of some dependencies, such as `@embedded-postgres/<platform>`, `protobufjs`, and `@google/genai`, and reports them after `bun add @bastani/atomic`. You don't need to add them to `trustedDependencies` in `package.json`: Atomic prepares the embedded Postgres runtime itself the first time it starts it, and it doesn't depend on the other scripts.
+Dependency install scripts are not required. If your package manager reports blocked scripts, you do not need to enable them for Atomic.
 
 ## Keep Atomic out of the server bundle
 
@@ -300,12 +300,12 @@ export async function POST(request: Request): Promise<Response> {
 
 ### Choose workflow durability
 
-By default, `run()` makes workflow state durable by starting a managed local Postgres, so a run can resume after the process exits. Request-scoped servers rarely want that:
+By default, `run()` persists workflow state in a local SQLite journal so eligible runs can resume after the process exits. Keep that file on durable local storage in deployments that need restart recovery.
 
-- **`durability: { mode: "memory" }`** keeps state in memory for this call only. No Postgres starts, and the run can't resume after the process exits. Use it when the request owns the run.
-- **`durability: { mode: "durable", systemDatabaseUrl }`** stores state in a Postgres database you run, such as a hosted one, and Atomic doesn't start its own. Use it in deployments that need runs to survive restarts. `DBOS_SYSTEM_DATABASE_URL`, when set, overrides the URL.
+- **`durability: { mode: "durable" }`** explicitly requires persistent state. Journal open or write failures stop the run; they do not select non-durable execution.
+- **`durability: { mode: "memory" }`** explicitly keeps state for this call only and cannot resume after process exit. Use it only when that lifetime is intentional.
 
-One process uses one workflow database. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend) for the full rules, and [Workflows](/workflows) for writing workflow definitions.
+Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before the first workflow action to choose the journal file. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend) and [Workflows](/workflows).
 
 ## Secure the endpoint
 

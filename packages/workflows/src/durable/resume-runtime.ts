@@ -1,22 +1,5 @@
-/**
- * Cross-process workflow resume using DBOS as the sole source of state.
- *
- * Resume semantics (DBOS-aligned):
- *   1. Look up the durable catalog entry (workflow name + cached inputs).
- *   2. Resolve the workflow definition from the registry.
- *   3. Re-dispatch the workflow as a new background run, reusing the ORIGINAL
- *      top-level workflow id as the run id. Because durable checkpoints are
- *      keyed by workflow id, every `ctx.tool` / `ctx.ui` / `ctx.stage` call
- *      inside the resumed run returns its cached result instead of re-executing
- *      — completed side effects are not repeated, exactly like DBOS replay.
- *
- * The adapter deliberately re-dispatches through `runDetached` rather than
- * reconstructing an in-memory snapshot, so it works across processes and
- * sessions without a live store entry.
- *
- * cross-ref: issue #1498 — "/workflow resume connects/attempts resume by
- * top-level workflow id."
- */
+import { raceAbort } from "../shared/abort.js";
+/** Resume workflows from durable checkpoints without repeating completed work. */
 
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
@@ -31,11 +14,10 @@ import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
-import { boundedAdmission, dbosAdmissionContext } from "./dbos-admission.js";
-import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { getDurableBackend } from "./factory.js";
 import { forkDurableWorkflow } from "./fork-workflow.js";
-import { isDurableWorkflowResumable, isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
+import { JournalDurableBackend } from "./journal/journal-backend.js";
+import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
@@ -74,7 +56,7 @@ export interface ResumeDurableDeps {
 	readonly forkModelOwner?: string;
 }
 
-/** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
+/** Refresh metadata and checkpoints before synchronous replay reads. */
 export async function prepareDurableResume(
 	workflowId: string | undefined,
 	deps: ResumeDurableDeps,
@@ -94,7 +76,7 @@ export async function prepareDurableResume(
 }
 
 /**
- * Resolve a current DBOS catalog entry by full run id or unique 8-hex prefix.
+ * Resolve a catalog entry by full run id or unique 8-hex prefix.
  *
  * The durable `workflowId` is the live run id, so it takes the same strict
  * contract. Malformed and ambiguous targets are reported separately from an
@@ -142,13 +124,15 @@ export async function resumeDurableWorkflow(
 		};
 	pending.add(id);
 	try {
-		return await resumeDurableWorkflowClaimed(workflowId, deps, catalog);
+		const resume = () => resumeDurableWorkflowClaimed(workflowId, deps, catalog);
+		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
+		return await raceAbort(execution, deps.signal);
 	} finally {
 		pending.delete(id);
 	}
 }
 
-/** Resume by DBOS workflow id and replay current persisted checkpoints. */
+/** Resume by workflow id and replay persisted checkpoints. */
 async function resumeDurableWorkflowClaimed(
 	workflowId: string,
 	deps: ResumeDurableDeps,
@@ -165,8 +149,6 @@ async function resumeDurableWorkflowClaimed(
 		return { ok: false, reason: "not_registered", message: target.message };
 	}
 	if (target.kind === "not_found") {
-		// A retained failed admission may not yet be in the resumable catalog.
-		// Only an explicit full identity can enter recovery without a catalog match.
 		if (!isFullRunId(workflowId)) {
 			return { ok: false, reason: "not_registered", message: `No resumable workflow found for id: ${workflowId}` };
 		}
@@ -179,18 +161,7 @@ async function resumeDurableWorkflowClaimed(
 		initial?.invocationCwd !== undefined &&
 		currentCwd !== undefined &&
 		canonicalDirectory(initial.invocationCwd) !== canonicalDirectory(currentCwd);
-	const recovering = backend.isAdmissionUnavailable?.(workflowId) || backend.isCheckpointUnavailable?.(workflowId);
-	if (recovering && hasActiveLiveRun(deps.baseRunOpts.store, workflowId)) {
-		return alreadyRunningResult(
-			backend.getWorkflow(workflowId)?.name ?? workflowId,
-			workflowId,
-			deps.baseRunOpts.store,
-		);
-	}
-	if (!crossProject) await backend.reconcileWorkflowAdmission?.(workflowId, deps.signal);
-	const resolvedCatalog = recovering
-		? backend.listResumableWorkflows()
-		: (catalog ?? backend.listResumableWorkflows());
+	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
 	const resolved = resolveDurableEntry(workflowId, resolvedCatalog);
 	if (resolved === undefined) {
 		const direct = backend.getWorkflow(workflowId);
@@ -198,7 +169,7 @@ async function resumeDurableWorkflowClaimed(
 			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
 				return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
 			}
-			if (isForeignLiveWorkflow(direct, getAtomicExecutorId())) {
+			if (backend.workflowOwnership(direct.workflowId) === "foreign") {
 				return foreignRunningResult(direct.name, direct.workflowId);
 			}
 		}
@@ -206,7 +177,7 @@ async function resumeDurableWorkflowClaimed(
 			return {
 				ok: false,
 				reason: "not_registered",
-				message: `Workflow ${workflowId} has no valid current DBOS state.`,
+				message: `Workflow ${workflowId} has no valid journal state.`,
 			};
 		}
 		return {
@@ -222,18 +193,16 @@ async function resumeDurableWorkflowClaimed(
 		return {
 			ok: false,
 			reason: "not_registered",
-			message: `Workflow ${resolved.workflowId} has no valid current DBOS state.`,
+			message: `Workflow ${resolved.workflowId} has no valid journal state.`,
 		};
 	}
-	// Revalidate the authoritative DBOS handle before resume. A running handle
-	// is refused when this process still has an actively executing run, or when
-	// fresh ownership metadata shows another Atomic session is executing it.
+	// Revalidate ownership before claiming the run.
 	const handle = backend.getWorkflow(resolved.workflowId);
 	if (handle === undefined) {
 		return {
 			ok: false,
 			reason: "stale",
-			message: `Workflow ${resolved.workflowId} has no current DBOS checkpoint state; re-run the workflow to start fresh.`,
+			message: `Workflow ${resolved.workflowId} has no checkpoint state; re-run the workflow to start fresh.`,
 		};
 	}
 
@@ -241,7 +210,7 @@ async function resumeDurableWorkflowClaimed(
 		if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
 			return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
 		}
-		if (isForeignLiveWorkflow(handle, getAtomicExecutorId())) {
+		if (backend.workflowOwnership(handle.workflowId) === "foreign") {
 			return foreignRunningResult(handle.name, resolved.workflowId);
 		}
 	}
@@ -257,7 +226,7 @@ async function resumeDurableWorkflowClaimed(
 		requestedOwner !== undefined &&
 		requestedOwner !== handle.modelOwner &&
 		(handle.modelOwner !== undefined || handle.origin === "agent");
-	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd)) {
+	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd, backend)) {
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
@@ -379,7 +348,6 @@ async function resumeDurableWorkflowClaimed(
 			handle.resumable,
 			sourceFailure,
 		);
-		await backend.flush(resolved.workflowId);
 		onRestored?.();
 		return true;
 	};
@@ -389,45 +357,29 @@ async function resumeDurableWorkflowClaimed(
 	// Claim resume against concurrent deletion through the required transition seam.
 	let claimed: boolean;
 	try {
-		claimed = await boundedAdmission(
-			(signal) =>
-				dbosAdmissionContext.run(signal, async () => {
-					let unsettled = unsettledResumeClaims.get(backend);
-					if (unsettled === undefined) {
-						unsettled = new Set();
-						unsettledResumeClaims.set(backend, unsettled);
-					}
-					unsettled.add(resolved.workflowId);
-					try {
-						const accepted = await backend.transitionWorkflowStatus(
-							resolved.workflowId,
-							[handle.status],
-							"running",
-							undefined,
-							undefined,
-							resolved.updatedAt,
-							adopting ? requestedOwner : undefined,
-						);
-						if (accepted && adopting) {
-							const current = backend.getWorkflow(resolved.workflowId);
-							if (current?.status === "running" && current.modelOwner === requestedOwner)
-								adoptedClaimUpdatedAt = current.updatedAt;
-						}
-						if (
-							accepted &&
-							!adopting &&
-							signal.aborted &&
-							backend.getWorkflow(resolved.workflowId)?.status === "running"
-						) {
-							await rollbackStartup();
-						}
-						return accepted;
-					} finally {
-						unsettled.delete(resolved.workflowId);
-					}
-				}),
-			deps.signal,
-		);
+		deps.signal?.throwIfAborted();
+		let unsettled = unsettledResumeClaims.get(backend);
+		if (unsettled === undefined) {
+			unsettled = new Set();
+			unsettledResumeClaims.set(backend, unsettled);
+		}
+		unsettled.add(resolved.workflowId);
+		try {
+			claimed = await backend.transitionWorkflowStatus(
+				resolved.workflowId,
+				[handle.status],
+				"running",
+				undefined,
+				undefined,
+				resolved.updatedAt,
+				adopting ? requestedOwner : undefined,
+			);
+			if (claimed && adopting) adoptedClaimUpdatedAt = backend.getWorkflow(resolved.workflowId)?.updatedAt;
+			if (claimed && !adopting && deps.signal?.aborted) await rollbackStartup();
+			deps.signal?.throwIfAborted();
+		} finally {
+			unsettled.delete(resolved.workflowId);
+		}
 	} catch (error) {
 		if (deps.signal?.aborted) throw deps.signal.reason ?? error;
 		return {
@@ -477,7 +429,6 @@ async function resumeDurableWorkflowClaimed(
 							handle.resumable,
 							sourceFailure,
 						);
-						await backend.flush(resolved.workflowId);
 						if (
 							deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId) === current &&
 							current.status === "failed" &&
@@ -509,13 +460,11 @@ async function resumeDurableWorkflowClaimed(
 			snapshot?.error,
 			`Workflow ${resolved.workflowId} ended before startup admission`,
 		);
-		if (!backend.isAdmissionUnavailable?.(resolved.workflowId)) {
-			if (!adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
-			await rollbackStartup(() => {
-				if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
-				if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
-			});
-		}
+		if (!adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
+		await rollbackStartup(() => {
+			if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
+			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+		});
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -564,7 +513,7 @@ function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: strin
 	return store.runs().some((r) => r.id === workflowId && r.endedAt === undefined && r.exitReason !== "quit");
 }
 
-/** Remove local snapshots that do not exist as valid current DBOS workflows. */
+/** Remove local snapshots that do not exist in the journal. */
 export function purgeSuppressedWorkflowRuns(
 	backend: DurableWorkflowBackend,
 	store: RunOpts["store"],
@@ -578,7 +527,7 @@ export function purgeSuppressedWorkflowRuns(
 	return removed;
 }
 
-/** Hydrate a bounded set of known DBOS workflow ids. */
+/** Refresh known workflow ids for resume discovery. */
 export async function prepareTargetedDurableResumable(
 	backend: DurableWorkflowBackend,
 	workflowIds: readonly string[],
@@ -590,7 +539,11 @@ export async function prepareTargetedDurableResumable(
 		seen.add(workflowId);
 		await backend.hydrateWorkflow(workflowId);
 		const handle = backend.getLoadableWorkflow(workflowId);
-		if (handle === undefined || !isDurableWorkflowResumable(handle) || isLiveRunningWorkflow(handle, Date.now()))
+		if (
+			handle === undefined ||
+			!isDurableWorkflowResumable(handle) ||
+			(handle.status === "running" && backend.workflowOwnership(workflowId) !== "available")
+		)
 			continue;
 		entries.push(resumableEntryFromHandle(handle));
 	}

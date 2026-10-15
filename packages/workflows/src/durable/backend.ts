@@ -1,8 +1,7 @@
-/** Durable workflow backend seam for DBOS and explicit in-memory tests. */
+/** Durable workflow storage and its in-memory projection. */
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { withCurrentStageTopology } from "./dbos-envelope.js";
 import {
 	inactivePromptReservationToken,
 	PromptReservationState,
@@ -20,6 +19,7 @@ import type {
 	DurableWorkflowStatus,
 	ResumableWorkflowEntry,
 } from "./types.js";
+import { DURABLE_STAGE_TOPOLOGY_VERSION } from "./types.js";
 export interface DurableWorkflowCatalogEntries {
 	readonly inspectableIds?: readonly string[];
 	readonly resumable: readonly ResumableWorkflowEntry[];
@@ -75,41 +75,14 @@ export type DurableInactiveDeleteResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: "not_found" | "running" };
 
-export type DurableWorkflowHydrationResult =
-	| { readonly kind: "current"; readonly handle: DurableWorkflowHandle }
-	| { readonly kind: "absent" | "deleted" | "malformed" };
-
-/** DBOS is the sole persistent implementation. In-memory is a test seam and the non-durable last-resort fallback. */
+/** Synchronous metadata writes and awaited checkpoint writes commit before returning. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
-	executionView?(): DurableWorkflowBackend;
-	enrollLegacyWorkflow?(
-		workflowId: string,
-		options: { readonly olderWorkersStopped: true; readonly modelOwner: string; readonly signal?: AbortSignal },
-	): Promise<boolean>;
+	workflowOwnership(workflowId: string): "local" | "foreign" | "available";
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void;
-	/** Retire possibly committed admission metadata without waiting on its abandoned queue. */
-	cancelUnadmittedWorkflow?(workflowId: string, signal: AbortSignal): Promise<void>;
-
-	/** Cancellable root persistence boundary. Child runs retain their root's queue. */
-	admitWorkflow?(
-		workflowId: string,
-		registration: WorkflowRegistrationInput | undefined,
-		signal: AbortSignal,
-	): Promise<void>;
-	/** Whether this run's admission failed on database availability; performs no I/O. */
-	isAdmissionUnavailable?(workflowId: string): boolean;
-	/** Whether an awaited checkpoint failed on database availability; performs no I/O. */
-	isCheckpointUnavailable?(workflowId: string): boolean;
-	/** Whether reconciliation succeeded but the same-ID executor has not been readmitted; performs no I/O. */
-	isWorkflowRecoveryPending?(workflowId: string): boolean;
-	/** Await this identity's bounded admission, retaining its rejection until a new attempt. */
-	settleWorkflowAdmission?(workflowId: string): Promise<void>;
-	/** Whether bounded registration is pending or retains a failed settlement. */
-	hasWorkflowAdmissionSettlement?(workflowId: string): boolean;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,
@@ -150,14 +123,8 @@ export interface DurableWorkflowBackend {
 	/** Persist a checkpoint before exposing its side effect. */
 	recordCheckpointAsync(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
 
-	/**
-	 * Persist additive replay metadata without turning a rejected storage write
-	 * into a fatal flush error. Returns false only for the storage rejection.
-	 */
+	/** Returns false only when additive metadata could not be stored. */
 	recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean>;
-
-	/** Wait for one workflow's serialized writes, or every workflow when omitted. */
-	flush(workflowId?: string): Promise<void>;
 
 	/**
 	 * Look up a cached tool output by content hash. Returns `undefined` if the
@@ -211,8 +178,6 @@ export interface DurableWorkflowBackend {
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 	): void;
-	/** Explicit resume-only repair of a locally retained, unavailable admission. Never executes author code. */
-	reconcileWorkflowAdmission?(workflowId: string, signal?: AbortSignal): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
 	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
@@ -238,10 +203,10 @@ export interface DurableWorkflowBackend {
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[];
 	/** List successful completed root workflows with durable checkpoint progress. */
 	listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
-	/** Current DBOS-backed resumable and completed catalog. */
+	/** Current resumable and completed catalog. */
 	prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries>;
 
-	/** Shape the current DBOS metadata payload. */
+	/** Current run metadata. */
 	toMetadata(workflowId: string): Omit<DurableWorkflowMetadata, "promptReservationEpoch"> | undefined;
 
 	/** Permanently remove one root workflow and its durable checkpoints. */
@@ -257,8 +222,6 @@ export interface DurableWorkflowBackend {
 
 	/** Hydrate one workflow from persistent storage. */
 	hydrateWorkflow(workflowId: string): Promise<void>;
-	/** Optional exact, read-only hydration classification for targeted inspection. */
-	hydrateWorkflowForInspection?(workflowId: string): Promise<DurableWorkflowHydrationResult>;
 	/** Hydrate all catalog candidates from persistent storage. */
 	hydrateResumableWorkflows(): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
@@ -284,10 +247,13 @@ function checkpointKey(c: DurableCheckpoint): string {
 	return `${c.kind}:${c.checkpointId}`;
 }
 
-/** Process-local backend: explicit test injection and the loud non-durable fallback when DBOS cannot be provisioned. */
+/** Process-local projection and explicitly injected test backend. */
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	public readonly persistent: boolean = false;
 	private readonly workflows = new Map<string, InMemoryWorkflowRecord>();
+	workflowOwnership(workflowId: string): "local" | "foreign" | "available" {
+		return this.workflows.has(workflowId) ? "local" : "available";
+	}
 	private readonly promptReservations = new Map<string, PromptReservationState>();
 	private readonly deletedWorkflowIds = new Set<string>();
 	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
@@ -498,7 +464,17 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		return true;
 	}
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
-		const currentCheckpoint = withCurrentStageTopology(checkpoint);
+		const currentCheckpoint =
+			checkpoint.kind === "stage" && checkpoint.topology === undefined
+				? {
+						...checkpoint,
+						topology: {
+							version: DURABLE_STAGE_TOPOLOGY_VERSION,
+							stageId: checkpoint.checkpointId,
+							parentIds: [],
+						},
+					}
+				: checkpoint;
 		const rec = this.workflows.get(currentCheckpoint.workflowId);
 		if (!rec) return;
 		const key = checkpointKey(currentCheckpoint);
@@ -550,8 +526,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			return false;
 		}
 	}
-
-	async flush(): Promise<void> {}
 
 	getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
 		return this.workflows.get(workflowId)?.toolByHash.get(argsHash)?.output;
@@ -607,11 +581,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 	}
 
 	async hydrateWorkflow(_workflowId: string): Promise<void> {}
-	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
-		const handle = this.getLoadableWorkflow(workflowId);
-		if (handle !== undefined) return { kind: "current", handle };
-		return { kind: this.deletedWorkflowIds.has(workflowId) ? "deleted" : "absent" };
-	}
 
 	async hydrateResumableWorkflows(): Promise<void> {}
 
@@ -745,7 +714,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			.map((rec) => toResumableEntry(rec.handle));
 	}
 
-	/** Shape the current DBOS metadata payload. */
+	/** Current run metadata. */
 	toMetadata(workflowId: string): Omit<DurableWorkflowMetadata, "promptReservationEpoch"> | undefined {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return undefined;

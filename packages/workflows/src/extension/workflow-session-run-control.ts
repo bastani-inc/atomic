@@ -6,10 +6,10 @@ import {
 	type WorkflowRunControlOutcome,
 	type WorkflowRunControlStatus,
 	WorkflowRunControlUnavailableError,
-	WorkflowRunDatabaseError,
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowRunStorageError,
 	type WorkflowRunSummary,
 	WorkflowStageAmbiguousError,
 	WorkflowStageNotFoundError,
@@ -93,8 +93,8 @@ function failure(
 			return new WorkflowStageAmbiguousError(message, options);
 		case "stage_resume_unsupported":
 			return new WorkflowStageResumeUnsupportedError(message, options);
-		case "database_unavailable":
-			return new WorkflowRunDatabaseError(message, options);
+		case "storage_unavailable":
+			return new WorkflowRunStorageError(message, options);
 		case "control_failed":
 			return new WorkflowRunControlError("WORKFLOW_RUN_CONTROL_FAILED", message, options);
 	}
@@ -102,7 +102,7 @@ function failure(
 
 function translateThrown(error: Error, runId: string | undefined): Error {
 	const code = classifyControlError(error);
-	return code === "owned_elsewhere" || code === "database_unavailable"
+	return code === "owned_elsewhere" || code === "storage_unavailable"
 		? failure(code, error.message, runId, error)
 		: error;
 }

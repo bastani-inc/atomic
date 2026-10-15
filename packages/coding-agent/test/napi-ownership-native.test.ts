@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,16 +18,8 @@ try {
 }
 
 const roots: string[] = [];
-const CONCURRENT_WAIT_TIMEOUT_MS = 40;
-const RETAINED_REAP_TIMEOUT_MS = 2_000;
 
 afterEach(() => {
-	// The dropped retained child deliberately outlives its wrapper, and it holds
-	// `root` as its working directory and the inherited log file as stdout. Those
-	// stay locked on Windows until the process itself exits, which happens after
-	// it writes the marker this test waits on, so an immediate rmdir raced the
-	// exit and failed with EBUSY. Retry, then give up: reclaiming an OS temp dir
-	// is never the assertion.
 	for (const root of roots.splice(0)) {
 		if (!existsSync(root)) continue;
 		try {
@@ -57,15 +49,6 @@ function forceGc(): void {
 	for (let index = 0; index < 4; index += 1) gc();
 }
 
-async function waitForLog(logFile: string, text: string): Promise<void> {
-	const deadline = Date.now() + 3_000;
-	while (Date.now() < deadline) {
-		if (existsSync(logFile) && readFileSync(logFile, "utf8").includes(text)) return;
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
-	throw new Error(`Timed out waiting for ${JSON.stringify(text)} in ${logFile}`);
-}
-
 function expectInvalidReceiver(method: (...args: never[]) => unknown, receiver: object, args: unknown[] = []): void {
 	expect(() => Reflect.apply(method, receiver, args)).toThrow(Error);
 }
@@ -80,11 +63,6 @@ describe("N-API class ownership boundary", () => {
 			}
 			for (const receiver of [{}, Object.create(native.SubagentControl.prototype)]) {
 				expectInvalidReceiver(native.SubagentControl.prototype.listChildren, receiver);
-			}
-			const pid = Object.getOwnPropertyDescriptor(native.RetainedPostgres.prototype, "pid")?.get;
-			expect(pid).toBeTypeOf("function");
-			for (const receiver of [{}, Object.create(native.RetainedPostgres.prototype)]) {
-				expect(() => Reflect.apply(pid as () => number | null, receiver, [])).toThrow(Error);
 			}
 		},
 	);
@@ -121,63 +99,6 @@ describe("N-API class ownership boundary", () => {
 			expect(result.exitCode).toBe(0);
 			expect(result.timedOut).toBe(false);
 			expect(output).toContain("received:owned");
-		},
-	);
-
-	it.skipIf(!requireNativeBinding && !binding)(
-		"retains one child across concurrent waits and preserves it across wrapper drop",
-		async () => {
-			const native = requiredBinding();
-			const root = mkdtempSync(join(tmpdir(), "atomic-napi-retained-ownership-"));
-			roots.push(root);
-			const exitGate = join(root, "exit.gate");
-			const waitedLog = join(root, "waited.log");
-			const waited = native.spawnRetainedPostgres({
-				executable: process.execPath,
-				args: [
-					"-e",
-					"const fs=require('node:fs');" +
-						"console.log('ready');" +
-						"const timer=setInterval(() => {" +
-						"if (fs.existsSync(process.argv[1])) {" +
-						"clearInterval(timer);" +
-						"console.log('done');" +
-						"process.exit(0);" +
-						"}}, 10);",
-					exitGate,
-				],
-				cwd: root,
-				logFile: waitedLog,
-			});
-			const waitedPid = waited.pid;
-			expect(waitedPid).toBeTypeOf("number");
-			await waitForLog(waitedLog, "ready");
-			const firstWait = waited.wait(CONCURRENT_WAIT_TIMEOUT_MS);
-			const secondWait = waited.wait(CONCURRENT_WAIT_TIMEOUT_MS);
-			await Promise.all([
-				expect(firstWait).rejects.toThrow(/Timed out/),
-				expect(secondWait).rejects.toThrow(/Timed out/),
-			]);
-			expect(waited.pid).toBe(waitedPid);
-			writeFileSync(exitGate, "exit");
-			await expect(waited.wait(RETAINED_REAP_TIMEOUT_MS)).resolves.toEqual({ exited: true, signaled: false });
-			expect(waited.pid).toBeNull();
-
-			const droppedLog = join(root, "dropped.log");
-			let dropped: ReturnType<typeof native.spawnRetainedPostgres> | undefined = native.spawnRetainedPostgres({
-				executable: process.execPath,
-				args: [
-					"-e",
-					"console.log('ready'); setTimeout(() => { console.log('survived-drop'); process.exit(0) }, 150)",
-				],
-				cwd: root,
-				logFile: droppedLog,
-			});
-			await waitForLog(droppedLog, "ready");
-			expect(dropped.pid).toBeTypeOf("number");
-			dropped = undefined;
-			forceGc();
-			await waitForLog(droppedLog, "survived-drop");
 		},
 	);
 

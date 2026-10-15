@@ -203,7 +203,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				return [];
 			},
 		});
-		const runId = testRunId("dbos-like-current-live");
+		const runId = testRunId("journal-current-live");
 		store.recordRunStart({
 			id: runId,
 			name: "current live",
@@ -234,7 +234,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				return [];
 			},
 		});
-		const runId = testRunId("dbos-like-unclassified-restored");
+		const runId = testRunId("journal-unclassified-restored");
 		store.recordRunStart({
 			id: runId,
 			name: "restored",

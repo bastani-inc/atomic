@@ -12,7 +12,7 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
  */
 
 import { resumableEntryFromHandle } from "../durable/backend.js";
-import { type DurabilityWarningSink, getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
@@ -84,10 +84,6 @@ export interface ExtensionRuntimeOpts {
 	jobs?: JobTracker;
 	/** Invocation cwd used for workflow execution. Defaults to process.cwd(). */
 	cwd?: string;
-	/** Display-only degradation warning reporter supplied by the host composition root. */
-	durabilityWarningSink?: DurabilityWarningSink;
-	prepareDatabase?: () => Promise<void>;
-	databaseReady?: () => void;
 	/** Resolve the host's non-default session directory for workflow stage transcripts. */
 	resolveDefaultStageSessionDir?: () => string | undefined;
 	/**
@@ -184,21 +180,11 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const config = opts.config;
 	const models = opts.models;
 	const jobs = opts.jobs ?? currentJobTracker();
-	const durabilityWarningSink = opts.durabilityWarningSink;
 	const runtimeCwd = opts.cwd ?? process.cwd();
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
-	const ensureDbosReady = async () => {
-		// Deliberately not memoized: the factory revalidates its memoized backend
-		// against the current DBOS lifecycle generation, so caching a permanently
-		// resolved promise here could mask a backend stopped after a
-		// host-session replacement (issue #1957).
-		if (opts.prepareDatabase !== undefined) await opts.prepareDatabase();
-		const backend = await initializeDurableBackend(durabilityWarningSink);
-		opts.databaseReady?.();
-		return backend;
-	};
+	const ensureReady = () => initializeDurableBackend();
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
 		const defaultSessionDir = resolveDefaultStageSessionDir?.();
@@ -383,7 +369,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
 			options?.signal?.throwIfAborted();
-			await raceWorkflowRequestAbort(ensureDbosReady(), options?.signal);
+			await raceWorkflowRequestAbort(ensureReady(), options?.signal);
 			options?.signal?.throwIfAborted();
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
@@ -419,7 +405,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			adapters,
 			runtimeCwd,
 			getWorkflowHostModules: opts.getWorkflowHostModules,
-			ensureReady: ensureDbosReady,
+			ensureReady,
 			resolveDefaultStageSessionDir,
 			baseRunOpts: (policy) => runOptions(policy),
 			beforeRestoreCompleted,

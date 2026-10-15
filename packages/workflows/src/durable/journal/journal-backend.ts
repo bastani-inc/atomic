@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { WorkflowInstanceOwnershipError } from "../../extension/workflow-instance-owner.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../shared/types.js";
+import { WorkflowInstanceOwnershipError } from "../../shared/workflow-instance-ownership-error.js";
 import {
 	type DurableWorkflowBackend,
 	InMemoryDurableBackend,
@@ -95,6 +96,13 @@ export class JournalOperationAbortedError extends JournalError {
 	}
 }
 
+export class JournalExecutionRetiredError extends JournalError {
+	constructor(readonly runId: string) {
+		super(`Workflow execution for ${runId} is retired`);
+		this.name = "JournalExecutionRetiredError";
+	}
+}
+
 export class JournalMessageScopeError extends JournalError {
 	constructor(
 		readonly runId: string,
@@ -105,15 +113,24 @@ export class JournalMessageScopeError extends JournalError {
 	}
 }
 
+interface WorkflowLeaseExecution {
+	lease?: Lease;
+	users: number;
+	retired: boolean;
+}
+
 export class JournalDurableBackend implements DurableWorkflowBackend {
 	readonly persistent = true;
 	private readonly projection = new InMemoryDurableBackend();
 	private readonly sequences = new Map<string, number>();
 	private readonly leases = new Map<string, Lease>();
+	private readonly executions = new Map<string, WorkflowLeaseExecution>();
+	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
 	private readonly timer: ReturnType<typeof setInterval>;
 	private closed = false;
+	private processExitCleanup: (() => void) | undefined;
 
 	constructor(
 		readonly journal: BackendJournal = new SqliteRunJournal(),
@@ -167,6 +184,18 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
 				this.prompts.delete(entry.runId);
 		}
+		const handle = this.projection.getWorkflow(entry.runId);
+		if (handle?.pendingStageMessages !== undefined) {
+			const messages = handle.pendingStageMessages.map((message) => {
+				if (message.sticky !== true) return message;
+				const count = this.projection.getPendingStageMessageDeliveryCount(entry.runId, message.id, message.runId);
+				return count > (message.deliveryCount ?? message.deliveries?.length ?? 0)
+					? { ...message, deliveryCount: count }
+					: message;
+			});
+			if (messages.some((message, index) => message !== handle.pendingStageMessages?.[index]))
+				this.projection.applyWorkflowSnapshot({ ...handle, pendingStageMessages: messages });
+		}
 		this.sequences.set(entry.runId, entry.seq);
 	}
 
@@ -188,6 +217,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 
 	private current(runId: string): DurableWorkflowHandle | undefined {
 		this.ensureOpen();
+		this.assertExecutionActive(runId);
 		this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
@@ -205,8 +235,15 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		if (this.closed) throw new JournalBackendClosedError();
 	}
 
+	private assertExecutionActive(runId: string): void {
+		for (const execution of this.executionContext.getStore()?.values() ?? []) {
+			if (execution.retired) throw new JournalExecutionRetiredError(runId);
+		}
+	}
+
 	private ownership(runId: string): Lease {
 		this.ensureOpen();
+		this.assertExecutionActive(runId);
 		const lost = this.lost.get(runId);
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
@@ -217,8 +254,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
-		this.rebuild(runId);
 		this.leases.set(runId, result.lease);
+		const execution = this.executions.get(runId);
+		if (execution !== undefined) execution.lease = result.lease;
+		this.rebuild(runId);
 		return result.lease;
 	}
 
@@ -264,6 +303,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	}
 
 	registerWorkflow(input: WorkflowRegistrationInput): void {
+		this.assertExecutionActive(input.workflowId);
 		this.ensureOpen();
 		this.journal.createRunSync({
 			runId: input.workflowId,
@@ -316,8 +356,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		}
 	}
 
-	async flush(): Promise<void> {
-		this.ensureOpen();
+	workflowOwnership(runId: string): "local" | "foreign" | "available" {
+		const lease = this.journal.leaseState(runId);
+		if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
 
 	setWorkflowStatus(
@@ -372,6 +414,11 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				E.statusChanged,
 				seq,
 			);
+			if (releasedModelOwner !== undefined) {
+				const lease = this.leases.get(runId);
+				if (lease !== undefined) this.journal.releaseSync(lease);
+				this.leases.delete(runId);
+			}
 			return true;
 		} catch (error) {
 			if (error instanceof JournalCasConflictError) {
@@ -564,7 +611,81 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		}
 	}
 
+	/** Only factory-owned journals participate in process shutdown. */
+	closeOnProcessExit(): void {
+		this.ensureOpen();
+		if (this.processExitCleanup !== undefined) return;
+		this.processExitCleanup = () => {
+			// Lease release and SQLite close complete before close() first awaits.
+			void this.close().catch((error: Error) => {
+				console.error(error);
+				process.exitCode = 1;
+			});
+		};
+		process.once("exit", this.processExitCleanup);
+	}
+
+	/** Share one acquisition owner across admission, executor and final persistence. */
+	async withWorkflowLease<T>(runId: string, execute: () => Promise<T>): Promise<T> {
+		this.ensureOpen();
+		this.assertExecutionActive(runId);
+		const context = this.executionContext.getStore();
+		const active = this.executions.get(runId);
+		if (active !== undefined && context?.get(runId) !== active) {
+			throw new JournalOwnershipError(runId, this.holderId);
+		}
+		const execution = active ?? { lease: this.leases.get(runId), users: 0, retired: false };
+		execution.users++;
+		this.executions.set(runId, execution);
+		const ownedContext = new Map(context);
+		ownedContext.set(runId, execution);
+		try {
+			return await this.executionContext.run(ownedContext, execute);
+		} finally {
+			if (--execution.users === 0) {
+				this.retireExecution(runId, execution);
+			}
+		}
+	}
+
+	/** Capture identity now; a delayed quit must never retire a replacement execution. */
+	captureWorkflowRetirement(runId: string): () => void {
+		const execution = this.executionContext.getStore()?.get(runId);
+		return () => {
+			if (execution !== undefined) this.retireExecution(runId, execution);
+		};
+	}
+
+	private retireExecution(runId: string, execution: WorkflowLeaseExecution): void {
+		if (execution.retired) return;
+		execution.retired = true;
+		if (this.executions.get(runId) === execution) this.executions.delete(runId);
+		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease) this.releaseLease(runId);
+	}
+
+	/** Release this execution's lease without closing the shared journal. */
+	releaseWorkflow(runId: string): void {
+		this.assertExecutionActive(runId);
+		this.releaseLease(runId);
+	}
+
+	private releaseLease(runId: string): void {
+		const lease = this.leases.get(runId);
+		if (lease === undefined) return;
+		try {
+			this.journal.releaseSync(lease);
+		} catch (error) {
+			if (!(error instanceof StaleLeaseError)) throw error;
+		} finally {
+			this.leases.delete(runId);
+		}
+	}
+
 	async close(): Promise<void> {
+		if (this.processExitCleanup !== undefined) {
+			process.off("exit", this.processExitCleanup);
+			this.processExitCleanup = undefined;
+		}
 		if (this.closed) return;
 		clearInterval(this.timer);
 		try {

@@ -13,7 +13,6 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
@@ -31,8 +30,8 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
 	return {
@@ -216,44 +215,6 @@ describe("resumeDurableWorkflow", () => {
 		// Regression: #2603 — downstream backend checks receive the resolved full UUID.
 		assert.equal(result.ok, true);
 		if (result.ok) assert.equal(result.workflowId, fullId);
-	});
-
-	test("canonicalizes recovery prefixes and rejects invalid selectors before reconciliation", async () => {
-		// Regression: #3093 — prefix selection must precede outage recovery side effects.
-		const fullId = testRunId("prefix-reconciliation");
-		const reconciled: string[] = [];
-		class RecoveryBackend extends InMemoryDurableBackend {
-			isCheckpointUnavailable(workflowId: string): boolean {
-				assert.equal(workflowId, fullId);
-				return true;
-			}
-			async reconcileWorkflowAdmission(workflowId: string): Promise<void> {
-				reconciled.push(workflowId);
-			}
-		}
-		const recovery = new RecoveryBackend();
-		recovery.registerWorkflow({
-			workflowId: fullId,
-			name: "resumable-pipeline",
-			inputs: { topic: "data" },
-			createdAt: 1,
-			status: "paused",
-			completedCheckpoints: 1,
-		});
-		const recoveryDeps = { ...deps(), durableBackend: recovery };
-		const collision = `${fullId.slice(0, 8)}-${testRunId("collision").slice(9)}`;
-		for (const selector of ["bad", fullId.slice(0, 8)]) {
-			const result = await resumeDurableWorkflow(selector, recoveryDeps, [
-				...recovery.listResumableWorkflows(),
-				makeEntry(collision, "other", "paused"),
-			]);
-			assert.equal(result.ok, false);
-			assert.match(result.message, selector === "bad" ? /must be a full/ : /ambiguous/);
-			assert.deepEqual(reconciled, []);
-		}
-		const result = await resumeDurableWorkflow(fullId.slice(0, 8).toUpperCase(), recoveryDeps);
-		assert.equal(result.ok, true);
-		assert.deepEqual(reconciled, [fullId]);
 	});
 
 	test("rejects a shared prefix while full workflow ids remain independently addressable", async () => {
@@ -632,8 +593,7 @@ describe("durable pending-stage resume", () => {
 		const messageId = "resume-message-exact-id";
 		const replayKey = "stage:receiver:1";
 		const receiverStageId = "receiver-before-process-exit";
-		const sdk = createMockSdk();
-		const writer = new DbosDurableBackend(sdk, { executorId: "pending-resume-writer" });
+		const writer = new JournalTestBackend();
 		writer.registerWorkflow({
 			workflowId,
 			name: "pending-stage-process-resume",
@@ -643,7 +603,6 @@ describe("durable pending-stage resume", () => {
 			rootWorkflowId: workflowId,
 			resumable: true,
 		});
-		await writer.flush();
 		const firstStore = createStore();
 		firstStore.recordRunStart({
 			id: workflowId,
@@ -705,15 +664,13 @@ describe("durable pending-stage resume", () => {
 			},
 		});
 		writer.setWorkflowStatus(workflowId, "paused", 0, true);
-		await writer.flush();
 		assert.equal(writer.getWorkflow(workflowId)?.pendingStageMessages?.[0]?.id, messageId);
 
 		// Process boundary: no Store, backend mirror, runtime, or extension object survives.
 		firstStore.clear();
-		writer.reset();
 		setDurableBackend(undefined);
 
-		const reader = new DbosDurableBackend(sdk, { executorId: "pending-resume-reader" });
+		const reader = await writer.reopen();
 		setDurableBackend(reader);
 		const freshStore = createStore();
 		const jobs = createJobTracker();

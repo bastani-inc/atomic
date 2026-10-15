@@ -668,10 +668,7 @@ test.sequential(
 				state: readGlobalIncidentState(stateDir).agent,
 			});
 
-			// `/reload` is a same-process durable boundary: production flushes DBOS
-			// without stopping its executor, while this test keeps the same in-memory
-			// backend across both real graph generations. Startup must not hydrate or
-			// replay live work, and the original callback must retain ownership.
+			// Startup must not replay live work; the original callback retains ownership.
 			const reloadWidgetCallStart = widget.calls.length;
 			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 			firstRuntime.invalidate();

@@ -108,7 +108,7 @@ The workflow tool action surface is:
 - prompt response: `answer`; run control: `pause`, `quit`, `resume`; free-form stage communication: ordinary Intercom `send`/live `ask` to `workflow:<rootRunId>/<segment>[/<segment>...]` path targets, including `*` and `**` globs
 - rediscovery: `reload`
 
-Every registered `workflow` tool call has one hard 150-second wall-clock deadline at the shared public tool boundary, leaving startup and acknowledgement headroom beyond the two-minute database admission budget. The deadline covers request handling through the returned result; for background `run` and `resume`, it therefore covers startup/resume admission and acknowledgement only, not the workflow execution that continues after acknowledgement. A deadline returns one structured result:
+Every registered `workflow` tool call has a hard 150-second wall-clock deadline at the public tool boundary. It covers request handling through the returned result; for background `run` and `resume`, it covers startup and acknowledgement, not the workflow execution that continues afterward. A deadline returns one structured result:
 
 ```json
 {
@@ -125,9 +125,9 @@ Expiry aborts the request operation signal so work that supports cancellation ca
 
 Explicit user interruption is different from the request deadline. Before startup acknowledgement, interrupting a `run` tool call cancels its initialization owner, records an allocated root as locally `killed`, and prevents delayed setup from starting workflow code. An already-aborted request starts no action. Interrupted resume preparation releases a claim it has acquired instead of dispatching later. After startup acknowledgement, the workflow is detached: aborting the original caller does not stop it; use run-level controls.
 
-Cancellation does not undo mutations that already happened. If registration metadata may already have reached PostgreSQL, Atomic makes a separate bounded attempt to persist cancellation. If that attempt fails, a warning says that cancellation is local and database state is unknown. Inspect status and external effects before retrying an interrupted mutation. Request timeout retains its unknown-outcome behavior and does not cancel an accepted detached launch.
+Cancellation does not undo committed journal writes or external effects. Inspect status and external effects before retrying an interrupted mutation. A request timeout does not cancel an already accepted detached launch.
 
-Run-level `quit` is different from interrupting the startup request: it preserves a paused run rather than cancelling its durable record. During database admission, `quit` acknowledges the local stop immediately, without waiting for registration. Registration continues under its two-minute deadline, and the database pause is saved after registration succeeds. The acknowledgement is not confirmation that the database saved the pause. If settlement fails, inspect `/workflow status <run-id>` for the original error; the local run stays paused and any saved durable progress remains resumable. Without usable durable progress, the run is nonresumable. Restore database availability and inspect status before retrying or starting a new run.
+Run-level `quit` preserves eligible checkpointed work as a paused run instead of cancelling its durable record. Inspect `/workflow status <run-id>` if it reports a storage error; local suspension alone is not proof that the journal saved the pause.
 
 From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `quit`) remain available while work runs.
 
@@ -288,7 +288,7 @@ workflow({ action: "reload", reason: "added team workflow" })
 Control behavior:
 
 - `runId` accepts the full UUID or a unique 8-character hexadecimal prefix for lifecycle and inspection actions, including `status`. Status lists and run pickers show top-level user-launched workflows; nested child runs remain part of the expanded parent graph.
-- `status`, `stages`, `stage`, and `transcript` with an explicit full `runId` first use the current session store, then perform one exact DBOS hydration when that id is absent locally. This is inspection only: Atomic does not claim ownership, change status, run workflow code, or resume the workflow. A stale durable `running` root is shown as `crashed` with its resumability and an explicit `/workflow resume <id>` hint; fresh work owned by another Atomic process remains `running`, offers read-only status guidance, and stays protected from local control or resume. Deleted/tombstoned, absent, malformed, cyclic, orphaned, nonreciprocal, out-of-scope, and duplicate-node records report distinct failures instead of inventing a partial graph. `status` without `runId` remains current-session-only and never scans durable history.
+- `status`, `stages`, `stage`, and `transcript` with a full `runId` use the session store, then read the journal if the run is absent locally. Inspection never claims ownership or executes workflow code. A running root with an expired lease appears as `crashed`; a live foreign lease remains protected.
 - `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `answer`, `pause`, `resume`, and `quit` accept, so an orchestrating agent can list runs and act on them directly.
 - `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
 - `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
@@ -311,7 +311,7 @@ Control behavior:
 - A whole-run executor-only pause also holds already-live owned child workflows, including children with no tracked node yet. Resume persists the root's running transition before releasing those child executors; a child-scoped control leaves sibling workflows alone.
 - Live executor resume does not require a checkpoint. Cross-process resume still requires durable checkpoint or pending-prompt progress: losing a zero-progress live owner cannot reconstruct its JavaScript continuation. Cancelling the original startup request before acknowledgement remains terminal cancellation, not this live pause.
 - `resume` can target a live paused stage with `stageId`; the target may be an exact stage id or an exact stage name. `message` is forwarded to paused work. Durable/cross-process resume is whole-run only and refuses a stage selector before dispatch rather than resuming the entire root. For a live interrupted streaming prompt, Atomic preserves the existing prompt loop without duplicating the user message and injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` when required before normal readiness-gate completion. For a paused stage that was idle waiting for a new stage-chat turn, a non-empty message resumes the stage and starts exactly one fresh prompt containing that message; an empty resume releases the pause without creating a prompt.
-- An explicit workflow-tool `resume` target absent locally triggers DBOS discovery. Prefixes require successful discovery across live, resumable, and completed catalogs before selecting a unique canonical UUID; discovery failure cannot select a local prefix match. Malformed targets are rejected before lookup. Ordinary `status` listing remains session-local.
+- An explicit workflow-tool `resume` target absent locally triggers journal discovery. Prefixes require successful discovery before selecting a unique UUID; discovery failure cannot select a local prefix match. Malformed targets are rejected before lookup. Ordinary `status` listing remains session-local.
 - Exact-id durable inspection is separate from resume. `status`, `stages`, `stage`, and `transcript` may hydrate one missing-local root for read-only inspection, but they never claim it or execute replay. Only an explicit `resume` action enters the claim-and-dispatch path.
 - Run-level `quit` gracefully pauses in-flight work and preserves eligible checkpointed runs for `/workflow resume`. Runs waiting during initialization or between nodes are also controllable, even with no active stage or tool. An executor-only quit retires the owner (including one already paused); without usable durable progress it is nonresumable and offers no resume hint.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
@@ -338,7 +338,7 @@ Pause holds the live executor, while quit retires it at a durability boundary. N
 
 Quit stops admitting tool calls, cancels owned in-flight calls, and waits a bounded time for cleanup. The result lists `cancelledTools` and any `abandonedTools` with their owning `{runId, nodeId}`. An abandoned callback may still have external effects. Inspect those effects before resuming; unfinished callbacks run again, while completed checkpoints replay.
 
-If the database pause cannot be saved, the run remains locally paused. That is not proof of a durable pause. Preserve the run ID, restore database availability, and inspect status. After successful admission, repeating quit retries a failed pause write; during admission, later failures appear in status. Existing durable progress remains available, but a failed write does not create progress.
+If the journal pause cannot be saved, the run remains locally paused. Preserve the run ID, restore storage access, and inspect status. Retrying quit can save the pause; resume retries the running transition before releasing the executor. Existing checkpoints remain available, but a failed write does not create durable progress.
 
 Catching a tool cancellation cannot turn whole-run quit into completion. To abort one tool and continue the workflow, target the tool node instead.
 
@@ -458,145 +458,33 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ## Durable Workflows and Cross-Session Resume
 
-Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` or `workflows.durability` in settings may select an existing database. Once DBOS is ready, query and write failures fail the workflow action and never switch backends.
+Atomic workflows use a **local SQLite journal as their only persistent store**. It opens on the first workflow action and commits registrations, checkpoints, and control transitions before reporting them as durable. The default file is `~/.atomic/workflows/journal.sqlite`; set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select another file. Keep it on durable local storage. Storage failures stop the action rather than selecting another store.
 
-SDK callers can choose the backend and database for each `run()` call, and require durable state so a run fails fast instead of using the in-memory fallback; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+SDK callers can explicitly choose per-call non-durable execution; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
-Root database registration has a two-minute deadline. First-time database provisioning and DBOS initialization are outside that deadline and can take longer. If registration fails or is cancelled, that attempt cannot start workflow code later when PostgreSQL returns. For an outage, restore the database before retrying; do not delete its data to bypass the failure. Authentication and schema errors keep their original diagnostics so you can correct the reported problem. A failed admission can remain a local same-ID retry target, but it is not confirmation that the run was saved for cross-session resume. A previously initialized durable backend does not fall back to in-memory execution after losing its connection.
+### Storage failures and recovery
 
-Pausing during startup acknowledges the local pause immediately and retains the live executor for resume, without waiting for database admission. Workflow code stays held until explicit resume. Registration continues under its two-minute deadline; inspect `/workflow status <run-id>` for a later persistence error. Do not start a replacement run or delete database records to bypass the error.
+Preserve the journal and full run ID when storage fails. Check the reported file, directory permissions, available space, and filesystem health. Restore access, inspect `/workflow status <full-run-uuid>`, and explicitly resume an eligible run. Do not delete the journal to bypass an error. A failed pause leaves the local executor paused; resume retries the durable running transition before releasing it. If that write also fails, the executor stays paused and the error is reported.
 
-For a PostgreSQL `permission denied` admission error, check the configured database user's grants on the named schema or table, not the model-provider credentials. Authentication failures require correcting the database credentials. When Atomic can verify that rejected registration saved no durable records or identity, it removes the local startup entry. If that verification fails, cleanup reports an error without deleting database records; retain the full run ID and correct the database problem before retrying.
+If recovery reports `Workflow definition not found`, restore the matching definition, run `/workflow reload`, and retry with the same full run ID. Changing a definition or its call order can invalidate checkpoint replay.
 
-If the result says `startup cleanup skipped: database admission unavailable`, Atomic has kept the failed run in the current session and has not attempted to delete its PostgreSQL identity. This also applies when PostgreSQL stops answering rather than refusing connections: cleanup does not extend the admission failure to the 150-second request timeout. Keep the full run ID and restore PostgreSQL before retrying. Current-session `status` can show the local failure, but it does not prove what was saved in PostgreSQL or that cross-session resume is available.
+### Multiple sessions
 
-If a resume continuation reports `cleanup skipped: database admission unavailable`, the source run stays resumable and no database cleanup is attempted for the failed continuation. Restore PostgreSQL before retrying resume on the source run ID.
+A run with a live journal lease cannot be claimed by another executor, even when a long-running tool has not updated its progress. After a process crashes and its lease expires (about two minutes without renewal), inspection reports `crashed`. Concurrent resume attempts admit one executor.
 
-While root registration is pending, status shows `pending` with phase `starting`, not healthy execution. Status listing and exact-run detail include `phase`, `phaseAgeMs`, `dependencyError`, and `lastProgressAt`. Last progress records admission or a tracked node starting/settling, not polling or a heartbeat. Database failures report `blocked_dependency`; a paused run still reports `paused`. Starting and dependency-blocked runs do not emit "still running" heartbeats.
+SDK recovery requires the original working directory and journal. `session.workflows.getRun(runId)` and `getStages(runId)` inspect saved state without taking ownership; `resume(runId)` explicitly claims eligible work. Save the full UUID. An owning session can also release checkpointed paused runs through `await session.dispose()` or a session switch, allowing another authorized session to adopt them. See [SDK run control](/sdk#workflow-run-control).
 
-For an admitted live executor with no active stage or tool, pause installs a local barrier immediately and acknowledges within 500ms of starting database settlement. The acknowledgement and status distinguish `observed` from `durable` control persistence. If confirmation is still pending at acknowledgement, settlement continues in the background for up to two minutes total. Status becomes `durable` on success; only a settlement failure or deadline reports `blocked_dependency`. `observed` is not proof of a saved pause and does not guarantee cross-process resume. During registration, pause acknowledges immediately while database settlement continues in the background. After registration, resume allows up to two minutes for database confirmation before releasing the barrier, and a resume requested while the pause's confirmation is still pending waits for it within that same two minutes instead of cancelling it. A failed resume leaves the executor paused; restore database availability and retry the same run. These limits do not cover stage cancellation or arbitrary external I/O.
-
-If registration times out or reports an unavailable database while the run is paused, restore the existing database without resetting data, then resume that same run in the same Atomic process. Resume retries registration with the original identity and releases the existing executor once; repeated concurrent resume requests share the retry and do not start another executor. If the run was not paused, admission failure ends the attempt. A non-retryable admission rejection, such as a permission error, is reported on resume instead of retrying the live executor. Retain the full run ID and inspect it before retrying. Completed checkpoints remain reusable, but an external side effect whose checkpoint was never confirmed can still repeat after a crash; make such operations idempotent.
-
-Cancellation or the deadline can leave a stored run identity without valid admission metadata, even when PostgreSQL is healthy but slow. After an unavailable-database failure, keep the original Atomic process open, restore PostgreSQL, and explicitly resume the same full run ID. Atomic can reconcile its retained pre-execution identity with the database before admission, without running workflow code during reconciliation. Missing records are repaired only for that known failed admission; conflicting, deleted, or malformed records are refused. A fresh process without valid admission metadata still cannot safely reconstruct the invocation. Keep the ID and report that failure rather than deleting or resetting records. Cancelled and explicitly nonresumable runs are not revived.
-
-A repeated registration timeout can mean the original registration never finished. Atomic waits within the database admission deadline and does not start workflow code or publish resumable state while that registration remains unresolved. Restoring PostgreSQL alone may not complete a registration abandoned by its original request. Keep the run ID and report the repeated timeout; do not delete database records to force admission. An identity without saved admission metadata is omitted from durable history and cannot be resumed from a fresh process.
-
-Awaited checkpoint writes also have a two-minute database deadline, including time waiting behind earlier writes for the same run. If a checkpoint fails because PostgreSQL is unavailable, the run keeps its local failure without waiting on another database write to finalize it. Restore PostgreSQL and explicitly resume the same ID; Atomic reads saved receipts before executing unfinished work. A committed checkpoint is reused even if its acknowledgement was lost. If no receipt was saved, the external operation's outcome remains unknown and its callback may run again. Reconcile external outcomes or use idempotency keys before resuming operations that must not repeat. Inspection alone never repairs records or starts execution.
-
-If recovery reports `Workflow definition not found`, restore the matching workflow definition and run `/workflow reload`, then retry resume with the same full run ID. A failed resume preparation does not discard the recovery target or saved receipts. Do not start a new run to bypass the missing definition.
-
-**Zero-configuration local database.** Without an explicit database URL from the environment or settings, Atomic uses its own embedded Postgres for DBOS. It requires no Docker daemon, system Postgres install, install lifecycle script, or first-run download.
-
-Supported targets are Linux x64/ARM64 with glibc or musl, macOS x64/ARM64, and Windows x64/ARM64 using x64 emulation. Linux musl uses PostgreSQL 18.6; other targets use 18.4. Both use the compatible major-version-18 cluster at `~/.atomic/postgres/v18`, with preferred port `5439`.
-
-The first workflow action initializes and starts the database. Concurrent Atomic sessions share it. Once ready, it stays running after Atomic exits, including after the last client closes.
-
-Cluster ownership records live beside the data in `~/.atomic/postgres/v18.shared`, outside Atomic installation/version directories. On Linux root installs, use `/var/lib/atomic-postgres/v18.shared`. Preserve these records and the existing data if Atomic reports an identity mismatch or missing `PG_VERSION`; do not delete either to force initialization. An identity mismatch names the fields that differ, for example `(inode)` or `(systemIdentifier)`. A data directory whose filesystem device number changed after a reboot, as can happen on macOS APFS volumes, is not a mismatch: Atomic attaches the cluster and updates the record when the directory inode, path, and PostgreSQL system identifier still match. Closing or reloading an updated Atomic client does not stop a ready shared server. Older clients without this lifetime behavior can still stop servers they started, so finish and close those sessions before relying on the updated behavior for long-running work. An explicit `DBOS_SYSTEM_DATABASE_URL` remains outside managed-cluster lifecycle operations.
-
-New managed PostgreSQL servers start from a complete, immutable runtime under
-`~/.atomic/postgres/pg-runtime` (or `/var/lib/atomic-postgres/pg-runtime` when
-running as root on Linux), separate from data and project checkouts. Removing
-the original worktree or reinstalling packages does not remove files needed by
-a server already using that runtime. Do not delete a runtime generation,
-including a damaged one, while a managed server may still use it.
-Set `ATOMIC_POSTGRES_RUNTIME_CACHE_DIR` before starting Atomic to share retained runtime generations across separate cluster homes; only the runtime cache moves, not cluster data or ownership records. Keep this directory private to a trusted account and do not remove generations while a server may use them.
-
-Atomic only uses a runtime cache whose parent folders other accounts can't write to. A folder that only its group can write to is accepted when that group is your own private group: no other account in `/etc/passwd` uses that group as its primary group, and `/etc/group` lists no member other than you. That's the default on Ubuntu and Debian, where umask 002 makes `~/.atomic` group-writable. If Atomic reports an **Untrusted embedded Postgres runtime cache directory ancestor** and falls back to in-memory workflows, run `chmod go-w` on the folder named in the message and restart Atomic.
-
-**Running as root on Linux.** Atomic needs an available unprivileged account, `postgres`, `nobody`, or `daemon`, because PostgreSQL cannot run as root. The cluster is stored under `/var/lib/atomic-postgres`. If privilege or runtime preparation fails, inspect the diagnostic rather than changing data ownership blindly.
-
-**Administrator accounts (Windows).** Atomic can start embedded Postgres from an elevated terminal or an administrative account without changing your account or system permissions. The server runs with reduced privileges, as it does under PostgreSQL's own launcher. Regular Windows accounts remain supported.
-
-Managed PostgreSQL writes startup output to `~/.atomic/postgres/v18.log` and, after startup, server logs to `~/.atomic/postgres/v18/log/postgresql-<Day>.log`, rotating daily through seven weekday files. If Postgres exits during startup, Atomic reports recent output from both logs. Check these logs for configuration or cluster errors; do not delete the cluster while a server may still be using it.
-
-Set `ATOMIC_POSTGRES_PORT` before starting Atomic to choose a preferred loopback port, for example `ATOMIC_POSTGRES_PORT=15439 atomic`. The default is `5439`; valid values are integers from 1 through 65535. An occupied port causes Atomic to choose another loopback port without changing or stopping the listener. Concurrent sessions use one elected starter and discover the verified actual port from `v18.shared/cluster.json`. A persisted port takes precedence over a changed preference. Startup bind races have at most three attempts; inspect `v18.log` if they fail.
-
-Atomic checks PostgreSQL readiness and matches the server to the managed data and process identity before attachment. A listening TCP port alone is not sufficient. If an existing cluster has no trusted ownership records, Atomic registers it only when it is the embedded cluster an older Atomic (0.9.10–0.9.19) provisioned, recognized by PostgreSQL major version 18 and the loopback launch of that exact data directory recorded in `postmaster.opts`; registration never reinitializes or modifies the data. Any other unregistered data is refused, and recovery never registers a cluster. Preserve refused data and use an explicit `DBOS_SYSTEM_DATABASE_URL` for that database instead. An explicit URL uses only that endpoint, never alternate managed ports.
-
-After attachment, Atomic checks the managed server's SQL and process identity before borrowing database connections and every five seconds while idle. Lost health discards old connections. One elected process may restart the existing managed cluster under the shared setup lock; other sessions reconnect to its verified, persisted port. Recovery never initializes missing data, signals an unrelated listener, switches to Docker, or restarts the DBOS executor.
-
-If the managed server has stopped, the next workflow database action can restart the existing cluster even when `postmaster.opts` is missing. Atomic still requires trusted ownership records, the original cluster identity, and a verified runtime. A hard identity, ownership, or filesystem failure refuses recovery rather than guessing which server or data to use.
-
-Each process makes at most three recovery attempts per check, with short
-backoffs. Later health checks retry after a cooldown if the problem persists.
-If the retained PostgreSQL runtime is damaged or missing, reinstall a complete
-healthy Atomic package or repair your `ATOMIC_POSTGRES_RUNTIME_DIR` override,
-then inspect `v18.log`. Atomic can select a verified replacement, including
-after a same-version reinstall, even when the damaged runtime prevents new
-database connections. A running server must pass process-identity verification
-before Atomic stops it; if the server has already exited, Atomic starts from
-the replacement without stopping anything. If a present server's identity
-cannot be verified, automatic restart is refused; preserve the data,
-`v18.shared`, and damaged runtime, and report the diagnostic for help instead
-of deleting files or starting another server. Identity mismatches and database
-corruption require investigation, not a package reinstall.
-New admission keeps its
-two-minute deadline even if shared recovery takes longer. Restoring the
-connection does not automatically resume a paused run or prove that an
-interrupted write or external side effect committed. Inspect the original run
-before retrying. External database URLs receive no managed recovery; restore
-that exact endpoint yourself.
-
-Restart Atomic after upgrading to enable health supervision in a session whose database executor was already initialized by an older version.
-
-Custom Windows launchers can still use executable names resolved through `PATH` or relative executable paths. `.cmd` and `.bat` launchers accept arguments on administrative accounts, including when the launcher path contains spaces. Explicit `cmd.exe` invocations retain their usual argument handling. Working directories with a `\\?\` prefix are supported when removing the prefix preserves the exact path; if `cmd.exe` reports an unsupported UNC working directory, use an ordinary local directory path. If startup reports that batch file arguments are invalid, remove carriage returns and line breaks from those arguments. If it reports that a string contains NUL characters, check the supplied paths, arguments, and environment entries. Remove the embedded NUL rather than retrying with a truncated value; no server is started for that request.
-
-If embedded provisioning fails without leaving retained-process cleanup pending, Atomic tries DBOS's reusable `dbos-db` Docker container. A published TCP port is not enough: Atomic waits until PostgreSQL on that container's selected endpoint answers a query before initializing DBOS. Transient startup resets and connection refusals are retried until that bounded wait expires. If DBOS still cannot become ready, workflows **degrade to a process-local in-memory backend with a loud warning** instead of refusing to run: the run executes normally, but its state does not survive the process and `/workflow resume` after exit has nothing to restore. Fix the configured database or set `DBOS_SYSTEM_DATABASE_URL` to a working Postgres to restore durability.
-
-The Docker readiness query uses the same `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGSSLMODE` settings as DBOS. If startup reports an invalid `PGPORT`, supply an integer from 1 through 65535. Authentication, TLS, schema and statement-timeout failures are not retried as database startup delays; correct the reported configuration or database problem.
-
-New Docker fallback containers publish PostgreSQL on `127.0.0.1` at `PGPORT`, or port 5432 when unset. Atomic does not change an existing container's port mapping. When reusing `dbos-db`, keep `PGPORT` consistent with its published port, or set `DBOS_SYSTEM_DATABASE_URL` to the intended database endpoint.
-
-Fallback starts only after failed DBOS initialization has been cleaned up. If Atomic reports `Workflow backend cleanup failed`, workflow startup stops rather than starting another backend alongside an unconfirmed executor. Correct the reported shutdown problem and restart Atomic; do not delete database data to bypass it.
-
-**Multiple concurrent Atomic sessions.** A workflow with a healthy connected owner is not a resume target. Fresh progress and database ownership are checked independently, so a quiet long-running tool stays protected. After the owning connection is lost and progress becomes stale in about two minutes, inspection reports `crashed`. Concurrent attempts to resume the same run admit one executor; a stale request reports that the run changed.
-
-For SDK crash recovery, save the full run UUID and create a fresh authorized session with the original working directory and workflow database configuration. `session.workflows.getRun(runId)` and `getStages(runId)` inspect its durable state without taking ownership. Once `getRun()` reports `crashed`, `session.workflows.resume(runId)` can adopt the root after the database excludes its previous owner and unfinished database writes. A healthy connected owner stays protected despite stale tool progress or copied VM boot/PID identity. This works with `SessionManager.inMemory()` without reopening a session file. Competing adopters cannot both claim the same generation. Missing ownership metadata, another working directory, or unavailable ownership verification keeps the run read-only; older unfenced runs cannot use distributed adoption.
-
-A paused run launched by the model-facing `workflow` tool is also adoptable once its owning session has left it: the session was disposed, or the host switched to another session with `/new`, `/fork`, or `/resume`. Leaving quits the session's in-flight runs at their last checkpoint and records in the workflow database that the session released its checkpointed paused runs, so `session.workflows.resume(runId)` from another authorized session, or the `workflow` tool's `resume` action in the new session, can adopt them, in the same process or after the owning process exits. The `/workflow resume <id>` command the new session prints does the same and makes the resuming session the owner. Before adopting, the new session's model can inspect a released run with the `workflow` tool's `status` and `stages` actions; pausing, quitting, or answering it still requires owning it. The first adopter becomes the owner; a later attempt is refused, and in the process that released the run the message says the run is now owned by another session (another process sharing the database gets the generic ownership error). A run whose owner crashed without leaving, or whose owning session is still open, stays owned by that session. See [SDK run control](/sdk#workflow-run-control).
-
-For live-cloned SDK hosts, configure one shared authoritative PostgreSQL server/database. A copied managed PostgreSQL directory in another VM is a separate coordinator, not a shared database, even when its `localhost` connection URL is identical. Independent database copies cannot coordinate ownership across VMs.
-
-The workflow database endpoint must preserve database sessions. Use direct PostgreSQL connections or session-mode pooling, not transaction-mode or statement-mode pooling. Ownership locks and write authorization depend on that session affinity.
-
-Ownership fencing prevents a disconnected executor from saving later checkpoints or workflow metadata. It does not stop arbitrary external code already running in that executor. After connection loss, the replacement may retry an unfinished `ctx.tool` while the old callback is still active. Use idempotent external effects and stable operation keys; do not assume exactly-once callback execution. Completed durable checkpoints still replay without executing those callbacks again.
-
-If Atomic reports that its database ownership connection was lost, restore database availability, inspect the retained run UUID, and resume explicitly. Recovery uses a fresh execution generation; it does not restore the disconnected executor's mutation authority. Preserve the workflow database and completed checkpoints.
-
-Older unfenced runs require controlled enrollment rather than automatic foreign-owner adoption. Stop all older Atomic workers using that workflow database, upgrade the recovery host, and keep the original database and workflow definition. In an authorized SDK session with the original working directory, use the full UUID with `session.workflows.resume(runId, { legacyRecovery: { olderWorkersStopped: true } })`. This explicit assertion enrolls the legacy root and preserves its completed checkpoints; it does not stop workers itself. Do not use it while an older worker may still be running. Reads and existing owner-scoped controls do not require enrollment. See [SDK run control](/sdk#workflow-run-control) for the recovery example.
-
-If the recovery host crashes between enrollment and execution, inspect the full UUID and retry that explicit SDK option from a fresh session after its database ownership connection is gone. Only an interrupted enrollment is eligible for this retry; healthy owners and other fenced paused or blocked runs remain protected.
-
-Independent root workflows persist independently. Nested workflows share their root's ordering.
-
-### Workflow database recovery
-
-Atomic monitors the managed PostgreSQL server and coordinates recovery when it
-loses health. The shared cluster keeps its data and ownership records; database
-recovery neither starts a replacement workflow nor proves an unfinished external
-effect succeeded. Inspect `/workflow status <full-run-uuid>` for the original run
-and explicitly resume it when eligible. Do not start a duplicate run or delete
-`v18` or `v18.shared` to bypass an identity or availability error.
-
-Database-unavailable admission errors and status `dependencyError` include the selected database provider, its endpoint without credentials or URL options, and the last retained health-probe or recovery failure. A cooldown error keeps the recovery failure visible. Use that reason to repair a missing runtime or configuration; preserve data and ownership records when identity or filesystem checks fail. After repair, inspect and explicitly resume the original run ID.
-
-For an explicit `DBOS_SYSTEM_DATABASE_URL`, Atomic does not manage the external
-database. Restore that endpoint or correct its credentials and TLS settings,
-then inspect and resume the original workflow. If the Docker fallback is in use,
-inspect `dbos-db` and correct its service configuration. A database repair does
-not automatically resume a paused workflow or establish whether an interrupted
-write committed.
+Fencing prevents a displaced executor from saving new checkpoints, not from finishing arbitrary external effects already underway. Use idempotent effects and stable operation keys. Completed checkpoints replay; an unfinished callback may run again.
 
 ### How it works
 
 - Only `ctx.*` work is checkpointed. Plain TypeScript outside those calls is not durable.
-- Completed tool, stage, prompt, and child-workflow checkpoints replay without repeating the completed work. Unfinished work may run again.
-- Resume and inspection use DBOS, not chat transcripts as a recovery catalog.
+- Completed tool, stage, prompt, and child-workflow checkpoints replay without repeating completed work. Unfinished work may run again.
+- Resume and inspection read the journal, not chat transcripts, as the recovery catalog.
 - Unsupported or inconsistent saved topology is refused rather than repaired by guessing. Preserve the run ID and diagnostic.
-- Running workflows cannot be resumed elsewhere. Explicit resume claims one owner before dispatch.
+- Independent roots persist independently; nested workflows share their root's ordering.
 
-**Privacy and retention.** DBOS persists workflow inputs, completed tool outputs, UI responses, stage outputs, message delivery receipts, and chat-session paths. Treat the configured database as sensitive. Atomic compacts superseded workflow metadata after saving a recoverable replacement. It keeps up to 50 recent settled messages across the root and all child runs in the root's metadata. Older delivery receipts remain separately so retrying a message ID does not deliver it again. Sticky messages remain available to future matching stages until the root finishes. Atomic archives receipts for completed, skipped, and failed stages before removing them from pending state, along with superseded session receipts. This compaction does not delete checkpoint history or independent chat transcripts. History does not automatically delete workflow records by age or count; confirmed picker deletion removes inactive DBOS workflow state while preserving independent chat transcripts.
+**Privacy and retention.** The journal contains workflow inputs, completed tool outputs, UI responses, stage outputs, message delivery receipts, and chat-session paths. Treat the file and its SQLite sidecar files as sensitive. History does not automatically delete runs by age or count. Confirmed picker deletion removes inactive workflow records while preserving independent chat transcripts.
 
 Sticky receipts suppress repeat delivery to the same recipient session, whether the message arrived as pre-start context or through live Intercom forwarding. This also holds after a failed stage retries or a cold resume. Repeated confirmations do not increase the delivery count. Delivery without an explicit recipient uses the stage's previous receipts; delivery to a new recipient session remains eligible.
 
@@ -685,7 +573,7 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 ### `/workflow resume` — cross-session resume selector
 
-The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no id, it builds one newest-first picker from live runs that satisfy the shared resumability predicate and current DBOS resumable/completed records. DBOS is the authoritative catalog; selected records are hydrated and revalidated before resume or inspection. Running workflows never appear: fresh-heartbeat rows are excluded in every session to prevent double dispatch, and stale ones surface as `crashed`. A row whose durable checkpoint or referenced artifact is missing is not resumable and is omitted rather than offered and rejected later. Naming such an id explicitly still produces the existing clear no-checkpoint/not-resumable error.
+The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
 
 Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. When a generated progress summary is available, it has its own column; status and workflow name precede the identity in the other column. Live rows also show completed/total stages. Without a generated summary, the adjacent column shows those status details instead. Search matches the identity, summary, and full run ID.
 
@@ -699,9 +587,9 @@ Only runs with usable durable checkpoints or pending prompts can resume. Deleted
 
 Rows carry semantic colors — completed green, paused yellow, failed/blocked/crashed red. The open picker live-updates on local run changes plus a bounded cross-session poll, so state transitions appear (and freshly running workflows disappear) without reopening it.
 
-Ctrl+D deletes a highlighted inactive durable or completed row after confirmation. Deletion rechecks same-process activity and the authoritative DBOS status, refuses a `running` workflow, and leaves host and stage chat transcripts untouched. The history surface matches `/resume` retention semantics: eligible runs remain searchable regardless of age or count. Aged-out history is driven by the state-aware `WORKFLOW_ARTIFACT_RETENTION_MS` policy: only terminal or unowned directories older than the policy are pruned, and pruning deletes the durable entry first, removing the artifact directory only when that deletion succeeds — a refused or unavailable deletion preserves both. Running, paused, quit, blocked, and awaiting-input runs retain their artifacts and durable records so they remain resumable. The picker mounts before asynchronous catalog hydration completes and merges DBOS rows when ready.
+Ctrl+D deletes a highlighted inactive durable or completed row after confirmation. Deletion rechecks same-process activity and journal ownership, refuses running workflows, and leaves chat transcripts untouched. Eligible runs remain searchable regardless of age or count.
 
-Only current-format DBOS records are selectable. Atomic hides unsupported or malformed records without reinterpreting them.
+Only valid current-format journal records are selectable. Unsupported or malformed records are not reinterpreted.
 
 Selecting a paused, resumable failed, blocked, or crash-recovery target from the current project re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
 
@@ -728,7 +616,7 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.
 
-The non-interactive `workflow` surface uses exact targeted DBOS lookup for explicit ids. `resume` loads workflow resources, queries and revalidates the authoritative resumable record, then claims and dispatches only when the caller explicitly requested resume. `status`, `stages`, `stage`, and `transcript` hydrate one exact missing-local root into an isolated read-only snapshot and never dispatch. This targeted path does not change `workflow({ action: "status" })` without a run id: an empty session-local listing neither scans DBOS nor implies that DBOS deleted the workflow.
+The non-interactive `workflow` surface reads the journal for explicit IDs. `resume` loads the definition, revalidates eligibility, then claims and dispatches the run. `status`, `stages`, `stage`, and `transcript` read a missing-local root without dispatching it. `status` without a run ID remains session-local.
 
 Targets other than full UUIDs or 8-hex prefixes are rejected before catalog lookup. Durable read-only prefix inspection includes actively running roots owned by other sessions, without claiming or resuming them. Once resolved, subsequent stage and transcript inspection uses the canonical root UUID, even when a nested child shares its prefix. Completed or failed roots with valid checkpoints remain inspectable when retained conversations are unavailable; invalid transcript paths are stripped while the graph remains visible.
 
@@ -742,7 +630,7 @@ Recovery requires saved checkpoints proving one unfinished tool and its complete
 
 A tool-frontier continuation must reach and consume the exact unfinished tool before reporting `completed`, whether the body returns normally or calls `ctx.exit({ status: "completed" })`. Omitting the call, including by changing control flow, fails with `insufficient_state: replay topology mismatch` and the pending tool's exact ID. A substituted tool is rejected before its callback runs. While that frontier is pending, completed model and child-workflow predecessors can replay, but new model stages, tasks, and child workflows cannot execute in its place. Stage and task worktree setup also waits for live admission. Replaying completed predecessors alone is not proof of completion. Failed replay publishes no successful result; inspect the same ID and restore the matching flow before another supported resume. Quit, kill, caught targeted cancellation, and intentional non-completed exits retain their existing behavior.
 
-After upgrading Atomic itself or applying a code fix, start a new Atomic process; `/workflow reload` refreshes definitions, not loaded code. A process-local non-durable warning means cross-process recovery is unavailable.
+After upgrading Atomic itself or applying a code fix, start a new Atomic process; `/workflow reload` refreshes definitions, not loaded code.
 
 If saved state cannot prove safe replay, reconcile the original run and external effects before choosing recovery. Do not restart the original workflow from the beginning to bypass the error. A separately authorized recovery-only workflow may perform verified remaining operations, but must not repeat completed side effects or fabricate checkpoints.
 
@@ -763,47 +651,13 @@ That history does not authorize any live release action.
 | **Abandoned `ctx.tool` callback** | Quit reports callbacks that ignored cancellation by `{runId, nodeId}`. They may still cause external effects but cannot save a late checkpoint. Reconcile effects before same-ID resume retries unfinished work. |
 | **`ctx.ui` pending prompt** | If a UI prompt was not answered before interruption, resume leaves off on that prompt — the user must answer it to continue. |
 
-### Configuring DBOS/Postgres
+### Configuring journal storage
 
-Choose a hosted or separately managed database persistently in `~/.atomic/agent/settings.json` or trusted project `.atomic/settings.json`:
-
-```json
-{
-  "workflows": {
-    "durability": {
-      "systemDatabaseUrlFile": "~/.atomic/neon/direct.url"
-    }
-  }
-}
-```
-
-The file contains only the PostgreSQL connection URL; surrounding whitespace and a trailing newline are trimmed. Use `systemDatabaseUrl` instead for an inline URL, but do not set both. Relative file paths resolve beside the settings file that declares them, such as the global agent directory or project `.atomic` directory. Protect the file from other accounts and keep credentials out of version control. Existing workflow path arrays remain supported; when using the object form, put resource paths in `workflows.paths`.
-
-`DBOS_SYSTEM_DATABASE_URL` overrides settings. A trusted project `durability` object replaces the global selection. Without either, Atomic provisions managed PostgreSQL, then tries Docker if provisioning fails. An explicit URL uses only its chosen endpoint, even on connection failure. Invalid settings, including unrecognized `durability` keys, and unreadable or empty credential files stop initialization rather than choosing another database. Restart Atomic to change the selection; existing runs stay in their original database and are not migrated.
-
-On first database initialization, interactive and RPC sessions display the selected provider and host without credentials or URL options. A Docker selection is labelled `Docker fallback`. Headless sessions, including SDK hosts without a UI, write only the Docker fallback notice to stderr; managed and configured selections stay silent there. In-memory degradation retains its existing warning. See [Workflow database settings](/settings#workflow-database).
-
-**Linux musl and Windows ARM64.** Musl installations include Alpine/musl PostgreSQL 18.6. Windows ARM64 runs PostgreSQL 18.4 x64 through emulation and requires Windows 11 plus the Microsoft Visual C++ x64 v14 Redistributable. This is not native PostgreSQL ARM64; Windows 10 on ARM is unsupported.
-
-Set `ATOMIC_POSTGRES_RUNTIME_DIR` to a complete extracted runtime containing `bin/initdb`, `bin/pg_ctl`, and `bin/postgres` to override packaged runtime discovery, including in air-gapped deployments. Otherwise DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; that explicit URL retains precedence over embedded provisioning. Atomic provisions embedded Postgres next (with drop-privilege support when running as root on Linux), then Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed. Interactive and RPC actions show the warning as a display-only notification that is not added to agent/model context. Print and other headless actions, where no usable UI exists, write the actionable diagnostic to the console instead.
-
-Keep the complete extracted archive, not only the `atomic` executable. `ATOMIC_POSTGRES_RUNTIME_DIR` accepts complete legacy runtimes without provenance; an incomplete override falls through to installed candidates. Packaging failures do not require deleting or reinitializing the v18 cluster.
-
-If starting workflows reports a missing PostgreSQL executable or library, such as `libzstd.1.dylib` on macOS, download a repaired release and reinstall the complete archive. The installers do not check the bundled PostgreSQL runtime, so the problem shows up the first time Atomic starts its embedded database. With an explicit database URL from the environment or settings, Atomic never uses the bundled runtime. If embedded startup fails and the Docker fallback succeeds, workflows run on Docker and the backend notice identifies that fallback. Check `~/.atomic/postgres/v18.log` if the managed database never starts. Do not copy libraries from another version or delete your PostgreSQL data directory: this is an installation problem, not database corruption. An already-running server does not prove that the new installation is usable.
-
-To check an archive runtime, set `runtime` to its `node_modules/@bastani/atomic-natives/postgres-runtime`, then run `"$runtime/bin/postgres" --version` and `"$runtime/bin/pg_ctl" --version`. On Windows use the corresponding `.exe` files in PowerShell. Both must succeed. If a library-link or copy error is reported, repair the complete installation instead of mixing libraries from different releases.
-
-Optional PostgreSQL OAuth and procedural-language modules may have upstream dependency gaps. Atomic does not bundle supplemental libcurl or Perl/Python/Tcl runtimes for those modules. They are not needed for normal workflow database operation; use a separately managed PostgreSQL server if you require them.
+Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select a durable local file. Otherwise Atomic uses `~/.atomic/workflows/journal.sqlite`. Preserve that file and its SQLite sidecar files; use the same journal and working directory to resume an existing run. See [Workflow storage settings](/settings#workflow-storage).
 
 Pending-stage Intercom cleanup checks durable ownership only for runs with messages that need settlement. Repeated failures with the same message produce one warning per extension instance. Interactive hosts receive a display-only notification, never a console stack trace, even if notification delivery fails; headless hosts retain a console diagnostic. Pending messages are not discarded when cleanup fails.
 
-```bash
-export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
-```
-
-Fresh-process resume and inspection read authoritative checkpoints from DBOS. Unsupported records are not treated as successful cached work. Keep the original diagnostic and run ID if decoding fails.
-
-Atomic does not use the legacy file backend under `~/.atomic/workflow-durable`; cross-session `/workflow resume` reads DBOS only.
+Fresh-process resume and inspection read authoritative checkpoints from the journal. Unsupported records are not treated as successful cached work. Keep the original diagnostic and run ID if decoding fails.
 
 ## Workflow Locations
 

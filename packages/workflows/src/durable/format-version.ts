@@ -1,4 +1,4 @@
-/** Single current schema version for DBOS workflow state and metadata. */
+/** Current workflow checkpoint format version. */
 export const DURABLE_FORMAT_VERSION = 3 as const;
 
 export function isCurrentDurableFormat(value: unknown): boolean {

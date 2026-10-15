@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import type { DbosStepRecord } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 
 describe("durable workflow origin", () => {
 	test("registered user and agent origins round-trip through the handle and catalog", () => {
@@ -45,32 +43,6 @@ describe("durable workflow origin", () => {
 			undefined,
 		);
 		assert.equal(backend.toMetadata("origin-omitted")?.origin, undefined);
-	});
-
-	test("DBOS metadata omits a bogus origin value while retaining the valid record", () => {
-		const record: DbosStepRecord = {
-			stepName: "__atomic_metadata:20:bogus-origin",
-			output: {
-				__atomicDurableMetadata: true,
-				version: 3,
-				metadata: {
-					workflowId: "origin-bogus",
-					name: "bogus-origin",
-					inputs: {},
-					status: "paused",
-					createdAt: 10,
-					completedCheckpoints: 1,
-					pendingPrompts: 0,
-					promptReservationEpoch: "epoch-1",
-					updatedAt: 20,
-					origin: "not-a-real-actor",
-				},
-			},
-		};
-
-		const parsed = parseCurrentMetadataRecord(record, "origin-bogus");
-		assert.ok(parsed);
-		assert.equal(parsed.origin, undefined);
 	});
 
 	test("re-registering without origin preserves the previously recorded origin", () => {

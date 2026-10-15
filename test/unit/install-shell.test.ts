@@ -1450,14 +1450,14 @@ unixTest("shell installer selects every Darwin and Linux archive, including Rose
 	}
 });
 
-unixTest("shell installer installs releases whose launcher has no PostgreSQL runtime validation", () => {
+unixTest("shell installer validates the release launcher on install and upgrade", () => {
 	for (const upgrade of [false, true]) {
 		const fixture = createFixture();
 		try {
 			if (upgrade) assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
 			const result = fixture.run({ args: ["--ref", "2.0.0"] });
 			assertSuccess(result);
-			assert.doesNotMatch(output(result), /unknown option|PostgreSQL/u);
+			assert.doesNotMatch(output(result), /unknown option/u);
 			assert.equal(currentVersion(fixture), "2.0.0");
 			assertNoTemporaryState(fixture);
 		} finally {

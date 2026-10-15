@@ -2,9 +2,8 @@
  * Isolated process-restart fixture for issue #3085.
  *
  * The parent integration test drives a fabricated rate-limit + expired-OAuth
- * block through a real AgentSession, persists mock DBOS state to disk, then
- * spawns this file as a child. The child hydrates an empty in-memory mirror
- * from that file, asserts the restored blocked/resumable metadata, resumes
+ * block through a real AgentSession and closes its journal before spawning
+ * this file. The child reopens that journal, asserts blocked/resumable metadata,
  * after simulated provider recovery, and proves the completed prefix is not
  * executed again.
  *
@@ -18,19 +17,14 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workflow } from "../../../packages/workflows/src/authoring/workflow.js";
-import { DbosDurableBackend } from "../../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../../packages/workflows/src/durable/factory.js";
+import { JournalDurableBackend } from "../../../packages/workflows/src/durable/journal/journal-backend.js";
 import { createExtensionRuntime } from "../../../packages/workflows/src/extension/runtime.js";
 import { createJobTracker } from "../../../packages/workflows/src/runs/background/job-tracker.js";
 import { effectiveRunStatus } from "../../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../../packages/workflows/src/workflows/registry.js";
 import { sleep } from "../../helpers/runtime.js";
-import {
-	createMockSdk,
-	restoreMockSdkState,
-	type SerializedMockDbosState,
-} from "../../unit/durable-dbos-backend-helpers.js";
 import { createIssue3085StageSession } from "./issue-3085-provider-auth-block-session.js";
 
 export const ISSUE_3085_WORKFLOW_NAME = "provider-auth-block-3085";
@@ -40,7 +34,7 @@ export const ISSUE_3085_RESULT_FILE = "resume-result.json";
 
 export type Issue3085PersistedState = {
 	readonly runId: string;
-	readonly sdk: SerializedMockDbosState;
+	readonly journalPath: string;
 };
 
 export type Issue3085ResumeResult = {
@@ -92,9 +86,7 @@ export function createIssue3085Definition(dir: string) {
 
 export async function resumeIssue3085FromPersistedState(dir: string): Promise<Issue3085ResumeResult> {
 	const persisted = JSON.parse(readFileSync(persistPath(dir), "utf8")) as Issue3085PersistedState;
-	const sdk = createMockSdk();
-	restoreMockSdkState(sdk, persisted.sdk);
-	const backend = new DbosDurableBackend(sdk, { executorId: "3085-process-restart" });
+	const backend = await JournalDurableBackend.open(persisted.journalPath);
 	setDurableBackend(backend);
 	try {
 		await backend.hydrateWorkflow(persisted.runId);

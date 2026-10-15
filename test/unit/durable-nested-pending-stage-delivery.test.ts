@@ -3,14 +3,13 @@ import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 const ROOT_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CHILD_RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -138,8 +137,7 @@ test("a child run hydrates and drains only its logical pending messages through 
 });
 
 test("actual nested orchestration reloads a child queue from root metadata and delivers it once", async () => {
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "nested-pending-writer" });
+	const writer = new JournalTestBackend();
 	let stageStarted = Promise.withResolvers<void>();
 	let releaseStage = Promise.withResolvers<void>();
 	const child = workflow({
@@ -200,10 +198,6 @@ test("actual nested orchestration reloads a child queue from root metadata and d
 		childBackend,
 	);
 	assert.equal(queued?.ok, true);
-	await writer.flush();
-	const persistedSdk = createMockSdk();
-	for (const [key, value] of sdk.state.workflows) persistedSdk.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) persistedSdk.state.steps.set(key, structuredClone(value));
 
 	firstController.abort(new Error("old process stopped"));
 	releaseStage.resolve();
@@ -211,7 +205,7 @@ test("actual nested orchestration reloads a child queue from root metadata and d
 
 	stageStarted = Promise.withResolvers<void>();
 	releaseStage = Promise.withResolvers<void>();
-	const reader = new DbosDurableBackend(persistedSdk, { executorId: "nested-pending-reader" });
+	const reader = await writer.reopen();
 	await reader.hydrateWorkflow(ROOT_RUN_ID);
 	setDurableBackend(reader);
 	const resumedStore = createStore();
@@ -285,8 +279,7 @@ test("actual nested orchestration reloads a child queue from root metadata and d
 
 	releaseStage.resolve();
 	assert.equal((await resumedRun).status, "completed");
-	await reader.flush();
-	const reloaded = new DbosDurableBackend(persistedSdk, { executorId: "nested-pending-verifier" });
+	const reloaded = await reader.reopen();
 	await reloaded.hydrateWorkflow(ROOT_RUN_ID);
 	const persisted = reloaded.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
 	assert.equal(persisted.length, 1);

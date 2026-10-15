@@ -14,6 +14,8 @@
  * cross-ref: spec detached-runner
  */
 
+import { getDurableBackend } from "../../durable/factory.js";
+import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type {
@@ -63,7 +65,7 @@ export interface DetachedRunOpts extends Omit<RunOpts, "signal" | "cancellation"
 	executionMode?: WorkflowExecutionMode;
 	/**
 	 * Observes the raw executor outcome. Fulfillment includes the executor's
-	 * RunResult; rejection includes the thrown setup/final-flush error. The job
+	 * RunResult; rejection includes the thrown setup or persistence error. The job
 	 * promise still resolves either way.
 	 */
 	onRawSettled?: (ok: boolean, result: RunResult | undefined, error: unknown | undefined) => void | Promise<void>;
@@ -177,9 +179,32 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		settleJob();
 		throw error;
 	}
+	let observed = false;
+	const observe = async (...args: Parameters<NonNullable<DetachedRunOpts["onRawSettled"]>>): Promise<void> => {
+		observed = true;
+		try {
+			await onRawSettled?.(...args);
+		} catch {
+			// Settlement observers must not become unhandled rejections.
+		}
+	};
 	let backgroundPromise: Promise<RunResult>;
 	try {
-		backgroundPromise = syncRun(def, inputs, execOpts);
+		const execute = async (): Promise<RunResult> => {
+			try {
+				const result = await syncRun(def, inputs, execOpts);
+				await observe(true, result, undefined);
+				return result;
+			} catch (error) {
+				await observe(false, undefined, error);
+				throw error;
+			}
+		};
+		const backend = opts.durableBackend ?? getDurableBackend();
+		backgroundPromise =
+			opts.parentRun === undefined && backend instanceof JournalDurableBackend
+				? backend.withWorkflowLease(runId, execute)
+				: execute();
 	} catch (error) {
 		detachStartup();
 		controller.abort(error);
@@ -188,11 +213,9 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		settleJob();
 		throw error;
 	}
-	const settle = async (ok: boolean, result: RunResult | undefined, error: unknown | undefined): Promise<void> => {
+	const settle = async (...args: Parameters<NonNullable<DetachedRunOpts["onRawSettled"]>>): Promise<void> => {
 		try {
-			await onRawSettled?.(ok, result, error);
-		} catch {
-			// Settlement observers must not become unhandled rejections.
+			if (!observed) await observe(...args);
 		} finally {
 			detachStartup();
 			registry.unregister(runId, controller);
@@ -204,7 +227,7 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		(result) => {
 			settle(true, result, undefined);
 		},
-		(error: unknown) => {
+		(error: Error) => {
 			settle(false, undefined, error);
 		},
 	);

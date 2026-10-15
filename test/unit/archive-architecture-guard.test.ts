@@ -114,7 +114,7 @@ describe("archive architecture guard", () => {
 	test("reports every mismatch, not just the first", () => {
 		const archiveRoot = stageArchive([
 			{ name: "@esbuild/linux-x64", os: ["linux"], cpu: ["x64"] },
-			{ name: "@embedded-postgres/linux-x64", os: ["linux"], cpu: ["x64"] },
+			{ name: "@bastani/atomic-natives-linux-x64-gnu", os: ["linux"], cpu: ["x64"] },
 			{ name: "jiti" },
 		]);
 
@@ -122,7 +122,7 @@ describe("archive architecture guard", () => {
 
 		assert.deepEqual(
 			mismatches.map((mismatch) => mismatch.name),
-			["@embedded-postgres/linux-x64", "@esbuild/linux-x64"],
+			["@bastani/atomic-natives-linux-x64-gnu", "@esbuild/linux-x64"],
 		);
 	});
 
@@ -152,9 +152,6 @@ describe("archive architecture guard", () => {
 			stagingLoop,
 			/bun run \.\.\/\.\.\/packages\/coding-agent\/scripts\/assert-archive-architecture\.ts "binaries\/\$platform" --platform "\$platform"/u,
 		);
-		// Every archive removes host leaves and stages a verified target runtime.
-		assert.match(stagingLoop, /rm -rf "binaries\/\$platform\/node_modules\/@embedded-postgres"/u);
-		assert.match(stagingLoop, /stage-postgres-runtime\.mjs "\$platform"/u);
 		assert.equal(stagingLoop.includes("esbuild"), false);
 
 		const syntax = spawnSync("bash", ["-n", buildScriptPath], { encoding: "utf8" });

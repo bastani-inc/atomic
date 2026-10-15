@@ -1,10 +1,6 @@
 import { InMemoryDurableBackend } from "../../durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
-import { acquireDbosLease } from "../../durable/dbos-lifecycle.js";
-import { requestDbosPoolSize } from "../../durable/dbos-pool-size.js";
-import { readDbosFailureDetail } from "../../durable/dbos-registration-diagnostics.js";
-import { requestDbosSystemDatabaseUrl } from "../../durable/dbos-system-database-url.js";
-import { initializeDurableBackend, initializeRequiredDurableBackend } from "../../durable/factory.js";
+import { initializeDurableBackend } from "../../durable/factory.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
@@ -33,23 +29,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		return await engineRun(def, inputs, { ...opts, durableBackend: new InMemoryDurableBackend() });
 	}
 	const durableRequested = durability?.mode === "durable";
-	if (durability?.poolSize !== undefined) requestDbosPoolSize(durability.poolSize);
 	const presetBackend = opts.durableBackend ?? getDurableBackendProcessOwner().injectedBackend;
-	if (presetBackend !== undefined) {
-		if (durableRequested && !presetBackend.persistent) {
-			throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
-		}
-		return await engineRun(def, inputs, opts);
+	if (durableRequested && presetBackend !== undefined && !presetBackend.persistent) {
+		throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
 	}
-	if (durability?.systemDatabaseUrl !== undefined) requestDbosSystemDatabaseUrl(durability.systemDatabaseUrl);
-	const releaseLease = acquireDbosLease();
-	try {
-		if (durableRequested) await initializeRequired(def.name);
-		else await initializeDurableBackend();
-		return await engineRun(def, inputs, opts);
-	} finally {
-		await releaseLease();
-	}
+	const backend = presetBackend ?? (await initializeDurableBackend());
+	return await engineRun(def, inputs, { ...opts, durableBackend: backend });
 }
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
@@ -62,16 +47,4 @@ function withDefaultAgentSessionAdapter(opts: RunOpts): RunOpts {
 			agentSession: createAgentSessionAdapter(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
 		},
 	};
-}
-
-async function initializeRequired(workflowName: string): Promise<void> {
-	try {
-		await initializeRequiredDurableBackend();
-	} catch (error) {
-		throw new WorkflowDurabilityRequiredError(
-			workflowName,
-			`the durable backend could not start: ${readDbosFailureDetail(error)}`,
-			{ cause: error },
-		);
-	}
 }

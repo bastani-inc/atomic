@@ -3,7 +3,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
-import { moduleDir, type SyncSpawnResult, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	type SyncSpawnResult,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 /** Spawn budget for one built-Node fixture process. Mirrors, but is not the
  *  source of, each suite file's vitest budget — the duration guard resolves
@@ -21,10 +27,27 @@ export function runBuiltNodeFixture(
 		existsSync(join(BUILT_PACKAGE_DIR, "cli.js")),
 		"packages/coding-agent/dist/cli.js missing — run the build step before the built Node host tests",
 	);
-	return spawnSyncCollect(
-		[process.execPath, ...execArgv, fileURLToPath(new URL(`../fixtures/${fixture}`, import.meta.url)), ...args],
-		{ timeout: FIXTURE_PROCESS_TIMEOUT_MS, env: { ...process.env, ...env, ATOMIC_PACKAGE_DIR: BUILT_PACKAGE_DIR } },
-	);
+	const home = makeTempDirectory("atomic-journal-host-");
+	try {
+		return spawnSyncCollect(
+			[process.execPath, ...execArgv, fileURLToPath(new URL(`../fixtures/${fixture}`, import.meta.url)), ...args],
+			{
+				timeout: FIXTURE_PROCESS_TIMEOUT_MS,
+				env: {
+					...process.env,
+					...env,
+					HOME: home,
+					USERPROFILE: home,
+					ATOMIC_MANAGED_TEST_HOME:
+						env && Object.hasOwn(env, "ATOMIC_MANAGED_TEST_HOME") ? env.ATOMIC_MANAGED_TEST_HOME : home,
+					ATOMIC_WORKFLOW_JOURNAL_PATH: join(home, "journal.sqlite"),
+					ATOMIC_PACKAGE_DIR: BUILT_PACKAGE_DIR,
+				},
+			},
+		);
+	} finally {
+		removeTempDirectory(home);
+	}
 }
 
 export function expectVerifiedFixture(
