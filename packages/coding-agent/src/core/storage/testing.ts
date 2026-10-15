@@ -87,6 +87,29 @@ export function registerSqliteDatabaseConformance(
 				assert.deepEqual(await database.get("SELECT ? AS value", 42n), { value: 42 });
 			});
 
+			check("binds binary parameters when called, not when queued work executes", async (subject) => {
+				await create(subject.database);
+				const database = await checkpoint(subject);
+				const entered = Promise.withResolvers<void>();
+				const release = Promise.withResolvers<void>();
+				const holding = database.transaction(async () => {
+					entered.resolve();
+					await release.promise;
+				});
+				await entered.promise;
+				const bytes = new Uint8Array([1, 2, 3]);
+				const write = database.run("INSERT INTO items(value) VALUES (?)", bytes);
+				const read = database.get("SELECT ? AS value", bytes);
+				const rows = database.all("SELECT ? AS value", bytes);
+				bytes.fill(0);
+				release.resolve();
+				await Promise.all([holding, write]);
+				const expected = { value: new Uint8Array([1, 2, 3]) };
+				assert.deepEqual(await read, expected);
+				assert.deepEqual(await rows, [expected]);
+				assert.deepEqual(await (await checkpoint(subject)).all("SELECT value FROM items"), [expected]);
+			});
+
 			check("rejects NUL string bindings before executing SQL", async (subject) => {
 				await create(subject.database);
 				const database = await checkpoint(subject);
@@ -154,6 +177,39 @@ export function registerSqliteDatabaseConformance(
 					StorageUnavailableError,
 				);
 				assert.deepEqual(await (await checkpoint(subject)).all("SELECT * FROM items"), []);
+			});
+
+			check("rejects a failed commit with a typed error and leaves nothing visible", async (subject) => {
+				await subject.database.exec(
+					"CREATE TABLE parents (id INTEGER PRIMARY KEY); CREATE TABLE children (id INTEGER PRIMARY KEY, parent INTEGER NOT NULL REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)",
+				);
+				const database = await checkpoint(subject);
+				// A deferred foreign-key violation passes every statement and fails only at COMMIT.
+				await database.exec("PRAGMA foreign_keys = ON");
+				let callbackSettled = false;
+				await assert.rejects(
+					database.transaction(async (tx) => {
+						await tx.run("INSERT INTO children(id, parent) VALUES (?, ?)", 1, 1);
+						callbackSettled = true;
+						return "committed";
+					}),
+					(error: Error) => {
+						assert.ok(error instanceof StorageUnavailableError);
+						assert.equal(error.adapter, database.descriptor.adapter);
+						assert.equal(error.location, database.descriptor.location);
+						assert.ok(error.cause instanceof Error);
+						return true;
+					},
+				);
+				assert.equal(callbackSettled, true);
+				assert.deepEqual(await database.all("SELECT id FROM children"), []);
+				await database.transaction(async (tx) => {
+					await tx.run("INSERT INTO parents(id) VALUES (?)", 1);
+					await tx.run("INSERT INTO children(id, parent) VALUES (?, ?)", 1, 1);
+				});
+				assert.deepEqual(await (await checkpoint(subject)).all("SELECT id, parent FROM children"), [
+					{ id: 1, parent: 1 },
+				]);
 			});
 
 			check("retains both failures when rollback fails", async (subject) => {

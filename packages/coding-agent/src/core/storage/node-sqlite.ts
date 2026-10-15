@@ -1,8 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
 import {
+	StorageAdapterLoadError,
 	type StorageFailureCause,
 	StorageInvalidTextError,
 	StorageRollbackError,
@@ -10,6 +11,21 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+
+/** Copies binary parameters so queued work binds the bytes the caller passed, not later buffer contents. */
+function snapshotParams(params: readonly SqliteValue[]): SqliteValue[] {
+	return params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
+}
+
+/**
+ * Bun's `DatabaseSync.close()` defers closing the file until garbage collection finalizes every statement the
+ * connection prepared, so the database, WAL and shared-memory files stay open (and locked on Windows). The adapter
+ * keeps no statement references, so a synchronous collection finalizes them and releases the files. Node finalizes
+ * statements inside `close()` and has no `Bun` global.
+ */
+function finalizeReleasedStatements(): void {
+	(globalThis as { Bun?: { gc(force: boolean): void } }).Bun?.gc(true);
+}
 
 function normalizeRow(row: Record<string, SqliteValue>): SqliteRow {
 	return Object.fromEntries(
@@ -94,15 +110,18 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
-		return this.enqueue(() => this.executor.run(sql, ...params));
+		const bound = snapshotParams(params);
+		return this.enqueue(() => this.executor.run(sql, ...bound));
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
-		return this.enqueue(() => this.executor.get<T>(sql, ...params));
+		const bound = snapshotParams(params);
+		return this.enqueue(() => this.executor.get<T>(sql, ...bound));
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
-		return this.enqueue(() => this.executor.all<T>(sql, ...params));
+		const bound = snapshotParams(params);
+		return this.enqueue(() => this.executor.all<T>(sql, ...bound));
 	}
 
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
@@ -130,7 +149,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.closing = true;
-			this.closePromise = this.tail.then(() => this.driver(() => this.connection.close()));
+			this.closePromise = this.tail.then(() =>
+				this.driver(() => {
+					this.connection.close();
+					finalizeReleasedStatements();
+				}),
+			);
 		}
 		return this.closePromise;
 	}
@@ -141,10 +165,18 @@ export async function openNodeSqliteDatabase(
 	{ busyTimeoutMs = 5000 }: { busyTimeoutMs?: number } = {},
 ): Promise<SqliteDatabase> {
 	const descriptor = { adapter: "node-sqlite", location: path };
+	// Load node:sqlite on first open: importing it prints Node's experimental warning, which every importer of the
+	// package entry point would otherwise see.
+	let Database: typeof DatabaseSync;
+	try {
+		({ DatabaseSync: Database } = await import("node:sqlite"));
+	} catch (cause) {
+		throw new StorageAdapterLoadError("node:sqlite", cause as StorageFailureCause);
+	}
 	let connection: DatabaseSync | undefined;
 	try {
 		if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
-		connection = new DatabaseSync(path);
+		connection = new Database(path);
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		return new NodeSqliteDatabase(connection, descriptor);

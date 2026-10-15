@@ -1,10 +1,19 @@
-import assert from "node:assert/strict";
+import assert, { AssertionError } from "node:assert/strict";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteValue,
+} from "../../packages/coding-agent/src/core/storage/database.js";
 import { StoragePrefixError, StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
-import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
+import {
+	registerSqliteDatabaseConformance,
+	type WithSqliteDatabaseSubject,
+} from "../../packages/coding-agent/src/core/storage/testing.js";
 import {
 	bunExecutable,
 	fileExists,
@@ -16,6 +25,66 @@ import {
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 
 registerSqliteDatabaseConformance({ describe, it: test }, "node SQLite", withNodeSqliteDatabase);
+
+type CommitFault = "swallows the commit error" | "rejects without rolling back";
+
+/** Wraps the real adapter with a hand-rolled transaction that mishandles a failed COMMIT. */
+function withFaultyCommit(fault: CommitFault): WithSqliteDatabaseSubject {
+	const wrap = (inner: SqliteDatabase): SqliteDatabase => ({
+		descriptor: inner.descriptor,
+		exec: (sql) => inner.exec(sql),
+		run: (sql, ...params) => inner.run(sql, ...params),
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => inner.get<T>(sql, ...params),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => inner.all<T>(sql, ...params),
+		close: () => inner.close(),
+		async transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
+			await inner.exec("BEGIN IMMEDIATE");
+			let result: T;
+			try {
+				result = await callback(inner);
+			} catch (error) {
+				await inner.exec("ROLLBACK");
+				throw error;
+			}
+			try {
+				await inner.exec("COMMIT");
+			} catch (error) {
+				if (fault === "rejects without rolling back") throw error;
+				await inner.exec("ROLLBACK");
+			}
+			return result;
+		},
+	});
+	return (body) =>
+		withNodeSqliteDatabase((subject) =>
+			body({
+				get database() {
+					return wrap(subject.database);
+				},
+				reopen: async () => wrap(await subject.reopen()),
+				withRollbackFailure: (cause, operation) => subject.withRollbackFailure(cause, operation),
+			}),
+		);
+}
+
+for (const fault of ["swallows the commit error", "rejects without rolling back"] as const) {
+	test(`SQLite facade conformance fails an adapter that ${fault}`, async () => {
+		const failedCommitCases: Array<() => Promise<void>> = [];
+		registerSqliteDatabaseConformance(
+			{
+				describe: (_name, body) => body(),
+				it: (name, body) => {
+					if (name === "rejects a failed commit with a typed error and leaves nothing visible")
+						failedCommitCases.push(body);
+				},
+			},
+			"faulty commit",
+			withFaultyCommit(fault),
+		);
+		assert.equal(failedCommitCases.length, 2);
+		for (const run of failedCommitCases) await assert.rejects(run(), AssertionError);
+	});
+}
 
 test("SQLite facade binds values without treating them as SQL", async () => {
 	const directory = makeTempDirectory("atomic-storage-");
