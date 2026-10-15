@@ -1,11 +1,13 @@
 import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
 import type { StageOptions } from "../../shared/types.js";
-import type { WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
+import type { WorkflowResolvedModelCandidate, WorkflowResolvedScopedModel } from "../shared/model-fallback.js";
 
 interface StageSessionOptionsInput {
 	readonly effectiveStageOptions: StageOptions | undefined;
 	readonly candidate: WorkflowResolvedModelCandidate | undefined;
 	readonly ownsFallbackChain: boolean;
+	/** Scoped models already resolved through the stage's model catalog. */
+	readonly scopedModels?: readonly WorkflowResolvedScopedModel[];
 	readonly restoreSavedModel?: boolean;
 	readonly reattachSessionFile: string | undefined;
 	readonly sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
@@ -36,6 +38,7 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
 						: {}),
 				};
 	if (options.cwd === undefined && input.defaultCwd !== undefined) options.cwd = input.defaultCwd;
+	if (input.scopedModels !== undefined) options.scopedModels = [...input.scopedModels];
 	if (input.ownsFallbackChain) {
 		options.fallbackModels = [];
 	}

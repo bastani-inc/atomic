@@ -256,6 +256,49 @@ export async function buildModelCandidatesFromCatalog(input: {
 	}
 }
 
+/** A stage scoped model resolved to the SDK's model-plus-thinking-level shape. */
+export interface WorkflowResolvedScopedModel {
+	readonly model: WorkflowModelValue;
+	readonly thinkingLevel?: WorkflowThinkingLevel;
+}
+
+function resolveScopedModels(
+	values: readonly WorkflowModelValue[],
+	availableModels: readonly WorkflowModelInfo[] | undefined,
+	preferredProvider: string | undefined,
+): WorkflowResolvedScopedModel[] {
+	const failures: ModelResolutionFailure[] = [];
+	const resolved: WorkflowResolvedScopedModel[] = [];
+	for (const value of values) {
+		const entry = resolveModelValue(value, availableModels, preferredProvider);
+		if (isFailure(entry)) {
+			failures.push(entry);
+			continue;
+		}
+		resolved.push({
+			model: entry.value,
+			...(entry.reasoningLevel !== undefined ? { thinkingLevel: entry.reasoningLevel } : {}),
+		});
+	}
+	if (failures.length > 0) throw new WorkflowModelValidationError(failures);
+	return resolved;
+}
+
+/** Resolve stage scoped models with the same catalog rules as the stage's primary model. */
+export async function resolveScopedModelsFromCatalog(input: {
+	readonly scopedModels: readonly WorkflowModelValue[];
+	readonly catalog?: WorkflowModelCatalogPort;
+}): Promise<WorkflowResolvedScopedModel[]> {
+	if (input.catalog === undefined) return resolveScopedModels(input.scopedModels, undefined, undefined);
+	let availableModels: readonly WorkflowModelInfo[];
+	try {
+		availableModels = await input.catalog.listModels();
+	} catch {
+		return resolveScopedModels(input.scopedModels, undefined, undefined);
+	}
+	return resolveScopedModels(input.scopedModels, availableModels, input.catalog.preferredProvider);
+}
+
 export async function validateWorkflowModels(input: {
 	readonly requests: readonly {
 		readonly model?: WorkflowModelValue;
