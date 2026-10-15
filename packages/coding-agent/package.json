@@ -24,6 +24,16 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./storage": {
+      "types": "./dist/core/storage/index.d.ts",
+      "import": "./dist/core/storage/index.js",
+      "default": "./dist/core/storage/index.js"
+    },
+    "./storage/testing": {
+      "types": "./dist/core/storage/testing.d.ts",
+      "import": "./dist/core/storage/testing.js",
+      "default": "./dist/core/storage/testing.js"
+    },
     "./rpc-entry": {
       "types": "./dist/rpc-entry.d.ts",
       "import": "./dist/rpc-entry.js",

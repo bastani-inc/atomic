@@ -423,7 +423,7 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	],
 	"/extensions/api-reference": ["/custom-provider/api-reference"],
 	"/sdk": ["/sdk/web-server"],
-	"/sdk/reference": ["/sdk/structured-decisions"],
+	"/sdk/reference": ["/storage", "/sdk/structured-decisions"],
 };
 
 /** A page's YAML frontmatter, limited to the scalar fields this suite reads. */
@@ -641,8 +641,8 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			37,
-			"migration routes, upstream additions, reader-path orientation pages, /mcp-servers, /sdk/structured-decisions, /sdk/web-server, and /nvidia-rtx-llama-cpp have insertion points",
+			38,
+			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
 
