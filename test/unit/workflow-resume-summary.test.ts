@@ -11,6 +11,7 @@ function run(): RunSnapshot {
 		name: "Ship feature",
 		inputs: {},
 		status: "paused",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		summary: "Tests pass; awaiting review",

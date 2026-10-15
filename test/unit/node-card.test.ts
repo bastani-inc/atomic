@@ -46,7 +46,6 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		name: opts.name ?? "alpha",
 		status: opts.status ?? ("pending" as StageStatus),
 		parentIds: opts.parentIds ?? [],
-		topologyState: opts.topologyState,
 		nodeKind: opts.nodeKind,
 		toolStatus: opts.toolStatus,
 		toolEvents: opts.toolEvents ?? [],
@@ -590,14 +589,6 @@ describe("renderNodeCard — metadata line", () => {
 		for (const line of lines) {
 			assert.equal(stripAnsi(line).length, NODE_W);
 		}
-	});
-
-	test("labels legacy reconstructed topology as unavailable rather than root", () => {
-		const lines = renderNodeCard(makeStage({ status: "completed", topologyState: "unavailable" }), {
-			theme,
-		});
-		const metadata = stripAnsi(lines[3]!).slice(1, -1).trim();
-		assert.equal(metadata, "topology unavailable");
 	});
 
 	test("running stages keep the model row without trailing dependency padding", () => {

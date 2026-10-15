@@ -35,13 +35,6 @@ serialTest("PID-file polling ignores an observable empty file while the writer i
 	}
 });
 
-function maximumGap(values: readonly number[]): number {
-	let maximum = 0;
-	for (let index = 1; index < values.length; index += 1)
-		maximum = Math.max(maximum, values[index]! - values[index - 1]!);
-	return maximum;
-}
-
 function fixtureArgs(extension: string): string[] {
 	return [
 		// --approve pins project trust for this run so a fresh agent dir (CI, containers)
@@ -73,11 +66,8 @@ function settingsEntryCounts(path: string): Record<"model_change" | "session_inf
 }
 
 const FORBIDDEN_TERMINATION_TEXT = ["Engine terminated;", "result unknown; inspect side effects before retrying"];
-// A single host heartbeat can slip under full Vitest file parallelism even
-// while the host remains healthy. The report-count assertions still detect a
-// stopped heartbeat; this cap tolerates scheduler jitter without hiding a real
-// engine wedge.
-const HOST_HEARTBEAT_GAP_CAP_MS = 150;
+// Allow loaded child processes to be scheduled, but require input to work while the engine cannot reply.
+const HOST_INPUT_RESPONSE_TIMEOUT_MS = 1_500;
 
 function assertNoForbiddenTerminationText(reports: HarnessReport[]): void {
 	for (const report of reports) {
@@ -102,6 +92,7 @@ serialTest(
 				ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 				ATOMIC_BLOCKING_GRANDCHILD_PID_FILE: grandchildPidFile,
 				ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
+				ATOMIC_BLOCKING_TOOL_UNTIL_TERMINATED: "1",
 			},
 		);
 		try {
@@ -128,7 +119,29 @@ serialTest(
 			// terminate or replace the child, even for a wedged one.
 			const beforeEscapeReports = driver.reports.length;
 			driver.send({ type: "input", data: "\u001b" });
-			await sleep(1_500);
+			await driver.waitForNext(beforeEscapeReports, (report) => report.type === "heartbeat");
+			// Model a scheduler pause without confusing wall-clock jitter with an engine wedge.
+			driver.process.kill("SIGSTOP");
+			try {
+				await sleep(300);
+			} finally {
+				driver.process.kill("SIGCONT");
+			}
+			const beforeProbe = driver.reports.length;
+			driver.send({ type: "input", data: "x" });
+			await driver.waitForNext(
+				beforeProbe,
+				(report) => report.type === "heartbeat" && report.editorText === "x",
+				HOST_INPUT_RESPONSE_TIMEOUT_MS,
+			);
+			const beforeErase = driver.reports.length;
+			driver.send({ type: "input", data: "\x7f" });
+			await driver.waitForNext(
+				beforeErase,
+				(report) => report.type === "heartbeat" && report.editorText === "",
+				HOST_INPUT_RESPONSE_TIMEOUT_MS,
+			);
+			await sleep(1_200);
 			const afterEscape = driver.reports
 				.slice(beforeEscapeReports)
 				.filter((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
@@ -167,10 +180,6 @@ serialTest(
 				)
 				.map((report) => report.at);
 			assert.ok(heartbeats.length > 20, "host heartbeat did not remain active through cancellation and restart");
-			assert.ok(
-				maximumGap(heartbeats) <= HOST_HEARTBEAT_GAP_CAP_MS,
-				`host heartbeat gap was ${maximumGap(heartbeats).toFixed(1)} ms`,
-			);
 			assertNoForbiddenTerminationText(driver.reports);
 		} finally {
 			await driver.stop();

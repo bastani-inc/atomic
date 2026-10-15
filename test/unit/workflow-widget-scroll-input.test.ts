@@ -247,7 +247,15 @@ for (const route of ["native", "remote"])
 					f.context.createExtensionUIContext() as unknown as NonNullable<ExtensionAPI["ui"]>,
 				);
 				for (const id of ids)
-					store.recordRunStart({ id, name: id, status: "paused", startedAt: Date.now(), inputs: {}, stages: [] });
+					store.recordRunStart({
+						id,
+						name: id,
+						status: "paused",
+						startedAt: Date.now(),
+						inputs: {},
+						toolNodes: [],
+						stages: [],
+					});
 				await Promise.resolve();
 				// Isolate this configured editor action from defaults that also accept the input.
 				const empty = Object.fromEntries(
@@ -441,6 +449,7 @@ test("workflow wheel uses actual clipped bounds, contains boundaries, preserves 
 				status: "paused",
 				startedAt: Date.now() + i,
 				inputs: {},
+				toolNodes: [],
 				stages: [],
 			});
 		await Promise.resolve();
@@ -543,6 +552,7 @@ test("remote workflow adapter synchronizes full content, wheel, shortcuts and fr
 			status: "paused",
 			startedAt: Date.now() + i,
 			inputs: {},
+			toolNodes: [],
 			stages: [],
 		});
 	const dispose = installStoreWidget(

@@ -63,7 +63,7 @@ function writeWorkflowFile(dir: string, name: string, normalizedName: string): s
 	const fp = join(dir, `${normalizedName}.ts`);
 	writeFileSync(
 		fp,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 const definition = workflow({ name: ${JSON.stringify(normalizedName)}, description: ${JSON.stringify(name)} + " test workflow", inputs: {}, outputs: {}, run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
 });
 if (definition.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");
@@ -445,7 +445,7 @@ describe("discoverWorkflows — settings-project vs settings-global source kinds
 		const globalSharedPath = join(home, ".atomic", "agent", "workflows", "e2e-shared-global.ts");
 		writeFileSync(
 			globalSharedPath,
-			`import { workflow } from "@bastani/workflows";
+			`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({ name: "e2e-shared-wf", description: "will be overridden", inputs: {}, outputs: {}, run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
 });\n`,
 			"utf-8",

@@ -87,16 +87,8 @@ function recentlyEnded(run: RunSnapshot, now: number): boolean {
 	return run.endedAt !== undefined && now - run.endedAt <= RECENT_ENDED_WINDOW_MS;
 }
 
-/**
- * Returns the timestamp from which a quit card's display-only expiry is measured.
- * Older snapshots do not have `quitAt`, so retain the bounded legacy fallbacks.
- */
-function quitExpiryTimestamp(run: RunSnapshot): number {
-	return run.quitAt ?? run.pausedAt ?? run.startedAt;
-}
-
 function recentlyQuit(run: RunSnapshot, now: number): boolean {
-	return isQuitRun(run) && now - quitExpiryTimestamp(run) <= RECENT_ENDED_WINDOW_MS;
+	return isQuitRun(run) && run.quitAt !== undefined && now - run.quitAt <= RECENT_ENDED_WINDOW_MS;
 }
 
 interface RunCounts {
@@ -145,8 +137,8 @@ export function nextWidgetRefreshDelayMs(snap: StoreSnapshot, now = Date.now()):
 	for (const run of display) {
 		if (run.endedAt !== undefined) {
 			delays.push(Math.max(1, run.endedAt + RECENT_ENDED_WINDOW_MS - now + 1));
-		} else if (isQuitRun(run)) {
-			delays.push(Math.max(1, quitExpiryTimestamp(run) + RECENT_ENDED_WINDOW_MS - now + 1));
+		} else if (isQuitRun(run) && run.quitAt !== undefined) {
+			delays.push(Math.max(1, run.quitAt + RECENT_ENDED_WINDOW_MS - now + 1));
 		}
 	}
 	for (const run of display) {
@@ -230,7 +222,7 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
 }
 
 function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]> {
-	return (run.toolNodes ?? []).filter((node) => node.status === "pending" || node.status === "running");
+	return run.toolNodes.filter((node) => node.status === "pending" || node.status === "running");
 }
 
 function activeToolLabel(run: RunSnapshot): string | undefined {

@@ -138,6 +138,7 @@ test(
 							runId: childId,
 							id: "message",
 							stageKey: "review",
+							admissionOrder: 1,
 							status: "delivered",
 							queuedAt: "now",
 							from: { id: "sender", name: "sender" },

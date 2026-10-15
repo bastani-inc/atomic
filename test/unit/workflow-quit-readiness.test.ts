@@ -392,6 +392,7 @@ test("quitting readiness preserves an unrelated question with the same local sta
 			name: "other",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

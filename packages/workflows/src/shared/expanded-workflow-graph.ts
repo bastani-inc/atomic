@@ -1,6 +1,21 @@
 import type { RunSnapshot, StageSnapshot, StoreSnapshot, ToolNodeSnapshot } from "./store-types.js";
 import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "./workflow-run-ownership.js";
 
+export class MissingWorkflowToolNodesError extends Error {
+	readonly runId: string;
+
+	constructor(runId: string) {
+		super(`atomic-workflows: run ${runId} has no tool node collection`);
+		this.name = "MissingWorkflowToolNodesError";
+		this.runId = runId;
+	}
+}
+
+function toolNodesFor(run: RunSnapshot): readonly ToolNodeSnapshot[] {
+	if (run.toolNodes === undefined) throw new MissingWorkflowToolNodesError(run.id);
+	return run.toolNodes;
+}
+
 export interface ExpandedWorkflowStageTarget {
 	readonly runId: string;
 	readonly stageId: string;
@@ -54,7 +69,7 @@ function virtualNodeId(runId: string, nodeId: string, isRootRun: boolean): strin
 
 function localItems(run: RunSnapshot): LocalItem[] {
 	const stages = run.stages.map((stage, sourceIndex) => ({ kind: "stage" as const, stage, sourceIndex }));
-	const tools = (run.toolNodes ?? []).map((tool, sourceIndex) => ({ kind: "tool" as const, tool, sourceIndex }));
+	const tools = toolNodesFor(run).map((tool, sourceIndex) => ({ kind: "tool" as const, tool, sourceIndex }));
 	return [...stages, ...tools].sort((left, right) => {
 		const leftOrder = left.kind === "stage" ? left.stage.executionOrder : left.tool.executionOrder;
 		const rightOrder = right.kind === "stage" ? right.stage.executionOrder : right.tool.executionOrder;
@@ -292,7 +307,7 @@ function refreshRunSources(snapshot: StoreSnapshot): Map<string, RefreshRunSourc
 			{
 				run,
 				stages: new Map(run.stages.map((stage) => [stage.id, stage])),
-				tools: new Map((run.toolNodes ?? []).map((tool) => [tool.id, tool])),
+				tools: new Map(toolNodesFor(run).map((tool) => [tool.id, tool])),
 			},
 		]),
 	);
@@ -303,13 +318,15 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 	for (let runIndex = 0; runIndex < left.runs.length; runIndex++) {
 		const a = left.runs[runIndex]!;
 		const b = right.runs[runIndex]!;
+		const aTools = toolNodesFor(a);
+		const bTools = toolNodesFor(b);
 		if (
 			a.id !== b.id ||
 			a.parentRunId !== b.parentRunId ||
 			a.parentStageId !== b.parentStageId ||
 			a.rootRunId !== b.rootRunId ||
 			a.stages.length !== b.stages.length ||
-			(a.toolNodes?.length ?? 0) !== (b.toolNodes?.length ?? 0)
+			aTools.length !== bTools.length
 		)
 			return false;
 		for (let stageIndex = 0; stageIndex < a.stages.length; stageIndex++) {
@@ -328,8 +345,6 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 			)
 				return false;
 		}
-		const aTools = a.toolNodes ?? [];
-		const bTools = b.toolNodes ?? [];
 		for (let toolIndex = 0; toolIndex < aTools.length; toolIndex++) {
 			const x = aTools[toolIndex]!;
 			const y = bTools[toolIndex]!;

@@ -1,3 +1,5 @@
+// @ts-nocheck
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // @ts-nocheck -- focused GraphView tool-detail input/rendering coverage
 
 import assert from "node:assert/strict";
@@ -15,6 +17,7 @@ import {
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import type { KeybindingsLike } from "../../packages/workflows/src/tui/keybindings-adapter.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.js";
@@ -109,6 +112,7 @@ function storeWithToolResult(result: unknown, runId = RUN_ID): ReturnType<typeof
 		name: "hostile run",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});
@@ -152,7 +156,7 @@ function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
 	};
 }
 
-function viewFor(node: ToolNodeSnapshot, piKeybindings?: unknown): GraphView {
+function viewFor(node: ToolNodeSnapshot, piKeybindings: KeybindingsLike = s5aKeybindings()): GraphView {
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -191,6 +195,7 @@ function viewForAtRows(node: ToolNodeSnapshot, rows: number): GraphView {
 		endedAt: 200,
 	});
 	return new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: RUN_ID,
 		store,
@@ -1091,6 +1096,7 @@ describe("tool graph inspection", () => {
 			name: "replay run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1336,6 +1342,7 @@ describe("tool graph inspection", () => {
 			name: "stage run",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [
 				{
 					id: "retained",
@@ -1351,6 +1358,7 @@ describe("tool graph inspection", () => {
 			endedAt: 2,
 		});
 		const attachable = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: RUN_ID,
 			store,
@@ -1367,10 +1375,12 @@ describe("tool graph inspection", () => {
 			name: "stage run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "pending", name: "pending", status: "pending", parentIds: [], toolEvents: [] }],
 			startedAt: 1,
 		});
 		const plain = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: RUN_ID,
 			store: plainStore,
@@ -1384,6 +1394,7 @@ describe("tool graph inspection", () => {
 
 		const emptyStore = createStore();
 		const empty = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: null,
 			store: emptyStore,
@@ -1452,6 +1463,7 @@ describe("tool graph inspection", () => {
 					name: "second",
 					inputs: {},
 					status: "running",
+					toolNodes: [],
 					stages: [],
 					startedAt: Date.now(),
 				});

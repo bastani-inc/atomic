@@ -26,22 +26,6 @@ export function parseWorkflowChildResult(
 	return value as WorkflowChildResult<WorkflowOutputValues>;
 }
 
-export function parseLegacyWorkflowChildResult(
-	value: WorkflowSerializableValue | undefined,
-): WorkflowChildResult<WorkflowOutputValues> | undefined {
-	if (!isOrdinaryObject(value)) return undefined;
-	if (
-		typeof value.workflow !== "string" ||
-		typeof value.runId !== "string" ||
-		value.status !== "completed" ||
-		value.exited !== undefined ||
-		value.exitReason !== undefined ||
-		!isOrdinaryObject(value.outputs)
-	)
-		return undefined;
-	return value as WorkflowChildResult<WorkflowOutputValues>;
-}
-
 export function isWorkflowChildResult(
 	value: WorkflowSerializableValue | undefined,
 ): value is WorkflowChildResult<WorkflowOutputValues> {

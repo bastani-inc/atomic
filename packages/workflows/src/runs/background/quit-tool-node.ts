@@ -59,7 +59,7 @@ export async function abortToolNode(
 	const cancelled = activeStore
 		.runs()
 		.find((candidate) => candidate.id === runId)
-		?.toolNodes?.find((candidate) => candidate.id === nodeId);
+		?.toolNodes.find((candidate) => candidate.id === nodeId);
 	return {
 		ok: true,
 		runId,

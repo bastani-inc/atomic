@@ -142,6 +142,7 @@ describe("createStatusWriter — statusFile:false", () => {
 				name: "test",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: Date.now(),
 			});
@@ -181,6 +182,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1000,
 		});
@@ -205,6 +207,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -229,6 +232,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -266,6 +270,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -291,6 +296,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -317,6 +323,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

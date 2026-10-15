@@ -709,6 +709,7 @@ test(
 				name: "reconnect-flow",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [
 					{
 						id: stageId,

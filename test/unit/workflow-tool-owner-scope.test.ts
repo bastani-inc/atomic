@@ -15,7 +15,15 @@ test("an existing workflow tool retains its owner's runs after a sibling starts 
 	const ownerStore = currentWorkflowStore();
 	const execute = makeExecuteWorkflowTool(createExtensionRuntime(), () => undefined);
 	const runId = testRunId("tool-owner");
-	ownerStore.recordRunStart({ id: runId, name: "owner", inputs: {}, status: "running", startedAt: 1, stages: [] });
+	ownerStore.recordRunStart({
+		id: runId,
+		name: "owner",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		toolNodes: [],
+		stages: [],
+	});
 	adoptWorkflowSessionRunState({}, true);
 	currentWorkflowStore().clear();
 	try {
@@ -44,6 +52,7 @@ test("inspection and prompt answers use the owner even when a sibling replaces s
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "review", name: "review", status: "running", parentIds: [], toolEvents: [], attachable: true }],
 	});
 	ownerStore.recordStagePendingPrompt(runId, "review", {
@@ -95,7 +104,15 @@ test("registered slash pause keeps its controls and store across a sibling adopt
 		runControl: { pi, overlay, runtimeForContext: () => runtime, ensureWorkflowResourcesLoaded() {} },
 	});
 	const runId = testRunId("slash-owner");
-	owner.store.recordRunStart({ id: runId, name: "owner", inputs: {}, status: "running", startedAt: 1, stages: [] });
+	owner.store.recordRunStart({
+		id: runId,
+		name: "owner",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		toolNodes: [],
+		stages: [],
+	});
 	let pauseCount = 0;
 	const unregister = owner.toolControlRegistry.registerRun(runId, {
 		paused: false,
@@ -131,6 +148,7 @@ test("tool transcript and stage pause retain the owner's live stage handle", asy
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "review", name: "review", status: "running", parentIds: [], toolEvents: [], attachable: true }],
 	});
 	let pauseCount = 0;

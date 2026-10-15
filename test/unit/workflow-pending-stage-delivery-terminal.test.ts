@@ -58,6 +58,7 @@ function fixture() {
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [{ id: STAGE_ID, name: STAGE_NAME, status: "pending", parentIds: [], toolEvents: [] }],
 		startedAt: 1,
 	});

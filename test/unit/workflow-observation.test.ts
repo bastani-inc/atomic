@@ -19,7 +19,15 @@ test("historical tool transitions without an executor stay idle", () => {
 	const store = createStore();
 	const hub = new WorkflowActivityHub();
 	const observation = createWorkflowObservation(store, hub.registerWorkflowActivityPublisher(), "owner");
-	store.recordRunStart({ id: "run", name: "tool-only", inputs: {}, stages: [], status: "running", startedAt: 1 });
+	store.recordRunStart({
+		id: "run",
+		name: "tool-only",
+		inputs: {},
+		toolNodes: [],
+		stages: [],
+		status: "running",
+		startedAt: 1,
+	});
 	store.recordToolNodeStart("run", {
 		kind: "tool",
 		attachable: false,
@@ -168,7 +176,15 @@ test("restored stages never synthesize completion and explicit replay is tagged"
 // #2891: late readers get full roots; non-activity store writes do not emit duplicates.
 test("late attach is ready and structural invalidations publish replacements and removals", async () => {
 	const store = createStore();
-	store.recordRunStart({ id: "root", name: "history", inputs: {}, stages: [], status: "completed", startedAt: 1 });
+	store.recordRunStart({
+		id: "root",
+		name: "history",
+		inputs: {},
+		toolNodes: [],
+		stages: [],
+		status: "completed",
+		startedAt: 1,
+	});
 	const hub = new WorkflowActivityHub();
 	const observation = createWorkflowObservation(store, hub.registerWorkflowActivityPublisher(), "owner");
 	const frames: WorkflowActivityFrame[] = [];

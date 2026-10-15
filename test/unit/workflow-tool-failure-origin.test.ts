@@ -602,6 +602,7 @@ describe("ctx.tool failure origin", () => {
 			name: "restored",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

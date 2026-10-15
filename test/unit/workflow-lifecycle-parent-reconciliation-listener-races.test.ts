@@ -43,6 +43,7 @@ describe("workflow lifecycle listener and admission races", () => {
 				name: listenerEvent,
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});
@@ -110,6 +111,7 @@ describe("workflow lifecycle listener and admission races", () => {
 			name: "idle-race",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -203,6 +205,7 @@ describe("workflow lifecycle listener and admission races", () => {
 			name: "hidden-listener",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

@@ -55,6 +55,7 @@ function makeRun(
 		name,
 		inputs: {},
 		status,
+		toolNodes: [],
 		stages,
 		startedAt,
 		endedAt,
@@ -285,6 +286,7 @@ describe("renderWidgetLines — standard form", () => {
 		const run: RunSnapshot = {
 			...makeRun("quit1234", "resume-me", "paused"),
 			exitReason: "quit",
+			quitAt: Date.now(),
 			resumable: true,
 		};
 		const lines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
@@ -298,6 +300,7 @@ describe("renderWidgetLines — standard form", () => {
 		const quit: RunSnapshot = {
 			...makeRun("quit-with-prompt", "resume-me", "paused", [], now - 1_000),
 			exitReason: "quit",
+			quitAt: now - 100,
 			resumable: true,
 			pendingPrompt: {
 				id: "quit-prompt",
@@ -1081,7 +1084,7 @@ describe("run identity rows", () => {
 			failed: "cc33dd44-55ee-66ff-7788-990011223344",
 		};
 		const awaiting = makeRun(ids.awaiting, "build-check", "running", [makeStage("s1", "ask", "awaiting_input")]);
-		const quit: RunSnapshot = { ...makeRun(ids.quit, "release-docs", "paused"), exitReason: "quit" };
+		const quit: RunSnapshot = { ...makeRun(ids.quit, "release-docs", "paused"), exitReason: "quit", quitAt: now };
 		const completed = makeRun(ids.completed, "publish-release", "completed", [], now - 10_000, now);
 		const failed = makeRun(ids.failed, "verify-release", "failed", [], now - 10_000, now);
 		const running = makeRun(ids.running, "stage-output-transcript", "running", [], now - 10_000);
@@ -1539,6 +1542,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1571,6 +1575,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1611,6 +1616,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [
 				{
 					id: "fanout",
@@ -1631,6 +1637,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			parentRunId: rootId,
 			parentStageId: "fanout",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(

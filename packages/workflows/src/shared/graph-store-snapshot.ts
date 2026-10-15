@@ -168,7 +168,7 @@ function compactRun(run: RunSnapshot): RunSnapshot {
 		...metadata,
 		inputs: {},
 		stages: stages.map(compactStage),
-		...(toolNodes !== undefined ? { toolNodes: toolNodes.map(compactToolNode) } : {}),
+		toolNodes: toolNodes.map(compactToolNode),
 		...(pendingPrompt !== undefined ? { pendingPrompt: clonePrompt(pendingPrompt) } : {}),
 		...(result !== undefined ? { result } : {}),
 	};

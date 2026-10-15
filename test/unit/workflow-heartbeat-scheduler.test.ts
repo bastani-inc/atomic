@@ -4,6 +4,7 @@ import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durabl
 import { DbosDurableBackend, type DbosSdkHandle } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
+	InvalidWorkflowHeartbeatAnchorError,
 	readWorkflowHeartbeatAnchor,
 	recordWorkflowHeartbeatAnchor,
 	WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
@@ -257,6 +258,7 @@ function startRun(
 		name: opts.name ?? "heartbeat-workflow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: opts.startedAt ?? STARTED_AT,
 		...(opts.parentRunId === undefined ? {} : { parentRunId: opts.parentRunId }),
@@ -1146,18 +1148,18 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 
 describe("workflow heartbeat durable cadence anchor", () => {
 	function recordingAnchorStore(opts?: {
-		seed?: { runId: string; anchorAt: number; intervalMinutes?: number };
+		seed?: { runId: string; anchorAt: number; intervalMinutes: number };
 		/** Models the no-progress guard: the write is refused until this flips. */
 		acceptWrites?: () => boolean;
 	}): WorkflowHeartbeatAnchorStore & {
-		readonly writes: { runId: string; anchorAt: number; intervalMinutes?: number }[];
+		readonly writes: { runId: string; anchorAt: number; intervalMinutes: number }[];
 	} {
 		const stored = new Map<string, WorkflowHeartbeatLaunchRecord>();
 		if (opts?.seed !== undefined) {
 			const { runId, ...record } = opts.seed;
 			stored.set(runId, record);
 		}
-		const writes: { runId: string; anchorAt: number; intervalMinutes?: number }[] = [];
+		const writes: { runId: string; anchorAt: number; intervalMinutes: number }[] = [];
 		return {
 			writes,
 			readAnchorAt(runId) {
@@ -1259,7 +1261,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const resumedStartedAt = originalStart + 7 * MINUTE_MS;
 		const store = createStore();
 		startRun(store, runId, { startedAt: resumedStartedAt });
-		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: originalStart } });
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: originalStart, intervalMinutes: 15 } });
 		const harness = installHarness({
 			store,
 			anchorStore,
@@ -1305,18 +1307,35 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a record written before the cadence field existed falls back to the registry", () => {
-		const runId = testRunId("heartbeat-legacy-anchor");
+	test("a persisted record without cadence cannot use the current definition", () => {
+		const runId = testRunId("heartbeat-missing-cadence");
 		const store = createStore();
-		startRun(store, runId, { name: "legacy" });
-		// An older build wrote `anchorAt` only. Absence must read as "unknown" and
-		// defer to the live definition, never as a disabled cadence.
-		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT } });
-		const harness = installHarness({ store, anchorStore, resolveInterval: () => 1 });
-
-		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);
-		assert.equal(harness.state.intervalMinutes.get(runId), 1);
-		harness.scheduler.dispose();
+		startRun(store, runId);
+		let resolutions = 0;
+		const state = createWorkflowHeartbeatSchedulerState();
+		assert.throws(
+			() =>
+				installHarness({
+					store,
+					state,
+					anchorStore: {
+						readAnchorAt: () => ({ anchorAt: STARTED_AT }) as WorkflowHeartbeatLaunchRecord,
+						recordAnchorAt: async () => true,
+					},
+					resolveInterval: () => {
+						resolutions += 1;
+						return 1;
+					},
+				}),
+			(error: Error) => {
+				assert.ok(error instanceof InvalidWorkflowHeartbeatAnchorError);
+				assert.equal(error.runId, runId);
+				assert.equal(error.field, "intervalMinutes");
+				return true;
+			},
+		);
+		assert.equal(resolutions, 0);
+		assert.equal(state.scheduled.size, 0);
 	});
 
 	test("a run launched with heartbeats disabled stays disabled and writes no record", () => {
@@ -1410,7 +1429,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const resumedStartedAt = STARTED_AT + 5 * MINUTE_MS + 20_000;
 		const store = createStore();
 		startRun(store, runId, { startedAt: resumedStartedAt });
-		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT } });
+		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT, intervalMinutes: 1 } });
 		const harness = installHarness({
 			store,
 			anchorStore,
@@ -1442,9 +1461,9 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		const runId = testRunId("heartbeat-anchor-never-advances");
 		const store = createStore();
 		startRun(store, runId, { startedAt: STARTED_AT });
-		// A record can only move the anchor back to the original start, never
-		// forward, so a bogus later value cannot shift the cadence.
-		const anchorStore = recordingAnchorStore({ seed: { runId, anchorAt: STARTED_AT + 10 * MINUTE_MS } });
+		const anchorStore = recordingAnchorStore({
+			seed: { runId, anchorAt: STARTED_AT + 10 * MINUTE_MS, intervalMinutes: 1 },
+		});
 		const harness = installHarness({ store, anchorStore, defaultInterval: 1 });
 
 		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, STARTED_AT + MINUTE_MS);
@@ -1491,6 +1510,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	/** One ordinary tool checkpoint, so the run has durable progress of its own. */
 	function recordProgress(backend: ReturnType<typeof createInMemoryTestBackend>, runId: string): void {
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress-1",
@@ -1500,6 +1520,30 @@ describe("workflow heartbeat anchor checkpoint", () => {
 			completedAt: STARTED_AT,
 		});
 	}
+
+	test("persisted heartbeat records require the launch cadence", () => {
+		const backend = createInMemoryTestBackend();
+		const runId = testRunId("heartbeat-anchor-requires-cadence");
+		registerRun(backend, runId);
+		backend.recordCheckpoint({
+			kind: "tool",
+			workflowId: runId,
+			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			name: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			argsHash: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
+			output: { anchorAt: STARTED_AT },
+			completedAt: STARTED_AT,
+		});
+		assert.throws(
+			() => readWorkflowHeartbeatAnchor(backend, runId),
+			(error: Error) => {
+				assert.ok(error instanceof InvalidWorkflowHeartbeatAnchorError);
+				assert.equal(error.runId, runId);
+				assert.equal(error.field, "intervalMinutes");
+				return true;
+			},
+		);
+	});
 
 	test("a run with no durable progress of its own is never made to look resumable", async () => {
 		const backend = createInMemoryTestBackend();
@@ -1729,7 +1773,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		resumedProcess.scheduler.dispose();
 	});
 
-	test("the record carries the launch cadence, and a pre-existing one without it reads as unknown", async () => {
+	test("the record carries the launch cadence and rejects corrupt cadence", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-cadence-field");
 		registerRun(backend, runId);
@@ -1743,27 +1787,6 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		});
 		assert.deepEqual(readWorkflowHeartbeatAnchor(backend, runId), { anchorAt: STARTED_AT, intervalMinutes: 7 });
 
-		// A record written by an earlier build carries `anchorAt` only. Its absence
-		// must read as "unknown" so the reader falls back to the live definition —
-		// reading it as `0` would silence a run that launched enabled.
-		const legacyBackend = createInMemoryTestBackend();
-		const legacyRunId = testRunId("heartbeat-anchor-legacy-shape");
-		registerRun(legacyBackend, legacyRunId);
-		legacyBackend.recordCheckpoint({
-			kind: "tool",
-			workflowId: legacyRunId,
-			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
-			name: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
-			argsHash: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
-			output: { anchorAt: STARTED_AT },
-			completedAt: STARTED_AT,
-		});
-		const legacy = readWorkflowHeartbeatAnchor(legacyBackend, legacyRunId);
-		assert.equal(legacy?.anchorAt, STARTED_AT);
-		assert.equal(legacy?.intervalMinutes, undefined, "absent, not zero");
-
-		// A non-positive cadence is never written, so one in storage is corrupt and
-		// is ignored rather than treated as a disable.
 		const corruptBackend = createInMemoryTestBackend();
 		const corruptRunId = testRunId("heartbeat-anchor-corrupt-shape");
 		registerRun(corruptBackend, corruptRunId);
@@ -1776,7 +1799,15 @@ describe("workflow heartbeat anchor checkpoint", () => {
 			output: { anchorAt: STARTED_AT, intervalMinutes: 0 },
 			completedAt: STARTED_AT,
 		});
-		assert.equal(readWorkflowHeartbeatAnchor(corruptBackend, corruptRunId)?.intervalMinutes, undefined);
+		assert.throws(
+			() => readWorkflowHeartbeatAnchor(corruptBackend, corruptRunId),
+			(error: Error) => {
+				assert.ok(error instanceof InvalidWorkflowHeartbeatAnchorError);
+				assert.equal(error.runId, corruptRunId);
+				assert.equal(error.field, "intervalMinutes");
+				return true;
+			},
+		);
 
 		// And the writer refuses a non-positive cadence outright.
 		assert.equal(
@@ -1875,6 +1906,7 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			status: "running",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress-1",
@@ -1995,7 +2027,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 	function trackingAnchorStore(seed?: {
 		runId: string;
 		anchorAt: number;
-		intervalMinutes?: number;
+		intervalMinutes: number;
 	}): TrackingAnchorStore {
 		const stored = new Map<string, WorkflowHeartbeatLaunchRecord>();
 		if (seed !== undefined) {
@@ -2408,6 +2440,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			name: "heartbeat-workflow",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: STARTED_AT,
 		});
@@ -2438,6 +2471,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			name: "heartbeat-workflow",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: STARTED_AT,
 		});

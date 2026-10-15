@@ -37,6 +37,7 @@ function printableRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "printable-workflow",
 		inputs: { prompt: "ship it" },
 		status: "completed",
+		toolNodes: [],
 		stages: [
 			{
 				id: "stage-printable",
@@ -396,6 +397,7 @@ describe("registerChatSurfaceRenderer", () => {
 			name: "tick-demo",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
 			startedAt: 1_000,
 		};
@@ -410,6 +412,7 @@ describe("registerChatSurfaceRenderer", () => {
 					status: "running",
 					startedAt: 1_000,
 					inputs: {},
+					tools: [],
 					stages: [],
 				},
 			},
@@ -467,6 +470,7 @@ describe("registerChatSurfaceRenderer", () => {
 			name: "visible-root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
 			startedAt: 1_000,
 		};
@@ -475,6 +479,7 @@ describe("registerChatSurfaceRenderer", () => {
 			name: "hidden-child",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
 			startedAt: 1_100,
 			parentRunId: "root-run-1234567890",

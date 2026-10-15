@@ -108,7 +108,7 @@ describe("coding-agent builtin resources", () => {
 		);
 		writeFileSync(
 			workflowPath,
-			"import { workflow } from '@bastani/workflows';\nimport { Type } from 'typebox';\nexport default workflow({ name: 'Custom', description: '', inputs: { prompt: Type.String({ default: 'validation smoke' }) }, outputs: {}, run: async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; } });\n",
+			"import { workflow } from '@bastani/atomic/workflows';\nimport { Type } from 'typebox';\nexport default workflow({ name: 'Custom', description: '', inputs: { prompt: Type.String({ default: 'validation smoke' }) }, outputs: {}, run: async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; } });\n",
 			"utf-8",
 		);
 		writeFileSync(
@@ -157,7 +157,7 @@ describe("coding-agent builtin resources", () => {
 			writeFileSync(
 				join(workflowsDir, "package-command.ts"),
 				[
-					`import { workflow } from "@bastani/workflows";`,
+					`import { workflow } from "@bastani/atomic/workflows";`,
 					``,
 					`export default workflow({`,
 					`  name: "package-command",`,

@@ -2,7 +2,7 @@
  * Shared workflow module loading helpers.
  *
  * Discovery loads user-authored workflow files through this jiti instance so
- * TypeScript/ESM/CJS semantics and the @bastani/workflows virtual SDK alias
+ * TypeScript/ESM/CJS semantics and the @bastani/atomic/workflows SDK module
  * stay consistent.
  */
 
@@ -25,7 +25,6 @@ import * as workflowsSdkSurface from "../sdk-surface.js";
 import { validateWorkflowBudget } from "../shared/budget.js";
 
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/atomic/workflows";
-const LEGACY_WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const TYPEBOX_MODULE_SPECIFIER = "typebox";
 // Keep this in sync with index.ts through sdk-surface.ts.
 const WORKFLOWS_SDK_MODULE: Record<string, unknown> = {
@@ -71,36 +70,21 @@ const TYPEBOX_VALUE_MODULE: Record<string, unknown> = {
 
 const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
 	...createWorkflowVirtualModules(WORKFLOWS_MODULE_SPECIFIER),
-	...createWorkflowVirtualModules(LEGACY_WORKFLOWS_MODULE_SPECIFIER),
 	[TYPEBOX_MODULE_SPECIFIER]: TYPEBOX_MODULE,
 	"typebox/compile": TYPEBOX_COMPILE_MODULE,
 	"typebox/value": TYPEBOX_VALUE_MODULE,
-	"@sinclair/typebox": TYPEBOX_MODULE,
-	"@sinclair/typebox/compile": TYPEBOX_COMPILE_MODULE,
-	"@sinclair/typebox/value": TYPEBOX_VALUE_MODULE,
 };
 
 export type WorkflowHostModules = Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>;
 
 export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
 
-export const workflowModuleLoaderTestHooks = {
-	getVirtualModuleSpecifiers: (hostModules?: WorkflowHostModules): string[] =>
-		Object.keys({ ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules }),
-};
-
 const workflowModuleLoader = createJiti(import.meta.url, {
 	moduleCache: false,
 	// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
 	// resolution instead of handing some imports back to native import().
 	tryNative: false,
-	// Resolve the published @bastani/atomic/workflows SDK and legacy @bastani/workflows
-	// aliases (including builtin submodules) to the same in-memory surfaces.
-	// This keeps discovery fast: aliasing the SDK to its on-disk package re-evaluated
-	// the entire SDK module graph once per workflow file (moduleCache stays false),
-	// which scaled discovery to multiple seconds on projects with many workflow
-	// files. Workflow files themselves are still evaluated fresh from disk, so
-	// `/workflow reload` continues to observe edits.
+	// Resolve the current SDK once while workflow files are evaluated fresh.
 	virtualModules: WORKFLOWS_VIRTUAL_MODULES,
 });
 

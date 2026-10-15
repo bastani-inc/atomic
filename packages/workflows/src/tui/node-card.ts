@@ -124,10 +124,6 @@ function durationText(stage: StageSnapshot): string {
 	return elapsed === undefined ? "—" : fmtDuration(elapsed);
 }
 
-function metaText(stage: StageSnapshot): string {
-	return stage.topologyState === "unavailable" ? "topology unavailable" : "";
-}
-
 /**
  * Compact model label for the card's dedicated model row (~22 cells): the
  * provider prefix is dropped, the thinking level is appended when set (omitted
@@ -191,7 +187,7 @@ export function nodeCardHeight(
 		const innerWidth = Math.max(2, (opts.width ?? NODE_W) - 2);
 		bodyRows = workflowChildRunRows(stage, innerWidth).length + 1 + queuedRows;
 	} else {
-		bodyRows = 2 + modelRows + (metaText(stage) ? 1 : 0) + queuedRows;
+		bodyRows = 2 + modelRows + queuedRows;
 	}
 	return Math.max(NODE_H, bodyRows + 2);
 }
@@ -337,7 +333,6 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 		`${bg}${bc}│${RESET}`;
 
 	const contentRows = Math.max(0, height - 2);
-	const metaLine = `${bg}${bc}│${RESET}${centreColored(metaText(stage), innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`;
 	const model = modelText(stage, innerWidth);
 	const modelLine = `${bg}${bc}│${RESET}${centreColored(model, innerWidth, theme.textMuted, bg)}${bg}${bc}│${RESET}`;
 	const childRunLines = workflowChildRunRows(stage, innerWidth).map(
@@ -381,7 +376,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 						`${bg}${bc}│${RESET}`,
 				]
 			: childSummaryLine === undefined
-				? [durLine, ...modelLines, statusLine, ...(metaText(stage) ? [metaLine] : []), ...queuedLines]
+				? [durLine, ...modelLines, statusLine, ...queuedLines]
 				: [...childRunLines, childSummaryLine, ...queuedLines];
 
 	// Pad / clip to exactly `height` lines.

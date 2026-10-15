@@ -1,3 +1,4 @@
+import { durableChildInvocationFingerprint } from "../../packages/workflows/src/durable/child-invocation.js";
 /**
  * Durable hashing, scoped child checkpoints, cancellation, and replay tests.
  */
@@ -29,6 +30,7 @@ function pendingStageMessage(runId: string, id: string): PendingStageMessage {
 		id,
 		runId,
 		stageKey: "shared",
+		admissionOrder: 1,
 		from: { id: "sender" },
 		message: { id, timestamp: 1, content: { text: id } },
 		queuedAt: "2026-08-27T17:00:00.000Z",
@@ -410,10 +412,13 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
 			status: "running",
 			rootWorkflowId: "wf-interrupted-root",
 		});
-		// A pre-fix active child may have scoped side effects but no reciprocal
-		// boundary identity. It must not attach to a new child or run a repair.
+		// Scoped side effects cannot resume without reciprocal boundary ownership.
 		const childToolArgsHash = durableHash({ name: "child-tool", args: { n: 1 }, ordinal: 1 });
-		const scopePrefix = "workflow:workflow:child-with-tool:1";
+		const fingerprint = durableChildInvocationFingerprint(
+			{ name: "child-with-tool", normalizedName: "child-with-tool" },
+			{},
+		);
+		const scopePrefix = `workflow:workflow:child-with-tool:${fingerprint}:1`;
 		backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: "wf-interrupted-root",

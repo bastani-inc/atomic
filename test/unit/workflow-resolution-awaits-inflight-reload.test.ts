@@ -48,7 +48,7 @@ async function writeProbeWorkflow(path: string, name: string): Promise<void> {
 	await writeFile(
 		path,
 		[
-			`import { workflow } from "@bastani/workflows";`,
+			`import { workflow } from "@bastani/atomic/workflows";`,
 			`import { Type } from "typebox";`,
 			`export default workflow({`,
 			`  name: ${JSON.stringify(name)},`,

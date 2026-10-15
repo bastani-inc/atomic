@@ -1,3 +1,5 @@
+// @ts-nocheck
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // @ts-nocheck -- intentional white-box GraphView input coverage
 
 import assert from "node:assert/strict";
@@ -79,6 +81,7 @@ describe("non-attachable tool interactions", () => {
 		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("tool-interaction-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: testRunId("tool-interaction-run"),
 			store: localStore,
@@ -106,6 +109,7 @@ describe("non-attachable tool interactions", () => {
 			status: "completed",
 			startedAt: 1,
 			endedAt: 2,
+			toolNodes: [],
 			stages: [
 				{
 					id: "retained-stage",
@@ -121,6 +125,7 @@ describe("non-attachable tool interactions", () => {
 		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("postmortem-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: testRunId("postmortem-run"),
 			store: localStore,
@@ -212,6 +217,7 @@ describe("non-attachable tool interactions", () => {
 			name: "failed-author-exit-tool-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -263,6 +269,7 @@ describe("non-attachable tool interactions", () => {
 			name: "budget-tool-resume-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: stageId, name: "frontier", status: "completed", parentIds: [], toolEvents: [] }],
 			startedAt: 1,
 			endedAt: 2,
@@ -352,6 +359,7 @@ describe("non-attachable tool interactions", () => {
 			name: "missing-author-exit-tool-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

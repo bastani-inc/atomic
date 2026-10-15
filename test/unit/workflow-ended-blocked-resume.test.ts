@@ -50,10 +50,12 @@ function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 		failureDisposition: "active_blocked",
 		failureMessage: "CleanupFailed",
 		failedStageId: "reviewer-source",
+		toolNodes: [],
 		stages: [
 			{
 				id: "prepare-source",
 				name: "prepare",
+				replayKey: "stage:prepare:1",
 				status: "completed",
 				parentIds: [],
 				toolEvents: [],
@@ -62,6 +64,7 @@ function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 			{
 				id: "reviewer-source",
 				name: "evidence-reviewer",
+				replayKey: "stage:evidence-reviewer:1",
 				status: "failed",
 				parentIds: ["prepare-source"],
 				toolEvents: [],

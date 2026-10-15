@@ -69,21 +69,7 @@ function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined)
 	return options?.cwd ?? options?.sessionManager?.getCwd() ?? process.cwd();
 }
 
-/**
- * Prepare Atomic SDK stage-session options with Atomic-first resource loading.
- *
- * The Atomic SDK's documented defaults are intentionally significant:
- * omitted `agentDir` means credentials/models/settings can be read from the
- * primary `~/.atomic/agent` paths first while still considering legacy
- * `~/.pi/agent` compatibility paths when the SDK supports multiple config
- * directories. Passing the computed default back as an explicit `agentDir`
- * would accidentally turn that multi-dir behavior into a single-dir override.
- *
- * A user-supplied `agentDir` is still preserved exactly and remains an
- * explicit override. A user-supplied `resourceLoader` is also preserved; in
- * that case cwd/agentDir no longer control resource discovery and only affect
- * session naming/tool path resolution, matching the pi SDK docs.
- */
+/** Prepare stage sessions with the current agent directory and caller overrides. */
 export async function prepareAtomicStageSessionOptions(
 	options: CreateAgentSessionOptions | undefined,
 	sdk: PiCodingAgentSdk,
@@ -96,7 +82,6 @@ export async function prepareAtomicStageSessionOptions(
 
 	const inheritanceSnapshot = prepareOptions.resourceLoaderInheritanceSnapshot;
 	const cwd = resolveSessionCwd(atomicOptions);
-	const hasAgentDirOverride = atomicOptions?.agentDir !== undefined;
 	const agentDir = atomicOptions?.agentDir ?? sdk.getAgentDir();
 	const settingsManager =
 		atomicOptions?.settingsManager ??
@@ -126,7 +111,7 @@ export async function prepareAtomicStageSessionOptions(
 	return {
 		...atomicOptions,
 		cwd,
-		...(hasAgentDirOverride ? { agentDir } : {}),
+		agentDir,
 		settingsManager,
 		resourceLoader,
 		subagentPolicy: WORKFLOW_STAGE_SUBAGENT_POLICY,

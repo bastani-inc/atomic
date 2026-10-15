@@ -22,6 +22,7 @@ function makeRun(id: string): RunSnapshot {
 		name: `run-${id}`,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	};

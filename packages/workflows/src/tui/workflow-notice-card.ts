@@ -163,5 +163,5 @@ function style(text: string, theme: GraphTheme | undefined, color: string | unde
 }
 
 function fit(line: string, width: number): string {
-	return truncateToWidth(line, width, "…", true);
+	return truncateToWidth(line, width, "…");
 }

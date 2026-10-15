@@ -545,7 +545,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			tracker,
 			run: runSnapshot,
 			sourceToContinuationNodeIds,
-			resumeToolNode: opts.continuation?.source.toolNodes?.find(
+			resumeToolNode: opts.continuation?.source.toolNodes.find(
 				(node) => node.id === opts.continuation?.resumeFromToolNodeId,
 			),
 			retryToolNodes: opts.continuation?.retryToolNodes,
@@ -570,7 +570,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			status: "paused",
 			exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
 			stages: [...runSnapshot.stages],
-			toolNodes: [...(runSnapshot.toolNodes ?? [])],
+			toolNodes: [...runSnapshot.toolNodes],
 		};
 	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
@@ -1119,7 +1119,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				runId,
 				status: "paused",
 				stages: [...runSnapshot.stages],
-				toolNodes: [...(runSnapshot.toolNodes ?? [])],
+				toolNodes: [...runSnapshot.toolNodes],
 			};
 		}
 		await admittedTools.closeAndDrain();

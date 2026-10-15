@@ -37,7 +37,15 @@ function seedPausedRun(
 	activeStore: Store,
 	registry: StageControlRegistry,
 ): void {
-	activeStore.recordRunStart({ id: runId, name: runId, inputs: {}, status: "running", stages: [], startedAt: 1 });
+	activeStore.recordRunStart({
+		id: runId,
+		name: runId,
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	activeStore.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 	activeStore.recordStagePaused(runId, "only");
 	activeStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });

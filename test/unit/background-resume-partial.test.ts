@@ -22,7 +22,15 @@ function seedPausedRun(
 	backend: InMemoryDurableBackend = new InMemoryDurableBackend(),
 ) {
 	const store = createStore();
-	store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: runId,
+		name: "partial",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	for (const stageId of stageIds) {
 		store.recordStageStart(runId, { id: stageId, name: stageId, status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, stageId);

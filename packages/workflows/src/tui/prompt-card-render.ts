@@ -23,8 +23,7 @@ export interface PromptCardRenderOpts {
 	readonly theme: GraphTheme;
 	readonly width: number;
 	readonly cursorOn: boolean;
-	/** Optional run attribution; absent preserves the legacy prompt card. */
-	readonly identity?: PromptCardIdentity;
+	readonly identity: PromptCardIdentity;
 	/** Maximum rows to emit. Small budgets use a reduced, closed prompt surface. */
 	readonly maxRows?: number;
 	/** Wrapped question-row offset used by scrollable attached prompt surfaces. */
@@ -116,7 +115,6 @@ export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLa
 		maxRows,
 		messageOffset,
 	);
-	if (opts.identity === undefined) return unattributed;
 
 	const banners = [
 		renderPromptIdentityBanner(opts.identity, theme, width),
@@ -334,7 +332,7 @@ function makePaddedRow(bg: string, borderColor: string, innerWidth: number, cont
 	const contentW = visibleWidth(content);
 	const pad = Math.max(0, innerWidth - contentW);
 	const padded = content + " ".repeat(pad);
-	const clipped = truncateToWidth(padded, innerWidth, "", true);
+	const clipped = truncateToWidth(padded, innerWidth, "");
 	return bg + paint("│", borderColor) + clipped + paint("│", borderColor) + RESET;
 }
 
@@ -384,7 +382,7 @@ function renderResponseFieldBox(
 }
 
 function makeFieldRow(content: string, width: number, borderColor: string): string {
-	const clipped = truncateToWidth(content, width, "", true);
+	const clipped = truncateToWidth(content, width, "");
 	const padded = clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 	return paint("│", borderColor) + padded + paint("│", borderColor);
 }
@@ -567,7 +565,7 @@ function drawCursor(text: string, caret: number, cursorOn: boolean, theme: Graph
 
 function padToUsable(content: string, usable: number): string {
 	const w = visibleWidth(content);
-	if (w >= usable) return truncateToWidth(content, usable, "", true);
+	if (w >= usable) return truncateToWidth(content, usable, "");
 	return content + " ".repeat(usable - w);
 }
 

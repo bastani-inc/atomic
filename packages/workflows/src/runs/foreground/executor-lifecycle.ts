@@ -20,12 +20,9 @@ export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE =
 	"Workflow run completed without creating any workflow stages or durable tool nodes. Create tracked execution with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), ctx.workflow(), or ctx.tool().";
 
 export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot): void {
-	if (runSnapshot.stages.length > 0 || (runSnapshot.toolNodes?.length ?? 0) > 0) return;
+	if (runSnapshot.stages.length > 0 || runSnapshot.toolNodes.length > 0) return;
 	throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
-
-/** @deprecated Use assertWorkflowCreatedExecution. */
-export const assertWorkflowCreatedStage = assertWorkflowCreatedExecution;
 
 export function appendRunEndWhenRecorded(
 	persistence: WorkflowPersistencePort | undefined,
@@ -64,7 +61,7 @@ export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
 		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
 		stages: [...snapshot.stages],
-		toolNodes: [...(snapshot.toolNodes ?? [])],
+		toolNodes: [...snapshot.toolNodes],
 	};
 }
 
@@ -85,7 +82,7 @@ export function reconcileTerminalRunResult(
 					runId,
 					...fallback,
 					stages: [...runSnapshot.stages],
-					toolNodes: [...(runSnapshot.toolNodes ?? [])],
+					toolNodes: [...runSnapshot.toolNodes],
 				};
 	onRunEnd?.(runId, result.status, result.result, result.error, result.exitReason);
 	return result;
@@ -486,6 +483,6 @@ export function recordActiveBlockedFailure(
 		...(metadata.result !== undefined ? { result: metadata.result } : {}),
 		error: metadata.errorMessage,
 		stages: [...runSnapshot.stages],
-		toolNodes: [...(runSnapshot.toolNodes ?? [])],
+		toolNodes: [...runSnapshot.toolNodes],
 	};
 }

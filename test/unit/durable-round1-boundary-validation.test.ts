@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableChildInvocationFingerprint } from "../../packages/workflows/src/durable/child-invocation.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import type { DurableStageRunTopology, DurableStageTopology } from "../../packages/workflows/src/durable/types.js";
 import { parseWorkflowChildResult } from "../../packages/workflows/src/durable/workflow-child-result.js";
@@ -12,7 +13,8 @@ import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-d
 
 const CHILD_NAME = "round1-validation-child";
 const PARENT_NAME = "round1-validation-parent";
-const REPLAY_KEY = `workflow:workflow:${CHILD_NAME}:1`;
+const FINGERPRINT = durableChildInvocationFingerprint({ name: CHILD_NAME, normalizedName: CHILD_NAME }, {});
+const REPLAY_KEY = `workflow:workflow:${CHILD_NAME}:${FINGERPRINT}:1`;
 
 interface SeededBoundaryOptions {
 	readonly output?: WorkflowSerializableValue;
@@ -50,6 +52,7 @@ function boundaryTopology(runId: string, childRunId: string, event: "start" | "t
 		replayScope: REPLAY_KEY,
 		alias: CHILD_NAME,
 		workflow: CHILD_NAME,
+		invocationFingerprint: FINGERPRINT,
 		child,
 	};
 	return event === "start"

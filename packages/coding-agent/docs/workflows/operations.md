@@ -812,11 +812,13 @@ Atomic discovers workflow definitions in this order:
 | Location | Scope | Notes |
 |----------|-------|-------|
 | `.atomic/extensions/workflow/config.json` | Project | `workflows.<name>.path`; project entries override global entries |
-| `.atomic/workflows/*.{ts,js,mjs,cjs}` | Project | Legacy `.pi/workflows/` is also checked |
+| `.atomic/workflows/*.{ts,js,mjs,cjs}` | Project | Current project workflow directory |
 | `~/.atomic/agent/extensions/workflow/config.json` | Global | `workflows.<name>.path` for user-wide configured paths |
-| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Legacy `~/.pi/agent/workflows/` is also checked |
+| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Current user workflow directory |
 | Installed Atomic packages | Package | Uses package metadata or conventional `workflows/` directories |
 | Bundled workflows | Built-in | Shipped with `@bastani/atomic/workflows` |
+
+Workflow configuration and discovery use only the current `.atomic` roots by default. `ATOMIC_CODING_AGENT_DIR` overrides the user agent directory. Import workflow APIs from `@bastani/atomic/workflows` and schemas from `typebox`.
 
 A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
 

@@ -94,6 +94,7 @@ async function registerIsolatedTests(): Promise<void> {
 			name: `wf-${id}`,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		};

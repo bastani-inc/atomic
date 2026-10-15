@@ -632,7 +632,8 @@ The workflow runs a readiness preflight as its own `ctx.tool` first, so a missin
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Type, workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
+import { Type } from "typebox";
 
 const sdkDir = join(homedir(), ".cache", "atomic-cua");
 const cuaEnv = { ...process.env, CUA_DRIVER_RS_TELEMETRY_ENABLED: "false" };

@@ -18,6 +18,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { testRunId } from "../helpers/run-id.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 import { defaultTheme, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
@@ -159,6 +160,7 @@ describe("completed workflow inspection", () => {
 		const attached: string[] = [];
 		const graph = expandWorkflowGraph(store.snapshot(), testRunId("completed-inspection"));
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: testRunId("completed-inspection"),
 			store,
@@ -244,6 +246,7 @@ describe("completed workflow inspection", () => {
 			name: "active",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -281,6 +284,7 @@ describe("completed workflow inspection", () => {
 			name: "stale-local-name",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -457,6 +461,7 @@ describe("completed workflow inspection", () => {
 			status: "completed",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed-tool-only"),
 			checkpointId: "tool:publish",
@@ -584,6 +589,7 @@ describe("completed workflow inspection", () => {
 			status: "completed",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("silent-tool-only"),
 			checkpointId: "tool:publish",
@@ -629,6 +635,7 @@ describe("completed workflow inspection", () => {
 			name: "live tool",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -643,6 +650,7 @@ describe("completed workflow inspection", () => {
 			status: "completed",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("live-then-inspect"),
 			checkpointId: "tool:done",

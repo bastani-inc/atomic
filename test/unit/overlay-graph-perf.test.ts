@@ -10,6 +10,7 @@ import { GraphCanvas } from "../../packages/workflows/src/tui/graph-canvas.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
 class CountingCanvas extends GraphCanvas {
@@ -180,6 +181,7 @@ function createGraphStore(stages: StageSnapshot[]) {
 		name: "large",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages,
 		startedAt: 1,
 	});
@@ -575,6 +577,7 @@ describe("overlay graph paints what the budgets do not constrain", () => {
 
 	it("paints the edge run connecting a parent card to its child", () => {
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: twoStageStore(),
@@ -609,6 +612,7 @@ describe("overlay graph paints what the budgets do not constrain", () => {
 
 	it("paints stage counts in the header", () => {
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: twoStageStore(),

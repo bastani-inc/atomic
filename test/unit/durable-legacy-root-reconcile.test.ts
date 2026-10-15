@@ -34,6 +34,7 @@ function run(id: string, stages: readonly StageSnapshot[], overrides: Partial<Ru
 		name: `${id}-name`,
 		inputs: {},
 		status: "completed",
+		toolNodes: [],
 		stages: [...stages],
 		startedAt: 1,
 		endedAt: 2,

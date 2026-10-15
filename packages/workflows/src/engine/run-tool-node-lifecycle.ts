@@ -62,9 +62,7 @@ export function createToolNodeLifecycle(input: {
 			}
 			const expected = reachesFrontier ? frontier : retry;
 			const inferredParents = tracker.onSpawn(node.id, node.name);
-			const sourceParents =
-				expected?.parentIds ??
-				(node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined);
+			const sourceParents = expected?.parentIds ?? (node.replayed === true ? node.parentIds : undefined);
 			const restored = sourceParents?.map((sourceId) => sourceToContinuationNodeIds.get(sourceId));
 			const translated = restored?.every((id): id is string => id !== undefined) ? restored : undefined;
 			if (run.resumedFromRunId !== undefined && sourceParents !== undefined && translated === undefined) {
@@ -114,7 +112,7 @@ export function unconsumedToolFrontier(
 	if (frontierId === undefined) return undefined;
 	if (!errorMessage.includes(`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for unfinished tool ${frontierId}`))
 		return undefined;
-	return continuation?.source.toolNodes?.find((node) => node.id === frontierId);
+	return continuation?.source.toolNodes.find((node) => node.id === frontierId);
 }
 
 function sameToolIdentity(node: ToolNodeSnapshot, expected: ToolNodeSnapshot): boolean {

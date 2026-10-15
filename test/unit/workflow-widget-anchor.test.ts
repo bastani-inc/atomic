@@ -21,6 +21,7 @@ function fixture() {
 			status: "paused",
 			startedAt: now + i,
 			inputs: {},
+			toolNodes: [],
 			stages: [],
 		});
 	for (let i = 0; i < 15; i++) add(i);
@@ -82,6 +83,7 @@ function rendererFixture() {
 			status: "paused" as RunStatus,
 			startedAt: now + i,
 			inputs: {},
+			toolNodes: [],
 			stages: [],
 		})),
 	} satisfies StoreSnapshot;
@@ -175,7 +177,15 @@ test("resize and collapsed live updates restore the workflow anchor without movi
 	f.snapshot.runs = [];
 	assert.deepEqual(f.render(27), []);
 	f.snapshot.runs = [
-		{ id: uuid(101), name: "duplicate name", status: "paused", startedAt: now, inputs: {}, stages: [] },
+		{
+			id: uuid(101),
+			name: "duplicate name",
+			status: "paused",
+			startedAt: now,
+			inputs: {},
+			toolNodes: [],
+			stages: [],
+		},
 	];
 	assert.ok(f.render()[0]?.startsWith("╭"));
 	assert.ok(f.render()[1]?.includes(uuid(101)));
@@ -274,6 +284,7 @@ test("every prompt and navigation row remains reachable in a one-row viewport", 
 				status: "running" as RunStatus,
 				startedAt: now,
 				inputs: {},
+				toolNodes: [],
 				stages: [
 					{
 						id: "ask",
@@ -333,6 +344,7 @@ test("multi-root prompt and connect pairs stay inside their owning layout ranges
 				status: "running" as RunStatus,
 				startedAt: now + index,
 				inputs: {},
+				toolNodes: [],
 				stages: waiting.has(index)
 					? [
 							{
@@ -443,6 +455,7 @@ test("below-editor pending input growth stays a differential redraw", async () =
 			inputs: {},
 			status: "running",
 			startedAt: NOW - 5_000,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		const snapshot = () => ({ runs: store.runs(), notices: [] as const, version: 0 });

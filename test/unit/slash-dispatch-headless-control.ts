@@ -125,7 +125,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		const { pi, commands, sent } = buildMockPi();
 		addFactoryStubs(pi);
 		pi.disableAsyncDiscovery = false;
-		pi.getWorkflowResources = () => [{ path: filePath, enabled: true }];
+		pi.refreshWorkflowResources = async () => [{ path: filePath, enabled: true }];
 
 		const events = new Map<string, ExtensionEventHandler[]>();
 		pi.on = (event, handler) => {
@@ -240,7 +240,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 	test.sequential("headless workflow failure remains visible through run status after acceptance", async () => {
 		const resource = await registerWorkflowCommandWithResource(
 			"terminal-failure.ts",
-			`import { workflow } from "@bastani/workflows";
+			`import { workflow } from "@bastani/atomic/workflows";
 
 export default workflow({
   name: "terminal-failure",
@@ -272,7 +272,7 @@ export default workflow({
 	test.sequential("headless workflow acceptance and eventual success emit printable run details", async () => {
 		const resource = await registerWorkflowCommandWithResource(
 			"headless-terminal-success.ts",
-			`import { workflow } from "@bastani/workflows";
+			`import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({

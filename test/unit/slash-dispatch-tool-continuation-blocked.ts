@@ -85,11 +85,13 @@ describe("tool run-control actions", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now(),
+			toolNodes: [],
 			stages: [],
 		});
 		store.recordStageStart(sourceRunId, {
 			id: "blocked-first",
 			name: "first",
+			replayKey: "stage:first:1",
 			status: "completed",
 			parentIds: [],
 			toolEvents: [],
@@ -98,6 +100,7 @@ describe("tool run-control actions", () => {
 		store.recordStageEnd(sourceRunId, {
 			id: "blocked-first",
 			name: "first",
+			replayKey: "stage:first:1",
 			status: "completed",
 			parentIds: [],
 			toolEvents: [],
@@ -106,6 +109,7 @@ describe("tool run-control actions", () => {
 		store.recordStageStart(sourceRunId, {
 			id: "blocked-second",
 			name: "second",
+			replayKey: "stage:second:1",
 			status: "failed",
 			parentIds: ["blocked-first"],
 			toolEvents: [],
@@ -118,6 +122,7 @@ describe("tool run-control actions", () => {
 		store.recordStageEnd(sourceRunId, {
 			id: "blocked-second",
 			name: "second",
+			replayKey: "stage:second:1",
 			status: "failed",
 			parentIds: ["blocked-first"],
 			toolEvents: [],
@@ -212,6 +217,7 @@ describe("tool run-control actions", () => {
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [],
 		});
 		store.recordStageStart(sourceRunId, {
@@ -289,7 +295,14 @@ describe("tool run-control actions", () => {
 			{
 				id: "e2",
 				type: "workflow.stage.start",
-				payload: { runId: sourceRunId, stageId: "restored-first", name: "first", parentIds: [], ts: 2 },
+				payload: {
+					runId: sourceRunId,
+					stageId: "restored-first",
+					name: "first",
+					replayKey: "stage:first:1",
+					parentIds: [],
+					ts: 2,
+				},
 			},
 			{
 				id: "e3",
@@ -308,6 +321,7 @@ describe("tool run-control actions", () => {
 					runId: sourceRunId,
 					stageId: "restored-second",
 					name: "second",
+					replayKey: "stage:second:1",
 					parentIds: ["restored-first"],
 					ts: 3,
 				},

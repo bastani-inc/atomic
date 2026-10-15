@@ -55,7 +55,7 @@ async function executePackageWorkflow(session: AgentSession, name: string, resul
 function writeWorkflow(path: string, name: string, resultPath?: string): void {
 	writeFileSync(
 		path,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 import { writeFile } from "node:fs/promises";
 export default workflow({ name: ${JSON.stringify(name)}, description: "SDK package workflow", inputs: {}, outputs: {}, run: async (ctx) => {
 await ctx.tool("write-fixture-result", {}, async () => {

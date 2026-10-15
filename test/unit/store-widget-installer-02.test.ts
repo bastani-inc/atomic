@@ -25,6 +25,7 @@ function makeRun(id: string, name: string): RunSnapshot {
 		name,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	};
@@ -423,6 +424,7 @@ describe("installStoreWidget", () => {
 			status: "running",
 			inputs: {},
 			startedAt: Date.now(),
+			toolNodes: [],
 			stages: [{ id: "to-child", name: "child", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -442,6 +444,7 @@ describe("installStoreWidget", () => {
 			parentRunId: rootId,
 			parentStageId: "to-child",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		const component = widgetCalls.findLast((c) => typeof c.factory === "function")!.factory!(null, undefined) as {
@@ -484,6 +487,7 @@ describe("installStoreWidget", () => {
 			status: "running",
 			inputs: {},
 			startedAt: Date.now(),
+			toolNodes: [],
 			stages: [{ id: "to-child", name: "child", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		storeInstance.recordRunStart({
@@ -495,6 +499,7 @@ describe("installStoreWidget", () => {
 			parentRunId: rootId,
 			parentStageId: "to-child",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(

@@ -397,7 +397,7 @@ function collectCancelledToolNodes(
 		const node = activeStore
 			.runs()
 			.find((candidate) => candidate.id === handle.runId)
-			?.toolNodes?.find((candidate) => candidate.id === handle.nodeId);
+			?.toolNodes.find((candidate) => candidate.id === handle.nodeId);
 		if (node === undefined || node.status !== "cancelled") return [];
 		return [{ runId: handle.runId, nodeId: handle.nodeId, node: structuredClone(node) }];
 	});

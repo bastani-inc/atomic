@@ -32,6 +32,7 @@ function boundaryTopology(
 		replayScope: "workflow:chat-child:1",
 		alias: "chat-child",
 		workflow: "chat-child",
+		invocationFingerprint: "chat-child-fingerprint",
 		child,
 	};
 	return event === "start"

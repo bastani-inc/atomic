@@ -273,6 +273,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -334,6 +335,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

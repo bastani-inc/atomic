@@ -61,6 +61,7 @@ describe("targeted durable workflow inspection", () => {
 				completedCheckpoints: 1,
 			});
 			backend.recordCheckpoint({
+				topology: { version: 1, nodeId: `tool:${`proof:${workflowId}`}`, ordinal: 1, order: 1, parentIds: [] },
 				kind: "tool",
 				workflowId,
 				checkpointId: `tool:${workflowId}`,

@@ -16,7 +16,7 @@
  * first heartbeat is due 60 seconds after the run starts.
  */
 
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 /** Long enough to cover two 1-minute boundaries with room to spare. */

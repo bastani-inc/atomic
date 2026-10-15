@@ -120,7 +120,7 @@ function listPayload(sent: readonly SentMessage[]): ChatSurfacePayload | undefin
 async function writeWorkflowFixture(filePath: string, name: string): Promise<void> {
 	await writeFile(
 		filePath,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: ${JSON.stringify(name)},
   description: "",
@@ -136,7 +136,7 @@ export default workflow({
 async function writePromptWorkflowFixture(filePath: string, name: string): Promise<void> {
 	await writeFile(
 		filePath,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: ${JSON.stringify(name)},
   description: "",
@@ -152,7 +152,7 @@ export default workflow({
 async function writeTrackedWorkflowFixture(filePath: string, name: string): Promise<void> {
 	await writeFile(
 		filePath,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: ${JSON.stringify(name)}, description: "", inputs: {}, outputs: {},
   run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
@@ -184,7 +184,9 @@ describe("workflow lazy-startup continuation fixes", () => {
 				invocationCwd: root,
 			};
 			backend.registerWorkflow(handle);
-			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			const { handlers } = registerFactory({
+				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
+			});
 			let prompts = 0;
 			let changedHandle = backend.getWorkflow(runId);
 			await startSession(
@@ -269,7 +271,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 					};
 					const { handlers, commands } = registerFactory({
 						sessionManager: { getCwd: () => projectB } as ExtensionAPI["sessionManager"],
-						getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+						refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 					});
 					await startSession(handlers, { reason: "startup" }, ctx);
 					await cleanupJobs();
@@ -352,7 +354,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 				const workflowPath = join(root, "startup-owner.ts");
 				await writeFile(
 					workflowPath,
-					`import { workflow } from "@bastani/workflows";
+					`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: "startup-owner", description: "", inputs: {}, outputs: {},
   run: async (ctx) => { await ctx.tool("marker", {}, async () => true); return {}; },
@@ -384,7 +386,7 @@ export default workflow({
 					ui: { notify: () => undefined, confirm: async () => true },
 				};
 				const { handlers } = registerFactory({
-					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 				});
 				await startSession(handlers, { reason: "startup" }, ctx);
 				await cleanupJobs();
@@ -446,7 +448,7 @@ export default workflow({
 				const lifecycleScope = {};
 				const overrides = {
 					lifecycleScope,
-					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 					createAgentSession: async () => {
 						const messages: Array<{
 							role: "assistant";
@@ -532,7 +534,7 @@ export default workflow({
 				const workflowPath = join(root, "startup-workflow.ts");
 				await writeFile(
 					workflowPath,
-					`import { workflow } from "@bastani/workflows";
+					`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: "startup-workflow", description: "", inputs: {}, outputs: {},
   run: async (ctx) => {
@@ -571,7 +573,7 @@ export default workflow({
 					},
 				};
 				const { handlers, commands } = registerFactory({
-					getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+					refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 				});
 				await startSession(handlers, { reason: "startup" }, ctx);
 				await cleanupJobs();
@@ -624,7 +626,9 @@ export default workflow({
 			const promptShown = new Promise<void>((resolve) => {
 				prompted = resolve;
 			});
-			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			const { handlers } = registerFactory({
+				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
+			});
 			const startup = handlers.get("session_start")?.(
 				{ reason: "startup" },
 				{
@@ -677,7 +681,9 @@ export default workflow({
 			});
 			const originalHandle = backend.getWorkflow(runId);
 			let confirmations = 0;
-			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			const { handlers } = registerFactory({
+				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
+			});
 			await handlers.get("session_start")?.(
 				{ reason: "startup" },
 				{
@@ -729,7 +735,9 @@ export default workflow({
 			const promptShown = new Promise<void>((resolve) => {
 				prompted = resolve;
 			});
-			const { handlers } = registerFactory({ getWorkflowResources: () => [{ path: workflowPath, enabled: true }] });
+			const { handlers } = registerFactory({
+				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
+			});
 			await handlers.get("session_start")?.(
 				{ reason: "startup" },
 				{
@@ -802,7 +810,7 @@ export default workflow({
 			let discoveryCalls = 0;
 			const { handlers } = registerFactory({
 				disableAsyncDiscovery: true,
-				getWorkflowResources: () => {
+				refreshWorkflowResources: async () => {
 					discoveryCalls += 1;
 					return [];
 				},
@@ -925,7 +933,7 @@ export default workflow({
 			let resourceCalls = 0;
 			const { handlers } = registerFactory({
 				disableAsyncDiscovery: true,
-				getWorkflowResources: () => {
+				refreshWorkflowResources: async () => {
 					resourceCalls += 1;
 					return [];
 				},
@@ -980,7 +988,7 @@ export default workflow({
 			const notifications: string[] = [];
 			const { handlers } = registerFactory({
 				disableAsyncDiscovery: true,
-				getWorkflowResources: () => {
+				refreshWorkflowResources: async () => {
 					resourceCalls += 1;
 					return [];
 				},
@@ -1064,6 +1072,7 @@ export default workflow({
 			name: "paused workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1085,6 +1094,7 @@ export default workflow({
 			name: "paused tool workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1136,6 +1146,7 @@ export default workflow({
 				name: "slash-resume-lazy",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: Date.now(),
 			});
@@ -1195,6 +1206,7 @@ export default workflow({
 			name: def.name,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

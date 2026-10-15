@@ -23,7 +23,7 @@ export function finalizeTerminalFailure(input: {
 	const failedToolNode =
 		metadata.failedToolNodeId === undefined
 			? undefined
-			: (runSnapshot.toolNodes?.find((node) => node.id === metadata.failedToolNodeId) ??
+			: (runSnapshot.toolNodes.find((node) => node.id === metadata.failedToolNodeId) ??
 				(input.failedToolNode?.id === metadata.failedToolNodeId ? input.failedToolNode : undefined));
 	const recorded = store.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
 	appendRunEndWhenRecorded(persistence, recorded, {

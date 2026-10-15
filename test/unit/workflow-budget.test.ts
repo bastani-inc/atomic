@@ -47,6 +47,7 @@ function budgetRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "budget-test",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 0,
 		...overrides,
@@ -352,6 +353,7 @@ describe("token and cost budget metering", () => {
 		const tree = {
 			run: budgetRun({
 				startedAt: 10,
+				toolNodes: [],
 				stages: [
 					usageStage("root", [
 						budgetAttempt("root-first", { input: 2, output: 3, cacheRead: 7, cacheWrite: 11, cost: 0.2 }),

@@ -8,7 +8,7 @@ export default function workflowWidgetScrollFixture(pi: ExtensionAPI): void {
 	factory(pi as unknown as WorkflowAPI);
 	pi.on("session_start", (_event, ctx) => {
 		for (let i = 0; i < 15; i++) {
-			store.recordRunStart({ id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `SCROLL WORKFLOW ${i}`, status: "paused", startedAt: Date.now() + i, inputs: {}, stages: [] });
+			store.recordRunStart({ id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `SCROLL WORKFLOW ${i}`, status: "paused", startedAt: Date.now() + i, inputs: {}, toolNodes: [], stages: [] });
 		}
 		ctx.ui.setEditorText("typing stays here");
 	});

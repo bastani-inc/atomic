@@ -11,6 +11,7 @@ function entry(runId: string, id: string, status: "queued" | "delivered" = "deli
 		runId,
 		id,
 		stageKey: "review",
+		admissionOrder: 1,
 		status,
 		queuedAt: "now",
 		from: { id: "sender", name: "sender" },
@@ -40,7 +41,15 @@ test("bounds settled messages across sibling runs with cold retry deduplication 
 	assert.deepEqual(resumed.getWorkflow(root)?.pendingStageMessages, messages);
 	assert.equal((await resumed.readSettledPendingStageMessage(root, "message", "child-0"))?.status, "delivered");
 	const store = createStore();
-	store.recordRunStart({ id: "child-0", name: "child", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: "child-0",
+		name: "child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	const scoped = new ScopedDurableBackend(resumed, { rootWorkflowId: root, scopePrefix: "child-0" });
 	const retry = await store.queueStageMessage(entry("child-0", "message"), undefined, undefined, scoped);
 	assert.ok(retry?.ok);

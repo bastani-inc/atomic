@@ -12,7 +12,7 @@
  *     (default `workflow:<child-normalizedName>`) and nests the child
  *     definition's own stages under that boundary segment, following the child
  *     through relative imports and the builtin export barrel
- *     (`@bastani/atomic/workflows/builtin` / `@bastani/workflows/builtin`).
+ *     (`@bastani/atomic/workflows/builtin`).
  *   - `<ctx>.tool(name, args, fn)` marks the definition as having tracked work
  *     without advertising a chat-stage target.
  *
@@ -43,13 +43,10 @@ import { normalizeWorkflowName } from "../workflows/identity.js";
 const DEFAULT_MAX_DEPTH = 4;
 
 /** Builtin barrel specifiers whose named exports resolve into the package's own builtin directory. */
-const BUILTIN_BARREL_SPECIFIERS: ReadonlySet<string> = new Set([
-	"@bastani/atomic/workflows/builtin",
-	"@bastani/workflows/builtin",
-]);
+const BUILTIN_BARREL_SPECIFIERS: ReadonlySet<string> = new Set(["@bastani/atomic/workflows/builtin"]);
 
 /** Prefix of `.../builtin/<name>` subpath specifiers. */
-const BUILTIN_SUBPATH_PREFIXES = ["@bastani/atomic/workflows/builtin/", "@bastani/workflows/builtin/"];
+const BUILTIN_SUBPATH_PREFIXES = ["@bastani/atomic/workflows/builtin/"];
 
 const TRACKED_NODE_METHODS: ReadonlySet<string> = new Set(["stage", "task", "chain", "parallel", "workflow", "tool"]);
 

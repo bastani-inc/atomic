@@ -36,6 +36,7 @@ function setupRun(store: ReturnType<typeof createStore>, runId: string, stages: 
 		name: "test-wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

@@ -138,9 +138,7 @@ describe("workflow authoring door", () => {
 
 	test("infers omitted workflow names across installed and extension layouts", () => {
 		const implementationFrames = [
-			"/workspace/app/node_modules/@bastani/workflows/authoring/workflow.ts",
 			"/Users/test/.atomic/agent/extensions/workflows/authoring/workflow.ts",
-			"/Users/test/.pi/agent/extensions/workflows/authoring/workflow.ts",
 			"/Users/test/.bun/install/global/node_modules/@bastani/atomic/dist/builtin/workflows/authoring/workflow.ts",
 		];
 
@@ -154,7 +152,17 @@ describe("workflow authoring door", () => {
 
 	test("infers omitted workflow names from file URL and Windows stack paths", () => {
 		const fileUrlImplementation = pathToFileURL(
-			join(process.cwd(), "node_modules", "@bastani", "workflows", "authoring", "workflow.ts"),
+			join(
+				process.cwd(),
+				"node_modules",
+				"@bastani",
+				"atomic",
+				"dist",
+				"builtin",
+				"workflows",
+				"authoring",
+				"workflow.ts",
+			),
 		).href;
 		const fileUrlCaller = pathToFileURL(join(process.cwd(), "file-url-flow.ts")).href;
 		const fileUrlDef = workflowFromStack(
@@ -163,7 +171,7 @@ describe("workflow authoring door", () => {
 		assert.equal(fileUrlDef.name, "file-url-flow");
 
 		const windowsDef = workflowFromStack(
-			"Error\n    at workflow (C:\\Users\\test\\.pi\\agent\\extensions\\workflows\\authoring\\workflow.ts:10:2)\n    at Object.<anonymous> (C:\\Users\\test\\project\\windows-flow.ts:5:1)",
+			"Error\n    at workflow (C:\\Users\\test\\.atomic\\agent\\extensions\\workflows\\authoring\\workflow.ts:10:2)\n    at Object.<anonymous> (C:\\Users\\test\\project\\windows-flow.ts:5:1)",
 		);
 		assert.equal(windowsDef.name, "windows-flow");
 	});
@@ -172,7 +180,7 @@ describe("workflow authoring door", () => {
 		assert.throws(
 			() =>
 				workflowFromStack(
-					"Error\n    at workflow (/tmp/app/node_modules/@bastani/workflows/authoring/workflow.ts:10:2)\n    at resolveWorkflowName (/tmp/app/node_modules/@bastani/workflows/authoring/workflow.ts:9:2)",
+					"Error\n    at workflow (/tmp/app/node_modules/@bastani/atomic/dist/builtin/workflows/authoring/workflow.ts:10:2)\n    at resolveWorkflowName (/tmp/app/node_modules/@bastani/atomic/dist/builtin/workflows/authoring/workflow.ts:9:2)",
 				),
 			{ message: /name must be provided when caller filename cannot be inferred/ },
 		);

@@ -43,23 +43,26 @@
  * cross-ref: packages/workflows/src/extension/workflow-heartbeat-scheduler.ts
  */
 
+import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableToolCheckpoint } from "./types.js";
 
 /** Reserved checkpoint name, args-hash, AND checkpoint id for cadence anchors. */
 export const WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME = "workflow-heartbeat-anchor";
 
-/**
- * What a run launched with: its original start time, and the cadence its own
- * definition declared.
- *
- * `intervalMinutes` is absent on records written before it was added, so a
- * reader must treat that as "unknown" and fall back to the live definition —
- * never as `0`.
- */
+export class InvalidWorkflowHeartbeatAnchorError extends Error {
+	constructor(
+		readonly runId: string,
+		readonly field: "anchorAt" | "intervalMinutes",
+	) {
+		super(`Invalid workflow heartbeat ${field} for ${runId}`);
+		this.name = "InvalidWorkflowHeartbeatAnchorError";
+	}
+}
+
 export interface WorkflowHeartbeatAnchorRecord {
 	readonly anchorAt: number;
-	readonly intervalMinutes?: number;
+	readonly intervalMinutes: number;
 }
 
 /**
@@ -75,29 +78,33 @@ interface PersistedAnchorOutput {
 	readonly intervalMinutes?: number;
 }
 
-function asPersistedAnchorOutput(output: unknown): PersistedAnchorOutput | undefined {
+function asPersistedAnchorOutput(output: WorkflowSerializableValue): PersistedAnchorOutput | undefined {
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const { anchorAt, intervalMinutes } = output as Partial<Record<keyof PersistedAnchorOutput, unknown>>;
+	const { anchorAt, intervalMinutes } = output as Partial<
+		Record<keyof PersistedAnchorOutput, WorkflowSerializableValue>
+	>;
 	return {
 		...(typeof anchorAt === "number" ? { anchorAt } : {}),
 		...(typeof intervalMinutes === "number" ? { intervalMinutes } : {}),
 	};
 }
 
-/** The persisted launch anchor for a run, or undefined when absent or malformed. */
+/** The persisted launch anchor for a run, or undefined when absent. */
 export function readWorkflowHeartbeatAnchor(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 ): WorkflowHeartbeatAnchorRecord | undefined {
-	const record = asPersistedAnchorOutput(backend.getToolOutput(workflowId, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME));
-	if (record === undefined) return undefined;
+	const output = backend.getToolOutput(workflowId, WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME);
+	if (output === undefined) return undefined;
+	const record = asPersistedAnchorOutput(output);
+	if (record?.anchorAt === undefined || !Number.isFinite(record.anchorAt)) {
+		throw new InvalidWorkflowHeartbeatAnchorError(workflowId, "anchorAt");
+	}
 	const { anchorAt, intervalMinutes } = record;
-	if (anchorAt === undefined || !Number.isFinite(anchorAt)) return undefined;
-	// Only a positive finite cadence is carried: a disabled run never writes a
-	// record at all, so a non-positive value here is corrupt rather than meaningful.
-	return intervalMinutes !== undefined && Number.isFinite(intervalMinutes) && intervalMinutes > 0
-		? { anchorAt, intervalMinutes }
-		: { anchorAt };
+	if (intervalMinutes === undefined || !Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+		throw new InvalidWorkflowHeartbeatAnchorError(workflowId, "intervalMinutes");
+	}
+	return { anchorAt, intervalMinutes };
 }
 
 /**

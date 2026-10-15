@@ -106,6 +106,7 @@ function startRun(
 		name: opts.name ?? id,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: opts.startedAt ?? 1,
 		...(opts.parentRunId === undefined ? {} : { parentRunId: opts.parentRunId }),
@@ -281,11 +282,12 @@ describe("workflow control lifecycle notices", () => {
 				name: "budget-warning",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 100,
 				budget: { maxDurationMs: 200, warnAtPercent: 80 },
 				budgetState: {
-					warning: { dimension: "duration", reading: 180, ceiling: 200, percent: 90 },
+					warnings: { duration: { dimension: "duration", reading: 180, ceiling: 200, percent: 90 } },
 				},
 			});
 			assert.deepEqual(kinds(sent), ["budget_warning"]);
@@ -646,6 +648,7 @@ describe("workflow control lifecycle notices", () => {
 			name: "goal",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			pausedAt: 100,

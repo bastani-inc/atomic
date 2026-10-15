@@ -44,7 +44,7 @@ const NO_CHAT_COMPACT_HINT = "esc close";
 
 /** Pad a visible string (ANSI-safe) to exactly `width` cells. */
 function padVisible(s: string, width: number): string {
-	const clipped = visibleWidth(s) > width ? truncateToWidth(s, width, "…", true) : s;
+	const clipped = visibleWidth(s) > width ? truncateToWidth(s, width, "…") : s;
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 

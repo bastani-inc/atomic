@@ -86,6 +86,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "my-wf",
 			inputs: { x: 1 },
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -112,6 +113,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -137,6 +139,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -162,6 +165,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -183,6 +187,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -194,6 +199,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf2",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -220,6 +226,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -242,6 +249,7 @@ describe("runtime tunables — statusFile", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

@@ -37,6 +37,7 @@ function makeRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "my-wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1000,
 		...overrides,

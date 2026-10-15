@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { hexBg } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import {
 	assertVisibleWidths,
 	makeSnap,
@@ -17,6 +18,7 @@ for (const bg of ["#1e1e2e", "#eff1f5", "#123456"]) {
 		const theme = deriveGraphTheme({ bg });
 		for (const stages of [[], [makeStage("first"), makeStage("second", ["first"])]]) {
 			const view = new GraphView({
+				piKeybindings: s5aKeybindings(),
 				mode: "overlay",
 				runId: "run-1",
 				store: makeStore(makeSnap(stages)),

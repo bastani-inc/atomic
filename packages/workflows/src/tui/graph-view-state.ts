@@ -11,13 +11,12 @@ import {
 } from "../shared/expanded-workflow-graph.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
-import type { PendingPrompt, RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
-import { createPromptCardState, type PromptCardState } from "./prompt-card.js";
 import type { SwitcherState } from "./switcher.js";
 
 export interface GraphStageCounts {
@@ -77,7 +76,6 @@ export abstract class GraphViewState {
 	protected graphTheme: GraphTheme;
 	protected onClose?: () => void;
 	protected onHide?: () => void;
-	protected onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
 	protected onStageAttach?: (runId: string, stageId: string) => void;
 	protected onDetach?: () => void;
 	protected initialFocusedStageId?: string;
@@ -87,9 +85,6 @@ export abstract class GraphViewState {
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
 	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
-
-	/** Active HIL prompt state, set when `_rebuildLayout` sees a new prompt id. */
-	protected promptState: PromptCardState | null = null;
 
 	protected focusedIndex = 0;
 	protected switcherOpen = false;
@@ -134,7 +129,6 @@ export abstract class GraphViewState {
 		this.graphTheme = opts.graphTheme;
 		this.onClose = opts.onClose;
 		this.onHide = opts.onHide;
-		this.onPromptResolve = opts.onPromptResolve;
 		this.onStageAttach = opts.onStageAttach;
 		this.onDetach = opts.onDetach;
 		this.initialFocusedStageId = opts.initialFocusedStageId;
@@ -176,7 +170,7 @@ export abstract class GraphViewState {
 	}
 
 	protected _needsAnimationTick(): boolean {
-		return this.promptState !== null || this.hasAnimatingStages;
+		return this.hasAnimatingStages;
 	}
 
 	private _nodeHeight(stage: StageSnapshot): number {
@@ -216,7 +210,6 @@ export abstract class GraphViewState {
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
-			this.promptState = null;
 			this.toolDetail = null;
 			this.topologySnapshot = this.currentSnapshot;
 			this.hasAnimatingStages = false;
@@ -245,7 +238,7 @@ export abstract class GraphViewState {
 			this.hasAnimatingStages = graphStages.some(
 				(stage) => stage.status === "running" || stage.status === "awaiting_input",
 			);
-			this._finalizeFocusAndPrompt(run, previousFocusedStageId, true);
+			this._finalizeFocus(previousFocusedStageId, true);
 			this._syncToolDetail();
 			this.lastBuiltSnapshotVersion = version;
 			return;
@@ -263,7 +256,7 @@ export abstract class GraphViewState {
 		);
 		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
-		this._finalizeFocusAndPrompt(run, previousFocusedStageId, false);
+		this._finalizeFocus(previousFocusedStageId, false);
 		this._syncToolDetail();
 		this.lastBuiltSnapshotVersion = version;
 	}
@@ -326,11 +319,7 @@ export abstract class GraphViewState {
 		return low;
 	}
 
-	protected _finalizeFocusAndPrompt(
-		run: RunSnapshot,
-		previousFocusedStageId: string | undefined,
-		preserveHitRects: boolean,
-	): void {
+	protected _finalizeFocus(previousFocusedStageId: string | undefined, preserveHitRects: boolean): void {
 		let focusNeedsReveal = this.pendingEnsureFocusedVisible;
 		// One-shot: if the host passed `initialFocusedStageId`, snap the
 		// cursor to that stage now that the layout exists. The attach shell
@@ -385,7 +374,6 @@ export abstract class GraphViewState {
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 		}
-		this._syncPromptState(run.pendingPrompt);
 	}
 
 	protected _awaitingInputFocusTarget(): { index: number; key: string } | null {
@@ -448,21 +436,6 @@ export abstract class GraphViewState {
 				stage.toolEvents.length === 0;
 			return !isUnstartedPlaceholder;
 		});
-	}
-
-	/**
-	 * Mirror the run's `pendingPrompt` into a UI working state. A new prompt
-	 * id resets the state (caret + buffer); a cleared prompt drops the state
-	 * so the card disappears.
-	 */
-	protected _syncPromptState(prompt: PendingPrompt | undefined): void {
-		if (!prompt) {
-			this.promptState = null;
-			return;
-		}
-		if (!this.promptState || this.promptState.prompt.id !== prompt.id) {
-			this.promptState = createPromptCardState(prompt);
-		}
 	}
 
 	/** Stage-only control target shared by hints and activation. */

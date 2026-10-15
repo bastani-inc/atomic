@@ -1,3 +1,4 @@
+import { InvalidWorkflowHeartbeatAnchorError } from "../durable/workflow-heartbeat-anchor.js";
 import type { SessionEntry } from "../shared/persistence-restore.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
@@ -170,8 +171,7 @@ export interface WorkflowHeartbeatSchedulerOptions {
 export interface WorkflowHeartbeatLaunchRecord {
 	/** The run's original start time. */
 	readonly anchorAt: number;
-	/** The cadence its own definition declared. Absent on pre-existing records. */
-	readonly intervalMinutes?: number;
+	readonly intervalMinutes: number;
 }
 
 /**
@@ -608,12 +608,7 @@ export function installWorkflowHeartbeatScheduler(
 			const owed = state.scheduled.get(run.id);
 			if (owed !== undefined && owed.scheduledAt <= now()) continue;
 			const launched = readLaunchRecord(run.id);
-			const intervalMinutes = resolveRunIntervalMinutes(
-				state,
-				options.resolveIntervalMinutes,
-				run,
-				launched?.intervalMinutes,
-			);
+			const intervalMinutes = resolveRunIntervalMinutes(state, options.resolveIntervalMinutes, run, launched);
 			if (intervalMinutes === undefined) {
 				state.scheduled.delete(run.id);
 				continue;
@@ -632,8 +627,13 @@ export function installWorkflowHeartbeatScheduler(
 	/** The run's durable launch record, read at most once per run per process. */
 	function readLaunchRecord(runId: string): WorkflowHeartbeatLaunchRecord | undefined {
 		try {
-			return anchorStore?.readAnchorAt(runId);
-		} catch {
+			const record = anchorStore?.readAnchorAt(runId);
+			if (record !== undefined && (!Number.isFinite(record.intervalMinutes) || record.intervalMinutes <= 0)) {
+				throw new InvalidWorkflowHeartbeatAnchorError(runId, "intervalMinutes");
+			}
+			return record;
+		} catch (error) {
+			if (error instanceof InvalidWorkflowHeartbeatAnchorError) throw error;
 			// A durable backend that is not ready falls back to live values.
 			return undefined;
 		}
@@ -800,16 +800,13 @@ function resolveRunIntervalMinutes(
 	state: WorkflowHeartbeatSchedulerState,
 	resolve: (workflowName: string) => number | undefined,
 	run: WorkflowHeartbeatRun,
-	persistedIntervalMinutes?: number,
+	launchRecord?: WorkflowHeartbeatLaunchRecord,
 ): number | undefined {
 	const memoized = state.intervalMinutes.get(run.id);
 	// A memoized `0` means the run launched disabled, and stays disabled for its
 	// whole life however the definition is later edited.
 	if (memoized !== undefined) return memoized > 0 ? memoized : undefined;
-	// A persisted launch cadence outranks the live registry: it is what this run
-	// launched with, recovered across a process boundary. Absent on records
-	// written by earlier builds, which fall back to the registry.
-	const resolved = persistedIntervalMinutes ?? resolve(run.name);
+	const resolved = launchRecord === undefined ? resolve(run.name) : launchRecord.intervalMinutes;
 	// Not resolvable yet — startup discovery may still be warming up, so nothing
 	// is memoized and the next pass tries again.
 	if (resolved === undefined || !Number.isFinite(resolved)) return undefined;

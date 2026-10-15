@@ -307,6 +307,9 @@ for (const primitive of ["task", "workflow", "ui", "tool"] as const) {
 		const opts = {
 			adapters: { prompt: { prompt: effect } },
 			ui: {
+				custom: async () => {
+					throw new Error("Unexpected custom UI invocation in primitive fixture");
+				},
 				input: async () => {
 					throw new Error("unexpected input");
 				},
@@ -470,6 +473,7 @@ test("prompt-node continuation UI waits for the node-less pause barrier", async 
 					status: "failed",
 					startedAt: 1,
 					endedAt: 2,
+					toolNodes: [],
 					stages: [],
 				},
 			},

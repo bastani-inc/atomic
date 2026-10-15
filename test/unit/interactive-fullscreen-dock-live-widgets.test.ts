@@ -63,6 +63,7 @@ function makeRun(id: string, name: string, startedAt: number): RunSnapshot {
 		name,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt,
 	};

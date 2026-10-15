@@ -54,7 +54,7 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 
 function gatedStageWorkflowSource(releasePath: string): string {
 	return `import { existsSync } from "node:fs";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({

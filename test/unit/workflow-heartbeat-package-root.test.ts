@@ -5,7 +5,7 @@ import {
 	type WorkflowHeartbeatEvent,
 	type WorkflowHeartbeatEventDetails,
 	type WorkflowHeartbeatIdentity,
-} from "@bastani/workflows";
+} from "@bastani/atomic/workflows";
 import { test } from "vitest";
 
 test("exports the workflow heartbeat contract from the package root", () => {

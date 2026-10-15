@@ -182,8 +182,7 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	readonly exited?: boolean;
 	readonly exitReason?: string;
 	readonly stages: StageSnapshot[];
-	/** Always populated by the runtime; optional for legacy structural literals. */
-	readonly toolNodes?: ToolNodeSnapshot[];
+	readonly toolNodes: ToolNodeSnapshot[];
 }
 
 export interface ParallelFailFastStage {

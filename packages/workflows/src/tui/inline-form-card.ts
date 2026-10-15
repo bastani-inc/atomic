@@ -243,7 +243,7 @@ function renderFieldTop(
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string): string {
-	const clipped = truncateToWidth(row, contentWidth, "", true);
+	const clipped = truncateToWidth(row, contentWidth, "");
 	const padded = clipped + " ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)));
 	return paint("│", borderColor) + padded + paint("│", borderColor);
 }
@@ -285,14 +285,14 @@ function renderAskInputRows(
 				: focused
 					? cursorBlock()
 					: "";
-		return [truncateToWidth(value, usable, "…", true)];
+		return [truncateToWidth(value, usable, "…")];
 	}
 
 	const layout = layoutTextField(raw, usable, caret);
 	return layout.lines.map((line, row) =>
 		focused && row === layout.cursorRow
 			? renderCaretLine(line, layout.cursorOffset ?? line.length, usable, theme, theme.text)
-			: truncateToWidth(paint(line, theme.text), usable, "…", true),
+			: truncateToWidth(paint(line, theme.text), usable, "…"),
 	);
 }
 
@@ -341,11 +341,11 @@ function composeCommand(state: InlineFormState): string {
 // ---------------------------------------------------------------------------
 
 function fitLine(ansi: string, width: number): string {
-	return truncateToWidth(ansi, Math.max(0, width), "…", true);
+	return truncateToWidth(ansi, Math.max(0, width), "…");
 }
 
 function clip(ansi: string, budget: number): string {
-	return truncateToWidth(ansi, Math.max(0, budget), "…", true);
+	return truncateToWidth(ansi, Math.max(0, budget), "…");
 }
 
 function cursorBlock(text = " "): string {

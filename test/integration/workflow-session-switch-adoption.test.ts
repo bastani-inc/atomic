@@ -34,7 +34,7 @@ const GATED_WORKFLOW = (
 	releasePath: string,
 	reachedPath: string,
 ) => `import { existsSync, writeFileSync } from "node:fs";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 export default workflow({
 	name: "switch-adoption",

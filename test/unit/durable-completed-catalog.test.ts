@@ -67,6 +67,7 @@ describe("completed durable catalog", () => {
 		});
 		registerCompleted(backend, testRunId("completed"));
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed"),
 			checkpointId: "tool:1",
@@ -183,6 +184,7 @@ describe("completed durable catalog", () => {
 		}
 		registerCompleted(backend, testRunId("tool-only"));
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("tool-only"),
 			checkpointId: "tool:1",

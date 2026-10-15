@@ -36,6 +36,7 @@ function makeRun(
 		name,
 		inputs: {},
 		status,
+		toolNodes: [],
 		stages,
 		startedAt,
 		endedAt,
@@ -413,6 +414,7 @@ test("same-id store descriptors require a compatible single question for a previ
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(
@@ -442,6 +444,7 @@ test("same-id store descriptors require a compatible single question for a previ
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(
@@ -468,6 +471,7 @@ test("same-id store descriptors require a compatible single question for a previ
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(
@@ -497,6 +501,7 @@ test("same-id store descriptors require a compatible single question for a previ
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(
@@ -622,6 +627,7 @@ test("zero-cell sanitized prompts stay non-displayable", () => {
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(store.recordStagePendingPrompt(stageId, "ask", primitive("p", message)), true);
@@ -660,6 +666,7 @@ test("zero-cell sanitized prompts stay non-displayable", () => {
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(controlStore.recordStagePendingPrompt("visible-prefix", "ask", primitive("p", visible)), true);
@@ -680,6 +687,7 @@ test("pause resume and block keep a pending prompt preview and answering while p
 		inputs: {},
 		status: "running",
 		startedAt: 1_000,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(store.recordStagePendingPrompt("pause-owner", "ask", primitive("pp", "Approve while paused?")), true);
@@ -712,6 +720,7 @@ test("pause resume and block keep a pending prompt preview and answering while p
 		inputs: {},
 		status: "running",
 		startedAt: 1_000,
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 	});
 	assert.equal(
@@ -736,6 +745,7 @@ test("awaiting-input boundary stages keep nested occurrences in the ambiguity co
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [
 				{
 					id: "fanout",
@@ -756,6 +766,7 @@ test("awaiting-input boundary stages keep nested occurrences in the ambiguity co
 			parentRunId: ROOT,
 			parentStageId: "fanout",
 			rootRunId: ROOT,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 	};

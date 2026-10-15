@@ -22,13 +22,16 @@ import type {
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
 	WorkflowModelUsage,
+	WorkflowModelValue,
 } from "../../shared/types.js";
 import {
 	buildModelCandidatesFromCatalog,
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	resolveScopedModelsFromCatalog,
 	type WorkflowResolvedModelCandidate,
+	type WorkflowResolvedScopedModel,
 	workflowModelId,
 } from "../shared/model-fallback.js";
 import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
@@ -36,7 +39,7 @@ import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
-import { candidateLabel, effectiveCandidateReasoning, modelAttemptReasoning } from "./stage-runner-candidate.js";
+import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
 	hasAssistantMessageSince,
@@ -264,6 +267,7 @@ export class StageSessionController {
 	private readonly pauseControl = new StageSessionPause(() => this.session ?? this.replacement.retiringSession);
 	private readonly hasExplicitModelFallbackConfig: boolean;
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
+	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	private modelRoute: ModelRoute | undefined;
 	private routingPromise: Promise<void> | undefined;
 	private explicitModel: CreateAgentSessionOptions["model"];
@@ -448,7 +452,7 @@ export class StageSessionController {
 				const route = this.modelCatalog?.routeModel;
 				if (!route) throw new Error("Workflow stage auto routing requires a routing-capable model catalog.");
 				const options = this.effectiveStageOptions;
-				const thinking = this.pendingThinkingLevel ?? options?.thinkingLevel;
+				const thinking = this.pendingThinkingLevel;
 				const constraints = [
 					...(options?.inheritedModelConstraints ?? []),
 					parseModelConstraints(options?.modelConstraints),
@@ -1218,6 +1222,17 @@ export class StageSessionController {
 		return new DOMException("stage aborted", "AbortError");
 	}
 
+	/** Scoped models resolve once, through the same catalog rules as the primary model. */
+	private scopedModels(): Promise<WorkflowResolvedScopedModel[] | undefined> {
+		const scopedModels = this.effectiveStageOptions?.scopedModels;
+		if (scopedModels === undefined) return Promise.resolve(undefined);
+		this.scopedModelsPromise ??= resolveScopedModelsFromCatalog({
+			scopedModels: scopedModels.map((entry) => entry.model as WorkflowModelValue),
+			catalog: this.modelCatalog,
+		});
+		return this.scopedModelsPromise;
+	}
+
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
 		if (!this.candidatesPromise) {
 			const resolved = buildModelCandidatesFromCatalog({
@@ -1226,12 +1241,6 @@ export class StageSessionController {
 					...(this.modelRoute?.fallbackModels ?? []),
 					...(this.effectiveStageOptions?.fallbackModels ?? []),
 				],
-				fallbackThinkingLevels: this.modelRoute?.fallbackModels?.length
-					? [
-							...this.modelRoute.fallbackModels.map(() => "off"),
-							...(this.effectiveStageOptions?.fallbackThinkingLevels ?? []),
-						]
-					: this.effectiveStageOptions?.fallbackThinkingLevels,
 				catalog: this.modelCatalog,
 				includeCurrentModel: this.modelRoute !== undefined,
 			});
@@ -1256,7 +1265,7 @@ export class StageSessionController {
 							.map((candidate) => ({
 								...candidate,
 								...(candidate.reasoningLevel === undefined && effort !== undefined
-									? { reasoningLevel: effort as StageOptions["thinkingLevel"] }
+									? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
 									: {}),
 							}));
 						if (allowed.length === 0)
@@ -1574,6 +1583,9 @@ export class StageSessionController {
 			}
 		}
 		this.reportStartupPhase("resource-preparation");
+		const scopedModels = await this.scopedModels();
+		if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
+			throw this.staleCreationReason(startGeneration);
 		// Saved effort must survive attachment so the restored candidate can be identified.
 		if (resumeOptions?.restoreSavedModel) this.pendingThinkingLevel = undefined;
 		else this.applyCandidateThinking(candidate);
@@ -1581,6 +1593,7 @@ export class StageSessionController {
 			effectiveStageOptions: this.effectiveStageOptions,
 			candidate,
 			ownsFallbackChain: this.hasExplicitModelFallbackConfig,
+			scopedModels,
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
 			reattachSessionFile: this.reattachSessionFile,
 			sharedModelRuntime: this.sharedModelRuntime,
@@ -1918,7 +1931,7 @@ export class StageSessionController {
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: false,
-			...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel),
+			...modelAttemptReasoning(candidate),
 			...(usage === undefined ? {} : { usage }),
 			error: message,
 		});
@@ -1958,7 +1971,7 @@ export class StageSessionController {
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: true,
-			...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel),
+			...modelAttemptReasoning(candidate),
 			...(usage === undefined ? {} : { usage }),
 		});
 		this.pendingFallbackWarnings.length = 0;
@@ -1993,10 +2006,7 @@ export class StageSessionController {
 	}
 
 	private applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
-		this.pendingThinkingLevel =
-			candidate === undefined
-				? this.effectiveStageOptions?.thinkingLevel
-				: effectiveCandidateReasoning(candidate, this.effectiveStageOptions?.thinkingLevel);
+		this.pendingThinkingLevel = candidate?.reasoningLevel;
 	}
 	private throwUnresolvedContextOverflowIfPresent(): void {
 		const message = this.unresolvedContextOverflowMessage;

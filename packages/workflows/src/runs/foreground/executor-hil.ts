@@ -197,34 +197,19 @@ export function makeHeadlessUnavailableUIContext(): WorkflowUIContext {
 	);
 }
 
+export class WorkflowUIAdapterError extends Error {
+	constructor(readonly method: keyof WorkflowUIAdapter) {
+		super(`Workflow UI adapter is missing ${method}`);
+		this.name = "WorkflowUIAdapterError";
+	}
+}
+
 export function normalizeUIContext(adapter: WorkflowUIAdapter | undefined): WorkflowUIContext {
-	const unavailable = makeUnavailableUIContext();
-	if (adapter === undefined) return unavailable;
-	return {
-		input(prompt) {
-			return typeof adapter.input === "function" ? adapter.input.call(adapter, prompt) : unavailable.input(prompt);
-		},
-		confirm(message) {
-			return typeof adapter.confirm === "function"
-				? adapter.confirm.call(adapter, message)
-				: unavailable.confirm(message);
-		},
-		select<T extends string>(message: string, options: readonly T[]): Promise<T> {
-			return typeof adapter.select === "function"
-				? (adapter.select.call(adapter, message, options) as Promise<T>)
-				: unavailable.select(message, options);
-		},
-		editor(initial) {
-			return typeof adapter.editor === "function"
-				? adapter.editor.call(adapter, initial)
-				: unavailable.editor(initial);
-		},
-		custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
-			return typeof adapter.custom === "function"
-				? (adapter.custom.call(adapter, factory, options) as Promise<T>)
-				: unavailable.custom(factory, options);
-		},
-	};
+	if (adapter === undefined) return makeUnavailableUIContext();
+	for (const method of ["input", "confirm", "select", "editor", "custom"] as const) {
+		if (typeof adapter[method] !== "function") throw new WorkflowUIAdapterError(method);
+	}
+	return adapter;
 }
 
 type AskUserQuestionToolEvent =

@@ -69,6 +69,7 @@ describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -112,6 +113,7 @@ describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -168,6 +170,7 @@ describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

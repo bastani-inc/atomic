@@ -108,7 +108,7 @@ describe("tool run-control actions", () => {
 	test.sequential("registered workflow tool returns a headless accepted run with inspectable completion", async () => {
 		const resource = await makeRegisteredWorkflowToolWithResource(
 			"tool-headless-lifecycle.ts",
-			`import { workflow } from "@bastani/workflows";
+			`import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export default workflow({
@@ -188,7 +188,7 @@ export default workflow({
 		const { pi, sent } = buildMockPi();
 		addFactoryStubs(pi);
 		pi.disableAsyncDiscovery = false;
-		pi.getWorkflowResources = () => [{ path: filePath, enabled: true }];
+		pi.refreshWorkflowResources = async () => [{ path: filePath, enabled: true }];
 
 		const events = new Map<string, Array<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>>();
 		pi.on = (event, handler) => {

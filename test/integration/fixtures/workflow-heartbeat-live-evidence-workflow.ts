@@ -16,7 +16,7 @@
  * and boundary 4 so nothing is due at the instant the run ends.
  */
 
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 /** Past boundary 3 (180s), well short of boundary 4 (240s). */

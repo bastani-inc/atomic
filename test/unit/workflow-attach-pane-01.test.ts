@@ -22,7 +22,6 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageInputRequest } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 
 type TestStageSeed = {
 	id: string;
@@ -36,6 +35,7 @@ function setupRun(store: ReturnType<typeof createStore>, runId: string, stages: 
 		name: "test-wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});
@@ -217,47 +217,6 @@ describe("WorkflowAttachPane", () => {
 			assert.equal(promptCalls[0], input);
 			pane.dispose();
 		}
-	});
-
-	test("forwards piKeybindings to GraphView run-level prompt cards", () => {
-		const store = createStore();
-		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-		const prompt = makePendingPrompt({
-			id: "prompt-select-graph",
-			kind: "select",
-			choices: ["alpha", "beta", "gamma"],
-		});
-		assert.equal(store.recordPendingPrompt("run-1", prompt), true);
-		const resolved: Array<{
-			runId: string;
-			promptId: string;
-			response: unknown;
-		}> = [];
-		const pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			onClose: () => {},
-			piKeybindings: makeFakeKeybindings({
-				"tui.select.down": ["d"],
-				"tui.select.confirm": ["s"],
-			}),
-			onPromptResolve: (runId, promptId, response) => {
-				resolved.push({ runId, promptId, response });
-				store.resolvePendingPrompt(runId, promptId, response);
-			},
-		});
-
-		assert.equal(pane._mode, "graph");
-		assert.equal(pane.handleInput("d"), true);
-		assert.deepEqual(resolved, []);
-		assert.equal(store.runs()[0]?.pendingPrompt?.id, prompt.id);
-
-		assert.equal(pane.handleInput("s"), true);
-		assert.deepEqual(resolved, [{ runId: "run-1", promptId: prompt.id, response: "beta" }]);
-		assert.equal(store.runs()[0]?.pendingPrompt, undefined);
-		assert.equal(pane._mode, "graph");
-		pane.dispose();
 	});
 
 	test("Enter on a graph node swaps to stage-chat mode", () => {

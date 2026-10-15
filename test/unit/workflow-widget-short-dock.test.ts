@@ -57,6 +57,7 @@ test("registered workflow shortcuts reach every run in a clipped dock without st
 				name: "same name",
 				status: "paused",
 				inputs: {},
+				toolNodes: [],
 				stages: [],
 				startedAt: 1_700_000_000_000 + i,
 			});
@@ -143,6 +144,7 @@ test("pending input preserves editor focus draft and frame bounds", async () => 
 			name: "waiting-root",
 			status: "running",
 			inputs: {},
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 			startedAt: 1_700_000_000_000,
 		});

@@ -240,7 +240,7 @@ function globalIncidentSource(): string {
 	return `
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 const stateDir = process.env.ATOMIC_GLOBAL_RELOAD_STATE_DIR;
@@ -411,6 +411,7 @@ function recordGenerationState(
 		name: "reload-survive",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 	});
@@ -948,6 +949,7 @@ test(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1005,6 +1007,7 @@ test(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(

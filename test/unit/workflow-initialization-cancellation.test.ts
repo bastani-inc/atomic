@@ -327,6 +327,7 @@ test("failed-run resume abort cancels startup and leaves the source available", 
 		endedAt: 2,
 		resumable: true,
 		failedStageId: "retry",
+		toolNodes: [],
 		stages: [{ id: "retry", name: "retry", status: "failed", parentIds: [], toolEvents: [] }],
 	});
 	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs });

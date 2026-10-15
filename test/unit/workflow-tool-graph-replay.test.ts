@@ -238,6 +238,11 @@ describe("ctx.tool durable graph replay", () => {
 			status: "paused",
 			resumable: true,
 		});
+		const boundaryStart = backend
+			.listCheckpoints(runId)
+			.find((checkpoint) => checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "start");
+		assert.ok(boundaryStart);
+		partialBackend.recordCheckpoint(boundaryStart);
 		partialBackend.recordCheckpoint(cachedChildTool);
 		const partialStore = createStore();
 		const partial = await run(parent, {}, { runId, store: partialStore, durableBackend: partialBackend });

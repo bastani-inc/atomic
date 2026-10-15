@@ -14,6 +14,7 @@ function renderStageHeader(workflowName: string, stageName: string, width: numbe
 		name: workflowName,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

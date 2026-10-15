@@ -13,7 +13,7 @@
  * delivered, and the queue has to survive the user leaving the node.
  */
 
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 export default workflow({
 	name: "issue-2074-stage-steering",

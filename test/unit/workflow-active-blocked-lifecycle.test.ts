@@ -28,6 +28,7 @@ function startRecoverableRun(store: ReturnType<typeof createStore>, runId: strin
 		name: "recoverable",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		...(parentRunId === undefined ? {} : { parentRunId }),

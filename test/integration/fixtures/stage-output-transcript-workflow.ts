@@ -10,7 +10,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 export default workflow({
 	name: "stage-output-transcript-e2e",

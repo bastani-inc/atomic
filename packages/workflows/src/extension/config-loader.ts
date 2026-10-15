@@ -17,7 +17,7 @@
  */
 
 import { isAbsolute, join } from "node:path";
-import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getAgentDir, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getAgentDir } from "@bastani/atomic";
 import { type EffectiveBudget, resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import { loadConfigFile } from "./config-file-loader.js";
 import type { WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
@@ -91,16 +91,14 @@ export interface ConfigLoadResult {
 	readonly config: WorkflowExtensionConfig | null;
 	/**
 	 * Pre-merge global config (from <agentDir>/extensions/workflow/config.json).
-	 * null when the global file is absent or invalid. Absent on results from callers
-	 * that constructed ConfigLoadResult before this field was added.
+	 * null when the global file is absent or invalid.
 	 */
-	readonly globalConfig?: WorkflowExtensionConfig | null;
+	readonly globalConfig: WorkflowExtensionConfig | null;
 	/**
 	 * Pre-merge project config (from first valid project-local candidate).
-	 * null when no project-local file is found or all are invalid. Absent on results
-	 * from callers that constructed ConfigLoadResult before this field was added.
+	 * null when no project-local file is found or all are invalid.
 	 */
-	readonly projectConfig?: WorkflowExtensionConfig | null;
+	readonly projectConfig: WorkflowExtensionConfig | null;
 	/** CONFIG_INVALID diagnostics from all sources. Empty when all is well. */
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }
@@ -115,10 +113,7 @@ export interface LoadWorkflowConfigOpts {
 	 * Project-local config is resolved relative to this path.
 	 */
 	readonly projectRoot?: string;
-	/**
-	 * User home directory. When set, preserves legacy test/compat resolution
-	 * relative to <homeDir>/.atomic/agent and <homeDir>/.pi/agent.
-	 */
+	/** User home directory used to resolve <homeDir>/.atomic/agent. */
 	readonly homeDir?: string;
 	/**
 	 * User agent config directories in precedence order. Defaults to Atomic's
@@ -317,9 +312,9 @@ function workflowAgentDirs(opts: Pick<LoadWorkflowConfigOpts, "agentDirs" | "hom
 	if (opts.agentDirs !== undefined) return opts.agentDirs;
 	if (opts.homeDir !== undefined) {
 		const homeDir = opts.homeDir;
-		return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+		return [join(homeDir, CONFIG_DIR_NAME, "agent")];
 	}
-	return getAgentDirs();
+	return [getAgentDir()];
 }
 
 /**
@@ -384,15 +379,13 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 
 	const diagnostics: ConfigDiagnostic[] = [];
 
-	// Global config paths (primary Atomic first, then legacy pi/defaults).
+	// Global config paths retain caller-provided precedence.
 	const globalCandidates = workflowAgentDirs(opts).map((agentDir) =>
 		join(agentDir, "extensions", "workflow", "config.json"),
 	);
 
-	// Project-local config paths (primary Atomic first, then legacy pi)
-	const projectCandidates: string[] = getProjectConfigPaths(projectRoot, "extensions", "workflow", "config.json");
+	const projectCandidates = [join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json")];
 
-	// Load global config (primary overrides legacy)
 	let globalConfig: WorkflowExtensionConfig | null = null;
 	for (let i = globalCandidates.length - 1; i >= 0; i--) {
 		const globalPath = globalCandidates[i]!;
@@ -405,7 +398,7 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 		// "missing" → silently skip
 	}
 
-	// Load project-local configs (primary overrides legacy)
+	// Load the current project-local config.
 	let projectConfig: WorkflowExtensionConfig | null = null;
 	for (let i = projectCandidates.length - 1; i >= 0; i--) {
 		const candidatePath = projectCandidates[i]!;

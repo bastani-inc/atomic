@@ -246,11 +246,6 @@ export interface WorkflowRegistry {
 	all(): AnyWorkflowDefinition[];
 }
 
-/**
- * @deprecated Removed imperative workflow API. This runtime value only throws
- * a migration error; author workflows with workflow({...}).
- */
-export declare const runWorkflow: never;
 export declare function workflow<
 	const TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
@@ -338,7 +333,7 @@ export interface RunSnapshot {
 	readonly status: RunStatus;
 	readonly stages: readonly StageSnapshot[];
 	/** First-class durable ctx.tool nodes; populated by the runtime. */
-	readonly toolNodes?: readonly import("./shared/authoring-contract.js").ToolNodeSnapshot[];
+	readonly toolNodes: readonly import("./shared/authoring-contract.js").ToolNodeSnapshot[];
 	readonly startedAt: number;
 	readonly endedAt?: number;
 	readonly durationMs?: number;

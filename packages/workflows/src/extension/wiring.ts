@@ -491,17 +491,13 @@ function makeStageExtensionUiContext(
 	};
 }
 
-/** Resolve only an explicitly requested account clone, never every credential in auth.json. */
-async function resolveStageModel(options: CreateAgentSessionOptions, restoreSavedModel: boolean): Promise<void> {
-	const runtime = options.modelRuntime;
-	if (!runtime) return;
-	const saved = restoreSavedModel ? options.sessionManager?.buildSessionContext() : undefined;
-	const reference = saved?.model
-		? `${saved.model.provider}/${saved.model.modelId}`
-		: typeof options.model === "string"
-			? options.model
-			: undefined;
-	if (!reference) return;
+type StageModelRuntime = NonNullable<CreateAgentSessionOptions["modelRuntime"]>;
+
+/** Look up a `provider/model` reference, registering only an explicitly requested account clone. */
+function findStageModel(
+	runtime: StageModelRuntime,
+	reference: string,
+): { provider: string; modelId: string; model: CreateAgentSessionOptions["model"] } {
 	const slash = reference.indexOf("/");
 	if (slash < 0) throw new Error(`Workflow stage model must specify provider/model: ${reference}`);
 	const provider = reference.slice(0, slash);
@@ -515,7 +511,38 @@ async function resolveStageModel(options: CreateAgentSessionOptions, restoreSave
 			model = runtime.getModel(provider, modelId);
 		}
 	}
-	if (!model && saved?.model) model = await resolveRestoredModelReference(provider, modelId, runtime);
+	return { provider, modelId, model };
+}
+
+type StageScopedModelReference = NonNullable<CreateAgentSessionOptions["scopedModels"]>[number]["model"] | string;
+
+/** Scoped models still named by `provider/model` resolve exactly like the stage's primary model. */
+function resolveStageScopedModels(options: CreateAgentSessionOptions, runtime: StageModelRuntime): void {
+	if (options.scopedModels === undefined) return;
+	options.scopedModels = options.scopedModels.map((entry) => {
+		const reference: StageScopedModelReference = entry.model;
+		if (typeof reference !== "string") return entry;
+		const { model } = findStageModel(runtime, reference);
+		if (!model) throw new Error(`Workflow stage model unavailable: ${reference}`);
+		return { ...entry, model };
+	});
+}
+
+/** Resolve only an explicitly requested account clone, never every credential in auth.json. */
+async function resolveStageModel(options: CreateAgentSessionOptions, restoreSavedModel: boolean): Promise<void> {
+	const runtime = options.modelRuntime;
+	if (!runtime) return;
+	resolveStageScopedModels(options, runtime);
+	const saved = restoreSavedModel ? options.sessionManager?.buildSessionContext() : undefined;
+	const reference = saved?.model
+		? `${saved.model.provider}/${saved.model.modelId}`
+		: typeof options.model === "string"
+			? options.model
+			: undefined;
+	if (!reference) return;
+	const found = findStageModel(runtime, reference);
+	let model = found.model;
+	if (!model && saved?.model) model = await resolveRestoredModelReference(found.provider, found.modelId, runtime);
 	if (!model) throw new Error(`Workflow stage model unavailable: ${reference}`);
 	options.model = model;
 	if (saved?.model) options.thinkingLevel = saved.thinkingLevel as CreateAgentSessionOptions["thinkingLevel"];

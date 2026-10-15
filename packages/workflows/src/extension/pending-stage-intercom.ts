@@ -515,7 +515,7 @@ function isNonAgentStage(stage: StageSnapshot): boolean {
 
 function nonAgentNodes(run: ReturnType<Store["runs"]>[number]): { readonly id: string; readonly name: string }[] {
 	return [
-		...(run.toolNodes ?? []),
+		...run.toolNodes,
 		...run.stages.filter(isNonAgentStage).flatMap((stage) => {
 			const prompt = stage.pendingPrompt ?? stage.promptFootprint;
 			return [stage, ...(prompt === undefined ? [] : [{ id: prompt.id, name: prompt.kind }])];

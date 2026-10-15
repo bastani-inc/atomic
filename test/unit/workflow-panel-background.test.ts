@@ -6,6 +6,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { createSessionPickerState, renderSessionPicker } from "../../packages/workflows/src/tui/session-picker.js";
 import { assertBackgroundFill } from "../helpers/background-fill.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { makeRun, makeStage, makeStore, makeTestTui } from "./overlay-graph-helpers.js";
 
 const run = { ...makeRun([makeStage("first")]), name: "A very long workflow name ".repeat(12) };
@@ -14,6 +15,7 @@ test("graph chrome fills every cell even when run names and footer hints truncat
 	const theme = deriveGraphTheme();
 	for (const width of [40, 64, 120]) {
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: run.id,
 			store: makeStore({ runs: [run], notices: [], version: 1 }),

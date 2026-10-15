@@ -21,6 +21,7 @@ test.each(["answer", "withdraw", "pause", "pause-queued"])("owners retain questi
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -124,7 +125,15 @@ test.each(["running", "paused"])(
 		const scope = {};
 		const store = adoptStore(scope);
 		const broker = adoptStageUiBroker(scope);
-		store.recordRunStart({ id: "run", name: "wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+		store.recordRunStart({
+			id: "run",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: Date.now(),
+		});
 		store.recordStageStart("run", { id: "stage", name: "ask", status: "running", parentIds: [], toolEvents: [] });
 		const replies: ReturnType<typeof Promise.withResolvers<QuestionnaireResult>>[] = [];
 		const asked: unknown[] = [];

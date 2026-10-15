@@ -22,7 +22,15 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 
 function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string) {
-	store.recordRunStart({ id: runId, name: "test-wf", inputs: {}, status: "completed", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: runId,
+		name: "test-wf",
+		inputs: {},
+		status: "completed",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	store.recordStageStart(runId, {
 		id: "stage-a",
 		name: "A",

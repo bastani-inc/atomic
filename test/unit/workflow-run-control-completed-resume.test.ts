@@ -82,6 +82,7 @@ function registerCompleted(backend: InMemoryDurableBackend, id: string, sessionF
 function registerCompletedTool(backend: InMemoryDurableBackend, id: string): void {
 	backend.registerWorkflow({ workflowId: id, name: `${id}-flow`, inputs: {}, createdAt: 1, status: "completed" });
 	backend.recordCheckpoint({
+		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: id,
 		checkpointId: "tool:done",
@@ -183,6 +184,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			name: "nested",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -214,6 +216,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			name: "nested",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -358,6 +361,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -386,6 +390,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 				exitReason: "quit",
 				resumable: true,
 				startedAt: 1,
+				toolNodes: [],
 				stages: [{ id: "right", name: "right", status: "paused", parentIds: [], toolEvents: [] }],
 			});
 			const before = calls.length;
@@ -412,6 +417,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -428,6 +434,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			exitReason: "quit",
 			resumable: true,
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "right", name: "right", status: "paused", parentIds: [], toolEvents: [] }],
 		});
 		const entry = pausedDurableEntry(root);
@@ -473,6 +480,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -510,6 +518,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -544,6 +553,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			name: "nested",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -693,6 +703,7 @@ describe("/workflow resume completed target", () => {
 		registerCompleted(backend, id);
 		backend.setWorkflowStatus(id, "failed", 0, true);
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"frontier-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool-failure:1",
@@ -736,6 +747,7 @@ describe("/workflow resume completed target", () => {
 		setDurableBackend(backend);
 		backend.registerWorkflow({ workflowId: id, name: "local", inputs: {}, createdAt: 1, status: "paused" });
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"proof"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool:proof",
@@ -744,7 +756,15 @@ describe("/workflow resume completed target", () => {
 			output: true,
 			completedAt: 2,
 		});
-		store.recordRunStart({ id, name: "local", inputs: {}, status: "paused", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id,
+			name: "local",
+			inputs: {},
+			status: "paused",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		const runtime = createExtensionRuntime({ store });
 		runtime.prepareDurableCatalog = async () => {
 			throw new Error("catalog unavailable");
@@ -881,6 +901,7 @@ describe("/workflow resume completed target", () => {
 			name: "zero-progress-flow",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -976,6 +997,7 @@ describe("/workflow resume completed target", () => {
 			name: "completed-flow",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1010,6 +1032,7 @@ describe("/workflow resume completed target", () => {
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -1031,6 +1054,7 @@ describe("/workflow resume completed target", () => {
 			name: "cancelled",
 			inputs: {},
 			status: "cancelled",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1041,6 +1065,7 @@ describe("/workflow resume completed target", () => {
 			name: "killed",
 			inputs: {},
 			status: "killed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1051,6 +1076,7 @@ describe("/workflow resume completed target", () => {
 			name: "failed",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1080,6 +1106,7 @@ describe("/workflow resume completed target", () => {
 			name: "quit-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1155,6 +1182,7 @@ describe("/workflow resume completed target", () => {
 			error: "durable tool failed",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"failed-tool-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool-failure:1",
@@ -1229,6 +1257,7 @@ describe("/workflow resume completed target", () => {
 			name: "failed-author-exit-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -1272,6 +1301,7 @@ describe("/workflow resume completed target", () => {
 			name: "missing-author-exit-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -1314,6 +1344,7 @@ describe("/workflow resume completed target", () => {
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -1344,6 +1375,7 @@ describe("/workflow resume completed target", () => {
 			name: "picker-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			blockedAt: 2,
@@ -1377,6 +1409,7 @@ describe("/workflow resume completed target", () => {
 			name: "picker-flow",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -1419,6 +1452,7 @@ describe("/workflow resume completed target", () => {
 				name: "picker-flow",
 				inputs: {},
 				status: "paused",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 				resumable: true,
@@ -1456,6 +1490,7 @@ describe("/workflow resume completed target", () => {
 			name: "failed-flow",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -1466,6 +1501,7 @@ describe("/workflow resume completed target", () => {
 			name: "running-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -1474,6 +1510,7 @@ describe("/workflow resume completed target", () => {
 			name: "blocked-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			blockedAt: 2,

@@ -76,6 +76,7 @@ function seedEndedRun(store: Store, hold: Hold): SeededRun {
 		name: "big-result",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

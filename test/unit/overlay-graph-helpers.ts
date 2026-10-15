@@ -1,3 +1,4 @@
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 /** Shared fixtures for overlay graph tests. */
 
 import assert from "node:assert/strict";
@@ -69,6 +70,7 @@ export function makeRun(stages: StageSnapshot[]): RunSnapshot {
 		name: "Test Run",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages,
 		startedAt: Date.now(),
 	};
@@ -194,6 +196,7 @@ export function makeView(stages: StageSnapshot[], onClose?: () => void): GraphVi
 	const snap = makeSnap(stages);
 	const store = makeStore(snap);
 	return new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store,

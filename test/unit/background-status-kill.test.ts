@@ -22,6 +22,7 @@ function makeRun(overrides: Partial<Pick<RunSnapshot, "id" | "name" | "status">>
 		name: overrides.name ?? "test-run",
 		inputs: {},
 		status: overrides.status ?? "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	};

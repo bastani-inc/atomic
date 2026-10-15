@@ -177,6 +177,7 @@ describe("workflow returned status outputs", () => {
 			status: "completed",
 			startedAt: 1,
 			failedStageId: "reviewer-a",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-a",
@@ -215,6 +216,7 @@ describe("workflow returned status outputs", () => {
 			status: "completed",
 			startedAt: 1,
 			result: { result: "approved" },
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-a",

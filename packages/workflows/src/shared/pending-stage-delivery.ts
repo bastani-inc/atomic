@@ -19,6 +19,23 @@ export type {
 export const PENDING_STAGE_MESSAGE_LIMIT = 50;
 const PENDING_STAGE_UNDELIVERABLE_NOTIFICATION_PREFIX = "atomic-pending-stage-undeliverable";
 
+export class PendingStageMessageOrderError extends Error {
+	readonly runId: string;
+	readonly messageId: string;
+
+	constructor(entry: PendingStageMessage) {
+		super(`atomic-workflows: pending stage message ${entry.id} in run ${entry.runId} has no admission order`);
+		this.name = "PendingStageMessageOrderError";
+		this.runId = entry.runId;
+		this.messageId = entry.id;
+	}
+}
+
+export function pendingStageMessageAdmissionOrder(entry: PendingStageMessage): number {
+	if (entry.admissionOrder === undefined) throw new PendingStageMessageOrderError(entry);
+	return entry.admissionOrder;
+}
+
 export interface PendingStageIdentity {
 	readonly id: string;
 	readonly replayKey?: string;
@@ -282,11 +299,8 @@ export function pendingStageMessagesFor(
 	return messages
 		.map((entry, index) => ({ entry, index }))
 		.filter(({ entry }) => matchesPendingStage(entry, runId, stageKey, stageIdentity) && entry.status === "queued")
-		.sort(
-			(left, right) =>
-				(left.entry.admissionOrder ?? left.index + 1) - (right.entry.admissionOrder ?? right.index + 1) ||
-				left.index - right.index,
-		)
+		.map(({ entry, index }) => ({ entry, index, order: pendingStageMessageAdmissionOrder(entry) }))
+		.sort((left, right) => left.order - right.order || left.index - right.index)
 		.map(({ entry }) => entry);
 }
 
@@ -411,11 +425,9 @@ function matchesPendingStage(
 
 function nextAdmissionOrder(messages: readonly PendingStageMessage[], runId: string): number {
 	let greatest = 0;
-	let legacyPosition = 0;
 	for (const entry of messages) {
 		if (entry.runId !== runId) continue;
-		legacyPosition += 1;
-		greatest = Math.max(greatest, entry.admissionOrder ?? legacyPosition);
+		greatest = Math.max(greatest, pendingStageMessageAdmissionOrder(entry));
 	}
 	return greatest + 1;
 }

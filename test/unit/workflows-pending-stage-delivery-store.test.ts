@@ -52,7 +52,15 @@ describe("workflow stage messages store", () => {
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		await store.queueStickyStageMessage(
 			{
 				...pendingMessage("sticky"),
@@ -124,7 +132,15 @@ describe("workflow stage messages store", () => {
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		for (let index = 0; index < 100; index++) {
 			await store.queueStageMessage(pendingMessage(String(index)), RUN_GROUP, RUN_GROUP, backend);
 			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, String(index), "now", backend);
@@ -167,7 +183,15 @@ describe("workflow stage messages store", () => {
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		for (let index = 0; index < 50; index++) {
 			await store.queueStageMessage(pendingMessage(String(index)), RUN_GROUP, RUN_GROUP, backend);
 			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, String(index), "now", backend);
@@ -266,7 +290,15 @@ describe("workflow stage messages store", () => {
 			} as PendingStageMessageInput["from"],
 		});
 		const writer = createStore();
-		writer.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		writer.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		assert.equal((await writer.queueStageMessage(original, RUN_GROUP, RUN_GROUP, backend))?.ok, true);
 
 		const retry = pendingMessage("presence", {
@@ -290,6 +322,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...(backend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 			startedAt: 1,
@@ -311,6 +344,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...(backend.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 			startedAt: 1,
@@ -341,7 +375,15 @@ describe("workflow stage messages store", () => {
 		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await writerBackend.flush();
 		const writerStore = createStore();
-		writerStore.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		writerStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		const original = pendingMessage("timestamp-retry", {
 			message: {
 				...message("timestamp-retry", "same logical send"),
@@ -365,6 +407,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...durableBeforeRetry],
 			startedAt: 1,
@@ -417,6 +460,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...deliveredBeforeRetry],
 			startedAt: 1,
@@ -447,7 +491,15 @@ describe("workflow stage messages store", () => {
 		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await writerBackend.flush();
 		const writerStore = createStore();
-		writerStore.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		writerStore.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		const omitted = pendingMessage("defaults-omitted", {
 			message: {
 				id: "defaults-omitted",
@@ -507,6 +559,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...queuedBeforeRetry],
 			startedAt: 1,
@@ -576,6 +629,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			pendingStageMessages: [...deliveredBeforeRetry],
 			startedAt: 1,
@@ -740,6 +794,7 @@ describe("workflow stage messages store", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "review-stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
 			startedAt: 1,
 		});
@@ -815,7 +870,15 @@ describe("workflow stage messages store", () => {
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		const result = await store.queueStageMessage(pendingMessage("live"), RUN_GROUP, RUN_GROUP, backend);
 		assert.equal(result?.ok, true);
 		assert.deepEqual(
@@ -928,7 +991,15 @@ describe("durable workflow stage messages metadata", () => {
 		});
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 
 		const queued = await store.queueStageMessage(pendingMessage("queued"), RUN_GROUP, RUN_GROUP, backend);
 		assert.equal(queued?.ok, true);
@@ -973,7 +1044,15 @@ describe("durable workflow stage messages metadata", () => {
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 
 		const [first, second] = await Promise.all([
 			store.queueStageMessage(pendingMessage("1"), RUN_GROUP, RUN_GROUP, backend),
@@ -1010,7 +1089,15 @@ describe("durable workflow stage messages metadata", () => {
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		await backend.flush();
 		const store = createStore();
-		store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		let notifications = 0;
 		store.subscribeInvalidation(() => notifications++);
 		rejectWrites = true;

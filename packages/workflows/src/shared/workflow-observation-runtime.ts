@@ -169,7 +169,7 @@ export class WorkflowObservationRuntime {
 						!existing,
 					);
 			}
-			for (const tool of run.toolNodes ?? [])
+			for (const tool of run.toolNodes)
 				visit(
 					`tool:${workflowActivityNodeKey(run.id, tool.id)}`,
 					{ kind: "tool", runId: run.id, toolNodeId: tool.id, toolName: tool.name, status: tool.status },

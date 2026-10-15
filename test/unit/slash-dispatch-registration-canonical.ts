@@ -150,6 +150,7 @@ function makeInflightRun(id: string) {
 		name: "test-wf",
 		inputs: {},
 		status: "running" as const,
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	};

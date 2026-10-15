@@ -24,6 +24,7 @@ describe("payload-bounded store observation", () => {
 			name: "large-workflow",
 			inputs: { evidence },
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "question",
@@ -68,6 +69,7 @@ describe("payload-bounded store observation", () => {
 			name: "legacy",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -130,6 +132,7 @@ describe("payload-bounded store observation", () => {
 			name: "child-output-count",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-boundary",
@@ -185,6 +188,7 @@ describe("payload-bounded store observation", () => {
 			inputs: {},
 			status: "completed",
 			result: { summary: longSummary, result: shortResult },
+			toolNodes: [],
 			stages: [
 				{
 					id: "tool-heavy-stage",
@@ -217,6 +221,7 @@ describe("payload-bounded store observation", () => {
 			name: "exited-output",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -240,6 +245,7 @@ describe("payload-bounded store observation", () => {
 			name: "empty-exit-output",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -256,6 +262,7 @@ describe("payload-bounded store observation", () => {
 			name: "oversized-exit-output",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -281,6 +288,7 @@ describe("payload-bounded store observation", () => {
 			name: "frozen",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "nested-stage", name: "nested-stage", status: "running", parentIds: [], toolEvents: [] }],
 			startedAt: Date.now(),
 		});
@@ -300,6 +308,7 @@ describe("payload-bounded store observation", () => {
 			name: "structured",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "setup-stage",

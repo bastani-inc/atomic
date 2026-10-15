@@ -286,7 +286,15 @@ for (const shape of ["repeated quit after drain", "hydrated run without an execu
 			} else {
 				id = "hydrated";
 				attempt = 1;
-				store.recordRunStart({ id, name: "hydrated", inputs: {}, stages: [], status: "running", startedAt: 1 });
+				store.recordRunStart({
+					id,
+					name: "hydrated",
+					inputs: {},
+					toolNodes: [],
+					stages: [],
+					status: "running",
+					startedAt: 1,
+				});
 				const quit = await quitRun(id, { store, actor: "user" });
 				assert.equal(quit.ok, false);
 				const pause = await pauseRun(id, { store });

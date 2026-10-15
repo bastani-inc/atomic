@@ -1,7 +1,11 @@
 import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
 import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
-import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
+import {
+	InvalidWorkflowHeartbeatAnchorError,
+	readWorkflowHeartbeatAnchor,
+	recordWorkflowHeartbeatAnchor,
+} from "../durable/workflow-heartbeat-anchor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import { resolveBuiltinDefinitionSource } from "../shared/possible-stages.js";
@@ -83,7 +87,8 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 		readAnchorAt(runId) {
 			try {
 				return readWorkflowHeartbeatAnchor(getDurableBackend(), runId);
-			} catch {
+			} catch (error) {
+				if (error instanceof InvalidWorkflowHeartbeatAnchorError) throw error;
 				return undefined;
 			}
 		},
@@ -92,9 +97,7 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 				return await recordWorkflowHeartbeatAnchor(getDurableBackend(), {
 					runId,
 					anchorAt: record.anchorAt,
-					// The scheduler only records a positive cadence; a run launched
-					// disabled never reaches this seam.
-					intervalMinutes: record.intervalMinutes ?? 0,
+					intervalMinutes: record.intervalMinutes,
 					now: Date.now(),
 				});
 			} catch {
@@ -563,7 +566,7 @@ export function createWorkflowExtensionRuntimeState(
 		return trackLazyDiscovery(reloadCoordinator.request(workflowDiscoveryGeneration));
 	}
 	async function loadPackageWorkflowPaths(): Promise<string[]> {
-		const packageResources = (await pi.refreshWorkflowResources?.()) ?? pi.getWorkflowResources?.() ?? [];
+		const packageResources = (await pi.refreshWorkflowResources?.()) ?? [];
 		return packageResources.filter((resource) => resource.enabled !== false).map((resource) => resource.path);
 	}
 	async function reloadWorkflowResourcesNow(
@@ -578,11 +581,11 @@ export function createWorkflowExtensionRuntimeState(
 			return supersededReloadReport(coalescedRequests, configResult);
 		}
 		try {
-			const hasGlobal = configResult.globalConfig != null;
-			const hasProject = configResult.projectConfig != null;
+			const hasGlobal = configResult.globalConfig !== null;
+			const hasProject = configResult.projectConfig !== null;
 			const discoveryConfig =
 				hasGlobal || hasProject
-					? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, {
+					? toScopedDiscoveryConfig(configResult.globalConfig, configResult.projectConfig, {
 							projectRoot: resolveCwd(),
 						})
 					: undefined;

@@ -232,7 +232,15 @@ test.each(["dependency", "rejection"] as const)(
 				toolControlRegistry: controls,
 				signal: controller.signal,
 				continuation: {
-					source: { id: runId, name: runId, inputs: {}, status: "paused", startedAt: 1, stages: [] },
+					source: {
+						id: runId,
+						name: runId,
+						inputs: {},
+						status: "paused",
+						startedAt: 1,
+						toolNodes: [],
+						stages: [],
+					},
 				},
 			},
 		).catch((failure: unknown) => failure);

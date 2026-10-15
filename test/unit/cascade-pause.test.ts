@@ -18,6 +18,7 @@ describe("cascade pause", () => {
 			name: "linear",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -49,6 +50,7 @@ describe("cascade pause", () => {
 			name: "diamond",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -76,6 +78,7 @@ describe("cascade pause", () => {
 			name: "siblings",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -165,6 +168,7 @@ describe("cascade pause", () => {
 			name: "kill",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

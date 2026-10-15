@@ -40,6 +40,7 @@ function childRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "guard-child-name",
 		inputs: { raw: " unchanged " },
 		status: "completed",
+		toolNodes: [],
 		stages: [stage("leaf-stage")],
 		startedAt: 1,
 		endedAt: 30,
@@ -59,6 +60,7 @@ function parentRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "guard-root-name",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		rootRunId: ROOT_ID,
@@ -395,12 +397,14 @@ test("cached recorder derives the durable catalog root through rootless parent a
 		workflow: "middle-name",
 		runId: "middle",
 		status: "completed",
+		exited: false,
 		outputs: {},
 	} as const;
 	const grandChildOutput = {
 		workflow: "guard-child-name",
 		runId: CHILD_ID,
 		status: "completed",
+		exited: false,
 		outputs: {},
 	} as const;
 	backend.recordCheckpoint({

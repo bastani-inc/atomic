@@ -10,6 +10,7 @@ type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 
 import { getDurableBackend } from "../../durable/factory.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-owner-backend.js";
+import { pendingStageMessageAdmissionOrder } from "../../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../../shared/pending-stage-route-capability.js";
 import { stageMatchesPathPattern, workflowBoundaryHops } from "../../shared/pending-stage-status.js";
 import type { Store } from "../../shared/store.js";
@@ -216,11 +217,8 @@ async function deliverPendingStageMessages(
 			.filter(({ entry }) => candidateIds.has(entry.id) && entry.sticky !== true),
 		...stickyEntries.map((entry) => ({ entry, index: Number.MAX_SAFE_INTEGER })),
 	]
-		.sort(
-			(left, right) =>
-				(left.entry.admissionOrder ?? left.index + 1) - (right.entry.admissionOrder ?? right.index + 1) ||
-				left.index - right.index,
-		)
+		.map(({ entry, index }) => ({ entry, index, order: pendingStageMessageAdmissionOrder(entry) }))
+		.sort((left, right) => left.order - right.order || left.index - right.index)
 		.map(({ entry }) => entry);
 	const rootBackend = getDurableBackend();
 	const backend = durableBackendForRun(rootBackend, runs, runId);

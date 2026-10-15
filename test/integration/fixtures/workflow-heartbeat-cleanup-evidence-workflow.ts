@@ -17,7 +17,7 @@
  * instant the run ends and the observed count is unambiguous.
  */
 
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 /** Past boundary 3 (180s) and well short of boundary 4 (240s). */

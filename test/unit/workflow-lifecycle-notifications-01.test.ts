@@ -88,13 +88,21 @@ function installWithState(
 }
 
 function startRun(store: ReturnType<typeof createStore>, id: string, name = id): void {
-	store.recordRunStart({ id, name, inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({ id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 });
 }
 
 describe("installWorkflowLifecycleNotifications", () => {
 	test("emits one completion notice when a run completes", () => {
 		const { store, sent, options } = install();
-		store.recordRunStart({ id: "run-1", name: "release", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-1",
+			name: "release",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 
 		assert.equal(store.recordRunEnd("run-1", "completed", {}, undefined), true);
 		store.recordNotice({ id: "nudge", level: "info", message: "force notify", createdAt: 3 });
@@ -116,6 +124,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "release",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -169,6 +178,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "release",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			budget: { maxDurationMs: 200 },
@@ -302,7 +312,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 	test("emits failure notice with stage and truncated error context", () => {
 		const { store, sent, options } = install();
 		const longError = `${"No API key. ".repeat(40)}tail`;
-		store.recordRunStart({ id: "run-2", name: "deploy", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-2",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart("run-2", runningStage({ id: "stage-2", name: "publish" }));
 
 		assert.equal(store.recordRunEnd("run-2", "failed", undefined, longError, { failedStageId: "stage-2" }), true);
@@ -317,7 +335,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 
 	test("tracks a stage pending prompt without waking the main chat", () => {
 		const { store, state, sent, options } = install();
-		store.recordRunStart({ id: "run-3", name: "review", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-3",
+			name: "review",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart("run-3", runningStage());
 
 		assert.equal(store.recordStagePendingPrompt("run-3", "stage-1", prompt()), true);
@@ -330,7 +356,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 
 	test("tracks ask_user_question-style stages without waking the main chat", () => {
 		const { store, state, sent, options } = install();
-		store.recordRunStart({ id: "run-4", name: "qa", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-4",
+			name: "qa",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart("run-4", runningStage({ id: "stage-ask", name: "question" }));
 		assert.equal(
 			store.recordStageInputRequest("run-4", "stage-ask", {
@@ -424,7 +458,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 				sent.push(message as SentMessage);
 			},
 		});
-		store.recordRunStart({ id: "run-5", name: "filtered", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-5",
+			name: "filtered",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordRunEnd("run-5", "completed", {});
 		assert.equal(sent.length, 0);
 
@@ -435,7 +477,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 				sent.push(message as SentMessage);
 			},
 		});
-		store.recordRunStart({ id: "run-6", name: "disabled", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-6",
+			name: "disabled",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordRunEnd("run-6", "failed", undefined, "boom");
 		assert.equal(sent.length, 1);
 	});

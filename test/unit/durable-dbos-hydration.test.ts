@@ -34,6 +34,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 	test("hydrateWorkflow reconstructs tool checkpoints from DBOS envelopes", async () => {
 		const hash = durableHash({ name: "fetch", args: { url: "https://api.example.com" } });
 		const cp: DurableToolCheckpoint = {
+			topology: { version: 1, nodeId: `tool:${hash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-h1",
 			checkpointId: "tool:h1",
@@ -66,6 +67,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		const args = { suite: "unit" };
 		const argsHash = durableHash({ name, args, ordinal: 1, failureMode: "return" });
 		const cp: DurableToolCheckpoint = {
+			topology: { version: 1, nodeId: `tool:${argsHash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId,
 			checkpointId: `tool:${argsHash}`,
@@ -363,6 +365,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			status: "running",
 		});
 		session1.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"h-meta"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-meta",
 			checkpointId: "tool:meta",
@@ -389,6 +392,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		seedMockWorkflow(sdk, { workflowId: "wf-a", name: "wf-a", status: "PENDING", inputs: { x: 1 } });
 		seedMockWorkflow(sdk, { workflowId: "wf-b", name: "wf-b", status: "PENDING" });
 		seedMockCheckpoint(sdk, "wf-a", {
+			topology: { version: 1, nodeId: `tool:${hash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-a",
 			checkpointId: "tool:1",
@@ -398,6 +402,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			completedAt: 100,
 		});
 		seedMockCheckpoint(sdk, "wf-b", {
+			topology: { version: 1, nodeId: `tool:${hash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-b",
 			checkpointId: "tool:1",
@@ -424,6 +429,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 		const hash = durableHash({ name: "t", args: {} });
 		seedMockWorkflow(sdk, { workflowId: "wf-idem", name: "test", status: "PENDING" });
 		seedMockCheckpoint(sdk, "wf-idem", {
+			topology: { version: 1, nodeId: `tool:${hash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-idem",
 			checkpointId: "tool:1",
@@ -452,6 +458,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 			status: "running",
 		});
 		session1.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${hash}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: "wf-resume",
 			checkpointId: `tool:${hash}`,

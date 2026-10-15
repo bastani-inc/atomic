@@ -490,7 +490,10 @@ test("stale catalog and explicit unsupported effort fail before admission", asyn
 			outputs: {},
 			run: async (ctx) => {
 				await ctx
-					.stage("task", { model: "auto", ...(stale ? {} : { thinkingLevel: "high" as const }) })
+					.stage("task", {
+						model: "auto",
+						...(stale ? {} : { modelConstraints: { allowedEfforts: ["high" as const] } }),
+					})
 					.prompt("Task");
 				return {};
 			},

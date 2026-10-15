@@ -63,11 +63,11 @@ function padLine(s: string, usable: number): string {
 	const len = visibleWidth(s);
 	if (len === usable) return s;
 	if (len < usable) return s + " ".repeat(usable - len);
-	return truncateToWidth(s, usable, "…", true);
+	return truncateToWidth(s, usable, "…");
 }
 
 function fitLine(line: string, width: number): string {
-	return truncateToWidth(line, Math.max(0, width), "…", true);
+	return truncateToWidth(line, Math.max(0, width), "…");
 }
 
 function renderWorkflowHeader(
@@ -263,7 +263,7 @@ function renderFieldTop(
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string, _theme: GraphTheme): string {
-	const clipped = truncateToWidth(row, contentWidth, "", true);
+	const clipped = truncateToWidth(row, contentWidth, "");
 	const padded = clipped + " ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)));
 	return paint("│", borderColor) + padded + paint("│", borderColor);
 }

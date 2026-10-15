@@ -8,13 +8,11 @@ import {
 	listOpenableCompletedWorkflows,
 	resolveCompletedWorkflow,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable/run-timing.js";
 import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/workflows/src/durable/types.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
 function registerCompleted(backend: InMemoryDurableBackend, workflowId: string): void {
 	backend.registerWorkflow({
@@ -92,7 +90,18 @@ describe("completed catalog reviewer regressions", () => {
 		const workflowId = testRunId("public-run-timing-name");
 		registerCompleted(backend, workflowId);
 		const argsHash = durableHash({ name: RUN_TIMING_CHECKPOINT_NAME, args: {}, ordinal: 1 });
-		backend.recordCheckpoint(tool(workflowId, `tool:${argsHash}`, RUN_TIMING_CHECKPOINT_NAME, argsHash, 20));
+		backend.recordCheckpoint(
+			tool(workflowId, `tool:${argsHash}`, RUN_TIMING_CHECKPOINT_NAME, argsHash, 20, {
+				topology: {
+					version: 1,
+					nodeId: `tool:${argsHash}`,
+					ordinal: 1,
+					order: 0,
+					parentIds: [],
+					run: { runId: workflowId, runName: "test" },
+				},
+			}),
+		);
 		backend.recordCheckpoint(
 			tool(workflowId, "run-timing:12345", RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, 30, {
 				output: { elapsedMs: 12_345 },
@@ -111,14 +120,12 @@ describe("completed catalog reviewer regressions", () => {
 			resolved.snapshot.toolNodes?.map((node) => ({
 				name: node.name,
 				status: node.status,
-				topologyState: node.topologyState,
 				attachable: node.attachable,
 			})),
 			[
 				{
 					name: RUN_TIMING_CHECKPOINT_NAME,
 					status: "cached",
-					topologyState: "unavailable",
 					attachable: false,
 				},
 			],
@@ -140,7 +147,7 @@ describe("completed catalog reviewer regressions", () => {
 		};
 		backend.recordCheckpoint(
 			stage(workflowId, "boundary", "child-boundary", 10, {
-				output: { workflow: "child", runId: childRunId, status: "completed", outputs: {} },
+				output: { workflow: "child", runId: childRunId, status: "completed", exited: false, outputs: {} },
 				topology: { version: 1, stageId: "boundary", parentIds: [], order: 1, run: rootRun },
 			}),
 		);
@@ -174,75 +181,6 @@ describe("completed catalog reviewer regressions", () => {
 			graph.tools.map((node) => node.name),
 			[RUN_TIMING_CHECKPOINT_NAME],
 		);
-	});
-
-	test("reconstructs legacy stage-tool-stage nodes in checkpoint sequence", () => {
-		const backend = new InMemoryDurableBackend();
-		const workflowId = testRunId("legacy-mixed-sequence");
-		registerCompleted(backend, workflowId);
-		backend.recordCheckpoint(stage(workflowId, "before", "before", 10));
-		backend.recordCheckpoint(tool(workflowId, "middle", "middle", "middle-hash", 20));
-		backend.recordCheckpoint(stage(workflowId, "after", "after", 30));
-
-		const result = reconstructed(backend, workflowId);
-		assert.deepEqual(result.names, ["before", "middle", "after"]);
-		assert.deepEqual(result.orders, [1, 2, 3]);
-	});
-
-	test("uses first logical checkpoint position across equal timestamps and repeated records", () => {
-		const backend = new InMemoryDurableBackend();
-		const workflowId = testRunId("legacy-equal-time");
-		registerCompleted(backend, workflowId);
-		backend.recordCheckpoint(
-			stage(workflowId, "before-session", "before", 10, {
-				replayKey: "before",
-				result: "early-stage",
-			}),
-		);
-		backend.recordCheckpoint(tool(workflowId, "middle-early", "middle", "middle-hash", 10, { output: "early-tool" }));
-		backend.recordCheckpoint(
-			stage(workflowId, "before-output", "before", 10, {
-				replayKey: "before",
-				result: "later-stage",
-				output: "later-stage-output",
-			}),
-		);
-		backend.recordCheckpoint(tool(workflowId, "middle-late", "middle", "middle-hash", 10, { output: "later-tool" }));
-		backend.recordCheckpoint(stage(workflowId, "after", "after", 10));
-
-		const result = reconstructed(backend, workflowId);
-		assert.deepEqual(result.names, ["before", "middle", "after"]);
-		assert.deepEqual(result.orders, [1, 2, 5]);
-		assert.equal(result.root.stages.find((node) => node.name === "before")?.result, "later-stage");
-		assert.equal(result.root.toolNodes?.find((node) => node.name === "middle")?.resultSummary, '"later-tool"');
-	});
-
-	test("preserves legacy mixed checkpoint sequence after DBOS hydration", async () => {
-		const sdk = createMockSdk();
-		const workflowId = testRunId("legacy-dbos-order");
-		const checkpoints = [
-			stage(workflowId, "before", "before", 10),
-			tool(workflowId, "middle", "middle", "middle-hash", 10),
-			stage(workflowId, "after", "after", 10),
-		] as const;
-		const beforeRestart = new InMemoryDurableBackend();
-		registerCompleted(beforeRestart, workflowId);
-		for (const checkpoint of checkpoints) beforeRestart.recordCheckpoint(checkpoint);
-		const expected = reconstructed(beforeRestart, workflowId);
-
-		seedMockWorkflow(sdk, { workflowId, name: workflowId, status: "SUCCESS", createdAt: 1 });
-		for (const checkpoint of checkpoints) seedMockCheckpoint(sdk, workflowId, checkpoint);
-		const fresh = new DbosDurableBackend(sdk);
-		await fresh.hydrateWorkflow(workflowId);
-		const entry = fresh.listCompletedWorkflows().find((item) => item.workflowId === workflowId)!;
-		const runs = completedWorkflowRunSnapshots(fresh, entry);
-		const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, workflowId);
-		const names = graph.nodes.map((node) => (node.kind === "stage" ? node.stage.name : node.tool.name));
-		const orders = graph.nodes.map((node) =>
-			node.kind === "stage" ? node.stage.executionOrder : node.tool.executionOrder,
-		);
-		assert.deepEqual({ names, orders }, { names: expected.names, orders: expected.orders });
-		assert.deepEqual({ names, orders }, { names: ["before", "middle", "after"], orders: [1, 2, 3] });
 	});
 
 	test("persisted topology order overrides contradictory checkpoint sequence", () => {
@@ -286,7 +224,13 @@ describe("completed catalog reviewer regressions", () => {
 			parentStageId: "boundary",
 			rootRunId: workflowId,
 		};
-		const childOutput = { workflow: "child", runId: childRunId, status: "completed", outputs: {} } as const;
+		const childOutput = {
+			workflow: "child",
+			runId: childRunId,
+			status: "completed",
+			exited: false,
+			outputs: {},
+		} as const;
 		for (const checkpoint of [
 			stage(workflowId, "right", "right", 10, {
 				output: "right",

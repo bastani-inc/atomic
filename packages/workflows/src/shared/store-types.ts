@@ -36,8 +36,6 @@ export interface RunBudgetState
 	readonly duration?: DurationBudgetReport;
 	readonly tokens?: UsageBudgetReport & { readonly dimension: "tokens" };
 	readonly cost?: UsageBudgetReport & { readonly dimension: "cost" };
-	/** Latest warning retained for legacy consumers; `warnings` keeps each dimension. */
-	readonly warning?: BudgetReport;
 	readonly warnings?: Partial<Record<BudgetDimension, BudgetReport>>;
 	readonly accounting?: RunBudgetAccountingState;
 	readonly wrapUpSummary?: string;
@@ -56,8 +54,6 @@ export interface ToolNodeSnapshot {
 	readonly ordinal: number;
 	readonly parentIds: readonly string[];
 	status: ToolNodeStatus;
-	/** Set when a legacy checkpoint lacks persisted topology. */
-	topologyState?: "unavailable";
 	/** True when the callback was skipped in favor of a durable checkpoint. */
 	replayed?: boolean;
 	/** Shared admission order with stages in this run. */
@@ -253,7 +249,7 @@ export interface PendingStageMessage {
 	readonly message: PendingStageIntercomMessage;
 	readonly queuedAt: string;
 	/** Durable workflow admission sequence; sender clocks never determine delivery order. */
-	readonly admissionOrder?: number;
+	readonly admissionOrder: number;
 	readonly status: "queued" | "delivered" | "undeliverable";
 	readonly deliveredAt?: string;
 	readonly undeliverableReason?: string;
@@ -357,8 +353,6 @@ export interface StageSnapshot {
 	nodeKind?: "stage" | "tool";
 	/** Original tool state when a tool node is projected into stage-compatible graph rendering. */
 	toolStatus?: ToolNodeStatus;
-	/** Set when durable inspection cannot safely determine the original stage lineage. */
-	topologyState?: "unavailable";
 	startedAt?: number;
 	endedAt?: number;
 	durationMs?: number;
@@ -496,8 +490,8 @@ export interface RunSnapshot extends RunExecutionState {
 	readonly inputs: Readonly<WorkflowInputValues>;
 	status: RunStatus;
 	readonly stages: StageSnapshot[];
-	/** Durable ctx.tool execution nodes. Optional only for legacy/restored snapshots. */
-	readonly toolNodes?: ToolNodeSnapshot[];
+	/** Durable ctx.tool execution nodes. */
+	readonly toolNodes: ToolNodeSnapshot[];
 	/** Resolved duration budget and persisted wrap-up state; omitted when unbudgeted. */
 	budget?: RunBudgetSnapshot;
 	budgetState?: RunBudgetState;
@@ -526,9 +520,7 @@ export interface RunSnapshot extends RunExecutionState {
 	/** Which path performed the most recent resume. */
 	resumeSource?: RunResumeSource;
 	/**
-	 * Who launched this run. Set once at dispatch and inherited by a continuation
-	 * from the run it continues. Absent on legacy and restored runs that never
-	 * recorded it, in which case attribution is omitted rather than guessed.
+	 * Who launched this run, when the launcher was attributable.
 	 */
 	origin?: WorkflowActor;
 	/** Model-tool caller/session bound at admission; retained through every lifecycle transition. */

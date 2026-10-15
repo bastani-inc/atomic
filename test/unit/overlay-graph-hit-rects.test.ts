@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { ANSI_RE, defaultTheme, makeSnap, makeStage, makeStore, makeTestTui } from "./overlay-graph-helpers.js";
 
 function sgrMousePress(col: number, row: number, buttonCode = 0, final = "M"): string {
@@ -22,6 +23,7 @@ describe("GraphView rendered node hit rects", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -42,6 +44,7 @@ describe("GraphView rendered node hit rects", () => {
 		const stages = [makeStage("root")];
 		const store = makeStore(makeSnap(stages));
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "widget",
 			runId: "run-1",
 			store,

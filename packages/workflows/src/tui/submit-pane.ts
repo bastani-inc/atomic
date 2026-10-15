@@ -56,9 +56,9 @@ export function renderAskChoiceRows(
 export function renderSubmitReview(opts: SubmitPaneRenderOpts): string[] {
 	const { workflowName, fields, rawText, theme, width } = opts;
 	const out: string[] = [paint("Review your inputs", theme.accent, { bold: true }), ""];
-	out.push(truncateToWidth(paint("/workflow ", theme.dim) + paint(workflowName, theme.text), width, "…", true));
+	out.push(truncateToWidth(paint("/workflow ", theme.dim) + paint(workflowName, theme.text), width, "…"));
 	for (const field of fields) {
-		out.push(truncateToWidth(paint(" ● ", theme.dim) + paint(field.name, theme.textMuted), width, "…", true));
+		out.push(truncateToWidth(paint(" ● ", theme.dim) + paint(field.name, theme.textMuted), width, "…"));
 		out.push(...renderReviewValueRows(field, rawText[field.name] ?? "", theme, width));
 	}
 	return out;
@@ -96,11 +96,11 @@ function renderSubmitToolbar(label: string, focused: boolean, theme: GraphTheme,
 	const gap = 2;
 	const rightPad = 1;
 	const hintBudget = Math.max(0, width - leftPad - button.visibleWidth - gap - rightPad);
-	const fittedHints = truncateToWidth(hints, hintBudget, "…", true);
+	const fittedHints = truncateToWidth(hints, hintBudget, "…");
 	const hintWidth = visibleWidth(fittedHints);
 	const filler = Math.max(0, width - leftPad - button.visibleWidth - gap - hintWidth - rightPad);
 	const line = `${chromeBg} ${button.text}${chromeBg}${" ".repeat(gap)}${fittedHints}${chromeBg}${" ".repeat(filler)} ${RESET}`;
-	const clipped = truncateToWidth(line, width, "", true);
+	const clipped = truncateToWidth(line, width, "");
 	return [`${clipped}${chromeBg}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${RESET}`];
 }
 

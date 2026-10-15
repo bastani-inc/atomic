@@ -133,7 +133,6 @@ export function createRunBudgetController(input: {
 	const recordWarning = (report: BudgetReport): void => {
 		updateState({
 			...(report.dimension === "duration" ? { warned: true } : {}),
-			warning: report,
 			warnings: { ...(state?.warnings ?? {}), [report.dimension]: report },
 		});
 		input.onWarning?.(report);

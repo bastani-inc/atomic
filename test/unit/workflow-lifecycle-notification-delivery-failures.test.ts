@@ -89,7 +89,7 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 function startRun(store: ReturnType<typeof createStore>, id: string, name: string): RunSnapshot {
-	const run: RunSnapshot = { id, name, inputs: {}, status: "running", stages: [], startedAt: 1 };
+	const run: RunSnapshot = { id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 };
 	store.recordRunStart(run);
 	return run;
 }

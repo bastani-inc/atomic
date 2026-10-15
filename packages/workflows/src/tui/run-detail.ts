@@ -85,7 +85,7 @@ function renderPlain(
 	}
 	out.push("");
 
-	const tools = detail.tools ?? [];
+	const tools = detail.tools;
 	if (detail.stages.length > 0 || tools.length === 0) {
 		out.push(" STAGES ");
 		if (detail.stages.length === 0) out.push("  (no stages recorded yet) ");
@@ -158,7 +158,7 @@ function renderThemed(
 	}
 	out.push("");
 
-	const tools = detail.tools ?? [];
+	const tools = detail.tools;
 	if (detail.stages.length > 0 || tools.length === 0) {
 		out.push(` ${muted}${BOLD}STAGES${RESET} `);
 		if (detail.stages.length === 0) out.push(`  ${dim}(no stages recorded yet)${RESET} `);

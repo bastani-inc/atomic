@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 const options = { model: "nested-discovery-fixture/fixture", group: "reviewers" };
 const grandchild = workflow({

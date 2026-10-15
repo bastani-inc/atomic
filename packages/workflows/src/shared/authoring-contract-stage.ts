@@ -68,8 +68,6 @@ export interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = Wor
 export interface WorkflowModelFallbackFields {
 	/** Ordered model IDs to try after `model` fails; entries may use `:off|minimal|low|medium|high|xhigh|max` reasoning suffixes. */
 	readonly fallbackModels?: readonly string[];
-	/** Optional deprecated compatibility helper aligned to `fallbackModels`; ignored for entries with a reasoning suffix. */
-	readonly fallbackThinkingLevels?: readonly string[];
 }
 
 export type WorkflowModelValue = string | object;
@@ -166,8 +164,6 @@ export interface WorkflowCustomToolDefinition<TParams extends TSchema = TSchema,
 
 export interface WorkflowScopedModel {
 	readonly model: WorkflowModelValue;
-	/** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
-	readonly thinkingLevel?: WorkflowThinkingLevel;
 }
 
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
@@ -194,8 +190,6 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly gitWorktreeDir?: string;
 	readonly baseBranch?: string;
 	readonly sessionDir?: string;
-	/** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
-	readonly thinkingLevel?: WorkflowThinkingLevel;
 	/**
 	 * Intercom home group for this stage session. A named string joins that group;
 	 * `true` auto-generates one shared UUID group per parallel set (all items in the

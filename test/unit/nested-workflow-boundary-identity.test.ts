@@ -16,6 +16,7 @@ test.each(["workflow:child", "first-boundary-id"])(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [firstId, "second-boundary-id"].map((id) => ({
 				id,
 				name: "workflow:child",
@@ -32,6 +33,7 @@ test.each(["workflow:child", "first-boundary-id"])(
 			startedAt: 1,
 			parentRunId: root.id,
 			parentStageId: boundary.id,
+			toolNodes: [],
 			stages: [
 				{
 					id: "workflow:grandchild",
@@ -50,6 +52,7 @@ test.each(["workflow:child", "first-boundary-id"])(
 			startedAt: 1,
 			parentRunId: child.id,
 			parentStageId: "workflow:grandchild",
+			toolNodes: [],
 			stages: [],
 		}));
 		const runs = [root, ...children, ...grandchildren];
@@ -74,6 +77,7 @@ test("boundary resolver indexes the roster once for all nested runs", () => {
 		status: "running",
 		startedAt: 1,
 		...(index === 0 ? {} : { parentRunId: `run-${index - 1}`, parentStageId: "boundary" }),
+		toolNodes: [],
 		stages: [{ id: "boundary", name: "child", status: "running", parentIds: [], toolEvents: [] }],
 	}));
 	let rosterReads = 0;
@@ -102,6 +106,7 @@ test("fresh publication resolver observes added siblings and broken lineage", ()
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "boundary", name: "child", status: "running", parentIds: [], toolEvents: [] }],
 	};
 	const child: RunSnapshot = {
@@ -112,6 +117,7 @@ test("fresh publication resolver observes added siblings and broken lineage", ()
 		startedAt: 1,
 		parentRunId: root.id,
 		parentStageId: "boundary",
+		toolNodes: [],
 		stages: [],
 	};
 	const runs = [root, child];

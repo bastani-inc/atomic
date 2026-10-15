@@ -206,7 +206,7 @@ describe("executor.run", () => {
 					cwd: "/repo",
 					tools: ["read"],
 					noTools: "builtin",
-					thinkingLevel: "high",
+					model: "provider/model:high",
 				});
 				return { text: result.text };
 			},

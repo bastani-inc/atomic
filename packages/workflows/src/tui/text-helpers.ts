@@ -33,16 +33,7 @@ function readAnsiCode(text: string, offset: number): string | null {
 	return match?.[0] ?? null;
 }
 
-/**
- * Compatibility wrapper over pi-tui's ANSI-aware truncation helper.
- *
- * The workflows TUI historically exposed a fourth `preserveAnsi` parameter.
- * pi-tui now preserves active ANSI runs by default; keep the old signature so
- * existing workflow renderers can move to the upstream primitive without a
- * broad call-site churn. The fourth argument is intentionally not forwarded to
- * pi-tui because pi-tui uses that slot for `pad`.
- */
-export function truncateToWidth(text: string, width: number, suffix = "", _preserveAnsi = false): string {
+export function truncateToWidth(text: string, width: number, suffix = ""): string {
 	if (width > 0 && visibleWidth(text) <= width) return text;
 	return piTruncateToWidth(text, width, suffix, false);
 }
@@ -158,7 +149,6 @@ export interface WrappedPrefixedLinesOpts {
 	firstPrefix: string;
 	continuationPrefix?: string;
 	suffix?: string;
-	preserveAnsi?: boolean;
 	styleLine?: (line: string, index: number) => string;
 }
 
@@ -173,7 +163,7 @@ export function renderWrappedPrefixedLines(opts: WrappedPrefixedLinesOpts): stri
 	return wrapPlainText(opts.text, textBudget).map((line, index) => {
 		const prefix = index === 0 ? opts.firstPrefix : continuationPrefix;
 		const styled = opts.styleLine ? opts.styleLine(line, index) : line;
-		return truncateToWidth(prefix + styled, opts.width, opts.suffix ?? "…", opts.preserveAnsi ?? true);
+		return truncateToWidth(prefix + styled, opts.width, opts.suffix ?? "…");
 	});
 }
 

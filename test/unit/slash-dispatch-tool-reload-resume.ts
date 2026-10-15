@@ -101,7 +101,7 @@ describe("tool run-control actions", () => {
 			const { pi, commands } = buildMockPi();
 			addFactoryStubs(pi);
 			let refreshCalls = 0;
-			pi.getWorkflowResources = () => [];
+			pi.refreshWorkflowResources = async () => [];
 			pi.refreshWorkflowResources = async () => {
 				refreshCalls += 1;
 				return [{ path: addedWorkflow, enabled: true }];
@@ -154,7 +154,7 @@ describe("tool run-control actions", () => {
 			message: string;
 		};
 		assert.equal(reload.status, "ok");
-		assert.equal(reload.message, "Reloaded workflow resources.");
+		assert.equal(reload.message, "Reloaded workflow resources. 0 workflow(s), generation 0.");
 	});
 
 	test.sequential("makeExecuteWorkflowTool reload stays available while workflows are in flight", async () => {

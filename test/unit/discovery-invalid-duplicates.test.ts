@@ -114,7 +114,7 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
 			join(wfDir, "side-effect.js"),
 			[
 				`import { writeFileSync } from "node:fs";`,
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				`export default workflow({`,
 				`  name: "Side Effect Workflow",`,
 				`  description: "Would write during run if discovery invoked it",`,
@@ -154,7 +154,7 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
 		writeFileSync(
 			join(wfDir, "aliased.js"),
 			[
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				`export default workflow({`,
 				`  name: "Aliased Stage Workflow",`,
 				`  description: "Uses an aliased task primitive",`,

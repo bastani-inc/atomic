@@ -87,7 +87,7 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 
 Workflow files import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export the definition returned by `workflow({ ... })`. TypeScript resolves the published `@bastani/atomic/workflows` specifier through the `@bastani/atomic` package.
 
-The host supports `typebox`, `typebox/compile`, `typebox/value`, and legacy `@sinclair/typebox` imports. See [Programmatic usage](/workflows/api-reference#programmatic-usage).
+Workflow files support `typebox`, `typebox/compile`, and `typebox/value`. Use these current imports even when an extension in the same package uses the host's additional schema aliases. See [Programmatic usage](/workflows/api-reference#programmatic-usage).
 
 When a package manifest exists, declared resource arrays normally define what loads. Workflows are the exception: if `atomic.workflows` / legacy `pi.workflows` is omitted, Atomic still checks conventional `workflows/` and `workflow/` directories.
 

@@ -171,6 +171,7 @@ test.each(exits)("admission exit matrix: %s (#3413)", async (exit) => {
 								inputs: {},
 								status: "paused" as const,
 								startedAt: 1,
+								toolNodes: [],
 								stages: [],
 							},
 						},

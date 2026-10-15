@@ -250,7 +250,6 @@ describe("createStageContext — durable model-fallback metadata notification", 
 				stageOptions: {
 					model: "anthropic/primary:high",
 					fallbackModels: ["openai/fallback:low"],
-					thinkingLevel: "xhigh",
 				},
 			}),
 		) as InternalStageContext;

@@ -16,7 +16,7 @@ export interface RunExecutionObservation extends RunExecutionState {
 
 export function observeRunExecution(run: RunSnapshot, now = Date.now()): RunExecutionObservation {
 	let lastProgressAt = run.lastProgressAt ?? run.startedAt;
-	for (const node of [...run.stages, ...(run.toolNodes ?? [])]) {
+	for (const node of [...run.stages, ...run.toolNodes]) {
 		lastProgressAt = Math.max(lastProgressAt, node.startedAt ?? 0, node.endedAt ?? 0);
 	}
 	return {

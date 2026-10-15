@@ -50,6 +50,7 @@ function failedSourceRun(store: Store, id: string, origin?: WorkflowActor): RunS
 		name: "goal",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		...(origin === undefined ? {} : { origin }),

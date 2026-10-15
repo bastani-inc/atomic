@@ -4,18 +4,10 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { ANIMATION_TICK_MS } from "../../packages/workflows/src/tui/graph-view-constants.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
-const {
-	makeAwaitingInputStage,
-	makePendingPrompt,
-	makeRunPromptSnap,
-	makeStage,
-	makeSnap,
-	makeStore,
-	defaultTheme,
-	waitForRenderCount,
-} = h;
+const { makeAwaitingInputStage, makeStage, makeSnap, makeStore, defaultTheme, waitForRenderCount } = h;
 
 class AnimationGateGraphView extends GraphView {
 	layoutForTest() {
@@ -30,6 +22,7 @@ describe("GraphView animation timer", () => {
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -53,6 +46,7 @@ describe("GraphView animation timer", () => {
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -75,12 +69,14 @@ describe("GraphView animation timer", () => {
 			name: "animation transition",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
 		store.recordStageStart("run-1", { ...makeStage("A"), status: "running", startedAt: 1 });
 		const requestRender = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -106,16 +102,11 @@ describe("GraphView animation timer", () => {
 		}
 	});
 
-	it("ticks for a prompt and a rebuilt awaiting-input stage independently", () => {
+	it("ticks for a rebuilt awaiting-input stage", () => {
 		vi.useFakeTimers();
 		const views: AnimationGateGraphView[] = [];
 		try {
 			const cases = [
-				{
-					name: "prompt",
-					store: makeStore(makeRunPromptSnap([makeStage("A")], makePendingPrompt())),
-					setup: (_view: AnimationGateGraphView) => {},
-				},
 				{
 					name: "awaiting_input",
 					store: makeStore(makeSnap([makeAwaitingInputStage("A")])),
@@ -153,6 +144,7 @@ describe("GraphView animation timer", () => {
 			name: "retained awaiting input",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ ...makeStage("A"), status: "running", startedAt: 1 }],
 			startedAt: 1,
 		});
@@ -183,6 +175,7 @@ describe("GraphView animation timer", () => {
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "widget",
 			runId: "run-1",
 			store,
@@ -199,6 +192,7 @@ describe("GraphView animation timer", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -217,6 +211,7 @@ describe("GraphView animation timer", () => {
 		const store = makeStore(snap);
 		const requestRender = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -249,6 +244,7 @@ describe("GraphView animation timer", () => {
 			const snap = makeSnap(stages);
 			const store = makeStore(snap);
 			view = new GraphView({
+				piKeybindings: s5aKeybindings(),
 				mode: "overlay",
 				runId: "run-1",
 				store,

@@ -157,6 +157,7 @@ describe("resumeDurableWorkflow", () => {
 			inputs: { topic: "data" },
 			startedAt: 1,
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			resumable: true,
 		};
@@ -504,6 +505,7 @@ describe("resumeDurableWorkflow", () => {
 			name: "resumable-pipeline",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -558,6 +560,7 @@ describe("resumeDurableWorkflow", () => {
 			name: "stale-shadow",
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			exitReason: "quit",
@@ -647,6 +650,7 @@ describe("durable pending-stage resume", () => {
 			name: "pending-stage-process-resume",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: receiverStageId,

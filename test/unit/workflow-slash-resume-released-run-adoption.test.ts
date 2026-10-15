@@ -150,6 +150,7 @@ describe("/workflow resume transfers ownership of a run released by the previous
 			exitReason: "quit",
 			resumable: true,
 			startedAt: 1,
+			toolNodes: [],
 			stages: [],
 			modelOwner: PREVIOUS_SESSION,
 			origin: "agent",

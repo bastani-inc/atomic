@@ -29,6 +29,7 @@ function setupStage() {
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

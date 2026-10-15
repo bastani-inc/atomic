@@ -192,7 +192,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				failureDisposition: metadata.failureDisposition,
 				blockedAt: metadata.blockedAt ?? Date.now(),
 				stages: source.stages.map((stage) => ({ ...stage })),
-				toolNodes: source.toolNodes?.map((node) => ({ ...node })),
+				toolNodes: source.toolNodes.map((node) => ({ ...node })),
 			};
 			delete restored.endedAt;
 			delete restored.durationMs;

@@ -234,7 +234,7 @@ function wrapFieldValue(text: string, width: number, continuationWidth = width):
 
 function fitLine(text: string, width: number, suffix: string, theme: GraphTheme | undefined): string {
 	const safeWidth = Math.max(1, Math.floor(width));
-	if (theme !== undefined) return truncateToWidth(text, safeWidth, suffix, true);
+	if (theme !== undefined) return truncateToWidth(text, safeWidth, suffix);
 	if (visibleWidth(text) <= safeWidth) return text;
 	const suffixWidth = visibleWidth(suffix);
 	const budget = Math.max(0, safeWidth - suffixWidth);

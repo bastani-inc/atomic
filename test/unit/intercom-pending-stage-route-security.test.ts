@@ -1524,6 +1524,7 @@ test("duplicate workflow bridge loads preserve recovered stage routing authority
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [
 			{
 				id: "reviewer-id",

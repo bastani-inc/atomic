@@ -35,6 +35,7 @@ function makeRun(over: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: over.name ?? "refactor-auth",
 		inputs: over.inputs ?? {},
 		status: over.status ?? "running",
+		toolNodes: [],
 		stages: over.stages ?? [],
 		startedAt: over.startedAt ?? 1000,
 		endedAt: over.endedAt,
@@ -61,6 +62,7 @@ function detailFromRun(run: RunSnapshot): RunDetail {
 		resumedAt: run.resumedAt,
 		inputs: run.inputs,
 		stages: run.stages,
+		tools: run.toolNodes,
 		result: run.result,
 		error: run.error,
 	};
@@ -217,6 +219,7 @@ describe("renderRunDetail — themed", () => {
 			name: "refactor-auth",
 			status: "running",
 			startedAt: now - 117_000,
+			toolNodes: [],
 			stages: [
 				makeStage("s1", "scout", "completed", { durationMs: 45_000 }),
 				makeStage("s2", "planner", "running", { startedAt: now - 72_000 }),
@@ -255,6 +258,7 @@ describe("renderRunDetail — themed", () => {
 				status: "paused",
 				startedAt: now - 10_000,
 				pausedAt: now - 6_000,
+				toolNodes: [],
 				stages: [makeStage("p1", "review", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
 			}),
 		);
@@ -285,6 +289,7 @@ describe("renderRunDetail — themed", () => {
 				startedAt: now - 60_000,
 				endedAt: now - 8_000,
 				durationMs: 52_000,
+				toolNodes: [],
 				stages: [makeStage("s1", "scan", "completed", { durationMs: 52_000 })],
 			}),
 		);
@@ -325,6 +330,7 @@ describe("renderRunDetail — themed", () => {
 				status: "running",
 				startedAt: now - 117_000,
 				inputs: { ["検索".repeat(10)]: "value" },
+				toolNodes: [],
 				stages: [
 					makeStage("s1", "計画".repeat(16), "running", {
 						startedAt: now - 72_000,
@@ -355,6 +361,7 @@ describe("renderRunDetail — themed", () => {
 				name: "scan",
 				status: "running",
 				startedAt: now - 117_000,
+				toolNodes: [],
 				stages: [
 					makeStage("s1", "worker", "running", {
 						startedAt: now - 72_000,

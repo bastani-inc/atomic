@@ -270,44 +270,6 @@ export function registerDiscoveryModuleImportsSuite3(): void {
 		});
 	});
 
-	// ---------------------------------------------------------------------------
-	// Removed runWorkflow API diagnostics
-	// ---------------------------------------------------------------------------
-
-	describe("discoverWorkflows — removed runWorkflow diagnostics", () => {
-		test("rejects runWorkflow calls through later CJS namespace declarators", async () => {
-			const workflowPath = await createProjectWorkflowFile(
-				"removed-run-workflow-later-declarator.cjs",
-				`
-  const { workflow } = require("@bastani/workflows");
-  const ignored = 1, workflows = require("@bastani/workflows");
-  workflows.runWorkflow();
-  module.exports = workflow({
-    name: "later-cjs-run-workflow",
-    description: "removed API diagnostic",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-
-			assert.equal(result.registry.has("later-cjs-run-workflow"), false);
-			assert.ok(
-				result.errors.some(
-					(e) => e.code === "IMPORT_FAILED" && e.source === workflowPath && /runWorkflow/.test(e.message),
-				),
-			);
-		});
-	});
-
-	// ---------------------------------------------------------------------------
 	// User-global path: ~/.atomic/agent/workflows/
 	// ---------------------------------------------------------------------------
 

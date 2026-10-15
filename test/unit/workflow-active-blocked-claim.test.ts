@@ -15,7 +15,15 @@ afterEach(() => setDurableBackend(undefined));
 
 function seedBlockedRun() {
 	const store = createStore();
-	store.recordRunStart({ id: runId, name: "claim-flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: runId,
+		name: "claim-flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	store.recordStageStart(runId, {
 		id: "only",
 		name: "only",

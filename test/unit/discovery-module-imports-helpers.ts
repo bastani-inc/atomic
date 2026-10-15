@@ -39,7 +39,7 @@ afterEach(async () => {
 /** Canonical valid workflow JS source (default export). */
 export function validDefaultExportSrc(name: string, normalizedName: string): string {
 	return `
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 const wf = workflow({
   name: ${JSON.stringify(normalizedName)},
   description: ${JSON.stringify(name)} + " test workflow",
@@ -55,7 +55,7 @@ export default wf;
 /** Valid workflow JS source as named export. */
 export function validNamedExportSrc(name: string, normalizedName: string, exportName = "workflow"): string {
 	return `
-import { workflow as defineWorkflow } from "@bastani/workflows";
+import { workflow as defineWorkflow } from "@bastani/atomic/workflows";
 export const ${exportName} = defineWorkflow({
   name: ${JSON.stringify(normalizedName)},
   description: ${JSON.stringify(name)} + " test workflow",
@@ -75,7 +75,7 @@ export function validDefaultAndNamedExportSrc(
 	namedNorm: string,
 ): string {
 	return `
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 const first = workflow({
   name: ${JSON.stringify(defaultNorm)},
   description: ${JSON.stringify(defaultName)} + " default export workflow",

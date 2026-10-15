@@ -159,6 +159,7 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 			name: quitId,
 			inputs: {},
 			status: "paused",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -320,6 +321,7 @@ test("a live continuation transitively protects the original artifact owner", as
 			name: "goal",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumable: true,
@@ -329,6 +331,7 @@ test("a live continuation transitively protects the original artifact owner", as
 			name: "goal",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 2,
 			resumable: true,
@@ -339,6 +342,7 @@ test("a live continuation transitively protects the original artifact owner", as
 			name: "goal",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 3,
 			resumable: true,
@@ -383,6 +387,7 @@ test("a live run mentioning an unrelated terminal artifact owner does not preven
 				name: "goal",
 				inputs: {},
 				status: "completed",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});
@@ -392,6 +397,7 @@ test("a live run mentioning an unrelated terminal artifact owner does not preven
 				inputs: {},
 				status: "running",
 				result: { note: join(root, "runs", terminalId, "artifact-old", "receipt.md") },
+				toolNodes: [],
 				stages: [],
 				startedAt: 2,
 			});
@@ -489,12 +495,21 @@ test("multi-hop continuations detect and check their original artifact owner", a
 	const middleId = "middle-owner";
 	try {
 		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
-			store.recordRunStart({ id: originId, name: "goal", inputs: {}, status: "failed", stages: [], startedAt: 1 });
+			store.recordRunStart({
+				id: originId,
+				name: "goal",
+				inputs: {},
+				status: "failed",
+				toolNodes: [],
+				stages: [],
+				startedAt: 1,
+			});
 			store.recordRunStart({
 				id: middleId,
 				name: "goal",
 				inputs: {},
 				status: "failed",
+				toolNodes: [],
 				stages: [],
 				startedAt: 2,
 				resumedFromRunId: originId,

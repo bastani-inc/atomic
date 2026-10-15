@@ -1,18 +1,16 @@
-import type { StageOptions, WorkflowModelAttempt } from "../../shared/types.js";
+import type { WorkflowModelAttempt } from "../../shared/types.js";
 import type { WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
 
 export function effectiveCandidateReasoning(
 	candidate: WorkflowResolvedModelCandidate,
-	fallback: StageOptions["thinkingLevel"] | undefined,
-): StageOptions["thinkingLevel"] | undefined {
-	return candidate.reasoningLevel ?? fallback;
+): WorkflowResolvedModelCandidate["reasoningLevel"] {
+	return candidate.reasoningLevel;
 }
 
 export function modelAttemptReasoning(
 	candidate: WorkflowResolvedModelCandidate,
-	fallback: StageOptions["thinkingLevel"] | undefined,
 ): Pick<WorkflowModelAttempt, "reasoningLevel"> {
-	const reasoningLevel = effectiveCandidateReasoning(candidate, fallback);
+	const reasoningLevel = effectiveCandidateReasoning(candidate);
 	return reasoningLevel !== undefined ? { reasoningLevel } : {};
 }
 

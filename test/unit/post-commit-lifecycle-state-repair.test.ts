@@ -60,7 +60,15 @@ function seedNested(
 	childId: string,
 	stageIds: readonly string[],
 ): void {
-	targetStore.recordRunStart({ id: rootId, name: "root", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	targetStore.recordRunStart({
+		id: rootId,
+		name: "root",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	targetStore.recordStageStart(rootId, {
 		id: "child-boundary",
 		name: "workflow:child",
@@ -74,6 +82,7 @@ function seedNested(
 		name: "child",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 2,
 		parentRunId: rootId,
@@ -164,7 +173,15 @@ describe("post-commit quit and nested resume coherence", () => {
 		const registry = createStageControlRegistry();
 		const runId = fixtureRunId("quit-store-coherence");
 		let controlStatus: StageControlStatus = "running";
-		targetStore.recordRunStart({ id: runId, name: runId, inputs: {}, status: "running", stages: [], startedAt: 1 });
+		targetStore.recordRunStart({
+			id: runId,
+			name: runId,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		targetStore.recordStageStart(runId, {
 			id: "stage",
 			name: "stage",
@@ -404,6 +421,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			name: runId,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -488,6 +506,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			name: runId,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -562,6 +581,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			name: runId,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

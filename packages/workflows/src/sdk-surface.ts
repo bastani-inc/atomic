@@ -7,28 +7,6 @@
 
 export type { Static, TSchema } from "typebox";
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
-export { workflow } from "./authoring/workflow.js";
-export type {
-	WorkflowHeartbeatEvent,
-	WorkflowHeartbeatEventDetails,
-	WorkflowHeartbeatIdentity,
-} from "./shared/workflow-heartbeat-contract.js";
-export {
-	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
-	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
-} from "./shared/workflow-heartbeat-contract.js";
-
-const REMOVED_RUN_WORKFLOW_MESSAGE =
-	"@bastani/workflows no longer exports runWorkflow; author workflows with workflow({...})";
-
-/**
- * @deprecated Removed imperative workflow API. Kept as a runtime migration
- * stub so older workflow modules fail at the call site with a clear message.
- */
-export const runWorkflow: never = (() => {
-	throw new Error(REMOVED_RUN_WORKFLOW_MESSAGE);
-}) as never;
-
 export type {
 	AuthoredWorkflowDefinition,
 	AuthoredWorkflowSpec,
@@ -36,6 +14,7 @@ export type {
 	WorkflowOutputsFromSchemas,
 	WorkflowProvidedInputsFromSchemas,
 } from "./authoring/workflow.js";
+export { workflow } from "./authoring/workflow.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
 export { createAgentSessionAdapter } from "./extension/wiring.js";
@@ -43,7 +22,6 @@ export type { ActiveRunEntry, CancellationRegistry } from "./runs/background/can
 // Phase D — cancellation registry
 export { cancellationRegistry, createCancellationRegistry } from "./runs/background/cancellation-registry.js";
 export type { ResolvedInputs, RunOpts, RunResult } from "./runs/foreground/executor.js";
-
 export { resolveInputs } from "./runs/foreground/executor.js";
 export { run } from "./runs/foreground/sdk-run.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
@@ -68,6 +46,15 @@ export type {
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export { WorkflowDurabilityRequiredError } from "./shared/workflow-durability.js";
+export type {
+	WorkflowHeartbeatEvent,
+	WorkflowHeartbeatEventDetails,
+	WorkflowHeartbeatIdentity,
+} from "./shared/workflow-heartbeat-contract.js";
+export {
+	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
+	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
+} from "./shared/workflow-heartbeat-contract.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 export { createRegistry } from "./workflows/registry.js";

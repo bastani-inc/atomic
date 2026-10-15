@@ -1,4 +1,4 @@
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 const options = {
 	model: `nested-discovery-fixture/${process.env.NESTED_FALLBACK_CONTROL === "primary" ? "fixture" : "failing"}`,

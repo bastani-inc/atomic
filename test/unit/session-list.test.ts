@@ -12,6 +12,7 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		name: over.name ?? "demo",
 		inputs: over.inputs ?? {},
 		status: over.status ?? "running",
+		toolNodes: [],
 		stages: over.stages ?? [],
 		startedAt: over.startedAt ?? 1000,
 		endedAt: over.endedAt,
@@ -34,6 +35,7 @@ test("session list renders full run ids with the band-header chrome and a detail
 			startedAt: now - 60_000,
 			endedAt: now - 10_000,
 			durationMs: 50_000,
+			toolNodes: [],
 			stages: [{ id: "s", name: "x", status: "completed", parentIds: [], toolEvents: [] }],
 		}),
 	];

@@ -98,6 +98,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "picker workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -178,6 +179,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "quit paused workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -207,6 +209,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "current live",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -237,6 +240,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "restored",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -256,6 +260,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "quit shadow workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 			exitReason: "quit",
@@ -379,6 +384,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			name: "lazy model resume",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

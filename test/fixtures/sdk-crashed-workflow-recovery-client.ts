@@ -48,7 +48,7 @@ async function ready(): Promise<AgentSession> {
 	mkdirSync(join(packageDir, "workflows"), { recursive: true });
 	writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "sdk-crashed-recovery-fixture", type: "module", atomic: { workflows: ["./workflows/*.ts"] } }));
 	writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ packages: [packageDir] }));
-	writeFileSync(join(packageDir, "workflows", "recovery.ts"), `import { workflow } from "@bastani/workflows";
+	writeFileSync(join(packageDir, "workflows", "recovery.ts"), `import { workflow } from "@bastani/atomic/workflows";
 import { appendFile, access, writeFile } from "node:fs/promises";
 export default workflow({ name: "sdk-crashed-recovery", description: "SDK durable recovery regression", inputs: {}, outputs: {}, run: async ctx => {
   await ctx.tool("completed-effect", {}, async () => { await appendFile(${JSON.stringify(effectFile)}, "effect\\n"); return "checkpointed"; });

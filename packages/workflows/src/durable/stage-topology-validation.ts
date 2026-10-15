@@ -37,7 +37,6 @@ export function directChildTopologyError(
 	stages: readonly DurableStageCheckpoint[],
 	replayScope: string,
 	expectedRun: DurableStageRunTopology,
-	requireCurrentIdentity = true,
 	allowedNodeIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
 	const prefix = `${replayScope}:`;
@@ -49,8 +48,8 @@ export function directChildTopologyError(
 		return "child checkpoint ownership is not reciprocal";
 	}
 
-	const directKeys = new Set(claiming.map((stage) => durableStageGroupKey(stage, stages)));
-	const direct = stages.filter((stage) => directKeys.has(durableStageGroupKey(stage, stages)));
+	const directKeys = new Set(claiming.map((stage) => durableStageGroupKey(stage)));
+	const direct = stages.filter((stage) => directKeys.has(durableStageGroupKey(stage)));
 	const immutableError = immutableStageGroupError(direct);
 	if (immutableError !== undefined) return immutableError;
 
@@ -58,10 +57,7 @@ export function directChildTopologyError(
 	for (const group of groupByDurableStageKey(direct).values()) {
 		const topology = group.find((stage) => stage.topology?.run?.runId === expectedRun.runId)?.topology;
 		if (topology === undefined) return "direct child stage group lacks owning-run topology";
-		if (
-			topology.version !== DURABLE_STAGE_TOPOLOGY_VERSION ||
-			(requireCurrentIdentity && topology.sourceOrder === undefined)
-		) {
+		if (topology.version !== DURABLE_STAGE_TOPOLOGY_VERSION || topology.sourceOrder === undefined) {
 			return "direct child stage topology lacks current source identity";
 		}
 		if (topology.stageId.length === 0) return "direct child stage id is empty";
@@ -154,27 +150,12 @@ export function promptOccurrenceIdentityError(stages: readonly DurableStageCheck
 		}
 		stageByReplayOccurrence.set(replayOccurrence, topology.stageId);
 	}
-	for (const legacy of stages) {
-		if (legacy.topology === undefined || legacy.topology.occurrenceKey !== undefined) continue;
-		const matches = stages.filter(
-			(current) =>
-				current.topology?.occurrenceKey !== undefined &&
-				current.replayKey === legacy.replayKey &&
-				current.topology.stageId === legacy.topology?.stageId,
-		);
-		if (matches.some((current) => !samePromptOccurrenceIdentity(legacy, current))) {
-			return "legacy prompt occurrence immutable identity drifted from current metadata";
-		}
-	}
 	return undefined;
 }
 
 /** Group prompt occurrences by replay + occurrence while retaining strict non-prompt replay grouping. */
-export function durableStageGroupKey(
-	stage: DurableStageCheckpoint,
-	stages: readonly DurableStageCheckpoint[] = [stage],
-): string {
-	const occurrence = stage.topology?.occurrenceKey ?? matchingCurrentOccurrence(stage, stages);
+export function durableStageGroupKey(stage: DurableStageCheckpoint): string {
+	const occurrence = stage.topology?.occurrenceKey;
 	return occurrence === undefined
 		? compositeKey("stage-replay", stage.replayKey)
 		: compositeKey("prompt-occurrence", stage.replayKey, occurrence);
@@ -185,45 +166,12 @@ export function groupByDurableStageKey(
 ): Map<string, DurableStageCheckpoint[]> {
 	const groups = new Map<string, DurableStageCheckpoint[]>();
 	for (const stage of stages) {
-		const key = durableStageGroupKey(stage, stages);
+		const key = durableStageGroupKey(stage);
 		const group = groups.get(key) ?? [];
 		group.push(stage);
 		groups.set(key, group);
 	}
 	return groups;
-}
-
-function matchingCurrentOccurrence(
-	legacy: DurableStageCheckpoint,
-	stages: readonly DurableStageCheckpoint[],
-): string | undefined {
-	if (legacy.topology === undefined) return undefined;
-	const matches = stages.filter(
-		(current) =>
-			current.topology?.occurrenceKey !== undefined &&
-			current.replayKey === legacy.replayKey &&
-			current.topology.stageId === legacy.topology?.stageId &&
-			samePromptOccurrenceIdentity(legacy, current),
-	);
-	const occurrences = new Set(matches.map((current) => current.topology!.occurrenceKey!));
-	return occurrences.size === 1 ? occurrences.values().next().value : undefined;
-}
-
-function samePromptOccurrenceIdentity(legacy: DurableStageCheckpoint, current: DurableStageCheckpoint): boolean {
-	const left = legacy.topology;
-	const right = current.topology;
-	return (
-		left !== undefined &&
-		right !== undefined &&
-		legacy.name === current.name &&
-		left.version === right.version &&
-		left.stageId === right.stageId &&
-		sameStrings(left.parentIds, right.parentIds) &&
-		left.sourceOrder === right.sourceOrder &&
-		sameOptionalRun(left.run, right.run) &&
-		left.boundary === undefined &&
-		right.boundary === undefined
-	);
 }
 
 function compositeKey(domain: string, ...parts: readonly string[]): string {

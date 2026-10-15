@@ -10,8 +10,7 @@
  *   - interactive background runs route ctx.ui.custom through the stage UI
  *     broker (stage shows awaiting_input and stays answerable);
  *   - earlier completed stages remain completed;
- *   - partial / method-less UI adapters degrade to the same clear errors
- *     instead of "x is not a function" TypeErrors.
+ *   - incomplete UI adapters are rejected with a typed boundary error.
  */
 
 import assert from "node:assert/strict";
@@ -21,11 +20,13 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
-import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import {
+	normalizeUIContext,
+	WorkflowUIAdapterError,
+} from "../../packages/workflows/src/runs/foreground/executor-hil.js";
 import type { StageCustomUiRequest } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 
 type TestStore = ReturnType<typeof createStore>;
 
@@ -175,22 +176,17 @@ describe("headless ctx.ui.custom (#1339)", () => {
 		}
 	});
 
-	test("partial UI adapters degrade to clear errors, never 'not a function' TypeErrors", async () => {
-		const store = createStore();
-		const partial = {} as WorkflowUIAdapter;
-		const def = workflow({
-			name: "partial-adapter",
-			description: "",
-			inputs: {},
-			outputs: {
-				v: Type.Optional(Type.Any()),
+	test("rejects incomplete UI adapters with a typed missing-method error", () => {
+		assert.throws(
+			() => {
+				// @ts-expect-error Incomplete adapters are not part of the current contract.
+				normalizeUIContext({});
 			},
-			run: async (ctx) => ({ v: await ctx.ui.input("q?") }),
-		});
-
-		const result = await run(def, {}, { store, ui: partial });
-		assert.equal(result.status, "failed");
-		assert.doesNotMatch(result.error ?? "", /is not a function/);
-		assert.match(result.error ?? "", /ctx\.ui\.input/);
+			(error: Error) => {
+				assert.ok(error instanceof WorkflowUIAdapterError);
+				assert.equal(error.method, "input");
+				return true;
+			},
+		);
 	});
 });

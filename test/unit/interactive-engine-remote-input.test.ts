@@ -1,3 +1,4 @@
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 /**
  * Remote custom-component input paths.
  *
@@ -309,6 +310,7 @@ async function makeFullscreenGraphFixture(options: BridgeOptions = {}): Promise<
 	const attached: Array<{ runId: string; stageId: string }> = [];
 	const detached = { count: 0 };
 	const graph = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap(stages)),

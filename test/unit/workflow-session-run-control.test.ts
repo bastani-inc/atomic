@@ -142,6 +142,7 @@ function run(id: string, overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [],
 		modelOwner: SESSION_ID,
 		origin: "agent",

@@ -17,7 +17,15 @@ import { testRunId } from "../helpers/run-id.js";
 function seedPartialRun(runId: string): InMemoryDurableBackend {
 	const backend = new InMemoryDurableBackend();
 	setDurableBackend(backend);
-	store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: runId,
+		name: "partial",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	for (const stageId of ["resume-ok", "resume-fail"]) {
 		store.recordStageStart(runId, { id: stageId, name: stageId, status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, stageId);
@@ -127,7 +135,15 @@ describe("partial resume command surfaces", () => {
 		const runId = testRunId("tool-durable-resume-failure");
 		const backend = new ThrowRunningBackend();
 		setDurableBackend(backend);
-		store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "partial",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
@@ -179,7 +195,15 @@ describe("partial resume command surfaces", () => {
 		const runId = testRunId("tool-durable-resume-retry");
 		const backend = new TransientRunningBackend();
 		setDurableBackend(backend);
-		store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "partial",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
@@ -224,7 +248,15 @@ describe("partial resume command surfaces", () => {
 		const runId = testRunId("slash-picker-resume-failure");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		store.recordRunStart({ id: runId, name: "picker", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "picker",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });

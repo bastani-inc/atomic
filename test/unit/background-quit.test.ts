@@ -145,7 +145,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		const runId = "quit-rejected-pause";
 		let secondPauseCalls = 0;
 		let secondPauseSettled = false;
-		store.recordRunStart({ id: runId, name: "reject", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "reject",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		for (const stageId of ["stage-reject", "stage-late"]) {
 			store.recordStageStart(runId, {
 				id: stageId,
@@ -214,7 +222,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		const pauseAcknowledged = Promise.withResolvers<void>();
 		const runId = "quit-acknowledged";
 		let status: StageControlStatus = "running";
-		store.recordRunStart({ id: runId, name: "ack", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "ack",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
 		backend.registerWorkflow({ workflowId: runId, name: "ack", inputs: {}, createdAt: 1, status: "running" });
 		registry.register(
@@ -261,7 +277,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		const lateAcknowledgement = Promise.withResolvers<void>();
 		let lateStatus: StageControlStatus = "running";
 		for (const runId of ["quit-reject-fast", "quit-ack-late"]) {
-			store.recordRunStart({ id: runId, name: runId, inputs: {}, status: "running", stages: [], startedAt: 1 });
+			store.recordRunStart({
+				id: runId,
+				name: runId,
+				inputs: {},
+				status: "running",
+				toolNodes: [],
+				stages: [],
+				startedAt: 1,
+			});
 			store.recordStageStart(runId, {
 				id: `${runId}-stage`,
 				name: "stage",
@@ -613,7 +637,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		const registry = createStageControlRegistry();
 		const runId = "quit-durable-transition-fails";
 		let status: StageControlStatus = "running";
-		store.recordRunStart({ id: runId, name: "durable", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "durable",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
 		backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
 		registry.register(
@@ -651,7 +683,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		const registry = createStageControlRegistry();
 		const runId = "quit-durable-flush-fails";
 		let status: StageControlStatus = "running";
-		store.recordRunStart({ id: runId, name: "durable", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "durable",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
 		backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
 		registry.register(
@@ -1337,7 +1377,15 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		const runId = "quit-stage-only-resumed";
 		let status: StageControlStatus = "running";
 		const releaseStage = Promise.withResolvers<void>();
-		store.recordRunStart({ id: runId, name: "stage-only", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "stage-only",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
 		backend.registerWorkflow({ workflowId: runId, name: "stage-only", inputs: {}, createdAt: 1, status: "running" });
 		registry.register(

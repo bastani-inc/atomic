@@ -7,22 +7,19 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { GraphViewLayout, graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const {
 	makeStage,
 	makeSnap,
-	makeRunPromptSnap,
 	makePendingPrompt,
 	makeAwaitingInputStage,
 	makeInputRequest,
 	makeStore,
-	makeRun,
 	makeTestTui,
 	defaultTheme,
 	visibleText,
-	typeIntoView,
 	makeView,
 } = h;
 
@@ -59,6 +56,7 @@ describe("GraphView keyboard navigation", () => {
 			makeStage("child-5", ["root"]),
 		];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
@@ -83,48 +81,6 @@ describe("GraphView keyboard navigation", () => {
 		assert.equal(view.handleInput("\x1b[<66;10;10M"), true);
 		assert.equal(view._graphScrollColOffset, 0);
 
-		const legacyWheelRight = `\x1b[M${String.fromCharCode(67 + 32)}**`;
-		assert.equal(view.handleInput(legacyWheelRight), true);
-		assert.ok(view._graphScrollColOffset > 0);
-		assert.equal(view._graphScrollOffset, verticalOffset);
-		assert.notEqual(visibleText(view.render(48)), beforePan);
-
-		const legacyWheelLeft = `\x1b[M${String.fromCharCode(66 + 32)}**`;
-		assert.equal(view.handleInput(legacyWheelLeft), true);
-		assert.equal(view._graphScrollColOffset, 0);
-		assert.equal(view._graphScrollOffset, verticalOffset);
-		assert.equal(view._focusedIndex, 0);
-		view.dispose();
-	});
-
-	it("keeps horizontal graph panning live while a run-level prompt is active", () => {
-		const stages = [
-			makeStage("root"),
-			...Array.from({ length: 6 }, (_, index) => makeStage(`child-${index}`, ["root"])),
-		];
-		const store = makeStore(makeRunPromptSnap(stages, makePendingPrompt({ id: "legacy-prompt" })));
-		const resolved: h.PromptResolution[] = [];
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			piTui: makeTestTui(32),
-			onPromptResolve: (runId, promptId, response) => {
-				resolved.push({ runId, promptId, response });
-			},
-		});
-
-		const beforePan = visibleText(view.render(48));
-		assert.equal(view.handleInput("\x1b[<67;10;10M"), true);
-		const afterPan = visibleText(view.render(48));
-		assert.ok(view._graphScrollColOffset > 0);
-		assert.notEqual(afterPan, beforePan);
-		assert.deepEqual(resolved, []);
-
-		typeIntoView(view, "answer");
-		view.handleInput("\r");
-		assert.deepEqual(resolved, [{ runId: "run-1", promptId: "legacy-prompt", response: "answer" }]);
 		view.dispose();
 	});
 
@@ -144,6 +100,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap([makeStage("A")]);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "widget",
 			runId: "run-1",
 			store,
@@ -276,6 +233,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -292,6 +250,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -307,6 +266,7 @@ describe("GraphView keyboard navigation", () => {
 	it("keeps tiny terminal frames bounded while shrinking chrome", () => {
 		let rows = 5;
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("tiny")])),
@@ -328,6 +288,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		let terminalRows = 10;
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -365,6 +326,7 @@ describe("GraphView keyboard navigation", () => {
 	it("keeps the last hosted frame height while the host terminal disappears", () => {
 		let terminalRows: number | undefined = 40;
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("lifecycle")])),
@@ -399,6 +361,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -433,6 +396,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(snap);
 		const onStageAttach = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -450,47 +414,6 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
-	it("honors remapped select keybindings for run-level prompt cards", () => {
-		const store = createStore();
-		store.recordRunStart(makeRun([makeStage("prompt-owner")]));
-		const prompt = {
-			id: "prompt-select-1",
-			kind: "select" as const,
-			message: "Choose a branch.",
-			choices: ["alpha", "beta", "gamma"],
-			createdAt: Date.now(),
-		};
-		assert.equal(store.recordPendingPrompt("run-1", prompt), true);
-		const resolved: Array<{ runId: string; promptId: string; response: unknown }> = [];
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			piTui: makeTestTui(32),
-			piKeybindings: makeFakeKeybindings({
-				"tui.select.down": ["d"],
-				"tui.select.confirm": ["s"],
-			}),
-			onPromptResolve: (runId, promptId, response) => {
-				resolved.push({ runId, promptId, response });
-				store.resolvePendingPrompt(runId, promptId, response);
-			},
-		});
-
-		assert.equal(view.handleInput("d"), true);
-		assert.deepEqual(resolved, []);
-		assert.equal(store.runs()[0]?.pendingPrompt?.id, prompt.id);
-
-		assert.equal(view.handleInput("\x1b[6~"), true, "raw PageDown remains owned by the select prompt");
-		assert.equal(view.handleInput("\x1b[5~"), true, "raw PageUp remains owned by the select prompt");
-
-		assert.equal(view.handleInput("s"), true);
-		assert.deepEqual(resolved, [{ runId: "run-1", promptId: prompt.id, response: "beta" }]);
-		assert.equal(store.runs()[0]?.pendingPrompt, undefined);
-		view.dispose();
-	});
-
 	it("auto-focuses a newly awaiting stage prompt node so Enter attaches to the HIL UI", () => {
 		const store = createStore();
 		store.recordRunStart({
@@ -498,6 +421,7 @@ describe("GraphView keyboard navigation", () => {
 			name: "Test Run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -510,6 +434,7 @@ describe("GraphView keyboard navigation", () => {
 		});
 		const onStageAttach = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -583,6 +508,7 @@ describe("GraphView keyboard navigation", () => {
 		const onStageAttach = vi.fn(() => {});
 		let detached = 0;
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,

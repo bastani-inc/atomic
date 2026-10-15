@@ -155,7 +155,7 @@ async function writeWorkflow(
 	await writeFile(
 		path,
 		[
-			`import { workflow } from "@bastani/workflows";`,
+			`import { workflow } from "@bastani/atomic/workflows";`,
 			`import { Type } from "typebox";`,
 			options.named ? `export const namedWorkflow = ${definition};` : `export default ${definition};`,
 		].join("\n"),
@@ -302,9 +302,7 @@ describe("workflow reload rediscovery matrix", () => {
 		const listed = names(await harness.execute({ action: "list" }));
 		for (const expected of [
 			"scope-project-atomic",
-			"scope-project-legacy",
 			"scope-global-atomic",
-			"scope-global-legacy",
 			"scope-project-relative",
 			"scope-project-absolute",
 			"scope-global-relative",
@@ -313,6 +311,8 @@ describe("workflow reload rediscovery matrix", () => {
 			"scope-conflict",
 		])
 			assert.ok(listed.includes(expected), expected);
+		assert.equal(listed.includes("scope-project-legacy"), false);
+		assert.equal(listed.includes("scope-global-legacy"), false);
 
 		const get = await harness.execute({ action: "get", workflow: "scope-project-atomic" });
 		assert.equal(get.action, "get");

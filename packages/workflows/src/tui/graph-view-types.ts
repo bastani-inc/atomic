@@ -25,12 +25,6 @@ export interface GraphViewOpts {
 	 */
 	onHide?: () => void;
 	/**
-	 * Invoked when the user submits (or skips) a HIL prompt rendered inside
-	 * the pane. The callback typically calls `store.resolvePendingPrompt`;
-	 * GraphView itself stays UI-only.
-	 */
-	onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
-	/**
 	 * Invoked when the user presses Enter on a focused graph node — the
 	 * parent attach shell swaps the popup interior to that stage's chat
 	 * pane. When unset, Enter is a no-op (preserves graph mode).

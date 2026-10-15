@@ -1024,6 +1024,7 @@ describe("ctx.task tail liveness", () => {
 			name: "parent",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "boundary",
@@ -1045,6 +1046,7 @@ describe("ctx.task tail liveness", () => {
 			parentRunId: "parent",
 			parentStageId: "boundary",
 			rootRunId: "parent",
+			toolNodes: [],
 			stages: [
 				{
 					id: "review",
@@ -1096,6 +1098,7 @@ describe("ctx.task tail liveness", () => {
 			name: "parent",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "boundary",
@@ -1117,6 +1120,7 @@ describe("ctx.task tail liveness", () => {
 			parentRunId: "parent",
 			parentStageId: "boundary",
 			rootRunId: "parent",
+			toolNodes: [],
 			stages: [
 				{
 					id: "review",
@@ -1543,6 +1547,7 @@ describe("ctx.task tail liveness", () => {
 			name: "stale-wrap",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 0,
 		};

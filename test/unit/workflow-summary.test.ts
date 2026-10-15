@@ -18,6 +18,7 @@ function fixture() {
 		name: "build",
 		inputs: { objective: "Fix the compiler" },
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 	});
@@ -125,6 +126,7 @@ test("workflow summary input is bounded and includes latest stage outputs", () =
 			...Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`other${i}`, "y".repeat(20000)])),
 			objective: "Fix the compiler",
 		},
+		toolNodes: [],
 		stages: [
 			{
 				id: "stage",

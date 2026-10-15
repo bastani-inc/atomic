@@ -600,6 +600,7 @@ describe("continuation tool-parent identity map", () => {
 			name: "deeper-replayed-parent",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumedFromRunId: "source",
@@ -717,7 +718,7 @@ describe("continuation tool-parent identity map", () => {
 		setDurableBackend(undefined);
 	});
 
-	test("active-blocked resume stays retryable after ambiguous duplicate-name replay topology", async () => {
+	test("active-blocked resume stays retryable after duplicate-key parent topology changes", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		let collapseDuplicates = false;
@@ -786,7 +787,7 @@ describe("continuation tool-parent identity map", () => {
 		await jobs.get(ambiguous.runId)?.promise;
 		assert.match(
 			store.runs().find((run) => run.id === ambiguous.runId)?.error ?? "",
-			/insufficient_state: replay topology ambiguous/,
+			/insufficient_state: replay topology mismatch/,
 		);
 		const blocked = store.runs().find((run) => run.id === source.id);
 		assert.ok(blocked);

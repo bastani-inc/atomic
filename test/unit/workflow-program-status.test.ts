@@ -269,6 +269,7 @@ test("projects run and stage approvals ahead of stage questions in either order 
 				status: "running",
 				startedAt: 0,
 				...(runPromptKind ? { pendingPrompt: prompt(runPromptKind) } : {}),
+				toolNodes: [],
 				stages: (stagePromptKinds.length > 0 ? stagePromptKinds : [undefined]).map((stagePromptKind, index) => ({
 					id: `question-${index}`,
 					name: "question",
@@ -317,6 +318,7 @@ test("projects the root terminal disposition without inheriting child cancellati
 			status,
 			startedAt: 0,
 			...(status === "paused" || status === "running" ? {} : { endedAt: 1 }),
+			toolNodes: [],
 			stages: [],
 		};
 		const [activity] = projectWorkflowActivity({

@@ -97,8 +97,7 @@ export interface StageSessionRuntime {
 	getLastAssistantText?: () => string | undefined;
 }
 
-export type StageSessionCreateOptions = CreateAgentSessionOptions &
-	Pick<StageOptions, "mcp" | "fallbackModels" | "fallbackThinkingLevels">;
+export type StageSessionCreateOptions = CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">;
 
 export interface StageSessionCreateResult {
 	readonly session: StageSessionRuntime;

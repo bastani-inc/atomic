@@ -53,7 +53,7 @@ test("builtin task, chain and parallel defaults preserve caller models, efforts,
 	const ctx = makeMockCtx({});
 	const wrapped = withBuiltinContext(ctx);
 	const constraints = { allowedEfforts: ["high" as const] };
-	await wrapped.task("auto", { prompt: "  task  ", modelConstraints: constraints, thinkingLevel: "high" });
+	await wrapped.task("auto", { prompt: "  task  ", modelConstraints: constraints });
 	await wrapped.task("explicit", { prompt: "task", model: "provider/model:low" });
 	await wrapped.chain([{ name: "chain-auto", prompt: "task" }]);
 	await wrapped.parallel([{ name: "parallel-auto", prompt: "task" }]);
@@ -65,7 +65,6 @@ test("builtin task, chain and parallel defaults preserve caller models, efforts,
 		{ model: "provider/shared:high" },
 	);
 	assert.equal(ctx.calls.taskOptions.auto?.[0]?.model, "auto");
-	assert.equal(ctx.calls.taskOptions.auto?.[0]?.thinkingLevel, "high");
 	assert.equal(ctx.calls.taskOptions.auto?.[0]?.modelConstraints, constraints);
 	assert.ok(ctx.calls.taskOptions.auto?.[0]?.prompt?.startsWith("  task  "));
 	assert.equal(ctx.calls.taskOptions.explicit?.[0]?.model, "provider/model:low");

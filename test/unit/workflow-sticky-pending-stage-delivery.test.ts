@@ -308,6 +308,7 @@ function rootFixture(
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: Array.isArray(stage) ? stage : [stage],
 		startedAt: 1,
 		...(possibleStages === undefined ? {} : { possibleStages }),
@@ -329,6 +330,7 @@ describe("pre-start sticky drain", () => {
 			startedAt: 2,
 			parentRunId: ROOT_RUN_ID,
 			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
 			stages: [baseStage({ id: "child-stage", status: "failed" })],
 		});
 		const sdk = createMockSdk();
@@ -937,6 +939,7 @@ describe("pre-start sticky drain", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "slice-boundary",
@@ -958,6 +961,7 @@ describe("pre-start sticky drain", () => {
 			parentRunId: ROOT_RUN_ID,
 			parentStageId: "slice-boundary",
 			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
 			stages: [baseStage({ id: "child-reviewer-id", name: "reviewer-a" })],
 			startedAt: 2,
 		});
@@ -1049,6 +1053,7 @@ describe("pre-start sticky drain", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "slice-boundary",
@@ -1070,6 +1075,7 @@ describe("pre-start sticky drain", () => {
 			parentRunId: ROOT_RUN_ID,
 			parentStageId: "slice-boundary",
 			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
 			stages: [baseStage({ id: "child-reviewer-id", name: "reviewer-a" })],
 			startedAt: 2,
 		});
@@ -1205,6 +1211,7 @@ describe("sticky entries in durable metadata", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [baseStage(), baseStage({ id: "orch-4-id", name: "orchestrator-4" })],
 			startedAt: 1,
 		});
@@ -1238,6 +1245,7 @@ describe("sticky entries in durable metadata", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [baseStage(), baseStage({ id: "orch-4-id", name: "orchestrator-4" })],
 			pendingStageMessages: hydrated,
 			startedAt: 2,
@@ -1272,6 +1280,7 @@ describe("sticky entries in durable metadata", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -1353,6 +1362,7 @@ function stickyBridgeFixture(
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: stageList as never,
 			startedAt: 1,
 			...(options.possibleStages === undefined ? {} : { possibleStages: options.possibleStages }),
@@ -1367,6 +1377,7 @@ function stickyBridgeFixture(
 			parentRunId: ROOT_RUN_ID,
 			parentStageId: "slice-boundary",
 			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
 			stages: [],
 			startedAt: 2,
 		});
@@ -1898,6 +1909,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			name: "flow",
 			inputs: {},
 			status: "completed" as RunStatus,
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -1981,6 +1993,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			inputs: {},
 			status: "running",
 			possibleStages: ["slice-*/reviewer-*"],
+			toolNodes: [],
 			stages: [
 				{
 					id: "slice-boundary",
@@ -2002,6 +2015,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			parentRunId: ROOT_RUN_ID,
 			parentStageId: "slice-boundary",
 			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
 			stages: [
 				baseStage({ id: "child-reviewer-id", name: "reviewer-a", status: "running", sessionId: "live-child" }),
 			],
@@ -2202,6 +2216,7 @@ function terminalStickyFixture(store: ReturnType<typeof createStore>, ..._ids: s
 		name: "flow",
 		inputs: {},
 		status: "cancelled" as RunStatus,
+		toolNodes: [],
 		stages: [baseStage()],
 		startedAt: 1,
 	});
@@ -2216,6 +2231,7 @@ test("replacement readiness waits for its own sticky admission after prior succe
 		name: "replacement-ready",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "stage-id",
@@ -2259,6 +2275,7 @@ test("live message validation works without a global durable backend (#3467)", a
 		name: "memory-validate",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "stage-id",

@@ -45,8 +45,6 @@ test.each([
 	"dbos",
 	"dbos-session",
 	"dbos-direct",
-	"legacy",
-	"legacy-missing",
 	"changed-args",
 ] as const)(
 	"public resume replays completed work from live, lifecycle-restored, or durable state and rejects unsafe frontiers (%s)",
@@ -127,20 +125,6 @@ test.each([
 			await backend.hydrateWorkflow(runId);
 			setDurableBackend(backend);
 		}
-		if (mode === "legacy-missing" || mode === "legacy") {
-			const old = backend;
-			backend = new InMemoryDurableBackend();
-			backend.registerWorkflow({ ...old.getWorkflow(runId)!, failedToolNodeId: undefined });
-			for (const checkpoint of old.listCheckpoints(runId)) {
-				if (checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) {
-					if (mode === "legacy-missing") continue;
-					const inspection = { ...checkpoint };
-					delete inspection.cancelled;
-					backend.recordCheckpoint(inspection);
-				} else backend.recordCheckpoint(checkpoint);
-			}
-			setDurableBackend(backend);
-		}
 		if (mode.includes("session")) {
 			store.clear();
 			restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: "never", persistRuns: true }, store);
@@ -165,17 +149,12 @@ test.each([
 			const snapshots = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!);
 			assert.equal(
 				snapshots[0]?.toolNodes?.length,
-				(source.toolNodes?.length ?? 0) - (mode === "legacy-missing" ? 1 : 0),
+				source.toolNodes?.length ?? 0,
 				"persist the cancelled frontier as well as completed tools",
 			);
-			if (mode !== "legacy-missing")
-				assert.equal(
-					snapshots[0]?.toolNodes?.find((node) => node.name === "wait-required-ci")?.status,
-					mode === "legacy" ? "failed" : "cancelled",
-				);
+			assert.equal(snapshots[0]?.toolNodes?.find((node) => node.name === "wait-required-ci")?.status, "cancelled");
 			store.clear();
 			for (const snapshot of snapshots) {
-				if (mode === "legacy") delete snapshot.failedToolNodeId;
 				if (mode !== "dbos-direct") store.recordRunStart(snapshot);
 			}
 		}
@@ -194,37 +173,6 @@ test.each([
 			assert.match(resumed.message ?? "", /insufficient_state/);
 			assert.deepEqual([completedCalls, modelCalls, waitCalls], [1, 1, 1]);
 			assert.equal(store.runs().length, 1);
-			assert.equal(backend.getWorkflow(runId)?.status, "failed");
-			return;
-		}
-		if (mode === "legacy-missing") {
-			assert.equal(resumed.status, "noop");
-			assert.match(resumed.message ?? "", /insufficient_state/);
-			assert.deepEqual([completedCalls, modelCalls, waitCalls], [1, 1, 1]);
-			let recoveryCalls = 0;
-			const recovery = workflow({
-				name: "explicit-recovery-only",
-				description: "operator-reviewed remaining read-only operation",
-				inputs: { reviewed: Type.String() },
-				outputs: { value: Type.String() },
-				run: async (ctx) => ({
-					value: await ctx.tool("remaining-check", { reviewed: ctx.inputs.reviewed }, async () => {
-						recoveryCalls++;
-						return ctx.inputs.reviewed;
-					}),
-				}),
-			});
-			const recoveryRuntime = createExtensionRuntime({ store, registry: createRegistry().register(recovery) });
-			const fresh = await recoveryRuntime.dispatch({
-				action: "run",
-				workflow: recovery.name,
-				inputs: { reviewed: "verified external state" },
-			});
-			assert.ok(fresh.action === "run");
-			await waitFor(() => store.runs().some((run) => run.id === fresh.runId && run.endedAt !== undefined));
-			assert.equal(store.runs().find((run) => run.id === fresh.runId)?.status, "completed");
-			assert.equal(recoveryCalls, 1);
-			assert.deepEqual([completedCalls, modelCalls, waitCalls], [1, 1, 1]);
 			assert.equal(backend.getWorkflow(runId)?.status, "failed");
 			return;
 		}
@@ -549,86 +497,83 @@ test.each(
 	["wait", "wait\nfor-ci", "wait\rfor-ci", "wait\u2028for-ci", "wait\u2029for-ci"].flatMap((name) =>
 		[false, true].map((typed) => ({ name, typed })),
 	),
-)("public durable resume requires typed legacy evidence for name=$name, typed=$typed", async ({ name, typed }) => {
-	const sdk = createMockSdk();
-	const original = new DbosDurableBackend(sdk);
-	setDurableBackend(original);
-	let completedCalls = 0;
-	let targetCalls = 0;
-	const definition = workflow({
-		name: "legacy-tool-name",
-		description: "offline legacy name fixture",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.tool("prepare", {}, async () => {
-				completedCalls++;
-				return null;
-			});
-			await ctx.tool(name, {}, async ({ signal }) => {
-				targetCalls++;
-				if (targetCalls === 1)
-					await new Promise<void>((_resolve, reject) =>
-						signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-					);
-				return true;
-			});
-			return {};
-		},
-	});
-	const runtime = createExtensionRuntime({ store, registry: createRegistry([definition]) });
-	const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
-	assert.ok(started.action === "run");
-	await waitFor(() => targetCalls === 1);
-	const source = store.runs().find((run) => run.id === started.runId)!;
-	const target = source.toolNodes![1]!;
-	await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
-	await waitFor(() => source.endedAt !== undefined);
-	await original.flush(source.id);
-	const legacySdk = createMockSdk();
-	const writer = new DbosDurableBackend(legacySdk);
-	writer.registerWorkflow({ ...original.getWorkflow(source.id)!, failedToolNodeId: undefined });
-	for (const checkpoint of original.listCheckpoints(source.id)) {
-		if (checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) {
-			if (!typed) continue;
-			const legacy = { ...checkpoint };
-			delete legacy.cancelled;
-			writer.recordCheckpoint(legacy);
-			continue;
+)(
+	"public durable resume requires the typed tool failure checkpoint for name=$name, typed=$typed",
+	async ({ name, typed }) => {
+		const sdk = createMockSdk();
+		const original = new DbosDurableBackend(sdk);
+		setDurableBackend(original);
+		let completedCalls = 0;
+		let targetCalls = 0;
+		const definition = workflow({
+			name: "durable-tool-name",
+			description: "offline tool name fixture",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("prepare", {}, async () => {
+					completedCalls++;
+					return null;
+				});
+				await ctx.tool(name, {}, async ({ signal }) => {
+					targetCalls++;
+					if (targetCalls === 1)
+						await new Promise<void>((_resolve, reject) =>
+							signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+						);
+					return true;
+				});
+				return {};
+			},
+		});
+		const runtime = createExtensionRuntime({ store, registry: createRegistry([definition]) });
+		const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
+		assert.ok(started.action === "run");
+		await waitFor(() => targetCalls === 1);
+		const source = store.runs().find((run) => run.id === started.runId)!;
+		const target = source.toolNodes![1]!;
+		await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
+		await waitFor(() => source.endedAt !== undefined);
+		await original.flush(source.id);
+		const copiedSdk = createMockSdk();
+		const writer = new DbosDurableBackend(copiedSdk);
+		writer.registerWorkflow(original.getWorkflow(source.id)!);
+		for (const checkpoint of original.listCheckpoints(source.id)) {
+			if (!typed && checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) continue;
+			writer.recordCheckpoint(checkpoint);
 		}
-		writer.recordCheckpoint(checkpoint);
-	}
-	await writer.flush(source.id);
-	const backend = new DbosDurableBackend(legacySdk);
-	await backend.hydrateWorkflow(source.id);
-	setDurableBackend(backend);
-	store.clear();
-	const resumed = await workflowResumeAction(
-		{ action: "resume", runId: source.id },
-		{
-			getRuntime: () => runtime,
-			policy: INTERACTIVE_WORKFLOW_POLICY,
-			ensureWorkflowResourcesLoaded: async () => {},
-		},
-	);
-	assert.ok(resumed.action === "resume");
-	if (!typed) {
-		assert.equal(resumed.status, "noop");
-		assert.match(resumed.message ?? "", /insufficient_state/);
-		assert.deepEqual([completedCalls, targetCalls], [1, 1]);
-		assert.equal(backend.getWorkflow(source.id)?.status, "failed");
-		return;
-	}
-	assert.equal(resumed.status, "running", resumed.message);
-	await waitFor(() => store.runs().some((run) => run.id === source.id && run.endedAt !== undefined));
-	const continuation = store.runs().find((run) => run.id === source.id)!;
-	assert.equal(continuation.status, "completed", continuation.error);
-	assert.deepEqual([completedCalls, targetCalls], [1, 2]);
-	assert.equal(continuation.failedStageId, undefined);
-	const retried = continuation.toolNodes?.find((node) => node.name === name);
-	assert.ok(retried, "tool name is preserved verbatim");
-	assert.deepEqual(
-		[retried.name, retried.id, retried.argsHash, retried.ordinal, retried.parentIds],
-		[target.name, target.id, target.argsHash, target.ordinal, target.parentIds],
-	);
-});
+		await writer.flush(source.id);
+		const backend = new DbosDurableBackend(copiedSdk);
+		await backend.hydrateWorkflow(source.id);
+		setDurableBackend(backend);
+		store.clear();
+		const resumed = await workflowResumeAction(
+			{ action: "resume", runId: source.id },
+			{
+				getRuntime: () => runtime,
+				policy: INTERACTIVE_WORKFLOW_POLICY,
+				ensureWorkflowResourcesLoaded: async () => {},
+			},
+		);
+		assert.ok(resumed.action === "resume");
+		if (!typed) {
+			assert.equal(resumed.status, "noop");
+			assert.match(resumed.message ?? "", /insufficient_state/);
+			assert.deepEqual([completedCalls, targetCalls], [1, 1]);
+			assert.equal(backend.getWorkflow(source.id)?.status, "failed");
+			return;
+		}
+		assert.equal(resumed.status, "running", resumed.message);
+		await waitFor(() => store.runs().some((run) => run.id === source.id && run.endedAt !== undefined));
+		const continuation = store.runs().find((run) => run.id === source.id)!;
+		assert.equal(continuation.status, "completed", continuation.error);
+		assert.deepEqual([completedCalls, targetCalls], [1, 2]);
+		assert.equal(continuation.failedStageId, undefined);
+		const retried = continuation.toolNodes?.find((node) => node.name === name);
+		assert.ok(retried, "tool name is preserved verbatim");
+		assert.deepEqual(
+			[retried.name, retried.id, retried.argsHash, retried.ordinal, retried.parentIds],
+			[target.name, target.id, target.argsHash, target.ordinal, target.parentIds],
+		);
+	},
+);
