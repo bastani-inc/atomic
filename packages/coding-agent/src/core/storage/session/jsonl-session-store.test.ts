@@ -447,6 +447,66 @@ it("appends small batches without rereading or parsing the committed 4 MiB trans
 	});
 });
 
+for (const terminated of [true, false]) {
+	it(`retains loaded sequence state for header-only appends after reopening (${terminated ? "newline" : "EOF"})`, async () => {
+		const directory = await mkdtemp(join(tmpdir(), "jsonl-reopen-"));
+		let store = await JsonlSessionStore.open(directory);
+		try {
+			const entries = Array.from({ length: 4096 }, (_, index) => ({
+				...entry,
+				id: `entry-${index}`,
+				name: "x".repeat(1024),
+			}));
+			await store.create(header, entries);
+			const path = await location(store);
+			if (!terminated) await truncate(path, (await fs.stat(path)).size - 1);
+			await store.close();
+			store = await JsonlSessionStore.open(directory);
+			assert.deepEqual((await store.load(header.id)).entries, entries);
+			vi.mocked(readFile).mockClear();
+			const parse = vi.spyOn(JSON, "parse");
+			const handles: FileHandle[] = [];
+			const originalOpen = fs.open;
+			const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+				const handle = await originalOpen(...args);
+				vi.spyOn(handle, "read");
+				handles.push(handle);
+				return handle;
+			});
+			try {
+				for (let index = 0; index < 2; index++) {
+					assert.deepEqual(await store.append(header.id, [entry], { expectSeq: entries.length + index }), {
+						lastSeq: entries.length + index + 1,
+					});
+				}
+				assert.equal(vi.mocked(readFile).mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length, 0);
+				assert.equal(parse.mock.calls.filter(([text]) => text.length > 1024).length, 0);
+				const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
+				assert.equal(handles.length, 2);
+				for (const handle of handles) {
+					let position = 0;
+					const reads = vi.mocked(handle.read);
+					for (const [index, result] of reads.mock.results.entries()) {
+						assert.equal(reads.mock.calls[index]?.at(-1), null);
+						assert.equal(result.type, "return");
+						if (result.type === "return") position += (await result.value).bytesRead;
+						assert.ok(position <= headerBytes);
+					}
+					assert.equal(position, headerBytes);
+				}
+			} finally {
+				parse.mockRestore();
+				opened.mockRestore();
+				for (const handle of handles) vi.mocked(handle.read).mockRestore();
+			}
+			assert.deepEqual((await store.load(header.id)).entries, [...entries, entry, entry]);
+		} finally {
+			await store.close();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+}
+
 it("refreshes cached sequence after competing replace, deletion and recreation", async () => {
 	await withStore(async (store, directory) => {
 		await store.create(header, [entry]);

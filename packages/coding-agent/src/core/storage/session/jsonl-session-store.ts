@@ -381,9 +381,11 @@ export class JsonlSessionStore implements SessionStore {
 
 	private async readSnapshot(path: string): Promise<SessionSnapshot> {
 		const header = await this.readHeaderAt(path);
-		const lines = (await readFile(path, "utf8")).split("\n");
+		const content = await readFile(path, "utf8");
+		const lines = content.split("\n");
 		if (lines.at(-1) === "") lines.pop();
 		const entries = lines.slice(1).map((line) => JSON.parse(line) as SessionEntry);
+		await this.remember(path, entries.length, content.endsWith("\n"));
 		return { header, entries, lastSeq: entries.length };
 	}
 
