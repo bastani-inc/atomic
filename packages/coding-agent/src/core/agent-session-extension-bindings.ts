@@ -1034,7 +1034,9 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
-			includeAllExtensionTools: true,
+			includeAllExtensionTools:
+				preservesInitialToolLoadout(this) ||
+				getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages) === undefined,
 			preserveRunner: true,
 		});
 		this.refreshCurrentModelFromRegistry();

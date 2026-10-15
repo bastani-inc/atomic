@@ -6,6 +6,7 @@ import { getModel } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { createAgentSessionFromServices, prepareAgentSessionServices } from "../src/core/agent-session-services.js";
 import { inheritChildSessionOptions } from "../src/core/child-session-options.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -367,4 +368,80 @@ for (const transactional of [true, false]) {
 		await session.reload({ reason: "startup" });
 		assert.deepEqual(session.getActiveToolNames().sort(), ["find", "inactive_tool", "read"]);
 	});
+}
+
+for (const activate of [false, true]) {
+	for (const safeChange of ["none", "activate", "deactivate"] as const) {
+		test(`startup completion preserves tool choices, activation=${activate}, safeChange=${safeChange} (#3624)`, async () => {
+			const extensionDir = join(tempDir, ".atomic", "extensions");
+			mkdirSync(extensionDir, { recursive: true });
+			writeFileSync(
+				join(extensionDir, "startup.ts"),
+				`export default function(pi) {
+				for (const name of ["startup_probe", "newcomer_probe"]) {
+					pi.registerTool({ name, label: name, description: "Fixture",
+						parameters: { type: "object", properties: {} },
+						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });
+				}
+				pi.on("session_start", () => {
+					pi.setSessionName(JSON.stringify(pi.getActiveTools().sort()));
+					if (${activate}) pi.setActiveTools([...pi.getActiveTools(), "newcomer_probe"]);
+				});
+			}`,
+			);
+			const settingsManager = SettingsManager.create(tempDir, agentDir, { projectTrusted: false });
+			let completeTrust!: () => Promise<void>;
+			const completeServices = await prepareAgentSessionServices({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+				resourceLoaderOptions: {
+					builtinPackagePaths: [],
+					extensionFactories: [
+						(pi) => {
+							pi.on("session_start", () => {
+								if (safeChange === "activate") pi.setActiveTools([...pi.getActiveTools(), "find"]);
+								if (safeChange === "deactivate")
+									pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "read"));
+							});
+						},
+					],
+					noSkills: true,
+					noThemes: true,
+					noPromptTemplates: true,
+					noContextFiles: true,
+				},
+				resourceLoaderReloadOptions: {
+					deferProjectTrust: (complete) => {
+						completeTrust = complete;
+					},
+					resolveProjectTrust: () => true,
+				},
+			});
+			const { session } = await createAgentSessionFromServices({
+				services: await completeServices(),
+				model: getModel("anthropic", "claude-sonnet-4-5"),
+				sessionManager: recordedSession(["read", "ls", "startup_probe"]),
+			});
+			sessions.push(session);
+			assert.deepEqual(
+				session.getActiveToolNames().sort(),
+				safeChange === "activate" ? ["find", "ls", "read"] : safeChange === "deactivate" ? ["ls"] : ["ls", "read"],
+			);
+			await completeTrust();
+			await session.completeStartupResources((await completeServices()).resourceLoader);
+			const observedTools = JSON.parse(session.sessionManager.getSessionName() ?? "null") as string[] | null;
+			const expected =
+				safeChange === "activate"
+					? ["find", "ls", "read", "startup_probe"]
+					: safeChange === "deactivate"
+						? ["ls"]
+						: ["ls", "read", "startup_probe"];
+			assert.deepEqual(observedTools, expected);
+			assert.deepEqual(
+				session.getActiveToolNames().sort(),
+				[...expected, ...(activate ? ["newcomer_probe"] : [])].sort(),
+			);
+		});
+	}
 }
