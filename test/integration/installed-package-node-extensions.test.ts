@@ -361,6 +361,10 @@ runTest(
 			.filter((name) => name.endsWith(".tgz"))
 			.map((name) => join(packedRoot!, name));
 		assert.equal(archives.length, 3);
+		// Local tarball manifests lack the registry's _hasShrinkwrap marker. Seed
+		// npm's root lock so this consumer uses the published dependency pins too.
+		const publishedShrinkwrap = fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8");
+		fs.writeFileSync(join(consumer, "npm-shrinkwrap.json"), publishedShrinkwrap);
 		execute(
 			[
 				npmCli,
@@ -381,6 +385,7 @@ runTest(
 			assert.ok(fs.realpathSync(join(installed, name)).startsWith(fs.realpathSync(consumer)));
 		}
 		const shrinkwrap = fs.readFileSync(join(installed, "atomic", "npm-shrinkwrap.json"), "utf8");
+		assert.equal(shrinkwrap, publishedShrinkwrap, "the packed shrinkwrap must match the consumer's lock seed");
 		assert.ok(!shrinkwrap.includes(repoRoot));
 		assert.doesNotMatch(shrinkwrap, /"(?:link|resolved)"\s*:\s*(?:true|"(?:file:|\.\.\/|packages\/))/);
 		assert.ok(fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
